@@ -63,7 +63,7 @@
     "clsx": "^2.1.1",
     "electron-updater": "^6.8.9",
     "lucide-react": "^0.539.0",
-    "posthog-js": "^1.415.6",
+    "posthog-js": "^1.417.2",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
