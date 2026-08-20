@@ -1,0 +1,1181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Without this the phone layout never runs: mobile Safari lays the page
+     out at 980px and scales it down, so every breakpoint below is dead. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Bloks is a local-first workspace for personal AI agents. They live on your Mac, run on the engines you already pay for, and answer to you.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#08090b">
+<link rel="icon" href="bloks-mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="bloks-mark.png">
+<meta property="og:title" content="Bloks">
+<meta property="og:description" content="Your agents should belong to you. Not to a company. Not to a subscription. To you, on the machine in front of you.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://bloks.dev/">
+<meta property="og:image" content="https://bloks.dev/bloks-mark.png">
+<meta name="twitter:card" content="summary_large_image">
+<title>Bloks</title>
+</head>
+<body>
+<style>
+  /* One visual world on purpose: the page opens in the void, where your
+     agents currently live, and crosses into paper at the moment it starts
+     talking about your own machine. It does not follow the viewer's theme,
+     and every colour is painted explicitly. */
+  :root {
+    --void:  #08090b;
+    --paper: #f4f2ee;
+
+    --on-void:       #f4f6f9;
+    --on-void-soft:  #99a1ac;
+    --on-void-faint: #545c68;
+    --rule-void:     #1b1f26;
+
+    --on-paper:       #121418;
+    --on-paper-soft:  #53575d;
+    --on-paper-faint: #8a8e95;
+    --rule-paper:     #d7d3cb;
+
+    --blue:   #004aad;
+    --purple: #cb6ce6;
+    --red:    #ff3131;
+    --orange: #ff751f;
+    --green:  #7ed957;
+    --cyan:   #5ce1e6;
+    --amber:  #ffbd59;
+    --coral:  #ff5757;
+
+    --bg:    var(--void);
+    --fg:    var(--on-void);
+    --soft:  var(--on-void-soft);
+    --faint: var(--on-void-faint);
+    --rule:  var(--rule-void);
+
+    --t-label: .68rem;
+    --t-sm:    .92rem;
+    --t-body:  1.06rem;
+    --t-lede:  clamp(1.12rem, 1.55vw, 1.36rem);
+    --t-md:    clamp(1.5rem, 2.3vw, 1.95rem);
+    --t-lg:    clamp(2rem, 4.1vw, 3.15rem);
+    --t-xl:    clamp(2.5rem, 5.9vw, 5rem);
+    --t-2xl:   clamp(2.9rem, 7.4vw, 6.4rem);
+
+    /* Strong custom curves. The built-in easings are too weak to read as
+       deliberate, and ease-in on anything entering is always wrong. */
+    --ease:    cubic-bezier(.23, 1, .32, 1);
+    --glide:   cubic-bezier(.19, 1, .22, 1);
+    --inout:   cubic-bezier(.77, 0, .175, 1);
+    --spring: linear(0, .28 8%, .74 19%, .98 27%, 1.08 33%, 1.1 38%, 1.05 47%, .99 60%, 1);
+  }
+
+  * { box-sizing: border-box; }
+  /* clip, not hidden: the mark scales to 23x on its way past you. Neither it
+     nor the room blocks should ever produce a horizontal scrollbar, and clip
+     does that without making html a scroll container the way hidden would. */
+  html { overflow-x: clip; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: var(--t-body);
+    line-height: 1.66;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+    transition: background-color 1300ms linear, color 1300ms linear;
+  }
+  body.paper {
+    --bg:    var(--paper);
+    --fg:    var(--on-paper);
+    --soft:  var(--on-paper-soft);
+    --faint: var(--on-paper-faint);
+    --rule:  var(--rule-paper);
+  }
+
+  .wrap { width: min(1180px, 100% - 3rem); margin-inline: auto; }
+  .col  { max-width: 40rem; }
+
+  /* ---------- type ---------- */
+  h1, h2, h3 { margin: 0; font-weight: 700; text-wrap: balance; }
+  .d-2xl { font-size: var(--t-2xl); line-height: .94; letter-spacing: -0.048em; }
+  .d-xl  { font-size: var(--t-xl);  line-height: .96; letter-spacing: -0.044em; }
+  .d-lg  { font-size: var(--t-lg);  line-height: 1.0; letter-spacing: -0.036em; font-weight: 690; }
+
+  .lede { font-size: var(--t-lede); line-height: 1.48; color: var(--soft); max-width: 34rem; margin: 1.6rem 0 0; }
+  p { margin: 0 0 1.15rem; color: var(--soft); }
+  strong { color: var(--fg); font-weight: 650; }
+  a { color: inherit; }
+  em { font-style: normal; color: var(--fg); }
+
+  /* Line masks: each line clipped and sliding up. The padding/margin pair
+     stops descenders being sliced by the clip. */
+  .ln { display: block; overflow: hidden; padding-bottom: .1em; margin-bottom: -.1em; }
+  .ln > i { display: block; font-style: normal; transform: translateY(112%); transition: transform 1800ms var(--glide); }
+  .lit .ln > i { transform: none; }
+  .lit .ln:nth-child(2) > i { transition-delay: 160ms; }
+  .lit .ln:nth-child(3) > i { transition-delay: 320ms; }
+
+  .label { display: flex; align-items: center; gap: .9rem; margin: 0 0 1.6rem; }
+  .label span {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--t-label); letter-spacing: .28em; text-transform: uppercase;
+    color: var(--faint); white-space: nowrap;
+  }
+  /* No nowrap: the footer line is long and was running off a 390px screen. */
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--t-label); letter-spacing: .28em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .label hr { flex: 1; height: 1px; border: 0; background: var(--rule); margin: 0; transform: scaleX(0); transform-origin: left; transition: transform 2200ms var(--glide) 180ms; }
+  .lit .label hr { transform: scaleX(1); }
+
+  section { padding: clamp(6rem, 14vh, 10.5rem) 0; position: relative; }
+
+  /* ================= the opening =================
+     One block, then seven more stacking into the mark, then the mark scaling
+     through the viewport to leave the belief behind it. Driven by a scroll
+     timeline so it runs on the compositor rather than on the main thread. */
+  #stage { height: 460svh; padding: 0; }
+  #why   { height: 440svh; padding: 0; }
+  .pin { position: sticky; top: 0; height: 100svh; display: grid; place-items: center; overflow: hidden; contain: paint; }
+  .markwrap { grid-area: 1 / 1; }
+  /* Large, because for the first three viewports it is the only thing on the
+     page. A 44px bar alone on a wide screen reads as a rendering error. */
+  .mark { position: relative; width: clamp(176px, 19vw, 290px); aspect-ratio: 1272 / 1483.5; }
+  .mark b { position: absolute; display: block; opacity: 0; }
+  .mark b:first-child { opacity: 1; }
+  .herotext { grid-area: 1 / 1; width: min(1180px, 100vw - 3rem); opacity: 0; }
+  .hint { position: absolute; bottom: 2.4rem; left: 50%; translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: .8rem; }
+  .hint i { display: block; width: 1px; height: 32px; background: var(--rule-void); position: relative; overflow: hidden; }
+  .hint i::after { content: ""; position: absolute; inset: 0; background: var(--on-void-faint); animation: drip 2000ms var(--ease) infinite; }
+  @keyframes drip { 0% { translate: 0 -100%; } 62%, 100% { translate: 0 100%; } }
+
+  .beats { grid-area: 1 / 1; width: min(1120px, calc(100vw - 2 * (var(--m) + var(--bt) + clamp(10px, 2.4vw, 26px)))); position: relative; height: 8em; }
+  .beat { position: absolute; inset: 0; margin: 0; color: var(--fg); font-size: var(--t-xl); line-height: .98; letter-spacing: -0.044em; font-weight: 700; text-wrap: balance; opacity: 0; }
+  .beat.last { color: var(--amber); }
+
+  /* The left rail. --u is one stacked step, --t the tighter spacing the
+     four close up to, so the 2x2 lands as tight as .smark, the same
+     four colours the app puts in its own sidebar. */
+  #why {
+    --m: clamp(14px, 3vw, 44px);          /* frame inset from the edge */
+    --bt: clamp(13px, 2.1vw, 30px);       /* bar thickness at page scale */
+    --fw: calc(100vw - 2 * var(--m));
+    --fh: calc(100svh - 2 * var(--m));
+    --M: clamp(220px, 26vw, 420px);       /* the mark as it forms, before it settles */
+  }
+  .rail { position: absolute; inset: 0; pointer-events: none; }
+  .rb { position: absolute; display: block; will-change: transform; }
+  .rb i { display: block; width: 100%; height: 100%; }
+
+  /* The mark's own proportions, stretched to the page. The bars keep the
+     pinwheel's offsets (each starts where the previous one stops) so it
+     reads as the logo long before it is the logo. */
+  .rb1 { left: var(--m); top: var(--m); width: var(--bt); height: calc(var(--fh) * .773); }
+  .rb2 { left: calc(var(--m) + var(--fw) * .263); top: var(--m); width: calc(var(--fw) * .737); height: var(--bt); }
+  .rb3 { left: calc(var(--m) + var(--fw) - var(--bt)); top: calc(var(--m) + var(--fh) * .226); width: var(--bt); height: calc(var(--fh) * .773); }
+  .rb4 { left: var(--m); top: calc(var(--m) + var(--fh) - var(--bt)); width: calc(var(--fw) * .737); height: var(--bt); }
+
+  .core {
+    position: absolute; left: 50%; top: 50%;
+    width: var(--M); height: var(--M);
+    margin: calc(var(--M) / -2) 0 0 calc(var(--M) / -2);
+  }
+  .core b { position: absolute; display: block; opacity: 0; }
+
+  /* ---- the compositor path. Everything above is scrubbed here, off the
+     main thread, which is the difference between 60 and 120. ---- */
+  @keyframes blockIn {
+    from { opacity: 0; transform: translate(var(--ox), var(--oy)) scale(.72); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes blowThrough { from { transform: scale(1); } to { transform: scale(23); } }
+  @keyframes fadeOut  { to { opacity: 0; } }
+  @keyframes fadeUp   { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: none; } }
+  @keyframes lineUp   { from { transform: translateY(112%); } to { transform: none; } }
+  @keyframes beatPass {
+    0%   { opacity: 0; transform: translateY(40px); }
+    18%  { opacity: 1; transform: none; }
+    80%  { opacity: 1; transform: none; }
+    100% { opacity: 0; transform: translateY(-40px); }
+  }
+  @keyframes hintOut { to { opacity: 0; } }
+
+  /* Each bar travels the length of the edge it lands on, and the four
+     directions together trace the pinwheel clockwise: up the left, right
+     along the top, down the right, back along the bottom. */
+  @keyframes barUp    { 0% { opacity: 0; transform: translateY(102svh);  } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barRight { 0% { opacity: 0; transform: translateX(-102vw);  } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barDown  { 0% { opacity: 0; transform: translateY(-102svh); } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barLeft  { 0% { opacity: 0; transform: translateX(102vw);   } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+
+  /* The page-sized bar folded onto its slot in the mark. The transform is
+     a ratio of two measured lengths, which calc() cannot express, so it
+     is measured in script and handed over as --f1..--f4. */
+  @keyframes form1 { to { transform: var(--f1); } }
+  @keyframes form2 { to { transform: var(--f2); } }
+  @keyframes form3 { to { transform: var(--f3); } }
+  @keyframes form4 { to { transform: var(--f4); } }
+  /* The inner pinwheel arrives to finish the logo, each piece from the
+     side it belongs to, exactly as in the opening. */
+  @keyframes coreIn { from { opacity: 0; transform: translate(var(--ox), var(--oy)); } to { opacity: 1; transform: none; } }
+  @keyframes markIn { to { transform: scale(.42); } }
+
+  @supports (animation-timeline: view()) {
+    #stage { view-timeline-name: --stage; }
+    #why   { view-timeline-name: --whytl; }
+
+    .mark b { animation: blockIn linear both; animation-timeline: --stage; }
+    .mark b:nth-child(1) { animation: none; opacity: 1; }
+    .mark b:nth-child(2) { animation-range: contain 5%  contain 15%; }
+    .mark b:nth-child(3) { animation-range: contain 13% contain 23%; }
+    .mark b:nth-child(4) { animation-range: contain 21% contain 31%; }
+    .mark b:nth-child(5) { animation-range: contain 29% contain 39%; }
+    .mark b:nth-child(6) { animation-range: contain 36% contain 46%; }
+    .mark b:nth-child(7) { animation-range: contain 43% contain 53%; }
+    .mark b:nth-child(8) { animation-range: contain 50% contain 60%; }
+
+    .markwrap { animation: blowThrough linear both, fadeOut linear both; animation-timeline: --stage, --stage; animation-range: contain 70% contain 96%, contain 76% contain 92%; }
+    .herotext { animation: fadeUp linear both; animation-timeline: --stage; animation-range: contain 74% contain 90%; }
+    .herotext .ln > i { animation: lineUp linear both; animation-timeline: --stage; transition: none; }
+    .herotext .ln:nth-child(1) > i { animation-range: contain 75% contain 87%; }
+    .herotext .ln:nth-child(2) > i { animation-range: contain 78.5% contain 90.5%; }
+    .herotext .ln:nth-child(3) > i { animation-range: contain 82% contain 94%; }
+    .hint { animation: hintOut linear both; animation-timeline: --stage; animation-range: contain 0% contain 5%; }
+
+    .beat { animation: beatPass linear both; animation-timeline: --whytl; }
+    .beat:nth-child(1) { animation-range: contain 0%  contain 21%; }
+    .beat:nth-child(2) { animation-range: contain 19% contain 40%; }
+    .beat:nth-child(3) { animation-range: contain 38% contain 59%; }
+    .beat:nth-child(4) { animation-range: contain 57% contain 78%; }
+
+    /* Arrival sits on the wrapper and the fold on the block inside it,
+       because two scroll-driven animations on one element both hold a
+       fill value for transform and the later one simply wins. */
+    .rb { animation: linear both; animation-timeline: --whytl; }
+    .rb1 { animation-name: barUp;    animation-range: contain 0%  contain 19%; }
+    .rb2 { animation-name: barRight; animation-range: contain 19% contain 38%; }
+    .rb3 { animation-name: barDown;  animation-range: contain 38% contain 57%; }
+    .rb4 { animation-name: barLeft;  animation-range: contain 57% contain 76%; }
+
+    .rb i { animation: linear both; animation-timeline: --whytl; animation-range: contain 80% contain 93%; }
+    .rb1 i { animation-name: form1; }
+    .rb2 i { animation-name: form2; }
+    .rb3 i { animation-name: form3; }
+    .rb4 i { animation-name: form4; }
+
+    .core b { animation: coreIn linear both; animation-timeline: --whytl; animation-range: contain 87% contain 96%; }
+    .rail { animation: markIn linear both; animation-timeline: --whytl; animation-range: contain 93% contain 100%; }
+  }
+
+  /* ---------- buttons ---------- */
+  .cta-row { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; align-items: center; margin-top: 2.7rem; }
+  .btn { display: inline-flex; align-items: center; gap: .8rem; background: var(--fg); color: var(--bg); padding: 1rem 1.8rem; font-size: var(--t-sm); font-weight: 620; text-decoration: none; transition: transform 620ms var(--glide); }
+  .btn:hover { transform: translateY(-3px) scale(1.015); }
+  .btn:active { transform: translateY(-1px) scale(.985); transition-duration: 140ms; }
+  .btn .arw { transition: transform 620ms var(--glide); }
+  .btn:hover .arw { transform: translateX(4px); }
+  .btn .sub { font-weight: 400; opacity: .55; }
+  :is(a, button, input):focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  .quiet { color: var(--faint); font-size: var(--t-sm); }
+  .ulink { text-decoration: none; background-image: linear-gradient(var(--faint), var(--faint)); background-size: 100% 1px; background-repeat: no-repeat; background-position: 0 100%; transition: background-size 320ms var(--ease); }
+  .ulink:hover { background-size: 0% 1px; }
+
+  .rise { opacity: 0; transform: translateY(26px); }
+  .lit .rise { opacity: 1; transform: none; transition: opacity 1700ms var(--glide), transform 1700ms var(--glide); }
+  .lit .rise.d1 { transition-delay: 300ms; }
+
+  /* Full bleed: this is the moment the page changes ground, and an inset bar
+     would make it a decoration instead of a threshold. */
+  .strip { display: flex; height: clamp(64px, 10vw, 124px); width: 100vw; margin-left: 50%; translate: -50% 0; }
+  .strip i { display: block; height: 100%; transform: scaleX(0); transform-origin: left; }
+  .lit .strip i { animation: wipe 1800ms var(--glide) forwards; }
+  .strip i:nth-child(2) { animation-delay: 130ms; }
+  .strip i:nth-child(3) { animation-delay: 260ms; }
+  .strip i:nth-child(4) { animation-delay: 390ms; }
+  .strip i:nth-child(5) { animation-delay: 520ms; }
+  @keyframes wipe { to { transform: scaleX(1); } }
+
+  /* =============== the app, actually running ===============
+     Rebuilt against the real components rather than from memory. Every
+     colour here is a token lifted from src/styles.css, and the cards are the
+     shapes ChatView actually renders: a lettered options card, an inline
+     activity chip, a rounded composer. */
+  .demo { --w-bg:#fff; --w-fg:#18181b; --w-muted:#f4f4f5; --w-mf:#6f6f78; --w-accent:#efeff1;
+          --w-brand:#5b6cff; --w-soft:#eef0ff; --w-warn:#c47b0e; --w-ok:#2f9e68;
+          --w-bd:rgba(18,18,21,.09);
+          margin-top: clamp(3rem, 6vw, 5rem); display: grid; grid-template-columns: minmax(0,1fr) auto; gap: clamp(1rem,2.4vw,2.4rem); align-items: end; }
+
+  .win { background: var(--w-bg); color: var(--w-fg); border: 1px solid var(--w-bd); border-radius: 12px;
+         box-shadow: 0 44px 100px -34px rgba(0,0,0,.5), 0 2px 10px rgba(0,0,0,.07);
+         display: grid; grid-template-rows: auto 1fr; overflow: hidden; height: clamp(430px, 54vw, 600px);
+         font-family: ui-sans-serif, -apple-system, sans-serif; }
+  .chrome { display: flex; align-items: center; gap: .48rem; padding: .68rem .85rem; border-bottom: 1px solid var(--w-bd); }
+  .chrome u { width: 11px; height: 11px; border-radius: 50%; }
+  .body2 { display: grid; grid-template-columns: 232px 1fr; min-height: 0; }
+
+  .side { border-right: 1px solid var(--w-bd); display: flex; flex-direction: column; min-height: 0; }
+  .sbhead { display: flex; align-items: center; gap: .5rem; padding: .7rem .8rem .5rem; font-size: .85rem; font-weight: 660; letter-spacing: -.015em; }
+  .sbhead .plus { margin-left: auto; color: var(--w-mf); font-size: 1.05rem; line-height: 1; }
+  .smark { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5px; width: 15px; height: 15px; }
+  .smark i { display: block; border-radius: 1px; }
+  .search { margin: 0 .6rem .45rem; border: 1px solid var(--w-bd); border-radius: 9px; padding: .34rem .6rem; font-size: .76rem; color: var(--w-mf); display: flex; align-items: center; gap: .4rem; }
+  .search::before { content: ""; width: 9px; height: 9px; border: 1.5px solid currentColor; border-radius: 50%; opacity: .75; }
+  .rows { padding: 0 .45rem; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+  .row { display: flex; gap: .55rem; align-items: center; width: 100%; text-align: left; background: none; border: 0; padding: .42rem .5rem; border-radius: 9px; cursor: pointer; font: inherit; transition: background 160ms; }
+  .row:hover { background: var(--w-accent); }
+  .row[aria-selected="true"] { background: var(--w-muted); }
+  .av { width: 32px; height: 32px; flex: none; display: block; }
+  .av svg { width: 100%; height: 100%; display: block; }
+  .rmid { min-width: 0; flex: 1; }
+  .rtop { display: flex; align-items: baseline; gap: .4rem; }
+  .rtop b { font-size: .8rem; font-weight: 640; letter-spacing: -.014em; }
+  .rtop i { margin-left: auto; font-style: normal; font-size: .68rem; color: var(--w-mf); }
+  .rprev { display: block; font-size: .73rem; color: var(--w-mf); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sbnav { margin-top: auto; border-top: 1px solid var(--w-bd); padding: .5rem .7rem; display: flex; flex-direction: column; gap: .3rem; }
+  .sbnav span { font-size: .75rem; color: var(--w-mf); }
+
+  .chat { display: grid; grid-template-rows: auto auto 1fr auto; min-height: 0; }
+  .chead { display: flex; align-items: center; gap: .55rem; padding: .6rem .85rem; border-bottom: 1px solid var(--w-bd); }
+  .chead .av { width: 26px; height: 26px; }
+  .chead b { font-size: .86rem; font-weight: 660; letter-spacing: -.016em; }
+  .chead i { font-style: normal; font-size: .78rem; color: var(--w-mf); margin-left: .3rem; }
+  .model { margin-left: auto; display: flex; align-items: center; gap: .3rem; font-size: .76rem; color: var(--w-fg); }
+  .model::before { content: "\2733"; color: #d97757; font-size: .74rem; }
+  .model::after { content: "\2304"; color: var(--w-mf); }
+
+  .msgs { padding: .9rem .95rem; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: .55rem; }
+  .when { text-align: center; font-size: .7rem; color: var(--w-mf); padding: .1rem 0 .4rem; }
+  .m { max-width: 78%; padding: .6rem .82rem; border-radius: 16px; font-size: .845rem; line-height: 1.52; animation: pop 380ms var(--glide) both; }
+  .m.bot { background: var(--w-muted); }
+  .m.you { background: var(--w-fg); color: #fff; align-self: flex-end; }
+  @keyframes pop { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+  /* An activity chip has no bubble at all, which is how the real one reads. */
+  .act { display: flex; align-items: center; gap: .4rem; padding: .1rem .15rem; font-size: .74rem; color: var(--w-mf); animation: pop 380ms var(--glide) both; }
+  .act::before { content: "\2713"; color: var(--w-ok); font-size: .8rem; }
+  .m.dots { display: flex; gap: 4px; align-items: center; padding: .7rem .8rem; width: max-content; max-width: none; }
+  .m.dots u { width: 5px; height: 5px; border-radius: 50%; background: #b6b9be; animation: bob 1.15s infinite; }
+  .m.dots u:nth-child(2) { animation-delay: .14s; }
+  .m.dots u:nth-child(3) { animation-delay: .28s; }
+  @keyframes bob { 0%, 62%, 100% { opacity: .32; transform: none; } 31% { opacity: 1; transform: translateY(-3px); } }
+
+  .card { width: 100%; max-width: 400px; border: 1px solid var(--w-bd); border-radius: 15px; background: var(--w-bg); padding: .85rem; animation: pop 380ms var(--glide) both; }
+  .card .k { font-size: .66rem; font-weight: 660; text-transform: uppercase; letter-spacing: .1em; color: var(--w-brand); }
+  .card.approval .k { color: var(--w-warn); }
+  .card .q { margin-top: .18rem; font-size: .84rem; font-weight: 640; letter-spacing: -.012em; }
+  .card .d { margin-top: .1rem; font-size: .76rem; color: var(--w-mf); line-height: 1.45; }
+  .opts { margin-top: .6rem; display: flex; flex-direction: column; gap: 2px; }
+  .opt { display: flex; align-items: center; gap: .6rem; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: .805rem; padding: .34rem .4rem; border-radius: 10px; cursor: pointer; color: var(--w-fg); transition: background 150ms; }
+  .opt:hover { background: var(--w-accent); }
+  .opt u { width: 21px; height: 21px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--w-muted); color: var(--w-mf); font-size: .66rem; font-weight: 660; text-decoration: none; }
+  .card.done .opt { opacity: .42; }
+  .card.done .opt.chosen { opacity: 1; background: var(--w-soft); color: var(--w-brand); }
+  .card.done .opt.chosen u { background: var(--w-brand); color: #fff; }
+  .card .own { margin-top: .45rem; border: 1px solid var(--w-bd); border-radius: 10px; padding: .38rem .6rem; font-size: .755rem; color: var(--w-mf); }
+
+  .comp { margin: 0 .95rem .95rem; border: 1px solid var(--w-bd); border-radius: 21px; padding: .32rem .38rem .32rem .6rem; display: flex; align-items: center; gap: .45rem; font-size: .8rem; color: var(--w-mf); }
+  .comp .ic { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .comp .ph { flex: 1; }
+  .comp .send { background: var(--w-muted); color: var(--w-mf); }
+  .cursor { display: inline-block; width: 2px; height: 1em; background: currentColor; vertical-align: -2px; animation: blinkcur 1s steps(2) infinite; }
+  @keyframes blinkcur { 50% { opacity: 0; } }
+
+  .phone { width: 236px; border-radius: 31px; padding: 9px; background: #1b1d21; box-shadow: 0 44px 90px -34px rgba(0,0,0,.55); flex: none; }
+  .pscreen { background: var(--w-bg); border-radius: 23px; overflow: hidden; height: 430px; display: grid; grid-template-rows: auto 1fr auto; color: var(--w-fg); }
+  .pbar { text-align: center; padding: .55rem 0 .4rem; font-size: .72rem; font-weight: 650; border-bottom: 1px solid var(--w-bd); }
+  .pbar em { display: block; font-size: .64rem; color: var(--w-mf); font-weight: 400; font-style: normal; }
+  .pmsgs { padding: .65rem; display: flex; flex-direction: column; justify-content: flex-end; gap: .38rem; overflow: hidden; }
+  .pmsgs .m { max-width: 88%; font-size: .73rem; padding: .42rem .58rem; border-radius: 13px; }
+  .pmsgs .card { padding: .55rem .6rem; border-radius: 12px; }
+  .pmsgs .card .q { font-size: .74rem; } .pmsgs .card .d { font-size: .66rem; }
+  .pmsgs .opt { font-size: .7rem; padding: .26rem .3rem; }
+  .pmsgs .opt u { width: 17px; height: 17px; font-size: .58rem; }
+  .pmsgs .own { font-size: .66rem; }
+  .pfoot { padding: .45rem .65rem .65rem; }
+  .pfoot div { border: 1px solid var(--w-bd); border-radius: 15px; padding: .36rem .65rem; font-size: .7rem; color: var(--w-mf); }
+  .demo-cap { margin-top: 1.1rem; }
+  .tabs { display: none; gap: .3rem; padding: .5rem .6rem; border-bottom: 1px solid var(--w-bd); overflow-x: auto; }
+  .tabs button { font: inherit; font-size: .75rem; font-weight: 620; white-space: nowrap; padding: .28rem .68rem; border-radius: 20px; border: 1px solid var(--w-bd); background: var(--w-bg); color: var(--w-mf); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--w-fg); border-color: var(--w-fg); color: #fff; }
+
+  /* =============== who they are ===============
+     The agents arrive one at a time and say hello. A spring on the tile, a
+     beat, then the line types out, then the next one. Sequenced rather than
+     simultaneous, because four things appearing at once is a grid and four
+     things appearing in turn is an introduction. */
+  .cast { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(1rem, 2.2vw, 2rem); margin-top: clamp(3rem, 6vw, 5rem); }
+  @media (max-width: 900px) { .cast { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .cast { grid-template-columns: 1fr; } }
+
+  .ag { margin: 0; display: flex; flex-direction: column; align-items: flex-start; gap: .85rem; }
+  .ag .tile { width: clamp(64px, 7.4vw, 92px); height: clamp(64px, 7.4vw, 92px); display: block; opacity: 0; transform: scale(.72) rotate(-9deg); }
+  .ag.in .tile { opacity: 1; transform: none; transition: transform 1100ms var(--spring), opacity 460ms linear; animation: float 6s ease-in-out 1.2s infinite; }
+  @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -5px; } }
+  .ag:nth-child(2).in .tile { animation-delay: 1.9s; }
+  .ag:nth-child(3).in .tile { animation-delay: 3.4s; }
+  .ag:nth-child(4).in .tile { animation-delay: 5s; }
+  /* The creature's eyes are white shapes inside the body group. */
+  .ag .tile g > ellipse, .ag .tile g > circle { transform-origin: center; transform-box: fill-box; animation: blink 6.5s infinite; }
+  .ag:nth-child(2) .tile g > ellipse, .ag:nth-child(2) .tile g > circle { animation-delay: 1.7s; }
+  .ag:nth-child(3) .tile g > ellipse, .ag:nth-child(3) .tile g > circle { animation-delay: 3.1s; }
+  .ag:nth-child(4) .tile g > ellipse, .ag:nth-child(4) .tile g > circle { animation-delay: 4.6s; }
+  @keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.08); } }
+
+  .ag .who { font-size: var(--t-sm); font-weight: 660; color: var(--fg); letter-spacing: -0.016em; line-height: 1.3; }
+  .ag .who em { display: block; font-weight: 400; color: var(--faint); font-size: .82rem; letter-spacing: 0; }
+
+  .say {
+    position: relative; margin: 0; min-height: 5.6em;
+    border: 1px solid var(--rule); border-radius: 2px;
+    padding: .8rem .9rem; font-size: .9rem; line-height: 1.5; color: var(--soft);
+    opacity: 0; transform: translateY(10px);
+  }
+  .ag.said .say { opacity: 1; transform: none; transition: opacity 1100ms var(--glide), transform 1100ms var(--glide); }
+  /* the tail, pointing back up at whoever is talking */
+  .say::before, .say::after {
+    content: ""; position: absolute; left: 22px; width: 0; height: 0;
+    border-left: 7px solid transparent; border-right: 7px solid transparent;
+  }
+  .say::before { top: -8px; border-bottom: 8px solid var(--rule); }
+  .say::after  { top: -7px; border-bottom: 8px solid var(--bg); }
+
+  /* ---------- engines ---------- */
+  .engines { border-top: 1px solid var(--rule); margin-top: 3.2rem; }
+  .engine { display: grid; grid-template-columns: 1.1fr 1.7fr auto; gap: 1.5rem; align-items: baseline; padding: 1.2rem 0; border-bottom: 1px solid var(--rule); opacity: 0; transform: translateY(16px); }
+  .lit .engine { opacity: 1; transform: none; transition: opacity 1300ms var(--glide), transform 1300ms var(--glide); }
+  .lit .engine:nth-child(2) { transition-delay: 130ms; }
+  .lit .engine:nth-child(3) { transition-delay: 260ms; }
+  .lit .engine:nth-child(4) { transition-delay: 390ms; }
+  .lit .engine:nth-child(5) { transition-delay: 520ms; }
+  .lit .engine:nth-child(6) { transition-delay: 650ms; }
+  .engine .name { font-weight: 630; color: var(--fg); letter-spacing: -0.014em; }
+  .engine .how { color: var(--soft); font-size: var(--t-sm); }
+  .chip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .61rem; letter-spacing: .14em; text-transform: uppercase; padding: .24rem .55rem; white-space: nowrap; border: 1px solid var(--rule); color: var(--faint); }
+  .chip.tools { background: var(--green); border-color: var(--green); color: #08210a; }
+  @media (max-width: 760px) { .engine { grid-template-columns: 1fr auto; } .engine .how { grid-column: 1 / -1; } }
+
+  /* ---------- facts ---------- */
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: 4rem; }
+  .fact { background: var(--bg); padding: 1.7rem 1.6rem; transition: background-color 1300ms linear, transform 900ms var(--glide); }
+  .fact:hover { transform: translateY(-4px); }
+  .fact h3 { margin: .6rem 0 .5rem; font-size: var(--t-body); font-weight: 650; letter-spacing: -0.016em; color: var(--fg); }
+  .fact p { margin: 0; font-size: var(--t-sm); }
+  .fact .bar { display: block; width: 36px; height: 6px; transform: scaleX(0); transform-origin: left; transition: transform 1800ms var(--glide); }
+  .lit .fact .bar { transform: scaleX(1); }
+  .lit .fact:nth-child(2) .bar { transition-delay: 170ms; }
+  .lit .fact:nth-child(3) .bar { transition-delay: 340ms; }
+  .lit .fact:nth-child(4) .bar { transition-delay: 510ms; }
+
+  .signup { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 2.1rem; max-width: 30rem; }
+  .signup input { flex: 1 1 15rem; background: transparent; color: var(--fg); border: 1px solid var(--rule); padding: .95rem 1.05rem; font: inherit; font-size: var(--t-sm); }
+  .signup input::placeholder { color: var(--faint); }
+  .signup button { background: var(--fg); color: var(--bg); border: 0; padding: .95rem 1.6rem; font: inherit; font-size: var(--t-sm); font-weight: 620; cursor: pointer; transition: transform 300ms var(--ease); }
+  .signup button:hover { transform: translateY(-3px); }
+  .signup button:active { transform: translateY(-1px) scale(.985); transition-duration: 140ms; }
+  .ghbtn { background: var(--fg); color: var(--bg); padding: .95rem 1.6rem; font-size: var(--t-sm); font-weight: 620; text-decoration: none; border-bottom: 0; transition: transform 300ms var(--ease); }
+  .ghbtn:hover { transform: translateY(-3px); color: var(--bg); }
+  .ghbtn:active { transform: translateY(-1px) scale(.985); transition-duration: 140ms; }
+
+  footer { padding: 4.5rem 0 5.5rem; border-top: 1px solid var(--rule); }
+  .foot { display: flex; flex-wrap: wrap; gap: 1.4rem 2.4rem; justify-content: space-between; align-items: baseline; }
+  footer a { color: var(--soft); text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+
+  /* Kept last on purpose. These were losing to later rules of the same
+     specificity, which is how a 218px sidebar survived on a 390px screen. */
+  @media (max-width: 980px) {
+    .demo { grid-template-columns: minmax(0, 1fr); }
+    /* The phone goes, and so does the caption that points at it, which
+       otherwise says "right" about something no longer on screen. */
+    .phone, .demo-cap { display: none; }
+  }
+  @media (max-width: 660px) {
+    .body2 { grid-template-columns: 1fr; }
+    .side { display: none; }
+    .tabs { display: flex; }
+  }
+
+  /* The frame costs the measure a little width on both sides, so the
+     phone gets a notch smaller type. It still fits more words per line
+     than it did before the rail existed. */
+  @media (max-width: 620px) {
+    .beat { font-size: clamp(2.05rem, 5.3vw, 2.6rem); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+    #stage, #why { height: auto; padding: 8rem 0; }
+    .pin { position: static; height: auto; gap: 3rem; place-items: start; }
+    .markwrap, .herotext, .beats { grid-area: auto; opacity: 1 !important; transform: none !important; }
+    .beats { height: auto; display: grid; gap: 1.4rem; }
+    .beat { position: static; opacity: 1 !important; transform: none !important; animation: none !important; }
+    .mark b { opacity: 1 !important; transform: none !important; animation: none !important; }
+    .hint, .rail { display: none; }
+    .ln > i, .rise, .engine { opacity: 1 !important; transform: none !important; animation: none !important; }
+    .ag .tile, .say { opacity: 1 !important; transform: none !important; }
+    .ag .tile, .ag .tile * { animation: none !important; }
+    .strip i, .fact .bar { transform: scaleX(1); }
+  }
+</style>
+
+<!-- ===================== the opening ===================== -->
+<section id="stage">
+  <div class="pin">
+    <div class="markwrap">
+      <!-- The mark's own geometry. Outer frame first, then the inner detail,
+           each piece sliding in from the side it belongs to. -->
+      <div class="mark" aria-label="The Bloks mark assembling">
+        <b style="left:0;top:0;width:22%;height:77.3%;background:var(--blue);--ox:-160px;--oy:0"></b>
+        <b style="left:26.3%;top:0;width:73.7%;height:18.8%;background:var(--orange);--ox:0;--oy:-150px"></b>
+        <b style="left:78%;top:22.6%;width:22%;height:77.3%;background:var(--purple);--ox:160px;--oy:0"></b>
+        <b style="left:0;top:81.1%;width:73.7%;height:18.8%;background:var(--red);--ox:0;--oy:150px"></b>
+        <b style="left:25.2%;top:25.7%;width:10.7%;height:37.5%;background:var(--cyan);--ox:-80px;--oy:-44px"></b>
+        <b style="left:37.9%;top:25.7%;width:35.8%;height:9.1%;background:var(--coral);--ox:66px;--oy:-66px"></b>
+        <b style="left:63%;top:36.7%;width:10.7%;height:37.5%;background:var(--green);--ox:80px;--oy:44px"></b>
+        <b style="left:25.2%;top:65.1%;width:35.8%;height:9.1%;background:var(--amber);--ox:-66px;--oy:66px"></b>
+      </div>
+    </div>
+
+    <div class="herotext">
+      <h1 class="d-2xl">
+        <span class="ln"><i>Your agents</i></span>
+        <span class="ln"><i>should belong</i></span>
+        <span class="ln"><i>to you.</i></span>
+      </h1>
+      <p class="lede">Not to a company. Not to a subscription. To you, on the machine in front of you.</p>
+      <div class="cta-row">
+        <a class="btn" href="#download">Download for macOS <span class="sub">Universal</span> <span class="arw">&rarr;</span></a>
+        <span class="quiet">Free. Source you can read, MIT in two years.</span>
+      </div>
+    </div>
+
+    <div class="hint" aria-hidden="true"><span class="mono">Scroll</span><i></i></div>
+  </div>
+</section>
+
+<!-- ===================== why ===================== -->
+<section id="why" aria-label="Why Bloks exists">
+  <div class="pin">
+    <!-- The mark's four outer bars, blown up to frame the whole page: one
+         arrives per belief, each travelling the length of the edge it
+         belongs to, which traces the pinwheel clockwise. When the words
+         are spent they converge to mark size, the inner four appear to
+         complete the logo, and the whole thing scales inward. Before
+         .beats in the DOM so the text always paints over it. -->
+    <div class="rail" aria-hidden="true">
+      <span class="rb rb1"><i style="background:var(--blue)"></i></span>
+      <span class="rb rb2"><i style="background:var(--orange)"></i></span>
+      <span class="rb rb3"><i style="background:var(--purple)"></i></span>
+      <span class="rb rb4"><i style="background:var(--red)"></i></span>
+      <!-- The inner pinwheel, at rest at mark size. Sized here rather than
+           in script, so the geometry has exactly one home. -->
+      <div class="core">
+        <b style="left:25.2%;top:25.7%;width:10.7%;height:37.5%;background:var(--cyan)"></b>
+        <b style="left:37.9%;top:25.7%;width:35.8%;height:9.1%;background:var(--coral)"></b>
+        <b style="left:63%;top:36.7%;width:10.7%;height:37.5%;background:var(--green)"></b>
+        <b style="left:25.2%;top:65.1%;width:35.8%;height:9.1%;background:var(--amber)"></b>
+      </div>
+    </div>
+    <div class="beats">
+      <p class="beat">Everything that knows you<br>lives somewhere else.</p>
+      <p class="beat">Your work. Your habits. Your half&#8209;finished thoughts.<br>All of it a guest in someone else's building.</p>
+      <p class="beat">They set the rent. They read the mail.<br>They can ask you to leave.</p>
+      <p class="beat last">We think that is the wrong way round.</p>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+
+  <!-- ===================== how ===================== -->
+  <section data-reveal data-flip>
+    <div class="strip" aria-hidden="true">
+      <i style="background:var(--blue);flex:22"></i>
+      <i style="background:var(--orange);flex:34"></i>
+      <i style="background:var(--red);flex:12"></i>
+      <i style="background:var(--purple);flex:18"></i>
+      <i style="background:var(--green);flex:8"></i>
+    </div>
+    <div style="height:clamp(4rem,8vw,7rem)"></div>
+    <p class="label"><span>How</span><hr></p>
+    <h2 class="d-xl">
+      <span class="ln"><i>So none of it</i></span>
+      <span class="ln"><i>leaves your Mac.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.5rem">
+      <p>Bloks runs entirely on your Mac. Your agents, your conversations and your keys sit in <strong>~/.bloks</strong> on your disk. There is no Bloks account, because there is no Bloks server to hold <em>one</em>.</p>
+      <p>The only thing that leaves this machine is the engine you picked, talking to the provider you already pay. Bloks is not in the middle.</p>
+    </div>
+
+    <div class="facts">
+      <div class="fact"><span class="bar" style="background:var(--blue)"></span><h3>No account</h3><p>Bloks never asks who you are. No sign-up, no email, nothing to make.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--orange)"></span><h3>It asks first</h3><p>When an agent wants to do something that matters, it stops and waits for you.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--red)"></span><h3>Nothing hidden</h3><p>A skill is just markdown. You read all of it before it goes near an agent.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--purple)"></span><h3>Yours to keep</h3><p>Read every line, build it yourself, run it at any company size. One limit: do not sell Bloks as Bloks.</p></div>
+    </div>
+  </section>
+
+  <!-- ===================== who ===================== -->
+  <section data-reveal id="cast">
+    <p class="label"><span>Who</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Setting one up</i></span>
+      <span class="ln"><i>is one question long.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>Pick a role and it is made on the spot, named for the job, carrying that role&rsquo;s skills. Or describe the job in a sentence and Bloks proposes the name, yours to change. Either way the agent opens with one question about how you want to work together, then gets on with it.</p>
+    </div>
+    <div class="cast">
+      <figure class="ag" data-k="chief" data-say="I&rsquo;m your chief of staff. I&rsquo;ll hold the whole picture of your week: your commitments, and what&rsquo;s quietly slipping. Then I&rsquo;ll brief you on what actually needs you.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_0"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_0)"><rect width="100" height="100" fill="#a468f7"></rect><g fill="#8051c1"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 14.00h9.00v4.50h-9.00ZM45.50 18.50h9.00v4.50h-9.00ZM41.00 23.00h18.00v4.50h-18.00ZM41.00 27.50h18.00v4.50h-18.00ZM36.50 32.00h27.00v4.50h-27.00ZM32.00 36.50h36.00v4.50h-36.00ZM23.00 41.00h54.00v4.50h-54.00ZM14.00 45.50h72.00v4.50h-72.00ZM14.00 50.00h72.00v4.50h-72.00ZM23.00 54.50h54.00v4.50h-54.00ZM32.00 59.00h36.00v4.50h-36.00ZM36.50 63.50h27.00v4.50h-27.00ZM41.00 68.00h18.00v4.50h-18.00ZM41.00 72.50h18.00v4.50h-18.00ZM45.50 77.00h9.00v4.50h-9.00ZM45.50 81.50h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Chief of Staff<em>Keeps the week on track</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="analyst" data-say="Give me a topic and I&rsquo;ll come back with a tight, sourced brief. Primary sources first, and I&rsquo;ll tell you where the evidence is thin.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_1"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_1)"><rect width="100" height="100" fill="#4c86f5"></rect><g fill="#3b69bf"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 18.50h9.00v4.50h-9.00ZM41.00 23.00h18.00v4.50h-18.00ZM36.50 27.50h27.00v4.50h-27.00ZM32.00 32.00h36.00v4.50h-36.00ZM27.50 36.50h45.00v4.50h-45.00ZM23.00 41.00h54.00v4.50h-54.00ZM18.50 45.50h63.00v4.50h-63.00ZM18.50 50.00h63.00v4.50h-63.00ZM23.00 54.50h54.00v4.50h-54.00ZM27.50 59.00h45.00v4.50h-45.00ZM32.00 63.50h36.00v4.50h-36.00ZM36.50 68.00h27.00v4.50h-27.00ZM41.00 72.50h18.00v4.50h-18.00ZM45.50 77.00h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Research Analyst<em>Deep dives, tight briefs</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="growth" data-say="I&rsquo;ll run your marketing: campaigns, copy, and experiments with a real hypothesis behind each one. I&rsquo;ll tell you when something loses.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_2"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_2)"><rect width="100" height="100" fill="#ff9432"></rect><g fill="#c77327"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 14.00h9.00v4.50h-9.00ZM45.50 18.50h9.00v4.50h-9.00ZM23.00 23.00h4.50v4.50h-4.50ZM45.50 23.00h9.00v4.50h-9.00ZM72.50 23.00h4.50v4.50h-4.50ZM23.00 27.50h9.00v4.50h-9.00ZM36.50 27.50h27.00v4.50h-27.00ZM68.00 27.50h9.00v4.50h-9.00ZM27.50 32.00h45.00v4.50h-45.00ZM27.50 36.50h45.00v4.50h-45.00ZM23.00 41.00h54.00v4.50h-54.00ZM14.00 45.50h72.00v4.50h-72.00ZM14.00 50.00h72.00v4.50h-72.00ZM23.00 54.50h54.00v4.50h-54.00ZM27.50 59.00h45.00v4.50h-45.00ZM27.50 63.50h45.00v4.50h-45.00ZM23.00 68.00h9.00v4.50h-9.00ZM36.50 68.00h27.00v4.50h-27.00ZM68.00 68.00h9.00v4.50h-9.00ZM23.00 72.50h4.50v4.50h-4.50ZM45.50 72.50h9.00v4.50h-9.00ZM72.50 72.50h4.50v4.50h-4.50ZM45.50 77.00h9.00v4.50h-9.00ZM45.50 81.50h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Growth Marketer<em>Campaigns, copy, experiments</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="inbox" data-say="I&rsquo;ll keep your inbox at zero: triaging what arrives, drafting the routine replies, and only bringing you what actually needs you.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_3"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_3)"><rect width="100" height="100" fill="#3bc76b"></rect><g fill="#2e9b53"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M32.00 27.50h22.50v4.50h-22.50ZM27.50 32.00h31.50v4.50h-31.50ZM63.50 32.00h13.50v4.50h-13.50ZM23.00 36.50h58.50v4.50h-58.50ZM18.50 41.00h63.00v4.50h-63.00ZM18.50 45.50h63.00v4.50h-63.00ZM18.50 50.00h63.00v4.50h-63.00ZM18.50 54.50h63.00v4.50h-63.00ZM23.00 59.00h54.00v4.50h-54.00ZM27.50 63.50h45.00v4.50h-45.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Inbox Manager<em>Keeps the inbox at zero</em></figcaption>
+        <p class="say"></p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== what: the app itself ===================== -->
+  <section data-reveal id="app">
+    <p class="label"><span>What</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>And what you get</i></span>
+      <span class="ln"><i>is a messaging app.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>An agent is a contact. You do not configure it, you talk to it. A room is a group chat, and whoever you made most senior speaks last.</p>
+      <p><strong>Click any of them.</strong> Watch a whole turn happen.</p>
+    </div>
+
+    <div class="demo rise d1">
+      <div class="win" role="group" aria-label="Bloks, running">
+        <div class="chrome">
+          <u style="background:#ff5f57"></u><u style="background:#febc2e"></u><u style="background:#28c840"></u>
+        </div>
+        <div class="body2">
+          <aside class="side">
+            <div class="sbhead"><span class="smark"><i style="background:var(--blue)"></i><i style="background:var(--orange)"></i><i style="background:var(--red)"></i><i style="background:var(--purple)"></i></span>Bloks<span class="plus">+</span></div>
+            <div class="search">Search</div>
+            <div class="rows" role="tablist" aria-label="Agents">
+              <button class="row" role="tab" data-k="chief" aria-selected="true">
+                <span class="av" data-av="chief"></span>
+                <span class="rmid"><span class="rtop"><b>Chief of Staff</b><i>3:27 PM</i></span><span class="rprev">Only the pricing note needs you. I can d</span></span>
+              </button>
+              <button class="row" role="tab" data-k="analyst" aria-selected="false">
+                <span class="av" data-av="analyst"></span>
+                <span class="rmid"><span class="rtop"><b>Research Analyst</b><i>3:12 PM</i></span><span class="rprev">Four of the six charge per seat, two per</span></span>
+              </button>
+              <button class="row" role="tab" data-k="growth" aria-selected="false">
+                <span class="av" data-av="growth"></span>
+                <span class="rmid"><span class="rtop"><b>Growth Marketer</b><i>2:41 PM</i></span><span class="rprev">Both posts are drafted. The HN one is 90</span></span>
+              </button>
+              <button class="row" role="tab" data-k="room" aria-selected="false">
+                <span class="av" data-av="room"></span>
+                <span class="rmid"><span class="rtop"><b>Launch week</b><i>1:58 PM</i></span><span class="rprev">Chief of Staff: So the only blocker is</span></span>
+              </button>
+            </div>
+            <nav class="sbnav"><span>New room</span><span>Skills</span><span>Plugins</span><span>Settings</span></nav>
+          </aside>
+
+          <div class="chat">
+            <div class="tabs" role="tablist" aria-label="Agents">
+              <button data-k="chief" aria-selected="true">Chief of Staff</button>
+              <button data-k="analyst" aria-selected="false">Research Analyst</button>
+              <button data-k="growth" aria-selected="false">Growth Marketer</button>
+              <button data-k="room" aria-selected="false">Launch week</button>
+            </div>
+            <div class="chead">
+              <span class="av" id="hav"></span>
+              <span><b id="hn">Chief of Staff</b><i id="hs">Keeps the week on track</i></span>
+              <span class="model"><span id="he">Claude Sonnet 5</span></span>
+            </div>
+            <div class="msgs" id="msgs"></div>
+            <div class="comp"><span class="ic">+</span><span class="ph" id="compph">Message Chief of Staff</span><span class="ic">&#127908;</span><span class="ic send">&uarr;</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- inert: the phone mirrors the thread but must not be a second set of
+           controls. Without it there are two of every button on the page. -->
+      <div class="phone" aria-hidden="true" inert>
+        <div class="pscreen">
+          <div class="pbar" id="pn">Chief of Staff<em id="ps">Keeps the week on track</em></div>
+          <div class="pmsgs" id="pmsgs"></div>
+          <div class="pfoot"><div>Message</div></div>
+        </div>
+      </div>
+    </div>
+    <p class="mono demo-cap">Left, the Mac app. Right, the same thread on a phone, which is what hosted adds.</p>
+  </section>
+
+  <!-- ===================== engines ===================== -->
+  <section data-reveal>
+    <p class="label"><span>Engines</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Runs on what</i></span>
+      <span class="ln"><i>you already pay for.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>Bring your own. Some engines run tools: they execute commands and touch files. The rest only talk. An agent on a chat engine has lost half its job, so Bloks marks the difference everywhere it shows one.</p>
+    </div>
+    <div class="engines">
+      <div class="engine"><span class="name">Claude Code</span><span class="how">npm i -g @anthropic-ai/claude-code</span><span class="chip tools">Runs tools</span></div>
+      <div class="engine"><span class="name">Codex</span><span class="how">npm i -g @openai/codex</span><span class="chip tools">Runs tools</span></div>
+      <div class="engine"><span class="name">Gemini CLI</span><span class="how">A Google sign-in, or a Gemini key</span><span class="chip tools">Runs tools</span></div>
+      <div class="engine"><span class="name">OpenRouter</span><span class="how">Sign in from Settings, in your browser</span><span class="chip">Chat</span></div>
+      <div class="engine"><span class="name">Gemini, Grok, Kimi, Llama, DeepSeek, Mistral, Groq</span><span class="how">Paste a key</span><span class="chip">Chat</span></div>
+      <div class="engine"><span class="name">Ollama</span><span class="how">Run it. Bloks finds it on this machine</span><span class="chip">Chat</span></div>
+    </div>
+  </section>
+
+  <!-- ===================== download ===================== -->
+  <section id="download" data-reveal>
+    <p class="label"><span>Install</span><hr></p>
+    <h2 class="d-xl">
+      <span class="ln"><i>Ten seconds,</i></span>
+      <span class="ln"><i>then say hello.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.5rem">
+      <p>macOS, universal, signed and notarized by Apple, so it opens on the first try instead of being blocked. One engine from the list above. Nothing else.</p>
+      <div class="cta-row">
+        <a class="btn" href="https://github.com/hamedgitty/bloks/releases/latest">Download the latest release <span class="arw">&rarr;</span></a>
+        <a href="https://github.com/hamedgitty/bloks" class="quiet ulink">or build it from source</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== coming ===================== -->
+  <section data-reveal>
+    <p class="label"><span>Next</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Agents that keep working</i></span>
+      <span class="ln"><i>after you shut the lid.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>All of this runs while your Mac is awake. Next is hosted: the same agents, the same rooms, still your own keys, answering you from your phone while the laptop is shut.</p>
+      <!-- TODO before launch: swap this for a real list (Buttondown, Kit)
+           and restore the inline form. Until then this has to point at
+           something that genuinely notifies people. -->
+      <div class="signup">
+        <span class="mono" style="flex:1 0 100%;margin-bottom:.2rem">Tell me when it opens</span>
+        <a class="ghbtn" href="https://github.com/hamedgitty/bloks/releases">Watch releases on GitHub</a>
+      </div>
+      <p class="quiet" style="margin-top:1.1rem">Every version lands there first. No list, no email from me.</p>
+    </div>
+  </section>
+
+  <footer>
+    <div class="foot">
+      <span class="mono">Bloks &nbsp;&middot;&nbsp; FSL&#8209;1.1&#8209;MIT &nbsp;&middot;&nbsp; becomes MIT after two years</span>
+      <span style="display:flex;gap:1.7rem">
+        <a href="https://github.com/hamedgitty/bloks">Source</a>
+        <a href="https://github.com/hamedgitty/bloks/blob/main/LICENSING.md">Licence</a>
+        <a href="https://github.com/hamedgitty/bloks/blob/main/SECURITY.md">Security</a>
+      </span>
+    </div>
+  </footer>
+</div>
+
+<script>
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* =========== weighted scroll ===========
+   A wheel notch jumps the page a fixed distance and stops dead. This keeps a
+   target position and eases the real scroll toward it every frame, so the
+   page carries momentum and settles instead of snapping. Because it moves
+   the genuine scroll position, the CSS scroll timelines above track it
+   exactly and still run on the compositor.
+
+   Off on touch, where the OS already does this better, and off entirely when
+   motion is not wanted. */
+(() => {
+  if (reduced || matchMedia("(hover: none)").matches) return;
+  const LERP = 0.105;
+  let target = scrollY, current = scrollY, running = false;
+  const limit = () => document.documentElement.scrollHeight - innerHeight;
+  const clampY = (v) => (v < 0 ? 0 : v > limit() ? limit() : v);
+
+  function frame() {
+    current += (target - current) * LERP;
+    if (Math.abs(target - current) < 0.35) { current = target; running = false; }
+    scrollTo(0, current);
+    if (running) requestAnimationFrame(frame);
+  }
+  function nudge(by) {
+    target = clampY(target + by);
+    if (!running) { running = true; requestAnimationFrame(frame); }
+  }
+  addEventListener("wheel", (e) => {
+    if (e.ctrlKey) return;                                  // leave pinch zoom alone
+    e.preventDefault();
+    nudge(e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY);    // some mice report lines
+  }, { passive: false });
+
+  // Anything else that scrolls (scrollbar drag, keyboard, find-in-page) wins,
+  // and the target resyncs so the next wheel event continues from there.
+  addEventListener("scroll", () => { if (!running) target = current = scrollY; }, { passive: true });
+  addEventListener("resize", () => { target = current = scrollY; });
+
+  // Anchors: no native smooth scroll to fight with, so drive them ourselves.
+  for (const a of document.querySelectorAll('a[href^="#"]')) {
+    a.addEventListener("click", (e) => {
+      const el = document.querySelector(a.getAttribute("href"));
+      if (!el) return;
+      e.preventDefault();
+      target = clampY(el.getBoundingClientRect().top + current);
+      if (!running) { running = true; requestAnimationFrame(frame); }
+    });
+  }
+})();
+const clamp = (n, a, b) => (n < a ? a : n > b ? b : n);
+
+/* =========== the belief frame ===========
+   Folding a page-sized bar onto its slot in the mark needs one length
+   divided by another, which calc() cannot do. So it is measured here,
+   once on load and again on resize, and handed to CSS as --f1..--f4. The
+   animation itself is still pure scroll-driven CSS on the compositor;
+   nothing in here runs per frame. offsetLeft/offsetWidth are used rather
+   than getBoundingClientRect because they report layout, unaffected by
+   whatever transform an arriving bar is mid-way through. */
+(() => {
+  const why = document.getElementById("why");
+  const rail = why?.querySelector(".rail");
+  const core = rail?.querySelector(".core");
+  if (!rail || !core) return;
+  // Where each outer bar belongs inside the mark, as fractions of it.
+  // Same numbers as the opening's markup, in the same order.
+  const SLOTS = [
+    [0,    0,    .22,  .773],
+    [.263, 0,    .737, .188],
+    [.78,  .226, .22,  .773],
+    [0,    .811, .737, .188],
+  ];
+  const bars = [...rail.querySelectorAll(".rb")];
+  function fit() {
+    if (getComputedStyle(rail).display === "none") return;
+    const M = core.offsetWidth;
+    if (!M) return;
+    // .core is centred with a negative margin, so its box starts half a
+    // mark back from where the layout engine placed it.
+    const lx = core.offsetLeft, ly = core.offsetTop;
+    bars.forEach((bar, i) => {
+      const [fx, fy, fw, fh] = SLOTS[i];
+      const w = bar.offsetWidth, h = bar.offsetHeight;
+      if (!w || !h) return;
+      const dx = lx + M * (fx + fw / 2) - (bar.offsetLeft + w / 2);
+      const dy = ly + M * (fy + fh / 2) - (bar.offsetTop + h / 2);
+      why.style.setProperty(
+        `--f${i + 1}`,
+        `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(${(M * fw / w).toFixed(5)}, ${(M * fh / h).toFixed(5)})`,
+      );
+    });
+  }
+  // The inner four arrive from the side they belong to, at mark scale.
+  for (const b of core.children) {
+    const l = parseFloat(b.style.left), t = parseFloat(b.style.top);
+    b.style.setProperty("--ox", `${(l - 44) * 0.42}px`);
+    b.style.setProperty("--oy", `${(t - 44) * 0.42}px`);
+  }
+  fit();
+  addEventListener("resize", fit, { passive: true });
+})();
+
+/* =========== fallback scrub ===========
+   Only for browsers without scroll-driven CSS animations. Where they are
+   supported the opening runs entirely on the compositor and this never
+   executes, which is the difference between smooth and not. */
+const NATIVE = CSS.supports("animation-timeline", "view()");
+if (!NATIVE && !reduced) {
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  const stage = document.getElementById("stage");
+  const why = document.getElementById("why");
+  const markwrap = document.querySelector(".markwrap");
+  const herotext = document.querySelector(".herotext");
+  const hint = document.querySelector(".hint");
+  const blocks = [...document.querySelectorAll(".mark b")];
+  const beats = [...document.querySelectorAll(".beat")];
+  // Cached once and on resize. Reading offsetTop/offsetHeight per frame is
+  // what makes a scrubbed page stutter.
+  let geo;
+  const measure = () => {
+    geo = {
+      sT: stage.offsetTop, sR: stage.offsetHeight - innerHeight,
+      wT: why.offsetTop,   wR: why.offsetHeight - innerHeight,
+    };
+  };
+  const step = 0.52 / (blocks.length - 1);
+  function draw() {
+    const y = scrollY;
+    const p = clamp((y - geo.sT) / geo.sR, 0, 1);
+    for (let i = 1; i < blocks.length; i++) {
+      const e = ease(clamp((p - i * step) / (step * 1.25), 0, 1));
+      const b = blocks[i], st = b.style;
+      st.opacity = e;
+      st.transform = `translate(${(1 - e) * parseFloat(st.getPropertyValue("--ox"))}px,${(1 - e) * parseFloat(st.getPropertyValue("--oy"))}px) scale(${0.72 + 0.28 * e})`;
+    }
+    const s = clamp((p - 0.7) / 0.26, 0, 1);
+    markwrap.style.transform = `scale(${1 + s * s * 22})`;
+    markwrap.style.opacity = String(1 - clamp((p - 0.76) / 0.16, 0, 1));
+    const h = clamp((p - 0.74) / 0.16, 0, 1);
+    herotext.style.opacity = String(h);
+    herotext.classList.toggle("lit", h > 0.06);
+    hint.style.opacity = String(clamp(1 - p * 14, 0, 1));
+
+    const q = clamp((y - geo.wT) / geo.wR, 0, 1), sl = 1 / beats.length;
+    for (let i = 0; i < beats.length; i++) {
+      const l = (q - i * sl) / sl;
+      const vis = clamp(l / 0.3, 0, 1) * (1 - clamp((l - 0.74) / 0.26, 0, 1));
+      beats[i].style.opacity = String(vis);
+      beats[i].style.transform = `translateY(${(1 - ease(clamp(l / 0.3, 0, 1))) * 46 - clamp((l - 0.74) / 0.26, 0, 1) * 46}px)`;
+    }
+  }
+  let tick = false;
+  measure(); draw();
+  addEventListener("scroll", () => { if (!tick) { tick = true; requestAnimationFrame(() => { draw(); tick = false; }); } }, { passive: true });
+  addEventListener("resize", () => { measure(); draw(); });
+} else if (NATIVE) {
+  // The headline's line masks are driven by the same timeline, so the class
+  // the transition version needs is not wanted here.
+  document.querySelector(".herotext").classList.add("native");
+}
+
+/* =========== reveals =========== */
+const io = new IntersectionObserver((es) => {
+  for (const e of es) if (e.isIntersecting) { e.target.classList.add("lit"); io.unobserve(e.target); }
+}, {
+  // Fire when the section is properly in view, not as its top edge grazes
+  // the fold. A 1.7 second reveal that starts too early has finished before
+  // you get to it, which reads as no animation at all.
+  threshold: 0,
+  rootMargin: "-18% 0px -22% 0px",
+});
+document.querySelectorAll("[data-reveal]").forEach((s) => io.observe(s));
+
+const flip = document.querySelector("[data-flip]");
+new IntersectionObserver(
+  ([e]) => document.body.classList.toggle("paper", e.isIntersecting || e.boundingClientRect.top < 0),
+  { threshold: 0.2 },
+).observe(flip);
+
+/* =========== the running app ===========
+   Not a transcript that appears all at once. A turn plays: you speak, the
+   agent thinks, tools run, an approval blocks, the reply types itself in.
+   Desktop and phone stay in step, and switching threads cancels whatever
+   was mid-flight rather than letting two playbacks fight. */
+const THREADS = {
+  chief: { n: "Chief of Staff", s: "Keeps the week on track", c: "var(--purple)", e: "Claude Sonnet 5", m: [
+    { r: "you", t: "What actually needs me today?" },
+    { r: "bot", t: "Three things. Design review moved to 2pm. Hosting renews Friday on the higher tier. Priya is still waiting on the pricing note.", wait: 900 },
+    { r: "card", q: "How should I handle the pricing note?", d: "I have the numbers from the sheet either way.",
+      opts: ["Draft it and I will edit", "Just send me the numbers", "Leave it with Priya"], wait: 850 },
+  ]},
+  analyst: { n: "Research Analyst", s: "Deep dives, tight briefs", c: "var(--blue)", e: "Claude Opus 5", m: [
+    { r: "you", t: "Summarise the competitor pricing I saved last night." },
+    { r: "act", t: "Read pricing-teardown.md", wait: 700 },
+    { r: "card", approval: true, q: "Read 4 more files in ~/Research?", d: "It needs the rest of the folder to finish the comparison.",
+      opts: ["Allow this once", "Allow for this folder", "Not this time"], wait: 850 },
+    { r: "bot", t: "Four of the six charge per seat, two per workspace. The per-seat ones all sit between 20 and 25 a month, which is worth knowing before you set yours.", wait: 800, stream: true },
+  ]},
+  growth: { n: "Growth Marketer", s: "Campaigns, copy, experiments", c: "var(--orange)", e: "GPT-5.6 Sol", m: [
+    { r: "you", t: "We launch Thursday. Where should we post?" },
+    { r: "bot", t: "Hacker News Thursday morning, r/LocalLLaMA the same afternoon. Both crowds care about local-first, so lead with that and not with the agents.", wait: 900 },
+    { r: "act", t: "Wrote launch-posts.md", wait: 620 },
+    { r: "bot", t: "Both posts are drafted. The HN one is 90 words, because anything longer gets skimmed.", wait: 640, stream: true },
+  ]},
+  room: { n: "Launch week", s: "3 members", c: "var(--green)", e: "Mixed", m: [
+    { r: "you", t: "@everyone what is left before Thursday?" },
+    { r: "bot", w: "Growth Marketer", t: "Copy is done. Both launch posts are in the doc.", wait: 800 },
+    { r: "bot", w: "Research Analyst", t: "Pricing comparison finished. One open question on the annual discount.", wait: 850 },
+    { r: "bot", w: "Chief of Staff", t: "So the only blocker is the annual discount, and that one is yours. Everything else is ready. I would ship Thursday.", wait: 1000, stream: true },
+  ]},
+};
+
+/* One source of avatar art on the page, and it is the real one: the cast
+   figures hold the SVG lifted from the running app, and the sidebar and
+   header borrow clones of it. */
+const ART = {};
+for (const fig of document.querySelectorAll(".ag")) ART[fig.dataset.k] = fig.querySelector("svg");
+ART.room = ART.inbox;
+for (const slot of document.querySelectorAll(".av[data-av]")) {
+  const art = ART[slot.dataset.av];
+  if (art) slot.appendChild(art.cloneNode(true));
+}
+function setHeaderArt(key) {
+  const art = ART[key === "room" ? "growth" : key];
+  document.getElementById("hav").replaceChildren(art ? art.cloneNode(true) : document.createTextNode(""));
+}
+
+const msgs  = document.getElementById("msgs");
+const pmsgs = document.getElementById("pmsgs");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let gen = 0;   // cancels an in-flight playback when you switch threads
+
+function dots() {
+  const d = document.createElement("div");
+  d.className = "m bot dots";
+  d.innerHTML = "<u></u><u></u><u></u>";
+  return d;
+}
+
+function bubble(m) {
+  // The real ChatView renders five kinds. These are the three a landing page
+  // needs: a text bubble, an inline activity chip with no bubble at all, and
+  // the lettered options card. "Approval" is the warning colour, "Question"
+  // is the brand colour, exactly as OptionCard decides it.
+  if (m.r === "act") {
+    const d = document.createElement("div");
+    d.className = "act";
+    d.textContent = m.t;
+    return d;
+  }
+  if (m.r === "card") {
+    const d = document.createElement("div");
+    d.className = "card" + (m.approval ? " approval" : "");
+    const letters = ["A", "B", "C", "D"];
+    d.innerHTML =
+      '<div class="k">' + (m.approval ? "Approval" : "Question") + "</div>" +
+      '<div class="q">' + m.q + "</div>" +
+      (m.d ? '<div class="d">' + m.d + "</div>" : "") +
+      '<div class="opts">' +
+      m.opts.map((o, i) => '<button class="opt"><u>' + letters[i] + "</u>" + o + "</button>").join("") +
+      "</div><div class=\"own\">Type your own answer\u2026</div>";
+    d.querySelectorAll(".opt").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        for (const card of [d, pmsgs.querySelector(".card")]) {
+          if (!card) continue;
+          card.classList.add("done");
+          const idx = [...d.querySelectorAll(".opt")].indexOf(btn);
+          card.querySelectorAll(".opt")[idx]?.classList.add("chosen");
+          card.querySelector(".own")?.remove();
+        }
+      }));
+    return d;
+  }
+  const d = document.createElement("div");
+  d.className = "m " + (m.r === "you" ? "you" : "bot");
+  d.textContent = (m.w ? m.w + ": " : "") + m.t;
+  return d;
+}
+
+function typeBoth(a, bEl, text, mine) {
+  return new Promise((res) => {
+    let i = 0;
+    const cur = document.createElement("span");
+    cur.className = "cursor";
+    a.textContent = "";
+    a.appendChild(cur);
+    if (bEl) bEl.textContent = "";
+    const id = setInterval(() => {
+      if (mine !== gen) { clearInterval(id); res(); return; }
+      i += 2;
+      const slice = text.slice(0, i);
+      cur.remove();
+      a.textContent = slice;
+      if (bEl) bEl.textContent = slice;
+      if (i >= text.length) { clearInterval(id); res(); return; }
+      a.appendChild(cur);
+    }, 15);
+  });
+}
+
+async function play(key) {
+  const t = THREADS[key];
+  const mine = ++gen;
+
+  document.querySelectorAll(".row, .tabs button").forEach((r) =>
+    r.setAttribute("aria-selected", String(r.dataset.k === key)));
+  setHeaderArt(key);
+  document.getElementById("hn").textContent = t.n;
+  document.getElementById("hs").textContent = t.s;
+  document.getElementById("he").textContent = t.e;
+  document.getElementById("compph").textContent = "Message " + t.n;
+  document.getElementById("pn").firstChild.textContent = t.n;
+  document.getElementById("ps").textContent = t.s;
+
+  const when = document.createElement("div");
+  when.className = "when";
+  when.textContent = "Today " + t.m.length + ":0" + (t.m.length % 6) + " PM";
+  msgs.replaceChildren(when);
+  pmsgs.replaceChildren();
+
+  for (const m of t.m) {
+    if (mine !== gen) return;
+    if (m.r !== "you") {
+      const d1 = dots(), d2 = dots();
+      msgs.appendChild(d1);
+      pmsgs.appendChild(d2);
+      await sleep(m.wait || 700);
+      if (mine !== gen) return;
+      d1.remove(); d2.remove();
+    }
+    const big = bubble(m);
+    msgs.appendChild(big);
+    const small = m.r === "act" ? null : bubble(m);
+    if (small) pmsgs.appendChild(small);
+
+    if (m.stream) {
+      await typeBoth(big, small, (m.w ? m.w + ": " : "") + m.t, mine);
+    } else {
+      await sleep(m.r === "you" ? 420 : 260);
+    }
+  }
+}
+
+document.querySelectorAll(".row, .tabs button").forEach((r) =>
+  r.addEventListener("click", () => play(r.dataset.k)));
+
+/* =========== the introductions ===========
+   Each agent springs in, holds a beat so you register the face, then speaks.
+   Only once, and only when the section is actually on screen. */
+const cast = [...document.querySelectorAll(".ag")];
+async function introduce() {
+  for (const ag of cast) {
+    ag.classList.add("in");
+    await sleep(560);
+    ag.classList.add("said");
+    const el = ag.querySelector(".say");
+    const text = ag.dataset.say.replace(/&rsquo;/g, "\u2019");
+    await new Promise((res) => {
+      let i = 0;
+      const id = setInterval(() => {
+        i += 2;
+        el.textContent = text.slice(0, i);
+        if (i >= text.length) { clearInterval(id); res(); }
+      }, 14);
+    });
+    await sleep(240);
+  }
+}
+new IntersectionObserver(([e], obs) => {
+  if (!e.isIntersecting) return;
+  introduce();
+  obs.disconnect();
+}, { threshold: 0.3 }).observe(document.getElementById("cast"));
+
+// Nothing plays to an empty room.
+new IntersectionObserver(([e], obs) => {
+  if (!e.isIntersecting) return;
+  play("chief");
+  obs.disconnect();
+}, { threshold: 0.25 }).observe(document.getElementById("app"));
+</script>
+
+</body>
+</html>

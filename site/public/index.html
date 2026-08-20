@@ -1,0 +1,1699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<meta name="theme-color" content="#08090b" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#f4f2ee" media="(prefers-color-scheme: light)" />
+<title>Bloks: personal AI agents that live on your machine</title>
+<meta name="description" content="Agents as contacts, rooms as group chats. Bloks is a local-first workspace for personal AI agents. Free forever with your own keys." />
+<link rel="icon" href="/assets/bloks-mark.png" />
+<meta property="og:title" content="Bloks" />
+<meta property="og:description" content="Personal AI agents that live on your machine, not in someone else's cloud." />
+<meta property="og:image" content="https://bloks.dev/assets/hero.png" />
+<meta property="og:url" content="https://bloks.dev" />
+<meta name="twitter:card" content="summary_large_image" />
+<style>
+  /* ---------- the devices ----------
+     Drawn, not photographed. A stock hand holding a phone would drag
+     this page toward every other app landing page; what is worth taking
+     from a good mockup is the depth, so: real bezels, one raking
+     highlight across the glass, and a contact shadow that sits the
+     pair on the ground. Vector, so it stays sharp at any
+     density and costs nothing to load. */
+  .shots {
+    margin-top: clamp(3.4rem, 7vw, 6rem);
+    display: grid; grid-template-columns: minmax(0, 1fr) clamp(168px, 19vw, 232px);
+    gap: clamp(1rem, 3vw, 3.2rem); align-items: end;
+    perspective: 2200px;
+  }
+  .shots figure { margin: 0; }
+
+  /* --- the laptop --- */
+  .shots .mac { transform: rotateY(1.6deg) rotateX(1.2deg); transform-style: preserve-3d; }
+  .shots .lid {
+    display: block; padding: clamp(7px, .85vw, 12px) clamp(7px, .85vw, 12px) clamp(11px, 1.3vw, 18px);
+    border-radius: clamp(11px, 1.3vw, 18px) clamp(11px, 1.3vw, 18px) 5px 5px;
+    background: linear-gradient(168deg, #55585e 0%, #303338 16%, #17191d 52%, #303338 88%, #4a4d53 100%);
+    box-shadow: 0 1px 0 rgba(255,255,255,.14) inset, 0 46px 90px -40px rgba(0,0,0,.6);
+  }
+  .shots .screen {
+    position: relative; display: block; overflow: hidden;
+    border-radius: clamp(5px, .55vw, 8px);
+    background: #05060a;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.6) inset;
+  }
+  .shots .screen img { width: 100%; height: auto; display: block; }
+  .shots .glare {
+    position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(104deg, rgba(255,255,255,.13) 0%, rgba(255,255,255,.045) 17%, transparent 34%);
+    mix-blend-mode: screen;
+  }
+  /* the deck, tapering away under the lid, with the thumb scoop */
+  .shots .base { display: block; position: relative; height: clamp(9px, 1.05vw, 15px); }
+  .shots .base::before {
+    content: ""; position: absolute; inset: 0 -2.6% auto;
+    height: 100%; border-radius: 0 0 clamp(7px, .8vw, 11px) clamp(7px, .8vw, 11px);
+    background: linear-gradient(180deg, #b9bcc2 0%, #8d9198 34%, #6f737a 72%, #4d5057 100%);
+    box-shadow: 0 20px 34px -18px rgba(0,0,0,.55);
+  }
+  .shots .base i {
+    position: absolute; top: 0; left: 50%; translate: -50% 0;
+    width: 15%; height: 42%; border-radius: 0 0 9px 9px;
+    background: linear-gradient(180deg, #6c7077, #93979e);
+  }
+
+  /* --- the phone --- */
+  .shots .ph {
+    position: relative; justify-self: end;
+    transform: rotateY(-7deg) rotateX(1.4deg); transform-style: preserve-3d;
+    background: linear-gradient(148deg, #dfe1e5 0%, #9aa0a8 20%, #5f646c 48%, #a2a8b0 76%, #d5d8dd 100%);
+    border-radius: clamp(30px, 3.4vw, 46px); padding: 3px;
+    box-shadow: 0 52px 96px -38px rgba(0,0,0,.58), 0 2px 6px rgba(0,0,0,.16);
+  }
+  .shots .ph::before, .shots .ph::after {
+    content: ""; position: absolute; left: -2px; width: 2.5px; border-radius: 3px;
+    background: linear-gradient(180deg, #b3b8bf, #74787f);
+  }
+  .shots .ph::before { top: 20%; height: 5%; }
+  .shots .ph::after { top: 28%; height: 9.5%; }
+  .shots .ph .glass {
+    position: relative; display: block; overflow: hidden;
+    background: #05060a; border-radius: clamp(28px, 3.15vw, 43px); padding: 4px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .shots .ph .glass::after {
+    content: ""; position: absolute; right: -6px; top: 31%; width: 2.5px; height: 12%;
+    border-radius: 3px; background: linear-gradient(180deg, #b3b8bf, #74787f);
+  }
+  .shots .ph img { width: 100%; height: auto; display: block; border-radius: clamp(25px, 2.8vw, 39px); }
+  .shots .ph .glare { border-radius: clamp(25px, 2.8vw, 39px); }
+
+  @media (max-width: 980px) {
+    .shots { grid-template-columns: minmax(0, 1fr); justify-items: center; perspective: none; }
+    .shots .mac, .shots .ph { transform: none; }
+    .shots .ph { max-width: 210px; justify-self: center; margin-top: 1rem; }
+  }
+
+  /* ---------- engines, tiled ---------- */
+  .engine { align-items: center; }
+  .edot { width: 13px; height: 13px; flex: none; display: inline-block; margin-right: .2rem; }
+  .engine { grid-template-columns: auto 1.1fr 1.7fr auto; }
+  @media (max-width: 760px) { .engine { grid-template-columns: auto 1fr auto; } .engine .how { grid-column: 2 / -1; } }
+  .chip.soon { background: var(--amber); border-color: var(--amber); color: #241a03; }
+
+  /* ---------- pricing ---------- */
+  .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: clamp(2.5rem, 5vw, 4rem); }
+  @media (max-width: 900px) { .plans { grid-template-columns: 1fr; } }
+  .plan { background: var(--bg); padding: 2rem 1.7rem 1.7rem; transition: background-color 1300ms linear; display: flex; flex-direction: column; gap: .2rem; }
+  .plan .bar { display: block; width: 36px; height: 6px; margin-bottom: 1.1rem; }
+  .plan .mono { margin: 0 0 .6rem; display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .plan h3 { font-size: var(--t-md); letter-spacing: -0.03em; }
+  .plan h3 em { font-style: normal; font-size: .5em; font-weight: 400; color: var(--faint); letter-spacing: 0; }
+  .plan ul { list-style: none; margin: 1.1rem 0 1.6rem; padding: 0; display: grid; gap: .55rem; }
+  .plan li { color: var(--soft); font-size: var(--t-sm); padding-left: 1.1rem; position: relative; }
+  .plan li::before { content: ""; position: absolute; left: 0; top: .52em; width: 5px; height: 5px; background: var(--faint); }
+  .plan .ulink { margin-top: auto; width: max-content; }
+
+  /* ---------- faq ---------- */
+  .faqs { margin-top: clamp(2.5rem, 5vw, 4rem); border-top: 1px solid var(--rule); max-width: 46rem; }
+  .qa { border-bottom: 1px solid var(--rule); }
+  .qa summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; justify-content: space-between; gap: 1.5rem; padding: 1.15rem 0; font-size: var(--t-body); font-weight: 640; color: var(--fg); letter-spacing: -0.014em; }
+  .qa summary::-webkit-details-marker { display: none; }
+  .qa summary::after { content: "+"; font-weight: 400; color: var(--faint); font-size: 1.3em; line-height: 1; transition: rotate 420ms var(--ease); flex: none; }
+  .qa[open] summary::after { rotate: 45deg; }
+  .qa p { margin: 0 0 1.3rem; max-width: 40rem; font-size: var(--t-sm); }
+
+
+
+  /* ---------- the belt ----------
+     Two rows, opposite directions, edges faded into the ground. Wide
+     enough to read as a moving shelf of things Bloks already speaks to
+     rather than a list somebody has to finish reading. */
+  .belt { margin-top: clamp(2.6rem, 5vw, 4.2rem); }
+  .beltrow + .beltrow { margin-top: clamp(1.8rem, 3vw, 2.6rem); }
+  .beltlabel { margin: 0 0 .9rem; display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
+  .beltlabel span { letter-spacing: .1em; color: var(--faint); opacity: .72; text-transform: none; }
+  .track {
+    overflow: hidden; width: 100vw; margin-left: 50%; translate: -50% 0;
+    padding: .35rem 0;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+  }
+  .run { display: flex; gap: .8rem; width: max-content; animation: belt 60s linear infinite; }
+  .track.right .run { animation-direction: reverse; }
+  @keyframes belt { to { transform: translateX(-50%); } }
+  /* the belt is scenery, not a menu: nothing here takes a pointer, so
+     nothing stops when the cursor crosses it and nothing looks clickable */
+  .track, .run, .chipx { pointer-events: none; user-select: none; }
+  .chipx {
+    display: inline-flex; align-items: center; gap: .75rem; white-space: nowrap;
+    /* each border wears its own brand, set per chip as --c */
+    border: 1px solid color-mix(in oklab, var(--c) 45%, transparent);
+    border-radius: 2px;
+    padding: .78rem 1.25rem .78rem .78rem;
+    font-size: .98rem; font-weight: 580; letter-spacing: -0.012em; color: var(--fg);
+    background: color-mix(in oklab, var(--c) 8%, transparent);
+  }
+  .chipx i {
+    display: grid; place-items: center; flex: none;
+    width: 30px; height: 30px; border-radius: 7px;
+    font-family: ui-sans-serif, -apple-system, sans-serif;
+    font-size: .82rem; font-weight: 700; font-style: normal; color: #fff;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+  }
+  @media (max-width: 620px) {
+    .chipx { font-size: .9rem; padding: .66rem 1rem .66rem .66rem; gap: .6rem; }
+    .chipx i { width: 26px; height: 26px; font-size: .74rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .run { animation: none; flex-wrap: wrap; width: auto; }
+    .track { -webkit-mask-image: none; mask-image: none; width: auto; margin-left: 0; translate: none; }
+  }
+
+  /* ---------- coming soon ---------- */
+  .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--rule); font: inherit; font-size: var(--t-sm); font-weight: 620; cursor: pointer; }
+  .btn.ghost:hover { border-color: var(--faint); }
+  .soon-wrap { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: rgba(8,9,11,.55); backdrop-filter: blur(6px); padding: 1.5rem; animation: soonIn 260ms var(--ease); }
+  .soon-wrap[hidden] { display: none; }
+  @keyframes soonIn { from { opacity: 0; } to { opacity: 1; } }
+  .soon-card { position: relative; width: min(30rem, 100%); background: var(--paper); color: var(--on-paper); padding: clamp(1.8rem, 4vw, 2.6rem); animation: soonUp 420ms var(--glide); }
+  @keyframes soonUp { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: none; } }
+  .soon-card .mono { color: var(--on-paper-faint); }
+  .soon-card h3 { margin: .5rem 0 0; font-size: clamp(1.7rem, 3.4vw, 2.4rem); line-height: 1.02; letter-spacing: -0.035em; }
+  .soon-card p { color: var(--on-paper-soft); margin: 0; }
+  .soon-card .signup { margin-top: 1.5rem; max-width: none; }
+  .soon-card .signup input { border-color: var(--rule-paper); color: var(--on-paper); }
+  .soon-card .signup input::placeholder { color: var(--on-paper-faint); }
+  .soon-card .signup button { background: var(--on-paper); color: var(--paper); }
+  .soon-x { position: absolute; top: .8rem; right: 1rem; background: none; border: 0; font-size: 1.6rem; line-height: 1; color: var(--on-paper-faint); cursor: pointer; padding: .2rem .4rem; }
+  .soon-x:hover { color: var(--on-paper); }
+
+  /* ---------- footer github mark ---------- */
+  footer .gh { display: inline-flex; color: var(--soft); }
+  footer .gh:hover { color: var(--fg); }
+</style>
+<script>
+  // Before anything renders: a saved choice beats the system, and no
+  // choice means follow the system. Done here rather than at the end of
+  // the body so the page never flashes the theme somebody rejected.
+  try {
+    var saved = localStorage.getItem("bloks-theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+  } catch (e) {}
+</script>
+</head>
+<body>
+  <button class="themeswap themepill" type="button" aria-label="Switch between dark and light">
+    <svg class="i-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    <svg class="i-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+  </button>
+
+<style>
+  /* One visual world on purpose: the page opens in the void, where your
+     agents currently live, and crosses into paper at the moment it starts
+     talking about your own machine. It does not follow the viewer's theme,
+     and every colour is painted explicitly. */
+  :root {
+    --void:  #08090b;
+    --paper: #f4f2ee;
+
+    --on-void:       #f4f6f9;
+    --on-void-soft:  #99a1ac;
+    --on-void-faint: #545c68;
+    --rule-void:     #1b1f26;
+
+    --on-paper:       #121418;
+    --on-paper-soft:  #53575d;
+    --on-paper-faint: #8a8e95;
+    --rule-paper:     #d7d3cb;
+
+    --blue:   #004aad;
+    --purple: #cb6ce6;
+    --red:    #ff3131;
+    --orange: #ff751f;
+    --green:  #7ed957;
+    --cyan:   #5ce1e6;
+    --amber:  #ffbd59;
+    --coral:  #ff5757;
+
+    /* Dark is the default because that is what this looks like. The
+       system's preference wins over that, and a person's own choice
+       wins over everything, which is the order people expect. */
+    color-scheme: dark;
+    --bg:    var(--void);
+    --fg:    var(--on-void);
+    --soft:  var(--on-void-soft);
+    --faint: var(--on-void-faint);
+    --rule:  var(--rule-void);
+
+    --t-label: .68rem;
+    --t-sm:    .92rem;
+    --t-body:  1.06rem;
+    --t-lede:  clamp(1.12rem, 1.55vw, 1.36rem);
+    --t-md:    clamp(1.5rem, 2.3vw, 1.95rem);
+    --t-lg:    clamp(2rem, 4.1vw, 3.15rem);
+    --t-xl:    clamp(2.5rem, 5.9vw, 5rem);
+    --t-2xl:   clamp(2.9rem, 7.4vw, 6.4rem);
+
+    /* Strong custom curves. The built-in easings are too weak to read as
+       deliberate, and ease-in on anything entering is always wrong. */
+    --ease:    cubic-bezier(.23, 1, .32, 1);
+    --glide:   cubic-bezier(.19, 1, .22, 1);
+    --inout:   cubic-bezier(.77, 0, .175, 1);
+    --spring: linear(0, .28 8%, .74 19%, .98 27%, 1.08 33%, 1.1 38%, 1.05 47%, .99 60%, 1);
+  }
+
+  * { box-sizing: border-box; }
+  /* clip, not hidden: the mark scales to 23x on its way past you. Neither it
+     nor the room blocks should ever produce a horizontal scrollbar, and clip
+     does that without making html a scroll container the way hidden would. */
+  html { overflow-x: clip; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: var(--t-body);
+    line-height: 1.66;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+  }
+  /* Following the system, unless the reader has said otherwise. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg:    var(--paper);
+    --fg:    var(--on-paper);
+    --soft:  var(--on-paper-soft);
+    --faint: var(--on-paper-faint);
+    --rule:  var(--rule-paper);
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg:    var(--paper);
+    --fg:    var(--on-paper);
+    --soft:  var(--on-paper-soft);
+    --faint: var(--on-paper-faint);
+    --rule:  var(--rule-paper);
+  }
+
+  .wrap { width: min(1180px, 100% - 3rem); margin-inline: auto; }
+  .col  { max-width: 40rem; }
+
+  /* ---------- type ---------- */
+  h1, h2, h3 { margin: 0; font-weight: 700; text-wrap: balance; }
+  .d-2xl { font-size: var(--t-2xl); line-height: .94; letter-spacing: -0.048em; }
+  .d-xl  { font-size: var(--t-xl);  line-height: .96; letter-spacing: -0.044em; }
+  .d-lg  { font-size: var(--t-lg);  line-height: 1.0; letter-spacing: -0.036em; font-weight: 690; }
+
+  .lede { font-size: var(--t-lede); line-height: 1.48; color: var(--soft); max-width: 34rem; margin: 1.6rem 0 0; }
+  p { margin: 0 0 1.15rem; color: var(--soft); }
+  strong { color: var(--fg); font-weight: 650; }
+  a { color: inherit; }
+  em { font-style: normal; color: var(--fg); }
+
+  /* Line masks: each line clipped and sliding up. The padding/margin pair
+     stops descenders being sliced by the clip. */
+  .ln { display: block; overflow: hidden; padding-bottom: .1em; margin-bottom: -.1em; }
+  .ln > i { display: block; font-style: normal; transform: translateY(112%); transition: transform 1800ms var(--glide); }
+  .lit .ln > i { transform: none; }
+  .lit .ln:nth-child(2) > i { transition-delay: 160ms; }
+  .lit .ln:nth-child(3) > i { transition-delay: 320ms; }
+
+  .label { display: flex; align-items: center; gap: .9rem; margin: 0 0 1.6rem; }
+  .label span {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--t-label); letter-spacing: .28em; text-transform: uppercase;
+    color: var(--faint); white-space: nowrap;
+  }
+  /* No nowrap: the footer line is long and was running off a 390px screen. */
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--t-label); letter-spacing: .28em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .label hr { flex: 1; height: 1px; border: 0; background: var(--rule); margin: 0; transform: scaleX(0); transform-origin: left; transition: transform 2200ms var(--glide) 180ms; }
+  .lit .label hr { transform: scaleX(1); }
+
+  section { padding: clamp(6rem, 14vh, 10.5rem) 0; position: relative; }
+
+  /* ================= the opening =================
+     One block, then seven more stacking into the mark, then the mark scaling
+     through the viewport to leave the belief behind it. Driven by a scroll
+     timeline so it runs on the compositor rather than on the main thread. */
+  #stage { height: 460svh; padding: 0; }
+  #why   { height: 440svh; padding: 0; }
+  .pin { position: sticky; top: 0; height: 100svh; display: grid; place-items: center; overflow: hidden; contain: paint; }
+  .markwrap { grid-area: 1 / 1; }
+  /* Large, because for the first three viewports it is the only thing on the
+     page. A 44px bar alone on a wide screen reads as a rendering error. */
+  .mark { position: relative; width: clamp(176px, 19vw, 290px); aspect-ratio: 1272 / 1483.5; }
+  .mark b { position: absolute; display: block; opacity: 0; }
+  .mark b:first-child { opacity: 1; }
+  .herotext { grid-area: 1 / 1; width: min(880px, 100vw - 3rem); opacity: 0; }
+  .hint { position: absolute; bottom: 2.4rem; left: 50%; translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: .8rem; }
+  .hint i { display: block; width: 1px; height: 32px; background: var(--rule-void); position: relative; overflow: hidden; }
+  .hint i::after { content: ""; position: absolute; inset: 0; background: var(--on-void-faint); animation: drip 2000ms var(--ease) infinite; }
+  @keyframes drip { 0% { translate: 0 -100%; } 62%, 100% { translate: 0 100%; } }
+
+  .beats { grid-area: 1 / 1; width: min(1120px, calc(100vw - 2 * (var(--m) + var(--bt) + clamp(10px, 2.4vw, 26px)))); position: relative; height: 8em; }
+  .beat { position: absolute; inset: 0; margin: 0; color: var(--fg); font-size: var(--t-xl); line-height: .98; letter-spacing: -0.044em; font-weight: 700; text-wrap: balance; opacity: 0; }
+  .beat.last { color: var(--amber); }
+
+  /* The left rail. --u is one stacked step, --t the tighter spacing the
+     four close up to, so the 2x2 lands as tight as .smark, the same
+     four colours the app puts in its own sidebar. */
+  #why {
+    --m: clamp(14px, 3vw, 44px);          /* frame inset from the edge */
+    --bt: clamp(13px, 2.1vw, 30px);       /* bar thickness at page scale */
+    --fw: calc(100vw - 2 * var(--m));
+    --fh: calc(100svh - 2 * var(--m));
+    --M: clamp(220px, 26vw, 420px);       /* the mark as it forms, before it settles */
+  }
+  .rail { position: absolute; inset: 0; pointer-events: none; }
+  .rb { position: absolute; display: block; will-change: transform; }
+  .rb i { display: block; width: 100%; height: 100%; }
+
+  /* The mark's own proportions, stretched to the page. The bars keep the
+     pinwheel's offsets (each starts where the previous one stops) so it
+     reads as the logo long before it is the logo. */
+  .rb1 { left: var(--m); top: var(--m); width: var(--bt); height: calc(var(--fh) * .773); }
+  .rb2 { left: calc(var(--m) + var(--fw) * .263); top: var(--m); width: calc(var(--fw) * .737); height: var(--bt); }
+  .rb3 { left: calc(var(--m) + var(--fw) - var(--bt)); top: calc(var(--m) + var(--fh) * .226); width: var(--bt); height: calc(var(--fh) * .773); }
+  .rb4 { left: var(--m); top: calc(var(--m) + var(--fh) - var(--bt)); width: calc(var(--fw) * .737); height: var(--bt); }
+
+  .core {
+    position: absolute; left: 50%; top: 50%;
+    width: var(--M); height: var(--M);
+    margin: calc(var(--M) / -2) 0 0 calc(var(--M) / -2);
+  }
+  .core b { position: absolute; display: block; opacity: 0; }
+
+  /* ---- the compositor path. Everything above is scrubbed here, off the
+     main thread, which is the difference between 60 and 120. ---- */
+  @keyframes blockIn {
+    from { opacity: 0; transform: translate(var(--ox), var(--oy)) scale(.72); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes blowThrough { from { transform: scale(1); } to { transform: scale(23); } }
+  @keyframes fadeOut  { to { opacity: 0; } }
+  @keyframes fadeUp   { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: none; } }
+  @keyframes lineUp   { from { transform: translateY(112%); } to { transform: none; } }
+  @keyframes beatPass {
+    0%   { opacity: 0; transform: translateY(40px); }
+    18%  { opacity: 1; transform: none; }
+    80%  { opacity: 1; transform: none; }
+    100% { opacity: 0; transform: translateY(-40px); }
+  }
+  @keyframes hintOut { to { opacity: 0; } }
+
+  /* Each bar travels the length of the edge it lands on, and the four
+     directions together trace the pinwheel clockwise: up the left, right
+     along the top, down the right, back along the bottom. */
+  @keyframes barUp    { 0% { opacity: 0; transform: translateY(102svh);  } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barRight { 0% { opacity: 0; transform: translateX(-102vw);  } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barDown  { 0% { opacity: 0; transform: translateY(-102svh); } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes barLeft  { 0% { opacity: 0; transform: translateX(102vw);   } 12% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+
+  /* The page-sized bar folded onto its slot in the mark. The transform is
+     a ratio of two measured lengths, which calc() cannot express, so it
+     is measured in script and handed over as --f1..--f4. */
+  @keyframes form1 { to { transform: var(--f1); } }
+  @keyframes form2 { to { transform: var(--f2); } }
+  @keyframes form3 { to { transform: var(--f3); } }
+  @keyframes form4 { to { transform: var(--f4); } }
+  /* The inner pinwheel arrives to finish the logo, each piece from the
+     side it belongs to, exactly as in the opening. */
+  @keyframes coreIn { from { opacity: 0; transform: translate(var(--ox), var(--oy)); } to { opacity: 1; transform: none; } }
+  @keyframes markIn { to { transform: scale(.42); } }
+
+  @supports (animation-timeline: view()) {
+    #stage { view-timeline-name: --stage; }
+    #why   { view-timeline-name: --whytl; }
+
+    .mark b { animation: blockIn linear both; animation-timeline: --stage; }
+    .mark b:nth-child(1) { animation: none; opacity: 1; }
+    .mark b:nth-child(2) { animation-range: contain 5%  contain 15%; }
+    .mark b:nth-child(3) { animation-range: contain 13% contain 23%; }
+    .mark b:nth-child(4) { animation-range: contain 21% contain 31%; }
+    .mark b:nth-child(5) { animation-range: contain 29% contain 39%; }
+    .mark b:nth-child(6) { animation-range: contain 36% contain 46%; }
+    .mark b:nth-child(7) { animation-range: contain 43% contain 53%; }
+    .mark b:nth-child(8) { animation-range: contain 50% contain 60%; }
+
+    .markwrap { animation: blowThrough linear both, fadeOut linear both; animation-timeline: --stage, --stage; animation-range: contain 70% contain 96%, contain 76% contain 92%; }
+    .herotext { animation: fadeUp linear both; animation-timeline: --stage; animation-range: contain 74% contain 90%; }
+    .herotext .ln > i { animation: lineUp linear both; animation-timeline: --stage; transition: none; }
+    .herotext .ln:nth-child(1) > i { animation-range: contain 75% contain 87%; }
+    .herotext .ln:nth-child(2) > i { animation-range: contain 78.5% contain 90.5%; }
+    .herotext .ln:nth-child(3) > i { animation-range: contain 82% contain 94%; }
+    .hint { animation: hintOut linear both; animation-timeline: --stage; animation-range: contain 0% contain 5%; }
+
+    /* Timed against cover, not contain, so the first line is already lit
+       as it rides up into view. On contain it could not start until the
+       section was pinned, which left one whole screen of scrolling with
+       the hero on its way out and nothing yet on its way in. Everything
+       after the first line keeps the beat it always had: contain 19% is
+       cover 30.5% here, and so on down. */
+    .beat { animation: beatPass linear both; animation-timeline: --whytl; }
+    .beat:nth-child(1) { animation-range: cover 4%     cover 31.7%; }
+    .beat:nth-child(2) { animation-range: cover 30.5%  cover 43.7%; }
+    .beat:nth-child(3) { animation-range: cover 42.4%  cover 55.7%; }
+    .beat:nth-child(4) { animation-range: cover 54.4%  cover 67.6%; }
+
+    /* Arrival sits on the wrapper and the fold on the block inside it,
+       because two scroll-driven animations on one element both hold a
+       fill value for transform and the later one simply wins. */
+    .rb { animation: linear both; animation-timeline: --whytl; }
+    .rb1 { animation-name: barUp;    animation-range: cover 18.5%  cover 30.5%; }
+    .rb2 { animation-name: barRight; animation-range: cover 30.5%  cover 42.4%; }
+    .rb3 { animation-name: barDown;  animation-range: cover 42.4%  cover 54.4%; }
+    .rb4 { animation-name: barLeft;  animation-range: cover 54.4%  cover 66.4%; }
+
+    .rb i { animation: linear both; animation-timeline: --whytl; animation-range: cover 68.9% cover 77.1%; }
+    .rb1 i { animation-name: form1; }
+    .rb2 i { animation-name: form2; }
+    .rb3 i { animation-name: form3; }
+    .rb4 i { animation-name: form4; }
+
+    .core b { animation: coreIn linear both; animation-timeline: --whytl; animation-range: cover 73.3% cover 79%; }
+    .rail { animation: markIn linear both; animation-timeline: --whytl; animation-range: cover 77.1% cover 81.5%; }
+
+  }
+
+  /* ---------- the two bars that cross the cast ----------
+     Two of the mark's bars at page height, passing the section in
+     opposite directions: blue down the left through the first half,
+     red up the right through the second, both leaving by the edge they
+     were heading for. Same idea as the frame in the section above,
+     without the horizontals and without stopping. */
+  #cast {
+    position: relative; z-index: 0;
+    --pt: clamp(12px, 1.9vw, 26px);
+  }
+  /* They travel in front of the page and behind this section's own
+     words. Behind everything is not an option: a negative layer sits
+     under the neighbouring sections' backgrounds and the bar vanishes
+     the moment it leaves this one. */
+  #cast > :not(.pass) { position: relative; z-index: 1; }
+  /* Absolute rather than fixed, and hidden until the script has a
+     position for them. A fixed bar parked off screen by an animation's
+     fill state is not reliably parked: a sliver of one was turning up
+     two sections away. Absolute also means they ride the page even if a
+     scroll frame is dropped, so only the drift lags, never the bar. */
+  .pass {
+    position: absolute; top: 0; z-index: 0;
+    width: var(--pt); height: 62svh;
+    visibility: hidden; pointer-events: none; will-change: transform;
+  }
+  /* Hard against the frame edge, which is also the only place they clear
+     the text column: the page keeps a 1.5rem gutter and the bar is
+     narrower than that at every width. */
+  .pass-a { left: env(safe-area-inset-left);   background: var(--blue); }
+  .pass-b { right: env(safe-area-inset-right); background: var(--red); }
+
+  /* ---------- buttons ---------- */
+
+
+
+  /* the theme toggle: one button, showing where it will take you */
+  .themeswap {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; padding: 0; border: 0; background: none;
+    color: var(--faint); cursor: pointer; transition: color 320ms var(--ease);
+  }
+  .themeswap:hover { color: var(--fg); }
+  .themeswap .i-sun, .themeswap .i-moon { display: none; }
+  .themeswap[data-now="dark"] .i-sun { display: block; }
+  .themeswap[data-now="light"] .i-moon { display: block; }
+
+  /* Safari draws its bars over the page on a phone, and paints them by
+     sampling the edges, so the page has to actually reach them. */
+  body { padding-bottom: env(safe-area-inset-bottom); }
+  .wrap, .strip { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+
+
+
+  /* The film runs everywhere. It used to be turned off on phones
+     because the hero overflowed its stage, but that was the download
+     blocks stacking into one column; with those two by two, and the
+     type sized against the screen's height, the whole hero fits a
+     phone and the intro belongs there as much as anywhere. */
+
+  /* ── the hero, sized to the screen it is pinned inside ──
+     The stage is exactly one viewport tall and clips what does not fit,
+     so the hero cannot be sized in width alone: a short window would
+     push the top and bottom out of view, which is exactly what happened
+     at 856 by 622 and again on a phone. Everything here is tied to the
+     viewport's HEIGHT as well as its width, so the block shrinks with
+     the room rather than overflowing it. */
+  .hero-copy h1 { font-size: clamp(2.15rem, min(9vw, 13svh), 7.5rem); }
+  .hero-copy .lede { font-size: clamp(1rem, min(1.9vw, 3svh), 1.45rem); margin-top: clamp(.8rem, 2svh, 1.6rem); }
+  .hero-copy .dl-grid { margin-top: clamp(1rem, 3svh, 2.7rem); }
+  .hero-copy .quiet { margin-top: clamp(.6rem, 1.6svh, 1.1rem); }
+  .dl { min-height: clamp(5.4rem, 13svh, 8.4rem); }
+  /* The blocks give up their breathing room before the words do, so a
+     short window keeps the whole hero instead of clipping its last line.
+     At phone height and above these all sit at their full value. */
+  .hero-copy .dl { padding-top: clamp(.8rem, 2.6svh, 1.4rem); gap: clamp(.5rem, 1.7svh, .9rem); }
+  .hero-copy .dl .label { padding-bottom: clamp(.6rem, 2.2svh, 1.15rem); }
+
+  /* Both pinned sections centre what they hold, and on a phone the two
+     offsets add up: the gap between the hero on its way out and the
+     first line on its way in is the hero's own top margin plus the
+     line's, and it stays that wide for the whole handover. The line
+     sits near the top of its box instead, which halves it and reads
+     well anyway on a screen this shape. */
+  @media (max-width: 760px) {
+    #why .pin { align-items: start; padding-top: 12svh; }
+  }
+
+
+
+  /* The theme switch, floated out of the way. Bottom right on every
+     surface, blurred so it reads on either ground without needing a
+     colour of its own. */
+  .themepill {
+    position: fixed; z-index: 60;
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: max(1rem, env(safe-area-inset-bottom));
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; padding: 0; border-radius: 999px;
+    background: color-mix(in oklab, var(--bg) 62%, transparent);
+    border: 1px solid color-mix(in oklab, var(--fg) 14%, transparent);
+    backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    color: var(--soft); cursor: pointer;
+    box-shadow: 0 6px 20px -10px rgba(0, 0, 0, .6);
+    transition: color 320ms var(--ease), transform 320ms var(--glide),
+                border-color 320ms var(--ease);
+  }
+  .themepill:hover { color: var(--fg); transform: translateY(-2px); border-color: color-mix(in oklab, var(--fg) 28%, transparent); }
+  .themepill:active { transform: translateY(0); }
+
+  /* ── the download blocks ──
+     Four tiles, two by two, each standing on a coloured floor: the same
+     dithered ledge the creatures stand on in the app, and between them
+     the four colours of the mark. The glyph sits on top, the label along
+     the bottom, and whichever platform you are actually on gets an arrow
+     and a beam travelling its edge. */
+  .dl-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .8rem; margin-top: 2.7rem; max-width: 27rem;
+  }
+  /* Two by two at every size. Stacked into a single column the four of
+     them are 576px tall, which does not fit a phone's screen and pushed
+     the whole hero out of its stage; and four blocks in a square is the
+     shape that says Bloks in the first place. */
+  @media (max-width: 560px) {
+    .dl-grid { gap: .55rem; max-width: 100%; }
+    .dl { min-height: 6.6rem; padding: 1rem .55rem 0; gap: .55rem; font-size: .78rem; }
+    .dl .label { padding-bottom: .85rem; gap: .3rem; line-height: 1.25; }
+    .dl svg { width: 18px; height: 18px; }
+    .dl .floor { height: 9px; }
+  }
+
+  .dl {
+    --c: var(--blue);
+    position: relative; isolation: isolate; overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+    gap: .9rem; min-height: 8.4rem; padding: 1.4rem 1rem 0;
+    background: color-mix(in oklab, var(--fg) 4%, transparent);
+    border: 1px solid var(--rule); color: var(--fg);
+    font: inherit; font-size: var(--t-sm); font-weight: 620; text-decoration: none;
+    cursor: pointer; text-align: center;
+    transition: transform 620ms var(--glide), border-color 620ms var(--ease),
+                background-color 620ms var(--ease);
+  }
+  .dl:hover { transform: translateY(-4px); border-color: color-mix(in oklab, var(--c) 55%, var(--rule)); }
+  .dl:active { transform: translateY(-1px); transition-duration: 140ms; }
+  .dl svg { flex: none; }
+  .dl .label { display: flex; align-items: center; gap: .45rem; padding-bottom: 1.15rem; }
+  .dl .arw { display: none; }
+  .dl.is-you .arw { display: inline-block; transition: transform 620ms var(--glide); }
+  .dl.is-you:hover .arw { transform: translateX(3px); }
+
+  /* the one you can actually use reads as the primary */
+  .dl.is-you { background: color-mix(in oklab, var(--c) 14%, transparent); border-color: color-mix(in oklab, var(--c) 45%, var(--rule)); }
+
+  /* The floor: a ledge with the ground breaking up as it rises.
+     Five rows, each thinner, sparser and dimmer than the one below, on
+     cell widths with no common factor so the columns never line up into
+     stripes. The falloff is what makes it read as ground rather than as
+     a pattern: dense and solid at the bottom, a few stray pixels at the
+     top, nothing in between that repeats on a beat you can find. */
+  .dl .floor { position: absolute; inset: auto -1px -1px -1px; height: 9px; background: var(--c); }
+  .dl .floor i { position: absolute; left: 0; right: 0; display: block; background-repeat: repeat-x; }
+  .dl .floor i:nth-child(1) {
+    top: -3px; height: 3px; opacity: .95;
+    background-image: linear-gradient(90deg, var(--c) 62%, transparent 62%);
+    background-size: 7px 3px;
+  }
+  .dl .floor i:nth-child(2) {
+    top: -6px; height: 3px; opacity: .7;
+    background-image: linear-gradient(90deg, var(--c) 44%, transparent 44%);
+    background-size: 11px 3px; background-position: 4px 0;
+  }
+  .dl .floor i:nth-child(3) {
+    top: -9px; height: 3px; opacity: .46;
+    background-image: linear-gradient(90deg, var(--c) 28%, transparent 28%);
+    background-size: 17px 3px; background-position: 9px 0;
+  }
+  .dl .floor i:nth-child(4) {
+    top: -12px; height: 3px; opacity: .27;
+    background-image:
+      linear-gradient(90deg, var(--c) 17%, transparent 17%),
+      linear-gradient(90deg, var(--c) 11%, transparent 11%);
+    background-size: 23px 3px, 31px 3px;
+    background-position: 2px 0, 13px 0;
+  }
+  .dl .floor i:nth-child(5) {
+    top: -16px; height: 4px; opacity: .14;
+    background-image:
+      linear-gradient(90deg, var(--c) 9%, transparent 9%),
+      linear-gradient(90deg, var(--c) 6%, transparent 6%),
+      linear-gradient(90deg, var(--c) 5%, transparent 5%);
+    background-size: 37px 4px, 47px 3px, 59px 3px;
+    background-position: 5px 0, 21px 1px, 38px 0;
+  }
+  /* the ground stirs a little under the cursor, on stepped timing so it
+     stays pixels rather than becoming a slide */
+  .dl:hover .floor i:nth-child(3) { animation: drift 2.6s steps(7) infinite; }
+  .dl:hover .floor i:nth-child(4) { animation: drift 3.4s steps(5) infinite reverse; }
+  .dl:hover .floor i:nth-child(5) { animation: flicker 1.9s steps(3) infinite; }
+  @keyframes drift { to { background-position-x: 23px; } }
+  @keyframes flicker { 45% { opacity: .05; } }
+
+  /* a light sweep on hover, and a beam that travels the edge of the tile
+     you would actually click */
+  .dl .shine {
+    position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    background: linear-gradient(105deg, transparent 38%, color-mix(in oklab, var(--fg) 16%, transparent) 50%, transparent 62%);
+    transform: translateX(-120%);
+  }
+  .dl:hover .shine { animation: sweep 900ms var(--ease) forwards; }
+  @keyframes sweep { to { transform: translateX(120%); } }
+
+  @property --beam { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  .dl.is-you::before {
+    content: ""; position: absolute; inset: -1px; z-index: -1;
+    background: conic-gradient(from var(--beam), transparent 0 68%, var(--c) 82%, transparent 92%);
+    animation: beam 4.5s linear infinite;
+  }
+  .dl.is-you::after {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background: var(--bg);
+  }
+  @keyframes beam { to { --beam: 360deg; } }
+
+  .dl[disabled] { opacity: .55; cursor: default; }
+  .dl[disabled]:hover { transform: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dl .shine { display: none; }
+    .dl .floor i { animation: none !important; }
+    .dl.is-you::before { animation: none; background: color-mix(in oklab, var(--c) 55%, transparent); }
+  }
+
+  .btn .sub { font-weight: 400; opacity: .55; }
+  .btn svg { flex: none; margin-right: .1rem; }
+  :is(a, button, input):focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  .quiet { color: var(--faint); font-size: var(--t-sm); }
+  .ulink { text-decoration: none; background-image: linear-gradient(var(--faint), var(--faint)); background-size: 100% 1px; background-repeat: no-repeat; background-position: 0 100%; transition: background-size 320ms var(--ease); }
+  .ulink:hover { background-size: 0% 1px; }
+
+  .rise { opacity: 0; transform: translateY(26px); }
+  .lit .rise { opacity: 1; transform: none; transition: opacity 1700ms var(--glide), transform 1700ms var(--glide); }
+  .lit .rise.d1 { transition-delay: 300ms; }
+
+  /* Full bleed: this is the moment the page changes ground, and an inset bar
+     would make it a decoration instead of a threshold. */
+  .strip { display: flex; height: clamp(64px, 10vw, 124px); width: 100vw; margin-left: 50%; translate: -50% 0; }
+  .strip i { display: block; height: 100%; transform: scaleX(0); transform-origin: left; }
+  .lit .strip i { animation: wipe 1800ms var(--glide) forwards; }
+  .strip i:nth-child(2) { animation-delay: 130ms; }
+  .strip i:nth-child(3) { animation-delay: 260ms; }
+  .strip i:nth-child(4) { animation-delay: 390ms; }
+  .strip i:nth-child(5) { animation-delay: 520ms; }
+  @keyframes wipe { to { transform: scaleX(1); } }
+
+  /* =============== the app, actually running ===============
+     Rebuilt against the real components rather than from memory. Every
+     colour here is a token lifted from src/styles.css, and the cards are the
+     shapes ChatView actually renders: a lettered options card, an inline
+     activity chip, a rounded composer. Two blues for the same reason the
+     app has two: --w-brand is the fill, --w-ink is the one that carries
+     words. test/palette.test.ts checks these against the real palette,
+     because a copy is a thing that drifts. */
+  .demo { --w-bg:#fff; --w-fg:#18181b; --w-muted:#f4f4f5; --w-mf:#68686f; --w-accent:#efeff1;
+          --w-brand:#5b6cff; --w-ink:#4a59e6; --w-soft:#eef0ff; --w-warn:#8f5a09; --w-ok:#1f7048;
+          --w-bd:rgba(18,18,21,.09);
+          margin-top: clamp(3rem, 6vw, 5rem); display: grid; grid-template-columns: minmax(0,1fr) auto; gap: clamp(1rem,2.4vw,2.4rem); align-items: end; }
+
+  .win { background: var(--w-bg); color: var(--w-fg); border: 1px solid var(--w-bd); border-radius: 12px;
+         box-shadow: 0 44px 100px -34px rgba(0,0,0,.5), 0 2px 10px rgba(0,0,0,.07);
+         display: grid; grid-template-rows: auto 1fr; overflow: hidden; height: clamp(430px, 54vw, 600px);
+         font-family: ui-sans-serif, -apple-system, sans-serif; }
+  .chrome { display: flex; align-items: center; gap: .48rem; padding: .68rem .85rem; border-bottom: 1px solid var(--w-bd); }
+  .chrome u { width: 11px; height: 11px; border-radius: 50%; }
+  .body2 { display: grid; grid-template-columns: 232px 1fr; min-height: 0; }
+
+  .side { border-right: 1px solid var(--w-bd); display: flex; flex-direction: column; min-height: 0; }
+  .sbhead { display: flex; align-items: center; gap: .5rem; padding: .7rem .8rem .5rem; font-size: .85rem; font-weight: 660; letter-spacing: -.015em; }
+  .sbhead .plus { margin-left: auto; color: var(--w-mf); font-size: 1.05rem; line-height: 1; }
+  .smark { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5px; width: 15px; height: 15px; }
+  .smark i { display: block; border-radius: 1px; }
+  .search { margin: 0 .6rem .45rem; border: 1px solid var(--w-bd); border-radius: 9px; padding: .34rem .6rem; font-size: .76rem; color: var(--w-mf); display: flex; align-items: center; gap: .4rem; }
+  .search::before { content: ""; width: 9px; height: 9px; border: 1.5px solid currentColor; border-radius: 50%; opacity: .75; }
+  .rows { padding: 0 .45rem; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+  .row { display: flex; gap: .55rem; align-items: center; width: 100%; text-align: left; background: none; border: 0; padding: .42rem .5rem; border-radius: 9px; cursor: pointer; font: inherit; transition: background 160ms; }
+  .row:hover { background: var(--w-accent); }
+  .row[aria-selected="true"] { background: var(--w-muted); }
+  .av { width: 32px; height: 32px; flex: none; display: block; }
+  .av svg { width: 100%; height: 100%; display: block; }
+  .rmid { min-width: 0; flex: 1; }
+  .rtop { display: flex; align-items: baseline; gap: .4rem; }
+  .rtop b { font-size: .8rem; font-weight: 640; letter-spacing: -.014em; }
+  .rtop i { margin-left: auto; font-style: normal; font-size: .68rem; color: var(--w-mf); }
+  .rprev { display: block; font-size: .73rem; color: var(--w-mf); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sbnav { margin-top: auto; border-top: 1px solid var(--w-bd); padding: .5rem .7rem; display: flex; flex-direction: column; gap: .3rem; }
+  .sbnav span { font-size: .75rem; color: var(--w-mf); }
+
+  .chat { display: grid; grid-template-rows: auto auto 1fr auto; min-height: 0; }
+  .chead { display: flex; align-items: center; gap: .55rem; padding: .6rem .85rem; border-bottom: 1px solid var(--w-bd); }
+  .chead .av { width: 26px; height: 26px; }
+  .chead b { font-size: .86rem; font-weight: 660; letter-spacing: -.016em; }
+  .chead i { font-style: normal; font-size: .78rem; color: var(--w-mf); margin-left: .3rem; }
+  .model { margin-left: auto; display: flex; align-items: center; gap: .3rem; font-size: .76rem; color: var(--w-fg); }
+  .model::before { content: "\2733"; color: #d97757; font-size: .74rem; }
+  .model::after { content: "\2304"; color: var(--w-mf); }
+
+  .msgs { padding: .9rem .95rem; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: .55rem; }
+  .when { text-align: center; font-size: .7rem; color: var(--w-mf); padding: .1rem 0 .4rem; }
+  .m { max-width: 78%; padding: .6rem .82rem; border-radius: 16px; font-size: .845rem; line-height: 1.52; animation: pop 380ms var(--glide) both; }
+  .m.bot { background: var(--w-muted); }
+  .m.you { background: var(--w-fg); color: #fff; align-self: flex-end; }
+  @keyframes pop { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+  /* An activity chip has no bubble at all, which is how the real one reads. */
+  .act { display: flex; align-items: center; gap: .4rem; padding: .1rem .15rem; font-size: .74rem; color: var(--w-mf); animation: pop 380ms var(--glide) both; }
+  .act::before { content: "\2713"; color: var(--w-ok); font-size: .8rem; }
+  .m.dots { display: flex; gap: 4px; align-items: center; padding: .7rem .8rem; width: max-content; max-width: none; }
+  .m.dots u { width: 5px; height: 5px; border-radius: 50%; background: #b6b9be; animation: bob 1.15s infinite; }
+  .m.dots u:nth-child(2) { animation-delay: .14s; }
+  .m.dots u:nth-child(3) { animation-delay: .28s; }
+  @keyframes bob { 0%, 62%, 100% { opacity: .32; transform: none; } 31% { opacity: 1; transform: translateY(-3px); } }
+
+  .card { width: 100%; max-width: 400px; border: 1px solid var(--w-bd); border-radius: 15px; background: var(--w-bg); padding: .85rem; animation: pop 380ms var(--glide) both; }
+  .card .k { font-size: .66rem; font-weight: 660; text-transform: uppercase; letter-spacing: .1em; color: var(--w-ink); }
+  .card.approval .k { color: var(--w-warn); }
+  .card .q { margin-top: .18rem; font-size: .84rem; font-weight: 640; letter-spacing: -.012em; }
+  .card .d { margin-top: .1rem; font-size: .76rem; color: var(--w-mf); line-height: 1.45; }
+  .opts { margin-top: .6rem; display: flex; flex-direction: column; gap: 2px; }
+  .opt { display: flex; align-items: center; gap: .6rem; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: .805rem; padding: .34rem .4rem; border-radius: 10px; cursor: pointer; color: var(--w-fg); transition: background 150ms; }
+  .opt:hover { background: var(--w-accent); }
+  .opt u { width: 21px; height: 21px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--w-muted); color: var(--w-mf); font-size: .66rem; font-weight: 660; text-decoration: none; }
+  .card.done .opt { opacity: .42; }
+  .card.done .opt.chosen { opacity: 1; background: var(--w-soft); color: var(--w-ink); }
+  .card.done .opt.chosen u { background: var(--w-ink); color: #fff; }
+  .card .own { margin-top: .45rem; border: 1px solid var(--w-bd); border-radius: 10px; padding: .38rem .6rem; font-size: .755rem; color: var(--w-mf); }
+
+  .comp { margin: 0 .95rem .95rem; border: 1px solid var(--w-bd); border-radius: 21px; padding: .32rem .38rem .32rem .6rem; display: flex; align-items: center; gap: .45rem; font-size: .8rem; color: var(--w-mf); }
+  .comp .ic { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .comp .ph { flex: 1; }
+  .comp .send { background: var(--w-muted); color: var(--w-mf); }
+  .cursor { display: inline-block; width: 2px; height: 1em; background: currentColor; vertical-align: -2px; animation: blinkcur 1s steps(2) infinite; }
+  @keyframes blinkcur { 50% { opacity: 0; } }
+
+  .phone { width: 236px; border-radius: 31px; padding: 9px; background: #1b1d21; box-shadow: 0 44px 90px -34px rgba(0,0,0,.55); flex: none; }
+  .pscreen { background: var(--w-bg); border-radius: 23px; overflow: hidden; height: 430px; display: grid; grid-template-rows: auto 1fr auto; color: var(--w-fg); }
+  .pbar { text-align: center; padding: .55rem 0 .4rem; font-size: .72rem; font-weight: 650; border-bottom: 1px solid var(--w-bd); }
+  .pbar em { display: block; font-size: .64rem; color: var(--w-mf); font-weight: 400; font-style: normal; }
+  .pmsgs { padding: .65rem; display: flex; flex-direction: column; justify-content: flex-end; gap: .38rem; overflow: hidden; }
+  .pmsgs .m { max-width: 88%; font-size: .73rem; padding: .42rem .58rem; border-radius: 13px; }
+  .pmsgs .card { padding: .55rem .6rem; border-radius: 12px; }
+  .pmsgs .card .q { font-size: .74rem; } .pmsgs .card .d { font-size: .66rem; }
+  .pmsgs .opt { font-size: .7rem; padding: .26rem .3rem; }
+  .pmsgs .opt u { width: 17px; height: 17px; font-size: .58rem; }
+  .pmsgs .own { font-size: .66rem; }
+  .pfoot { padding: .45rem .65rem .65rem; }
+  .pfoot div { border: 1px solid var(--w-bd); border-radius: 15px; padding: .36rem .65rem; font-size: .7rem; color: var(--w-mf); }
+  .demo-cap { margin-top: 1.1rem; }
+  .tabs { display: none; gap: .3rem; padding: .5rem .6rem; border-bottom: 1px solid var(--w-bd); overflow-x: auto; }
+  .tabs button { font: inherit; font-size: .75rem; font-weight: 620; white-space: nowrap; padding: .28rem .68rem; border-radius: 20px; border: 1px solid var(--w-bd); background: var(--w-bg); color: var(--w-mf); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--w-fg); border-color: var(--w-fg); color: #fff; }
+
+  /* =============== who they are ===============
+     The agents arrive one at a time and say hello. A spring on the tile, a
+     beat, then the line types out, then the next one. Sequenced rather than
+     simultaneous, because four things appearing at once is a grid and four
+     things appearing in turn is an introduction. */
+  .cast { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(1rem, 2.2vw, 2rem); margin-top: clamp(3rem, 6vw, 5rem); }
+  @media (max-width: 900px) { .cast { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .cast { grid-template-columns: 1fr; } }
+
+  .ag { margin: 0; display: flex; flex-direction: column; align-items: flex-start; gap: .85rem; }
+  .ag .tile { width: clamp(64px, 7.4vw, 92px); height: clamp(64px, 7.4vw, 92px); display: block; opacity: 0; transform: scale(.72) rotate(-9deg); }
+  .ag.in .tile { opacity: 1; transform: none; transition: transform 1100ms var(--spring), opacity 460ms linear; animation: float 6s ease-in-out 1.2s infinite; }
+  @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -5px; } }
+  .ag:nth-child(2).in .tile { animation-delay: 1.9s; }
+  .ag:nth-child(3).in .tile { animation-delay: 3.4s; }
+  .ag:nth-child(4).in .tile { animation-delay: 5s; }
+  /* The creature's eyes are white shapes inside the body group. */
+  .ag .tile g > ellipse, .ag .tile g > circle { transform-origin: center; transform-box: fill-box; animation: blink 6.5s infinite; }
+  .ag:nth-child(2) .tile g > ellipse, .ag:nth-child(2) .tile g > circle { animation-delay: 1.7s; }
+  .ag:nth-child(3) .tile g > ellipse, .ag:nth-child(3) .tile g > circle { animation-delay: 3.1s; }
+  .ag:nth-child(4) .tile g > ellipse, .ag:nth-child(4) .tile g > circle { animation-delay: 4.6s; }
+  @keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.08); } }
+
+  .ag .who { font-size: var(--t-sm); font-weight: 660; color: var(--fg); letter-spacing: -0.016em; line-height: 1.3; }
+  .ag .who em { display: block; font-weight: 400; color: var(--faint); font-size: .82rem; letter-spacing: 0; }
+
+  .say {
+    position: relative; margin: 0; min-height: 5.6em;
+    border: 1px solid var(--rule); border-radius: 2px;
+    padding: .8rem .9rem; font-size: .9rem; line-height: 1.5; color: var(--soft);
+    opacity: 0; transform: translateY(10px);
+  }
+  .ag.said .say { opacity: 1; transform: none; transition: opacity 1100ms var(--glide), transform 1100ms var(--glide); }
+  /* the tail, pointing back up at whoever is talking */
+  .say::before, .say::after {
+    content: ""; position: absolute; left: 22px; width: 0; height: 0;
+    border-left: 7px solid transparent; border-right: 7px solid transparent;
+  }
+  .say::before { top: -8px; border-bottom: 8px solid var(--rule); }
+  .say::after  { top: -7px; border-bottom: 8px solid var(--bg); }
+
+  /* ---------- engines ---------- */
+  .engines { border-top: 1px solid var(--rule); margin-top: 3.2rem; }
+  .engine { display: grid; grid-template-columns: 1.1fr 1.7fr auto; gap: 1.5rem; align-items: baseline; padding: 1.2rem 0; border-bottom: 1px solid var(--rule); opacity: 0; transform: translateY(16px); }
+  .lit .engine { opacity: 1; transform: none; transition: opacity 1300ms var(--glide), transform 1300ms var(--glide); }
+  .lit .engine:nth-child(2) { transition-delay: 130ms; }
+  .lit .engine:nth-child(3) { transition-delay: 260ms; }
+  .lit .engine:nth-child(4) { transition-delay: 390ms; }
+  .lit .engine:nth-child(5) { transition-delay: 520ms; }
+  .lit .engine:nth-child(6) { transition-delay: 650ms; }
+  .engine .name { font-weight: 630; color: var(--fg); letter-spacing: -0.014em; }
+  .engine .how { color: var(--soft); font-size: var(--t-sm); }
+  .chip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .61rem; letter-spacing: .14em; text-transform: uppercase; padding: .24rem .55rem; white-space: nowrap; border: 1px solid var(--rule); color: var(--faint); }
+  .chip.tools { background: var(--green); border-color: var(--green); color: #08210a; }
+  @media (max-width: 760px) { .engine { grid-template-columns: 1fr auto; } .engine .how { grid-column: 1 / -1; } }
+
+  /* ---------- facts ---------- */
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: 4rem; }
+  .fact { background: var(--bg); padding: 1.7rem 1.6rem; transition: background-color 1300ms linear, transform 900ms var(--glide); }
+  .fact:hover { transform: translateY(-4px); }
+  .fact h3 { margin: .6rem 0 .5rem; font-size: var(--t-body); font-weight: 650; letter-spacing: -0.016em; color: var(--fg); }
+  .fact p { margin: 0; font-size: var(--t-sm); }
+  .fact .bar { display: block; width: 36px; height: 6px; transform: scaleX(0); transform-origin: left; transition: transform 1800ms var(--glide); }
+  .lit .fact .bar { transform: scaleX(1); }
+  .lit .fact:nth-child(2) .bar { transition-delay: 170ms; }
+  .lit .fact:nth-child(3) .bar { transition-delay: 340ms; }
+  .lit .fact:nth-child(4) .bar { transition-delay: 510ms; }
+
+  .signup { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 2.1rem; max-width: 30rem; }
+  .signup input { flex: 1 1 15rem; background: transparent; color: var(--fg); border: 1px solid var(--rule); padding: .95rem 1.05rem; font: inherit; font-size: var(--t-sm); }
+  .signup input::placeholder { color: var(--faint); }
+  .signup button { background: var(--fg); color: var(--bg); border: 0; padding: .95rem 1.6rem; font: inherit; font-size: var(--t-sm); font-weight: 620; cursor: pointer; transition: transform 300ms var(--ease); }
+  .signup button:hover { transform: translateY(-3px); }
+  .signup button:active { transform: translateY(-1px) scale(.985); transition-duration: 140ms; }
+  .ghbtn { background: var(--fg); color: var(--bg); padding: .95rem 1.6rem; font-size: var(--t-sm); font-weight: 620; text-decoration: none; border-bottom: 0; transition: transform 300ms var(--ease); }
+  .ghbtn:hover { transform: translateY(-3px); color: var(--bg); }
+  .ghbtn:active { transform: translateY(-1px) scale(.985); transition-duration: 140ms; }
+
+  footer { padding: 4.5rem 0 5.5rem; border-top: 1px solid var(--rule); }
+  .foot { display: flex; flex-wrap: wrap; gap: 1.4rem 2.4rem; justify-content: space-between; align-items: baseline; }
+  footer a { color: var(--soft); text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+
+  /* Kept last on purpose. These were losing to later rules of the same
+     specificity, which is how a 218px sidebar survived on a 390px screen. */
+  @media (max-width: 980px) {
+    .demo { grid-template-columns: minmax(0, 1fr); }
+    /* The phone goes, and so does the caption that points at it, which
+       otherwise says "right" about something no longer on screen. */
+    .phone, .demo-cap { display: none; }
+  }
+  @media (max-width: 660px) {
+    .body2 { grid-template-columns: 1fr; }
+    .side { display: none; }
+    .tabs { display: flex; }
+  }
+
+  /* The frame costs the measure a little width on both sides, so the
+     phone gets a notch smaller type. It still fits more words per line
+     than it did before the rail existed. */
+  @media (max-width: 620px) {
+    .beat { font-size: clamp(2.05rem, 5.3vw, 2.6rem); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+    #stage, #why { height: auto; padding: 8rem 0; }
+    .pin { position: static; height: auto; gap: 3rem; place-items: start; }
+    .markwrap, .herotext, .beats { grid-area: auto; opacity: 1 !important; transform: none !important; }
+    .beats { height: auto; display: grid; gap: 1.4rem; }
+    .beat { position: static; opacity: 1 !important; transform: none !important; animation: none !important; }
+    .mark b { opacity: 1 !important; transform: none !important; animation: none !important; }
+    .hint, .rail, .pass { display: none; }
+    .ln > i, .rise, .engine { opacity: 1 !important; transform: none !important; animation: none !important; }
+    .ag .tile, .say { opacity: 1 !important; transform: none !important; }
+    .ag .tile, .ag .tile * { animation: none !important; }
+    .strip i, .fact .bar { transform: scaleX(1); }
+  }
+</style>
+
+<!-- ===================== the opening ===================== -->
+<section id="stage">
+  <div class="pin">
+    <div class="markwrap">
+      <!-- The mark's own geometry. Outer frame first, then the inner detail,
+           each piece sliding in from the side it belongs to. -->
+      <div class="mark" aria-label="The Bloks mark assembling">
+        <b style="left:0;top:0;width:22%;height:77.3%;background:var(--blue);--ox:-160px;--oy:0"></b>
+        <b style="left:26.3%;top:0;width:73.7%;height:18.8%;background:var(--orange);--ox:0;--oy:-150px"></b>
+        <b style="left:78%;top:22.6%;width:22%;height:77.3%;background:var(--purple);--ox:160px;--oy:0"></b>
+        <b style="left:0;top:81.1%;width:73.7%;height:18.8%;background:var(--red);--ox:0;--oy:150px"></b>
+        <b style="left:25.2%;top:25.7%;width:10.7%;height:37.5%;background:var(--cyan);--ox:-80px;--oy:-44px"></b>
+        <b style="left:37.9%;top:25.7%;width:35.8%;height:9.1%;background:var(--coral);--ox:66px;--oy:-66px"></b>
+        <b style="left:63%;top:36.7%;width:10.7%;height:37.5%;background:var(--green);--ox:80px;--oy:44px"></b>
+        <b style="left:25.2%;top:65.1%;width:35.8%;height:9.1%;background:var(--amber);--ox:-66px;--oy:66px"></b>
+      </div>
+    </div>
+
+    <div class="herotext">
+      <div class="hero-copy">
+      <h1 class="d-2xl">
+        <span class="ln"><i>Your agents</i></span>
+        <span class="ln"><i>should belong</i></span>
+        <span class="ln"><i>to you.</i></span>
+      </h1>
+      <p class="lede">Not to a company. Not to a subscription. To you, on the machine in front of you.</p>
+      <div class="dl-grid">
+        <a class="dl" data-os="mac" style="--c: var(--blue)" href="/download/mac"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M11.18 8.5c-.02-1.72 1.4-2.55 1.47-2.59-.8-1.17-2.05-1.33-2.5-1.35-1.06-.11-2.07.62-2.61.62-.54 0-1.37-.6-2.25-.59-1.16.02-2.23.67-2.83 1.71-1.2 2.09-.31 5.19.86 6.89.58.83 1.27 1.76 2.17 1.73.87-.04 1.2-.56 2.25-.56 1.05 0 1.35.56 2.27.54.94-.02 1.53-.85 2.1-1.68.66-.96.93-1.89.95-1.94-.02-.01-1.82-.7-1.84-2.78ZM9.47 3.53c.48-.58.8-1.39.71-2.19-.69.03-1.52.46-2.01 1.03-.44.51-.83 1.33-.72 2.12.77.06 1.55-.39 2.02-.96Z"/></svg><span class="label">Download for macOS <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <a class="dl" data-os="windows" style="--c: var(--orange)" href="/download/windows"><svg viewBox="0 0 16 16" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M0 2.27 6.53 1.4v6.3H0V2.27ZM7.32 1.29 16 0v7.62H7.32V1.29ZM0 8.42h6.53v6.31L0 13.84V8.42Zm7.32 0H16V16l-8.68-1.28V8.42Z"/></svg><span class="label">Download for Windows <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <a class="dl" data-os="linux" style="--c: var(--green)" href="/download/linux"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 0C5.9 0 4.6 1.6 4.6 3.6c0 1-.3 2-.8 3C3 7.9 2.4 9.3 2.4 10.8c0 .9.3 1.7.8 2.3-.4.3-.7.8-.7 1.3 0 1 .9 1.6 2 1.6.8 0 1.5-.3 2-.7h3c.5.4 1.2.7 2 .7 1.1 0 2-.6 2-1.6 0-.5-.3-1-.7-1.3.5-.6.8-1.4.8-2.3 0-1.5-.6-2.9-1.4-4.2-.5-1-.8-2-.8-3C11.4 1.6 10.1 0 8 0ZM6.4 3.4c.3 0 .6.3.6.7s-.3.7-.6.7-.6-.3-.6-.7.3-.7.6-.7Zm3.2 0c.3 0 .6.3.6.7s-.3.7-.6.7-.6-.3-.6-.7.3-.7.6-.7ZM8 5.2c.7 0 1.6.5 1.6 1S8.7 7 8 7s-1.6-.3-1.6-.8.9-1 1.6-1Z"/></svg><span class="label">Download for Linux <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <button class="dl" data-os="ios" style="--c: var(--purple)" disabled data-soon="iOS"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M11.18 8.5c-.02-1.72 1.4-2.55 1.47-2.59-.8-1.17-2.05-1.33-2.5-1.35-1.06-.11-2.07.62-2.61.62-.54 0-1.37-.6-2.25-.59-1.16.02-2.23.67-2.83 1.71-1.2 2.09-.31 5.19.86 6.89.58.83 1.27 1.76 2.17 1.73.87-.04 1.2-.56 2.25-.56 1.05 0 1.35.56 2.27.54.94-.02 1.53-.85 2.1-1.68.66-.96.93-1.89.95-1.94-.02-.01-1.82-.7-1.84-2.78ZM9.47 3.53c.48-.58.8-1.39.71-2.19-.69.03-1.52.46-2.01 1.03-.44.51-.83 1.33-.72 2.12.77.06 1.55-.39 2.02-.96Z"/></svg><span class="label">Download for iOS <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></button>
+      </div>
+      <p class="quiet" style="margin-top:1.1rem">Free forever. No account.</p>
+      </div>
+    </div>
+
+    <div class="hint" aria-hidden="true"><span class="mono">Scroll</span><i></i></div>
+  </div>
+</section>
+
+<!-- ===================== why ===================== -->
+<section id="why" aria-label="Why Bloks exists">
+  <div class="pin">
+    <!-- The mark's four outer bars, blown up to frame the whole page: one
+         arrives per belief, each travelling the length of the edge it
+         belongs to, which traces the pinwheel clockwise. When the words
+         are spent they converge to mark size, the inner four appear to
+         complete the logo, and the whole thing scales inward. Before
+         .beats in the DOM so the text always paints over it. -->
+    <div class="rail" aria-hidden="true">
+      <span class="rb rb1"><i style="background:var(--blue)"></i></span>
+      <span class="rb rb2"><i style="background:var(--orange)"></i></span>
+      <span class="rb rb3"><i style="background:var(--purple)"></i></span>
+      <span class="rb rb4"><i style="background:var(--red)"></i></span>
+      <!-- The inner pinwheel, at rest at mark size. Sized here rather than
+           in script, so the geometry has exactly one home. -->
+      <div class="core">
+        <b style="left:25.2%;top:25.7%;width:10.7%;height:37.5%;background:var(--cyan)"></b>
+        <b style="left:37.9%;top:25.7%;width:35.8%;height:9.1%;background:var(--coral)"></b>
+        <b style="left:63%;top:36.7%;width:10.7%;height:37.5%;background:var(--green)"></b>
+        <b style="left:25.2%;top:65.1%;width:35.8%;height:9.1%;background:var(--amber)"></b>
+      </div>
+    </div>
+    <div class="beats">
+      <p class="beat">Everything that knows you<br>lives somewhere else.</p>
+      <p class="beat">Your work. Your habits. Your half&#8209;finished thoughts.<br>All of it a guest in someone else's building.</p>
+      <p class="beat">They set the rent. They read the mail.<br>They can ask you to leave.</p>
+      <p class="beat last">We think that is the wrong way round.</p>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+
+  <!-- ===================== how ===================== -->
+  <section data-reveal data-flip>
+    <div class="strip" aria-hidden="true">
+      <i style="background:var(--blue);flex:22"></i>
+      <i style="background:var(--orange);flex:34"></i>
+      <i style="background:var(--red);flex:12"></i>
+      <i style="background:var(--purple);flex:18"></i>
+      <i style="background:var(--green);flex:8"></i>
+    </div>
+    <div style="height:clamp(4rem,8vw,7rem)"></div>
+    <p class="label"><span>How</span><hr></p>
+    <h2 class="d-xl">
+      <span class="ln"><i>So none of it</i></span>
+      <span class="ln"><i>leaves your Mac.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.5rem">
+      <p>Bloks runs entirely on your Mac. Your agents, your conversations and your keys sit in <strong>~/.bloks</strong> on your disk. There is no Bloks account, because there is no Bloks server to hold <em>one</em>.</p>
+      <p>The only thing that leaves this machine is the engine you picked, talking to the provider you already pay. Bloks is not in the middle.</p>
+    </div>
+
+    <div class="facts">
+      <div class="fact"><span class="bar" style="background:var(--blue)"></span><h3>No account</h3><p>Bloks never asks who you are. No sign-up, no email, nothing to make.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--orange)"></span><h3>It asks first</h3><p>When an agent wants to do something that matters, it stops and waits for you.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--red)"></span><h3>Nothing hidden</h3><p>A skill is just markdown. You read all of it before it goes near an agent.</p></div>
+      <div class="fact"><span class="bar" style="background:var(--purple)"></span><h3>Yours to keep</h3><p>Read every line, build it yourself, run it at any company size. The one thing you cannot do is sell Bloks itself.</p></div>
+    </div>
+  </section>
+
+  <!-- ===================== who ===================== -->
+  <section data-reveal id="cast">
+    <span class="pass pass-a" aria-hidden="true"></span>
+    <span class="pass pass-b" aria-hidden="true"></span>
+    <p class="label"><span>Who</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Describe the job.</i></span>
+      <span class="ln"><i>Meet them a minute later.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>Pick a role and it is made on the spot, named for the job, carrying that role&rsquo;s skills. Or describe the job in a sentence and Bloks proposes the name, yours to change. Either way the agent opens with one question about how you want to work together, then gets on with it.</p>
+    </div>
+    <div class="cast">
+      <figure class="ag" data-k="chief" data-say="I&rsquo;m your chief of staff. I&rsquo;ll hold the whole picture of your week: your commitments, and what&rsquo;s quietly slipping. Then I&rsquo;ll brief you on what actually needs you.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_0"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_0)"><rect width="100" height="100" fill="#a468f7"></rect><g fill="#8051c1"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 14.00h9.00v4.50h-9.00ZM45.50 18.50h9.00v4.50h-9.00ZM41.00 23.00h18.00v4.50h-18.00ZM41.00 27.50h18.00v4.50h-18.00ZM36.50 32.00h27.00v4.50h-27.00ZM32.00 36.50h36.00v4.50h-36.00ZM23.00 41.00h54.00v4.50h-54.00ZM14.00 45.50h72.00v4.50h-72.00ZM14.00 50.00h72.00v4.50h-72.00ZM23.00 54.50h54.00v4.50h-54.00ZM32.00 59.00h36.00v4.50h-36.00ZM36.50 63.50h27.00v4.50h-27.00ZM41.00 68.00h18.00v4.50h-18.00ZM41.00 72.50h18.00v4.50h-18.00ZM45.50 77.00h9.00v4.50h-9.00ZM45.50 81.50h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Chief of Staff<em>Keeps the week on track</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="analyst" data-say="Give me a topic and I&rsquo;ll come back with a tight, sourced brief. Primary sources first, and I&rsquo;ll tell you where the evidence is thin.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_1"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_1)"><rect width="100" height="100" fill="#4c86f5"></rect><g fill="#3b69bf"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 18.50h9.00v4.50h-9.00ZM41.00 23.00h18.00v4.50h-18.00ZM36.50 27.50h27.00v4.50h-27.00ZM32.00 32.00h36.00v4.50h-36.00ZM27.50 36.50h45.00v4.50h-45.00ZM23.00 41.00h54.00v4.50h-54.00ZM18.50 45.50h63.00v4.50h-63.00ZM18.50 50.00h63.00v4.50h-63.00ZM23.00 54.50h54.00v4.50h-54.00ZM27.50 59.00h45.00v4.50h-45.00ZM32.00 63.50h36.00v4.50h-36.00ZM36.50 68.00h27.00v4.50h-27.00ZM41.00 72.50h18.00v4.50h-18.00ZM45.50 77.00h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Research Analyst<em>Deep dives, tight briefs</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="growth" data-say="I&rsquo;ll run your marketing: campaigns, copy, and experiments with a real hypothesis behind each one. I&rsquo;ll tell you when something loses.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_2"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_2)"><rect width="100" height="100" fill="#ff9432"></rect><g fill="#c77327"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M45.50 14.00h9.00v4.50h-9.00ZM45.50 18.50h9.00v4.50h-9.00ZM23.00 23.00h4.50v4.50h-4.50ZM45.50 23.00h9.00v4.50h-9.00ZM72.50 23.00h4.50v4.50h-4.50ZM23.00 27.50h9.00v4.50h-9.00ZM36.50 27.50h27.00v4.50h-27.00ZM68.00 27.50h9.00v4.50h-9.00ZM27.50 32.00h45.00v4.50h-45.00ZM27.50 36.50h45.00v4.50h-45.00ZM23.00 41.00h54.00v4.50h-54.00ZM14.00 45.50h72.00v4.50h-72.00ZM14.00 50.00h72.00v4.50h-72.00ZM23.00 54.50h54.00v4.50h-54.00ZM27.50 59.00h45.00v4.50h-45.00ZM27.50 63.50h45.00v4.50h-45.00ZM23.00 68.00h9.00v4.50h-9.00ZM36.50 68.00h27.00v4.50h-27.00ZM68.00 68.00h9.00v4.50h-9.00ZM23.00 72.50h4.50v4.50h-4.50ZM45.50 72.50h9.00v4.50h-9.00ZM72.50 72.50h4.50v4.50h-4.50ZM45.50 77.00h9.00v4.50h-9.00ZM45.50 81.50h9.00v4.50h-9.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Growth Marketer<em>Campaigns, copy, experiments</em></figcaption>
+        <p class="say"></p>
+      </figure>
+      <figure class="ag" data-k="inbox" data-say="I&rsquo;ll keep your inbox at zero: triaging what arrives, drafting the routine replies, and only bringing you what actually needs you.">
+        <svg viewBox="0 0 100 100" class="tile" aria-hidden="true"><defs><clipPath id="_cast_3"><rect width="100" height="100" rx="24"></rect></clipPath></defs><g clip-path="url(#_cast_3)"><rect width="100" height="100" fill="#3bc76b"></rect><g fill="#2e9b53"><rect x="5" y="85" width="5" height="5"></rect><rect x="25" y="85" width="5" height="5"></rect><rect x="45" y="85" width="5" height="5"></rect><rect x="65" y="85" width="5" height="5"></rect><rect x="85" y="85" width="5" height="5"></rect><rect x="0" y="90" width="5" height="5"></rect><rect x="10" y="90" width="5" height="5"></rect><rect x="20" y="90" width="5" height="5"></rect><rect x="30" y="90" width="5" height="5"></rect><rect x="40" y="90" width="5" height="5"></rect><rect x="50" y="90" width="5" height="5"></rect><rect x="60" y="90" width="5" height="5"></rect><rect x="70" y="90" width="5" height="5"></rect><rect x="80" y="90" width="5" height="5"></rect><rect x="90" y="90" width="5" height="5"></rect><rect x="5" y="95" width="5" height="5"></rect><rect x="15" y="95" width="5" height="5"></rect><rect x="25" y="95" width="5" height="5"></rect><rect x="35" y="95" width="5" height="5"></rect><rect x="45" y="95" width="5" height="5"></rect><rect x="55" y="95" width="5" height="5"></rect><rect x="65" y="95" width="5" height="5"></rect><rect x="75" y="95" width="5" height="5"></rect><rect x="85" y="95" width="5" height="5"></rect><rect x="95" y="95" width="5" height="5"></rect></g></g><path d="M32.00 27.50h22.50v4.50h-22.50ZM27.50 32.00h31.50v4.50h-31.50ZM63.50 32.00h13.50v4.50h-13.50ZM23.00 36.50h58.50v4.50h-58.50ZM18.50 41.00h63.00v4.50h-63.00ZM18.50 45.50h63.00v4.50h-63.00ZM18.50 50.00h63.00v4.50h-63.00ZM18.50 54.50h63.00v4.50h-63.00ZM23.00 59.00h54.00v4.50h-54.00ZM27.50 63.50h45.00v4.50h-45.00Z" fill="#101013" shape-rendering="crispEdges"></path><g transform="translate(50 50)"><ellipse cx="-8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(-8 -8 -5.25)"></ellipse><ellipse cx="8" cy="-5.25" rx="4" ry="6.5" fill="#fff" transform="rotate(8 8 -5.25)"></ellipse><path d="M-6 5.75 Q0 9.75 6 5.75" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>
+        <figcaption class="who">Inbox Manager<em>Keeps the inbox at zero</em></figcaption>
+        <p class="say"></p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== what: the app itself ===================== -->
+  <section data-reveal id="app">
+    <p class="label"><span>What</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>One agent is useful.</i></span>
+      <span class="ln"><i>Six is a company.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>Give one a job and it starts. Add another when the work outgrows it: one on the launch, one on research, one holding the inbox at zero. They run at the same time, pull each other into a room when the work overlaps, and the one you made most senior has the last word.</p>
+      <p>Everything they do lands in a thread you can read: the files they made, the commands they ran, and the one decision they need from you. Answer it at your desk, or from your pocket.</p>
+    </div>
+
+    <div class="shots rise d1">
+      <figure class="mac">
+        <span class="lid">
+          <span class="screen">
+            <img src="/assets/hero.png" alt="The Bloks Mac app: a conversation with an agent, its Local VM desktop open beside it" width="2800" height="1800" loading="lazy" />
+            <i class="glare" aria-hidden="true"></i>
+          </span>
+        </span>
+        <span class="base" aria-hidden="true"><i></i></span>
+      </figure>
+      <figure class="ph">
+        <span class="glass"><i class="glare" aria-hidden="true"></i><img src="/assets/phone-chat.png" alt="The Bloks iPhone app: a chat with Head of Marketing, an approval card waiting" width="1206" height="2622" loading="lazy" /></span>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== engines ===================== -->
+  <section data-reveal>
+    <p class="label"><span>Engines</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Runs on what</i></span>
+      <span class="ln"><i>you already pay for.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>Bring the agent you already run, or the key you already pay for. Connect the apps your work lives in. Bloks is the room they all work in.</p>
+    </div>
+
+    <div class="belt rise d1">
+      <div class="beltrow">
+        <p class="mono beltlabel">Models and CLIs <span>bring the one you already use</span></p>
+        <div class="track"><div class="run"><span class="chipx" style="--c:#d97757"><i style="background:#d97757">C</i>Claude Code</span><span class="chipx" style="--c:#111318"><i style="background:#111318">O</i>Codex</span><span class="chipx" style="--c:#3d7bf5"><i style="background:#3d7bf5">G</i>Gemini CLI</span><span class="chipx" style="--c:#111318"><i style="background:#111318">X</i>Grok</span><span class="chipx" style="--c:#7b61ff"><i style="background:#7b61ff">O</i>OpenCode</span><span class="chipx" style="--c:#28a86b"><i style="background:#28a86b">A</i>Antigravity</span><span class="chipx" style="--c:#0a66ff"><i style="background:#0a66ff">L</i>Llama</span><span class="chipx" style="--c:#4d6bfe"><i style="background:#4d6bfe">D</i>DeepSeek</span><span class="chipx" style="--c:#ff7000"><i style="background:#ff7000">M</i>Mistral</span><span class="chipx" style="--c:#111318"><i style="background:#111318">K</i>Kimi</span><span class="chipx" style="--c:#f55036"><i style="background:#f55036">G</i>Groq</span><span class="chipx" style="--c:#615ced"><i style="background:#615ced">Q</i>Qwen</span><span class="chipx" style="--c:#6467f2"><i style="background:#6467f2">R</i>OpenRouter</span><span class="chipx" style="--c:#111318"><i style="background:#111318">O</i>Ollama</span><span class="chipx" style="--c:#d97757"><i style="background:#d97757">C</i>Claude Code</span><span class="chipx" style="--c:#111318"><i style="background:#111318">O</i>Codex</span><span class="chipx" style="--c:#3d7bf5"><i style="background:#3d7bf5">G</i>Gemini CLI</span><span class="chipx" style="--c:#111318"><i style="background:#111318">X</i>Grok</span><span class="chipx" style="--c:#7b61ff"><i style="background:#7b61ff">O</i>OpenCode</span><span class="chipx" style="--c:#28a86b"><i style="background:#28a86b">A</i>Antigravity</span><span class="chipx" style="--c:#0a66ff"><i style="background:#0a66ff">L</i>Llama</span><span class="chipx" style="--c:#4d6bfe"><i style="background:#4d6bfe">D</i>DeepSeek</span><span class="chipx" style="--c:#ff7000"><i style="background:#ff7000">M</i>Mistral</span><span class="chipx" style="--c:#111318"><i style="background:#111318">K</i>Kimi</span><span class="chipx" style="--c:#f55036"><i style="background:#f55036">G</i>Groq</span><span class="chipx" style="--c:#615ced"><i style="background:#615ced">Q</i>Qwen</span><span class="chipx" style="--c:#6467f2"><i style="background:#6467f2">R</i>OpenRouter</span><span class="chipx" style="--c:#111318"><i style="background:#111318">O</i>Ollama</span></div></div>
+      </div>
+      <div class="beltrow">
+        <p class="mono beltlabel">Apps and tools <span>connect them from the chat</span></p>
+        <div class="track right"><div class="run"><span class="chipx" style="--c:#4a154b"><i style="background:#4a154b">S</i>Slack</span><span class="chipx" style="--c:#ea4335"><i style="background:#ea4335">M</i>Gmail</span><span class="chipx" style="--c:#111318"><i style="background:#111318">G</i>GitHub</span><span class="chipx" style="--c:#1a73e8"><i style="background:#1a73e8">C</i>Google Calendar</span><span class="chipx" style="--c:#111318"><i style="background:#111318">N</i>Notion</span><span class="chipx" style="--c:#5e6ad2"><i style="background:#5e6ad2">L</i>Linear</span><span class="chipx" style="--c:#0f9d58"><i style="background:#0f9d58">S</i>Google Sheets</span><span class="chipx" style="--c:#fbbc04"><i style="background:#fbbc04">D</i>Google Drive</span><span class="chipx" style="--c:#0052cc"><i style="background:#0052cc">J</i>Jira</span><span class="chipx" style="--c:#f24e1e"><i style="background:#f24e1e">F</i>Figma</span><span class="chipx" style="--c:#635bff"><i style="background:#635bff">S</i>Stripe</span><span class="chipx" style="--c:#ff7a59"><i style="background:#ff7a59">H</i>HubSpot</span><span class="chipx" style="--c:#5865f2"><i style="background:#5865f2">D</i>Discord</span><span class="chipx" style="--c:#0b5cff"><i style="background:#0b5cff">Z</i>Zoom</span><span class="chipx" style="--c:#fcb400"><i style="background:#fcb400">A</i>Airtable</span><span class="chipx" style="--c:#00a1e0"><i style="background:#00a1e0">S</i>Salesforce</span><span class="chipx" style="--c:#28a86b"><i style="background:#28a86b">+</i>Any MCP server</span><span class="chipx" style="--c:#4a154b"><i style="background:#4a154b">S</i>Slack</span><span class="chipx" style="--c:#ea4335"><i style="background:#ea4335">M</i>Gmail</span><span class="chipx" style="--c:#111318"><i style="background:#111318">G</i>GitHub</span><span class="chipx" style="--c:#1a73e8"><i style="background:#1a73e8">C</i>Google Calendar</span><span class="chipx" style="--c:#111318"><i style="background:#111318">N</i>Notion</span><span class="chipx" style="--c:#5e6ad2"><i style="background:#5e6ad2">L</i>Linear</span><span class="chipx" style="--c:#0f9d58"><i style="background:#0f9d58">S</i>Google Sheets</span><span class="chipx" style="--c:#fbbc04"><i style="background:#fbbc04">D</i>Google Drive</span><span class="chipx" style="--c:#0052cc"><i style="background:#0052cc">J</i>Jira</span><span class="chipx" style="--c:#f24e1e"><i style="background:#f24e1e">F</i>Figma</span><span class="chipx" style="--c:#635bff"><i style="background:#635bff">S</i>Stripe</span><span class="chipx" style="--c:#ff7a59"><i style="background:#ff7a59">H</i>HubSpot</span><span class="chipx" style="--c:#5865f2"><i style="background:#5865f2">D</i>Discord</span><span class="chipx" style="--c:#0b5cff"><i style="background:#0b5cff">Z</i>Zoom</span><span class="chipx" style="--c:#fcb400"><i style="background:#fcb400">A</i>Airtable</span><span class="chipx" style="--c:#00a1e0"><i style="background:#00a1e0">S</i>Salesforce</span><span class="chipx" style="--c:#28a86b"><i style="background:#28a86b">+</i>Any MCP server</span></div></div>
+      </div>
+    </div>
+
+    <div class="col rise d1" style="margin-top:2.8rem">
+      <p>Switch an agent&rsquo;s engine mid&#8209;conversation and it keeps the thread. Ask it to use an app it cannot reach yet and a sign&#8209;in card appears in the chat.</p>
+    </div>
+  </section>
+
+  <!-- ===================== download ===================== -->
+  <section id="download" data-reveal>
+    <p class="label"><span>Install</span><hr></p>
+    <h2 class="d-xl">
+      <span class="ln"><i>Ten seconds,</i></span>
+      <span class="ln"><i>then say hello.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.5rem">
+      <p>Download it, drag it in, say hello. Free forever, and no account to make.</p>
+      <div class="dl-grid">
+        <a class="dl" data-os="mac" style="--c: var(--blue)" href="/download/mac"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M11.18 8.5c-.02-1.72 1.4-2.55 1.47-2.59-.8-1.17-2.05-1.33-2.5-1.35-1.06-.11-2.07.62-2.61.62-.54 0-1.37-.6-2.25-.59-1.16.02-2.23.67-2.83 1.71-1.2 2.09-.31 5.19.86 6.89.58.83 1.27 1.76 2.17 1.73.87-.04 1.2-.56 2.25-.56 1.05 0 1.35.56 2.27.54.94-.02 1.53-.85 2.1-1.68.66-.96.93-1.89.95-1.94-.02-.01-1.82-.7-1.84-2.78ZM9.47 3.53c.48-.58.8-1.39.71-2.19-.69.03-1.52.46-2.01 1.03-.44.51-.83 1.33-.72 2.12.77.06 1.55-.39 2.02-.96Z"/></svg><span class="label">Download for macOS <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <a class="dl" data-os="windows" style="--c: var(--orange)" href="/download/windows"><svg viewBox="0 0 16 16" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M0 2.27 6.53 1.4v6.3H0V2.27ZM7.32 1.29 16 0v7.62H7.32V1.29ZM0 8.42h6.53v6.31L0 13.84V8.42Zm7.32 0H16V16l-8.68-1.28V8.42Z"/></svg><span class="label">Download for Windows <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <a class="dl" data-os="linux" style="--c: var(--green)" href="/download/linux"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 0C5.9 0 4.6 1.6 4.6 3.6c0 1-.3 2-.8 3C3 7.9 2.4 9.3 2.4 10.8c0 .9.3 1.7.8 2.3-.4.3-.7.8-.7 1.3 0 1 .9 1.6 2 1.6.8 0 1.5-.3 2-.7h3c.5.4 1.2.7 2 .7 1.1 0 2-.6 2-1.6 0-.5-.3-1-.7-1.3.5-.6.8-1.4.8-2.3 0-1.5-.6-2.9-1.4-4.2-.5-1-.8-2-.8-3C11.4 1.6 10.1 0 8 0ZM6.4 3.4c.3 0 .6.3.6.7s-.3.7-.6.7-.6-.3-.6-.7.3-.7.6-.7Zm3.2 0c.3 0 .6.3.6.7s-.3.7-.6.7-.6-.3-.6-.7.3-.7.6-.7ZM8 5.2c.7 0 1.6.5 1.6 1S8.7 7 8 7s-1.6-.3-1.6-.8.9-1 1.6-1Z"/></svg><span class="label">Download for Linux <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></a>
+        <button class="dl" data-os="ios" style="--c: var(--purple)" disabled data-soon="iOS"><svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M11.18 8.5c-.02-1.72 1.4-2.55 1.47-2.59-.8-1.17-2.05-1.33-2.5-1.35-1.06-.11-2.07.62-2.61.62-.54 0-1.37-.6-2.25-.59-1.16.02-2.23.67-2.83 1.71-1.2 2.09-.31 5.19.86 6.89.58.83 1.27 1.76 2.17 1.73.87-.04 1.2-.56 2.25-.56 1.05 0 1.35.56 2.27.54.94-.02 1.53-.85 2.1-1.68.66-.96.93-1.89.95-1.94-.02-.01-1.82-.7-1.84-2.78ZM9.47 3.53c.48-.58.8-1.39.71-2.19-.69.03-1.52.46-2.01 1.03-.44.51-.83 1.33-.72 2.12.77.06 1.55-.39 2.02-.96Z"/></svg><span class="label">Download for iOS <span class="arw">&rarr;</span></span><span class="floor" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span class="shine" aria-hidden="true"></span></button>
+      </div>
+      <p class="quiet" style="margin-top:1.2rem">iOS is close behind; tap it and we will write the day it lands. Prefer arm64 or a .deb on Linux? Every build is on the <a class="ulink" href="https://github.com/hamedgitty/bloks/releases/latest">releases page</a>.
+        New here? <a href="/docs" class="ulink">Start with the docs</a>.</p>
+    </div>
+  </section>
+
+  <!-- ===================== coming ===================== -->
+  <!-- ===================== pricing ===================== -->
+  <section data-reveal id="pricing">
+    <p class="label"><span>Pricing</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Free where it runs on yours.</i></span>
+      <span class="ln"><i>Paid where it runs on ours.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>The desktop app costs nothing because it costs us nothing: it runs on your Mac, with your keys. Money changes hands only when Bloks keeps your agents running on servers we operate.</p>
+    </div>
+    <div class="plans rise d1">
+      <div class="plan">
+        <span class="bar" style="background:var(--green)"></span>
+        <p class="mono">Bloks</p>
+        <h3>$0 <em>forever</em></h3>
+        <ul>
+          <li>The whole desktop app, not a trial</li>
+          <li>Unlimited agents, rooms and automations</li>
+          <li>Your own keys, your own machine</li>
+          <li>Every feature on this page</li>
+        </ul>
+        <a class="ulink quiet" href="#download">Download it now</a>
+      </div>
+      <div class="plan">
+        <span class="bar" style="background:var(--blue)"></span>
+        <p class="mono">Bloks Cloud &nbsp;<span class="chip soon">Coming soon</span></p>
+        <h3>$15 <em>/ month</em></h3>
+        <ul>
+          <li>Agents that keep running, laptop shut</li>
+          <li>Your phone as the remote, anywhere</li>
+          <li>Scheduled runs that land while you sleep</li>
+          <li>Sync across every machine you own</li>
+          <li>Still your own provider keys</li>
+        </ul>
+        <a class="ulink quiet" href="#waitlist-anchor">Join the waitlist below</a>
+      </div>
+      <div class="plan">
+        <span class="bar" style="background:var(--purple)"></span>
+        <p class="mono">Bloks Teams</p>
+        <h3>Coming soon</h3>
+        <ul>
+          <li>Shared rooms across people</li>
+          <li>Shared skill and team libraries</li>
+          <li>Roles, admin and billing in one place</li>
+        </ul>
+        <a class="ulink quiet" href="/support">Tell us what yours needs</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== faq ===================== -->
+  <section data-reveal id="faq">
+    <p class="label"><span>FAQ</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Fair questions,</i></span>
+      <span class="ln"><i>short answers.</i></span>
+    </h2>
+    <div class="faqs rise d1">
+      <details class="qa">
+        <summary>Is the desktop app really free?</summary>
+        <p>Yes. Your own API keys, unlimited agents, no seat count, no expiry. It is not a trial and never turns into one. The source is public under FSL&#8209;1.1&#8209;MIT, so this is checkable rather than promised.</p>
+      </details>
+      <details class="qa">
+        <summary>Where does my data live?</summary>
+        <p>In <strong>~/.bloks</strong> on your Mac: conversations, agent memory, keys, all of it. Back the folder up, move it to another machine, or delete it and be genuinely rid of the app. There is no Bloks account and no Bloks server holding a copy.</p>
+      </details>
+      <details class="qa">
+        <summary>Do I need an API key?</summary>
+        <p>You need at least one engine. If Claude Code, Codex or another agent CLI is already installed and signed in, that counts and no key is needed. Otherwise paste any provider key, sign into OpenRouter from Settings, or run Ollama.</p>
+      </details>
+      <details class="qa">
+        <summary>What can agents actually do?</summary>
+        <p>On a tool-running engine: read and write files, run commands, browse, use apps you have connected, and keep notes in their own memory. Anything consequential stops and asks you first, on the Mac or on your phone.</p>
+      </details>
+      <details class="qa">
+        <summary>Can agents work together?</summary>
+        <p>Yes. Put them in a room and address one with @name or just talk. Juniors answer first, the most senior speaks last, and they can hand work to each other mid-thread. Teams you like can be saved and rehired.</p>
+      </details>
+      <details class="qa">
+        <summary>Can I connect my own tools?</summary>
+        <p>Three ways. Connect apps like Slack or Gmail through the built-in connector cards, register any MCP server you already use, or let an agent request an API key with a secure field in the chat. Keys are stored on your Mac and never appear in the conversation.</p>
+      </details>
+      <details class="qa">
+        <summary>What happens when I close the laptop?</summary>
+        <p>Today, agents pause with it; scheduled runs skip rather than pile up. Bloks Cloud is the answer to exactly this: the same agents hosted, working while the lid is shut, with your phone as the remote. The waitlist below hears about it first.</p>
+      </details>
+      <details class="qa">
+        <summary>Is Bloks in the middle of my provider traffic?</summary>
+        <p>No. The engine you picked talks to the provider you pay, directly. Bloks orchestrates on your machine and resells nothing, marks up nothing, and cannot read what it does not carry.</p>
+      </details>
+    </div>
+  </section>
+
+  <section data-reveal>
+    <p class="label"><span>Next</span><hr></p>
+    <h2 class="d-lg">
+      <span class="ln"><i>Agents that keep working</i></span>
+      <span class="ln"><i>after you shut the lid.</i></span>
+    </h2>
+    <div class="col rise d1" style="margin-top:2.2rem">
+      <p>All of this runs while your Mac is awake. Bloks Cloud changes that: the same agents, the same rooms, still your own keys, working while the laptop is shut and answering you from your phone.</p>
+      <!-- TODO before launch: swap this for a real list (Buttondown, Kit)
+           and restore the inline form. Until then this has to point at
+           something that genuinely notifies people. -->
+      <span id="waitlist-anchor"></span>
+      <form class="signup" id="waitlist">
+        <span class="mono" style="flex:1 0 100%;margin-bottom:.2rem">Tell me when it opens</span>
+        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email" aria-label="Email address" />
+        <button type="submit">Keep me posted</button>
+      </form>
+      <p class="quiet" style="margin-top:1.1rem">One email when it opens, nothing else. Or <a class="ulink" href="https://github.com/hamedgitty/bloks/releases">watch releases on GitHub</a>; every version lands there first.</p>
+    </div>
+  </section>
+
+
+  <!-- coming soon: one dialog, two doors -->
+  <div class="soon-wrap" id="soon" hidden>
+    <div class="soon-card" role="dialog" aria-modal="true" aria-labelledby="soon-title">
+      <button class="soon-x" id="soon-close" aria-label="Close">&times;</button>
+      <p class="mono">Coming soon</p>
+      <h3 class="d-lg" id="soon-title">Bloks on <span id="soon-what">Windows</span></h3>
+      <p style="margin-top:1rem">Nearly there. Leave an email and you will be the first to know.</p>
+      <form class="signup" id="soon-form" style="margin-top:1.6rem">
+        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email" aria-label="Email address" />
+        <button type="submit">Notify me</button>
+      </form>
+    </div>
+  </div>
+
+  <footer>
+    <div class="foot">
+      <span class="mono">Bloks &nbsp;&middot;&nbsp; FSL&#8209;1.1&#8209;MIT &nbsp;&middot;&nbsp; becomes MIT after two years</span>
+      <span style="display:flex;gap:1.7rem;flex-wrap:wrap;align-items:center">
+        <a href="/docs">Docs</a>
+        <a href="https://github.com/hamedgitty/bloks/blob/main/LICENSING.md">Licence</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/support">Support</a>
+        <a href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub" class="gh"><svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      </span>
+    </div>
+  </footer>
+</div>
+
+<script>
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* =========== weighted scroll ===========
+   A wheel notch jumps the page a fixed distance and stops dead. This keeps a
+   target position and eases the real scroll toward it every frame, so the
+   page carries momentum and settles instead of snapping. Because it moves
+   the genuine scroll position, the CSS scroll timelines above track it
+   exactly and still run on the compositor.
+
+   Off on touch, where the OS already does this better, and off entirely when
+   motion is not wanted. */
+(() => {
+  if (reduced || matchMedia("(hover: none)").matches) return;
+  const LERP = 0.105;
+  let target = scrollY, current = scrollY, running = false;
+  const limit = () => document.documentElement.scrollHeight - innerHeight;
+  const clampY = (v) => (v < 0 ? 0 : v > limit() ? limit() : v);
+
+  function frame() {
+    current += (target - current) * LERP;
+    if (Math.abs(target - current) < 0.35) { current = target; running = false; }
+    scrollTo(0, current);
+    if (running) requestAnimationFrame(frame);
+  }
+  function nudge(by) {
+    target = clampY(target + by);
+    if (!running) { running = true; requestAnimationFrame(frame); }
+  }
+  addEventListener("wheel", (e) => {
+    if (e.ctrlKey) return;                                  // leave pinch zoom alone
+    e.preventDefault();
+    nudge(e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY);    // some mice report lines
+  }, { passive: false });
+
+  // Anything else that scrolls (scrollbar drag, keyboard, find-in-page) wins,
+  // and the target resyncs so the next wheel event continues from there.
+  addEventListener("scroll", () => { if (!running) target = current = scrollY; }, { passive: true });
+  addEventListener("resize", () => { target = current = scrollY; });
+
+  // Anchors: no native smooth scroll to fight with, so drive them ourselves.
+  for (const a of document.querySelectorAll('a[href^="#"]')) {
+    a.addEventListener("click", (e) => {
+      const el = document.querySelector(a.getAttribute("href"));
+      if (!el) return;
+      e.preventDefault();
+      target = clampY(el.getBoundingClientRect().top + current);
+      if (!running) { running = true; requestAnimationFrame(frame); }
+    });
+  }
+})();
+const clamp = (n, a, b) => (n < a ? a : n > b ? b : n);
+
+/* =========== the belief frame ===========
+   Folding a page-sized bar onto its slot in the mark needs one length
+   divided by another, which calc() cannot do. So it is measured here,
+   once on load and again on resize, and handed to CSS as --f1..--f4. The
+   animation itself is still pure scroll-driven CSS on the compositor;
+   nothing in here runs per frame. offsetLeft/offsetWidth are used rather
+   than getBoundingClientRect because they report layout, unaffected by
+   whatever transform an arriving bar is mid-way through. */
+(() => {
+  const why = document.getElementById("why");
+  const rail = why?.querySelector(".rail");
+  const core = rail?.querySelector(".core");
+  if (!rail || !core) return;
+  // Where each outer bar belongs inside the mark, as fractions of it.
+  // Same numbers as the opening's markup, in the same order.
+  const SLOTS = [
+    [0,    0,    .22,  .773],
+    [.263, 0,    .737, .188],
+    [.78,  .226, .22,  .773],
+    [0,    .811, .737, .188],
+  ];
+  const bars = [...rail.querySelectorAll(".rb")];
+  function fit() {
+    if (getComputedStyle(rail).display === "none") return;
+    const M = core.offsetWidth;
+    if (!M) return;
+    // .core is centred with a negative margin, so its box starts half a
+    // mark back from where the layout engine placed it.
+    const lx = core.offsetLeft, ly = core.offsetTop;
+    bars.forEach((bar, i) => {
+      const [fx, fy, fw, fh] = SLOTS[i];
+      const w = bar.offsetWidth, h = bar.offsetHeight;
+      if (!w || !h) return;
+      const dx = lx + M * (fx + fw / 2) - (bar.offsetLeft + w / 2);
+      const dy = ly + M * (fy + fh / 2) - (bar.offsetTop + h / 2);
+      why.style.setProperty(
+        `--f${i + 1}`,
+        `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(${(M * fw / w).toFixed(5)}, ${(M * fh / h).toFixed(5)})`,
+      );
+    });
+  }
+  // The inner four arrive from the side they belong to, at mark scale.
+  for (const b of core.children) {
+    const l = parseFloat(b.style.left), t = parseFloat(b.style.top);
+    b.style.setProperty("--ox", `${(l - 44) * 0.42}px`);
+    b.style.setProperty("--oy", `${(t - 44) * 0.42}px`);
+  }
+  fit();
+  addEventListener("resize", fit, { passive: true });
+})();
+
+/* =========== fallback scrub ===========
+   Only for browsers without scroll-driven CSS animations. Where they are
+   supported the opening runs entirely on the compositor and this never
+   executes, which is the difference between smooth and not. */
+const NATIVE = CSS.supports("animation-timeline", "view()");
+if (!NATIVE && !reduced) {
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  const stage = document.getElementById("stage");
+  const why = document.getElementById("why");
+  const markwrap = document.querySelector(".markwrap");
+  const herotext = document.querySelector(".herotext");
+  const hint = document.querySelector(".hint");
+  const blocks = [...document.querySelectorAll(".mark b")];
+  const beats = [...document.querySelectorAll(".beat")];
+  // Cached once and on resize. Reading offsetTop/offsetHeight per frame is
+  // what makes a scrubbed page stutter.
+  let geo;
+  const measure = () => {
+    geo = {
+      sT: stage.offsetTop, sR: stage.offsetHeight - innerHeight,
+      // the beats begin while the section is still coming up, matching
+      // the cover ranges the native version uses
+      wT: why.offsetTop - innerHeight * 0.78, wR: why.offsetHeight - innerHeight * 0.22,
+    };
+  };
+  const step = 0.52 / (blocks.length - 1);
+  function draw() {
+    const y = scrollY;
+    const p = clamp((y - geo.sT) / geo.sR, 0, 1);
+    for (let i = 1; i < blocks.length; i++) {
+      const e = ease(clamp((p - i * step) / (step * 1.25), 0, 1));
+      const b = blocks[i], st = b.style;
+      st.opacity = e;
+      st.transform = `translate(${(1 - e) * parseFloat(st.getPropertyValue("--ox"))}px,${(1 - e) * parseFloat(st.getPropertyValue("--oy"))}px) scale(${0.72 + 0.28 * e})`;
+    }
+    const s = clamp((p - 0.7) / 0.26, 0, 1);
+    markwrap.style.transform = `scale(${1 + s * s * 22})`;
+    markwrap.style.opacity = String(1 - clamp((p - 0.76) / 0.16, 0, 1));
+    const h = clamp((p - 0.74) / 0.16, 0, 1);
+    herotext.style.opacity = String(h);
+    herotext.classList.toggle("lit", h > 0.06);
+    hint.style.opacity = String(clamp(1 - p * 14, 0, 1));
+
+    const q = clamp((y - geo.wT) / geo.wR, 0, 1), sl = 1 / beats.length;
+    for (let i = 0; i < beats.length; i++) {
+      const l = (q - i * sl) / sl;
+      const vis = clamp(l / 0.3, 0, 1) * (1 - clamp((l - 0.74) / 0.26, 0, 1));
+      beats[i].style.opacity = String(vis);
+      beats[i].style.transform = `translateY(${(1 - ease(clamp(l / 0.3, 0, 1))) * 46 - clamp((l - 0.74) / 0.26, 0, 1) * 46}px)`;
+    }
+  }
+  let tick = false;
+  measure(); draw();
+  addEventListener("scroll", () => { if (!tick) { tick = true; requestAnimationFrame(() => { draw(); tick = false; }); } }, { passive: true });
+  addEventListener("resize", () => { measure(); draw(); });
+} else if (NATIVE) {
+  // The headline's line masks are driven by the same timeline, so the class
+  // the transition version needs is not wanted here.
+  document.querySelector(".herotext").classList.add("native");
+}
+
+/* =========== the two bars that cross the cast ===========
+   Positioned from the section's own box rather than a view timeline.
+   Two reasons: a bar parked off screen by an animation's fill state is
+   not reliably parked, and this way the bar is a child of the section
+   that scrolls with the page, so a dropped frame costs a little drift
+   rather than leaving a block hanging in mid air. */
+(() => {
+  const cast = document.getElementById("cast");
+  const bars = [
+    // [element, start of its share of the section, screen travel]
+    [document.querySelector(".pass-a"), 0.06, 1],
+    [document.querySelector(".pass-b"), 0.46, -1],
+  ];
+  if (!cast || bars.some(([el]) => !el) || reduced) return;
+
+  let top = 0, height = 0;
+  const measure = () => { top = cast.getBoundingClientRect().top + scrollY; height = cast.offsetHeight; };
+
+  function draw() {
+    const vh = innerHeight;
+    // where the section sits in its own passage across the screen
+    const p = (scrollY - (top - vh)) / (height + vh);
+    const onScreen = top - scrollY;
+    for (const [el, from, way] of bars) {
+      const q = (p - from) / 0.52;
+      if (q <= 0 || q >= 1) { el.style.visibility = "hidden"; continue; }
+      const h = el.offsetHeight;
+      // down the screen, or up it, from just outside one edge to just
+      // outside the other
+      const y = way > 0 ? -h - 24 + q * (vh + h + 48) : vh + 24 - q * (vh + h + 48);
+      el.style.visibility = "visible";
+      el.style.transform = `translateY(${Math.round(y - onScreen)}px)`;
+    }
+  }
+
+  let tick = false;
+  measure(); draw();
+  addEventListener("scroll", () => {
+    if (tick) return;
+    tick = true;
+    requestAnimationFrame(() => { draw(); tick = false; });
+  }, { passive: true });
+  addEventListener("resize", () => { measure(); draw(); }, { passive: true });
+})();
+
+/* =========== reveals =========== */
+const io = new IntersectionObserver((es) => {
+  for (const e of es) if (e.isIntersecting) { e.target.classList.add("lit"); io.unobserve(e.target); }
+}, {
+  // Fire when the section is properly in view, not as its top edge grazes
+  // the fold. A 1.7 second reveal that starts too early has finished before
+  // you get to it, which reads as no animation at all.
+  threshold: 0,
+  rootMargin: "-18% 0px -22% 0px",
+});
+document.querySelectorAll("[data-reveal]").forEach((s) => io.observe(s));
+
+
+
+/* The toggle flips to the opposite of whatever is on screen right now,
+   which is what a single button should do, and remembers it. */
+(() => {
+  const root = document.documentElement;
+  const button = document.querySelector(".themeswap");
+  if (!button) return;
+  const showing = () =>
+    root.getAttribute("data-theme") ||
+    (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  const paint = () => {
+    const dark = showing() === "dark";
+    button.dataset.now = dark ? "dark" : "light";
+    button.title = dark ? "Switch to light" : "Switch to dark";
+  };
+  button.addEventListener("click", () => {
+    const next = showing() === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("bloks-theme", next); } catch (e) {}
+    paint();
+  });
+  // somebody who never chose keeps following the system as it changes
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", paint);
+  paint();
+})();
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* =========== the introductions ===========
+   Each agent springs in, holds a beat so you register the face, then speaks.
+   Only once, and only when the section is actually on screen. */
+const cast = [...document.querySelectorAll(".ag")];
+async function introduce() {
+  for (const ag of cast) {
+    ag.classList.add("in");
+    await sleep(560);
+    ag.classList.add("said");
+    const el = ag.querySelector(".say");
+    const text = ag.dataset.say.replace(/&rsquo;/g, "\u2019");
+    await new Promise((res) => {
+      let i = 0;
+      const id = setInterval(() => {
+        i += 2;
+        el.textContent = text.slice(0, i);
+        if (i >= text.length) { clearInterval(id); res(); }
+      }, 14);
+    });
+    await sleep(240);
+  }
+}
+new IntersectionObserver(([e], obs) => {
+  if (!e.isIntersecting) return;
+  introduce();
+  obs.disconnect();
+}, { threshold: 0.3 }).observe(document.getElementById("cast"));
+
+
+</script>
+
+
+<script>
+/* the waitlist: the only network request this page ever makes, and only
+   when someone asks it to */
+document.getElementById("waitlist").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const email = form.email.value.trim();
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    const res = await fetch("/api/waitlist", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    if (!res.ok) throw new Error();
+    form.innerHTML = '<span class="mono" style="color:var(--green)">You are on the list.</span>';
+  } catch {
+    button.disabled = false;
+    button.textContent = "Try again";
+  }
+});
+</script>
+<script>
+/* Coming soon: the same waitlist, reached from the hero. */
+const soon = document.getElementById("soon");
+const soonWhat = document.getElementById("soon-what");
+const soonForm = document.getElementById("soon-form");
+let lastOpener = null;
+
+function openSoon(label, opener) {
+  soonWhat.textContent = label;
+  soon.hidden = false;
+  lastOpener = opener;
+  soonForm.querySelector("input").focus();
+}
+function closeSoon() {
+  soon.hidden = true;
+  lastOpener?.focus();
+}
+
+/* Which tile is yours. Only a hint: every platform stays one click away,
+   because a browser can be wrong about this and a download page that
+   hides the build you came for is worse than one that guesses. */
+(() => {
+  const ua = navigator.userAgent;
+  const os = /iPhone|iPad|iPod/.test(ua)
+    ? "ios"
+    : /Mac/.test(ua)
+      ? "mac"
+      : /Win/.test(ua)
+        ? "windows"
+        : /Linux|X11|CrOS/.test(ua)
+          ? "linux"
+          : null;
+  if (!os) return;
+  document.querySelectorAll(`.dl[data-os="${os}"]`).forEach((tile) => {
+    tile.classList.add("is-you");
+    tile.setAttribute("aria-current", "true");
+  });
+})();
+
+document.querySelectorAll("[data-soon]").forEach((b) =>
+  b.addEventListener("click", () => openSoon(b.dataset.soon, b)));
+document.getElementById("soon-close").addEventListener("click", closeSoon);
+soon.addEventListener("click", (e) => { if (e.target === soon) closeSoon(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && !soon.hidden) closeSoon(); });
+
+soonForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const button = soonForm.querySelector("button");
+  button.disabled = true;
+  try {
+    const res = await fetch("/api/waitlist", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: soonForm.email.value.trim() }),
+    });
+    if (!res.ok) throw new Error();
+    soonForm.innerHTML = '<span class="mono" style="color:var(--green)">You are on the list.</span>';
+  } catch {
+    button.disabled = false;
+    button.textContent = "Try again";
+  }
+});
+</script>
+
+</body>
+</html>

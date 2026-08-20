@@ -1,0 +1,109 @@
+appId: com.bloks.app
+productName: Bloks
+artifactName: Bloks-${version}-${arch}.${ext}
+
+directories:
+  buildResources: build
+  output: release
+
+# Nothing in the packaged app needs node_modules at runtime, which is
+# what keeps the bundle small and the signing simple. Three pieces ship:
+# the Electron entry files as plain .mjs/.cjs, the interface as built
+# static files, and the harness server as compiled JavaScript. The last
+# two live in Resources, and the server runs on the Node inside Electron
+# itself (ELECTRON_RUN_AS_NODE), so no second runtime is bundled.
+files:
+  - electron/**
+  - "!electron/resources/speech-helper"
+  - "!electron/resources/perm-helper"
+  - "!**/node_modules/**"
+  - package.json
+
+asar: true
+
+extraResources:
+  - from: dist
+    to: ui
+  - from: dist-server
+    to: server
+
+mac:
+  # The Swift helpers are macOS machinery (TCC prompts, dictation) and
+  # ship only here; the other platforms degrade those features honestly.
+  extraResources:
+    - from: electron/resources/speech-helper
+      to: speech-helper
+    - from: electron/resources/perm-helper
+      to: perm-helper
+  # universal so Intel Macs get a working build too. The Swift helpers
+  # are lipo'd to universal by scripts/build-helpers.sh for the same
+  # reason: they are copied into both slices verbatim.
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  # A PNG, not an .icns: electron-builder converts it, and the source of
+  # truth stays one file generated from the brand mark by
+  # scripts/render-icon.mjs. The hand-made .icns is what let the icon drift
+  # out of sync with the mark in the first place.
+  icon: build/icon.png
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: Bloks uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: Bloks transcribes your voice on-device to type messages for you.
+  # Notarization is on. electron-builder reads APPLE_ID,
+  # APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID from the environment,
+  # then staples the ticket. Without a signing identity there is nothing
+  # to notarize, so unsigned local builds (CSC_IDENTITY_AUTO_DISCOVERY=false)
+  # skip both steps. See docs/RELEASING.md.
+  notarize: true
+
+dmg:
+  # electron-builder's default, and the safe one. The .app inside is
+  # signed, notarized and stapled, which is what Gatekeeper checks when
+  # someone opens it. Signing the disk image on top of that has a history
+  # of invalidating the ticket, and buys nothing.
+  sign: false
+  artifactName: Bloks-${version}.dmg
+
+linux:
+  # AppImage runs anywhere without a package manager; the deb covers the
+  # distros where "download an AppImage" is a support ticket. Both are
+  # unsigned, which is normal on Linux.
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+  icon: build/icon.png
+  category: Utility
+  maintainer: hamedr@outlook.com
+  synopsis: A local-first desktop workspace for personal AI agents
+
+win:
+  # Unsigned for now, which means SmartScreen warns on first run. A
+  # signing certificate is a purchase decision, not a build step; when one
+  # exists it drops in through CSC_LINK exactly as the mac identity does.
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  icon: build/icon.png
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+
+# Releases go to GitHub, which is also where an auto-updater would look.
+publish:
+  provider: github
+  owner: hamedgitty
+  repo: bloks
+  releaseType: draft

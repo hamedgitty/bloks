@@ -1,0 +1,21 @@
+// bloks.dev: the site, served from the edge of the account that already
+// owns the zone. Static pages plus one live endpoint, the waitlist.
+// Deploy with `npx wrangler deploy` from this directory.
+{
+  "name": "bloks-site",
+  "main": "worker.ts",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "kv_namespaces": [
+    { "binding": "WAITLIST", "id": "dbc5f3265f7d48c68f1880d18c5380a6" }
+  ],
+  "routes": [
+    { "pattern": "bloks.dev", "custom_domain": true },
+    { "pattern": "www.bloks.dev", "custom_domain": true }
+  ]
+}

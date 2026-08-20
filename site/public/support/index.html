@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Support · Bloks</title>
+<meta name="description" content="How to get help with Bloks: bugs, security, common fixes and quick answers." />
+<link rel="icon" href="/assets/bloks-mark.png" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="strip" aria-hidden="true"><i style="background:var(--blue);flex:22"></i><i style="background:var(--orange);flex:34"></i><i style="background:var(--red);flex:12"></i><i style="background:var(--purple);flex:18"></i><i style="background:var(--green);flex:8"></i></div>
+<div class="wrap">
+  <header class="site">
+    <a class="brand" href="/" aria-label="Bloks">
+      <img src="/assets/bloks-wordmark-light.png" alt="Bloks" style="height:20px;display:block" />
+    </a>
+    <nav>
+      <a href="/docs">Docs</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/support" aria-current="page">Support</a>
+      <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+  </header>
+
+  <div class="pagehead">
+    <p class="label"><span>Support</span><hr></p>
+    <h1>A person answers.<br>Usually within a day.</h1>
+    <p class="lede">Bugs go to GitHub where everyone benefits from the fix. Anything private goes to email. Security reports skip the queue.</p>
+  </div>
+
+  <main>
+  <div class="prose col">
+    <h2>Something is broken</h2>
+    <p>Open an issue on <a href="https://github.com/hamedgitty/bloks/issues">GitHub Issues</a> with three things: what you did, what you expected, and what happened instead. A screenshot of the exact moment helps more than a long description. If the issue involves anything you would not post publicly, email <a href="mailto:support@bloks.dev">support@bloks.dev</a> instead.</p>
+
+    <h2>Security</h2>
+    <p>Found a vulnerability? Please do not open a public issue. Email <a href="mailto:security@bloks.dev">security@bloks.dev</a> and it will be read the same day. The repository&rsquo;s security policy has scope and details.</p>
+
+    <h2>Common fixes</h2>
+    <details class="qa">
+      <summary>The app says Bloks is not reachable</summary>
+      <p>The interface talks to a small server that runs with the app. Quit Bloks fully (Cmd&#8209;Q) and reopen it. If you run from source, <code>pnpm dev:server</code> starts it by hand. Nothing is lost either way; conversations live on disk.</p>
+    </details>
+    <details class="qa">
+      <summary>My agent says its engine is not installed</summary>
+      <p>The agent is pointed at a CLI engine that this Mac does not have. Either install it (for example <code>npm i -g @anthropic-ai/claude-code</code>) or open the agent&rsquo;s settings and pick a different engine. Pasted-key engines need no install.</p>
+    </details>
+    <details class="qa">
+      <summary>My phone cannot find my Mac</summary>
+      <p>Pairing needs both devices on the same network, and pairing turned on in the Mac app under Settings, Devices. Scan the QR code the Mac shows, or type the six digit code. If it still fails, the network may isolate devices from each other; hotel and office Wi&#8209;Fi often does.</p>
+    </details>
+    <details class="qa">
+      <summary>An agent is stuck working</summary>
+      <p>Every lane has an interrupt. Open the conversation and stop the turn from the task strip; the agent halts cleanly and the transcript keeps what happened. If the whole app misbehaves, quitting and reopening never loses data.</p>
+    </details>
+    <details class="qa">
+      <summary>Where exactly is my data?</summary>
+      <p>One folder: <code>~/.bloks</code>. Agents, transcripts, memory, keys, settings. Back it up with everything else you back up. Delete it and Bloks starts from zero.</p>
+    </details>
+
+    <h2>Quick answers</h2>
+    <details class="qa">
+      <summary>Is the desktop app really free?</summary>
+      <p>Yes. Your own keys, unlimited agents, no expiry. It is not a trial. Paid tiers add hosting we run, never features held back from the app you have.</p>
+    </details>
+    <details class="qa">
+      <summary>Which engines work?</summary>
+      <p>Claude Code, Codex, Gemini CLI, OpenCode, Grok CLI and Antigravity as installed CLIs; Gemini, Grok, Kimi, Llama, DeepSeek, Mistral and Groq by pasted key; OpenRouter by browser sign-in; Ollama for local models. The <a href="/docs#engines">docs</a> cover each one.</p>
+    </details>
+    <details class="qa">
+      <summary>When is mobile coming?</summary>
+      <p>The iPhone app pairs with your Mac on your network today, from source. The App Store version and Bloks Cloud, which works away from your network, are next. The waitlist on the <a href="/#waitlist-anchor">front page</a> hears first.</p>
+    </details>
+
+    <h2>Everything else</h2>
+    <p><a href="mailto:support@bloks.dev">support@bloks.dev</a> reaches a person, not a queue.</p>
+  </div>
+  </main>
+
+  <footer class="site">
+    <div class="foot">
+      <span class="mono">Bloks &nbsp;&middot;&nbsp; FSL&#8209;1.1&#8209;MIT &nbsp;&middot;&nbsp; becomes MIT after two years</span>
+      <span style="display:flex;gap:1.6rem;flex-wrap:wrap;align-items:center">
+        <a href="/docs">Docs</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/support">Support</a>
+        <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      </span>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

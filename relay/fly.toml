@@ -1,0 +1,32 @@
+# Deploy with `fly deploy` from this directory.
+#
+# yyz because that is where the Macs are. The relay sits in the middle of
+# every phone-to-Mac round trip, so the region is latency you feel in the
+# composer rather than a number on a dashboard.
+app = "bloks-relay"
+primary_region = "yyz"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  # NOT auto-stopping. A stopped machine drops the Mac's held stream, and
+  # the phone would find nothing home until something woke it. Uptime is
+  # the product here; a couple of dollars a month is the whole cost of it.
+  auto_stop_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # A pipe that holds no transcripts does not need memory. The bound that
+  # matters is MAX_PAYLOAD_BYTES in relay/spaces.ts, not this.
+  memory = "256mb"

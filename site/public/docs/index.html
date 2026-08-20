@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Docs · Bloks</title>
+<meta name="description" content="User guides for Bloks: install, engines, agents, rooms, automations, connectors, voice, computers, memory, phone and watch." />
+<link rel="icon" href="/assets/bloks-mark.png" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="strip" aria-hidden="true"><i style="background:var(--blue);flex:22"></i><i style="background:var(--orange);flex:34"></i><i style="background:var(--red);flex:12"></i><i style="background:var(--purple);flex:18"></i><i style="background:var(--green);flex:8"></i></div>
+<div class="wrap">
+  <header class="site">
+    <a class="brand" href="/" aria-label="Bloks">
+      <img src="/assets/bloks-wordmark-light.png" alt="Bloks" style="height:20px;display:block" />
+    </a>
+    <nav>
+      <a href="/docs" aria-current="page">Docs</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/support">Support</a>
+      <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+  </header>
+
+  <div class="pagehead">
+    <p class="label"><span>Docs</span><hr></p>
+    <h1>Everything Bloks does,<br>in the order you will meet it.</h1>
+    <p class="lede">Ten minutes end to end. Start at the top if you are new; the left rail jumps anywhere.</p>
+  </div>
+
+  <main>
+  <div class="docs">
+    <nav class="toc" aria-label="Sections">
+      <span class="mono">Guide</span>
+      <a href="#install">Install</a>
+      <a href="#engines">Engines</a>
+      <a href="#first-agent">Your first agent</a>
+      <a href="#talking">Talking and tasks</a>
+      <a href="#rooms">Rooms and teams</a>
+      <a href="#automations">Automations</a>
+      <a href="#connect">Connecting apps</a>
+      <a href="#voice">Voice and calls</a>
+      <a href="#computers">Computers</a>
+      <a href="#memory">Memory and folders</a>
+      <a href="#phone">Phone and watch</a>
+      <a href="#data">Your data</a>
+    </nav>
+
+    <div class="prose">
+      <section class="doc-section" id="install">
+        <h2>Install</h2>
+        <p>Download the latest release from <a href="https://github.com/hamedgitty/bloks/releases/latest">GitHub releases</a> and drag Bloks to Applications. The app is code-signed and notarized, so it opens on the first try instead of being blocked. It is universal: Apple silicon and Intel.</p>
+        <p>Building from source works too and takes about four minutes:</p>
+        <pre><code>git clone https://github.com/hamedgitty/bloks
+cd bloks
+pnpm install
+pnpm dev:server   # the harness
+pnpm dev:desktop  # the app</code></pre>
+        <p>Everything Bloks stores lives in one folder, <code>~/.bloks</code>. Remember that path; it comes up again at the bottom of this page.</p>
+      </section>
+
+      <section class="doc-section" id="engines">
+        <h2>Engines</h2>
+        <p>An engine is what an agent thinks with. Bloks ships with no model of its own on purpose: you bring the one you already pay for, and each agent picks its engine and model individually.</p>
+        <h3>CLI agents</h3>
+        <p>If Claude Code, Codex, Gemini CLI, OpenCode, Grok CLI or Antigravity is installed and signed in, Bloks finds it and it just works. These run tools: they execute commands, read and write files, and act.</p>
+        <h3>API keys</h3>
+        <p>Paste a key in Settings, Engines for Gemini, Grok, Kimi, Llama, DeepSeek, Mistral or Groq. These engines get a tool loop from Bloks itself, so they can still ask you questions, run sandboxed commands and request app connections. OpenRouter signs in from your browser instead of a key.</p>
+        <h3>Local models</h3>
+        <p>Run Ollama and Bloks lists whatever models it serves. Whether a local model can run tools depends on the model, so Bloks makes no promise there and marks it accordingly.</p>
+        <p>You can switch an agent&rsquo;s engine mid&#8209;conversation. Bloks replays the story so far to the new engine, so nothing is forgotten in the move.</p>
+      </section>
+
+      <section class="doc-section" id="first-agent">
+        <h2>Your first agent</h2>
+        <p>Press <span class="kbd">&#8984;N</span> or the plus button. Pick a role and the agent is made on the spot, named for the job and carrying that role&rsquo;s skills, or describe the job in a sentence and Bloks proposes a name. Every agent gets a pixel face; tap it to shuffle, or open its settings to pick shape, color and expression yourself. The same editor exists on the iPhone.</p>
+        <p>New agents open with one question about how you want to work together: how much to check in versus just handle things. Your answer shapes its behavior from then on, and you can change it later in its settings.</p>
+      </section>
+
+      <section class="doc-section" id="talking">
+        <h2>Talking and tasks</h2>
+        <p>Type like you would to a person. While an agent works you see what it is doing: each tool it touches shows as a quiet line in the thread, and its avatar changes state in the sidebar.</p>
+        <ul>
+          <li><strong>Parallel tasks.</strong> An agent runs up to three lanes at once. The strip above the chat shows each lane with its state and token spend; new lanes name themselves after the first thing you ask.</li>
+          <li><strong>Steering.</strong> Message a busy agent and the message queues, marked in the thread, then starts its own turn the moment the current one settles.</li>
+          <li><strong>Approvals.</strong> Anything consequential stops and asks first, as a card with one&#8209;tap answers, on the Mac and on your phone.</li>
+          <li><strong>Replies and forwards.</strong> Hover a message to reply with context or forward it to another agent, like any messenger.</li>
+          <li><strong>Artifacts.</strong> Files an agent saves during a turn appear as cards: HTML renders live, spreadsheets and documents open in a native viewer.</li>
+          <li><strong>Search.</strong> <span class="kbd">&#8984;K</span> searches every conversation, every lane, every room.</li>
+        </ul>
+      </section>
+
+      <section class="doc-section" id="rooms">
+        <h2>Rooms and teams</h2>
+        <p>A room is a group chat of agents. Address one with <code>@name</code>, or just talk and the room decides: juniors answer first, whoever you made most senior speaks last and can delegate with <code>@name</code> itself. Rooms can also be lead&#8209;only, where unaddressed messages go straight to the senior agent.</p>
+        <p>The team library ships six premade teams, each with roles, seniority and skills. Hiring one asks whether to reuse agents you already have or mint new members with fresh names. Custom rooms you like can be saved back into the library and rehired later.</p>
+      </section>
+
+      <section class="doc-section" id="automations">
+        <h2>Automations</h2>
+        <p>The Routines entry in the sidebar opens a calendar: day, week and month views, with each routine as a block you can drag to reschedule, exactly like moving an appointment. Click an empty slot to create one there.</p>
+        <p>A routine has a name, a prompt, a schedule (weekly on chosen days, or once on a date), a duration for the calendar, and a choice of where it runs: wherever the agent normally runs, its cloud computer, this Mac, or no computer. Runs land in their own background lane so they never interrupt your conversation. Missed runs fire once when the Mac wakes, or skip if too stale; they never pile up.</p>
+        <p><strong>Webhooks</strong> share the panel: each one is a URL that turns any outside event, a git push, a form, an alert, into a task for an agent. Each hook shows its delivery history, can be renamed, paused, or given a fresh URL, and the payload is always quoted to the agent as data, never as instructions.</p>
+      </section>
+
+      <section class="doc-section" id="connect">
+        <h2>Connecting apps</h2>
+        <p>Three doors, use any of them:</p>
+        <ul>
+          <li><strong>Connector cards.</strong> With a Composio key in Settings, Apps, agents can request app access mid&#8209;task: a sign&#8209;in card appears in the chat, you tap Connect, and the task resumes itself once the connection lands. Slack, Gmail, GitHub, calendars and hundreds more.</li>
+          <li><strong>Your own MCP servers.</strong> Register any MCP server, a local command or a remote URL with an auth header, in Settings, Apps, then attach it to agents individually from each agent&rsquo;s settings.</li>
+          <li><strong>Secret cards.</strong> When a service just needs an API key, an agent can ask with a secure field in the chat. The value is stored on your Mac, handed to the agent&rsquo;s tools as an environment variable, and never appears in the conversation.</li>
+        </ul>
+      </section>
+
+      <section class="doc-section" id="voice">
+        <h2>Voice and calls</h2>
+        <p>Give an agent a voice in its settings, from ElevenLabs or OpenAI with your key, and a phone button appears. Calls work like calls: talk, it listens, thinks, answers in its own voice; interrupt by tapping the mic. Rooms take group calls, where saying a name addresses that member and each agent answers in its own voice, one at a time. The whole call lands in the thread as ordinary messages. Voice is marked beta while it earns trust.</p>
+      </section>
+
+      <section class="doc-section" id="computers">
+        <h2>Computers</h2>
+        <p>Agents can have a machine of their own. Four options, chosen per agent:</p>
+        <ul>
+          <li><strong>Cloud box.</strong> A remote Linux desktop from Box, with a paid API key. Bloks provisions it and shows a live preview.</li>
+          <li><strong>Local VM.</strong> A free Linux desktop in a container on your Mac, set up once from Settings with a guided checklist. Isolated from your own desktop, with one durable workspace folder that survives rebuilds.</li>
+          <li><strong>This Mac.</strong> The agent works your own screen, looking before it touches and asking before anything hard to undo.</li>
+          <li><strong>Sandbox.</strong> A headless container: shell and files, no display.</li>
+        </ul>
+        <p>Every preview has a rewind scrubber: drag back through the last several minutes of the agent&rsquo;s screen to see not just what it is doing but what it did. Opening a desktop full screen keeps a chat beside it, dockable to any edge or floating, and the close button never leaves the corner.</p>
+      </section>
+
+      <section class="doc-section" id="memory">
+        <h2>Memory and working folders</h2>
+        <p>Each agent keeps notes in its own workspace: a main memory file plus topic files, all plain markdown you can read and edit from its settings. Memory is capped so it stays a briefing, not a transcript, and agents are instructed never to store instructions that arrive from webhooks or forwarded content.</p>
+        <p>An agent can also be pointed at a working folder, your project directory for example. Each task lane pins the folder it started in, so a lane never shifts ground mid&#8209;conversation.</p>
+      </section>
+
+      <section class="doc-section" id="phone">
+        <h2>Phone and watch</h2>
+        <p>The iPhone app is the same workspace, iMessage&#8209;shaped: the roster with role badges and unread dots, chats with approval cards you can answer with a tap, lane switching, artifacts in a native viewer, calls, and the same avatar editor. Pair it by scanning the QR code the Mac shows under Settings, Devices, on the same network.</p>
+        <p>Home screen widgets show who needs you and who is working, with the agents&rsquo; real faces. A running task shows live in the Dynamic Island. The watch app mirrors the roster to your wrist, one glance to know whether anything is waiting.</p>
+      </section>
+
+      <section class="doc-section" id="data">
+        <h2>Your data</h2>
+        <p>One folder: <code>~/.bloks</code>. Agents, conversations, memory, keys, settings, artifacts. Back it up and you have backed up Bloks; move it to a new Mac and your agents come with you; delete it and Bloks has genuinely forgotten you. Keys are stored with owner&#8209;only file permissions and are never echoed back to any screen once saved. The full story is on the <a href="/privacy">privacy page</a>.</p>
+      </section>
+    </div>
+  </div>
+
+  <script>
+  // the rail follows the reader
+  const links = [...document.querySelectorAll(".toc a")];
+  const map = new Map(links.map(a => [a.hash.slice(1), a]));
+  const seen = new Set();
+  const follow = new IntersectionObserver(entries => {
+    for (const e of entries) e.isIntersecting ? seen.add(e.target.id) : seen.delete(e.target.id);
+    const first = [...map.keys()].find(id => seen.has(id));
+    links.forEach(a => a.classList.toggle("on", a.hash.slice(1) === first));
+  }, { rootMargin: "-10% 0px -70% 0px" });
+  document.querySelectorAll(".doc-section").forEach(s => follow.observe(s));
+  </script>
+  </main>
+
+  <footer class="site">
+    <div class="foot">
+      <span class="mono">Bloks &nbsp;&middot;&nbsp; FSL&#8209;1.1&#8209;MIT &nbsp;&middot;&nbsp; becomes MIT after two years</span>
+      <span style="display:flex;gap:1.6rem;flex-wrap:wrap;align-items:center">
+        <a href="/docs">Docs</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/support">Support</a>
+        <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      </span>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

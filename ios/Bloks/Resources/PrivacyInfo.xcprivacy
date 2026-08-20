@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Bloks for iOS collects nothing. It talks to one server: the Bloks
+	     app running on the user's own Mac, over their own network. There is
+	     no Bloks backend, no account, no analytics SDK, and no third party
+	     in the request path, so every collection array here is empty and
+	     that is the accurate answer rather than a convenient one. -->
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyTracking</key>
+	<false/>
+
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!-- Required-reason APIs. UserDefaults is the only one this app uses:
+	     it stores the host and port of the user's Mac. CA92.1 is the
+	     "accessible only to the app itself" reason, which is what applies
+	     when the app is not in an App Group. The pairing token is not here
+	     because it lives in the Keychain, which is not a declarable API. -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

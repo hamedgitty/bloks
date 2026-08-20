@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy · Bloks</title>
+<meta name="description" content="What Bloks collects, which is very little, and what stays on your machine, which is almost everything." />
+<link rel="icon" href="/assets/bloks-mark.png" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="strip" aria-hidden="true"><i style="background:var(--blue);flex:22"></i><i style="background:var(--orange);flex:34"></i><i style="background:var(--red);flex:12"></i><i style="background:var(--purple);flex:18"></i><i style="background:var(--green);flex:8"></i></div>
+<div class="wrap">
+  <header class="site">
+    <a class="brand" href="/" aria-label="Bloks">
+      <img src="/assets/bloks-wordmark-light.png" alt="Bloks" style="height:20px;display:block" />
+    </a>
+    <nav>
+      <a href="/docs">Docs</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/support">Support</a>
+      <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+  </header>
+
+  <div class="pagehead">
+    <p class="label"><span>Privacy Policy</span><hr></p>
+    <h1>Local-first makes this page short.</h1>
+    <p class="lede">Your conversations, your agents&rsquo; memory and your keys live in a folder on your own Mac, and we cannot see them. What follows is every place data does move, and what happens to it there.</p>
+    <p class="mono updated">Last updated August 18, 2026</p>
+  </div>
+
+  <main>
+  <div class="prose col">
+    <h2>What stays on your machine</h2>
+    <ul>
+      <li><strong>Conversations and transcripts.</strong> Stored in <code>~/.bloks</code> on your computer. Never sent to us.</li>
+      <li><strong>API keys and secrets.</strong> Stored in a file only your user account can read, with file permissions to match. Never sent to us, and never echoed back to any interface once saved; even the settings screen only ever says whether a key exists.</li>
+      <li><strong>Agent memory and working files.</strong> Plain files on your disk, readable, editable and deletable by you.</li>
+      <li><strong>Voice.</strong> Calls are recognized on the device you speak into; replies are synthesized through the voice vendor you configured, with your key.</li>
+    </ul>
+    <p>Deleting <code>~/.bloks</code> removes everything Bloks knows. That is the design, not a limitation.</p>
+
+    <h2>What reaches third parties, at your direction</h2>
+    <ul>
+      <li><strong>AI providers.</strong> When an agent takes a turn, the message and relevant context go to the provider you configured, using your credentials, directly. Their privacy policies govern that data. We are not in that path and cannot read it.</li>
+      <li><strong>Connected services.</strong> Apps you connect, whether through connector cards, your own MCP servers, or an API key you saved, are used by your agents under the access you granted, and those services&rsquo; policies apply.</li>
+    </ul>
+
+    <h2>What reaches us</h2>
+    <ul>
+      <li><strong>The waitlist email, if you give one.</strong> One address and a timestamp, stored so we can tell you when Bloks Cloud launches, used for nothing else, never shared or sold. Email <a href="mailto:privacy@bloks.dev">privacy@bloks.dev</a> and it is deleted.</li>
+      <li><strong>Ordinary server logs.</strong> This site is served by Cloudflare, which processes IP addresses and request metadata to deliver pages, as every host does. We run no analytics and set no tracking cookies; the waitlist form is the only thing on this site that transmits anything, and only when you submit it.</li>
+      <li><strong>Relay traffic, when you use it.</strong> Pairing your phone on your own network never touches us. If you use the relay to reach your Mac across the internet, the relay forwards traffic between your devices and keeps only the operational logs needed to run it. It exists to deliver bytes, not to read them.</li>
+      <li><strong>Payments, later.</strong> When paid tiers launch, billing will run through a payment processor. They handle the card; we see subscription status, never card numbers. This page will name the processor before that ships.</li>
+    </ul>
+
+    <h2>What we do not do</h2>
+    <ul>
+      <li>No analytics or tracking scripts, on this site or in the app.</li>
+      <li>No advertising, no data brokers, no sale of personal data, ever.</li>
+      <li>No account required to download or use the desktop app.</li>
+      <li>No telemetry in the desktop app that sends your content anywhere.</li>
+    </ul>
+
+    <h2>Retention</h2>
+    <p>Data on your machine is yours and follows your own retention, which is to say: it stays until you delete it. The waitlist email stays until Bloks Cloud launches or you ask for deletion, whichever comes first. Host and relay logs rotate on the short schedules typical of operations, measured in days and weeks, not years.</p>
+
+    <h2>Security</h2>
+    <p>The config file that holds keys is created with owner&#8209;only permissions. The webhook receiver and the pairing system use long random tokens, compared in constant time, revocable individually. The harness answers only your own origin. Security reports go to <a href="mailto:security@bloks.dev">security@bloks.dev</a> and are read the same day.</p>
+
+    <h2>Your rights</h2>
+    <p>Depending on where you live, including under the GDPR and the CCPA, you may have the right to access, correct, delete, export or restrict the personal data we hold about you, and to complain to your local authority. Since the only personal data we typically hold is a waitlist email, exercising these rights is usually one message to <a href="mailto:privacy@bloks.dev">privacy@bloks.dev</a>, answered within thirty days. We do not discriminate against anyone for exercising them.</p>
+
+    <h2>Children</h2>
+    <p>Bloks is not directed at children under 13, and we do not knowingly collect their data. If you believe a child has given us data, write to us and it will be removed.</p>
+
+    <h2>Changes</h2>
+    <p>If a future feature changes what reaches us, this page will say so before the feature ships, with an updated date at the top. A privacy policy that changes quietly is not one.</p>
+  </div>
+  </main>
+
+  <footer class="site">
+    <div class="foot">
+      <span class="mono">Bloks &nbsp;&middot;&nbsp; FSL&#8209;1.1&#8209;MIT &nbsp;&middot;&nbsp; becomes MIT after two years</span>
+      <span style="display:flex;gap:1.6rem;flex-wrap:wrap;align-items:center">
+        <a href="/docs">Docs</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/support">Support</a>
+        <a class="gh" href="https://github.com/hamedgitty/bloks" aria-label="Bloks on GitHub"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      </span>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

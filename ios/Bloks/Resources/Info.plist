@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Bloks uses the camera only to scan the pairing code shown on your Mac.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.bloks.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>bloks</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Bloks</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- The harness speaks http on loopback and on the LAN, never https:
+	     it is a local server with no certificate to present. This is the
+	     narrow exemption for exactly that, not a blanket
+	     NSAllowsArbitraryLoads, which App Review asks you to justify. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<!-- iOS 14+ refuses to reach a LAN address until the user says yes.
+	     The Simulator does not enforce it, so this only bites on a real
+	     phone, which is exactly when it is most confusing to hit. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Bloks connects to the Bloks app running on your Mac over your local network. Nothing is sent anywhere else.</string>
+
+	<!-- Dictation. The app owns the microphone rather than leaning on the
+	     keyboard's mic key, because the keyboard's dictation is invisible
+	     to the app and there would be nothing to show while you speak.
+	     Speech is on-device wherever the device supports it. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Bloks uses the microphone so you can dictate a message to your agents instead of typing it.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Bloks turns your dictation into text. On devices that support it this happens entirely on your iPhone.</string>
+
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

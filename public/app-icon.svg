@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Bloks</title>
+  <desc id="desc">The Bloks colored block mark on a white tile.</desc>
+
+  <defs>
+    <clipPath id="tile-clip">
+      <rect width="1024" height="1024" rx="224" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tile-clip)">
+    <rect width="1024" height="1024" fill="#ffffff" />
+  </g>
+
+  <!-- mark geometry + palette from public/brand/bloks-mark.svg, scaled 0.418 and centered -->
+  <g transform="translate(246 202) scale(0.418)">
+    <rect x="0" y="0" width="279" height="1147" fill="#004aad" />
+    <rect x="334" y="0" width="937" height="279" fill="#ff751f" />
+    <rect x="992" y="335" width="279" height="1147" fill="#cb6ce6" />
+    <rect x="0" y="1203" width="937" height="279" fill="#ff3131" />
+    <rect x="320" y="381" width="136" height="557" fill="#5ce1e6" />
+    <rect x="482" y="381" width="455" height="136" fill="#ff5757" />
+    <rect x="801" y="544" width="136" height="557" fill="#7ed957" />
+    <rect x="320" y="965" width="455" height="136" fill="#ffbd59" />
+  </g>
+</svg>

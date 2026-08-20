@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "updated": "2026-08-19",
+  "about": "Skills for Bloks. Each one is instructions an agent follows when the situation calls for it.",
+  "skills": [
+    {
+      "id": "meeting-notes",
+      "name": "Meeting notes",
+      "description": "Turn a recording or a transcript into notes somebody will actually read",
+      "version": "1",
+      "tags": [
+        "writing",
+        "meetings"
+      ],
+      "author": "Bloks",
+      "body": "Use this when handed a transcript, a recording, or raw notes from a meeting.\n\n1. Read the whole thing before writing anything. A summary written as you read is a summary of the beginning.\n2. Lead with decisions. What was agreed, by whom, and what changes because of it.\n3. Then actions: one line each, with an owner and a date. An action with no owner is a wish.\n4. Then anything genuinely unresolved, with what would settle it.\n5. Leave out the discussion that led nowhere, unless somebody will ask why it was dropped, in which case one line.\n\nReturn: plain text under 250 words unless the meeting was longer than an hour.\nNever invent an owner or a date. If nobody said, write \"unassigned\" and say so at the end.\nApproval: none needed, this is reading and writing.",
+      "sha256": "241944aa6bcbc1ca02ea0ec70228520551dbb25554273ff40d0007a241ca68a4"
+    },
+    {
+      "id": "pull-request-review",
+      "name": "Pull request review",
+      "description": "Review a change the way a careful colleague would, not a linter",
+      "version": "1",
+      "tags": [
+        "engineering",
+        "review"
+      ],
+      "author": "Bloks",
+      "body": "Use this when asked to review a diff, a branch, or a pull request.\n\n1. Read the description first, then the diff. A change that does not match its description is the first thing to say.\n2. Look for the failure the author would be most annoyed to find in production: a case they did not consider, not a style preference.\n3. Check the edges the diff creates: empty input, the second call, the concurrent one, the one that fails halfway.\n4. Say what you verified and what you did not. A review that implies more than it checked is worse than no review.\n5. Rank what you found. One serious thing said clearly beats nine notes.\n\nReturn: the serious findings first, each with the input that breaks it. Then anything smaller, briefly.\nNever approve or merge anything. Never rewrite the change yourself unless asked.\nApproval: required before pushing, commenting publicly, or changing any branch.",
+      "sha256": "0abd70941d9b811601d962178f2e1d0cc6efc5fa8b7892bfe443432793696911"
+    },
+    {
+      "id": "weekly-review",
+      "name": "Weekly review",
+      "description": "What moved, what slipped, and the one thing to decide next week",
+      "version": "1",
+      "tags": [
+        "planning"
+      ],
+      "author": "Bloks",
+      "body": "Use this at the end of a week, or when asked how the week went.\n\n1. Compare what was planned against what happened. Name the gap rather than explaining it away.\n2. Group into: finished, moved, and stalled. Something stalled two weeks running is the headline.\n3. For anything stalled, say what it is waiting on and who could unblock it.\n4. Finish with exactly one thing that needs a decision next week, and what the options are.\n\nReturn: under 200 words. No praise, no filler, no restating the plan.\nApproval: none needed.",
+      "sha256": "43da6646880e927b8b768f005b3e460a6b39f52005947e810c02b70ef3657833"
+    },
+    {
+      "id": "customer-reply",
+      "name": "Customer reply",
+      "description": "Answer a customer plainly, own the problem, propose the next step",
+      "version": "1",
+      "tags": [
+        "support",
+        "writing"
+      ],
+      "author": "Bloks",
+      "body": "Use this when drafting a reply to a customer.\n\n1. Answer the question in the first sentence. Everything else is context for that answer.\n2. If we got something wrong, say so plainly, once, without a paragraph of apology.\n3. Never promise a date you were not given. \"I will find out by Thursday\" beats \"soon\".\n4. End with the specific next step and who takes it.\n5. Match their register: a one-line question gets a one-line answer.\n\nReturn: the draft only, ready to send, with no preamble to the user.\nNever send it yourself.\nApproval: required before anything is sent.",
+      "sha256": "3d9c658e67bf16e2b39f4f60a84d203f35c23603ceb63796d2d9da758e564024"
+    },
+    {
+      "id": "competitor-scan",
+      "name": "Competitor scan",
+      "description": "What a rival actually shipped, separated from what they announced",
+      "version": "1",
+      "tags": [
+        "research"
+      ],
+      "author": "Bloks",
+      "body": "Use this when asked what a competitor is doing.\n\n1. Separate shipped from announced from rumoured, and label each. Most coverage conflates all three.\n2. Prefer primary sources: their changelog, their docs, their pricing page, their repository.\n3. Note the date of everything. A claim with no date is not evidence.\n4. Say what changed since the last time this was asked, if you can tell.\n5. Finish with what it means for us in one line, and say if it means nothing.\n\nReturn: shipped first, with dates and links. Then announced. Then anything you could not verify, marked as such.\nNever present a secondary article as a source when the primary one exists.\nApproval: none needed, this is reading.",
+      "sha256": "dd6b0262d875f767689e0fa8570983d8d0fec78269bb750afeb8a668787968e5"
+    },
+    {
+      "id": "incident-writeup",
+      "name": "Incident writeup",
+      "description": "What broke, what it cost, and the change that stops it happening again",
+      "version": "1",
+      "tags": [
+        "engineering",
+        "writing"
+      ],
+      "author": "Bloks",
+      "body": "Use this after something broke.\n\n1. Timeline first, in plain times: when it started, when it was noticed, when it was fixed. The gap between the first two is usually the real finding.\n2. What people saw, and how many. An incident with no impact stated is a story.\n3. What caused it, at the level somebody could act on. \"A bug\" is not a cause.\n4. Why it was not caught: the test that did not exist, the alert that did not fire, the review that did not look.\n5. One change that would have prevented it, and one that would have caught it sooner. Both, not either.\n\nReturn: the five sections above, no blame, no passive voice hiding who did what.\nApproval: none needed to write it. Required before publishing anywhere.",
+      "sha256": "429b14c4d3c49537555036933b0b3abddb4f4ce9f97366c3c5c927ae36eebfaf"
+    }
+  ]
+}
