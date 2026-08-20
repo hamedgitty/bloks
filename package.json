@@ -82,7 +82,7 @@
     "esbuild": "^0.28.2",
     "playwright-core": "^1.62.1",
     "tailwindcss": "^4.1.11",
-    "typescript": "^5.8.3",
+    "typescript": "^7.0.2",
     "vite": "^7.1.0"
   },
   "pnpm": {
