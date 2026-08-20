@@ -45,7 +45,7 @@ jobs:
 
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --linux --publish never
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bloks-linux
           path: |
@@ -115,7 +115,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --win --publish never
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bloks-windows
           path: |

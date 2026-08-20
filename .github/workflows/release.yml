@@ -180,7 +180,7 @@ jobs:
 
       # A dry run produces signed output that never becomes a release, so
       # hand it back as an artifact instead of throwing it away.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: inputs.dry_run
         with:
           name: bloks-macos-unpublished
