@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest something Bloks should be able to do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        The situation, not the solution. What were you doing when you
+        wanted this, and what did you do instead?
+      placeholder: |
+        I keep three agents working on the same launch and I want them to
+        see each other's output without me relaying it by hand.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Optional. If you already have a shape for it, describe it.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried already
+      description: >
+        Optional, but useful. Knowing what nearly worked often changes the
+        answer.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched open issues and this is not already there
+          required: true
+        - label: This is a feature, not a bug (bugs have their own template)
+          required: true

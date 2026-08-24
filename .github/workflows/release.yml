@@ -1,0 +1,193 @@
+name: Release
+
+# Push a tag that matches the version in package.json and this builds,
+# signs, notarizes and uploads a draft release. The draft is deliberate:
+# nothing reaches users until a human opens it, writes the notes and
+# clicks publish. docs/RELEASING.md walks through it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and sign, but do not create a release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build, sign and notarize
+    # arm64, with an Xcode that can cross-compile the x86_64 slice of the
+    # Swift helpers. Notarization is a network round trip to Apple and is
+    # usually the slowest step by a wide margin.
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Artifact filenames come from package.json, not from the tag, so a
+      # mismatch ships Bloks-0.1.3.dmg under a v0.2.0 release and nobody
+      # notices until someone reports the wrong version in About.
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $pkg."
+            echo "Bump the version, commit, then retag."
+            exit 1
+          fi
+
+      # Fail here rather than 20 minutes later with an unsigned .app that
+      # looks fine until Gatekeeper sees it.
+      - name: Check the signing secrets are present
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Missing repository secrets:$missing"
+            echo "See docs/RELEASING.md for how to produce each one."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same gate CI runs. A release that skips it is how a broken
+      # build gets a version number.
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      # One draft, made here, and nothing else is allowed to make one.
+      #
+      # electron-builder's own publisher cannot be used for this. It looks
+      # a release up by tag, and that lookup does not see drafts, so it
+      # never finds this one and makes its own instead. Worse, it resolves
+      # once per artifact and the uploads run concurrently, so two of them
+      # miss at the same moment and make two drafts carrying the same tag
+      # with the build split across them. A tag can hold any number of
+      # drafts, so nothing complains and you find out by reading the
+      # releases page.
+      #
+      # So: build with --publish never, and every platform attaches to
+      # this release by id, the same way the Windows and Linux jobs do.
+      - name: Open the draft release
+        if: startsWith(github.ref, 'refs/tags/') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/releases" \
+               --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | length" | grep -qv '^0$'; then
+            echo "a release for $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --title "Bloks ${GITHUB_REF_NAME#v}" \
+              --notes "Draft. Notes go here before this is published."
+          fi
+
+      - name: Build, sign and notarize
+        env:
+          # electron-builder imports this .p12 into a temporary keychain.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # notarytool credentials, read by @electron/notarize.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm package
+
+      # The build can succeed while quietly producing something Gatekeeper
+      # will reject, so assert on the artifact rather than on the exit code.
+      - name: Verify the signature and the notarization ticket
+        run: |
+          app=release/mac-universal/Bloks.app
+          if [ ! -d "$app" ]; then
+            app="$(find release -maxdepth 3 -name 'Bloks.app' -print -quit)"
+          fi
+          if [ -z "$app" ] || [ ! -d "$app" ]; then
+            echo "No Bloks.app under release/; nothing to verify."
+            exit 1
+          fi
+          echo "== app: $app =="
+          lipo -archs "$app/Contents/MacOS/Bloks"
+          echo "== swift helpers, which have to be universal too =="
+          for helper in speech-helper perm-helper; do
+            echo "$helper: $(lipo -archs "$app/Contents/Resources/$helper")"
+          done
+          echo "== codesign =="
+          codesign --verify --deep --strict --verbose=2 "$app"
+          echo "== gatekeeper =="
+          spctl --assess --type execute --verbose=4 "$app"
+          echo "== stapled ticket =="
+          xcrun stapler validate "$app"
+
+      # Verified, so now it can be attached. By id, to the one draft this
+      # job opened, for the reason written above that step.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+                 --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | first | .id // empty")
+          if [ -z "$id" ]; then
+            echo "The draft this job opened is gone."
+            exit 1
+          fi
+          for f in release/*.dmg release/*.zip release/latest*.yml release/*.blockmap; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            # Skip what is already there. Nothing races this step:
+            # --publish never means electron-builder uploads nothing at
+            # all. The guard is for re-runs. A job that failed after some
+            # of its uploads would otherwise 422 on the assets the first
+            # attempt had already placed correctly.
+            if gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" \
+                 --jq "map(select(.name == \"$name\")) | length" | grep -qv '^0$'; then
+              echo "  already there: $name"
+              continue
+            fi
+            gh api --method POST \
+              -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$name" \
+              --input "$f" >/dev/null
+            echo "  uploaded $name"
+          done
+
+      # A dry run produces signed output that never becomes a release, so
+      # hand it back as an artifact instead of throwing it away.
+      - uses: actions/upload-artifact@v4
+        if: inputs.dry_run
+        with:
+          name: bloks-macos-unpublished
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/latest*.yml
+            release/*.blockmap
+          retention-days: 7

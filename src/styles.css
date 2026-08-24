@@ -1,0 +1,475 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Bloks design tokens ──────────────────────────────────────────────
+   Two full palettes flipped by the `.dark` class on <html> (set before
+   first paint by the inline script in index.html, managed by
+   src/lib/theme.tsx). Semantic names follow shadcn/ui so generated
+   components drop in unchanged. */
+
+:root {
+  color-scheme: light;
+
+  --background: #ffffff;
+  --foreground: #18181b;
+
+  --sidebar: #f7f7f8;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f1f1f3;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  /* Just dark enough to clear 4.5:1 on the accent grey it most often
+     sits on, not only on white. */
+  --muted-foreground: #68686f;
+  --accent: #efeff1;
+  --accent-foreground: #18181b;
+
+  --brand: #5b6cff;
+  --brand-foreground: #ffffff;
+  --brand-soft: #eef0ff;
+  /* The same blue, dark enough to be read. Brand colour as a fill is a
+     surface and 4.17 to 1 is fine for one; the moment it becomes words,
+     or carries them, the bar is 4.5 and it misses. So --brand stays on
+     everything that is pure colour, a dot or a bar or a switch track,
+     and the ink takes every fill with something drawn on it and every
+     run of brand coloured text. Dark mode needs no second shade: there
+     the brand already sits at 6.4 to 1 on near black, which is why the
+     two are the same value below. */
+  --brand-ink: #4a59e6;
+
+  /* Status colours carry meaning, so they have to be readable at 11px
+     and on their own tint, which is where a badge puts them. The lighter
+     versions of these came out at about 3:1 on white and under 3:1 on a
+     15% wash of themselves. Dark mode never had the problem: there the
+     same hues sit on near black. */
+  --destructive: #c0272d;
+  --destructive-foreground: #ffffff;
+  --success: #1f7048;
+  --warning: #8f5a09;
+
+  --border: rgba(18, 18, 21, 0.09);
+  --input: rgba(18, 18, 21, 0.12);
+  /* The focus ring has to be seen, which the fill blue could not be:
+     at the seventy percent the rule below uses it came out at 2.6 to 1
+     against the page, under the 3 to 1 a focus indicator needs. Same
+     value as the ink, for the same reason. */
+  --ring: #4a59e6;
+
+  --shadow-color: rgba(24, 24, 27, 0.08);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #0e0e10;
+  --foreground: #ededf0;
+
+  --sidebar: #131316;
+  --card: #17171a;
+  --card-foreground: #ededf0;
+  --popover: #1a1a1e;
+  --popover-foreground: #ededf0;
+
+  --primary: #ededf0;
+  --primary-foreground: #131316;
+  --secondary: #232328;
+  --secondary-foreground: #ededf0;
+  --muted: #1e1e23;
+  --muted-foreground: #8f8f99;
+  --accent: #202025;
+  --accent-foreground: #ededf0;
+
+  --brand: #7c8aff;
+  --brand-ink: #7c8aff;
+  --brand-foreground: #14151f;
+  --brand-soft: rgba(124, 138, 255, 0.14);
+
+  --destructive: #ff6369;
+  --destructive-foreground: #1a0d0e;
+  --success: #3dd68c;
+  --warning: #f5a524;
+
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.13);
+  --ring: #7c8aff;
+
+  --shadow-color: rgba(0, 0, 0, 0.45);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  /* Strong curves, the built-in CSS easings are too weak for UI. */
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-quart: cubic-bezier(0.77, 0, 0.175, 1);
+
+  --animate-panel-in: panel-in 0.22s var(--ease-out-quart);
+  --animate-pop-in: pop-in 0.18s var(--ease-out-quart);
+  --animate-fade-in: fade-in 0.15s ease-out;
+  --animate-rise-in: rise-in 0.2s var(--ease-out-quart);
+  --animate-flip-in: flip-in 0.28s var(--ease-out-quart);
+  --animate-send-in: send-in 0.22s var(--ease-out-quart);
+  --animate-receive-in: receive-in 0.24s var(--ease-out-quart);
+  --animate-pop: pop 0.26s var(--ease-out-quart);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    letter-spacing: -0.011em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+
+  button {
+    cursor: default;
+  }
+
+  /* One focus ring for the whole app, and only for keyboard users. The
+     app is dense and every surface has its own radius, so this rides on
+     a shadow rather than an outline: it follows the border radius of
+     whatever it lands on instead of drawing a rectangle around it. */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--background),
+      0 0 0 4px var(--ring);
+    border-radius: inherit;
+  }
+  /* Text fields never take the global ring. A bare field shows focus
+     through its own component border, and a field inside a styled
+     wrapper (the composer pill, the search bar) lets the wrapper's
+     focus-within treatment speak alone. One ring, always the outermost. */
+  input:focus-visible,
+  textarea:focus-visible {
+    box-shadow: none;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 4px;
+  background-clip: padding-box;
+  border: 1px solid transparent;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--foreground) 26%, transparent);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+@keyframes panel-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes pop-in {
+  from { transform: scale(0.97) translateY(4px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rise-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+/* the describe → name field turn; the card rotates in on X so the two
+   states read as one object changing, not two fields swapping */
+@keyframes flip-in {
+  from { transform: rotateX(-38deg) translateY(-6px); opacity: 0; }
+  to { transform: rotateX(0) translateY(0); opacity: 1; }
+}
+/* arriving messages settle from the side they came from, so the motion
+   says who spoke before you've read a word */
+@keyframes send-in {
+  from { transform: translate3d(10px, 8px, 0) scale(0.98); opacity: 0; }
+  to { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+}
+@keyframes receive-in {
+  from { transform: translate3d(-8px, 8px, 0) scale(0.98); opacity: 0; }
+  to { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+}
+/* a shape landing after a shuffle */
+@keyframes pop {
+  0% { transform: scale(0.86); }
+  60% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+/* the halo an agent wears while its voice plays, in its own color */
+.call-speaking-ring {
+  animation: call-ring 1.6s ease-in-out infinite;
+}
+@keyframes call-ring {
+  0%, 100% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ring-tint, var(--brand)) 28%, transparent); }
+  50% { box-shadow: 0 0 0 18px color-mix(in srgb, var(--ring-tint, var(--brand)) 8%, transparent); }
+}
+
+/* ── first-run intro ─────────────────────────────────────────────────
+   One cinematic sequence, run once. Every animation here is transform
+   and opacity only, so the whole film stays on the compositor; the
+   reduced-motion block below flattens all of it to near-instant, and the
+   component itself swaps to plain crossfades in that case. */
+
+/* a block of the mark arriving: flies in from fully outside the frame
+   (--from-x/--from-y set per block in viewport units) and settles with a
+   soft overshoot */
+@keyframes intro-block-in {
+  from {
+    transform: translate(var(--from-x, 0px), var(--from-y, -100vh));
+    opacity: 1;
+  }
+  70% {
+    transform: translate(calc(var(--from-x, 0px) * -0.012), calc(var(--from-y, 0px) * -0.012));
+  }
+  to { transform: translate(0, 0); opacity: 1; }
+}
+.intro-block-in {
+  animation: intro-block-in 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* off-screen until its animation starts, not parked in the frame */
+  opacity: 0;
+}
+
+.intro-fade-in {
+  animation: intro-fade 400ms ease-out both;
+}
+@keyframes intro-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* content entering a stage: a short rise, staggered per element via
+   animation-delay in the markup */
+.intro-rise {
+  animation: intro-rise 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes intro-rise {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* the loader mascot hovers like it is treading air */
+.intro-hover {
+  animation: intro-hover 2.6s ease-in-out infinite;
+}
+@keyframes intro-hover {
+  0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+  50% { transform: translateY(-9px) rotate(1.5deg); }
+}
+
+/* trailing dots on "Setting up your workspace" */
+.intro-ellipsis::after {
+  content: "";
+  animation: intro-ellipsis 1.4s steps(4) infinite;
+}
+@keyframes intro-ellipsis {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+/* indeterminate progress: honest about not knowing how long */
+.intro-progress {
+  animation: intro-progress 1.5s ease-in-out infinite;
+}
+@keyframes intro-progress {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+
+.intro-caret {
+  animation: intro-caret 1s steps(1) infinite;
+}
+@keyframes intro-caret {
+  50% { opacity: 0; }
+}
+
+/* the settled mark rattling before it blows: a long build with the
+   amplitude ramping up, so it reads as pressure rising, not a glitch */
+.intro-shake {
+  animation: intro-shake 1620ms linear both;
+}
+@keyframes intro-shake {
+  0% { transform: translate(0, 0) rotate(0); }
+  5% { transform: translate(-1px, 1px) rotate(-0.2deg); }
+  10% { transform: translate(1px, -1px) rotate(0.2deg); }
+  15% { transform: translate(-1px, -1px) rotate(-0.3deg); }
+  20% { transform: translate(1px, 1px) rotate(0.3deg); }
+  25% { transform: translate(-2px, 1px) rotate(-0.4deg); }
+  30% { transform: translate(2px, -1px) rotate(0.4deg); }
+  35% { transform: translate(-2px, -2px) rotate(-0.5deg); }
+  40% { transform: translate(2px, 2px) rotate(0.5deg); }
+  45% { transform: translate(-2px, 2px) rotate(-0.6deg); }
+  50% { transform: translate(3px, -2px) rotate(0.6deg); }
+  55% { transform: translate(-3px, -2px) rotate(-0.7deg); }
+  60% { transform: translate(3px, 2px) rotate(0.8deg); }
+  65% { transform: translate(-3px, 2px) rotate(-0.9deg); }
+  70% { transform: translate(4px, -2px) rotate(0.9deg); }
+  75% { transform: translate(-4px, -3px) rotate(-1deg); }
+  80% { transform: translate(4px, 3px) rotate(1.1deg); }
+  85% { transform: translate(-5px, 3px) rotate(-1.2deg); }
+  90% { transform: translate(5px, -3px) rotate(1.3deg); }
+  95% { transform: translate(-5px, 2px) rotate(-1.2deg); }
+  100% { transform: translate(0, 0) rotate(0); }
+}
+
+/* the agent cursor's click: one expanding ring, then gone */
+.intro-click {
+  animation: intro-click 500ms ease-out both;
+}
+@keyframes intro-click {
+  from { transform: scale(0.3); opacity: 0.9; }
+  to { transform: scale(1.4); opacity: 0; }
+}
+
+/* the glow that sweeps the ring while the five agents take their places:
+   a conic highlight rotating once slowly, then left as a faint halo */
+.intro-sweep {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--brand) 55%, transparent) 40deg,
+    transparent 90deg
+  );
+  filter: blur(18px);
+  animation: intro-sweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) both;
+  transition: opacity 400ms ease-out;
+}
+@keyframes intro-sweep {
+  from { transform: rotate(0deg); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 0.9; }
+  to { transform: rotate(360deg); opacity: 0.18; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The window's own drag handle.
+ *
+ * With a hidden titlebar the frame gives us no draggable strip: whatever
+ * the app paints across the top IS the titlebar, and a header that does
+ * not say so leaves the window stuck to the desk. Anything a person can
+ * actually click inside that header opts back out, or the button would
+ * start a drag instead of firing. */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.titlebar-drag :is(button, a, input, textarea, select, [role="button"], [role="tab"], [contenteditable]) {
+  -webkit-app-region: no-drag;
+}
+
+/* The terminal.
+ *
+ * xterm lays out its own grid and paints its own scrollbar, and both want
+ * the right-hand gutter. Padding on the element around it is therefore
+ * counted twice on that side and crops the last column, so the breathing
+ * room goes inside the terminal and only on the left.
+ *
+ * The grid is pinned to the top as well. Fitting leaves a partial row of
+ * slack and xterm would otherwise distribute it, which moves every line
+ * by a few pixels each time the drawer is dragged. */
+.term-host .xterm {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  height: 100%;
+  padding: 4px 0 4px 12px;
+}
+.term-host .xterm-screen {
+  flex: 0 0 auto;
+}
+.term-host .xterm-scrollable-element {
+  align-self: stretch;
+  width: 100%;
+}
+/* xterm paints these itself, and its own idea of the background is one
+   frame behind a theme change. */
+.term-host .xterm,
+.term-host .xterm-viewport,
+.term-host .xterm-screen {
+  background-color: var(--card) !important;
+}
+.term-host .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  border-radius: 999px;
+  left: auto !important;
+  right: 3px !important;
+  width: 6px !important;
+}

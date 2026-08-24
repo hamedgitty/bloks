@@ -1,0 +1,189 @@
+# Cross-platform desktop builds.
+#
+# Separate from release.yml on purpose: the macOS release carries signing
+# and notarization, which have secrets and a human in the loop. These two
+# build unsigned artifacts on every tag and on demand, so a Windows or
+# Linux user always has something current to download, and so a breakage
+# in either target surfaces in CI rather than on someone's machine.
+#
+# The Linux job also runs the harness's test suite on Linux, which is the
+# closest thing to "does the server actually work off-macOS" that CI can
+# answer without a GUI.
+#
+# On a tag both jobs also attach what they built to the draft release
+# that release.yml is creating in parallel, so one tag produces one
+# release carrying every platform. They wait for the draft rather than
+# assuming it: the two workflows start together and the macOS one has to
+# sign and notarize before it has anything to attach to.
+name: Desktop builds
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux (AppImage, deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The suite on Linux: origin checks, limits, the whole request path.
+      - run: pnpm test
+
+      - run: pnpm build && pnpm build:server
+      - run: pnpm exec electron-builder --linux --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bloks-linux
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/latest*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+      # Attach to the draft the macOS job is making.
+      #
+      # By id, found among all releases including drafts, rather than by
+      # tag. A draft is not addressable by tag: `gh release view v1.0.0`
+      # and `gh release upload v1.0.0` will happily make a second draft
+      # carrying the same tag, and the first run of this produced exactly
+      # that, with the mac build in one and everything else in the other.
+      #
+      # Waiting rather than assuming: both workflows start on the same
+      # tag and this one usually finishes first, because signing and
+      # notarizing is a network round trip to Apple.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 80); do
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+                   --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | first | .id // empty")
+            if [ -n "$id" ]; then
+              echo "attaching to release $id"
+              for f in release/*.AppImage release/*.deb release/latest*.yml release/*.blockmap; do
+                # latest*.yml is the update manifest electron-updater
+                # fetches, and the blockmaps are what make an update a
+                # delta rather than a whole redownload. Without them a
+                # packaged build checks for updates forever and never
+                # finds one. A glob that matches nothing arrives as
+                # itself, so check before uploading.
+                [ -f "$f" ] || continue
+                name=$(basename "$f")
+                # Skip what is already there: re-posting a name that
+                # exists is a 422 that fails the job over an asset that
+                # is already correct.
+                if gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" \
+                     --jq "map(select(.name == \"$name\")) | length" | grep -qv '^0$'; then
+                  echo "  already there: $name"
+                  continue
+                fi
+                gh api --method POST \
+                  -H "Content-Type: application/octet-stream" \
+                  "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$name" \
+                  --input "$f" >/dev/null
+                echo "  uploaded $name"
+              done
+              exit 0
+            fi
+            echo "waiting for the draft release ($i/80)"
+            sleep 30
+          done
+          echo "The draft release never appeared. The build is still on this run as an artifact."
+          exit 1
+
+
+  windows:
+    name: Windows (installer, zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build && pnpm build:server
+      - run: pnpm exec electron-builder --win --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bloks-windows
+          path: |
+            release/*.exe
+            release/*.zip
+            release/latest*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+      # Attach to the draft the macOS job is making.
+      #
+      # By id, found among all releases including drafts, rather than by
+      # tag. A draft is not addressable by tag: `gh release view v1.0.0`
+      # and `gh release upload v1.0.0` will happily make a second draft
+      # carrying the same tag, and the first run of this produced exactly
+      # that, with the mac build in one and everything else in the other.
+      #
+      # Waiting rather than assuming: both workflows start on the same
+      # tag and this one usually finishes first, because signing and
+      # notarizing is a network round trip to Apple.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 80); do
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+                   --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | first | .id // empty")
+            if [ -n "$id" ]; then
+              echo "attaching to release $id"
+              for f in release/*.exe release/*.zip release/latest*.yml release/*.blockmap; do
+                # latest*.yml is the update manifest electron-updater
+                # fetches, and the blockmaps are what make an update a
+                # delta rather than a whole redownload. Without them a
+                # packaged build checks for updates forever and never
+                # finds one. A glob that matches nothing arrives as
+                # itself, so check before uploading.
+                [ -f "$f" ] || continue
+                name=$(basename "$f")
+                # Skip what is already there: re-posting a name that
+                # exists is a 422 that fails the job over an asset that
+                # is already correct.
+                if gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" \
+                     --jq "map(select(.name == \"$name\")) | length" | grep -qv '^0$'; then
+                  echo "  already there: $name"
+                  continue
+                fi
+                gh api --method POST \
+                  -H "Content-Type: application/octet-stream" \
+                  "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$name" \
+                  --input "$f" >/dev/null
+                echo "  uploaded $name"
+              done
+              exit 0
+            fi
+            echo "waiting for the draft release ($i/80)"
+            sleep 30
+          done
+          echo "The draft release never appeared. The build is still on this run as an artifact."
+          exit 1
+

@@ -1,0 +1,84 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing this. One note before you paste anything: logs
+        under `~/.bloks` can contain API keys and the contents of your
+        conversations. Please scrub them.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        I asked the agent to run the tests. I expected an approval card.
+        The turn ended with no output and no error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create an agent on ...
+        2. Send "..."
+        3. Watch the transcript
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Which engine was the agent running on
+      description: The model picker in the chat header shows this.
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - An API provider (Gemini, Grok, Kimi, Llama, DeepSeek, Mistral, Groq, OpenRouter)
+        - Ollama or another local endpoint
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Bloks version
+      description: From the app, or the commit you are running.
+      placeholder: "0.1.3, or a commit sha"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How are you running it
+      options:
+        - Packaged desktop app
+        - From source (pnpm dev)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: "macOS 15.4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >
+        Optional. The harness prints to the terminal that runs it. The
+        canonical event stream is in `~/.bloks/events/`, raw provider
+        traffic in `~/.bloks/native/`. Scrub keys first.
+      render: shell

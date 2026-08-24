@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hamedgitty/bloks/security/advisories/new
+    about: >
+      Please do not open a public issue for anything exploitable. Open a
+      private advisory instead. See SECURITY.md.
+  - name: Question or idea
+    url: https://github.com/hamedgitty/bloks/discussions
+    about: >
+      Not sure whether something is a bug? Want to talk through an idea
+      before building it? Start a discussion.
