@@ -27,13 +27,13 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -181,7 +181,7 @@ jobs:
 
       # A dry run produces signed output that never becomes a release, so
       # hand it back as an artifact instead of throwing it away.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: inputs.dry_run
         with:
           name: bloks-macos-unpublished

@@ -30,11 +30,11 @@ jobs:
     name: Linux (AppImage, deb)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -45,7 +45,14 @@ jobs:
 
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --linux --publish never
-      - uses: actions/upload-artifact@v4
+      # Only when there is no release to attach to. A tag build already
+      # puts these exact files on the release, so uploading them again as
+      # a run artifact stores a second copy of every installer for ninety
+      # days. Three platforms at roughly 1.5 GB a tag exhausted the
+      # account's artifact quota, and the next build failed at this step
+      # with the installers already built and sitting on disk.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: bloks-linux
           path: |
@@ -54,6 +61,7 @@ jobs:
             release/latest*.yml
             release/*.blockmap
           if-no-files-found: error
+          retention-days: 7
 
       # Attach to the draft the macOS job is making.
       #
@@ -113,18 +121,20 @@ jobs:
     name: Windows (installer, zip)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --win --publish never
-      - uses: actions/upload-artifact@v4
+      # Same reasoning as the Linux job above.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: bloks-windows
           path: |
@@ -133,6 +143,7 @@ jobs:
             release/latest*.yml
             release/*.blockmap
           if-no-files-found: error
+          retention-days: 7
 
       # Attach to the draft the macOS job is making.
       #

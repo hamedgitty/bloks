@@ -1,4 +1,14 @@
+# Which dependencies may run install scripts. pnpm blocks them by default,
+# and this list used to live in package.json under "pnpm", where current
+# pnpm no longer reads it: the keys were ignored and the file left behind
+# placeholder strings rather than booleans. Electron was not named at all,
+# so a clean install could finish without ever fetching the Electron
+# binary and fail later at package time with nothing obvious to blame.
 allowBuilds:
-  core-js: set this to true or false
-  electron-winstaller: set this to true or false
-  esbuild: set this to true or false
+  # Both fetch a platform binary during install and are useless without it.
+  electron: true
+  esbuild: true
+  # Windows installer tooling, needed by the Windows build job.
+  electron-winstaller: true
+  # A postinstall banner asking for donations. Nothing depends on it.
+  core-js: false

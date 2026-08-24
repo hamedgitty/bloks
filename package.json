@@ -1,6 +1,6 @@
 {
   "name": "bloks",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "A local-first desktop workspace for personal AI agents.",
   "license": "SEE LICENSE IN LICENSE",
@@ -69,7 +69,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwind-merge": "^3.3.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",
@@ -85,11 +85,5 @@
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",
     "vite": "^7.1.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild"
-    ]
   }
 }
