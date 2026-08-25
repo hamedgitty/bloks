@@ -54,6 +54,9 @@ export interface Notice {
   target: string;
   /** Approvals get to be loud; everything else is quiet. */
   urgent: boolean;
+  /** The agent's face, when it has one, so a stack of banners reads as
+   * people rather than as one app repeating itself. */
+  avatar?: string;
 }
 
 const MAX_BODY = 180;

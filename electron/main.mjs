@@ -557,13 +557,46 @@ ipcMain.handle("perm:open-settings", (_event, pane) => {
  * to the main process and the click has to raise a window the renderer
  * cannot raise itself.
  */
-ipcMain.handle("notify:show", (event, notice) => {
+/** The banner each conversation currently has up, so a chatty agent
+ * replaces its own banner rather than papering the corner of the screen
+ * with copies. Keyed by target: one banner per conversation. */
+const standingBanners = new Map();
+
+/** The agent's face for the banner, fetched from the harness. Answers
+ * null quickly and quietly whenever it cannot: an iconless banner is
+ * fine, a banner that arrives late is not. */
+async function bannerIcon(avatar) {
+  if (typeof avatar !== "string" || !avatar.startsWith("/api/")) return null;
+  try {
+    const response = await fetch(`http://127.0.0.1:${serverPort}${avatar}`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!response.ok) return null;
+    const image = nativeImage.createFromBuffer(Buffer.from(await response.arrayBuffer()));
+    return image.isEmpty() ? null : image;
+  } catch {
+    return null;
+  }
+}
+
+ipcMain.handle("notify:show", async (event, notice) => {
   if (!Notification.isSupported()) return;
+  const target = String(notice?.target ?? "");
+  const icon = await bannerIcon(notice?.avatar);
   const shown = new Notification({
     title: String(notice?.title ?? "Bloks").slice(0, 120),
     body: String(notice?.body ?? "").slice(0, 400),
     silent: !notice?.urgent,
+    ...(icon ? { icon } : {}),
   });
+  // the previous banner from this conversation is old news now
+  if (target) {
+    standingBanners.get(target)?.close();
+    standingBanners.set(target, shown);
+    shown.on("close", () => {
+      if (standingBanners.get(target) === shown) standingBanners.delete(target);
+    });
+  }
   shown.on("click", () => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;

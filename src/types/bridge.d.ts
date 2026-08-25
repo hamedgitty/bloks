@@ -30,6 +30,7 @@ declare global {
         body: string;
         target: string;
         urgent: boolean;
+        avatar?: string;
       }): Promise<void>;
       onNotifyActivate(handler: (payload: { target: string }) => void): () => void;
       /** Puts a number on the Dock icon; 0 clears it. */

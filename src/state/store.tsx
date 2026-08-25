@@ -343,6 +343,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const previous = lastBanner.current.get(threadId) ?? 0;
     if (!notice.urgent && now - previous < 4000) return;
     lastBanner.current.set(threadId, now);
+    if (bot?.avatarAt) notice.avatar = `/api/bots/${bot.id}/avatar?v=${bot.avatarAt}`;
     void bridge.notifyShow(notice).catch(() => {});
   }, []);
 
