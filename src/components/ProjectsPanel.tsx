@@ -20,6 +20,7 @@ import { BlokAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { cn } from "@/lib/cn";
 
 interface FolderStanding {
@@ -318,13 +319,20 @@ function ProjectForm({
 
       <label className="text-[12.5px] text-muted-foreground">
         Folders, one per line. The first one that exists is where turns run.
-        <Textarea
-          value={folders}
-          onChange={(e) => setFolders(e.target.value)}
-          rows={2}
-          placeholder="/Users/you/src/api"
-          className="mt-1 resize-none font-mono text-[12px]"
-        />
+        <div className="mt-1 flex items-start gap-1.5">
+          <Textarea
+            value={folders}
+            onChange={(e) => setFolders(e.target.value)}
+            rows={2}
+            placeholder="/Users/you/src/api"
+            className="resize-none font-mono text-[12px]"
+          />
+          <BrowseFolderButton
+            onPick={(path) =>
+              setFolders((current: string) => (current.trim() ? `${current.trimEnd()}\n${path}` : path))
+            }
+          />
+        </div>
       </label>
 
       <label className="text-[12.5px] text-muted-foreground">

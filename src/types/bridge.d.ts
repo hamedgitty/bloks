@@ -38,6 +38,8 @@ declare global {
       /** The disk path behind a dropped or picked File, or "" when the
        * file has none (a drag out of a browser, for instance). */
       filePath(file: File): string;
+      /** The native folder picker; null when the user cancels. */
+      pickFolder(): Promise<string | null>;
       /** Registers the system-wide hotkey, or clears it with null.
        * Answers with what actually took: another app may own the keys. */
       shortcutApply(accelerator: string | null): Promise<string | null>;

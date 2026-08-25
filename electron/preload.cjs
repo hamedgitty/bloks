@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("bloks", {
   // Where a dropped or picked File actually lives. Chromium stopped
   // putting the path on the File object; this is the sanctioned bridge.
   filePath: (file) => webUtils.getPathForFile(file),
+  pickFolder: () => ipcRenderer.invoke("dialog:pick-folder"),
   shortcutApply: (accelerator) => ipcRenderer.invoke("shortcut:apply", accelerator),
   quickHide: () => ipcRenderer.invoke("quick:hide"),
   quickOpenMain: () => ipcRenderer.invoke("quick:open-main"),

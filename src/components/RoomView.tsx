@@ -30,6 +30,7 @@ import {
 } from "./MessageActions";
 import { OptionCard } from "./OptionCard";
 import { Button } from "@/components/ui/button";
+import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
 import { GalleryComponent } from "./Gallery";
 import MoreHorizontal from "lucide-react/dist/esm/icons/more-horizontal.js";
@@ -794,13 +795,16 @@ function RoomFolderButton({ blok }: { blok: Blok }) {
               <div className="mt-1 text-[12px] text-muted-foreground">
                 Every member's room turns run here. Set it before the room's first task.
               </div>
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && save()}
-                placeholder="/Users/you/Projects/launch  (empty = own folders)"
-                className="mt-2 w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring/60"
-              />
+              <div className="mt-2 flex gap-1.5">
+                <input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && save()}
+                  placeholder="/Users/you/Projects/launch  (empty = own folders)"
+                  className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring/60"
+                />
+                <BrowseFolderButton onPick={setDraft} />
+              </div>
               {error && <div className="mt-1.5 text-[12px] text-destructive">{error}</div>}
               <div className="mt-2 flex justify-end gap-1.5">
                 <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>

@@ -12,6 +12,7 @@ import { AgentAvatar, BlokAvatar } from "./Avatar";
 import { drawNames, type LibraryMember } from "@/lib/teamLibrary";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { BrowseFolderButton } from "@/components/ui/browse-folder";
 
 export interface HireableTeam {
   name: string;
@@ -175,12 +176,15 @@ export function TeamHireDialog({
               <span className="text-[12.5px] font-medium text-muted-foreground">
                 A folder to work in
               </span>
-              <input
-                value={desk}
-                onChange={(e) => setDesk(e.target.value)}
-                placeholder="Optional. e.g. ~/Projects/pricing"
-                className="mt-1.5 w-full rounded-xl border border-input bg-transparent px-3 py-2 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring/60"
-              />
+              <div className="mt-1.5 flex gap-1.5">
+                <input
+                  value={desk}
+                  onChange={(e) => setDesk(e.target.value)}
+                  placeholder="Optional. e.g. ~/Projects/pricing"
+                  className="w-full rounded-xl border border-input bg-transparent px-3 py-2 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring/60"
+                />
+                <BrowseFolderButton onPick={setDesk} className="h-auto rounded-xl" />
+              </div>
             </label>
             <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
               Both are optional and can change later. Answering now means the room starts with

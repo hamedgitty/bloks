@@ -4718,6 +4718,14 @@ const server = createServer(async (req, res) => {
       // project, instead of a room of strangers asking what this is.
       const brief = clamp(body.brief, 600);
       const desk = typeof body.cwd === "string" ? body.cwd.trim() : "";
+      // Checked before anything is created: a mistyped desk used to be
+      // dropped on the floor after the dialog had already said yes, and a
+      // room that quietly ignores the folder it was given is worse than
+      // an error. The dialog shows this message next to the field.
+      const resolvedDesk = desk ? workspace.validateWorkingFolder(desk) : null;
+      if (resolvedDesk && !resolvedDesk.ok) {
+        return json(res, 400, { error: resolvedDesk.error });
+      }
       const hired = profiles.map((profile) =>
         store.createBot({
           ...profile,
@@ -4741,10 +4749,7 @@ const server = createServer(async (req, res) => {
         [...existing, ...hired.map((h) => h.id)],
       );
       // one desk for the whole room, when they were pointed at a folder
-      if (desk) {
-        const resolved = workspace.validateWorkingFolder(desk);
-        if (resolved.ok && resolved.path) bloks.patch(blok.id, { cwd: resolved.path });
-      }
+      if (resolvedDesk?.ok && resolvedDesk.path) bloks.patch(blok.id, { cwd: resolvedDesk.path });
       if (brief) {
         const note = store.appendMessage(blok.id, {
           role: "bot",

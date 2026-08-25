@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { cn } from "@/lib/cn";
 
 function Field({
@@ -646,6 +647,12 @@ function WorkingFolderCard({ bot }: { bot: Bot }) {
           placeholder="~/Projects/my-app"
           spellCheck={false}
           className="h-8 font-mono text-[12px]"
+        />
+        <BrowseFolderButton
+          onPick={(path) => {
+            setValue(path);
+            save(path);
+          }}
         />
         <Button variant="secondary" size="sm" onClick={() => save(value.trim() || null)}>
           Save

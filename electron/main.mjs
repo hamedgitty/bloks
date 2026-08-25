@@ -15,6 +15,7 @@ import {
   BrowserWindow,
   clipboard,
   desktopCapturer,
+  dialog,
   globalShortcut,
   ipcMain,
   Menu,
@@ -607,6 +608,20 @@ ipcMain.handle("notify:show", async (event, notice) => {
     win.webContents.send("notify:activate", { target: notice?.target ?? "" });
   });
   shown.show();
+});
+
+/**
+ * The real folder picker, for every place the app asks for a folder.
+ * Typing a path stays possible; this is for everyone who should not
+ * have to know what an absolute path is. Answers null on cancel.
+ */
+ipcMain.handle("dialog:pick-folder", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return null;
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return canceled ? null : (filePaths[0] ?? null);
 });
 
 /**
