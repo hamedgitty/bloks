@@ -11,6 +11,7 @@ import PinOff from "lucide-react/dist/esm/icons/pin-off.js";
 import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Archive from "lucide-react/dist/esm/icons/archive.js";
 import Puzzle from "lucide-react/dist/esm/icons/puzzle.js";
+import Folder from "lucide-react/dist/esm/icons/folder.js";
 import FolderKanban from "lucide-react/dist/esm/icons/folder-kanban.js";
 import Activity from "lucide-react/dist/esm/icons/activity.js";
 import BotIcon from "lucide-react/dist/esm/icons/bot.js";
@@ -29,6 +30,7 @@ import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/pageVisible";
 import { previewLine } from "@/lib/preview";
+import { inSection, sectionNames } from "@/lib/sections";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,7 +54,107 @@ interface MenuState {
   y: number;
 }
 
-function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
+/** What is being filed under a section right now, if anything. */
+interface FilingState {
+  kind: "bot" | "room";
+  id: string;
+  name: string;
+  current: string | null;
+}
+
+/**
+ * The filing dialog: existing sections as one-click destinations, a
+ * field for a new name, and a way back out. Sections come from what is
+ * already filed, so this list is never stale and never empty-but-real.
+ */
+function SectionPicker({ filing, onClose }: { filing: FilingState; onClose: () => void }) {
+  const { state, dispatch } = useStore();
+  const [draft, setDraft] = useState("");
+  const names = sectionNames(
+    state.bots.filter((b) => !b.hidden),
+    state.bloks,
+  );
+
+  const fileTo = (section: string | null) => {
+    if (filing.kind === "bot") {
+      dispatch({ type: "updateBot", botId: filing.id, patch: { section } });
+    } else {
+      dispatch({ type: "patchRoom", blokId: filing.id, patch: { section } });
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
+    >
+      <div className="w-[300px] animate-pop-in rounded-2xl border bg-popover p-4 shadow-lg">
+        <div className="text-[13.5px] font-semibold text-foreground">
+          File {filing.name} under…
+        </div>
+        <div className="mt-3 flex flex-col gap-1">
+          {names.map((name) => (
+            <button
+              key={name}
+              onClick={() => fileTo(name)}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-foreground hover:bg-accent",
+                name === filing.current && "bg-accent/60 font-medium",
+              )}
+            >
+              <Folder size={14} className="text-muted-foreground" />
+              {name}
+            </button>
+          ))}
+          {names.length === 0 && (
+            <div className="px-1 py-1 text-[12.5px] text-muted-foreground">
+              No sections yet. Name the first one below.
+            </div>
+          )}
+        </div>
+        <form
+          className="mt-2 flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (draft.trim()) fileTo(draft.trim());
+          }}
+        >
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="New section"
+            maxLength={60}
+            className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring/60"
+          />
+          <Button type="submit" size="sm" variant="secondary" disabled={!draft.trim()}>
+            File
+          </Button>
+        </form>
+        {filing.current && (
+          <button
+            onClick={() => fileTo(null)}
+            className="mt-2 w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            Remove from {filing.current}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BotContextMenu({
+  menu,
+  onClose,
+  onFile,
+}: {
+  menu: MenuState;
+  onClose: () => void;
+  onFile: (filing: FilingState) => void;
+}) {
   const { state, dispatch } = useStore();
   const bot = state.bots.find((b) => b.id === menu.botId);
 
@@ -119,6 +221,9 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
         ),
         item(<BellDot size={15} className="text-muted-foreground" />, "Mark as unread", () =>
           dispatch({ type: "markUnread", botId: bot.id }),
+        ),
+        item(<Folder size={15} className="text-muted-foreground" />, "Move to section…", () =>
+          onFile({ kind: "bot", id: bot.id, name: bot.name, current: bot.section ?? null }),
         ),
         divider("d1"),
         item(<Pencil size={15} className="text-muted-foreground" />, "Edit profile", () => {
@@ -220,7 +325,15 @@ function BotListItem({
   );
 }
 
-function RoomListItem({ blok, rail }: { blok: Blok; rail?: boolean }) {
+function RoomListItem({
+  blok,
+  rail,
+  onFile,
+}: {
+  blok: Blok;
+  rail?: boolean;
+  onFile?: (filing: FilingState) => void;
+}) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === blok.id;
   const members = blok.memberIds
@@ -252,6 +365,11 @@ function RoomListItem({ blok, rail }: { blok: Blok; rail?: boolean }) {
   return (
     <button
       onClick={() => dispatch({ type: "select", id: blok.id })}
+      onContextMenu={(e) => {
+        if (!onFile) return;
+        e.preventDefault();
+        onFile({ kind: "room", id: blok.id, name: blok.name, current: blok.section ?? null });
+      }}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-[background-color,transform] duration-150 active:scale-[0.99]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -335,6 +453,7 @@ export function Sidebar() {
   const { state, dispatch } = useStore();
   const { resolvedTheme, setTheme } = useTheme();
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [filing, setFiling] = useState<FilingState | null>(null);
   const activity = useActivityCount();
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState("");
@@ -522,7 +641,8 @@ export function Sidebar() {
             <SettingsIcon size={16} />
           </button>
         </header>
-        {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} />}
+        {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
+        {filing && <SectionPicker filing={filing} onClose={() => setFiling(null)} />}
         {showArchived && <ArchivedAgents onClose={() => setShowArchived(false)} />}
       </>
     );
@@ -654,10 +774,13 @@ export function Sidebar() {
         </button>
       )}
 
-      {/* The agent list is the whole sidebar: no sections, no chrome */}
+      {/* The list. Filed rows stand under their section's heading; the
+          unfiled majority keeps the plain Rooms and Agents lists it has
+          always had, so sections cost nothing until the first one is
+          named. The rail has no room for headings and stays flat. */}
       <div className="flex-1 overflow-y-auto px-2 pt-1">
         <div className={cn("flex flex-col", rail ? "gap-1" : "gap-px")}>
-          {state.bloks.length > 0 && (
+          {(rail ? state.bloks : inSection(state.bloks, null)).length > 0 && (
             <>
               {!rail && (
                 <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
@@ -671,8 +794,8 @@ export function Sidebar() {
                   </button>
                 </div>
               )}
-              {state.bloks.map((b) => (
-                <RoomListItem key={b.id} blok={b} rail={rail} />
+              {(rail ? state.bloks : inSection(state.bloks, null)).map((b) => (
+                <RoomListItem key={b.id} blok={b} rail={rail} onFile={setFiling} />
               ))}
               {rail ? (
                 <div className="mx-3 my-1 border-t" />
@@ -683,9 +806,29 @@ export function Sidebar() {
               )}
             </>
           )}
-          {visibleBots.map((b) => (
+          {(rail ? visibleBots : inSection(visibleBots, null)).map((b) => (
             <BotListItem key={b.id} bot={b} onMenu={setMenu} rail={rail} />
           ))}
+          {!rail &&
+            sectionNames(visibleBots, state.bloks).map((name) => {
+              const rooms = inSection(state.bloks, name);
+              const bots = inSection(visibleBots, name);
+              if (!rooms.length && !bots.length) return null;
+              return (
+                <div key={name} className="flex flex-col gap-px">
+                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    <Folder size={11} className="shrink-0" />
+                    <span className="truncate">{name}</span>
+                  </div>
+                  {rooms.map((b) => (
+                    <RoomListItem key={b.id} blok={b} onFile={setFiling} />
+                  ))}
+                  {bots.map((b) => (
+                    <BotListItem key={b.id} bot={b} onMenu={setMenu} />
+                  ))}
+                </div>
+              );
+            })}
           {visibleBots.length === 0 && !rail && (
             <div className="px-3 py-8 text-center text-[13px] text-muted-foreground">
               {query ? "No agents match" : "No agents yet. Create one with +"}
@@ -760,7 +903,8 @@ export function Sidebar() {
         </div>
       </div>
 
-      {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
+      {filing && <SectionPicker filing={filing} onClose={() => setFiling(null)} />}
       {showArchived && <ArchivedAgents onClose={() => setShowArchived(false)} />}
     </aside>
   );

@@ -30,6 +30,9 @@ export interface BlokRecord {
    * its members so it can come back; only an explicit second decision
    * removes anything. */
   archived?: boolean;
+  /** The sidebar heading this room files under. One namespace shared
+   * with agents; absent or null means the plain Rooms list. */
+  section?: string | null;
   /** The room's shared desk. Every member's room turn runs here instead
    * of in its own folder. Three states matter: undefined = never
    * dispatched, null = each member keeps its own, a path = the desk. */
@@ -92,7 +95,7 @@ export class BlokStore {
 
   patch(
     id: string,
-    patch: Partial<Pick<BlokRecord, "name" | "memberIds" | "leadOnly" | "cwd" | "archived">>,
+    patch: Partial<Pick<BlokRecord, "name" | "memberIds" | "leadOnly" | "cwd" | "archived" | "section">>,
   ): BlokRecord | null {
     const blok = this.get(id);
     if (!blok) return null;
@@ -103,6 +106,7 @@ export class BlokStore {
     if (typeof patch.leadOnly === "boolean") blok.leadOnly = patch.leadOnly;
     if (typeof patch.archived === "boolean") blok.archived = patch.archived || undefined;
     if ("cwd" in patch) blok.cwd = patch.cwd ?? undefined;
+    if ("section" in patch) blok.section = patch.section ?? undefined;
     this.save();
     return blok;
   }

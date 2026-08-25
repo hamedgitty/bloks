@@ -152,6 +152,9 @@ export interface Bot {
   /** Components this agent may not answer with. */
   withoutComponents?: string[];
   pinned?: boolean;
+  /** The sidebar heading this agent files under; unset means the plain
+   * Agents list. Shares one namespace with rooms. */
+  section?: string | null;
   hidden?: boolean;
   messages: Message[];
 }
@@ -211,6 +214,9 @@ export interface Blok {
   /** The room's shared desk, and the pin that fixes it at first use. */
   cwd?: string;
   pinnedCwd?: string | null;
+  /** The sidebar heading this room files under; unset means the plain
+   * Rooms list. Shares one namespace with agents. */
+  section?: string | null;
   createdAt: number;
   messages: Message[];
 }
@@ -284,7 +290,7 @@ export type Action =
   | { type: "blokDeleted"; blokId: string }
   | { type: "createRoom"; name: string; memberIds: string[] }
   | { type: "deleteRoom"; blokId: string }
-  | { type: "patchRoom"; blokId: string; patch: { archived?: boolean; name?: string } }
+  | { type: "patchRoom"; blokId: string; patch: { archived?: boolean; name?: string; section?: string | null } }
   | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"] }
   | { type: "toggleNewRoom"; open?: boolean }
   | { type: "instances"; instances: InstanceInfo[] }
@@ -347,6 +353,7 @@ export type Action =
           | "mascotExpression"
           | "pinned"
           | "hidden"
+          | "section"
           | "composio"
           | "mcpServers"
         >

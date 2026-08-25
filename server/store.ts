@@ -234,6 +234,9 @@ export interface BotRecord {
   withoutComponents?: string[];
   pinned?: boolean;
   hidden?: boolean;
+  /** The sidebar heading this agent files under. One namespace shared
+   * with rooms; absent or null means the plain Agents list. */
+  section?: string | null;
   /**
    * Retired rather than destroyed. Set instead of the record being
    * deleted, so an agent stops appearing and stops working without

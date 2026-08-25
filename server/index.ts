@@ -389,6 +389,23 @@ function liveCards() {
   };
 }
 
+/**
+ * A section name as the sidebar will show it. One rule for agents and
+ * rooms, because they share the namespace: null or an empty string
+ * clears the filing, whitespace collapses, and the cap keeps a heading
+ * from becoming a paragraph.
+ */
+function normalizeSection(
+  raw: unknown,
+): { ok: true; section: string | null } | { ok: false; error: string } {
+  if (raw === null || raw === "") return { ok: true, section: null };
+  if (typeof raw !== "string") return { ok: false, error: "a section is a short name" };
+  const name = raw.trim().replace(/\s+/g, " ");
+  if (!name) return { ok: true, section: null };
+  if (name.length > 60) return { ok: false, error: "section names top out at 60 characters" };
+  return { ok: true, section: name };
+}
+
 function clientBot(bot: BotRecord | null) {
   if (!bot) return bot;
   const { resumeCursors: _cursors, tasks, ...visible } = bot;
@@ -3286,6 +3303,11 @@ const server = createServer(async (req, res) => {
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.path;
       }
+      if (body.section !== undefined) {
+        const named = normalizeSection(body.section);
+        if (!named.ok) return json(res, 400, { error: named.error });
+        patch.section = named.section;
+      }
       if (body.mcpServers !== undefined) {
         if (!Array.isArray(body.mcpServers)) {
           return json(res, 400, { error: "mcpServers must be a list of server ids" });
@@ -4613,10 +4635,15 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/bloks\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
-      const patch: { name?: string; memberIds?: string[]; leadOnly?: boolean; cwd?: string; archived?: boolean } = {};
+      const patch: { name?: string; memberIds?: string[]; leadOnly?: boolean; cwd?: string; archived?: boolean; section?: string | null } = {};
       if (typeof body.name === "string") patch.name = body.name;
       if (typeof body.leadOnly === "boolean") patch.leadOnly = body.leadOnly;
       if (typeof body.archived === "boolean") patch.archived = body.archived;
+      if (body.section !== undefined) {
+        const named = normalizeSection(body.section);
+        if (!named.ok) return json(res, 400, { error: named.error });
+        patch.section = named.section;
+      }
       if ("cwd" in body) {
         const existing = bloks.get(m[1]);
         if (existing?.pinnedCwd !== undefined) {
