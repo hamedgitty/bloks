@@ -116,6 +116,51 @@ function ProposeSkills() {
 
 /** Shared context every agent receives. Optional, never asked for up
  * front: it lives here for whenever you feel like writing it. */
+/**
+ * One button between "it doesn't work" and a useful bug report. The
+ * server assembles the facts (versions, engine states, which
+ * credentials exist as booleans, never values) and this copies them,
+ * ready to paste into a GitHub issue.
+ */
+function Diagnostics() {
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const copy = async () => {
+    try {
+      const report = await fetch("/api/diagnostics").then((r) => {
+        if (!r.ok) throw new Error();
+        return r.text();
+      });
+      await navigator.clipboard.writeText(report);
+      setFailed(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setFailed(true);
+    }
+  };
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="text-[13.5px] font-semibold text-foreground">Diagnostics</div>
+      <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+        Copies a short report about this install for a bug report: versions, engine states and
+        which keys are set. Never the keys themselves.
+      </div>
+      <button
+        onClick={() => void copy()}
+        className="mt-3 rounded-xl border bg-background px-3 py-1.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-accent"
+      >
+        {copied ? "Copied" : "Copy diagnostics"}
+      </button>
+      {failed && (
+        <div className="mt-2 text-[12px] text-destructive">
+          Couldn't build the report. Is the server running?
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AboutYou() {
   const { state, dispatch } = useStore();
   const saved = state.config?.profile?.about ?? "";
@@ -404,6 +449,7 @@ export function AppSettingsPanel() {
                 <Compaction />
                 <ProposeSkills />
                 <AboutYou />
+                <Diagnostics />
               </>
             )}
 

@@ -12,6 +12,7 @@ import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
 import * as box from "./box.ts";
+import * as diagnostics from "./diagnostics.ts";
 import {
   ArtifactCommentStore,
   describeAnchor,
@@ -4400,6 +4401,43 @@ const server = createServer(async (req, res) => {
     // ── engines: what you can connect, and how ──
     if (method === "GET" && path === "/api/providers") {
       return json(res, 200, await providerCatalog());
+    }
+
+    // The bug-report bundle: facts a public issue can hold. Built from
+    // booleans and counts, then scrubbed again; see server/diagnostics.ts.
+    if (method === "GET" && path === "/api/diagnostics") {
+      const { providers: rows } = await providerCatalog();
+      const speechStatus = speech.speechConfigured(cfg);
+      const report = diagnostics.diagnosticsReport({
+        version: APP_VERSION,
+        platform: process.platform,
+        arch: process.arch,
+        node: process.version,
+        uptimeSeconds: process.uptime(),
+        config: {
+          xai: Boolean(cfg.xai?.key),
+          composioConnect: Boolean(cfg.composio?.key),
+          composioApi: Boolean(cfg.composio?.apiKey),
+          box: Boolean(cfg.box?.token),
+          speechElevenlabs: Boolean(speechStatus.elevenlabs),
+          speechOpenai: Boolean(speechStatus.openai),
+          compactionMicro: Boolean(cfg.compaction?.micro),
+          skillsPropose: Boolean(cfg.skills?.propose),
+        },
+        engines: rows.map((row: { name: string; connected: boolean; agentic: boolean }) => ({
+          name: row.name,
+          connected: Boolean(row.connected),
+          agentic: Boolean(row.agentic),
+        })),
+        counts: {
+          agents: store.bots.filter((b) => !b.archivedAt).length,
+          rooms: bloks.bloks.length,
+          skills: listSkills().length,
+        },
+      });
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
+      res.end(report);
+      return;
     }
     m = path.match(/^\/api\/providers\/([\w-]+)\/connect$/);
     if (m && method === "POST") {
