@@ -17,6 +17,9 @@ import { BrowseFolderButton } from "@/components/ui/browse-folder";
 export interface HireableTeam {
   name: string;
   members: (LibraryMember & { name?: string })[];
+  /** Prefilled context, when the team was scouted from a folder. */
+  brief?: string;
+  desk?: string;
 }
 
 /** Which agent fills a seat: a new hire under a drawn name, or someone
@@ -56,8 +59,8 @@ export function TeamHireDialog({
   /** What this team is for, and where they work. Both optional, both
    * worth asking: a team hired into silence spends its first turns
    * asking what the project is. */
-  const [brief, setBrief] = useState("");
-  const [desk, setDesk] = useState("");
+  const [brief, setBrief] = useState(team.brief ?? "");
+  const [desk, setDesk] = useState(team.desk ?? "");
 
   const hire = () => {
     if (hiring) return;

@@ -13,6 +13,7 @@ import { extname, join, resolve, sep } from "node:path";
 import * as attachments from "./attachments.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
+import * as scout from "./scout.ts";
 import {
   ArtifactCommentStore,
   describeAnchor,
@@ -4716,6 +4717,20 @@ const server = createServer(async (req, res) => {
         }));
       return json(res, 200, { bloksTeam: 1, name: blok.name, members });
     }
+    // Point at a folder, get a proposed roster for the hire dialog. Read
+    // only; nothing is created until the user hires.
+    if (method === "POST" && path === "/api/teams/scout") {
+      const body = await readBody(req);
+      const checked = workspace.validateWorkingFolder(body.path);
+      if (!checked.ok) return json(res, 400, { error: checked.error });
+      if (!checked.path) return json(res, 400, { error: "a folder is required" });
+      try {
+        return json(res, 200, { team: scout.scoutFolder(checked.path), path: checked.path });
+      } catch (error) {
+        return json(res, 400, { error: (error as Error).message });
+      }
+    }
+
     if (method === "POST" && path === "/api/teams/import") {
       const body = await readBody(req);
       const rows: any[] = Array.isArray(body.members) ? body.members : [];

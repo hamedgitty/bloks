@@ -17,6 +17,7 @@ interface SavedTeam {
   savedAt: number;
 }
 import { Button } from "@/components/ui/button";
+import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 
@@ -29,6 +30,17 @@ export function NewRoomDialog() {
   const [picked, setPicked] = useState<string[]>([]);
   const [hiring, setHiring] = useState<HireableTeam | null>(null);
   const [saved, setSaved] = useState<SavedTeam[] | null>(null);
+  const [scoutError, setScoutError] = useState<string | null>(null);
+
+  /** Point at a project folder; its shape proposes the roster. */
+  const scoutFolder = (path: string) => {
+    setScoutError(null);
+    api("/api/teams/scout", { method: "POST", body: JSON.stringify({ path }) })
+      .then(({ team, path: desk }) => {
+        setHiring({ name: team.name, members: team.members, brief: team.brief, desk });
+      })
+      .catch((e: Error) => setScoutError(e.message));
+  };
 
   const agents = state.bots.filter((b) => !b.hidden);
   const close = () => dispatch({ type: "toggleNewRoom", open: false });
@@ -153,6 +165,22 @@ export function NewRoomDialog() {
         {tab === "library" ? (
           <>
             <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-0.5">
+              {Boolean(window.bloks?.pickFolder) && (
+                <div className="mb-3 flex items-center gap-3 rounded-xl border border-dashed bg-card p-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-semibold text-foreground">
+                      Scout a project folder
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                      Point at a repo and get a team shaped to what is in it, desk included.
+                    </div>
+                    {scoutError && (
+                      <div className="mt-1 text-[11.5px] text-destructive">{scoutError}</div>
+                    )}
+                  </div>
+                  <BrowseFolderButton onPick={scoutFolder} />
+                </div>
+              )}
               {saved && saved.length > 0 && (
                 <>
                   <div className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
