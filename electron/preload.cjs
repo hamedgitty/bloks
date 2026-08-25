@@ -9,7 +9,7 @@
 // Each subscribe function returns its own unsubscribe rather than exposing
 // a removeListener, so a caller can only ever detach the handler it
 // actually attached.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 /** Wraps an event channel as subscribe-returning-unsubscribe. */
 function subscription(channel) {
@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld("bloks", {
 
   notifyShow: (notice) => ipcRenderer.invoke("notify:show", notice),
   badgeSet: (count) => ipcRenderer.invoke("badge:set", count),
+  // Where a dropped or picked File actually lives. Chromium stopped
+  // putting the path on the File object; this is the sanctioned bridge.
+  filePath: (file) => webUtils.getPathForFile(file),
   shortcutApply: (accelerator) => ipcRenderer.invoke("shortcut:apply", accelerator),
   quickHide: () => ipcRenderer.invoke("quick:hide"),
   quickOpenMain: () => ipcRenderer.invoke("quick:open-main"),

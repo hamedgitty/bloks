@@ -34,6 +34,9 @@ declare global {
       onNotifyActivate(handler: (payload: { target: string }) => void): () => void;
       /** Puts a number on the Dock icon; 0 clears it. */
       badgeSet(count: number): Promise<void>;
+      /** The disk path behind a dropped or picked File, or "" when the
+       * file has none (a drag out of a browser, for instance). */
+      filePath(file: File): string;
       /** Registers the system-wide hotkey, or clears it with null.
        * Answers with what actually took: another app may own the keys. */
       shortcutApply(accelerator: string | null): Promise<string | null>;

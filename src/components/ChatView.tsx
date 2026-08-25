@@ -17,6 +17,7 @@ import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
 import { showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { findHits, splitHighlight, stepHit } from "@/lib/find";
+import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
 import { CallButton } from "./Voice";
 import { ArtifactCard } from "./Artifacts";
@@ -35,6 +36,45 @@ import { cn } from "@/lib/cn";
 
 // Minimal markdown for bot bubbles: **bold**, `code`, headings, lists.
 // Rendered as React nodes, model output never reaches the DOM as HTML.
+/**
+ * A user bubble's text with its attachment tags lifted out: images come
+ * back as thumbnails, files as small name chips, and what remains is
+ * the sentence the user actually typed.
+ */
+function UserText({ text, highlight }: { text: string; highlight?: string }) {
+  const { display, images, files } = splitAttachments(text);
+  return (
+    <>
+      {images.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1.5">
+          {images.map((path, i) => (
+            <img
+              key={i}
+              src={`/api/attachments/${attachmentBasename(path)}`}
+              alt="attached image"
+              className="max-h-[220px] max-w-full rounded-xl object-contain"
+            />
+          ))}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {files.map((path, i) => (
+            <span
+              key={i}
+              title={path}
+              className="rounded-lg bg-black/15 px-1.5 py-0.5 text-[12px]"
+            >
+              {attachmentBasename(path)}
+            </span>
+          ))}
+        </div>
+      )}
+      {withHighlight([display], highlight ?? "")}
+    </>
+  );
+}
+
 /** Wraps every occurrence of the query in the plain-text parts of an
  * already-rendered line. Elements are left alone: breaking a code span
  * to paint it yellow trades a working transcript for a search result. */
@@ -254,7 +294,7 @@ function Bubble({
               </div>
             </div>
           ) : user ? (
-            withHighlight([message.text ?? ""], highlight)
+            <UserText text={message.text ?? ""} highlight={highlight} />
           ) : (
             <Markdownish text={message.text ?? ""} highlight={highlight} />
           )}

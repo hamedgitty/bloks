@@ -6,9 +6,21 @@ import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Square from "lucide-react/dist/esm/icons/square.js";
 import Hand from "lucide-react/dist/esm/icons/hand.js";
 import Archive from "lucide-react/dist/esm/icons/archive.js";
+import FileIcon from "lucide-react/dist/esm/icons/file.js";
+import X from "lucide-react/dist/esm/icons/x.js";
 import { api, useStore, type Bot } from "@/state/store";
 import { ReplyChip, type ReplyDraft } from "./MessageActions";
 import { cn } from "@/lib/cn";
+import {
+  attachmentBasename,
+  composeOutgoing,
+  formatBytes,
+  intakeFiles,
+  isLongPaste,
+  pasteAttachment,
+  uploadImageAttachment,
+  type Attachment,
+} from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -92,12 +104,36 @@ export function Composer({
   // replacing what someone had started writing
   const baseText = useRef("");
   const inputRef = useAutoSize(text);
+  /** Chips riding with the next message. */
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  /** Why something did not become a chip, said once, dismissible. */
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const pickerRef = useRef<HTMLInputElement>(null);
+
+  /** The one road in, whether the files came by picker, drop or paste. */
+  const intake = (files: File[]) => {
+    if (!files.length) return;
+    void intakeFiles(files, {
+      pathOf: (file) => window.bloks?.filePath?.(file) ?? "",
+      uploadImage: uploadImageAttachment,
+    }).then(({ attachments: added, refused }) => {
+      if (added.length) setAttachments((current) => [...current, ...added]);
+      setAttachNotice(refused);
+    });
+  };
 
   const send = () => {
-    if (!text.trim()) return;
-    dispatch({ type: "send", botId: bot.id, text: text.trim(), replyTo: replyTo ?? undefined });
+    if (!text.trim() && !attachments.length) return;
+    dispatch({
+      type: "send",
+      botId: bot.id,
+      text: composeOutgoing(text, attachments),
+      replyTo: replyTo ?? undefined,
+    });
     track("message_sent", { driver: bot.modelSelection?.instanceId });
     setText("");
+    setAttachments([]);
+    setAttachNotice(null);
     onClearReply?.();
   };
 
@@ -186,7 +222,7 @@ export function Composer({
     setRecording(true);
   };
 
-  const canSend = Boolean(text.trim());
+  const canSend = Boolean(text.trim()) || attachments.length > 0;
 
   // While you hold the wheel the server refuses a turn, and it is right
   // to: you are the one driving. But a bare refusal after typing a
@@ -251,10 +287,63 @@ export function Composer({
   }
 
   return (
-    <div className="px-4 pb-4 pt-1 md:px-6 md:pb-5">
+    <div
+      className="px-4 pb-4 pt-1 md:px-6 md:pb-5"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return;
+        e.preventDefault();
+        intake([...e.dataTransfer.files]);
+      }}
+    >
       {replyTo && (
         <div className="mx-auto mb-2 max-w-[760px]">
           <ReplyChip draft={replyTo} onClear={() => onClearReply?.()} />
+        </div>
+      )}
+      {attachNotice && (
+        <div className="mx-auto mb-2 flex max-w-[760px] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
+          <span className="min-w-0 flex-1">{attachNotice}</span>
+          <button
+            onClick={() => setAttachNotice(null)}
+            className="shrink-0 rounded-lg px-1.5 py-1 opacity-60 transition-opacity hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {attachments.length > 0 && (
+        <div className="mx-auto mb-2 flex max-w-[760px] flex-wrap gap-1.5">
+          {attachments.map((a) => (
+            <span
+              key={a.id}
+              className="flex max-w-[240px] items-center gap-1.5 rounded-xl border bg-muted/50 py-1 pl-1.5 pr-1 text-[12px] text-foreground"
+            >
+              {a.kind === "image" ? (
+                <img
+                  src={`/api/attachments/${attachmentBasename(a.path)}`}
+                  alt={a.name}
+                  className="size-7 shrink-0 rounded-lg object-cover"
+                />
+              ) : (
+                <FileIcon size={14} className="shrink-0 text-muted-foreground" />
+              )}
+              <span className="min-w-0 flex-1 truncate">
+                {a.kind === "paste" ? `Pasted text, ${a.lines} lines` : a.name}
+              </span>
+              <span className="shrink-0 text-muted-foreground">{formatBytes(a.bytes)}</span>
+              <button
+                onClick={() => setAttachments((cur) => cur.filter((x) => x.id !== a.id))}
+                className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label={`Remove ${a.kind === "paste" ? "pasted text" : a.name}`}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
         </div>
       )}
       {speechError && (
@@ -283,9 +372,20 @@ export function Composer({
           "focus-within:border-ring/50",
         )}
       >
+        <input
+          ref={pickerRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            intake([...(e.target.files ?? [])]);
+            e.target.value = "";
+          }}
+        />
         <button
           className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
-          title="Attach"
+          title="Attach a file or image"
+          onClick={() => pickerRef.current?.click()}
         >
           <Plus size={18} />
         </button>
@@ -294,6 +394,21 @@ export function Composer({
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // images in the clipboard become chips; so does a paste long
+            // enough to bury the conversation
+            const files = [...e.clipboardData.files];
+            if (files.length) {
+              e.preventDefault();
+              intake(files);
+              return;
+            }
+            const pasted = e.clipboardData.getData("text/plain");
+            if (pasted && isLongPaste(pasted)) {
+              e.preventDefault();
+              setAttachments((cur) => [...cur, pasteAttachment(pasted)]);
+            }
+          }}
           onKeyDown={(e) => {
             // Enter sends; Shift+Enter starts a new line
             if (e.key === "Enter" && !e.shiftKey) {

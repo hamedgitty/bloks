@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
+import * as attachments from "./attachments.ts";
 import * as box from "./box.ts";
 import {
   ArtifactCommentStore,
@@ -5924,6 +5925,17 @@ const server = createServer(async (req, res) => {
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
+    }
+
+    // ── attachments (pasted images, saved once, referenced by path) ──
+    if (method === "POST" && path === "/api/attachments") {
+      attachments.saveAttachment(req, res);
+      return;
+    }
+    m = path.match(/^\/api\/attachments\/([\w.-]+)$/);
+    if (m && method === "GET") {
+      attachments.serveAttachment(m[1], res);
+      return;
     }
 
     // ── connectors (Composio) ──
