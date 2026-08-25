@@ -22,6 +22,7 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
 } from "../contracts.ts";
+import { callMcpTool, listMcpTools, type McpAccess } from "../composio.ts";
 import { newEventId, newId } from "../contracts.ts";
 import type { ProviderSpec } from "../providers.ts";
 import { appendNative } from "./native.ts";
@@ -437,6 +438,34 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
         const computer = turn.integrations?.computer;
         const sandbox = turn.integrations?.sandbox;
         const tools = toolSchemas(Boolean(computer), Boolean(sandbox));
+        // The connectors, as callable tools rather than a rumor. The CLI
+        // engines mount Composio's MCP server themselves; API models have
+        // no MCP client, so the harness is theirs: list the meta-tools
+        // once per turn and relay calls. Without this, an API model could
+        // ask the user to connect Slack and then not touch it, which
+        // reads as "connections don't work" and is exactly what it is.
+        const connectors: McpAccess | null = turn.integrations?.composio?.key
+          ? turn.integrations.composio
+          : null;
+        const connectorTools = new Set<string>();
+        if (connectors) {
+          try {
+            for (const tool of await listMcpTools(connectors)) {
+              connectorTools.add(tool.name);
+              tools.push({
+                type: "function",
+                function: {
+                  name: tool.name,
+                  description: tool.description.slice(0, 1024),
+                  parameters: tool.inputSchema,
+                },
+              });
+            }
+          } catch {
+            // unreachable connector service: the turn goes on with the
+            // built-in tools rather than failing before it starts
+          }
+        }
         let usageTotal = { input: 0, output: 0 };
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -501,6 +530,13 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
                 );
               } else {
                 result = "only http(s) URLs can be opened";
+                ok = false;
+              }
+            } else if (connectors && connectorTools.has(name)) {
+              try {
+                result = await callMcpTool(connectors, name, args);
+              } catch (error) {
+                result = `the connector call failed: ${error instanceof Error ? error.message : "unknown error"}`;
                 ok = false;
               }
             } else {

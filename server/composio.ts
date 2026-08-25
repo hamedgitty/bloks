@@ -57,30 +57,84 @@ function unwrapMcp(body: string): any {
   }
 }
 
+/** Enough to speak to the Connect MCP server: the key, and an endpoint
+ * override for people pointing at a proxy. What a turn carries. */
+export interface McpAccess {
+  key: string;
+  url?: string;
+}
+
+/** One raw JSON-RPC exchange with the Connect MCP server. */
+async function mcpRequest(access: McpAccess, method: string, params: unknown): Promise<string> {
+  const response = await fetch(access.url || MCP_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      // it may answer either way, so declare that both are fine
+      accept: "application/json, text/event-stream",
+      "x-consumer-api-key": access.key,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`connector service: HTTP ${response.status}`);
+  return response.text();
+}
+
+/** The envelope without the content-block unwrapping: for calls like
+ * tools/list whose result is structure, not stringified text. */
+function mcpResult(body: string): any {
+  const envelope = body.startsWith("{")
+    ? body
+    : body
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+  if (!envelope) throw new Error("the connector service returned nothing");
+  const message = JSON.parse(envelope);
+  if (message.error) throw new Error(message.error.message || "connector service error");
+  return message.result ?? null;
+}
+
+/** What the Connect MCP server offers a turn: a handful of meta-tools
+ * (search, execute, manage connections), not one tool per app. */
+export async function listMcpTools(
+  access: McpAccess,
+): Promise<Array<{ name: string; description: string; inputSchema: unknown }>> {
+  const result = mcpResult(await mcpRequest(access, "tools/list", {}));
+  const tools = Array.isArray(result?.tools) ? result.tools : [];
+  return tools
+    .filter((tool: any) => typeof tool?.name === "string")
+    .map((tool: any) => ({
+      name: tool.name,
+      description: typeof tool.description === "string" ? tool.description : "",
+      inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+    }));
+}
+
+/** One tool call on behalf of a turn, answered as text for the model. */
+export async function callMcpTool(access: McpAccess, name: string, args: unknown): Promise<string> {
+  const result = mcpResult(
+    await mcpRequest(access, "tools/call", { name, arguments: args ?? {} }),
+  );
+  const text = (result?.content ?? [])
+    .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("\n");
+  return text || JSON.stringify(result ?? null);
+}
+
 /** One JSON-RPC call against the Connect MCP server. */
 async function callMcp(cfg: AppConfig, tool: string, args: unknown) {
   const key = cfg.composio?.key;
   if (!key) {
     throw new Error('no connector key configured. Add {"composio":{"key":"ck_…"}} to ~/.bloks/config.json');
   }
-  const response = await fetch(cfg.composio?.url || MCP_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      // it may answer either way, so declare that both are fine
-      accept: "application/json, text/event-stream",
-      "x-consumer-api-key": key,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: tool, arguments: args },
-    }),
-    signal: AbortSignal.timeout(30_000),
+  const body = await mcpRequest({ key, url: cfg.composio?.url }, "tools/call", {
+    name: tool,
+    arguments: args,
   });
-  if (!response.ok) throw new Error(`connector service: HTTP ${response.status}`);
-  return unwrapMcp(await response.text());
+  return unwrapMcp(body);
 }
 
 /**
