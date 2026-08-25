@@ -12,6 +12,7 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
 import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { usePageVisible } from "@/lib/pageVisible";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -66,7 +67,9 @@ export function DevicesSection() {
       });
   }, []);
 
+  const visible = usePageVisible();
   useEffect(() => {
+    if (!visible) return;
     load();
     const poll = setInterval(load, 4_000);
     const tick = setInterval(() => setNow(Date.now()), 1_000);
@@ -74,7 +77,7 @@ export function DevicesSection() {
       clearInterval(poll);
       clearInterval(tick);
     };
-  }, [load]);
+  }, [load, visible]);
 
   const setEnabled = (enabled: boolean) => {
     api("/api/pair", { method: "PUT", body: JSON.stringify({ enabled }) })

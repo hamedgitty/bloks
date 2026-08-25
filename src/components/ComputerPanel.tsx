@@ -25,6 +25,7 @@ import Power from "lucide-react/dist/esm/icons/power.js";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.js";
 import X from "lucide-react/dist/esm/icons/x.js";
 import { useStore, type Bot } from "@/state/store";
+import { usePageVisible } from "@/lib/pageVisible";
 import { DesktopOverlay } from "./DesktopOverlay";
 import { ApiKeyRow } from "./ApiKeys";
 import { RoutinesSection } from "./RoutinesSection";
@@ -151,8 +152,10 @@ function LocalVmCard({ bot }: { bot: Bot }) {
   }, [bot.id]);
 
   // the preview: one frame every few seconds while the desktop is up
+  // and somebody is looking; a hidden window captures nothing
+  const visible = usePageVisible();
   useEffect(() => {
-    if (!status?.ready) return;
+    if (!status?.ready || !visible) return;
     let alive = true;
     let busy = false;
     const shoot = () => {
@@ -171,7 +174,7 @@ function LocalVmCard({ bot }: { bot: Bot }) {
       alive = false;
       clearInterval(t);
     };
-  }, [status?.ready]);
+  }, [status?.ready, visible]);
 
   return (
     <div className="mt-3">
@@ -297,12 +300,14 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     setLocalFrame(null);
   }
 
-  // cloud preview: SSE frames win while the agent works; otherwise poll
+  // cloud preview: SSE frames win while the agent works; otherwise poll,
+  // and only while the window is actually on screen
   const live = state.screens[bot.id];
   const sseFlowing = Boolean(bot.busy && live);
   const inFlight = useRef(false);
+  const visible = usePageVisible();
   useEffect(() => {
-    if (phase !== "ready" || sseFlowing) return;
+    if (phase !== "ready" || sseFlowing || !visible) return;
     let alive = true;
     const shoot = async () => {
       if (inFlight.current) return;
@@ -322,11 +327,11 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [phase, sseFlowing, bot.id]);
+  }, [phase, sseFlowing, bot.id, visible]);
 
   // local preview: frames from the Electron main process
   useEffect(() => {
-    if (phase !== "local" || !window.bloks) return;
+    if (phase !== "local" || !window.bloks || !visible) return;
     let alive = true;
     const shoot = async () => {
       try {
@@ -342,7 +347,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [phase]);
+  }, [phase, visible]);
 
   const lastScreenMessage = [...bot.messages].reverse().find((m) => m.kind === "screen" && m.png);
   const cloudFrame =

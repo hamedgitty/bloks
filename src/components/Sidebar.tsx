@@ -27,6 +27,7 @@ import { useTheme } from "@/lib/theme";
 import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
+import { usePageVisible } from "@/lib/pageVisible";
 import { previewLine } from "@/lib/preview";
 import {
   DropdownMenu,
@@ -302,7 +303,9 @@ function RoomListItem({ blok, rail }: { blok: Blok; rail?: boolean }) {
  */
 function useActivityCount(): { running: number; waiting: number; suggested: number } {
   const [count, setCount] = useState({ running: 0, waiting: 0, suggested: 0 });
+  const visible = usePageVisible();
   useEffect(() => {
+    if (!visible) return;
     let alive = true;
     const load = () =>
       Promise.all([
@@ -324,7 +327,7 @@ function useActivityCount(): { running: number; waiting: number; suggested: numb
       alive = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [visible]);
   return count;
 }
 

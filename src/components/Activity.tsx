@@ -21,6 +21,7 @@ import Hourglass from "lucide-react/dist/esm/icons/hourglass.js";
 import Square from "lucide-react/dist/esm/icons/square.js";
 import X from "lucide-react/dist/esm/icons/x.js";
 import { api, useStore, type Bot } from "@/state/store";
+import { usePageVisible } from "@/lib/pageVisible";
 import { AgentAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";
 
@@ -122,18 +123,23 @@ export function ActivityPanel() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
+  const visible = usePageVisible();
   useEffect(() => {
+    if (!visible) return;
     load();
     const timer = setInterval(load, 3_000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, visible]);
 
   // Elapsed times tick on their own, or a row would sit at "2m" for as
-  // long as the panel is open and read as frozen.
+  // long as the panel is open and read as frozen. A hidden panel has no
+  // reader, so the tick pauses with the page.
   useEffect(() => {
+    if (!visible) return;
+    setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [visible]);
 
   const close = () => dispatch({ type: "toggleActivity", open: false });
   const botOf = (id: string) => state.bots.find((b) => b.id === id);
