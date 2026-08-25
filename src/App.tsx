@@ -4,6 +4,7 @@ import { StoreProvider, useStore } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
 import { Intro, introPending } from "@/components/Intro";
 import { initAnalytics, setupDone, workspaceSetupDone } from "@/lib/analytics";
+import { unreadCount } from "@/lib/unread";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { NewAgentScreen } from "@/components/NewAgentScreen";
@@ -24,6 +25,13 @@ function Shell() {
   const { state, dispatch } = useStore();
   const room = state.bloks.find((b) => b.id === state.selectedId);
   const bot = room ? null : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
+
+  // The Dock badge mirrors the sidebar's unread dots. Absent bridge
+  // means a browser tab, which has no Dock to speak of.
+  const waiting = unreadCount(state.bots);
+  useEffect(() => {
+    window.bloks?.badgeSet?.(waiting);
+  }, [waiting]);
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden md:flex-row">
       <Sidebar />

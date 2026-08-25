@@ -13,9 +13,12 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   desktopCapturer,
   globalShortcut,
   ipcMain,
+  Menu,
+  nativeImage,
   nativeTheme,
   Notification,
   screen,
@@ -25,8 +28,11 @@ import {
   utilityProcess,
 } from "electron";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
 // node_modules, so the updater travels inside electron/ pre-bundled
@@ -82,6 +88,22 @@ async function adoptLoginShellPath() {
 let serverProcess = null;
 let serverPort = CANDIDATE_PORTS[0];
 let serverStarted = true;
+
+// One Bloks per user. A second launch would fork a second harness onto a
+// fallback port and quietly split the workspace in two, so the loser
+// exits before it has started anything, and the winner brings its own
+// window forward when that happens.
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
+app.on("second-instance", () => {
+  const main = BrowserWindow.getAllWindows().find((w) => w !== quickWin && !w.isDestroyed());
+  if (!main) return;
+  if (main.isMinimized()) main.restore();
+  main.show();
+  main.focus();
+  app.focus?.({ steal: true });
+});
 
 // ── the harness server ─────────────────────────────────────────────────
 
@@ -188,6 +210,100 @@ const isOurOwnPage = (url) => {
 };
 
 /**
+ * Right-click, the way native apps mean it.
+ *
+ * Electron ships no context menu at all, so without this a right-click
+ * in the composer does nothing: no Paste, no spelling fixes. The menu
+ * is built from what was actually clicked, and when nothing there is
+ * actionable, no menu appears rather than a column of grey items.
+ */
+function installContextMenu(win) {
+  win.webContents.on("context-menu", (_event, params) => {
+    if (!params.isEditable && !params.selectionText && !params.linkURL && !params.misspelledWord)
+      return;
+    const items = [];
+    if (params.misspelledWord) {
+      for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+        items.push({
+          label: suggestion,
+          click: () => win.webContents.replaceMisspelling(suggestion),
+        });
+      }
+      if (items.length) items.push({ type: "separator" });
+    }
+    if (params.linkURL) {
+      items.push(
+        { label: "Copy Link", click: () => clipboard.writeText(params.linkURL) },
+        { type: "separator" },
+      );
+    }
+    if (params.isEditable) {
+      items.push(
+        { role: "undo", enabled: params.editFlags.canUndo },
+        { role: "redo", enabled: params.editFlags.canRedo },
+        { type: "separator" },
+        { role: "cut", enabled: params.editFlags.canCut },
+        { role: "copy", enabled: params.editFlags.canCopy },
+        { role: "paste", enabled: params.editFlags.canPaste },
+        { role: "pasteAndMatchStyle", enabled: params.editFlags.canPaste },
+        { type: "separator" },
+        { role: "selectAll", enabled: params.editFlags.canSelectAll },
+      );
+    } else {
+      items.push({ role: "copy", enabled: params.editFlags.canCopy });
+    }
+    Menu.buildFromTemplate(items).popup({ window: win, frame: params.frame });
+  });
+}
+
+// ── where the window was ───────────────────────────────────────────────
+
+const windowStateFile = () => path.join(app.getPath("userData"), "window-state.json");
+
+function readWindowState() {
+  try {
+    return fs.readFileSync(windowStateFile(), "utf8");
+  } catch {
+    return null; // first run, or the file was cleaned away
+  }
+}
+
+/** Written whole and renamed into place, so a crash mid-save leaves the
+ * previous state rather than half a JSON object. */
+function writeWindowState(win) {
+  if (!win || win.isDestroyed()) return;
+  const file = windowStateFile();
+  const staging = `${file}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      staging,
+      JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() }),
+    );
+    fs.renameSync(staging, file);
+  } catch {
+    fs.rmSync(staging, { force: true });
+  }
+}
+
+/** Every resize and move schedules a save; the debounce means a drag is
+ * one write, not hundreds. Close flushes so the last position wins. */
+function persistWindowState(win) {
+  let timer = null;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = null;
+    writeWindowState(win);
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(flush, 300);
+  };
+  for (const event of ["resize", "move", "maximize", "unmaximize"]) win.on(event, schedule);
+  win.on("close", flush);
+}
+
+/**
  * Where the three window buttons sit.
  *
  * The cluster is 52px wide (three 12px buttons, 20px apart). At x:16 it
@@ -257,6 +373,7 @@ function quickWindow() {
     },
   });
   quickWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  installContextMenu(quickWin);
   quickWin.loadURL(appUrl("quick=1"));
   // Clicking away is a dismissal. Anything else would leave a floating
   // box on somebody's screen with no obvious way to close it.
@@ -301,17 +418,22 @@ function applyQuickShortcut(accelerator) {
 }
 
 function createWindow() {
-  // Fit the display, never exceed it. A window taller than the screen
-  // puts the composer below the bottom edge, which reads as "the app has
-  // no way to type" rather than "the window is too big". workArea already
-  // excludes the menu bar and the Dock, so this is the space we may use.
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-  const width = Math.min(1440, screenW);
-  const height = Math.min(920, screenH);
+  // Open where the window was last time, resolved against the displays
+  // that exist right now; a saved position on an unplugged monitor
+  // re-centres instead of restoring off-screen. First run falls back to
+  // fitting the primary display, never exceeding it: a window taller
+  // than the screen puts the composer below the bottom edge, which
+  // reads as "the app has no way to type" rather than "too big".
+  const primary = screen.getPrimaryDisplay();
+  const others = screen.getAllDisplays().filter((d) => d.id !== primary.id);
+  const restored = resolveWindowState(
+    readWindowState(),
+    [primary, ...others].map((d) => d.workArea),
+  );
+  const { width: screenW, height: screenH } = primary.workAreaSize;
 
   const win = new BrowserWindow({
-    width,
-    height,
+    ...restored.bounds,
     // never larger than the screen, whatever the minimum would prefer
     minWidth: Math.min(900, screenW),
     minHeight: Math.min(600, screenH),
@@ -342,6 +464,9 @@ function createWindow() {
     },
   });
   keepButtonsInPlace(win);
+  installContextMenu(win);
+  persistWindowState(win);
+  if (restored.maximized) win.maximize();
 
   // Links in this app come from models and from web pages the agent read,
   // so every URL is treated as hostile until proven to be plain http(s):
@@ -449,6 +574,30 @@ ipcMain.handle("notify:show", (event, notice) => {
     win.webContents.send("notify:activate", { target: notice?.target ?? "" });
   });
   shown.show();
+});
+
+/**
+ * The Dock badge: how many conversations are waiting.
+ *
+ * The renderer owns the arithmetic, because only it knows what counts
+ * as unread; this end only knows how each platform draws a number on an
+ * icon. Windows has no badge, so it gets a small overlay on the taskbar
+ * icon instead.
+ */
+let badgeOverlay = null;
+ipcMain.handle("badge:set", (event, value) => {
+  const count = normalizeBadgeCount(value);
+  if (process.platform === "win32") {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    badgeOverlay ??= nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
+    win.setOverlayIcon(
+      count > 0 && !badgeOverlay.isEmpty() ? badgeOverlay : null,
+      count > 0 ? `${count} unread` : "",
+    );
+    return;
+  }
+  app.setBadgeCount(count);
 });
 
 ipcMain.handle("shortcut:apply", (_event, accelerator) =>

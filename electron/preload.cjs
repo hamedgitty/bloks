@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("bloks", {
   screenFrame: () => ipcRenderer.invoke("screen:frame"),
 
   notifyShow: (notice) => ipcRenderer.invoke("notify:show", notice),
+  badgeSet: (count) => ipcRenderer.invoke("badge:set", count),
   shortcutApply: (accelerator) => ipcRenderer.invoke("shortcut:apply", accelerator),
   quickHide: () => ipcRenderer.invoke("quick:hide"),
   quickOpenMain: () => ipcRenderer.invoke("quick:open-main"),

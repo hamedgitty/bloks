@@ -32,6 +32,8 @@ declare global {
         urgent: boolean;
       }): Promise<void>;
       onNotifyActivate(handler: (payload: { target: string }) => void): () => void;
+      /** Puts a number on the Dock icon; 0 clears it. */
+      badgeSet(count: number): Promise<void>;
       /** Registers the system-wide hotkey, or clears it with null.
        * Answers with what actually took: another app may own the keys. */
       shortcutApply(accelerator: string | null): Promise<string | null>;
