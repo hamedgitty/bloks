@@ -417,11 +417,23 @@ export function AppSettingsPanel() {
                   Shared by all agents. Keys stay on this Mac.
                 </div>
                 <div className="mt-4 flex flex-col gap-4">
-                  <ApiKeyRow section="composio" label="Composio Connect key" placeholder="ck_…" />
+                  <ApiKeyRow
+                    section="composio"
+                    label="Composio Connect key"
+                    placeholder="ck_…"
+                    info={{
+                      text: "Composio issues two different keys. This is the Connect key (starts with ck_), the one that links accounts like Slack and Gmail. The key is checked with Composio when you save it.",
+                      linkLabel: "Get a Connect key at composio.dev",
+                      linkHref: "https://composio.dev",
+                    }}
+                  />
                   <ApiKeyRow
                     section="composioApi"
                     label="Composio API key (optional)"
                     placeholder="ak_…  unlocks the full app catalog"
+                    info={{
+                      text: "The other Composio key: a project API key (starts with ak_), separate from the Connect key above. Only used to browse the full app catalog; connections work without it.",
+                    }}
                   />
                   <ApiKeyRow
                     section="box"

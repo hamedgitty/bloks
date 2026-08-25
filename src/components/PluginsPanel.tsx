@@ -222,7 +222,7 @@ export function PluginsPanel() {
             >
               Add a Composio API key
             </button>{" "}
-            to browse the full catalog.
+            (the ak_ one, separate from your Connect key) to browse the full catalog.
           </div>
         )}
         {view === "connectors" && error && (

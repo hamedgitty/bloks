@@ -83,6 +83,53 @@ async function callMcp(cfg: AppConfig, tool: string, args: unknown) {
   return unwrapMcp(await response.text());
 }
 
+/**
+ * What an HTTP status says about a candidate key.
+ *
+ * Only a definite refusal (401 or 403) fails the key. Anything else that
+ * is not success answers null, "could not tell", and the caller saves
+ * anyway: a person entering a key on a train should not be told the key
+ * is wrong when it is the network that is missing.
+ */
+export function keyVerdict(status: number): boolean | null {
+  if (status >= 200 && status < 300) return true;
+  if (status === 401 || status === 403) return false;
+  return null;
+}
+
+/** Asks the Connect MCP server whether this ck_ key is real, with the
+ * cheapest call it has. Never throws; unreachable means null. */
+export async function validateConnectKey(cfg: AppConfig, key: string): Promise<boolean | null> {
+  try {
+    const response = await fetch(cfg.composio?.url || MCP_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-consumer-api-key": key,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return keyVerdict(response.status);
+  } catch {
+    return null;
+  }
+}
+
+/** Same question for an ak_ catalog key, against the REST side. */
+export async function validateApiKey(apiKey: string): Promise<boolean | null> {
+  try {
+    const response = await fetch(`${CATALOG_ENDPOINT}/toolkits?limit=1`, {
+      headers: { "x-api-key": apiKey },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return keyVerdict(response.status);
+  } catch {
+    return null;
+  }
+}
+
 /** `COMPOSIO_MANAGE_CONNECTIONS` takes a list of per-service instructions.
  * Every caller here sends exactly one, so this hides the array. */
 function manageConnections(cfg: AppConfig, slug: string, action: string, extra: object = {}) {

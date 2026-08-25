@@ -264,8 +264,9 @@ function PluginsStage({ onDone }: { onDone: (connected: string[]) => void }) {
         </h2>
         <p className="intro-rise mt-2 text-[13.5px] text-muted-foreground [animation-delay:100ms]">
           Agents reach Slack, Gmail, Notion and the rest through Composio.
-          Paste a Connect key and you can link your tools right here; a
-          free key takes a minute at composio.dev.
+          Paste a Composio Connect key (it starts with ck_) and you can
+          link your tools right here; a free key takes a minute at
+          composio.dev.
         </p>
         <div className="intro-rise mx-auto mt-6 max-w-[380px] text-left [animation-delay:200ms]">
           <input

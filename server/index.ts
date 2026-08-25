@@ -5900,6 +5900,24 @@ const server = createServer(async (req, res) => {
       if (!Object.keys(patch).length && !wroteSomething) {
         return json(res, 400, { error: "nothing to save" });
       }
+      // A Composio key is probed before it is believed. Saving a bad key
+      // used to light the row green anyway, and "Connected" must mean
+      // Composio said yes, not "a string was stored". A definite refusal
+      // blocks the save; an unreachable service does not, because
+      // offline is not the user's fault.
+      const composioPatch = patch.composio as { key?: string; apiKey?: string } | undefined;
+      if (composioPatch?.key) {
+        const verdict = await composio.validateConnectKey(cfg, composioPatch.key);
+        if (verdict === false) {
+          return json(res, 400, { error: "Composio didn't accept that Connect key" });
+        }
+      }
+      if (composioPatch?.apiKey) {
+        const verdict = await composio.validateApiKey(composioPatch.apiKey);
+        if (verdict === false) {
+          return json(res, 400, { error: "Composio didn't accept that API key" });
+        }
+      }
       saveConfig(patch);
       Object.assign(cfg, loadConfig());
       await reloadProviders();
