@@ -269,6 +269,7 @@ export interface AppState {
   projectsOpen: boolean;
   /** The one place that says what is running and what wants you. */
   activityOpen: boolean;
+  mapOpen: boolean;
   /** The project the app is looking through, or null for everything.
    * A lens: nothing is hidden from anywhere else, and leaving puts the
    * whole workspace back. */
@@ -308,6 +309,7 @@ export type Action =
   | { type: "toggleSkills"; open?: boolean }
   | { type: "toggleRoutines"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
+  | { type: "toggleMap"; open?: boolean }
   | { type: "newTask"; botId: string }
   | { type: "selectTask"; botId: string; taskId: string }
   | { type: "closeTask"; botId: string; taskId: string }
@@ -474,6 +476,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, routinesOpen: action.open ?? !state.routinesOpen };
     case "toggleActivity":
       return { ...state, activityOpen: action.open ?? !state.activityOpen };
+    case "toggleMap":
+      return { ...state, mapOpen: action.open ?? !state.mapOpen };
     case "newTask":
     case "selectTask":
     case "closeTask":
@@ -671,6 +675,7 @@ export const initialState: AppState = {
   newRoomOpen: false,
   projectsOpen: false,
   activityOpen: false,
+  mapOpen: false,
   projectId: (() => {
     try {
       return localStorage.getItem("bloks-project");

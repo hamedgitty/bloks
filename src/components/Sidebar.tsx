@@ -12,6 +12,7 @@ import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Archive from "lucide-react/dist/esm/icons/archive.js";
 import Puzzle from "lucide-react/dist/esm/icons/puzzle.js";
 import Folder from "lucide-react/dist/esm/icons/folder.js";
+import MapIcon from "lucide-react/dist/esm/icons/map.js";
 import FolderKanban from "lucide-react/dist/esm/icons/folder-kanban.js";
 import Activity from "lucide-react/dist/esm/icons/activity.js";
 import BotIcon from "lucide-react/dist/esm/icons/bot.js";
@@ -842,6 +843,7 @@ export function Sidebar() {
         {(
           [
             [Activity, "Activity", () => dispatch({ type: "toggleActivity", open: true })],
+            [MapIcon, "Map", () => dispatch({ type: "toggleMap", open: true })],
             [FolderKanban, "Projects", () => dispatch({ type: "toggleProjects", open: true })],
             [CalendarClock, "Routines", () => dispatch({ type: "toggleRoutines", open: true })],
             [Sparkles, "Skills", () => dispatch({ type: "toggleSkills", open: true })],
