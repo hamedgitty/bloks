@@ -20,7 +20,8 @@
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   DriverCreateInput,
@@ -72,6 +73,13 @@ export interface AcpConfig {
 }
 
 const PROTOCOL_VERSION = 1;
+
+/** The connectors bridge ships as TypeScript in development and compiled
+ * JavaScript in the packaged app; resolve whichever is actually there. */
+function connectorsHelper(): string {
+  const asTypeScript = join(dirname(fileURLToPath(import.meta.url)), "..", "connectors-proxy.ts");
+  return existsSync(asTypeScript) ? asTypeScript : asTypeScript.replace(/\.ts$/, ".js");
+}
 
 /** ACP tool kinds, mapped to something worth reading in a transcript. */
 function toolTitle(update: any): string {
@@ -379,16 +387,35 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
             const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
             const cwd = turn.cwd ?? homedir();
+            // The connectors, over the stdio bridge, because ACP mounts
+            // MCP servers as child processes it spawns itself. The key
+            // travels as an env variable, never in argv.
+            const mcpServers = turn.integrations?.composio?.key
+              ? [
+                  {
+                    name: "bloks_connectors",
+                    command: process.execPath,
+                    args: [connectorsHelper()],
+                    env: [
+                      { name: "BLOKS_COMPOSIO_KEY", value: turn.integrations.composio.key },
+                      ...(turn.integrations.composio.url
+                        ? [{ name: "BLOKS_COMPOSIO_URL", value: turn.integrations.composio.url }]
+                        : []),
+                      { name: "ELECTRON_RUN_AS_NODE", value: "1" },
+                    ],
+                  },
+                ]
+              : [];
             let session: any = null;
             if (cursor) {
               try {
-                session = (await request("session/load", { cwd, mcpServers: [], sessionId: cursor })) ?? {};
+                session = (await request("session/load", { cwd, mcpServers, sessionId: cursor })) ?? {};
                 session.sessionId ??= cursor;
               } catch {
                 /* the agent forgot this session; start a new one below */
               }
             }
-            if (!session) session = await request("session/new", { cwd, mcpServers: [] });
+            if (!session) session = await request("session/new", { cwd, mcpServers });
             sessionId = session?.sessionId ?? null;
             if (!sessionId) throw new Error(`${spec.name} did not open a session`);
 

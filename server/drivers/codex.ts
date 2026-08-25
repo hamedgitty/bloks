@@ -14,7 +14,10 @@
 // quietly starts a new thread if that fails, because a thread the CLI has
 // forgotten should cost the user their history, not their message.
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { attachRpc } from "../harness/jsonrpc-stdio.ts";
 import type {
@@ -107,6 +110,13 @@ function toolLabel(item: any): string | null {
 
 const TOOL_ITEM_TYPES = new Set(["commandExecution", "fileChange", "mcpToolCall"]);
 
+/** The connectors bridge ships as TypeScript in development and compiled
+ * JavaScript in the packaged app; resolve whichever is actually there. */
+function connectorsHelper(): string {
+  const asTypeScript = join(dirname(fileURLToPath(import.meta.url)), "..", "connectors-proxy.ts");
+  return existsSync(asTypeScript) ? asTypeScript : asTypeScript.replace(/\.ts$/, ".js");
+}
+
 export const CodexDriver: ProviderDriver<CodexConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Codex", supportsMultipleInstances: true },
@@ -152,7 +162,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // silently move the user onto pay-as-you-go billing.
       delete env.OPENAI_API_KEY;
 
-      const child = spawn(config.cli, ["app-server"], {
+      // The connectors, over the stdio bridge, because this CLI mounts
+      // MCP servers as child processes and nothing else. The key rides
+      // the environment and only its *name* appears in argv, so process
+      // listings and diagnostics never see it.
+      const appServerArgs = ["app-server"];
+      if (turn.integrations?.composio?.key) {
+        env.BLOKS_COMPOSIO_KEY = turn.integrations.composio.key;
+        if (turn.integrations.composio.url) env.BLOKS_COMPOSIO_URL = turn.integrations.composio.url;
+        // in the packaged app process.execPath is Electron; this makes it
+        // behave as plain node for the bridge
+        env.ELECTRON_RUN_AS_NODE = "1";
+        const prefix = "mcp_servers.bloks_connectors";
+        appServerArgs.push(
+          "-c", `${prefix}.command=${JSON.stringify(process.execPath)}`,
+          "-c", `${prefix}.args=${JSON.stringify([connectorsHelper()])}`,
+          "-c", `${prefix}.env_vars=${JSON.stringify(["BLOKS_COMPOSIO_KEY", "BLOKS_COMPOSIO_URL", "ELECTRON_RUN_AS_NODE"])}`,
+        );
+      }
+
+      const child = spawn(config.cli, appServerArgs, {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
