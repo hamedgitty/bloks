@@ -44,7 +44,10 @@ export function OptionCard({
   return (
     <div className="w-full max-w-[560px] animate-rise-in rounded-2xl border bg-card p-4 shadow-[0_1px_3px_var(--shadow-color)]">
       <div className="flex items-start justify-between gap-4">
-        <div>
+        {/* min-w-0 so the text column may shrink; anywhere-wrapping so a
+            title that is one long JSON blob folds instead of escaping
+            the card's right edge */}
+        <div className="min-w-0 flex-1">
           <div
             className={cn(
               "text-[11px] font-semibold uppercase tracking-[0.1em]",
@@ -53,9 +56,11 @@ export function OptionCard({
           >
             {card.requestId ? "Approval" : card.runId ? "Workflow" : "Question"}
           </div>
-          <div className="mt-1 text-[14.5px] font-semibold text-foreground">{card.title}</div>
+          <div className="mt-1 break-words text-[14.5px] font-semibold text-foreground [overflow-wrap:anywhere]">
+            {card.title}
+          </div>
           {card.subtitle && (
-            <div className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+            <div className="mt-0.5 break-words text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
               {card.subtitle}
             </div>
           )}
