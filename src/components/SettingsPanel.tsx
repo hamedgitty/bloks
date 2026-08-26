@@ -571,6 +571,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           </div>
 
           <VoiceCard bot={bot} />
+          <ApprovalsCard bot={bot} />
           <WorkingFolderCard bot={bot} />
           <ConnectedAppsCard bot={bot} patch={patch} />
           <McpAttachCard bot={bot} />
@@ -607,6 +608,51 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   );
 }
 
+
+/**
+ * How much this agent may do without asking. Three positions, widening:
+ * everything cards, file edits wave through, everything waves through.
+ * Deny rules in Settings > Rules outrank all three, so "auto" is a
+ * shorter leash than it sounds when the user has written any.
+ */
+function ApprovalsCard({ bot }: { bot: Bot }) {
+  const { dispatch } = useStore();
+  const mode = bot.approvals ?? "ask";
+  const OPTIONS = [
+    { id: "ask" as const, label: "Ask", hint: "Every consequential action cards" },
+    { id: "edits" as const, label: "Accept edits", hint: "File changes go ahead; the rest asks" },
+    { id: "auto" as const, label: "Auto", hint: "Everything goes ahead; deny rules still refuse" },
+  ];
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
+        Approvals
+        <InfoTip text="A mode only widens what is allowed. Anything you have forbidden under Settings > Rules stays refused in every mode, and answers you chose to remember from approval cards keep working too." />
+      </div>
+      <div className="mt-0.5 text-[12.5px] text-muted-foreground">
+        {OPTIONS.find((o) => o.id === mode)?.hint}
+      </div>
+      <div className="mt-3 flex gap-1 rounded-xl bg-muted p-1">
+        {OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            onClick={() =>
+              dispatch({ type: "updateBot", botId: bot.id, patch: { approvals: option.id } })
+            }
+            className={cn(
+              "flex-1 rounded-lg py-1.5 text-[12.5px] transition-colors duration-150",
+              mode === option.id
+                ? "bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** The folder this agent's new tasks run in. Server-validated: a typo'd
  * path is refused with the reason rather than silently kept. */

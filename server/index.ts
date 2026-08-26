@@ -687,6 +687,39 @@ bus.subscribe((event: RuntimeEvent) => {
           }
           break;
         }
+
+        // The agent's mode, after the rules. A deny rule has already
+        // refused by here, so a mode can only widen what is allowed,
+        // never reopen what a rule shut. "auto" waves everything
+        // through; "edits" waves through the file-shaped tools and
+        // cards the rest.
+        const mode = bot.approvals ?? "ask";
+        // File-shaped tools only, and named tightly: a bare "create"
+        // would also match a connector's create_pull_request, which is
+        // not an edit anyone meant to wave through.
+        const editish = /edit|^write|_write|patch|str_replace|save_file|create_file|mkdir/i.test(
+          event.tool ?? "",
+        );
+        if (mode === "auto" || (mode === "edits" && editish)) {
+          const instance = registry.get(bot.modelSelection.instanceId);
+          void instance?.adapter
+            .respondToRequest(event.threadId, event.requestId, { behavior: "allow" })
+            .catch(() => {});
+          record(
+            signed(bot.id, {
+              at: Date.now(),
+              kind: "approval",
+              actor: bot.name,
+              summary: event.summary || event.tool || "an action",
+              detail: {
+                answer: "allow",
+                decidedBy: mode === "auto" ? "auto mode" : "edits mode",
+                agent: bot.name,
+              },
+            }),
+          );
+          break;
+        }
       }
 
       const message = pushMessage({
@@ -697,6 +730,9 @@ bus.subscribe((event: RuntimeEvent) => {
           subtitle: event.summary,
           options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
           requestId: event.requestId,
+          // the tool rides along so the card can offer to remember the
+          // answer as a rule
+          ...(permission && event.tool ? { tool: event.tool } : {}),
         },
       });
       if (event.requestId) {
@@ -3309,6 +3345,12 @@ const server = createServer(async (req, res) => {
         if (!named.ok) return json(res, 400, { error: named.error });
         patch.section = named.section;
       }
+      if (body.approvals !== undefined) {
+        if (!["ask", "edits", "auto"].includes(body.approvals as string)) {
+          return json(res, 400, { error: "approvals is ask, edits or auto" });
+        }
+        patch.approvals = body.approvals;
+      }
       if (body.mcpServers !== undefined) {
         if (!Array.isArray(body.mcpServers)) {
           return json(res, 400, { error: "mcpServers must be a list of server ids" });
@@ -4429,6 +4471,9 @@ const server = createServer(async (req, res) => {
     // The bug-report bundle: facts a public issue can hold. Built from
     // booleans and counts, then scrubbed again; see server/diagnostics.ts.
     if (method === "GET" && path === "/api/diagnostics") {
+      // This machine's business. A paired phone has no button that asks,
+      // and a leaked token should not read the engine roster either.
+      if (!local) return json(res, 403, { error: "not from here" });
       const { providers: rows } = await providerCatalog();
       const speechStatus = speech.speechConfigured(cfg);
       const report = diagnostics.diagnosticsReport({
@@ -4720,6 +4765,10 @@ const server = createServer(async (req, res) => {
     // Point at a folder, get a proposed roster for the hire dialog. Read
     // only; nothing is created until the user hires.
     if (method === "POST" && path === "/api/teams/scout") {
+      // Reads directory names off this machine's disk; only this machine
+      // gets to point it anywhere. The scout button exists only on the
+      // desktop, beside the native picker.
+      if (!local) return json(res, 403, { error: "not from here" });
       const body = await readBody(req);
       const checked = workspace.validateWorkingFolder(body.path);
       if (!checked.ok) return json(res, 400, { error: checked.error });

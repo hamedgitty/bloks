@@ -51,6 +51,9 @@ export interface OptionCardData {
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means the card is a setup question, which can be ignored. */
   requestId?: string;
+  /** The tool an approval card is about, so the answer can be
+   * remembered as a rule about that tool. */
+  tool?: string;
   /** Set when a workflow run is parked on this card. Answering it
    * resumes that run rather than saying anything to an agent, so it goes
    * to its own route (server/workflows.ts explains why a run waits on
@@ -237,6 +240,14 @@ export interface BotRecord {
   /** The sidebar heading this agent files under. One namespace shared
    * with rooms; absent or null means the plain Agents list. */
   section?: string | null;
+  /**
+   * How much this agent may do without asking. "ask" (and absent) is
+   * every consequential action carding; "edits" waves file changes
+   * through and asks about the rest; "auto" waves everything through.
+   * Deny rules outrank every mode: a mode is a wider allow, never a
+   * way past something the user forbade.
+   */
+  approvals?: "ask" | "edits" | "auto";
   /**
    * Retired rather than destroyed. Set instead of the record being
    * deleted, so an agent stops appearing and stops working without

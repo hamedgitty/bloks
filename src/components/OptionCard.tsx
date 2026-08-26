@@ -102,6 +102,33 @@ export function OptionCard({
         ))}
       </div>
 
+      {/* The answer worth remembering. One press writes an allow rule
+          scoped to this agent and this tool, then allows, so the
+          hundredth identical ask never arrives. Rules live in Settings
+          where they can be read and removed. */}
+      {!card.answered && card.requestId && card.tool && (
+        <button
+          onClick={() => {
+            void fetch("/api/rules", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                effect: "allow",
+                field: "tool",
+                op: "equals",
+                value: card.tool,
+                botId,
+                enabled: true,
+              }),
+            }).catch(() => {});
+            answer("Allow");
+          }}
+          className="mt-1 w-full rounded-xl px-2.5 py-1.5 text-left text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          Always allow {card.tool} for this agent
+        </button>
+      )}
+
       {/* A workflow gate has exactly two answers and each one decides
           what happens next. Offering a text box beside them would invite
           an answer nobody can act on, and anything unrecognised has to be

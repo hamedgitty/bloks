@@ -497,6 +497,18 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [query, setQuery] = useState("");
   const [hitAt, setHitAt] = useState(0);
   const hits = useMemo(() => findHits(bot.messages, query), [bot.messages, query]);
+
+  // Approvals stacked up while the user was away. One or two are a
+  // conversation; several are a queue, and a queue deserves queue
+  // controls rather than a scroll of identical presses.
+  const pendingApprovals = useMemo(
+    () =>
+      bot.messages.filter(
+        (m) =>
+          m.kind === "options" && m.card?.requestId && !m.card.answered && !m.card.dismissed,
+      ),
+    [bot.messages],
+  );
   const currentHit = hits.length ? hits[Math.min(hitAt, hits.length - 1)] : -1;
 
   useEffect(() => {
@@ -806,6 +818,33 @@ export function ChatView({ bot }: { bot: Bot }) {
             className="h-1.5 shrink-0 cursor-ns-resize bg-transparent transition-colors duration-150 hover:bg-accent"
           />
           <TerminalPanel bot={bot} onClose={() => setTerminalOpen(false)} />
+        </div>
+      )}
+      {pendingApprovals.length > 1 && (
+        <div className="flex items-center justify-center gap-2 px-4 pb-1">
+          <span className="text-[12px] text-muted-foreground">
+            {pendingApprovals.length} approvals waiting
+          </span>
+          <button
+            onClick={() => {
+              for (const m of pendingApprovals) {
+                dispatch({ type: "answerCard", botId: bot.id, messageId: m.id, answer: "Allow" });
+              }
+            }}
+            className="rounded-lg bg-brand-soft px-2.5 py-1 text-[12px] font-medium text-brand-ink transition-colors hover:opacity-90"
+          >
+            Allow all
+          </button>
+          <button
+            onClick={() => {
+              for (const m of pendingApprovals) {
+                dispatch({ type: "answerCard", botId: bot.id, messageId: m.id, answer: "Deny" });
+              }
+            }}
+            className="rounded-lg px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Deny all
+          </button>
         </div>
       )}
       <Composer bot={bot} replyTo={replyTo} onClearReply={() => setReplyTo(null)} />

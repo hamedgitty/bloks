@@ -19,6 +19,9 @@ export interface OptionCardData {
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means a setup question, which is safe to ignore. */
   requestId?: string;
+  /** The tool an approval card is about, so the answer can be
+   * remembered as a rule about that tool. */
+  tool?: string;
   /** Set when a workflow run is parked on this card. Answering it
    * resumes that run rather than saying anything to an agent. */
   runId?: string;
@@ -155,6 +158,10 @@ export interface Bot {
   /** The sidebar heading this agent files under; unset means the plain
    * Agents list. Shares one namespace with rooms. */
   section?: string | null;
+  /** How much this agent may do without asking: ask (default), edits
+   * (file changes wave through), auto (everything does). Deny rules
+   * outrank every mode. */
+  approvals?: "ask" | "edits" | "auto";
   hidden?: boolean;
   messages: Message[];
 }
@@ -354,6 +361,7 @@ export type Action =
           | "pinned"
           | "hidden"
           | "section"
+          | "approvals"
           | "composio"
           | "mcpServers"
         >
