@@ -23,6 +23,8 @@ import X from "lucide-react/dist/esm/icons/x.js";
 import { api, useStore, type Bot } from "@/state/store";
 import { usePageVisible } from "@/lib/pageVisible";
 import { AgentAvatar } from "./Avatar";
+import { TeamMapView } from "./TeamMap";
+import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 
 export interface Spend {
@@ -113,6 +115,8 @@ export function ActivityPanel() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  /** The same question at two zoom levels: rows, or the map. */
+  const [view, setView] = useState<"list" | "map">("list");
 
   const load = useCallback(() => {
     api("/api/activity")
@@ -182,22 +186,54 @@ export function ActivityPanel() {
       onClick={close}
     >
       <div
-        className="flex h-[80%] w-[640px] max-w-[92vw] animate-pop-in flex-col rounded-2xl border bg-popover p-4 shadow-2xl shadow-[--shadow-color] sm:p-5"
+        className={cn(
+          "flex h-[80%] max-w-[92vw] animate-pop-in flex-col rounded-2xl border bg-popover p-4 shadow-2xl shadow-[--shadow-color] sm:p-5",
+          view === "map" ? "w-[960px]" : "w-[640px]",
+        )}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-foreground">Activity</div>
             <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-              Everything your agents are doing right now, and what today has cost.
+              {view === "map"
+                ? "The whole team at a glance. Click anyone to go there."
+                : "Everything your agents are doing right now, and what today has cost."}
             </div>
           </div>
-          <Button variant="ghost" size="icon" aria-label="Close" onClick={close}>
-            <X size={17} />
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="flex rounded-lg bg-muted p-0.5">
+              {(["list", "map"] as const).map((option) => (
+                <button
+                  key={option}
+                  onClick={() => setView(option)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-[12px] capitalize transition-colors",
+                    view === option
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <Button variant="ghost" size="icon" aria-label="Close" onClick={close}>
+              <X size={17} />
+            </Button>
+          </div>
         </div>
 
-        {activity && (
+        {view === "map" && (
+          <TeamMapView
+            onNavigate={(id) => {
+              dispatch({ type: "select", id });
+              close();
+            }}
+          />
+        )}
+
+        {view === "list" && activity && (
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl bg-muted/50 px-3 py-2 text-[12.5px] text-muted-foreground">
             <span>
               <span className="text-foreground">{activity.today.turns}</span> turns today
@@ -218,13 +254,13 @@ export function ActivityPanel() {
           </div>
         )}
 
-        {error && (
+        {view === "list" && error && (
           <div className="mt-2 rounded-xl bg-destructive/10 px-3 py-2 text-[12.5px] text-destructive">
             {error}
           </div>
         )}
 
-        <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        <div className={cn("mt-3 min-h-0 flex-1 overflow-y-auto", view === "map" && "hidden")}>
           {quiet && (
             <div className="rounded-2xl border border-dashed px-4 py-10 text-center">
               <div className="text-[13.5px] text-foreground">Nothing is running.</div>

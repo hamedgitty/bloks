@@ -6,17 +6,17 @@
 // Everything on screen is store state the sidebar already keeps live,
 // so the map updates the moment anything changes and polls nothing.
 // Clicking an agent or a room goes there; the map is a door, not a
-// dashboard.
+// dashboard. It renders as the Map tab of the Activity panel, because
+// both answer the same question at different zoom levels.
 import { useMemo, useRef, useLayoutEffect, useState } from "react";
 import Users from "lucide-react/dist/esm/icons/users.js";
-import X from "lucide-react/dist/esm/icons/x.js";
 import { useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { layoutTeamMap } from "@/lib/teamMap";
 import { cn } from "@/lib/cn";
 
-export function TeamMapPanel() {
-  const { state, dispatch } = useStore();
+export function TeamMapView({ onNavigate }: { onNavigate: (id: string) => void }) {
+  const { state } = useStore();
   const frame = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(720);
   useLayoutEffect(() => {
@@ -50,33 +50,11 @@ export function TeamMapPanel() {
   );
   const roomsById = new Map(state.bloks.map((r) => [r.id, r]));
 
-  const open = (id: string) => {
-    dispatch({ type: "select", id });
-    dispatch({ type: "toggleMap", open: false });
-  };
+  const open = onNavigate;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4 md:p-10">
-      <div
-        ref={frame}
-        className="flex max-h-full w-full max-w-[980px] flex-col overflow-hidden rounded-2xl border bg-background shadow-xl"
-      >
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <div className="text-[14px] font-semibold text-foreground">Team map</div>
-            <div className="text-[12px] text-muted-foreground">
-              Who is where, and what they are up to right now
-            </div>
-          </div>
-          <button
-            onClick={() => dispatch({ type: "toggleMap", open: false })}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="overflow-auto p-4">
+    <div ref={frame} className="min-h-0 flex-1 overflow-auto">
+      <div className="p-2">
           <div className="relative" style={{ width, height }}>
             <svg width={width} height={height} className="absolute inset-0">
               {clusters.map((c) => (
@@ -165,7 +143,6 @@ export function TeamMapPanel() {
               No agents yet. The map fills in as you hire.
             </div>
           )}
-        </div>
       </div>
     </div>
   );
