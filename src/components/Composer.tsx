@@ -410,9 +410,15 @@ export function Composer({
             }
           }}
           onKeyDown={(e) => {
-            // Enter sends; Shift+Enter starts a new line
+            // Enter sends; Shift+Enter starts a new line. While the agent
+            // works, plain Enter queues behind the running turn, and
+            // Cmd+Enter stops the turn first: both the patient road and
+            // the impatient one, the same way the CLIs offer both.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
+              if ((e.metaKey || e.ctrlKey) && bot.busy) {
+                dispatch({ type: "interrupt", botId: bot.id });
+              }
               send();
             }
             if (e.key === "Escape" && recording) setRecording(false);
@@ -421,7 +427,7 @@ export function Composer({
             recording
               ? "Listening…"
               : bot.busy
-                ? `${bot.name} is working. Messages queue…`
+                ? `${bot.name} is working. Enter queues, ⌘Enter interrupts…`
                 : `Message ${bot.name}`
           }
           className="w-full min-w-0 resize-none self-center bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
