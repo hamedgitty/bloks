@@ -307,15 +307,15 @@ function persistWindowState(win) {
 /**
  * Where the three window buttons sit.
  *
- * The cluster is 52px wide (three 12px buttons, 20px apart). At x:16 it
- * ends at 68, which leaves exactly 16px to the 84px rail's edge: the
+ * The cluster is 52px wide (three 12px buttons, 20px apart). At x:22 it
+ * ends at 74, which leaves exactly 22px to the 96px rail's edge: the
  * group sits centred, with even margins on both sides. macOS
  * forgets this position on its own: leaving full screen, changing
  * display scale and some resizes all reset it, which is how the green
  * button ends up back over the divider after a while. So it is applied
  * again on each of those, rather than only at creation.
  */
-const BUTTONS = { x: 16, y: 16 };
+const BUTTONS = { x: 22, y: 16 };
 
 function keepButtonsInPlace(win) {
   if (process.platform !== "darwin") return;

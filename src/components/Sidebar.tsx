@@ -653,11 +653,11 @@ export function Sidebar() {
     <aside
       className={cn(
         "flex h-full shrink-0 flex-col border-r bg-sidebar transition-[width] duration-200",
-        // 84px is not arbitrary: macOS draws its three buttons as a 52px
-        // cluster, so a 16px inset leaves exactly 16px on the other side
-        // and the group sits centred in the rail. See BUTTONS in
-        // electron/main.mjs, which holds the matching inset.
-        rail ? "w-[84px]" : "w-[320px]",
+        // 96px is not arbitrary: macOS draws its three buttons as a 52px
+        // cluster, so a 22px inset leaves exactly 22px on the other side
+        // and the group sits centred with real air around it. See BUTTONS
+        // in electron/main.mjs, which holds the matching inset.
+        rail ? "w-[96px]" : "w-[320px]",
       )}
     >
       {/* macOS draws its traffic lights into the top-left corner of the
