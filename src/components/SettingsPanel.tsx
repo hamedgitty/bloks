@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
+import { InfoTip } from "@/components/ui/info-tip";
 import { cn } from "@/lib/cn";
 
 function Field({
@@ -635,9 +636,9 @@ function WorkingFolderCard({ bot }: { bot: Bot }) {
           </span>
         )}
       </div>
-      <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-        Where new tasks run. Point it at a project to work in that repo; leave it empty and the
-        agent uses its own workspace. Running tasks keep the folder they started in.
+      <div className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-relaxed text-muted-foreground">
+        Where new tasks run.
+        <InfoTip text="Point it at a project to work in that repo; leave it empty and the agent uses its own workspace. Running tasks keep the folder they started in." />
       </div>
       <div className="mt-3 flex gap-2">
         <Input

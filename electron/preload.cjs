@@ -29,6 +29,12 @@ contextBridge.exposeInMainWorld("bloks", {
   // putting the path on the File object; this is the sanctioned bridge.
   filePath: (file) => webUtils.getPathForFile(file),
   pickFolder: () => ipcRenderer.invoke("dialog:pick-folder"),
+
+  appVersion: () => ipcRenderer.invoke("app:version"),
+  updateState: () => ipcRenderer.invoke("update:state"),
+  updateCheck: () => ipcRenderer.invoke("update:check"),
+  updateInstall: () => ipcRenderer.invoke("update:install"),
+  onUpdateState: subscription("update:state"),
   shortcutApply: (accelerator) => ipcRenderer.invoke("shortcut:apply", accelerator),
   quickHide: () => ipcRenderer.invoke("quick:hide"),
   quickOpenMain: () => ipcRenderer.invoke("quick:open-main"),

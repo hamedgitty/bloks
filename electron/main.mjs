@@ -648,6 +648,31 @@ ipcMain.handle("badge:set", (event, value) => {
   app.setBadgeCount(count);
 });
 
+// ── the About card's three questions ───────────────────────────────────
+// What version am I, is there a newer one, and how do I get it. The
+// updater itself runs on its own (see the whenReady block); these exist
+// so a person can ask instead of waiting.
+
+/** The last thing the updater said, replayed to windows that ask. */
+let updaterState = { state: "idle" };
+
+ipcMain.handle("app:version", () => app.getVersion());
+ipcMain.handle("update:state", () => updaterState);
+ipcMain.handle("update:check", async () => {
+  if (!app.isPackaged) return { state: "dev" };
+  try {
+    await electronUpdater.autoUpdater.checkForUpdates();
+  } catch {
+    // the error event has already told the windows
+  }
+  return updaterState;
+});
+ipcMain.handle("update:install", () => {
+  if (!app.isPackaged) return;
+  // same teardown as a normal quit, then the installer takes over
+  electronUpdater.autoUpdater.quitAndInstall();
+});
+
 ipcMain.handle("shortcut:apply", (_event, accelerator) =>
   applyQuickShortcut(typeof accelerator === "string" && accelerator ? accelerator : null),
 );
@@ -734,7 +759,26 @@ app.whenReady().then(async () => {
     const { autoUpdater } = electronUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on("error", (error) => console.error("[updater]", error?.message ?? error));
+    // Every updater event folds into one state frame the renderer can
+    // draw: the About card shows checking, downloading, ready or quiet,
+    // and never has to know the updater's own event vocabulary.
+    const tellWindows = (state, detail = {}) => {
+      updaterState = { state, ...detail };
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send("update:state", updaterState);
+      }
+    };
+    autoUpdater.on("checking-for-update", () => tellWindows("checking"));
+    autoUpdater.on("update-available", (info) => tellWindows("downloading", { version: info?.version }));
+    autoUpdater.on("update-not-available", () => tellWindows("current"));
+    autoUpdater.on("download-progress", (progress) =>
+      tellWindows("downloading", { percent: Math.round(progress?.percent ?? 0) }),
+    );
+    autoUpdater.on("update-downloaded", (info) => tellWindows("ready", { version: info?.version }));
+    autoUpdater.on("error", (error) => {
+      console.error("[updater]", error?.message ?? error);
+      tellWindows("error");
+    });
     autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   }
 

@@ -8,6 +8,7 @@ import Moon from "lucide-react/dist/esm/icons/moon.js";
 import Sun from "lucide-react/dist/esm/icons/sun.js";
 import { api, useStore } from "@/state/store";
 import { useTheme, type Theme } from "@/lib/theme";
+import type { UpdateState } from "@/types/bridge";
 import { RecordPanel } from "./RecordPanel";
 import { RulesPanel } from "./RulesPanel";
 import { ApiKeyRow } from "./ApiKeys";
@@ -18,6 +19,7 @@ import { CloudSection } from "./CloudSection";
 import { DevicesSection } from "./DevicesSection";
 import { LocalVmSection } from "./LocalVmSection";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
@@ -53,20 +55,15 @@ function Compaction() {
     <div className="mt-4 rounded-2xl border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-[13.5px] font-semibold text-foreground">Summarise as you go</div>
+          <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
+            Summarise as you go
+            <InfoTip text="A long conversation has to be summarised to keep fitting. Off, that happens once when it fills up, which is a pause before your next message. On, one message is folded in after each turn instead, so it never pauses. The cost: folding rewrites what was already sent, so the provider cannot reuse its cache, which on some providers costs more than the pause it removes. Your own messages are never summarised either way." />
+          </div>
           <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-            A long conversation has to be summarised to keep fitting. Off, that happens once when it
-            fills up, which is a pause before your next message. On, one message is folded in after
-            each turn instead, so it never pauses and the conversation stays about a fifth full.
+            Fold the conversation a little after each turn instead of all at once when it fills up.
           </div>
         </div>
         <Switch aria-label="Summarise as you go" checked={on} disabled={saving} onCheckedChange={set} />
-      </div>
-      <div className="mt-2.5 rounded-xl bg-muted/50 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
-        What it costs: folding after every turn rewrites what was already sent, which means the
-        provider cannot reuse its cache of this conversation. On a provider that discounts cached
-        input heavily, that can cost more than the pause it removes. Your own messages are never
-        summarised either way.
       </div>
     </div>
   );
@@ -97,7 +94,10 @@ function ProposeSkills() {
     <div className="mt-4 rounded-2xl border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-[13.5px] font-semibold text-foreground">Suggest skills</div>
+          <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
+            Suggest skills
+            <InfoTip text="Nothing is ever installed on its own. A suggestion waits in Skills with the words already written, and keeping it is one press. Reading a session back costs one cheap call, on your own key, for work you did not ask for, which is why this is off until you turn it on." />
+          </div>
           <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
             After a conversation that worked something out, read it back and write the procedure
             down as a skill. Most conversations teach nothing and nothing is suggested for them.
@@ -105,17 +105,83 @@ function ProposeSkills() {
         </div>
         <Switch aria-label="Suggest skills" checked={on} disabled={saving} onCheckedChange={set} />
       </div>
-      <div className="mt-2.5 rounded-xl bg-muted/50 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
-        Nothing is ever installed on its own. A suggestion waits in Skills with the words already
-        written, and keeping it is one press. Reading a session back costs one cheap call, on your
-        own key, for work you did not ask for, which is why this is off until you turn it on.
-      </div>
     </div>
   );
 }
 
 /** Shared context every agent receives. Optional, never asked for up
  * front: it lives here for whenever you feel like writing it. */
+/**
+ * What version this is, and the way to the next one.
+ *
+ * The updater already runs on its own at launch; this card exists so a
+ * person can ask instead of waiting, watch the download when there is
+ * one, and restart into it the moment it is ready. In a plain browser
+ * tab there is no updater and the card says only what it knows.
+ */
+function AboutCard() {
+  const [version, setVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateState>({ state: "idle" });
+
+  useEffect(() => {
+    void window.bloks?.appVersion?.().then(setVersion);
+    void window.bloks?.updateState?.().then(setUpdate);
+    return window.bloks?.onUpdateState?.(setUpdate);
+  }, []);
+
+  const line =
+    update.state === "checking"
+      ? "Checking…"
+      : update.state === "downloading"
+        ? `Downloading ${update.version ?? "the update"}${update.percent ? ` (${update.percent}%)` : ""}…`
+        : update.state === "current"
+          ? "You are on the latest version."
+          : update.state === "ready"
+            ? `${update.version ?? "An update"} is downloaded and ready.`
+            : update.state === "error"
+              ? "The update check didn't reach the server. It will retry on next launch."
+              : update.state === "dev"
+                ? "Updates apply to the installed app, not a dev build."
+                : null;
+
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-[13.5px] font-semibold text-foreground">
+          Bloks {version ?? ""}
+        </div>
+        {update.state === "ready" ? (
+          <Button size="sm" onClick={() => void window.bloks?.updateInstall?.()}>
+            Restart to update
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!window.bloks || update.state === "checking" || update.state === "downloading"}
+            onClick={() => void window.bloks?.updateCheck?.().then(setUpdate)}
+          >
+            Check for updates
+          </Button>
+        )}
+      </div>
+      {line && <div className="mt-1.5 text-[12.5px] text-muted-foreground">{line}</div>}
+      <div className="mt-2 text-[12.5px] text-muted-foreground">
+        Something broken, or missing?{" "}
+        <a
+          href={`https://github.com/hamedgitty/bloks/issues/new?body=${encodeURIComponent(`\n\n---\nBloks ${version ?? ""} on ${navigator.platform}`)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Send feedback
+        </a>
+        {" "}(opens GitHub; paste the diagnostics below into anything gnarly).
+      </div>
+    </div>
+  );
+}
+
 /**
  * One button between "it doesn't work" and a useful bug report. The
  * server assembles the facts (versions, engine states, which
@@ -141,10 +207,12 @@ function Diagnostics() {
   };
   return (
     <div className="mt-4 rounded-2xl border bg-card p-4">
-      <div className="text-[13.5px] font-semibold text-foreground">Diagnostics</div>
+      <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
+        Diagnostics
+        <InfoTip text="The report holds versions, engine connection states, which keys are set as yes or no, and agent counts. Never the keys themselves, and the finished text is scrubbed for anything credential-shaped besides." />
+      </div>
       <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-        Copies a short report about this install for a bug report: versions, engine states and
-        which keys are set. Never the keys themselves.
+        Copies a short report about this install, ready to paste into a bug report.
       </div>
       <button
         onClick={() => void copy()}
@@ -450,6 +518,7 @@ export function AppSettingsPanel() {
                 <ProposeSkills />
                 <AboutYou />
                 <Diagnostics />
+                <AboutCard />
               </>
             )}
 

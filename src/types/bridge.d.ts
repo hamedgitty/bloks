@@ -7,6 +7,13 @@
 // in a browser is still a usable way to work on the app.
 export {};
 
+/** What the updater is doing right now, flattened for the About card. */
+export interface UpdateState {
+  state: "idle" | "checking" | "downloading" | "current" | "ready" | "error" | "dev";
+  version?: string;
+  percent?: number;
+}
+
 declare global {
   interface Window {
     bloks?: {
@@ -40,6 +47,16 @@ declare global {
       filePath(file: File): string;
       /** The native folder picker; null when the user cancels. */
       pickFolder(): Promise<string | null>;
+
+      /** The installed app's own version string. */
+      appVersion(): Promise<string>;
+      /** One frame of updater state: idle, checking, downloading (with
+       * percent), current, ready (with version), error, or dev. */
+      updateState(): Promise<UpdateState>;
+      updateCheck(): Promise<UpdateState>;
+      /** Quits and hands over to the installer; only sane on "ready". */
+      updateInstall(): Promise<void>;
+      onUpdateState(handler: (state: UpdateState) => void): () => void;
       /** Registers the system-wide hotkey, or clears it with null.
        * Answers with what actually took: another app may own the keys. */
       shortcutApply(accelerator: string | null): Promise<string | null>;
