@@ -235,8 +235,42 @@ export const PROVIDER_SPECS: readonly ProviderSpec[] = [
   OLLAMA,
 ];
 
+/** A user-added OpenAI-compatible host. The URL and keys live in
+ * config.json, not here: this is only the driver shape, so one generic
+ * instance can point at any /v1 that speaks chat completions. Tools stay
+ * off because support depends on whatever is loaded behind that URL. */
+export const CUSTOM_SPEC: ProviderSpec = {
+  kind: "custom",
+  name: "Custom",
+  url: "",
+  auth: "key",
+  keyHint: "API key from your OpenAI-compatible endpoint",
+  docsUrl: "https://platform.openai.com/docs/api-reference/models",
+  models: { default: "", options: [] },
+  limit: 32,
+};
+
 export function specFor(kind: string): ProviderSpec | undefined {
+  if (kind === CUSTOM_SPEC.kind) return CUSTOM_SPEC;
   return PROVIDER_SPECS.find((s) => s.kind === kind);
+}
+
+/** The OpenAI-compatible root a person meant. Trailing slashes and a
+ * pasted /chat/completions path are the two ways a working host becomes
+ * a 404 on /models, so both get folded here rather than stored as typed. */
+export function normalizeCompatUrl(url: string): string | undefined {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed) || trimmed.length > 400) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.username || parsed.password) return undefined;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    let path = parsed.pathname.replace(/\/+$/, "");
+    path = path.replace(/\/(chat\/)?completions$/i, "");
+    return `${parsed.protocol}//${parsed.host}${path}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Engines that come from a CLI on this machine. They are not configured

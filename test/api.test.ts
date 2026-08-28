@@ -217,6 +217,193 @@ describe("the engine catalog", () => {
   });
 });
 
+describe("custom OpenAI-compatible endpoints", () => {
+  test("a host plus a key becomes an instance, and the key never comes back", async (t) => {
+    const { createServer } = await import("node:http");
+    const seen: string[] = [];
+    const fake = createServer((req, res) => {
+      if (req.url?.endsWith("/models")) {
+        seen.push(String(req.headers.authorization ?? ""));
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ data: [{ id: "acct-large" }, { id: "acct-small" }] }));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+    t.after(() => fake.close());
+    const port = (fake.address() as any).port;
+
+    const secret = "sk-custom-super-secret-value-123456";
+    const created = await h.fetch("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Acct",
+        url: `http://127.0.0.1:${port}/v1/`,
+        key: secret,
+        label: "work",
+      }),
+    });
+    assert.equal(created.status, 201);
+    const listed = await created.json();
+    const endpoint = listed.endpoints.find((e: any) => e.name === "Acct");
+    assert.ok(endpoint);
+    t.after(() => h.fetch(`/api/custom-endpoints/${endpoint.id}`, { method: "DELETE" }));
+    assert.equal(endpoint.url, `http://127.0.0.1:${port}/v1`);
+    assert.equal(endpoint.keys.length, 1);
+    assert.equal(endpoint.keys[0].label, "work");
+    assert.equal(endpoint.keys[0].active, true);
+    const echoed = JSON.stringify(listed);
+    assert.ok(!echoed.includes(secret), "a custom key leaked into the create response");
+
+    const saved = readFileSync(join(h.home, ".bloks", "config.json"), "utf8");
+    assert.ok(saved.includes(secret), "the key should be on disk");
+    const { mode } = statSync(join(h.home, ".bloks", "config.json"));
+    assert.equal(mode & 0o077, 0, "config.json is group or world readable");
+
+    const instances = await h.json("/api/instances");
+    const custom = instances.instances.find((i: any) => i.instanceId === endpoint.instanceId);
+    assert.ok(custom, "the host should appear as an instance");
+    assert.equal(custom.driverKind, "custom");
+    assert.equal(custom.displayName, "Acct");
+    assert.ok(
+      custom.models.options.some((o: any) => o.id === "acct-large"),
+      "GET /models should populate the picker",
+    );
+    assert.ok(!JSON.stringify(instances).includes(secret), "a custom key leaked into /api/instances");
+  });
+
+  test("several keys share one host, and Use rotates which one is sent", async (t) => {
+    const { createServer } = await import("node:http");
+    const auths: string[] = [];
+    const fake = createServer((req, res) => {
+      if (req.url?.endsWith("/models")) {
+        auths.push(String(req.headers.authorization ?? ""));
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ data: [{ id: "shared-model" }] }));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+    t.after(() => fake.close());
+    const port = (fake.address() as any).port;
+    const first = "sk-custom-first-key-aaaaaaaa";
+    const second = "sk-custom-second-key-bbbbbbbb";
+
+    const { endpoints: created } = await h.json("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Shared",
+        url: `http://127.0.0.1:${port}/v1`,
+        key: first,
+        label: "primary",
+      }),
+    });
+    const id = created[0].id;
+    const added = await h.json(`/api/custom-endpoints/${id}/keys`, {
+      method: "POST",
+      body: JSON.stringify({ key: second, label: "backup" }),
+    });
+    assert.equal(added.endpoints[0].keys.length, 2);
+    assert.equal(added.endpoints[0].keys.filter((k: any) => k.active).length, 1);
+    assert.equal(
+      added.endpoints[0].keys.find((k: any) => k.label === "primary").active,
+      true,
+      "the first key stays in use until someone picks another",
+    );
+
+    await h.json("/api/instances");
+    await waitFor(async () => (auths.some((a) => a.includes(first)) ? true : null));
+    assert.ok(
+      auths.some((a) => a.includes(first)),
+      "the active key should be the one sent to /models",
+    );
+    assert.ok(
+      !auths.some((a) => a.includes(second)),
+      "the unused key should stay off the wire",
+    );
+
+    const backup = added.endpoints[0].keys.find((k: any) => k.label === "backup");
+    auths.length = 0;
+    const rotated = await h.json(`/api/custom-endpoints/${id}/keys/${backup.id}/use`, {
+      method: "POST",
+    });
+    assert.equal(rotated.endpoints[0].keys.find((k: any) => k.label === "backup").active, true);
+
+    await h.json("/api/instances");
+    await waitFor(async () => (auths.some((a) => a.includes(second)) ? true : null));
+    assert.ok(auths.some((a) => a.includes(second)), "Use should send the newly active key");
+    assert.ok(!auths.some((a) => a.includes(first)), "the previous key should no longer be sent");
+
+    t.after(() => h.fetch(`/api/custom-endpoints/${id}`, { method: "DELETE" }));
+  });
+
+  test("a pasted completions URL is stored as the /v1 root", async () => {
+    const made = await h.json("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Trimmed",
+        url: "https://api.example.test/v1/chat/completions",
+        key: "sk-custom-trim-key-cccccccc",
+      }),
+    });
+    const trimmed = made.endpoints.find((e: any) => e.name === "Trimmed");
+    assert.equal(trimmed.url, "https://api.example.test/v1");
+    await h.fetch(`/api/custom-endpoints/${trimmed.id}`, { method: "DELETE" });
+  });
+
+  test("a bad URL or a missing key is refused", async () => {
+    const noUrl = await h.fetch("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({ name: "Nope", url: "not-a-url", key: "sk-custom-bad-dddddddd" }),
+    });
+    assert.equal(noUrl.status, 400);
+    const noKey = await h.fetch("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({ name: "Nope", url: "https://api.example.test/v1" }),
+    });
+    assert.equal(noKey.status, 400);
+    const userinfo = await h.fetch("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Nope",
+        url: "https://user:pass@api.example.test/v1",
+        key: "sk-custom-bad-eeeeeeee",
+      }),
+    });
+    assert.equal(userinfo.status, 400, "credentials in the URL are not a key field");
+  });
+
+  test("removing the last key forgets the host", async () => {
+    const made = await h.json("/api/custom-endpoints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Temp",
+        url: "https://api.example.test/v1",
+        key: "sk-custom-temp-key-ffffffff",
+      }),
+    });
+    const endpoint = made.endpoints.find((e: any) => e.name === "Temp");
+    const gone = await h.json(`/api/custom-endpoints/${endpoint.id}/keys/${endpoint.keys[0].id}`, {
+      method: "DELETE",
+    });
+    assert.ok(!gone.endpoints.some((e: any) => e.id === endpoint.id));
+    const disk = JSON.parse(readFileSync(join(h.home, ".bloks", "config.json"), "utf8"));
+    assert.ok(!(disk.custom ?? []).some((e: any) => e.id === endpoint.id));
+  });
+
+  test("custom is not a row in the static catalog", async () => {
+    const { providers } = await h.json("/api/providers");
+    assert.ok(!providers.some((p: any) => p.kind === "custom"));
+    const refused = await h.fetch("/api/providers/custom/connect", {
+      method: "POST",
+      body: JSON.stringify({ key: "sk-nope", url: "https://api.example.test/v1" }),
+    });
+    assert.equal(refused.status, 400);
+  });
+});
+
 describe("skills", () => {
   test("a builtin library ships with the app", async () => {
     const { skills } = await h.json("/api/skills");

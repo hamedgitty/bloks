@@ -140,6 +140,7 @@ const LETTERED: Record<string, { letter: string; tone: string }> = {
   mistral: { letter: "M", tone: "#fa520f" },
   groq: { letter: "G", tone: "#f55036" },
   ollama: { letter: "O", tone: "#6b7280" },
+  custom: { letter: "C", tone: "#6b7280" },
 };
 
 export function ProviderMark({ driverKind, size, className }: IconProps & { driverKind: string }) {

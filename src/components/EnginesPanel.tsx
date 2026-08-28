@@ -10,6 +10,7 @@ import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
 import Plus from "lucide-react/dist/esm/icons/plus.js";
 import { api, useStore, type ProviderRow } from "@/state/store";
+import { CustomEndpoints } from "./CustomEndpoints";
 import { ProviderMark } from "./ProviderIcons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -203,26 +204,29 @@ export function EnginesPanel() {
   const chat = providers.filter((p) => !p.agentic);
 
   return (
-    <div className="mt-4 overflow-hidden rounded-2xl border bg-card">
-      <div className="px-4 pb-3 pt-4">
-        <div className="flex items-baseline justify-between gap-2">
-          <div className="text-[13.5px] font-semibold text-foreground">Engines</div>
-          <div className="text-[11.5px] text-muted-foreground">{connected} connected</div>
+    <>
+      <div className="mt-4 overflow-hidden rounded-2xl border bg-card">
+        <div className="px-4 pb-3 pt-4">
+          <div className="flex items-baseline justify-between gap-2">
+            <div className="text-[13.5px] font-semibold text-foreground">Engines</div>
+            <div className="text-[11.5px] text-muted-foreground">{connected} connected</div>
+          </div>
+          <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+            What your agents run on. Keys stay on this machine.
+          </div>
         </div>
-        <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-          What your agents run on. Keys stay on this machine.
-        </div>
+        <Group
+          title="Agents"
+          note="Run commands and read files. Install the CLI, then sign in."
+          rows={agents}
+        />
+        <Group
+          title="Chat models"
+          note="Write and reason, but cannot act on your machine."
+          rows={chat}
+        />
       </div>
-      <Group
-        title="Agents"
-        note="Run commands and read files. Install the CLI, then sign in."
-        rows={agents}
-      />
-      <Group
-        title="Chat models"
-        note="Write and reason, but cannot act on your machine."
-        rows={chat}
-      />
-    </div>
+      <CustomEndpoints />
+    </>
   );
 }
