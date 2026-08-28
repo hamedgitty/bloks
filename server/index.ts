@@ -24,7 +24,9 @@ import * as composio from "./composio.ts";
 import {
   APP_VERSION,
   DATA_DIR,
+  activeCustomKey,
   connectedProviders,
+  customInstanceId,
   disconnectProvider,
   ensureDirs,
   instanceConfigs,
@@ -34,9 +36,11 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
   type AppConfig,
+  type CustomEndpoint,
+  type CustomKey,
 } from "./config.ts";
 import { RelayLink, relayDeviceFor } from "./relay-link.ts";
-import { CLI_PROVIDERS, PROVIDER_SPECS, specFor } from "./providers.ts";
+import { CLI_PROVIDERS, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
@@ -65,13 +69,17 @@ import {
   clamp,
   clampList,
   MAX_BODY_BYTES,
+  MAX_CUSTOM_ENDPOINTS,
+  MAX_CUSTOM_KEYS,
   MAX_DESCRIPTION_CHARS,
+  MAX_KEY_CHARS,
   MAX_MESSAGE_CHARS,
   MAX_NAME_CHARS,
   MAX_SKILL_CHARS,
   MAX_SKILLS,
   MAX_SSE_CLIENTS,
   MAX_TITLE_CHARS,
+  MAX_URL_CHARS,
 } from "./limits.ts";
 import {
   describeAgentFile,
@@ -2910,6 +2918,46 @@ async function connectProvider(kind: string, key: string, endpoint = "") {
   broadcast({ kind: "providers", ...(await providerCatalog()) });
 }
 
+/** What Settings renders for user-added hosts: names, URLs, key labels.
+ * Never the keys themselves. */
+function customCatalog() {
+  return {
+    endpoints: (cfg.custom ?? []).map((endpoint) => {
+      const active = activeCustomKey(endpoint);
+      return {
+        id: endpoint.id,
+        name: endpoint.name,
+        url: endpoint.url,
+        instanceId: customInstanceId(endpoint.id),
+        activeKeyId: active?.id ?? null,
+        keys: endpoint.keys.map((cred) => ({
+          id: cred.id,
+          label: cred.label ?? "",
+          active: cred.id === active?.id,
+        })),
+      };
+    }),
+  };
+}
+
+async function persistCustom(next: CustomEndpoint[]) {
+  saveConfig({ custom: next } as Partial<AppConfig>);
+  Object.assign(cfg, loadConfig());
+  // loadConfig re-reads the file; keep the in-memory list aligned with
+  // what we just wrote so a follow-up in this request sees it.
+  cfg.custom = next;
+  await reloadProviders();
+  broadcast({ kind: "providers", ...(await providerCatalog()) });
+}
+
+function parseCustomKey(body: Record<string, unknown>): { key?: string; label?: string; error?: string } {
+  const key = typeof body.key === "string" ? body.key.trim() : "";
+  const label = clamp(body.label, MAX_NAME_CHARS);
+  if (!key) return { error: "a key is required" };
+  if (key.length > MAX_KEY_CHARS) return { error: "that key is too long" };
+  return { key, ...(label ? { label } : {}) };
+}
+
 // ── request and response helpers ──────────────────────────────────────
 function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
@@ -4511,6 +4559,9 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const spec = specFor(m[1]);
       if (!spec) return json(res, 404, { error: "no such provider" });
+      if (spec.kind === "custom") {
+        return json(res, 400, { error: "add a custom endpoint from Settings" });
+      }
       if (spec.auth === "cli") return json(res, 400, { error: `${spec.name} signs in through its own CLI` });
       const body = await readBody(req);
       const key = String(body.key ?? "").trim();
@@ -4536,6 +4587,89 @@ const server = createServer(async (req, res) => {
       await reloadProviders();
       broadcast({ kind: "providers", ...(await providerCatalog()) });
       return json(res, 200, await providerCatalog());
+    }
+
+    // ── custom OpenAI-compatible hosts: URL plus one or more keys ──
+    if (method === "GET" && path === "/api/custom-endpoints") {
+      return json(res, 200, customCatalog());
+    }
+    if (method === "POST" && path === "/api/custom-endpoints") {
+      const body = await readBody(req);
+      const name = clamp(body.name, MAX_NAME_CHARS);
+      const url = typeof body.url === "string" ? normalizeCompatUrl(body.url) : undefined;
+      const parsed = parseCustomKey(body);
+      if (!name) return json(res, 400, { error: "a name is required" });
+      if (!url) return json(res, 400, { error: "the endpoint must be an http or https URL" });
+      if (url.length > MAX_URL_CHARS) return json(res, 413, { error: "that URL is too long" });
+      if (parsed.error) return json(res, parsed.error.includes("too long") ? 413 : 400, { error: parsed.error });
+      if ((cfg.custom ?? []).length >= MAX_CUSTOM_ENDPOINTS) {
+        return json(res, 507, { error: `at most ${MAX_CUSTOM_ENDPOINTS} custom endpoints` });
+      }
+      const cred: CustomKey = { id: randomBytes(8).toString("hex"), key: parsed.key!, ...(parsed.label ? { label: parsed.label } : {}) };
+      const entry: CustomEndpoint = {
+        id: randomBytes(8).toString("hex"),
+        name,
+        url,
+        keys: [cred],
+        activeKeyId: cred.id,
+      };
+      await persistCustom([...(cfg.custom ?? []), entry]);
+      return json(res, 201, customCatalog());
+    }
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)$/);
+    if (m && method === "DELETE") {
+      const next = (cfg.custom ?? []).filter((endpoint) => endpoint.id !== m![1]);
+      if (next.length === (cfg.custom ?? []).length) return json(res, 404, { error: "no such endpoint" });
+      await persistCustom(next);
+      return json(res, 200, customCatalog());
+    }
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/keys$/);
+    if (m && method === "POST") {
+      const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
+      if (!endpoint) return json(res, 404, { error: "no such endpoint" });
+      const body = await readBody(req);
+      const parsed = parseCustomKey(body);
+      if (parsed.error) return json(res, parsed.error.includes("too long") ? 413 : 400, { error: parsed.error });
+      if (endpoint.keys.length >= MAX_CUSTOM_KEYS) {
+        return json(res, 507, { error: `at most ${MAX_CUSTOM_KEYS} keys on one host` });
+      }
+      const cred: CustomKey = { id: randomBytes(8).toString("hex"), key: parsed.key!, ...(parsed.label ? { label: parsed.label } : {}) };
+      const next = (cfg.custom ?? []).map((entry) =>
+        entry.id === endpoint.id ? { ...entry, keys: [...entry.keys, cred] } : entry,
+      );
+      await persistCustom(next);
+      return json(res, 201, customCatalog());
+    }
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/keys\/([\w-]+)$/);
+    if (m && method === "DELETE") {
+      const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
+      if (!endpoint) return json(res, 404, { error: "no such endpoint" });
+      const remaining = endpoint.keys.filter((cred) => cred.id !== m![2]);
+      if (remaining.length === endpoint.keys.length) return json(res, 404, { error: "no such key" });
+      // the last key is the host: drop the endpoint rather than leave a
+      // connected row that cannot talk to anything
+      if (!remaining.length) {
+        await persistCustom((cfg.custom ?? []).filter((entry) => entry.id !== endpoint.id));
+        return json(res, 200, customCatalog());
+      }
+      const activeKeyId =
+        endpoint.activeKeyId === m[2] ? remaining[0].id : endpoint.activeKeyId;
+      const next = (cfg.custom ?? []).map((entry) =>
+        entry.id === endpoint.id ? { ...entry, keys: remaining, activeKeyId } : entry,
+      );
+      await persistCustom(next);
+      return json(res, 200, customCatalog());
+    }
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/keys\/([\w-]+)\/use$/);
+    if (m && method === "POST") {
+      const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
+      if (!endpoint) return json(res, 404, { error: "no such endpoint" });
+      if (!endpoint.keys.some((cred) => cred.id === m![2])) return json(res, 404, { error: "no such key" });
+      const next = (cfg.custom ?? []).map((entry) =>
+        entry.id === endpoint.id ? { ...entry, activeKeyId: m![2] } : entry,
+      );
+      await persistCustom(next);
+      return json(res, 200, customCatalog());
     }
 
     // ── browser sign-in (OAuth PKCE) ──
@@ -6189,6 +6323,7 @@ function redactSecrets(message: string): string {
     cfg.composio?.apiKey,
     cfg.box?.token,
     ...Object.values(cfg.providers ?? {}).map((p) => p?.key),
+    ...(cfg.custom ?? []).flatMap((endpoint) => endpoint.keys.map((cred) => cred.key)),
     ...Object.values(cfg.secrets ?? {}),
   ];
   for (const secret of stored) {

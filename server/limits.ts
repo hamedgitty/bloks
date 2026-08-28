@@ -26,6 +26,12 @@ export const MAX_BODY_BYTES = 2_000_000;
 /** Simultaneous event-stream listeners. One app needs one. */
 export const MAX_SSE_CLIENTS = 32;
 
+/** User-added OpenAI-compatible hosts, and keys on one host. */
+export const MAX_CUSTOM_ENDPOINTS = 16;
+export const MAX_CUSTOM_KEYS = 8;
+export const MAX_KEY_CHARS = 400;
+export const MAX_URL_CHARS = 400;
+
 /** Trims a value to a cap, returning undefined when there is nothing
  * left. Callers decide whether absent means "skip" or "reject". */
 export function clamp(value: unknown, max: number): string | undefined {

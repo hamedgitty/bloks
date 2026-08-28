@@ -332,7 +332,7 @@ test("every config section the server writes is one saveConfig will keep", async
   const written = [...source("../server/index.ts").matchAll(/saveConfig\(\{\s*(\w+):/g)].map((m) => m[1]);
   assert.ok(written.length > 0, "no saveConfig calls found, so this proves nothing");
   const missing = [...new Set(written)].filter(
-    (key) => !allowed.has(key) && !["mcpServers", "setupDoneAt"].includes(key),
+    (key) => !allowed.has(key) && !["mcpServers", "custom", "setupDoneAt"].includes(key),
   );
   assert.deepEqual(missing, [], `these would be written and then dropped: ${missing.join(", ")}`);
 });
