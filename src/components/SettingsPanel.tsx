@@ -210,6 +210,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "effort"
         | "mascotExpression"
         | "composio"
+        | "browser"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -574,6 +575,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           <ApprovalsCard bot={bot} />
           <WorkingFolderCard bot={bot} />
           <ConnectedAppsCard bot={bot} patch={patch} />
+        <BrowserCard bot={bot} patch={patch} />
           <McpAttachCard bot={bot} />
           <MemoryCard bot={bot} />
           <AnswersCard bot={bot} patch={patch} />
@@ -785,6 +787,30 @@ function ConnectedAppsCard({
         disabled={!configured && allowed === false}
         onCheckedChange={(on) => patch({ composio: on })}
       />
+    </div>
+  );
+}
+
+/**
+ * A browser of the agent's own.
+ *
+ * Deliberately its own grant rather than part of the computer one: an
+ * agent that should compare prices does not also need the desktop, and
+ * handing over the narrower tool is the whole point of having two.
+ */
+function BrowserCard({ bot, patch }: { bot: Bot; patch: (p: { browser: boolean }) => void }) {
+  const on = bot.browser === true;
+  return (
+    <div className="mt-4 flex items-center justify-between rounded-2xl border bg-card p-4">
+      <div className="min-w-0 pr-3">
+        <div className="text-[13.5px] font-semibold text-foreground">Its own browser</div>
+        <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+          {on
+            ? "Opens pages, reads them and clicks, in a browser of its own. Signed in separately from yours."
+            : "Off. Turn this on for work on the web: comparing prices, filling a form, reading a page that needs a session."}
+        </div>
+      </div>
+      <Switch checked={on} onCheckedChange={(next) => patch({ browser: next })} />
     </div>
   );
 }

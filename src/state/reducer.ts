@@ -143,6 +143,9 @@ export interface Bot {
   cwd?: string | null;
   /** Whether this agent may reach the shared connectors. Unset = yes. */
   composio?: boolean;
+  /** Whether this agent has a browser of its own. Unset = no: a browser
+   * starts a real process, so it is asked for rather than assumed. */
+  browser?: boolean;
   /** Ids of user-registered MCP servers this agent may use. */
   mcpServers?: string[];
   /** How this agent sounds; unset means no voice yet. */

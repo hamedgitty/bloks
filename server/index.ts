@@ -330,6 +330,10 @@ const agentTokens = new AgentTokens();
 setInterval(() => agentTokens.sweep(Date.now()), 5 * 60_000).unref?.();
 const AGENT_CLI = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
 
+/** The agent browser's debugging port. One browser serves every agent
+ * that has one; profiles keep their sessions apart. */
+const BROWSER_PORT = Number(process.env.BLOKS_BROWSER_PORT || 9222);
+
 /**
  * The skill catalog, fetched and kept for a while.
  *
@@ -1487,6 +1491,18 @@ async function startTurn(
       if (!integrations.computer && wants !== "off" && wants !== "cloud" && wants !== "sandbox") {
         const cua = readCuaConnection();
         if (cua) integrations.localComputer = cua;
+      }
+
+      // A browser of its own, when the agent is allowed one. Separate
+      // from the computer grant: an agent that should book a flight
+      // does not also need the whole desktop, and the narrower tool is
+      // the one to hand it. Off unless asked for, because a browser
+      // starts a real process.
+      if (bot.browser === true) {
+        integrations.browser = {
+          profileDir: join(DATA_DIR, "browser", bot.id),
+          port: BROWSER_PORT,
+        };
       }
 
       // A lane keeps the folder its first turn ran in: engines key
@@ -3424,6 +3440,16 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "composio must be true or false" });
         }
         patch.composio = body.composio;
+      }
+      if (body.browser !== undefined) {
+        if (typeof body.browser !== "boolean") {
+          return json(res, 400, { error: "browser must be true or false" });
+        }
+        // An agent granting itself a browser would be widening its own
+        // reach, which is the person's call. PATCH /api/bots/:me is on
+        // the agent allowlist, so this has to be said explicitly.
+        if (asAgent) return json(res, 403, { error: "an agent cannot give itself a browser" });
+        patch.browser = body.browser;
       }
       if (body.withoutComponents !== undefined) {
         if (!Array.isArray(body.withoutComponents)) {
