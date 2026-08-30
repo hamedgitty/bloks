@@ -26,6 +26,12 @@ extraResources:
     to: ui
   - from: dist-server
     to: server
+  # The agent's own command line. It is resolved at runtime relative to
+  # the server module (see AGENT_CLI in server/index.ts), so it has to
+  # land beside it in Resources or every command an agent runs fails in
+  # the packaged app while working perfectly from source.
+  - from: bin
+    to: bin
 
 mac:
   # The Swift helpers are macOS machinery (TCC prompts, dictation) and
