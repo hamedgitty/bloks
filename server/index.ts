@@ -124,6 +124,7 @@ import { assemble as assembleActivity, blockedOn } from "./activity.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
+  extractComponents,
   galleryPrompt,
   mayRender,
   parseComponent,
@@ -566,8 +567,20 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.itemType === "assistant_text") {
         // a lead may have proposed a team; the plan becomes a card the
         // user approves, never something that happens on its own
-        const { plan, text } = extractTeamPlan(event.text);
+        const { plan, text: afterPlan } = extractTeamPlan(event.text);
+        // Components an engine wrote into its own answer. The CLI is the
+        // route for engines with a shell; this is the one for the rest,
+        // so an API model can answer with a chart like anybody else.
+        const { components, text } = extractComponents(afterPlan);
         if (text) pushMessage({ role: "bot", kind: "text", text: houseStyle(text) });
+        for (const component of components) {
+          if (!mayRender(component.kind, bot.withoutComponents)) continue;
+          pushMessage({
+            role: "bot",
+            kind: "component",
+            component: component as unknown as Record<string, unknown>,
+          });
+        }
         if (plan) {
           const card = pushMessage({
             role: "bot",
@@ -1352,11 +1365,16 @@ async function startTurn(
       disclose(attached, runsAProcess(instance.driverKind)),
       `To read one, run: node "${AGENT_CLI}" skill <id>`,
     ),
-    // Only when this engine gets a credential: the gallery is reached
-    // through the CLI, so telling an engine about it that has no way to
-    // call it would be describing a door that is not there.
-    runsAProcess(instance.driverKind) &&
-      galleryPrompt(bot.withoutComponents, `To use one, run: node "${AGENT_CLI}" show <kind> '<json>'`),
+    // Every engine gets the gallery; only the route differs. One with a
+    // shell calls the CLI. One without writes the component into its own
+    // answer as a fenced block, which is the only shape a model with no
+    // tools can reliably produce.
+    galleryPrompt(
+      bot.withoutComponents,
+      runsAProcess(instance.driverKind)
+        ? `To use one, run: node "${AGENT_CLI}" show <kind> '<json>'`
+        : 'To use one, write it as a fenced block on its own:\n```bloks\n{ "kind": "table", ... }\n```',
+    ),
     cfg.profile?.about?.trim() && `About the person you work for: ${cfg.profile.about.trim()}`,
     workspace.memoryPrompt(bot.id),
     `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,

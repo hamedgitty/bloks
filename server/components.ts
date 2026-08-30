@@ -267,3 +267,53 @@ export const KIND_LABEL: Record<ComponentKind, string> = {
   quote: "Quotes",
   refused: "Refusals",
 };
+
+/**
+ * Components an engine wrote into its own answer.
+ *
+ * The CLI is the route for engines that run a process. An API model has
+ * no shell, so it needs a way to send a component that is just text, and
+ * a fenced block is the one shape every model already emits reliably:
+ *
+ *     ```bloks
+ *     { "kind": "chart", "bars": [...] }
+ *     ```
+ *
+ * Anything that parses becomes a component; anything that does not is
+ * left exactly where it was, because a malformed fence is more useful to
+ * a reader as visible text than as a silent deletion.
+ */
+export function extractComponents(text: string): {
+  components: Component[];
+  text: string;
+  /** Fences that looked like ours and did not parse, for the log. */
+  rejected: number;
+} {
+  const components: Component[] = [];
+  let rejected = 0;
+  const fence = /^[ \t]*```[ \t]*bloks[ \t]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
+  const remaining = text.replace(fence, (whole, body: string) => {
+    let data: unknown;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      rejected++;
+      return whole;
+    }
+    const kind = (data as { kind?: unknown })?.kind;
+    if (typeof kind !== "string" || !KINDS.includes(kind as ComponentKind)) {
+      rejected++;
+      return whole;
+    }
+    const parsed = parseComponent(kind, data);
+    if (!parsed.ok) {
+      rejected++;
+      return whole;
+    }
+    components.push(parsed.component);
+    return "";
+  });
+  // Collapse the blank run a lifted fence leaves behind, so the sentence
+  // above and the one below do not end up separated by a hole.
+  return { components, text: remaining.replace(/\n{3,}/g, "\n\n").trim(), rejected };
+}
