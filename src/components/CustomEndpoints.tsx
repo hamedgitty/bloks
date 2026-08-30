@@ -5,9 +5,9 @@
 // host issued. Keys never come back out; the list is names, URLs, and
 // whether a key is the one the live instance is using.
 import { useCallback, useEffect, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { api, useStore } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
