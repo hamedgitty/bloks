@@ -120,6 +120,7 @@ export const RULES: Rule[] = [
 export const NEVER = [
   "/api/config",
   "/api/providers",
+  "/api/custom-endpoints",
   "/api/instances",
   "/api/pair",
   "/api/mcp-servers",

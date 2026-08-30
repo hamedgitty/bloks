@@ -14,13 +14,33 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { InstanceConfigMap } from "./contracts.ts";
-import { PROVIDER_SPECS, specFor } from "./providers.ts";
+import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
 
 /** One connected engine: the credential, plus an override for people
  * pointing at a proxy or a self-hosted endpoint. */
 export interface ProviderConfig {
   key?: string;
   url?: string;
+}
+
+/** One credential on a user-added OpenAI-compatible host. Several can
+ * share a URL; the active one is what the live instance sends. */
+export interface CustomKey {
+  id: string;
+  /** Optional name so two keys on one host can be told apart. */
+  label?: string;
+  key: string;
+}
+
+/** A third-party host that speaks OpenAI's /v1 shape. Secrets stay in
+ * this file with the rest of the keys. */
+export interface CustomEndpoint {
+  id: string;
+  name: string;
+  url: string;
+  keys: CustomKey[];
+  /** Which key the instance uses. Missing means the first key. */
+  activeKeyId?: string;
 }
 
 export interface AppConfig {
@@ -47,6 +67,9 @@ export interface AppConfig {
    * Off until somebody sets one: a global hotkey that arrives
    * uninvited will collide with whatever they already use. */
   shortcuts?: { quickAsk?: string | null };
+  /** User-added OpenAI-compatible hosts. Same file as the other keys
+   * because this is already the secrets file. */
+  custom?: CustomEndpoint[];
   /** User-registered MCP servers, attachable per agent. Headers and
    * commands live here because this file is already the secrets file. */
   mcpServers?: Array<{
@@ -205,6 +228,9 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   if (Array.isArray((patch as Record<string, unknown>).mcpServers)) {
     disk.mcpServers = (patch as Record<string, unknown>).mcpServers;
   }
+  if (Array.isArray((patch as Record<string, unknown>).custom)) {
+    disk.custom = (patch as Record<string, unknown>).custom;
+  }
   if (typeof (patch as Record<string, unknown>).setupDoneAt === "number") {
     disk.setupDoneAt = (patch as Record<string, unknown>).setupDoneAt;
   }
@@ -267,6 +293,19 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       ...(cfg.providers?.[kind]?.url ? { config: { url: cfg.providers[kind].url } } : {}),
     };
   }
+  // One instance per custom host. Several keys can sit on that host;
+  // only the active one is injected, so rotating a key is a settings
+  // change rather than a new engine in the picker.
+  for (const endpoint of cfg.custom ?? []) {
+    const cred = activeCustomKey(endpoint);
+    if (!endpoint.url || !cred?.key) continue;
+    map[customInstanceId(endpoint.id)] = {
+      driver: CUSTOM_SPEC.kind,
+      displayName: endpoint.name,
+      config: { url: endpoint.url },
+      environment: { [envVarFor(CUSTOM_SPEC.kind)]: cred.key },
+    };
+  }
   for (const entry of Object.values(map)) {
     entry.environment = {
       ...cfg.secrets,
@@ -281,4 +320,16 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     };
   }
   return map;
+}
+
+export function customInstanceId(endpointId: string): string {
+  return `custom_${endpointId}`;
+}
+
+export function activeCustomKey(endpoint: CustomEndpoint): CustomKey | undefined {
+  if (endpoint.activeKeyId) {
+    const named = endpoint.keys.find((k) => k.id === endpoint.activeKeyId && k.key);
+    if (named) return named;
+  }
+  return endpoint.keys.find((k) => k.key);
 }

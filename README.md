@@ -53,7 +53,8 @@ company has juniors.
 
 **Any engine.** Claude Code, Codex and Gemini CLI run as real agents that
 use tools and touch files. Gemini, Grok, Kimi, Llama, DeepSeek, Mistral,
-Groq, OpenRouter and Ollama connect as chat engines. OpenRouter has a
+Groq, OpenRouter and Ollama connect as chat engines. A custom
+OpenAI-compatible host takes a base URL and one or more keys. OpenRouter has a
 proper browser sign-in; the rest take a key or ride along with a CLI you
 already signed in to.
 
@@ -129,6 +130,7 @@ You need one of these before an agent can reply. Any of them works.
 | Gemini CLI | `npm i -g @google/gemini-cli`, then a Google sign-in or a Gemini key | yes |
 | OpenRouter | Sign in from Settings, in your browser | no |
 | Gemini, Grok, Kimi, Llama, DeepSeek, Mistral, Groq | Paste a key in Settings | no |
+| Custom (OpenAI-compatible) | Paste a base URL and key(s) in Settings | no |
 | Ollama | Run it; Bloks finds it on this machine | no |
 
 The engines marked "runs tools" can execute commands and read files. The

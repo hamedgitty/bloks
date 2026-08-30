@@ -3,7 +3,7 @@
 // the catalog in providers.ts, so adding another lab is a spec rather
 // than a driver.
 import type { AnyProviderDriver } from "../contracts.ts";
-import { PROVIDER_SPECS } from "../providers.ts";
+import { CUSTOM_SPEC, PROVIDER_SPECS } from "../providers.ts";
 import { acpDriver, ACP_SPECS } from "./acp.ts";
 import { AntigravityDriver } from "./antigravity.ts";
 import { BoxAgentDriver } from "./boxagent.ts";
@@ -13,6 +13,7 @@ import { openAiCompatDriver } from "./openai-compat.ts";
 
 export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   ...PROVIDER_SPECS.map(openAiCompatDriver),
+  openAiCompatDriver(CUSTOM_SPEC),
   ...ACP_SPECS.map(acpDriver),
   AntigravityDriver,
   ClaudeDriver,
