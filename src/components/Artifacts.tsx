@@ -11,14 +11,14 @@
 // The xlsx parser is imported lazily: it is heavier than every other
 // viewer combined and most conversations never open a spreadsheet.
 import { useEffect, useState, useCallback } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import X from "lucide-react/dist/esm/icons/x.js";
-import Download from "lucide-react/dist/esm/icons/download.js";
-import FileCode from "lucide-react/dist/esm/icons/file-code.js";
-import FileImage from "lucide-react/dist/esm/icons/file-image.js";
-import FileSpreadsheet from "lucide-react/dist/esm/icons/file-spreadsheet.js";
-import FileText from "lucide-react/dist/esm/icons/file-text.js";
-import Presentation from "lucide-react/dist/esm/icons/presentation.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
+import Download from "lucide-react/dist/esm/icons/download.mjs";
+import FileCode from "lucide-react/dist/esm/icons/file-code.mjs";
+import FileImage from "lucide-react/dist/esm/icons/file-image.mjs";
+import FileSpreadsheet from "lucide-react/dist/esm/icons/file-spreadsheet.mjs";
+import FileText from "lucide-react/dist/esm/icons/file-text.mjs";
+import Presentation from "lucide-react/dist/esm/icons/presentation.mjs";
 import { type Message } from "@/state/store";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";

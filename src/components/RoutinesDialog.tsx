@@ -10,11 +10,11 @@
 // Self-fetching like RoutinesSection: routines are read on open and
 // after every write; nothing else in the app holds them in state.
 import { useCallback, useEffect, useState } from "react";
-import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.js";
-import Play from "lucide-react/dist/esm/icons/play.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
-import Users from "lucide-react/dist/esm/icons/users.js";
+import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
+import Play from "lucide-react/dist/esm/icons/play.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { type Routine } from "./RoutinesSection";

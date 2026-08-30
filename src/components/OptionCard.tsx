@@ -1,5 +1,5 @@
 import { useState } from "react";
-import X from "lucide-react/dist/esm/icons/x.js";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { useStore, type Message, type TeamPlan } from "@/state/store";
 import { BlokAvatar } from "@/components/Avatar";
 import { BLOK_COLOR_NAMES, shapeForBot, type BlokColor } from "@/lib/mascot";

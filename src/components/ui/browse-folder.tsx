@@ -5,7 +5,7 @@
 // other Mac app gives them. In a plain browser tab there is no picker
 // to offer, so the button simply is not there and the field stands on
 // its own.
-import FolderOpen from "lucide-react/dist/esm/icons/folder-open.js";
+import FolderOpen from "lucide-react/dist/esm/icons/folder-open.mjs";
 import { cn } from "@/lib/cn";
 
 export function BrowseFolderButton({

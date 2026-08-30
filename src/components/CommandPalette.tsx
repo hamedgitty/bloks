@@ -7,10 +7,10 @@
 // cursor runs across all sections, because reaching for arrow keys
 // should never care about headings.
 import { useEffect, useMemo, useRef, useState } from "react";
-import CornerDownLeft from "lucide-react/dist/esm/icons/corner-down-left.js";
-import MessageSquare from "lucide-react/dist/esm/icons/message-square.js";
-import Search from "lucide-react/dist/esm/icons/search.js";
-import Users from "lucide-react/dist/esm/icons/users.js";
+import CornerDownLeft from "lucide-react/dist/esm/icons/corner-down-left.mjs";
+import MessageSquare from "lucide-react/dist/esm/icons/message-square.mjs";
+import Search from "lucide-react/dist/esm/icons/search.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { api, useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { cn } from "@/lib/cn";

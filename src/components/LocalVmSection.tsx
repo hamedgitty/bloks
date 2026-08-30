@@ -8,11 +8,11 @@
 // The commands behind the buttons sit one disclosure away, for people
 // who want to see the wires.
 import { useCallback, useEffect, useRef, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
-import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 

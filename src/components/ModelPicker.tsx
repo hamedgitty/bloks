@@ -9,8 +9,8 @@
 // went, when what they need to know is that it is installed but signed
 // out.
 import { useEffect, useRef, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import { useStore, type Bot, type InstanceInfo } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { cn } from "@/lib/cn";

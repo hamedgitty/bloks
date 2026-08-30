@@ -5,12 +5,12 @@
 // wrote is not an update, so it does not get an Update button: it says
 // what it would do and asks for that specifically.
 import { useCallback, useEffect, useState } from "react";
-import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.js";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Download from "lucide-react/dist/esm/icons/download.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.js";
-import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert.js";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Download from "lucide-react/dist/esm/icons/download.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.mjs";
+import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert.mjs";
 import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";

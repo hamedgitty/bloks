@@ -9,11 +9,11 @@
 // on the card, in the words somebody would use: this is not there any
 // more, and nothing will run in it until it is.
 import { useCallback, useEffect, useState } from "react";
-import FolderOpen from "lucide-react/dist/esm/icons/folder-open.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import FolderOpen from "lucide-react/dist/esm/icons/folder-open.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore } from "@/state/store";
 import { BLOK_COLOR_NAMES, BLOK_SHAPES, type BlokColor, type BlokShape } from "@/lib/mascot";
 import { BlokAvatar } from "./Avatar";

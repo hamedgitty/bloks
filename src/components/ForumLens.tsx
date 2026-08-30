@@ -10,9 +10,9 @@
 // is sent differently, and every message appears in both. Switching is a
 // question of what you are trying to read right now.
 import { useState } from "react";
-import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.js";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
-import MessageSquare from "lucide-react/dist/esm/icons/message-square.js";
+import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
+import MessageSquare from "lucide-react/dist/esm/icons/message-square.mjs";
 import { preview, replyLabel, threadsFrom, type Thread } from "@/lib/threads";
 import type { Bot, Message } from "@/state/reducer";
 import { AgentAvatar } from "./Avatar";

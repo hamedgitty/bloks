@@ -1,6 +1,6 @@
 // Provider brand marks, keyed by driver kind. Monochrome marks use
 // currentColor/fill-foreground so they read in both themes.
-import Monitor from "lucide-react/dist/esm/icons/monitor.js";
+import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import { cn } from "@/lib/cn";
 
 export interface IconProps {

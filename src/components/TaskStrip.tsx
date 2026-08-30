@@ -15,8 +15,8 @@
 //
 // Capped at three running tasks per agent: enough to feel parallel,
 // few enough that each still gets real attention (and real compute).
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
 
 export type TaskState = "working" | "needs-you" | "idle";

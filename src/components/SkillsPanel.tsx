@@ -6,15 +6,15 @@
 // import flow always shows the exact body before it is written, and
 // nothing is ever fetched and installed automatically.
 import { useCallback, useEffect, useRef, useState } from "react";
-import FileText from "lucide-react/dist/esm/icons/file-text.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Lock from "lucide-react/dist/esm/icons/lock.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Search from "lucide-react/dist/esm/icons/search.js";
-import Sparkles from "lucide-react/dist/esm/icons/sparkles.js";
-import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import FileText from "lucide-react/dist/esm/icons/file-text.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Lock from "lucide-react/dist/esm/icons/lock.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Search from "lucide-react/dist/esm/icons/search.mjs";
+import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
+import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, type Skill } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";

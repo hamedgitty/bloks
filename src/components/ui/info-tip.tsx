@@ -5,7 +5,7 @@
 // time, so it moves behind a ? that answers on hover: the card keeps
 // one line, the paragraph keeps its length, and neither crowds the
 // other. Click works too, for touch and for keyboards.
-import HelpCircle from "lucide-react/dist/esm/icons/help-circle.js";
+import HelpCircle from "lucide-react/dist/esm/icons/help-circle.mjs";
 import {
   Tooltip,
   TooltipContent,

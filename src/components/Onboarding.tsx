@@ -3,13 +3,13 @@
 // skippable: setup must never brick the app. It ends by handing off to
 // the agent picker, so the first thing you do is choose someone.
 import { useCallback, useEffect, useState } from "react";
-import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.js";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Copy from "lucide-react/dist/esm/icons/copy.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Mic from "lucide-react/dist/esm/icons/mic.js";
-import Monitor from "lucide-react/dist/esm/icons/monitor.js";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.js";
+import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Mic from "lucide-react/dist/esm/icons/mic.mjs";
+import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
 import { BlockField, BloksLogo } from "./Brand";
 import { BlokAvatar } from "./Avatar";
 import { useStore } from "@/state/store";

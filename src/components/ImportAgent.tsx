@@ -10,9 +10,9 @@
 // the import, with the same parser. This screen only shows what it was
 // told and asks.
 import { useEffect, useState } from "react";
-import AlertTriangle from "lucide-react/dist/esm/icons/triangle-alert.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Upload from "lucide-react/dist/esm/icons/upload.js";
+import AlertTriangle from "lucide-react/dist/esm/icons/triangle-alert.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Upload from "lucide-react/dist/esm/icons/upload.mjs";
 import { api, useStore, type Bot } from "@/state/store";
 import { BlokAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";

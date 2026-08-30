@@ -1,19 +1,19 @@
 // A room: several agents and you, in one transcript. Unlike a solo chat,
 // every line is attributed, because who said it is half the meaning.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.js";
-import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.js";
-import BookmarkPlus from "lucide-react/dist/esm/icons/bookmark-plus.js";
-import FolderOpen from "lucide-react/dist/esm/icons/folder-open.js";
-import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.js";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Crown from "lucide-react/dist/esm/icons/crown.js";
-import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
-import MessagesSquare from "lucide-react/dist/esm/icons/messages-square.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Download from "lucide-react/dist/esm/icons/download.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
-import Users from "lucide-react/dist/esm/icons/users.js";
+import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
+import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
+import BookmarkPlus from "lucide-react/dist/esm/icons/bookmark-plus.mjs";
+import FolderOpen from "lucide-react/dist/esm/icons/folder-open.mjs";
+import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Crown from "lucide-react/dist/esm/icons/crown.mjs";
+import Rows3 from "lucide-react/dist/esm/icons/rows-3.mjs";
+import MessagesSquare from "lucide-react/dist/esm/icons/messages-square.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Download from "lucide-react/dist/esm/icons/download.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { api, useStore, formatTime, type Blok, type Bot, type Message } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
 import { GalleryComponent } from "./Gallery";
-import MoreHorizontal from "lucide-react/dist/esm/icons/more-horizontal.js";
+import MoreHorizontal from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 import {
   DropdownMenu,
   DropdownMenuContent,

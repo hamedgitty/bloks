@@ -1,4 +1,4 @@
-declare module "lucide-react/dist/esm/icons/*.js" {
+declare module "lucide-react/dist/esm/icons/*.mjs" {
   import type { ForwardRefExoticComponent, RefAttributes, SVGProps } from "react";
 
   type IconProps = Omit<SVGProps<SVGSVGElement>, "ref"> & {

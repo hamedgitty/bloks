@@ -7,13 +7,13 @@
 // The arrangement is remembered, because a layout you fixed once should
 // stay fixed.
 import { useCallback, useEffect, useRef, useState } from "react";
-import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
-import GripHorizontal from "lucide-react/dist/esm/icons/grip-horizontal.js";
-import PanelBottom from "lucide-react/dist/esm/icons/panel-bottom.js";
-import PanelLeft from "lucide-react/dist/esm/icons/panel-left.js";
-import PanelRight from "lucide-react/dist/esm/icons/panel-right.js";
-import PictureInPicture2 from "lucide-react/dist/esm/icons/picture-in-picture-2.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import GripHorizontal from "lucide-react/dist/esm/icons/grip-horizontal.mjs";
+import PanelBottom from "lucide-react/dist/esm/icons/panel-bottom.mjs";
+import PanelLeft from "lucide-react/dist/esm/icons/panel-left.mjs";
+import PanelRight from "lucide-react/dist/esm/icons/panel-right.mjs";
+import PictureInPicture2 from "lucide-react/dist/esm/icons/picture-in-picture-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";

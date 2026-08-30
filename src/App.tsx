@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import { StoreProvider, useStore } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
 import { Intro, introPending } from "@/components/Intro";

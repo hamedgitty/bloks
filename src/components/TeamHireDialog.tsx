@@ -6,7 +6,7 @@
 // given to an existing agent who already does that job. The server then
 // creates only the new ones and builds the room around everybody.
 import { useMemo, useState } from "react";
-import Crown from "lucide-react/dist/esm/icons/crown.js";
+import Crown from "lucide-react/dist/esm/icons/crown.mjs";
 import { api, useStore } from "@/state/store";
 import { AgentAvatar, BlokAvatar } from "./Avatar";
 import { drawNames, type LibraryMember } from "@/lib/teamLibrary";

@@ -4,11 +4,11 @@
 // Suggested roles rotate and skip anything you already have, so the list
 // stays useful once you have a few agents.
 import { useEffect, useMemo, useRef, useState } from "react";
-import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.js";
-import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.js";
-import Upload from "lucide-react/dist/esm/icons/upload.js";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
+import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
+import Upload from "lucide-react/dist/esm/icons/upload.mjs";
 import { track } from "@/lib/analytics";
 import { api, useStore, type NewAgentProfile } from "@/state/store";
 import {

@@ -12,19 +12,19 @@
 // weekday set. The calendar shows intentions, and the details popover is
 // where a specific routine is paused, run now, or removed.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.js";
-import ChevronLeft from "lucide-react/dist/esm/icons/chevron-left.js";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
-import Copy from "lucide-react/dist/esm/icons/copy.js";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Play from "lucide-react/dist/esm/icons/play.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
-import Users from "lucide-react/dist/esm/icons/users.js";
-import Webhook from "lucide-react/dist/esm/icons/webhook.js";
-import Briefcase from "lucide-react/dist/esm/icons/briefcase.js";
-import Workflow from "lucide-react/dist/esm/icons/workflow.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
+import ChevronLeft from "lucide-react/dist/esm/icons/chevron-left.mjs";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Play from "lucide-react/dist/esm/icons/play.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
+import Webhook from "lucide-react/dist/esm/icons/webhook.mjs";
+import Briefcase from "lucide-react/dist/esm/icons/briefcase.mjs";
+import Workflow from "lucide-react/dist/esm/icons/workflow.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { AgentAvatar, BlokAvatar } from "./Avatar";
 import { type Routine, type RoutineRun } from "./RoutinesSection";

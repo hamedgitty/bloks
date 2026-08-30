@@ -10,8 +10,8 @@
 // acknowledged. Collapsing them into one green light is how somebody sits
 // looking at "connected" while their phone gets nothing.
 import { useCallback, useEffect, useState } from "react";
-import Cloud from "lucide-react/dist/esm/icons/cloud.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
+import Cloud from "lucide-react/dist/esm/icons/cloud.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
