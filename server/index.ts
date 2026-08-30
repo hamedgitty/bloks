@@ -121,6 +121,7 @@ import {
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
 import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
 import { assemble as assembleActivity, blockedOn } from "./activity.ts";
+import { splitArgs } from "./argv.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
@@ -4054,10 +4055,25 @@ const server = createServer(async (req, res) => {
               .slice(0, 8) as Array<[string, string]>,
           );
         }
+      } else if (typeof body.commandLine === "string") {
+        // The settings screen sends the line exactly as it was typed, so
+        // the split happens once, here, with quotes respected. Splitting
+        // it on the client as well would mangle a quoted path before the
+        // server ever saw it.
+        const parts = splitArgs(clamp(body.commandLine, 1200) ?? "");
+        entry.command = parts[0] ?? "";
+        entry.args = parts.slice(1, 25);
       } else {
         entry.command = clamp(body.command, 300) ?? "";
-        entry.args =
-          typeof body.args === "string" ? body.args.split(/\s+/).filter(Boolean).slice(0, 24) : [];
+        // Parsed the way a shell would, not split on whitespace: an
+        // argument like "/Users/me/Application Support/x.mjs" is one
+        // path, and tearing it in half runs the wrong file with no
+        // error worth reading. An array is accepted as given.
+        entry.args = Array.isArray(body.args)
+          ? (body.args as unknown[]).filter((a): a is string => typeof a === "string").slice(0, 24)
+          : typeof body.args === "string"
+            ? splitArgs(body.args).slice(0, 24)
+            : [];
       }
       if (transport === "http" ? !entry.url : !entry.command) {
         return json(res, 400, { error: transport === "http" ? "a valid http(s) url is required" : "a command is required" });

@@ -53,7 +53,6 @@ export function McpServersCard() {
   const add = () => {
     setBusy(true);
     setError(null);
-    const [cmd, ...args] = command.trim().split(/\s+/);
     // one "Name: value" header covers the common bearer-token case
     const colon = headerLine.indexOf(":");
     const headers =
@@ -65,7 +64,9 @@ export function McpServersCard() {
       body: JSON.stringify(
         transport === "http"
           ? { name, transport, url: url.trim(), ...(headers ? { headers } : {}) }
-          : { name, transport, command: cmd, args: args.join(" ") },
+          : // sent as typed: the server splits it the way a shell would,
+            // so a quoted path with a space survives
+            { name, transport, commandLine: command.trim() },
       ),
     })
       .then(() => {
