@@ -9,7 +9,7 @@
 // dashboard. It renders as the Map tab of the Activity panel, because
 // both answer the same question at different zoom levels.
 import { useMemo, useRef, useLayoutEffect, useState } from "react";
-import Users from "lucide-react/dist/esm/icons/users.js";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { layoutTeamMap } from "@/lib/teamMap";

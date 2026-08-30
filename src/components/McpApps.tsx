@@ -10,11 +10,11 @@
 // Nothing here is a security boundary on its own; this half exists so the
 // message is a shape rather than a surprise before it goes anywhere.
 import { useCallback, useEffect, useRef, useState } from "react";
-import AppWindow from "lucide-react/dist/esm/icons/app-window.js";
-import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.js";
-import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.js";
+import AppWindow from "lucide-react/dist/esm/icons/app-window.mjs";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.mjs";
+import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.mjs";
 import { useMcpServers, type McpServerRow } from "./McpServers";
 import { useTheme } from "@/lib/theme";
 import { Button } from "@/components/ui/button";

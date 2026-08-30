@@ -8,10 +8,10 @@
 // What this screen has to show is therefore not a list of tasks: it is
 // who took each one, who turned it down and why, and what came of it.
 import { useCallback, useEffect, useState } from "react";
-import Briefcase from "lucide-react/dist/esm/icons/briefcase.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Briefcase from "lucide-react/dist/esm/icons/briefcase.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RotateCw from "lucide-react/dist/esm/icons/rotate-cw.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { api, useStore } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";

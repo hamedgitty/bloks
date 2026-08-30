@@ -6,9 +6,9 @@
 // the server returns is sanitized: names and shapes, never header
 // values, so nothing pasted here ever comes back out.
 import { useCallback, useEffect, useState } from "react";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Server from "lucide-react/dist/esm/icons/server.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Server from "lucide-react/dist/esm/icons/server.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";

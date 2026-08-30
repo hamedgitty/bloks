@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import XIcon from "lucide-react/dist/esm/icons/x.js";
+import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {

@@ -10,11 +10,11 @@
 // opens again. The transcript is just the chat, a call leaves the same
 // record a typed conversation would.
 import { useCallback, useEffect, useRef, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Mic from "lucide-react/dist/esm/icons/mic.js";
-import Phone from "lucide-react/dist/esm/icons/phone.js";
-import PhoneOff from "lucide-react/dist/esm/icons/phone-off.js";
-import Volume2 from "lucide-react/dist/esm/icons/volume-2.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Mic from "lucide-react/dist/esm/icons/mic.mjs";
+import Phone from "lucide-react/dist/esm/icons/phone.mjs";
+import PhoneOff from "lucide-react/dist/esm/icons/phone-off.mjs";
+import Volume2 from "lucide-react/dist/esm/icons/volume-2.mjs";
 import { api, useStore, type Bot, type Message } from "@/state/store";
 import { BLOK_COLORS, type BlokColor } from "@/lib/mascot";
 import { AgentAvatar } from "./Avatar";

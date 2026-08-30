@@ -6,9 +6,9 @@
 // sign-in tab is open the card quietly polls, so coming back to the
 // chat usually means coming back to "Connected".
 import { useEffect, useRef, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 

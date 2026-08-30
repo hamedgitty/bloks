@@ -5,10 +5,10 @@
 // holds a login, or a server on this machine. Nothing here pretends to be
 // a sign-in that is really a text field.
 import { useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
 import { api, useStore, type ProviderRow } from "@/state/store";
 import { CustomEndpoints } from "./CustomEndpoints";
 import { ProviderMark } from "./ProviderIcons";

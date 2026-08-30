@@ -6,9 +6,9 @@
 // what it scanned and waits for a tap. Codes last minutes, work once,
 // and a handful of wrong guesses closes the window.
 import { useCallback, useEffect, useRef, useState } from "react";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Smartphone from "lucide-react/dist/esm/icons/smartphone.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Smartphone from "lucide-react/dist/esm/icons/smartphone.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";

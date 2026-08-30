@@ -11,15 +11,15 @@
 // slower than typing for anything under a dozen steps, and a dozen steps
 // is the cap.
 import { useCallback, useEffect, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.js";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
-import CircleDot from "lucide-react/dist/esm/icons/circle-dot.js";
-import Hourglass from "lucide-react/dist/esm/icons/hourglass.js";
-import Play from "lucide-react/dist/esm/icons/play.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
+import CircleDot from "lucide-react/dist/esm/icons/circle-dot.mjs";
+import Hourglass from "lucide-react/dist/esm/icons/hourglass.mjs";
+import Play from "lucide-react/dist/esm/icons/play.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

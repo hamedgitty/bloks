@@ -14,10 +14,10 @@
 //   Deny wins. The list is ordered the way it runs, denies first, so that
 //   reading it top to bottom is reading what actually happens.
 import { useCallback, useEffect, useState } from "react";
-import Ban from "lucide-react/dist/esm/icons/ban.js";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Ban from "lucide-react/dist/esm/icons/ban.mjs";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { api, useStore } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

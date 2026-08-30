@@ -16,10 +16,10 @@
 // buttons; going to find it in a background lane to press the same two
 // buttons is the trip this panel exists to save.
 import { useCallback, useEffect, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Hourglass from "lucide-react/dist/esm/icons/hourglass.js";
-import Square from "lucide-react/dist/esm/icons/square.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Hourglass from "lucide-react/dist/esm/icons/hourglass.mjs";
+import Square from "lucide-react/dist/esm/icons/square.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, type Bot } from "@/state/store";
 import { usePageVisible } from "@/lib/pageVisible";
 import { AgentAvatar } from "./Avatar";

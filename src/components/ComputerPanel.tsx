@@ -17,13 +17,13 @@
 // only on the cloud path, so an agent working locally can never end up
 // rendering an error response where a screenshot should be.
 import { useEffect, useRef, useState } from "react";
-import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Monitor from "lucide-react/dist/esm/icons/monitor.js";
-import Moon from "lucide-react/dist/esm/icons/moon.js";
-import Power from "lucide-react/dist/esm/icons/power.js";
-import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
+import Moon from "lucide-react/dist/esm/icons/moon.mjs";
+import Power from "lucide-react/dist/esm/icons/power.mjs";
+import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { usePageVisible } from "@/lib/pageVisible";
 import { DesktopOverlay } from "./DesktopOverlay";

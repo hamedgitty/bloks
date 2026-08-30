@@ -8,10 +8,10 @@
 // Saving rebuilds the engines server-side, which is why a pasted key
 // works on the next message rather than after a restart.
 import { useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import ExternalLink from "lucide-react/dist/esm/icons/external-link.js";
-import HelpCircle from "lucide-react/dist/esm/icons/help-circle.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import HelpCircle from "lucide-react/dist/esm/icons/help-circle.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

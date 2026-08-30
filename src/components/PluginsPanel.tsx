@@ -8,10 +8,10 @@
 // otherwise-perfect logos looks worse than no logos at all: official
 // artwork, then the service's own favicon, then a letter.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.js";
-import Search from "lucide-react/dist/esm/icons/search.js";
-import X from "lucide-react/dist/esm/icons/x.js";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
+import Search from "lucide-react/dist/esm/icons/search.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore } from "@/state/store";
 import { McpAppsCard } from "./McpApps";
 import { Button } from "@/components/ui/button";

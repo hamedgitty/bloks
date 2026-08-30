@@ -4,11 +4,11 @@
 // the computer panel treats box state: it changes rarely, only this panel
 // cares, and stale-on-arrival would be worse than a spinner.
 import { useCallback, useEffect, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Copy from "lucide-react/dist/esm/icons/copy.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
-import Trash2 from "lucide-react/dist/esm/icons/trash-2.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

@@ -5,9 +5,9 @@
 // therefore the first thing on the screen, not a detail at the bottom,
 // and it says plainly what it does and does not prove.
 import { useEffect, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Loader2 from "lucide-react/dist/esm/icons/loader-2.js";
-import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
+import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.mjs";
 import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";

@@ -2,10 +2,10 @@
 // credentials shared by all agents. Per-agent settings live in
 // SettingsPanel; contextual Box-token entry also stays in ComputerPanel.
 import { useEffect, useRef, useState } from "react";
-import Check from "lucide-react/dist/esm/icons/check.js";
-import Monitor from "lucide-react/dist/esm/icons/monitor.js";
-import Moon from "lucide-react/dist/esm/icons/moon.js";
-import Sun from "lucide-react/dist/esm/icons/sun.js";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
+import Moon from "lucide-react/dist/esm/icons/moon.mjs";
+import Sun from "lucide-react/dist/esm/icons/sun.mjs";
 import { api, useStore } from "@/state/store";
 import { useTheme, type Theme } from "@/lib/theme";
 import type { UpdateState } from "@/types/bridge";
