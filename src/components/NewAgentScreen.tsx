@@ -9,6 +9,8 @@ import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
 import Upload from "lucide-react/dist/esm/icons/upload.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
+import { Input } from "@/components/ui/input";
 import { track } from "@/lib/analytics";
 import { api, useStore, type NewAgentProfile } from "@/state/store";
 import {
@@ -124,6 +126,11 @@ export function NewAgentScreen() {
     if (step === "name") nameRef.current?.select();
   }, [step]);
 
+  /** What a model proposed for this agent, before the person edits it. */
+  const [draft, setDraft] = useState<{ title: string; description: string; skills: string[] } | null>(
+    null,
+  );
+
   const close = () => dispatch({ type: "toggleNewAgent", open: false });
 
   /** A file, from the picker or from a drop. Read here and judged by the
@@ -174,6 +181,7 @@ export function NewAgentScreen() {
     // upgrade the local guess with a model-written one if a provider is
     // up; the flow never waits on it
     setNaming(true);
+    setDraft(null);
     api("/api/agents/suggest", {
       method: "POST",
       body: JSON.stringify({ description }),
@@ -181,6 +189,11 @@ export function NewAgentScreen() {
       .then((s) => {
         // don't clobber a name the user has already started editing
         if (s?.name && !nameRef.current?.matches(":focus")) setName(s.name);
+        // the rest of the draft is shown as editable fields rather than
+        // applied quietly: a persona nobody read is one nobody can fix
+        if (s?.title || s?.description || s?.skills?.length) {
+          setDraft({ title: s.title ?? "", description: s.description ?? "", skills: s.skills ?? [] });
+        }
       })
       .catch(() => {})
       .finally(() => setNaming(false));
@@ -190,12 +203,17 @@ export function NewAgentScreen() {
     const description = text.trim();
     const finalName = name.trim() || suggestName(description);
     const template = matched.current;
+    // A drafted persona is the agent's craft, the same job a template's
+    // description does. It wins over the template when both exist,
+    // because it was written for this description rather than matched
+    // to it, and the person has had it in front of them either way.
+    const craft = draft?.description?.trim() || template?.description;
     create({
       name: finalName,
-      title: template?.title ?? suggestTitle(description),
-      // the user's own words are the persona; a matched role adds its craft
-      description: template ? `${description}\n\n${template.description}` : description,
-      skills: template?.skills,
+      title: draft?.title?.trim() || template?.title || suggestTitle(description),
+      // the user's own words are the persona; a role adds its craft
+      description: craft ? `${description}\n\n${craft}` : description,
+      skills: draft?.skills.length ? draft.skills : template?.skills,
       greeting: template?.greeting ?? GENERIC_SETUP.greeting,
       setup: template?.setup ?? GENERIC_SETUP.setup,
     });
@@ -370,6 +388,69 @@ export function NewAgentScreen() {
                 )}
               </button>
             </div>
+
+            {/* What was drafted for this agent, before it exists. Shown
+                because a persona nobody read is one nobody can correct
+                later, and editable for the same reason. */}
+            {!describing && draft && (
+              <div className="mx-auto mt-3 w-full max-w-[560px] animate-rise-in rounded-2xl border bg-card p-3 text-left">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    Drafted for this agent
+                  </span>
+                  <button
+                    onClick={() => setDraft(null)}
+                    className="text-[11.5px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    title="Create the agent without any of this"
+                  >
+                    Start it blank
+                  </button>
+                </div>
+                <Input
+                  value={draft.title}
+                  onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                  placeholder="What they do"
+                  className="h-8 text-[13px]"
+                />
+                <textarea
+                  value={draft.description}
+                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  placeholder="How they work"
+                  rows={4}
+                  className="mt-1.5 w-full resize-none rounded-lg border bg-background px-2.5 py-1.5 text-[12.5px] leading-relaxed text-foreground outline-none focus:border-ring/50"
+                />
+                {draft.skills.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {draft.skills.map((skill, i) => (
+                      <div key={i} className="flex items-start gap-1.5">
+                        <span className="mt-[7px] size-1 shrink-0 rounded-full bg-muted-foreground/50" />
+                        <input
+                          value={skill}
+                          onChange={(e) => {
+                            const skills = [...draft.skills];
+                            skills[i] = e.target.value;
+                            setDraft({ ...draft, skills });
+                          }}
+                          className="min-w-0 flex-1 bg-transparent text-[12px] leading-relaxed text-muted-foreground outline-none focus:text-foreground"
+                        />
+                        <button
+                          onClick={() =>
+                            setDraft({ ...draft, skills: draft.skills.filter((_, j) => j !== i) })
+                          }
+                          className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                          title="Drop this skill"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                  Everything here is editable now and in the agent's settings later.
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

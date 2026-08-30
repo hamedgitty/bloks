@@ -122,6 +122,7 @@ import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } fro
 import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
 import { assemble as assembleActivity, blockedOn } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
+import { draftPrompt, parseDraft } from "./draft.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
@@ -3349,22 +3350,13 @@ const server = createServer(async (req, res) => {
       const instance = registry.get((await defaultSelection()).instanceId);
       if (!instance?.generateText) return json(res, 200, {});
       try {
-        const raw = await instance.generateText(
-          `Name an AI agent whose job is: "${description.trim()}".\n` +
-            `Reply with exactly two lines and nothing else:\n` +
-            `Line 1: a short human-style role name, 1-3 words, title case, no quotes.\n` +
-            `Line 2: a role description under 8 words.`,
-        );
-        const [name, title] = raw
-          .split("\n")
-          .map((l: string) => l.replace(/^["'\s]+|["'\s.]+$/g, ""))
-          .filter(Boolean);
-        return json(res, 200, {
-          ...(name && name.length <= 32 ? { name } : {}),
-          ...(title && title.length <= 72 ? { title } : {}),
-        });
+        // Name, role, persona and a few skills in one call. Whatever
+        // comes back is a proposal shown in editable fields, never
+        // something applied on the person's behalf.
+        const draft = parseDraft(await instance.generateText(draftPrompt(description)));
+        return json(res, 200, draft);
       } catch {
-        return json(res, 200, {}); // never block creation on a naming call
+        return json(res, 200, { skills: [] }); // never block creation on a drafting call
       }
     }
     let m = path.match(/^\/api\/bots\/([\w-]+)$/);
