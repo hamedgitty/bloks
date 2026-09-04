@@ -25,6 +25,16 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
 const byUsable = (a: InstanceInfo, b: InstanceInfo) =>
   Number(b.snapshot.state === "available") - Number(a.snapshot.state === "available");
 
+/** A selection that names no option this instance serves means "whatever
+ * the engine defaults to": Pi's catalog follows its own settings, and a
+ * bot carried over from before a catalog changed is the general case.
+ * The turn behaves that way already (no set_model, engine default), so
+ * the picker shows and ticks exactly that. */
+function effectiveModel(instance: InstanceInfo | undefined, model: string): string {
+  const isKnown = instance?.models.options.some((o) => o.id === model);
+  return isKnown ? model : (instance?.models.default ?? model);
+}
+
 export function ModelPicker({ bot, className }: { bot: Bot; className?: string }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
@@ -64,10 +74,10 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
           setOpen((o) => !o);
         }}
         className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-[0.98]"
-        title={active ? `${active.displayName} · ${modelLabel(active, selection.model)}` : selection.model}
+        title={active ? `${active.displayName} · ${modelLabel(active, effectiveModel(active, selection.model))}` : selection.model}
       >
         {active && <ProviderMark driverKind={active.driverKind} size={13} />}
-        <span className="max-w-[140px] truncate">{modelLabel(active, selection.model)}</span>
+        <span className="max-w-[140px] truncate">{modelLabel(active, effectiveModel(active, selection.model))}</span>
         <ChevronDown size={13} className="opacity-60" />
       </button>
 
@@ -127,7 +137,8 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                 </div>
                 {railInstance.models.options.map((option) => {
                   const current =
-                    selection.instanceId === railInstance.instanceId && selection.model === option.id;
+                    selection.instanceId === railInstance.instanceId &&
+                    effectiveModel(railInstance, selection.model) === option.id;
                   const disabled = railInstance.snapshot.state !== "available";
                   return (
                     <button

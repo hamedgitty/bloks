@@ -10,7 +10,10 @@
 // Shapes here were read off the wire from gemini-cli 0.55.1, not guessed:
 //   initialize            -> { protocolVersion, agentCapabilities, agentInfo }
 //   session/new           -> { sessionId, models, modes }
-//   session/load          -> resumes a prior sessionId (loadSession capability)
+//   session/load          -> resumes a prior sessionId (loadSession capability).
+//                            The spec says the agent then replays the whole
+//                            conversation as session/update; Bloks already
+//                            has that transcript, so those frames are dropped.
 //   session/prompt        -> blocks for the turn, returns { stopReason, usage }
 //   session/update        <- streaming notifications (text, tools, thoughts)
 //   session/request_permission <- a real request we must answer
@@ -19,8 +22,8 @@
 // driver. Continuity comes from session/load with the stored id.
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -34,6 +37,8 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { attachRpc } from "../harness/jsonrpc-stdio.ts";
+import { onPath, widenPath } from "../path.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 
@@ -63,6 +68,14 @@ export interface AcpSpec {
   authFiles?: string[];
   /** Used until session/new reports what the agent actually serves. */
   models: ModelCatalog;
+  /** When --version would start a session instead of printing a
+   * version, the install probe is "is this binary on PATH". */
+  probePath?: boolean;
+  /** Engines whose catalog follows their own configuration (pi reads its
+   * connected providers) stay behind the placeholder until the first
+   * turn otherwise. Set to probe a throwaway session for the real
+   * catalog, so the picker lists actual models from the start. */
+  probeModels?: boolean;
 }
 
 export interface AcpConfig {
@@ -73,6 +86,18 @@ export interface AcpConfig {
 }
 
 const PROTOCOL_VERSION = 1;
+
+/** How long a probe session may take to report its catalog. A hung CLI
+ * (pi-acp --version starts a session) will sit forever without this. */
+const PROBE_TIMEOUT_MS = 15_000;
+
+/** We do not lend the agent our filesystem or terminal; it has its own,
+ * and every borrowed capability is another way in. */
+const CLIENT_HELLO = {
+  protocolVersion: PROTOCOL_VERSION,
+  clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+  clientInfo: { name: "bloks", version: "1" },
+};
 
 /** The connectors bridge ships as TypeScript in development and compiled
  * JavaScript in the packaged app; resolve whichever is actually there. */
@@ -86,6 +111,53 @@ function toolTitle(update: any): string {
   const title = typeof update?.title === "string" ? update.title : null;
   if (title) return title.slice(0, 100);
   return typeof update?.kind === "string" ? update.kind : "tool";
+}
+
+function catalogFromSession(session: any): ModelCatalog | null {
+  const available: any[] = session?.models?.availableModels ?? [];
+  if (!available.length) return null;
+  return {
+    default: String(session.models.currentModelId ?? available[0].modelId),
+    options: available.map((m) => ({ id: String(m.modelId), label: String(m.name || m.modelId) })),
+  };
+}
+
+/** The catalog an ACP agent serves, from one throwaway session, or null
+ * when the agent cannot be asked. ACP has no catalog without a session,
+ * so there is no cheaper question. No prompt is sent: nothing is spent,
+ * and the child is killed as soon as the answer lands. */
+async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, string | undefined>): Promise<ModelCatalog | null> {
+  const child = spawn(cli, spec.args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
+  // a chatty CLI can fill stderr and stall if nobody reads it
+  child.stderr?.resume();
+
+  const rpc = attachRpc({
+    stdin: child.stdin,
+    stdout: child.stdout,
+    onRequest: (msg) => rpc.replyError(msg.id, -32601, "not supported by this client"),
+    onNotify: () => {},
+  });
+
+  const timer = setTimeout(() => rpc.failPending(new Error("timed out")), PROBE_TIMEOUT_MS);
+  timer.unref?.();
+  child.on("error", (e) => rpc.failPending(e instanceof Error ? e : new Error(String(e))));
+  child.on("close", () => rpc.failPending(new Error("exited")));
+
+  try {
+    await rpc.request("initialize", CLIENT_HELLO);
+    const session = await rpc.request("session/new", { cwd: tmpdir(), mcpServers: [] });
+    return catalogFromSession(session);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    rpc.failPending(new Error("probe ended"));
+  }
 }
 
 export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
@@ -142,6 +214,19 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         return env;
       };
 
+      // Engines that build their catalog from their own configuration
+      // are probed once with a throwaway session, so the picker starts
+      // with real models. A failed probe leaves the placeholder; the
+      // first turn replaces it with what the agent serves.
+      if (spec.probeModels) {
+        widenPath();
+        void probeCatalog(spec, config.cli, childEnv()).then((catalog) => {
+          if (!catalog) return;
+          models.options = catalog.options;
+          models.default = catalog.default;
+        });
+      }
+
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
@@ -155,6 +240,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             effort: turn.effort,
           }) ?? []),
         ];
+        widenPath();
         const child = spawn(config.cli, argv, {
           cwd: turn.cwd ?? homedir(),
           env: childEnv(turn.env),
@@ -162,27 +248,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           detached: true,
         });
 
-        const state = { settled: false, text: "" };
+        const state = { settled: false, text: "", live: false };
         const asks = new Map<string, (behavior: string, message?: string) => void>();
-        let nextId = 1;
-        const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-
-        const write = (obj: unknown) => {
-          try {
-            child.stdin.write(JSON.stringify(obj) + "\n");
-          } catch {
-            /* the child died; close() will settle the turn */
-          }
-          appendNative(threadId, { dir: "out", source: `${spec.kind}.acp`, msg: obj });
-        };
-        const request = (method: string, params: unknown) =>
-          new Promise<any>((resolve, reject) => {
-            const id = nextId++;
-            rpcPending.set(id, { resolve, reject });
-            write({ jsonrpc: "2.0", id, method, params });
-          });
-        const notify = (method: string, params: unknown) =>
-          write({ jsonrpc: "2.0", method, params });
 
         const stop = () => {
           try {
@@ -196,11 +263,24 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           }
         };
 
+        const rpc = attachRpc({
+          stdin: child.stdin,
+          stdout: child.stdout,
+          onFrame: (msg, dir) => appendNative(threadId, { dir, source: `${spec.kind}.acp`, msg }),
+          onRequest: (msg) => {
+            if (msg.method === "session/request_permission") handlePermission(msg);
+            else rpc.replyError(msg.id, -32601, "not supported by this client");
+          },
+          onNotify: (msg) => {
+            if (msg.method === "session/update") handleUpdate(msg.params);
+          },
+        });
+
         // An interrupt goes through the protocol first, so the agent can
         // put its tools down properly. The kill is the backstop.
         let sessionId: string | null = null;
         const interrupt = () => {
-          if (sessionId) notify("session/cancel", { sessionId });
+          if (sessionId) rpc.notify("session/cancel", { sessionId });
           setTimeout(stop, 2_000).unref?.();
         };
 
@@ -208,8 +288,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           if (state.settled) return;
           state.settled = true;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn ended");
-          for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
-          rpcPending.clear();
+          rpc.failPending(new Error("turn settled"));
           active.delete(threadId);
           if (state.text.trim()) {
             emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: state.text });
@@ -219,7 +298,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         };
 
         // ── agent asks the user for permission ──
-        const handlePermission = (msg: any) => {
+        function handlePermission(msg: any) {
           const params = msg.params ?? {};
           const options: any[] = Array.isArray(params.options) ? params.options : [];
           const pick = (kinds: string[]) => options.find((o) => kinds.includes(o?.kind))?.optionId;
@@ -227,7 +306,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           const denyId = pick(["reject_once", "reject_always"]) ?? options[options.length - 1]?.optionId;
 
           if (config.fullAuto && allowId) {
-            return write({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: allowId } } });
+            return rpc.reply(msg.id, { outcome: { outcome: "selected", optionId: allowId } });
           }
 
           const requestId = newId();
@@ -243,13 +322,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               ? options.find((o) => String(o?.name ?? "").toLowerCase() === message.trim().toLowerCase())
               : null;
             const optionId = named?.optionId ?? (behavior === "allow" ? allowId : denyId);
-            write({
-              jsonrpc: "2.0",
-              id: msg.id,
-              result: optionId
+            rpc.reply(
+              msg.id,
+              optionId
                 ? { outcome: { outcome: "selected", optionId } }
                 : { outcome: { outcome: "cancelled" } },
-            });
+            );
             const denied = !optionId || optionId === denyId;
             emit({
               ...base(threadId, turnId),
@@ -272,10 +350,14 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // the agent names its own choices, so use its words
             choices: options.map((o) => String(o?.name ?? "")).filter(Boolean).slice(0, 5),
           });
-        };
+        }
 
         // ── streaming updates ──
-        const handleUpdate = (params: any) => {
+        function handleUpdate(params: any) {
+          // session/load replays history as the same notifications a live
+          // turn uses. Until we have sent session/prompt, none of it is
+          // this turn's output.
+          if (!state.live) return;
           const update = params?.update ?? {};
           switch (update.sessionUpdate) {
             case "agent_message_chunk": {
@@ -310,39 +392,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               break;
             }
           }
-        };
-
-        let buf = "";
-        child.stdout.on("data", (chunk) => {
-          buf += chunk;
-          let nl;
-          while ((nl = buf.indexOf("\n")) !== -1) {
-            const line = buf.slice(0, nl);
-            buf = buf.slice(nl + 1);
-            if (!line.trim()) continue;
-            let msg: any;
-            try {
-              msg = JSON.parse(line);
-            } catch {
-              continue; // a stray log line, not protocol
-            }
-            appendNative(threadId, { dir: "in", source: `${spec.kind}.acp`, msg });
-            if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
-              const pend = rpcPending.get(msg.id);
-              if (!pend) continue;
-              rpcPending.delete(msg.id);
-              if (msg.error) pend.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));
-              else pend.resolve(msg.result);
-            } else if (msg.id !== undefined && msg.method === "session/request_permission") {
-              handlePermission(msg);
-            } else if (msg.id !== undefined && msg.method) {
-              // fs/* and terminal/* only arrive if we claimed the capability
-              write({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "not supported by this client" } });
-            } else if (msg.method === "session/update") {
-              handleUpdate(msg.params);
-            }
-          }
-        });
+        }
 
         let stderr = "";
         child.stderr.on("data", (c) => {
@@ -377,13 +427,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
         (async () => {
           try {
-            await request("initialize", {
-              protocolVersion: PROTOCOL_VERSION,
-              // we do not lend the agent our filesystem or terminal; it has
-              // its own, and every borrowed capability is another way in
-              clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-              clientInfo: { name: "bloks", version: "1" },
-            });
+            await rpc.request("initialize", CLIENT_HELLO);
 
             const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
             const cwd = turn.cwd ?? homedir();
@@ -409,30 +453,27 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             let session: any = null;
             if (cursor) {
               try {
-                session = (await request("session/load", { cwd, mcpServers, sessionId: cursor })) ?? {};
+                session = (await rpc.request("session/load", { cwd, mcpServers, sessionId: cursor })) ?? {};
                 session.sessionId ??= cursor;
               } catch {
                 /* the agent forgot this session; start a new one below */
               }
             }
-            if (!session) session = await request("session/new", { cwd, mcpServers });
+            if (!session) session = await rpc.request("session/new", { cwd, mcpServers });
             sessionId = session?.sessionId ?? null;
             if (!sessionId) throw new Error(`${spec.name} did not open a session`);
 
             // the agent knows its own model list better than we do
-            const available: any[] = session?.models?.availableModels ?? [];
-            if (available.length) {
-              models.options = available.map((m) => ({
-                id: String(m.modelId),
-                label: String(m.name || m.modelId),
-              }));
-              models.default = String(session.models.currentModelId ?? models.options[0].id);
+            const catalog = catalogFromSession(session);
+            if (catalog) {
+              models.options = catalog.options;
+              models.default = catalog.default;
             }
-            if (turn.model && available.some((m) => String(m.modelId) === turn.model)) {
-              await request("session/set_model", { sessionId, modelId: turn.model }).catch(() => {});
+            if (turn.model && catalog?.options.some((m) => m.id === turn.model)) {
+              await rpc.request("session/set_model", { sessionId, modelId: turn.model }).catch(() => {});
             }
             if (config.fullAuto) {
-              await request("session/set_mode", { sessionId, modeId: "yolo" }).catch(() => {});
+              await rpc.request("session/set_mode", { sessionId, modeId: "yolo" }).catch(() => {});
             }
 
             emit({
@@ -442,7 +483,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               model: turn.model ?? models.default,
             });
 
-            const result = await request("session/prompt", {
+            state.live = true;
+            const result = await rpc.request("session/prompt", {
               sessionId,
               prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
             });
@@ -468,11 +510,14 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       };
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
-        const version = await new Promise<string | null>((resolve) => {
-          execFile(config.cli, ["--version"], { timeout: 8_000 }, (err, stdout) =>
-            resolve(err ? null : stdout.trim().split("\n").pop()!.trim()),
-          );
-        });
+        widenPath();
+        const version = spec.probePath
+          ? (onPath(config.cli) ? basename(config.cli) : null)
+          : await new Promise<string | null>((resolve) => {
+              execFile(config.cli, ["--version"], { timeout: 8_000 }, (err, stdout) =>
+                resolve(err ? null : stdout.trim().split("\n").pop()!.trim()),
+              );
+            });
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
         const hasKey = (spec.keyEnv ?? []).some((k) => input.environment[k] || process.env[k]);
         const signedIn = (spec.authFiles ?? []).some((f) => existsSync(join(homedir(), f)));
@@ -580,6 +625,26 @@ export const ACP_SPECS: readonly AcpSpec[] = [
         { id: "auto", label: "Auto" },
         { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
       ],
+    },
+  },
+  {
+    kind: "pi",
+    name: "Pi",
+    // pi-acp on PATH, not npx: --version starts an ACP session and hangs,
+    // so the install check is "is this name on PATH" after widenPath
+    command: "pi-acp",
+    args: [],
+    probePath: true,
+    // pi serves whatever providers its own settings connect, so the
+    // catalog is pi's, not ours to guess
+    probeModels: true,
+    install: "npm i -g --ignore-scripts @earendil-works/pi-coding-agent && npm i -g pi-acp",
+    signIn: "run `pi` (or `pi-acp --terminal-login`) and configure providers/login",
+    // credentials live in Pi; nothing of ours to pass
+    authFiles: [".pi/agent/auth.json"],
+    models: {
+      default: "auto",
+      options: [{ id: "auto", label: "Auto" }],
     },
   },
 ];
