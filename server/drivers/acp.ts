@@ -218,12 +218,20 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       // are probed once with a throwaway session, so the picker starts
       // with real models. A failed probe leaves the placeholder; the
       // first turn replaces it with what the agent serves.
+      let finishCatalog = () => {};
+      const catalogReady = spec.probeModels
+        ? new Promise<void>((resolve) => {
+            finishCatalog = resolve;
+          })
+        : undefined;
       if (spec.probeModels) {
         widenPath();
         void probeCatalog(spec, config.cli, childEnv()).then((catalog) => {
-          if (!catalog) return;
-          models.options = catalog.options;
-          models.default = catalog.default;
+          if (catalog) {
+            models.options = catalog.options;
+            models.default = catalog.default;
+          }
+          finishCatalog();
         });
       }
 
@@ -531,6 +539,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         enabled: input.enabled,
         models,
         snapshot,
+        catalogReady,
         adapter: {
           provider: spec.kind,
           capabilities: { sessionModelSwitch: "in-session" },

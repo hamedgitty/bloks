@@ -477,6 +477,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))
             .catch(() => {});
           break;
+        case "instances":
+          if (Array.isArray(frame.instances)) rawDispatch({ type: "instances", instances: frame.instances });
+          break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
