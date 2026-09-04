@@ -24,7 +24,11 @@ import { QuickAsk } from "@/components/QuickAsk";
 function Shell() {
   const { state, dispatch } = useStore();
   const room = state.bloks.find((b) => b.id === state.selectedId);
-  const bot = room ? null : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
+  const bot = room
+    ? null
+    : (state.bots.find((b) => b.id === state.selectedId && !b.hidden) ??
+      state.bots.find((b) => !b.hidden) ??
+      null);
 
   // The Dock badge mirrors the sidebar's unread dots. Absent bridge
   // means a browser tab, which has no Dock to speak of.
