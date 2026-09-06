@@ -17,6 +17,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { EnginesPanel } from "./EnginesPanel";
 import { CloudSection } from "./CloudSection";
 import { DevicesSection } from "./DevicesSection";
+import { TelegramSection } from "./TelegramSection";
 import { LocalVmSection } from "./LocalVmSection";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -575,6 +576,7 @@ export function AppSettingsPanel() {
             {tab === "devices" && (
               <>
                 <DevicesSection />
+                <TelegramSection />
                 <CloudSection />
               </>
             )}

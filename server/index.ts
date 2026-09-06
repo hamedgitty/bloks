@@ -124,6 +124,7 @@ import { assemble as assembleActivity, blockedOn } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
+import * as telegram from "./telegram.ts";
 import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
@@ -2668,6 +2669,106 @@ async function runDueRoutines() {
 // Every 30s. The schedule has minute resolution, so this is twice as often
 // as it needs to be and cheap enough not to care.
 const routineTimer = setInterval(() => void runDueRoutines().catch(() => {}), 30_000);
+
+// ── messages arriving from Telegram ───────────────────────────────────
+// A loop rather than an interval: long polling already blocks for as
+// long as we want to wait, and a timer on top of it would stack calls
+// whenever Telegram was slow. Chats we have refused once are remembered
+// for the life of the process, so somebody who found the bot and keeps
+// typing gets one answer rather than one per message.
+const telegramRefused = new Set<number>();
+let telegramRunning = false;
+
+async function telegramRound(): Promise<void> {
+  const state = cfg.telegram;
+  if (!state?.enabled || !state.token) return;
+  const messages = await telegram.poll(state.token, state.offset ?? 0);
+  const offset = telegram.nextOffset(state.offset ?? 0, messages);
+  if (offset !== (state.offset ?? 0)) {
+    // Saved before anything is acted on. A crash mid-turn should lose
+    // the reply, not replay the message on every restart forever.
+    cfg.telegram = { ...state, offset };
+    saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+  }
+  for (const message of messages) {
+    const decision = telegram.decide(cfg.telegram ?? {}, message);
+    if (decision.kind === "pair") {
+      const paired = [...(cfg.telegram?.chatIds ?? []), decision.chatId];
+      cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
+      saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+      broadcast({ kind: "config", config: await configStatus() });
+      await telegram
+        .send(state.token, decision.chatId, "Paired. Message me and your agent will answer.")
+        .catch(() => {});
+      continue;
+    }
+    if (decision.kind === "refuse") {
+      if (telegramRefused.has(decision.chatId)) continue;
+      telegramRefused.add(decision.chatId);
+      await telegram
+        .send(state.token, decision.chatId, "This bot is not paired with you.")
+        .catch(() => {});
+      continue;
+    }
+    if (decision.kind !== "deliver") continue;
+    const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
+    if (!bot) continue;
+    // The reply goes back to the chat that asked, and the exchange lands
+    // in the agent's own thread like any other conversation.
+    const answer = await answerOverTelegram(bot.id, decision.text).catch(
+      (error: unknown) => `Could not answer: ${(error as Error).message}`,
+    );
+    await telegram.send(state.token, decision.chatId, answer).catch(() => {});
+  }
+}
+
+/**
+ * Run a turn for a message that arrived from a phone, and read back what
+ * the agent said.
+ *
+ * Everything lands in the agent's ordinary lane, so a conversation
+ * started on a phone is the same conversation when you open the Mac.
+ * The reply is whatever it said that was not already there, which is
+ * how a turn that ran tools and then answered comes back as the answer
+ * rather than as the running commentary.
+ */
+async function answerOverTelegram(botId: string, text: string): Promise<string> {
+  const bot = store.bot(botId);
+  if (!bot) throw new Error("that agent is gone");
+  const laneId = bot.activeTaskId ?? bot.threadId;
+  const before = store.messagesFor(laneId).length;
+  await startTurn(botId, text);
+  await waitForIdle(botId, 240_000);
+  const said = store
+    .messagesFor(laneId)
+    .slice(before)
+    .filter((message) => message.role === "bot" && message.kind === "text" && message.text)
+    .map((message) => message.text as string)
+    .join("\n\n")
+    .trim();
+  return said || "(the agent finished without saying anything)";
+}
+
+async function telegramLoop(): Promise<void> {
+  if (telegramRunning) return;
+  telegramRunning = true;
+  for (;;) {
+    try {
+      await telegramRound();
+    } catch {
+      // Telegram unreachable, a bad token, a laptop that just woke.
+      // Wait before asking again rather than spinning on the failure.
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+    }
+    if (!cfg.telegram?.enabled) {
+      telegramRunning = false;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+if (cfg.telegram?.enabled) void telegramLoop();
 
 // The Local VM lease dies with the turn that held it, and a VM that
 // survived a restart goes back on the idle clock.
@@ -5825,6 +5926,56 @@ const server = createServer(async (req, res) => {
       });
       broadcast({ kind: "message", threadId: laneId, message });
       return json(res, 201, { ok: true });
+    }
+
+    // ── reaching agents from a phone ──
+    if (method === "GET" && path === "/api/telegram") {
+      const state = cfg.telegram ?? {};
+      // The token is a credential and never comes back out; what the
+      // screen needs is whether one is set and who is paired.
+      return json(res, 200, {
+        configured: Boolean(state.token),
+        enabled: state.enabled === true,
+        paired: (state.chatIds ?? []).length,
+        pairing: state.pairing ?? null,
+        botId: state.botId ?? null,
+      });
+    }
+    if (method === "POST" && path === "/api/telegram") {
+      if (asAgent) return json(res, 403, { error: "an agent cannot change this" });
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const next = { ...(cfg.telegram ?? {}) };
+      if (body.token !== undefined) {
+        const token = telegram.cleanToken(body.token);
+        if (!token) return json(res, 400, { error: "a bot token is required" });
+        try {
+          await telegram.whoAmI(token);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        next.token = token;
+        // A new token is a new bot: whoever was paired with the old one
+        // has no business talking to this one.
+        next.chatIds = [];
+        next.offset = 0;
+      }
+      if (typeof body.botId === "string") next.botId = body.botId;
+      if (body.enabled !== undefined) next.enabled = body.enabled === true;
+      if (body.pair === true) next.pairing = telegram.pairingWord();
+      if (body.unpair === true) {
+        next.chatIds = [];
+        next.pairing = null;
+      }
+      cfg.telegram = next;
+      saveConfig({ telegram: next } as Partial<AppConfig>);
+      if (next.enabled && next.token) void telegramLoop();
+      return json(res, 200, {
+        configured: Boolean(next.token),
+        enabled: next.enabled === true,
+        paired: (next.chatIds ?? []).length,
+        pairing: next.pairing ?? null,
+        botId: next.botId ?? null,
+      });
     }
 
     // ── borrowing a sign-in for the agent's browser ──
