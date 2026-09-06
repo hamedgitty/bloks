@@ -27,8 +27,8 @@ importers:
         specifier: ^1.2.16
         version: 1.2.16(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@trycua/cua-driver':
-        specifier: ^0.21.0
-        version: 0.21.0
+        specifier: ^0.23.2
+        version: 0.23.2
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -48,11 +48,11 @@ importers:
         specifier: ^6.8.9
         version: 6.8.9(supports-color@7.2.0)
       lucide-react:
-        specifier: ^1.34.0
-        version: 1.34.0(react@19.2.8)
+        specifier: ^1.39.0
+        version: 1.39.0(react@19.2.8)
       posthog-js:
-        specifier: ^1.418.13
-        version: 1.418.13
+        specifier: ^1.422.5
+        version: 1.422.5(@types/react@19.2.18)(react@19.2.8)
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -71,10 +71,10 @@ importers:
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.11
-        version: 4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))
+        version: 4.3.3(vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0))
       '@types/node':
-        specifier: ^26.2.0
-        version: 26.2.0
+        specifier: ^26.4.0
+        version: 26.4.0
       '@types/qrcode':
         specifier: ^1.5.6
         version: 1.5.6
@@ -86,10 +86,10 @@ importers:
         version: 19.2.5(@types/react@19.2.18)
       '@vitejs/plugin-react':
         specifier: ^4.7.0
-        version: 4.7.0(supports-color@7.2.0)(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))
+        version: 4.7.0(supports-color@7.2.0)(vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0))
       electron:
-        specifier: ^43.4.1
-        version: 43.4.1(supports-color@7.2.0)
+        specifier: ^44.1.0
+        version: 44.1.0(supports-color@7.2.0)
       electron-builder:
         specifier: ^26.15.3
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)(supports-color@7.2.0)
@@ -107,7 +107,7 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^7.1.0
-        version: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+        version: 7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0)
 
 packages:
 
@@ -469,14 +469,14 @@ packages:
     resolution: {integrity: sha512-ODOov0sGMJMf3jPonOkgGqPknTsu+DdQ7kD++gz8aI+aFMOMHFbWAA2taqXXVTdP+OTOQR/znGvSpmkeI0WTYQ==}
     engines: {node: '>=14.18.0'}
 
-  '@posthog/browser-common@0.5.0':
-    resolution: {integrity: sha512-8DaxVZS1bQPbA514RePurLNbYjei3P4jhnC206DwVv5XThmZM3QdlsXenI2ujE3pLbgQ79hYn9o1Kda8I3WK/Q==}
+  '@posthog/browser-common@0.7.0':
+    resolution: {integrity: sha512-Kr6j9sH7NisT3fC3w7jZlonYeCFjPXZrDwHl3usFpjNEdgbHUrxPAmekEkTt+zRAa2huldFPIAmibZ3KC4hXoQ==}
 
-  '@posthog/core@1.48.9':
-    resolution: {integrity: sha512-jKJyG12L0TcLaa0av6lmSl8pLANUmvp2RVebM0/FYa/gID47BAVzuj3fT6QPJ7RZe0U4QZGQIrkB1amVYfBcig==}
+  '@posthog/core@1.49.2':
+    resolution: {integrity: sha512-AXHDo/4nisUg7OPG1TQNgREK7n+chBQXLQyttp7bDTDsDg2k9lV06TmnpvuNbwJs53q9mP9hjezKEZu4fYadfg==}
 
-  '@posthog/types@1.405.2':
-    resolution: {integrity: sha512-NVsw5pER9YEDFOfvmbpyRtIgv+0411QXHg1IjCFh+EcxtmLUP2FdJyiWYVpNM6WhTTlrPEW+fPZpGz1OBXijvQ==}
+  '@posthog/types@1.407.1':
+    resolution: {integrity: sha512-WhbkXPC2rgylXqmxHqv70ffI3k+KxyR6s7DBIfr5NvIqHkxp6v0pk31D/jbz0DNVbzwkLjyll2pxr4FNbJiYzg==}
 
   '@radix-ui/primitive@1.1.7':
     resolution: {integrity: sha512-rqWnm76nYT8HoNNqEjpgJ7Pw/DrBj5iBTrmEPo6HTX5+VJyBNOqTdv4g89G63HuR5g0AaENoAcH7Is5fF2kZ8Q==}
@@ -1039,40 +1039,40 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@trycua/cua-driver-darwin-arm64@0.21.0':
-    resolution: {integrity: sha512-wiQRixfS+zkakpcBI1zAfPQrE3slN1mozvkcFYgp0HufuzDuO/aShX+qLrTyw1a0MiKa7JjjyNdPXpJBE1wUiA==}
+  '@trycua/cua-driver-darwin-arm64@0.23.2':
+    resolution: {integrity: sha512-gWNCPIhR5KOAcxjtybzLhyxwj5T9TjBP9qEyLA78zAVABnVsqUdTaJOBx+ba8Leo3ZNc8WtvHnJJ15gsrluvjg==}
     cpu: [arm64]
     os: [darwin]
 
-  '@trycua/cua-driver-darwin-x64@0.21.0':
-    resolution: {integrity: sha512-MFWkXLESSmr1LxE8FGwNWWUcZgZM+4kIFSPCV6uwy5W2ctSn5O/G4DrjjCAiuONRZzMpU0jlovcfQEB55Eje4g==}
+  '@trycua/cua-driver-darwin-x64@0.23.2':
+    resolution: {integrity: sha512-2uGLvU/HhkSN0EQTEzbBUoTBriHbS2nskfMG+vi1KIfunuQS8OtHlI3ZsfDgD+P8s6BsoAoMpuWYAXiOZjlCkw==}
     cpu: [x64]
     os: [darwin]
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.21.0':
-    resolution: {integrity: sha512-Udb+CeHmogSndIR8yChucYPg70zFqAC595ykeXOWUOs+oGE2QN1a92uJRZSqCYtx1hi2MkLamW/tQksigJTFrw==}
+  '@trycua/cua-driver-linux-arm64-gnu@0.23.2':
+    resolution: {integrity: sha512-+lFr/hvPAKEgYYqrlAJYr/TwTcMAt63DZ9j/2TcC8BdrgZ9CAuzFvAvgK7LObexUpxAl2uJFGLJOA5m/aS95yA==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-linux-x64-gnu@0.21.0':
-    resolution: {integrity: sha512-CuT/FNR2/zShtIK6cSbIZVCUc6khlH88SgQi8w1mYjDx7xEDyuLxuoBhu9JRpMKDvj2EOf4bqlSUOBa4zJSSyA==}
+  '@trycua/cua-driver-linux-x64-gnu@0.23.2':
+    resolution: {integrity: sha512-0sWPd4LkL1hqvsGqougwwZdufAOZxLosAE/Wwq7tBYOJuPbP+1jpGiyPdCrZrCejnlVrR440RAKs+0TsMxOcqw==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.21.0':
-    resolution: {integrity: sha512-qVwBJgsYHyhP/LZih0km+TJrVcV4vFB8h1URtcYgHgiZ+XdT/WwXzTAuB/34+gb2acyI2oddQPw/JQE3klM5Lw==}
+  '@trycua/cua-driver-win32-arm64-msvc@0.23.2':
+    resolution: {integrity: sha512-ZRD1cxu2v9b23AUr3/o7AzHzPmHjrAYK9v24qsifSt9bw7nH5zrs81QuuO6WoaBzrUUCyOvEGLh38Tyb3cvEyw==}
     cpu: [arm64]
     os: [win32]
 
-  '@trycua/cua-driver-win32-x64-msvc@0.21.0':
-    resolution: {integrity: sha512-BTHCfX2t6ht6TsJxIBjBxF3FfkMVsuOuakOqCBRhE8eYbfhouqKHHF8dwwCtOKk6g1KJSOkYC83+Qkq2yuoVdQ==}
+  '@trycua/cua-driver-win32-x64-msvc@0.23.2':
+    resolution: {integrity: sha512-Ax0DobXvVSrOIaKWINIhW/VbWKfdCYoQ27M6zFsfHlNT1paXaJYCgiRmoZiVItcfCgsQBzU7Yth046Le0TDedw==}
     cpu: [x64]
     os: [win32]
 
-  '@trycua/cua-driver@0.21.0':
-    resolution: {integrity: sha512-5oe8+1mm40pvMYSuXvPf5RTMPITgeGAUJhwQkkrL8nX57Goe2n5zs48q5e5kpT+jaGwGuxX4PotOn5UuNVSymA==}
+  '@trycua/cua-driver@0.23.2':
+    resolution: {integrity: sha512-OQZGxEbiPO5wHuxROptGF8D9HDiN4R8M1E58TsUsq0pyQ73fkWpLrVY6JEo3ZnE9e+cgH7mG36NV1cqaXj8BTw==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -1110,8 +1110,8 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
-  '@types/node@26.2.0':
-    resolution: {integrity: sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg==}
+  '@types/node@26.4.0':
+    resolution: {integrity: sha512-faiGnoIrLH/V8cibOMEAZ8pMw6oXqSukl29ra4mN8GdaB2ZewzeaLj+INpV5N+Z1eKWzY+IzaIZH2EIR6YZRNQ==}
 
   '@types/qrcode@1.5.6':
     resolution: {integrity: sha512-te7NQcV2BOvdj2b1hCAHzAoMNuj65kNBMz0KBaxM6c3VGBOhU0dURQKOtH8CFNI/dsKkwlv32p26qYQTWoB5bw==}
@@ -1502,8 +1502,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@43.4.1:
-    resolution: {integrity: sha512-5b+EuiwkgG5iRcsEL34rimgRpkYp15SsfZOa0pC5kXs0Tb82TH4n95rpQzTZa7yRCbA7tm0WoEbuBL6NaAhAcA==}
+  electron@44.1.0:
+    resolution: {integrity: sha512-kmLg8axOg22DC3fXx5NCwBYW8fx0rK2zzJ3Tf67GjNCkxfoxEcd+yo0QfDjlBtHJs3xeA8fTg64b6iVzFTVErg==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -1891,8 +1891,8 @@ packages:
     resolution: {integrity: sha512-Jo6dJ04CmSjuznwJSS3pUeWmd/H0ffTlkXXgwZi+eq1UCmqQwCh+eLsYOYCwY991i2Fah4h1BEMCx4qThGbsiA==}
     engines: {node: '>=10'}
 
-  lucide-react@1.34.0:
-    resolution: {integrity: sha512-vnjGJNI7Htk5+oWW8gXGuaLgwgAb0T6/iZbBrp9JCfRFwdNWZ0YTm3eyxjOLgwN6r8iyAf3UA70zNmBRBNv7yg==}
+  lucide-react@1.39.0:
+    resolution: {integrity: sha512-y8nXoEwvqqIsF927NBWXODa4bfMrcUeEb/9sgpwFqg0gUjgn3j5Hznk+v7STmPgZ2iQ11JKlbQGdFRuTOwvYkA==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -2065,8 +2065,16 @@ packages:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
-  posthog-js@1.418.13:
-    resolution: {integrity: sha512-EwBi0M3sn8Hmes6Iu1Oav65+COt6fUL+eSC50lz1eSfABWsNxQndWT1LjxYd6nxvMUnV3NJkcZTeRor4lOENXw==}
+  posthog-js@1.422.5:
+    resolution: {integrity: sha512-p1CLXsGoHwNkdElxXtd1KzNP/df8sIrp8CRII+lAPRhaHdpi1HfNxrybqLSzWvJLw2w5Nou5vpXfGABUI5BVwA==}
+    peerDependencies:
+      '@types/react': '>=16.8.0'
+      react: '>=16.8.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      react:
+        optional: true
 
   postject@1.0.0-alpha.6:
     resolution: {integrity: sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==}
@@ -2908,16 +2916,16 @@ snapshots:
       tslib: 2.8.1
       webcrypto-core: 1.9.2
 
-  '@posthog/browser-common@0.5.0':
+  '@posthog/browser-common@0.7.0':
     dependencies:
-      '@posthog/core': 1.48.9
-      '@posthog/types': 1.405.2
+      '@posthog/core': 1.49.2
+      '@posthog/types': 1.407.1
 
-  '@posthog/core@1.48.9':
+  '@posthog/core@1.49.2':
     dependencies:
-      '@posthog/types': 1.405.2
+      '@posthog/types': 1.407.1
 
-  '@posthog/types@1.405.2': {}
+  '@posthog/types@1.407.1': {}
 
   '@radix-ui/primitive@1.1.7': {}
 
@@ -3371,42 +3379,42 @@ snapshots:
       '@tailwindcss/oxide-win32-arm64-msvc': 4.3.3
       '@tailwindcss/oxide-win32-x64-msvc': 4.3.3
 
-  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))':
+  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0))':
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
       tailwindcss: 4.3.3
-      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite: 7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  '@trycua/cua-driver-darwin-arm64@0.21.0':
+  '@trycua/cua-driver-darwin-arm64@0.23.2':
     optional: true
 
-  '@trycua/cua-driver-darwin-x64@0.21.0':
+  '@trycua/cua-driver-darwin-x64@0.23.2':
     optional: true
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.21.0':
+  '@trycua/cua-driver-linux-arm64-gnu@0.23.2':
     optional: true
 
-  '@trycua/cua-driver-linux-x64-gnu@0.21.0':
+  '@trycua/cua-driver-linux-x64-gnu@0.23.2':
     optional: true
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.21.0':
+  '@trycua/cua-driver-win32-arm64-msvc@0.23.2':
     optional: true
 
-  '@trycua/cua-driver-win32-x64-msvc@0.21.0':
+  '@trycua/cua-driver-win32-x64-msvc@0.23.2':
     optional: true
 
-  '@trycua/cua-driver@0.21.0':
+  '@trycua/cua-driver@0.23.2':
     dependencies:
       '@ubjs/core': 0.31.0-3
       '@ubjs/node': 0.31.0-3
     optionalDependencies:
-      '@trycua/cua-driver-darwin-arm64': 0.21.0
-      '@trycua/cua-driver-darwin-x64': 0.21.0
-      '@trycua/cua-driver-linux-arm64-gnu': 0.21.0
-      '@trycua/cua-driver-linux-x64-gnu': 0.21.0
-      '@trycua/cua-driver-win32-arm64-msvc': 0.21.0
-      '@trycua/cua-driver-win32-x64-msvc': 0.21.0
+      '@trycua/cua-driver-darwin-arm64': 0.23.2
+      '@trycua/cua-driver-darwin-x64': 0.23.2
+      '@trycua/cua-driver-linux-arm64-gnu': 0.23.2
+      '@trycua/cua-driver-linux-x64-gnu': 0.23.2
+      '@trycua/cua-driver-win32-arm64-msvc': 0.23.2
+      '@trycua/cua-driver-win32-x64-msvc': 0.23.2
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -3433,7 +3441,7 @@ snapshots:
     dependencies:
       '@types/http-cache-semantics': 4.2.0
       '@types/keyv': 3.1.4
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
       '@types/responselike': 1.0.3
 
   '@types/debug@4.1.13':
@@ -3444,13 +3452,13 @@ snapshots:
 
   '@types/fs-extra@9.0.13':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
 
   '@types/http-cache-semantics@4.2.0': {}
 
   '@types/keyv@3.1.4':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
 
   '@types/ms@2.1.0': {}
 
@@ -3458,13 +3466,13 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
-  '@types/node@26.2.0':
+  '@types/node@26.4.0':
     dependencies:
       undici-types: 8.3.0
 
   '@types/qrcode@1.5.6':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
 
   '@types/react-dom@19.2.5(@types/react@19.2.18)':
     dependencies:
@@ -3476,7 +3484,7 @@ snapshots:
 
   '@types/responselike@1.0.3':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
 
   '@types/trusted-types@2.0.7':
     optional: true
@@ -3518,7 +3526,7 @@ snapshots:
       '@ubjs/node-win32-arm64-msvc': 0.31.0-3
       '@ubjs/node-win32-x64-msvc': 0.31.0-3
 
-  '@vitejs/plugin-react@4.7.0(supports-color@7.2.0)(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))':
+  '@vitejs/plugin-react@4.7.0(supports-color@7.2.0)(vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0))':
     dependencies:
       '@babel/core': 7.29.7(supports-color@7.2.0)
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7(supports-color@7.2.0))
@@ -3526,7 +3534,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-beta.27
       '@types/babel__core': 7.20.5
       react-refresh: 0.17.0
-      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite: 7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -3925,7 +3933,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@43.4.1(supports-color@7.2.0):
+  electron@44.1.0(supports-color@7.2.0):
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0(supports-color@7.2.0)
@@ -4319,7 +4327,7 @@ snapshots:
     dependencies:
       yallist: 4.0.0
 
-  lucide-react@1.34.0(react@19.2.8):
+  lucide-react@1.39.0(react@19.2.8):
     dependencies:
       react: 19.2.8
 
@@ -4469,11 +4477,11 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  posthog-js@1.418.13:
+  posthog-js@1.422.5(@types/react@19.2.18)(react@19.2.8):
     dependencies:
-      '@posthog/browser-common': 0.5.0
-      '@posthog/core': 1.48.9
-      '@posthog/types': 1.405.2
+      '@posthog/browser-common': 0.7.0
+      '@posthog/core': 1.49.2
+      '@posthog/types': 1.407.1
       core-js: 3.50.0
       dompurify: 3.4.14
       fflate: 0.4.9
@@ -4481,6 +4489,9 @@ snapshots:
       query-selector-shadow-dom: 1.0.1
       web-vitals: 5.3.0
       web-vitals-soft-navs: web-vitals@6.0.0
+    optionalDependencies:
+      '@types/react': 19.2.18
+      react: 19.2.8
     transitivePeerDependencies:
       - preact-render-to-string
 
@@ -4821,7 +4832,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0):
+  vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.5)
@@ -4830,7 +4841,7 @@ snapshots:
       rollup: 4.62.4
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.0
       fsevents: 2.3.3
       jiti: 2.7.0
       lightningcss: 1.32.0

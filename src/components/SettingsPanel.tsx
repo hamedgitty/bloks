@@ -210,6 +210,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "effort"
         | "mascotExpression"
         | "composio"
+        | "browser"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -574,6 +575,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           <ApprovalsCard bot={bot} />
           <WorkingFolderCard bot={bot} />
           <ConnectedAppsCard bot={bot} patch={patch} />
+        <BrowserCard bot={bot} patch={patch} />
           <McpAttachCard bot={bot} />
           <MemoryCard bot={bot} />
           <AnswersCard bot={bot} patch={patch} />
@@ -618,11 +620,36 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 function ApprovalsCard({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   const mode = bot.approvals ?? "ask";
+  const [refused, setRefused] = useState(false);
   const OPTIONS = [
     { id: "ask" as const, label: "Ask", hint: "Every consequential action cards" },
     { id: "edits" as const, label: "Accept edits", hint: "File changes go ahead; the rest asks" },
     { id: "auto" as const, label: "Auto", hint: "Everything goes ahead; deny rules still refuse" },
   ];
+
+  /**
+   * Widening the leash asks who is there; narrowing it never does.
+   *
+   * Auto is the one setting on this screen that somebody else could
+   * change while a laptop sits unlocked, and it is the one whose effect
+   * is invisible afterwards. A Mac with no sensor is not blocked: this
+   * proves who is present when it can, and stays out of the way when it
+   * cannot.
+   */
+  const choose = async (next: "ask" | "edits" | "auto") => {
+    setRefused(false);
+    if (next === "auto" && mode !== "auto" && window.bloks?.authConfirm) {
+      const answer = await window.bloks.authConfirm(
+        `let ${bot.name} act without asking`,
+      );
+      if (answer === "denied" || answer === "cancelled") {
+        setRefused(true);
+        return;
+      }
+    }
+    dispatch({ type: "updateBot", botId: bot.id, patch: { approvals: next } });
+  };
+
   return (
     <div className="mt-4 rounded-2xl border bg-card p-4">
       <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
@@ -636,9 +663,7 @@ function ApprovalsCard({ bot }: { bot: Bot }) {
         {OPTIONS.map((option) => (
           <button
             key={option.id}
-            onClick={() =>
-              dispatch({ type: "updateBot", botId: bot.id, patch: { approvals: option.id } })
-            }
+            onClick={() => void choose(option.id)}
             className={cn(
               "flex-1 rounded-lg py-1.5 text-[12.5px] transition-colors duration-150",
               mode === option.id
@@ -650,6 +675,11 @@ function ApprovalsCard({ bot }: { bot: Bot }) {
           </button>
         ))}
       </div>
+      {refused && (
+        <div className="mt-2 text-[11.5px] text-warning">
+          Not confirmed, so the mode is unchanged.
+        </div>
+      )}
     </div>
   );
 }
@@ -785,6 +815,99 @@ function ConnectedAppsCard({
         disabled={!configured && allowed === false}
         onCheckedChange={(on) => patch({ composio: on })}
       />
+    </div>
+  );
+}
+
+/**
+ * A browser of the agent's own.
+ *
+ * Deliberately its own grant rather than part of the computer one: an
+ * agent that should compare prices does not also need the desktop, and
+ * handing over the narrower tool is the whole point of having two.
+ */
+function BrowserCard({ bot, patch }: { bot: Bot; patch: (p: { browser: boolean }) => void }) {
+  const on = bot.browser === true;
+  const [sources, setSources] = useState<string[]>([]);
+  const [sites, setSites] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!on) return;
+    api("/api/browser/cookie-sources")
+      .then((r) => setSources(r.sources ?? []))
+      .catch(() => setSources([]));
+  }, [on]);
+
+  const borrow = (browser: string) => {
+    const wanted = sites
+      .split(/[\s,]+/)
+      .map((site) => site.trim())
+      .filter(Boolean);
+    if (!wanted.length || importing) return;
+    setImporting(true);
+    setResult(null);
+    api(`/api/bots/${bot.id}/browser/cookies`, {
+      method: "POST",
+      body: JSON.stringify({ browser, sites: wanted }),
+    })
+      .then((r) =>
+        setResult(
+          r.imported
+            ? `Signed in for ${wanted.join(", ")}.`
+            : (r.note ?? "Nothing found for those sites."),
+        ),
+      )
+      .catch((e) => setResult(e.message))
+      .finally(() => setImporting(false));
+  };
+
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <div className="min-w-0 pr-3">
+          <div className="text-[13.5px] font-semibold text-foreground">Its own browser</div>
+          <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+            {on
+              ? "Opens pages, reads them and clicks, in a browser of its own. Signed in separately from yours."
+              : "Off. Turn this on for work on the web: comparing prices, filling a form, reading a page that needs a session."}
+          </div>
+        </div>
+        <Switch checked={on} onCheckedChange={(next) => patch({ browser: next })} />
+      </div>
+
+      {/* Sign-ins are borrowed per site rather than wholesale: an agent
+          that checks a delivery has no business holding the bank. */}
+      {on && sources.length > 0 && (
+        <div className="mt-3 border-t pt-3">
+          <div className="text-[12.5px] font-medium text-foreground">Borrow a sign-in</div>
+          <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+            Name the sites this agent needs, and only those move across. Your browser asks your
+            keychain first.
+          </div>
+          <Input
+            value={sites}
+            onChange={(e) => setSites(e.target.value)}
+            placeholder="amazon.com, ebay.com"
+            className="mt-2 h-8 text-[13px]"
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {sources.map((browser) => (
+              <Button
+                key={browser}
+                size="sm"
+                variant="secondary"
+                disabled={importing || !sites.trim()}
+                onClick={() => borrow(browser)}
+              >
+                {importing ? "Borrowing…" : `From ${browser}`}
+              </Button>
+            ))}
+            {result && <span className="text-[11.5px] text-muted-foreground">{result}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

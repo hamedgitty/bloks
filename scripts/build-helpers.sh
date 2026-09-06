@@ -23,7 +23,7 @@ out=electron/resources
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-for helper in speech-helper perm-helper; do
+for helper in speech-helper perm-helper auth-helper; do
   for arch in arm64 x86_64; do
     swiftc -O \
       -target "$arch-apple-macos11.0" \

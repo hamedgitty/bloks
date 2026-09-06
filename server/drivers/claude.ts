@@ -101,6 +101,7 @@ function helperEntry(name: string): string {
 
 const COMPUTER_HELPER = helperEntry("computer-proxy");
 const SANDBOX_HELPER = helperEntry("sandbox-proxy");
+const BROWSER_HELPER = helperEntry("browser-proxy");
 const PERMISSION_HELPER = helperEntry("permission-proxy");
 
 /** In the packaged app `process.execPath` is Electron, not node. This makes
@@ -249,6 +250,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           },
         };
         allowed.push("mcp__sandbox");
+      }
+
+      if (turn.integrations?.browser) {
+        mcpServers.browser = {
+          command: process.execPath,
+          args: [BROWSER_HELPER],
+          env: {
+            ...RUN_AS_NODE,
+            BLOKS_BROWSER_PROFILE: turn.integrations.browser.profileDir,
+            BLOKS_BROWSER_PORT: String(turn.integrations.browser.port),
+          },
+        };
+        allowed.push("mcp__browser");
       }
 
       // bypassPermissions means nothing would ever ask, so there is nothing

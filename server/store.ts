@@ -225,6 +225,10 @@ export interface BotRecord {
   /** Whether this agent may reach the shared Composio connectors. The
    * key is workspace-wide; the grant is per agent. Unset means yes. */
   composio?: boolean;
+  /** Whether this agent has a browser of its own, driven through the
+   * debugging protocol. Unset means no: a browser is a real process,
+   * so it is granted rather than assumed. */
+  browser?: boolean;
   /** Ids of user-registered MCP servers this agent may use. */
   mcpServers?: string[];
   /** How this agent sounds. Unset means it has no voice yet. */

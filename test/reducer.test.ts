@@ -71,6 +71,24 @@ test("an agent nobody has seen is added, not dropped", () => {
   assert.deepEqual(next.bots[0].messages, [], "an arrival starts with an empty transcript");
 });
 
+test("hydrate skips an archived agent and opens a living one", () => {
+  const state = withState({ selectedId: "" });
+  const next = reducer(state, {
+    type: "hydrate",
+    bots: [bot("asdf", { hidden: true }), bot("keep")],
+  });
+  assert.equal(next.selectedId, "keep");
+});
+
+test("hydrate restores the last selected living agent", () => {
+  const state = withState({ selectedId: "keep" });
+  const next = reducer(state, {
+    type: "hydrate",
+    bots: [bot("asdf", { hidden: true }), bot("keep"), bot("other")],
+  });
+  assert.equal(next.selectedId, "keep");
+});
+
 test("a partial patch for an unknown agent is ignored", () => {
   // without a threadId it is a patch for something we do not have, and
   // inventing an agent from it would put a broken row in the sidebar

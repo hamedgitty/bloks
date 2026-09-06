@@ -121,9 +121,15 @@ import {
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
 import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
 import { assemble as assembleActivity, blockedOn } from "./activity.ts";
+import { splitArgs } from "./argv.ts";
+import { draftPrompt, parseDraft } from "./draft.ts";
+import { cookieStores, readCookies } from "./cookie-import.ts";
+import * as telegram from "./telegram.ts";
+import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
+  extractComponents,
   galleryPrompt,
   mayRender,
   parseComponent,
@@ -326,6 +332,10 @@ function standingOf(project: Project): ProjectStanding {
 const agentTokens = new AgentTokens();
 setInterval(() => agentTokens.sweep(Date.now()), 5 * 60_000).unref?.();
 const AGENT_CLI = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
+
+/** The agent browser's debugging port. One browser serves every agent
+ * that has one; profiles keep their sessions apart. */
+const BROWSER_PORT = Number(process.env.BLOKS_BROWSER_PORT || 9222);
 
 /**
  * The skill catalog, fetched and kept for a while.
@@ -566,8 +576,20 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.itemType === "assistant_text") {
         // a lead may have proposed a team; the plan becomes a card the
         // user approves, never something that happens on its own
-        const { plan, text } = extractTeamPlan(event.text);
+        const { plan, text: afterPlan } = extractTeamPlan(event.text);
+        // Components an engine wrote into its own answer. The CLI is the
+        // route for engines with a shell; this is the one for the rest,
+        // so an API model can answer with a chart like anybody else.
+        const { components, text } = extractComponents(afterPlan);
         if (text) pushMessage({ role: "bot", kind: "text", text: houseStyle(text) });
+        for (const component of components) {
+          if (!mayRender(component.kind, bot.withoutComponents)) continue;
+          pushMessage({
+            role: "bot",
+            kind: "component",
+            component: component as unknown as Record<string, unknown>,
+          });
+        }
         if (plan) {
           const card = pushMessage({
             role: "bot",
@@ -1352,11 +1374,16 @@ async function startTurn(
       disclose(attached, runsAProcess(instance.driverKind)),
       `To read one, run: node "${AGENT_CLI}" skill <id>`,
     ),
-    // Only when this engine gets a credential: the gallery is reached
-    // through the CLI, so telling an engine about it that has no way to
-    // call it would be describing a door that is not there.
-    runsAProcess(instance.driverKind) &&
-      galleryPrompt(bot.withoutComponents, `To use one, run: node "${AGENT_CLI}" show <kind> '<json>'`),
+    // Every engine gets the gallery; only the route differs. One with a
+    // shell calls the CLI. One without writes the component into its own
+    // answer as a fenced block, which is the only shape a model with no
+    // tools can reliably produce.
+    galleryPrompt(
+      bot.withoutComponents,
+      runsAProcess(instance.driverKind)
+        ? `To use one, run: node "${AGENT_CLI}" show <kind> '<json>'`
+        : 'To use one, write it as a fenced block on its own:\n```bloks\n{ "kind": "table", ... }\n```',
+    ),
     cfg.profile?.about?.trim() && `About the person you work for: ${cfg.profile.about.trim()}`,
     workspace.memoryPrompt(bot.id),
     `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,
@@ -1467,6 +1494,18 @@ async function startTurn(
       if (!integrations.computer && wants !== "off" && wants !== "cloud" && wants !== "sandbox") {
         const cua = readCuaConnection();
         if (cua) integrations.localComputer = cua;
+      }
+
+      // A browser of its own, when the agent is allowed one. Separate
+      // from the computer grant: an agent that should book a flight
+      // does not also need the whole desktop, and the narrower tool is
+      // the one to hand it. Off unless asked for, because a browser
+      // starts a real process.
+      if (bot.browser === true) {
+        integrations.browser = {
+          profileDir: join(DATA_DIR, "browser", bot.id),
+          port: BROWSER_PORT,
+        };
       }
 
       // A lane keeps the folder its first turn ran in: engines key
@@ -2661,6 +2700,106 @@ async function runDueRoutines() {
 // as it needs to be and cheap enough not to care.
 const routineTimer = setInterval(() => void runDueRoutines().catch(() => {}), 30_000);
 
+// ── messages arriving from Telegram ───────────────────────────────────
+// A loop rather than an interval: long polling already blocks for as
+// long as we want to wait, and a timer on top of it would stack calls
+// whenever Telegram was slow. Chats we have refused once are remembered
+// for the life of the process, so somebody who found the bot and keeps
+// typing gets one answer rather than one per message.
+const telegramRefused = new Set<number>();
+let telegramRunning = false;
+
+async function telegramRound(): Promise<void> {
+  const state = cfg.telegram;
+  if (!state?.enabled || !state.token) return;
+  const messages = await telegram.poll(state.token, state.offset ?? 0);
+  const offset = telegram.nextOffset(state.offset ?? 0, messages);
+  if (offset !== (state.offset ?? 0)) {
+    // Saved before anything is acted on. A crash mid-turn should lose
+    // the reply, not replay the message on every restart forever.
+    cfg.telegram = { ...state, offset };
+    saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+  }
+  for (const message of messages) {
+    const decision = telegram.decide(cfg.telegram ?? {}, message);
+    if (decision.kind === "pair") {
+      const paired = [...(cfg.telegram?.chatIds ?? []), decision.chatId];
+      cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
+      saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+      broadcast({ kind: "config", config: await configStatus() });
+      await telegram
+        .send(state.token, decision.chatId, "Paired. Message me and your agent will answer.")
+        .catch(() => {});
+      continue;
+    }
+    if (decision.kind === "refuse") {
+      if (telegramRefused.has(decision.chatId)) continue;
+      telegramRefused.add(decision.chatId);
+      await telegram
+        .send(state.token, decision.chatId, "This bot is not paired with you.")
+        .catch(() => {});
+      continue;
+    }
+    if (decision.kind !== "deliver") continue;
+    const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
+    if (!bot) continue;
+    // The reply goes back to the chat that asked, and the exchange lands
+    // in the agent's own thread like any other conversation.
+    const answer = await answerOverTelegram(bot.id, decision.text).catch(
+      (error: unknown) => `Could not answer: ${(error as Error).message}`,
+    );
+    await telegram.send(state.token, decision.chatId, answer).catch(() => {});
+  }
+}
+
+/**
+ * Run a turn for a message that arrived from a phone, and read back what
+ * the agent said.
+ *
+ * Everything lands in the agent's ordinary lane, so a conversation
+ * started on a phone is the same conversation when you open the Mac.
+ * The reply is whatever it said that was not already there, which is
+ * how a turn that ran tools and then answered comes back as the answer
+ * rather than as the running commentary.
+ */
+async function answerOverTelegram(botId: string, text: string): Promise<string> {
+  const bot = store.bot(botId);
+  if (!bot) throw new Error("that agent is gone");
+  const laneId = bot.activeTaskId ?? bot.threadId;
+  const before = store.messagesFor(laneId).length;
+  await startTurn(botId, text);
+  await waitForIdle(botId, 240_000);
+  const said = store
+    .messagesFor(laneId)
+    .slice(before)
+    .filter((message) => message.role === "bot" && message.kind === "text" && message.text)
+    .map((message) => message.text as string)
+    .join("\n\n")
+    .trim();
+  return said || "(the agent finished without saying anything)";
+}
+
+async function telegramLoop(): Promise<void> {
+  if (telegramRunning) return;
+  telegramRunning = true;
+  for (;;) {
+    try {
+      await telegramRound();
+    } catch {
+      // Telegram unreachable, a bad token, a laptop that just woke.
+      // Wait before asking again rather than spinning on the failure.
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+    }
+    if (!cfg.telegram?.enabled) {
+      telegramRunning = false;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+if (cfg.telegram?.enabled) void telegramLoop();
+
 // The Local VM lease dies with the turn that held it, and a VM that
 // survived a restart goes back on the idle clock.
 configureVmLease((threadId) => Boolean(store.taskByThread(threadId)?.task.busy));
@@ -3393,22 +3532,13 @@ const server = createServer(async (req, res) => {
       const instance = registry.get((await defaultSelection()).instanceId);
       if (!instance?.generateText) return json(res, 200, {});
       try {
-        const raw = await instance.generateText(
-          `Name an AI agent whose job is: "${description.trim()}".\n` +
-            `Reply with exactly two lines and nothing else:\n` +
-            `Line 1: a short human-style role name, 1-3 words, title case, no quotes.\n` +
-            `Line 2: a role description under 8 words.`,
-        );
-        const [name, title] = raw
-          .split("\n")
-          .map((l: string) => l.replace(/^["'\s]+|["'\s.]+$/g, ""))
-          .filter(Boolean);
-        return json(res, 200, {
-          ...(name && name.length <= 32 ? { name } : {}),
-          ...(title && title.length <= 72 ? { title } : {}),
-        });
+        // Name, role, persona and a few skills in one call. Whatever
+        // comes back is a proposal shown in editable fields, never
+        // something applied on the person's behalf.
+        const draft = parseDraft(await instance.generateText(draftPrompt(description)));
+        return json(res, 200, draft);
       } catch {
-        return json(res, 200, {}); // never block creation on a naming call
+        return json(res, 200, { skills: [] }); // never block creation on a drafting call
       }
     }
     let m = path.match(/^\/api\/bots\/([\w-]+)$/);
@@ -3476,6 +3606,16 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "composio must be true or false" });
         }
         patch.composio = body.composio;
+      }
+      if (body.browser !== undefined) {
+        if (typeof body.browser !== "boolean") {
+          return json(res, 400, { error: "browser must be true or false" });
+        }
+        // An agent granting itself a browser would be widening its own
+        // reach, which is the person's call. PATCH /api/bots/:me is on
+        // the agent allowlist, so this has to be said explicitly.
+        if (asAgent) return json(res, 403, { error: "an agent cannot give itself a browser" });
+        patch.browser = body.browser;
       }
       if (body.withoutComponents !== undefined) {
         if (!Array.isArray(body.withoutComponents)) {
@@ -4064,10 +4204,25 @@ const server = createServer(async (req, res) => {
               .slice(0, 8) as Array<[string, string]>,
           );
         }
+      } else if (typeof body.commandLine === "string") {
+        // The settings screen sends the line exactly as it was typed, so
+        // the split happens once, here, with quotes respected. Splitting
+        // it on the client as well would mangle a quoted path before the
+        // server ever saw it.
+        const parts = splitArgs(clamp(body.commandLine, 1200) ?? "");
+        entry.command = parts[0] ?? "";
+        entry.args = parts.slice(1, 25);
       } else {
         entry.command = clamp(body.command, 300) ?? "";
-        entry.args =
-          typeof body.args === "string" ? body.args.split(/\s+/).filter(Boolean).slice(0, 24) : [];
+        // Parsed the way a shell would, not split on whitespace: an
+        // argument like "/Users/me/Application Support/x.mjs" is one
+        // path, and tearing it in half runs the wrong file with no
+        // error worth reading. An array is accepted as given.
+        entry.args = Array.isArray(body.args)
+          ? (body.args as unknown[]).filter((a): a is string => typeof a === "string").slice(0, 24)
+          : typeof body.args === "string"
+            ? splitArgs(body.args).slice(0, 24)
+            : [];
       }
       if (transport === "http" ? !entry.url : !entry.command) {
         return json(res, 400, { error: transport === "http" ? "a valid http(s) url is required" : "a command is required" });
@@ -5845,6 +6000,115 @@ const server = createServer(async (req, res) => {
       });
       broadcast({ kind: "message", threadId: destination, message });
       return json(res, 201, { ok: true });
+    }
+
+    // ── reaching agents from a phone ──
+    if (method === "GET" && path === "/api/telegram") {
+      const state = cfg.telegram ?? {};
+      // The token is a credential and never comes back out; what the
+      // screen needs is whether one is set and who is paired.
+      return json(res, 200, {
+        configured: Boolean(state.token),
+        enabled: state.enabled === true,
+        paired: (state.chatIds ?? []).length,
+        pairing: state.pairing ?? null,
+        botId: state.botId ?? null,
+      });
+    }
+    if (method === "POST" && path === "/api/telegram") {
+      if (asAgent) return json(res, 403, { error: "an agent cannot change this" });
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const next = { ...(cfg.telegram ?? {}) };
+      if (body.token !== undefined) {
+        const token = telegram.cleanToken(body.token);
+        if (!token) return json(res, 400, { error: "a bot token is required" });
+        try {
+          await telegram.whoAmI(token);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        next.token = token;
+        // A new token is a new bot: whoever was paired with the old one
+        // has no business talking to this one.
+        next.chatIds = [];
+        next.offset = 0;
+      }
+      if (typeof body.botId === "string") next.botId = body.botId;
+      if (body.enabled !== undefined) next.enabled = body.enabled === true;
+      if (body.pair === true) next.pairing = telegram.pairingWord();
+      if (body.unpair === true) {
+        next.chatIds = [];
+        next.pairing = null;
+      }
+      cfg.telegram = next;
+      saveConfig({ telegram: next } as Partial<AppConfig>);
+      if (next.enabled && next.token) void telegramLoop();
+      return json(res, 200, {
+        configured: Boolean(next.token),
+        enabled: next.enabled === true,
+        paired: (next.chatIds ?? []).length,
+        pairing: next.pairing ?? null,
+        botId: next.botId ?? null,
+      });
+    }
+
+    // ── borrowing a sign-in for the agent's browser ──
+    // Per site, never the whole jar: an agent that checks a delivery
+    // should not also be handed the bank. The keychain prompt this
+    // raises is the consent gate, and it is the operating system's own.
+    if (method === "GET" && path === "/api/browser/cookie-sources") {
+      return json(res, 200, { sources: cookieStores().map((store) => store.browser) });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/browser\/cookies$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "an agent cannot import your sign-ins" });
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      if (bot.browser !== true) {
+        return json(res, 400, { error: "give this agent a browser first" });
+      }
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const sites = Array.isArray(body.sites)
+        ? (body.sites as unknown[])
+            .filter((site): site is string => typeof site === "string" && site.trim().length > 0)
+            .map((site) => site.trim())
+            .slice(0, 12)
+        : [];
+      if (!sites.length) return json(res, 400, { error: "name at least one site" });
+      const source = cookieStores().find(
+        (candidate) => candidate.browser === String(body.browser ?? ""),
+      );
+      if (!source) return json(res, 400, { error: "no such browser on this machine" });
+      try {
+        const cookies = await readCookies(source.path, source.browser, sites);
+        if (!cookies.length) {
+          return json(res, 200, { imported: 0, note: `no cookies for those sites in ${source.browser}` });
+        }
+        await launch(join(DATA_DIR, "browser", bot.id), BROWSER_PORT);
+        const targets = await listTargets(BROWSER_PORT);
+        if (!targets.length) return json(res, 503, { error: "the agent's browser is not open" });
+        const page = new CdpSession(targets[targets.length - 1].webSocketDebuggerUrl);
+        await page.open();
+        try {
+          await page.send("Network.setCookies", {
+            cookies: cookies.map((cookie) => ({
+              name: cookie.name,
+              value: cookie.value,
+              domain: cookie.domain,
+              path: cookie.path,
+              secure: cookie.secure,
+              httpOnly: cookie.httpOnly,
+              ...(cookie.expires ? { expires: cookie.expires } : {}),
+            })),
+          });
+        } finally {
+          page.close();
+        }
+        // The values themselves never touch the response or the log.
+        return json(res, 200, { imported: cookies.length, sites });
+      } catch (error) {
+        return json(res, 400, { error: (error as Error).message });
+      }
     }
 
     // ── taking the wheel ──

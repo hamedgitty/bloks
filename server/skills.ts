@@ -110,7 +110,12 @@ export function skillsPrompt(disclosure: Disclosure, howToRead: string): string 
   const parts: string[] = [];
   if (disclosure.inline.length) {
     parts.push(
-      `You have these skills installed. Follow the matching one whenever a request calls for it:\n\n${disclosure.inline
+      // "whenever a request calls for it" is doing real work here: a
+      // skill that fires on everything adjacent to its subject is worse
+      // than no skill, because it turns a one-line answer into a
+      // procedure. Each body carries its own "Not for:" line for the
+      // same reason.
+      `You have these skills installed. Follow the matching one whenever a request calls for it, and only then. Each says what it is not for; when that applies, answer directly instead:\n\n${disclosure.inline
         .map((s) => `## ${s.name}\n${s.body}`)
         .join("\n\n")}`,
     );
@@ -209,6 +214,7 @@ const BUILTIN: Array<Omit<Skill, "source">> = [
 3. Lead with the decisions. Never open with a greeting or a summary of what you're about to say.
 4. Keep it under 150 words. If something slipped since yesterday, say so and why.
 
+Not for: a single lookup. If they asked what one meeting is, answer that and stop.
 Return: a short plain-text brief. No tables, no headers unless there are more than three groups.
 Approval: none needed, this is read-only.`,
   },
@@ -223,6 +229,7 @@ Approval: none needed, this is read-only.`,
 3. For routine mail, draft a reply in the user's voice and hold it.
 4. Escalate immediately, without waiting for the batch: anything financial, legal, security-related, time-sensitive within 24h, or from a named VIP.
 
+Not for: one named message. Read and answer that one rather than sorting the whole inbox.
 Return: counts per class, the escalations in full, and the drafts awaiting approval.
 Approval: required before sending anything. Never send on your own.`,
   },
@@ -237,6 +244,7 @@ Approval: required before sending anything. Never send on your own.`,
 3. Separate clearly: established fact, contested, and your own inference.
 4. Say plainly when the evidence is thin. A short honest brief beats a long confident one.
 
+Not for: a fact you already hold, or one lookup that a single source settles. Answer it plainly instead.
 Return: the answer in the first two sentences, then supporting detail, then sources as links.
 Approval: none needed unless the research requires paid access or account creation.`,
   },
@@ -251,6 +259,7 @@ Approval: none needed unless the research requires paid access or account creati
 3. Then note genuine simplifications. Do not invent nitpicks to fill space.
 4. For each finding give: the file and line, what breaks, and the concrete input that would break it.
 
+Not for: a question about how code works, or a change you were asked to make. Explain or write it instead.
 Return: findings ordered most-severe first. If the diff is clean, say so in one line.
 Approval: required before pushing any change.`,
   },
@@ -265,6 +274,7 @@ Approval: required before pushing any change.`,
 3. Surface what changed since you last spoke.
 4. Propose an agenda with the single most important item first.
 
+Not for: a meeting already under way, or one with no attendees and no history worth assembling.
 Return: half a page maximum. Who, what changed, what to decide, suggested agenda.
 Approval: none needed, this is read-only.`,
   },
@@ -279,6 +289,7 @@ Approval: none needed, this is read-only.`,
 3. Name the single biggest risk to next week and what would defuse it.
 4. Note anything that has now slipped two weeks running; that is a pattern, not a delay.
 
+Not for: a question about one project. Answer that project rather than reviewing the week.
 Return: three short sections and one risk. Under 200 words.
 Approval: none needed, this is read-only.`,
   },
@@ -293,6 +304,7 @@ Approval: none needed, this is read-only.`,
 3. One clear ask. No multi-part questions.
 4. Match the user's voice from their previous messages. Never use "I hope this finds you well", "circling back", or "just following up".
 
+Not for: a reply in an existing thread. Match that thread rather than opening cold.
 Return: subject line and body, under 120 words.
 Approval: always required before sending. Never send outreach on your own.`,
   },
@@ -307,6 +319,7 @@ Approval: always required before sending. Never send outreach on your own.`,
 3. Flag: duplicate charges, subscriptions with no recent use, and anything more than 50% above its own historical average.
 4. Note any charge missing a receipt so the user can find it while they still remember it.
 
+Not for: one receipt somebody asked you to read. Read it and say what it is.
 Return: counts by category, the flags, and the list of missing receipts.
 Approval: required before categorizing anything as personal or writing to an accounting system.`,
   },

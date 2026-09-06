@@ -19,6 +19,12 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
   return instance?.models.options.find((o) => o.id === model)?.label ?? model;
 }
 
+/** Engines you can use sort ahead of engines you cannot, ties keeping
+ * the fleet's own order. The rail reads at a glance: what is installed
+ * is what comes first. */
+const byUsable = (a: InstanceInfo, b: InstanceInfo) =>
+  Number(b.snapshot.state === "available") - Number(a.snapshot.state === "available");
+
 export function ModelPicker({ bot, className }: { bot: Bot; className?: string }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
@@ -72,7 +78,7 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
         >
           {/* instance rail */}
           <div className="flex flex-col gap-0.5 border-r bg-muted/40 p-1.5">
-            {state.instances.map((instance) => {
+            {[...state.instances].sort(byUsable).map((instance) => {
               const unavailable = instance.snapshot.state !== "available";
               const onRail = instance.instanceId === railInstance?.instanceId;
               return (

@@ -63,6 +63,15 @@ declare global {
       quickHide(): Promise<void>;
       quickOpenMain(): Promise<void>;
       onQuickOpened(handler: () => void): () => void;
+      /** Whether this Mac can prove who is at the keyboard: "biometry",
+       * "password", or "unavailable". */
+      authStatus(): Promise<"biometry" | "password" | "unavailable">;
+      /** Raises the Touch ID prompt. "granted", "denied", "cancelled",
+       * or "unavailable" when the Mac cannot ask at all. */
+      authConfirm(
+        reason: string,
+      ): Promise<"granted" | "denied" | "cancelled" | "unavailable">;
+
       permStatus(): Promise<{ mic: string; screen: string }>;
       /** Shows the real microphone prompt; true once granted. */
       permRequestMic(): Promise<boolean>;

@@ -154,6 +154,10 @@ export interface SendTurnInput {
     /** A Linux container on this machine: shell and files, no display.
      * Resolved by the harness before the turn; drivers only relay it. */
     sandbox?: { runtime: string; name: string };
+    /** A real browser, driven through its debugging protocol rather than
+     * through pixels. Separate from `computer` on purpose: the web will
+     * describe itself if asked, and a native app will not. */
+    browser?: { profileDir: string; port: number };
     /** User-registered MCP servers this agent may use, already resolved
      * to their full spawn/connect shape by the harness. */
     mcpServers?: Array<{

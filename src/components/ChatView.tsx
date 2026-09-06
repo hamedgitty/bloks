@@ -17,6 +17,7 @@ import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
 import { showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { findHits, splitHighlight, stepHit } from "@/lib/find";
+import { splitBlocks, type TableBlock } from "@/lib/markdownTable";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
 import { CallButton } from "./Voice";
@@ -128,7 +129,63 @@ function inlineMd(text: string, keyBase: string): React.ReactNode[] {
   return parts;
 }
 
+/**
+ * A table a model wrote, drawn as one.
+ *
+ * Scrolls inside its own box rather than widening the bubble: a
+ * six-column comparison should not decide how wide the transcript is.
+ */
+function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: string }) {
+  const align = (i: number) => {
+    const a = block.aligns[i] ?? "left";
+    return a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left";
+  };
+  return (
+    <div className="my-1.5 max-w-full overflow-x-auto rounded-xl border">
+      <table className="w-full border-collapse text-[12.5px]">
+        <thead>
+          <tr className="border-b bg-foreground/[0.04]">
+            {block.columns.map((column, i) => (
+              <th
+                key={i}
+                className={cn("px-2.5 py-1.5 font-semibold whitespace-nowrap", align(i))}
+              >
+                {withHighlight(inlineMd(column, `th${i}`), highlight)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, r) => (
+            <tr key={r} className="border-b last:border-b-0">
+              {row.map((cell, c) => (
+                <td key={c} className={cn("px-2.5 py-1.5 align-top", align(c))}>
+                  {withHighlight(inlineMd(cell, `td${r}-${c}`), highlight)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Markdownish({ text, highlight = "" }: { text: string; highlight?: string }) {
+  const blocks = splitBlocks(text);
+  if (blocks.some((block) => block.kind === "table")) {
+    return (
+      <>
+        {blocks.map((block, b) =>
+          block.kind === "table" ? (
+            <MarkdownTable key={`t${b}`} block={block} highlight={highlight} />
+          ) : (
+            <Markdownish key={`l${b}`} text={block.lines.join("\n")} highlight={highlight} />
+          ),
+        )}
+      </>
+    );
+  }
   return (
     <>
       {text.split("\n").map((line, i) => {

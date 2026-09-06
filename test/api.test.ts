@@ -3833,7 +3833,9 @@ describe("what an MCP server can draw", () => {
         name: "Sales",
         transport: "stdio",
         command: process.execPath,
-        args: fake,
+        // quoted, because a checkout path can contain a space and the
+        // server parses this the way a shell would
+        args: JSON.stringify(fake),
       }),
     });
     return id as string;

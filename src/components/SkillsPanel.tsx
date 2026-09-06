@@ -171,7 +171,7 @@ function AddSkill({
       <Textarea
         value={markdown}
         onChange={(e) => setMarkdown(e.target.value)}
-        placeholder={`Use this when…\n\n1. First step\n2. Second step\n\nReturn: what to hand back.\nApproval: what needs a human first.`}
+        placeholder={`Use this when…\n\n1. First step\n2. Second step\n\nNot for: when to leave this alone.\nReturn: what to hand back.\nApproval: what needs a human first.`}
         className="min-h-[180px] flex-1 resize-none font-mono text-[12px] leading-relaxed"
       />
 

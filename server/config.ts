@@ -70,6 +70,16 @@ export interface AppConfig {
   /** User-added OpenAI-compatible hosts. Same file as the other keys
    * because this is already the secrets file. */
   custom?: CustomEndpoint[];
+  /** Reaching agents from a phone over Telegram. The token is a
+   * credential, so it lives here with the rest of them. */
+  telegram?: {
+    token?: string;
+    chatIds?: number[];
+    botId?: string;
+    pairing?: string | null;
+    offset?: number;
+    enabled?: boolean;
+  };
   /** User-registered MCP servers, attachable per agent. Headers and
    * commands live here because this file is already the secrets file. */
   mcpServers?: Array<{
@@ -220,6 +230,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     "shortcuts",
     "compaction",
     "skills",
+    "telegram",
   ] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
