@@ -1149,7 +1149,7 @@ function roomTranscript(blokId: string, speakerId: string): string {
   };
   return store
     .messagesFor(blokId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted)
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued)
     .slice(-30)
     .map((m) =>
       m.replyTo
@@ -1651,19 +1651,58 @@ async function postToRoom(
   text: string,
   author: { botId?: string; hops: number; toAll?: boolean; replyTo?: ReplyRef },
 ) {
-  const previous = roomPosting.get(blok.id) ?? Promise.resolve();
-  const run = previous.catch(() => {}).then(() => postToRoomNow(blok, text, author));
-  roomPosting.set(blok.id, run);
-  run.finally(() => {
-    if (roomPosting.get(blok.id) === run) roomPosting.delete(blok.id);
+  return enqueueRoomPost(blok, text, author).completion;
+}
+
+function enqueueRoomPost(
+  blok: BlokRecord,
+  text: string,
+  author: { botId?: string; hops: number; toAll?: boolean; replyTo?: ReplyRef },
+) {
+  if (!blok.memberIds.some((id) => store.bot(id))) {
+    throw Object.assign(new Error("this room has no agents"), { status: 409 });
+  }
+  const previous = roomPosting.get(blok.id);
+  const message = store.appendMessage(blok.id, {
+    role: author.botId ? "bot" : "user",
+    ...(author.botId ? { from: author.botId } : {}),
+    kind: "text",
+    text,
+    queued: Boolean(previous),
+    ...(author.replyTo ? { replyTo: author.replyTo } : {}),
   });
-  return run;
+  broadcast({ kind: "message", threadId: blok.id, message });
+  const run = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const current = store.messagesFor(blok.id).find((m) => m.id === message.id);
+    const room = bloks.get(blok.id);
+    if (!room || !current || current.deleted) return message;
+    if (current.queued) {
+      const patched = store.patchMessage(blok.id, message.id, { queued: false });
+      broadcast({ kind: "message.patch", threadId: blok.id, message: patched! });
+    }
+    return postToRoomNow(room, current.text ?? text, author, current);
+  });
+  roomPosting.set(blok.id, run);
+  const cleanup = () => {
+    if (roomPosting.get(blok.id) === run) roomPosting.delete(blok.id);
+  };
+  void run.then(cleanup, (error) => {
+    cleanup();
+    if (!bloks.get(blok.id)) return;
+    const notice = store.appendMessage(blok.id, {
+      role: "bot", kind: "notice",
+      text: `This room message could not run: ${redactSecrets(String(error instanceof Error ? error.message : error)).slice(0, 200)}`,
+    });
+    broadcast({ kind: "message", threadId: blok.id, message: notice });
+  });
+  return { message, completion: run };
 }
 
 async function postToRoomNow(
   blok: BlokRecord,
   text: string,
   author: { botId?: string; hops: number; toAll?: boolean; replyTo?: ReplyRef },
+  message: Message,
 ) {
   const members = blok.memberIds.map((id) => store.bot(id)).filter(Boolean) as BotRecord[];
   // Whether the room has anybody in it and whether anybody in it can
@@ -1675,15 +1714,6 @@ async function postToRoomNow(
   // tombstone this is for.
   if (!members.length) throw Object.assign(new Error("this room has no agents"), { status: 409 });
   const awake = members.filter((m) => !m.archivedAt);
-
-  const message = store.appendMessage(blok.id, {
-    role: author.botId ? "bot" : "user",
-    ...(author.botId ? { from: author.botId } : {}),
-    kind: "text",
-    text,
-    ...(author.replyTo ? { replyTo: author.replyTo } : {}),
-  });
-  broadcast({ kind: "message", threadId: blok.id, message });
 
   // Names resolve against everyone in the room, not only those who can
   // answer. addressees returns the whole list when nothing matched, so
@@ -2904,6 +2934,39 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // restart loses only the auto-send intent; the words are already saved.
 const steerQueues = new Map<string, { botId: string; items: Array<{ messageId: string; text: string }> }>();
 
+async function sendUserMessage(botId: string, text: string, options: { taskId?: string; replyTo?: ReplyRef } = {}) {
+  const bot = store.bot(botId);
+  if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
+  const taskId = options.taskId ?? bot.activeTaskId;
+  const lane = bot.tasks.find((t) => t.id === taskId);
+  if (!lane) throw Object.assign(new Error("no such task"), { status: 404 });
+  const holding = wheel.heldBy(bot.id);
+  if (holding) {
+    wheel.noteTurnedAway(bot.id);
+    broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+    throw Object.assign(new Error(heldRefusal(holding, bot.name)), { status: 409 });
+  }
+  if (bot.archivedAt) {
+    throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), { status: 409 });
+  }
+  if (lane.busy) {
+    const message = store.appendMessage(lane.id, {
+      role: "user", kind: "text", text, queued: true,
+      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+    });
+    broadcast({ kind: "message", threadId: lane.id, message });
+    const entry = steerQueues.get(lane.id) ?? { botId: bot.id, items: [] };
+    entry.items.push({ messageId: message.id, text });
+    steerQueues.set(lane.id, entry);
+    return { ok: true, queued: true };
+  }
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo });
+  triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
+  return { ok: true };
+}
+
+const choosingDecisions = new Set<string>();
+
 function drainSteer(threadId: string) {
   const entry = steerQueues.get(threadId);
   if (!entry) return;
@@ -3840,43 +3903,8 @@ const server = createServer(async (req, res) => {
       }
       const text = clamp(body.text, MAX_MESSAGE_CHARS);
       if (!text) return json(res, 400, { error: "text required" });
-      const steered = store.bot(m[1]);
-      const lane = steered?.tasks.find((t) => t.id === steered.activeTaskId) ?? steered?.tasks[0];
-      // Before the steer branch, not after it. A lane can be busy and
-      // held at the same time, and the queue path answers 202 without
-      // ever reaching startTurn: the words would sit waiting to drain
-      // into a turn on a computer somebody has taken over, which is the
-      // one thing the hold is supposed to make impossible. Refused, not
-      // queued, whatever the lane is doing.
-      const holding = steered ? wheel.heldBy(steered.id) : null;
-      if (steered && holding) {
-        wheel.noteTurnedAway(steered.id);
-        broadcast({ kind: "bot", bot: clientBot(store.bot(steered.id)) });
-        return json(res, 409, { error: heldRefusal(holding, steered.name) });
-      }
-      if (steered?.archivedAt) {
-        return json(res, 409, { error: `${steered.name} is archived. Restore it to give it work.` });
-      }
-      if (steered && lane?.busy) {
-        // said mid-turn: it lands now, and sends itself when the lane
-        // settles. No 409, no lost words.
-        const ref = replyRef(body.replyTo);
-        const message = store.appendMessage(lane.id, {
-          role: "user",
-          kind: "text",
-          text,
-          queued: true,
-          ...(ref ? { replyTo: ref } : {}),
-        });
-        broadcast({ kind: "message", threadId: lane.id, message });
-        const entry = steerQueues.get(lane.id) ?? { botId: steered.id, items: [] };
-        entry.items.push({ messageId: message.id, text });
-        steerQueues.set(lane.id, entry);
-        return json(res, 202, { ok: true, queued: true });
-      }
-      await startTurn(m[1], text, { replyTo: replyRef(body.replyTo) });
-      triggersFired({ kind: "message", targetId: m[1], text, fromUser: true });
-      return json(res, 202, { ok: true });
+      const result = await sendUserMessage(m[1], text, { replyTo: replyRef(body.replyTo) });
+      return json(res, 202, result);
     }
     // ── task lanes ──
     // ── voices: how agents sound ──
@@ -4219,6 +4247,51 @@ const server = createServer(async (req, res) => {
         }
       }
       return json(res, 200, { ok: true });
+    }
+
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/choose$/);
+    if (m && method === "POST") {
+      const [threadId, messageId] = [m[1], m[2]];
+      const body = await readBody(req);
+      const existing = store.messagesFor(threadId).find((msg) => msg.id === messageId);
+      if (!existing || existing.deleted || existing.component?.kind !== "decision") {
+        return json(res, 404, { error: "no such decision" });
+      }
+      const parsed = parseComponent("decision", existing.component);
+      if (!parsed.ok || parsed.component.kind !== "decision") {
+        return json(res, 409, { error: "this decision has no valid options" });
+      }
+      const choice = body.choice;
+      if (typeof choice !== "number" || !Number.isInteger(choice) || !parsed.component.options[choice]) {
+        return json(res, 400, { error: "choose one of the offered options" });
+      }
+      const key = `${threadId}:${messageId}`;
+      if (existing.decisionChoice !== undefined || choosingDecisions.has(key)) {
+        return json(res, 409, { error: "this decision has already been answered" });
+      }
+      const room = bloks.get(threadId);
+      const task = store.taskByThread(threadId);
+      const bot = room ? store.bot(existing.from ?? "") : task?.bot;
+      if (!bot || (room && !room.memberIds.includes(bot.id))) {
+        return json(res, 409, { error: "the agent that asked is no longer here" });
+      }
+      const option = parsed.component.options[choice];
+      const text = `${room ? `@${bot.name} ` : ""}${option.label}`;
+      const replyTo = { messageId, author: bot.name, excerpt: parsed.component.question.slice(0, 300) };
+      choosingDecisions.add(key);
+      try {
+        if (room) {
+          enqueueRoomPost(room, text, { hops: 0, replyTo });
+          triggersFired({ kind: "message", targetId: room.id, text, fromUser: true });
+        } else {
+          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo });
+        }
+        const message = store.patchMessage(threadId, messageId, { decisionChoice: choice });
+        broadcast({ kind: "message.patch", threadId, message: message! });
+        return json(res, 200, { message });
+      } finally {
+        choosingDecisions.delete(key);
+      }
     }
 
     // ── editing and taking back ──
@@ -5022,12 +5095,12 @@ const server = createServer(async (req, res) => {
       }
       // a human message starts a fresh chain, so hop counters reset
       for (const id of blok.memberIds) agentHops.delete(id);
-      const message = await postToRoom(blok, text, {
+      const { message } = enqueueRoomPost(blok, text, {
         hops: 0,
         replyTo: replyRef(roomBody.replyTo),
       });
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });
-      return json(res, 201, { message });
+      return json(res, message.queued ? 202 : 201, { message });
     }
 
     // ── team manifests: a room and its people as a file ──
@@ -5918,13 +5991,14 @@ const server = createServer(async (req, res) => {
           : (asAgent?.taskId && bot.tasks.some((t) => t.id === asAgent.taskId)
               ? asAgent.taskId
               : bot.activeTaskId);
-      const message = store.appendMessage(laneId, {
+      const destination = activeRoom.get(laneId) ?? laneId;
+      const message = store.appendMessage(destination, {
         role: "bot",
         from: bot.id,
         kind: "component",
         component: parsed.component as unknown as Record<string, unknown>,
       });
-      broadcast({ kind: "message", threadId: laneId, message });
+      broadcast({ kind: "message", threadId: destination, message });
       return json(res, 201, { ok: true });
     }
 
