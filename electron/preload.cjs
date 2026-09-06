@@ -45,6 +45,12 @@ contextBridge.exposeInMainWorld("bloks", {
   onSpeechTranscript: subscription("speech:transcript"),
   onSpeechEnd: subscription("speech:end"),
 
+  /** Whether this Mac can prove who is at the keyboard, and the prompt
+   * that does it. Answers a word: biometry, password, granted, denied,
+   * cancelled, or unavailable. */
+  authStatus: () => ipcRenderer.invoke("auth:status"),
+  authConfirm: (reason) => ipcRenderer.invoke("auth:confirm", reason),
+
   permStatus: () => ipcRenderer.invoke("perm:status"),
   permRequestMic: () => ipcRenderer.invoke("perm:request-mic"),
   permRequestScreen: () => ipcRenderer.invoke("perm:request-screen"),

@@ -714,6 +714,41 @@ ipcMain.handle("quick:open-main", () => {
   app.focus?.({ steal: true });
 });
 
+/**
+ * Touch ID, for the few things that deserve it.
+ *
+ * A signed helper rather than a node module: LocalAuthentication needs
+ * to be asked by the app itself for the prompt to carry the app's name,
+ * which is the same reason the screen and dictation helpers exist. The
+ * answer is one word, and "unavailable" is a normal answer rather than
+ * an error: plenty of Macs have no sensor, and the caller decides what
+ * that means rather than being handed an exception.
+ */
+function askHelper(args) {
+  return new Promise((resolve) => {
+    let helper;
+    try {
+      helper = nativeHelper("auth-helper");
+    } catch {
+      resolve("unavailable");
+      return;
+    }
+    execFile(helper, args, { timeout: 130_000 }, (error, stdout) => {
+      resolve(error ? "unavailable" : stdout.trim() || "unavailable");
+    });
+  });
+}
+
+ipcMain.handle("auth:status", () =>
+  process.platform === "darwin" ? askHelper(["check"]) : Promise.resolve("unavailable"),
+);
+
+ipcMain.handle("auth:confirm", (_event, reason) => {
+  if (process.platform !== "darwin") return "unavailable";
+  const said = typeof reason === "string" ? reason.slice(0, 120) : "";
+  return askHelper(["ask", said]);
+});
+
 ipcMain.handle("speech:start", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win) startSpeech(win);

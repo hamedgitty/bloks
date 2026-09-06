@@ -16,6 +16,7 @@ files:
   - electron/**
   - "!electron/resources/speech-helper"
   - "!electron/resources/perm-helper"
+  - "!electron/resources/auth-helper"
   - "!**/node_modules/**"
   - package.json
 
@@ -41,6 +42,8 @@ mac:
       to: speech-helper
     - from: electron/resources/perm-helper
       to: perm-helper
+    - from: electron/resources/auth-helper
+      to: auth-helper
   # universal so Intel Macs get a working build too. The Swift helpers
   # are lipo'd to universal by scripts/build-helpers.sh for the same
   # reason: they are copied into both slices verbatim.

@@ -620,11 +620,36 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 function ApprovalsCard({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   const mode = bot.approvals ?? "ask";
+  const [refused, setRefused] = useState(false);
   const OPTIONS = [
     { id: "ask" as const, label: "Ask", hint: "Every consequential action cards" },
     { id: "edits" as const, label: "Accept edits", hint: "File changes go ahead; the rest asks" },
     { id: "auto" as const, label: "Auto", hint: "Everything goes ahead; deny rules still refuse" },
   ];
+
+  /**
+   * Widening the leash asks who is there; narrowing it never does.
+   *
+   * Auto is the one setting on this screen that somebody else could
+   * change while a laptop sits unlocked, and it is the one whose effect
+   * is invisible afterwards. A Mac with no sensor is not blocked: this
+   * proves who is present when it can, and stays out of the way when it
+   * cannot.
+   */
+  const choose = async (next: "ask" | "edits" | "auto") => {
+    setRefused(false);
+    if (next === "auto" && mode !== "auto" && window.bloks?.authConfirm) {
+      const answer = await window.bloks.authConfirm(
+        `let ${bot.name} act without asking`,
+      );
+      if (answer === "denied" || answer === "cancelled") {
+        setRefused(true);
+        return;
+      }
+    }
+    dispatch({ type: "updateBot", botId: bot.id, patch: { approvals: next } });
+  };
+
   return (
     <div className="mt-4 rounded-2xl border bg-card p-4">
       <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-foreground">
@@ -638,9 +663,7 @@ function ApprovalsCard({ bot }: { bot: Bot }) {
         {OPTIONS.map((option) => (
           <button
             key={option.id}
-            onClick={() =>
-              dispatch({ type: "updateBot", botId: bot.id, patch: { approvals: option.id } })
-            }
+            onClick={() => void choose(option.id)}
             className={cn(
               "flex-1 rounded-lg py-1.5 text-[12.5px] transition-colors duration-150",
               mode === option.id
@@ -652,6 +675,11 @@ function ApprovalsCard({ bot }: { bot: Bot }) {
           </button>
         ))}
       </div>
+      {refused && (
+        <div className="mt-2 text-[11.5px] text-warning">
+          Not confirmed, so the mode is unchanged.
+        </div>
+      )}
     </div>
   );
 }
