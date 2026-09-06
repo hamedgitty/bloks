@@ -466,6 +466,33 @@ function createWindow() {
   });
   keepButtonsInPlace(win);
   installContextMenu(win);
+  if (process.platform !== "darwin") {
+    // Zoom and devtools without the stock menu bar, which used to own
+    // their accelerators. macOS keeps its menu and its roles instead.
+    win.webContents.on("before-input-event", (_event, input) => {
+      if (input.type !== "keyDown") return;
+      const isZoomIn = input.control && (input.key === "=" || input.key === "+");
+      if (isZoomIn) {
+        win.webContents.setZoomLevel(Math.min(win.webContents.getZoomLevel() + 0.5, 5));
+        return;
+      }
+      const isZoomOut = input.control && input.key === "-";
+      if (isZoomOut) {
+        win.webContents.setZoomLevel(Math.max(win.webContents.getZoomLevel() - 0.5, -4));
+        return;
+      }
+      const isZoomReset = input.control && input.key === "0";
+      if (isZoomReset) {
+        win.webContents.setZoomLevel(0);
+        return;
+      }
+      const isDevtools =
+        input.control && input.shift && input.key.toLowerCase() === "i";
+      // devtools without a menu bar: the stock View menu was the only
+      // way in, and packaged builds have no use for it
+      if (isDevtools && !app.isPackaged) win.webContents.toggleDevTools();
+    });
+  }
   persistWindowState(win);
   if (restored.maximized) win.maximize();
 
@@ -713,6 +740,12 @@ async function restoreQuickShortcut() {
 
 app.whenReady().then(async () => {
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
+
+  // The stock File/Edit/View menu says nothing this app needs: it has its
+  // own right-click menu for editing, and nothing else in the bar is
+  // reachable from the UI. macOS keeps its menu: the hidden-inset
+  // titlebar and the platform conventions expect one.
+  if (process.platform !== "darwin") Menu.setApplicationMenu(null);
 
   // getDisplayMedia in the renderer routed through here keeps the whole
   // capture inside the app's processes, which is the path macOS reliably
