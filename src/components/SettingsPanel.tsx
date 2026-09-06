@@ -800,17 +800,86 @@ function ConnectedAppsCard({
  */
 function BrowserCard({ bot, patch }: { bot: Bot; patch: (p: { browser: boolean }) => void }) {
   const on = bot.browser === true;
+  const [sources, setSources] = useState<string[]>([]);
+  const [sites, setSites] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!on) return;
+    api("/api/browser/cookie-sources")
+      .then((r) => setSources(r.sources ?? []))
+      .catch(() => setSources([]));
+  }, [on]);
+
+  const borrow = (browser: string) => {
+    const wanted = sites
+      .split(/[\s,]+/)
+      .map((site) => site.trim())
+      .filter(Boolean);
+    if (!wanted.length || importing) return;
+    setImporting(true);
+    setResult(null);
+    api(`/api/bots/${bot.id}/browser/cookies`, {
+      method: "POST",
+      body: JSON.stringify({ browser, sites: wanted }),
+    })
+      .then((r) =>
+        setResult(
+          r.imported
+            ? `Signed in for ${wanted.join(", ")}.`
+            : (r.note ?? "Nothing found for those sites."),
+        ),
+      )
+      .catch((e) => setResult(e.message))
+      .finally(() => setImporting(false));
+  };
+
   return (
-    <div className="mt-4 flex items-center justify-between rounded-2xl border bg-card p-4">
-      <div className="min-w-0 pr-3">
-        <div className="text-[13.5px] font-semibold text-foreground">Its own browser</div>
-        <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-          {on
-            ? "Opens pages, reads them and clicks, in a browser of its own. Signed in separately from yours."
-            : "Off. Turn this on for work on the web: comparing prices, filling a form, reading a page that needs a session."}
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <div className="min-w-0 pr-3">
+          <div className="text-[13.5px] font-semibold text-foreground">Its own browser</div>
+          <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+            {on
+              ? "Opens pages, reads them and clicks, in a browser of its own. Signed in separately from yours."
+              : "Off. Turn this on for work on the web: comparing prices, filling a form, reading a page that needs a session."}
+          </div>
         </div>
+        <Switch checked={on} onCheckedChange={(next) => patch({ browser: next })} />
       </div>
-      <Switch checked={on} onCheckedChange={(next) => patch({ browser: next })} />
+
+      {/* Sign-ins are borrowed per site rather than wholesale: an agent
+          that checks a delivery has no business holding the bank. */}
+      {on && sources.length > 0 && (
+        <div className="mt-3 border-t pt-3">
+          <div className="text-[12.5px] font-medium text-foreground">Borrow a sign-in</div>
+          <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+            Name the sites this agent needs, and only those move across. Your browser asks your
+            keychain first.
+          </div>
+          <Input
+            value={sites}
+            onChange={(e) => setSites(e.target.value)}
+            placeholder="amazon.com, ebay.com"
+            className="mt-2 h-8 text-[13px]"
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {sources.map((browser) => (
+              <Button
+                key={browser}
+                size="sm"
+                variant="secondary"
+                disabled={importing || !sites.trim()}
+                onClick={() => borrow(browser)}
+              >
+                {importing ? "Borrowing…" : `From ${browser}`}
+              </Button>
+            ))}
+            {result && <span className="text-[11.5px] text-muted-foreground">{result}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

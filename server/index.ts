@@ -123,6 +123,8 @@ import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./id
 import { assemble as assembleActivity, blockedOn } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
+import { cookieStores, readCookies } from "./cookie-import.ts";
+import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
@@ -5823,6 +5825,65 @@ const server = createServer(async (req, res) => {
       });
       broadcast({ kind: "message", threadId: laneId, message });
       return json(res, 201, { ok: true });
+    }
+
+    // ── borrowing a sign-in for the agent's browser ──
+    // Per site, never the whole jar: an agent that checks a delivery
+    // should not also be handed the bank. The keychain prompt this
+    // raises is the consent gate, and it is the operating system's own.
+    if (method === "GET" && path === "/api/browser/cookie-sources") {
+      return json(res, 200, { sources: cookieStores().map((store) => store.browser) });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/browser\/cookies$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "an agent cannot import your sign-ins" });
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      if (bot.browser !== true) {
+        return json(res, 400, { error: "give this agent a browser first" });
+      }
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const sites = Array.isArray(body.sites)
+        ? (body.sites as unknown[])
+            .filter((site): site is string => typeof site === "string" && site.trim().length > 0)
+            .map((site) => site.trim())
+            .slice(0, 12)
+        : [];
+      if (!sites.length) return json(res, 400, { error: "name at least one site" });
+      const source = cookieStores().find(
+        (candidate) => candidate.browser === String(body.browser ?? ""),
+      );
+      if (!source) return json(res, 400, { error: "no such browser on this machine" });
+      try {
+        const cookies = await readCookies(source.path, source.browser, sites);
+        if (!cookies.length) {
+          return json(res, 200, { imported: 0, note: `no cookies for those sites in ${source.browser}` });
+        }
+        await launch(join(DATA_DIR, "browser", bot.id), BROWSER_PORT);
+        const targets = await listTargets(BROWSER_PORT);
+        if (!targets.length) return json(res, 503, { error: "the agent's browser is not open" });
+        const page = new CdpSession(targets[targets.length - 1].webSocketDebuggerUrl);
+        await page.open();
+        try {
+          await page.send("Network.setCookies", {
+            cookies: cookies.map((cookie) => ({
+              name: cookie.name,
+              value: cookie.value,
+              domain: cookie.domain,
+              path: cookie.path,
+              secure: cookie.secure,
+              httpOnly: cookie.httpOnly,
+              ...(cookie.expires ? { expires: cookie.expires } : {}),
+            })),
+          });
+        } finally {
+          page.close();
+        }
+        // The values themselves never touch the response or the log.
+        return json(res, 200, { imported: cookies.length, sites });
+      } catch (error) {
+        return json(res, 400, { error: (error as Error).message });
+      }
     }
 
     // ── taking the wheel ──
