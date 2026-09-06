@@ -408,14 +408,22 @@ function patchCard(
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
-      const selectedId =
-        action.bots.some((b) => b.id === state.selectedId) && state.selectedId
-          ? state.selectedId
-          : (action.bots[0]?.id ?? "");
+      const wanted = state.selectedId || readSelected();
+      const match = action.bots.find((b) => b.id === wanted);
+      const selectedId = match
+        ? match.hidden
+          ? (action.bots.find((b) => !b.hidden)?.id ?? "")
+          : wanted
+        : wanted && !action.bots.some((b) => b.id === wanted)
+          ? wanted
+          : (action.bots.find((b) => !b.hidden)?.id ?? "");
       return { ...state, bots: action.bots, selectedId };
     }
-    case "hydrateBloks":
-      return { ...state, bloks: action.bloks };
+    case "hydrateBloks": {
+      const wanted = state.selectedId || readSelected();
+      const selectedId = action.bloks.some((b) => b.id === wanted) ? wanted : state.selectedId;
+      return { ...state, bloks: action.bloks, selectedId };
+    }
     case "blokPatched": {
       const existing = state.bloks.find((b) => b.id === action.blok.id);
       return {
@@ -451,6 +459,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "configStatus":
       return { ...state, config: action.config };
     case "select":
+      writeSelected(action.id);
       return updateBot({ ...state, selectedId: action.id }, action.id, (b) => ({ ...b, unread: false }));
     // settle the card locally now; the server's own patch arrives a
     // moment later saying the same thing
@@ -461,6 +470,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "hireTeam":
       return patchCard(state, action.botId, action.messageId, { answered: "Hire the team" });
     case "botAdded":
+      writeSelected(action.bot.id);
       return {
         ...state,
         bots: [action.bot, ...state.bots],
@@ -497,14 +507,14 @@ export function reducer(state: AppState, action: Action): AppState {
           b.id === action.botId ? { ...b, hidden: true, archivedAt: Date.now() } : b,
         );
         const selectedId =
-          state.selectedId === action.botId
-            ? (moved.find((b) => !b.hidden)?.id ?? moved[0]?.id ?? "")
-            : state.selectedId;
+          state.selectedId === action.botId ? (moved.find((b) => !b.hidden)?.id ?? "") : state.selectedId;
+        if (selectedId !== state.selectedId) writeSelected(selectedId);
         return { ...state, bots: moved, selectedId };
       }
       const bots = state.bots.filter((b) => b.id !== action.botId);
       const selectedId =
-        state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? bots[0]?.id ?? "") : state.selectedId;
+        state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? "") : state.selectedId;
+      if (selectedId !== state.selectedId) writeSelected(selectedId);
       return { ...state, bots, selectedId };
     }
     case "restoreBot":
@@ -661,13 +671,30 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+function readSelected(): string {
+  try {
+    return localStorage.getItem("bloks-selected") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSelected(id: string) {
+  try {
+    if (id) localStorage.setItem("bloks-selected", id);
+    else localStorage.removeItem("bloks-selected");
+  } catch {
+    /* private mode */
+  }
+}
+
 export const initialState: AppState = {
   bots: [],
   bloks: [],
   instances: [],
   providers: [],
   config: null,
-  selectedId: "",
+  selectedId: readSelected(),
   settingsOpen: false,
   pluginsOpen: false,
   computerOpen: false,
