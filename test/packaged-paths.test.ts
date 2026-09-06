@@ -19,16 +19,28 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (relative: string) => readFileSync(join(root, relative), "utf8");
 
-/** `from: X` / `to: Y` pairs under extraResources, in order. */
+/**
+ * `from: X` / `to: Y` pairs under the top-level extraResources.
+ *
+ * A line walk rather than one regex: the platform sections carry their
+ * own indented `extraResources:`, and a pattern loose enough to span
+ * blank lines will happily run past `mac:` and pick those up too. The
+ * block ends at the first line that starts in column zero.
+ */
 function extraResources(): Array<{ from: string; to: string }> {
-  const yml = read("electron-builder.yml");
-  const block = yml.match(/^extraResources:\n((?:\s+.*\n)+?)(?=^\S)/m)?.[1] ?? "";
+  const lines = read("electron-builder.yml").split("\n");
+  const start = lines.findIndex((line) => line === "extraResources:");
+  if (start === -1) return [];
+  const block: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    block.push(line);
+  }
   const pairs: Array<{ from: string; to: string }> = [];
-  const lines = block.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const from = lines[i].match(/^\s*-\s*from:\s*(\S+)/)?.[1];
+  for (let i = 0; i < block.length; i++) {
+    const from = block[i].match(/^\s*-\s*from:\s*(\S+)/)?.[1];
     if (!from) continue;
-    const to = lines[i + 1]?.match(/^\s*to:\s*(\S+)/)?.[1];
+    const to = block[i + 1]?.match(/^\s*to:\s*(\S+)/)?.[1];
     if (to) pairs.push({ from, to });
   }
   return pairs;
@@ -72,12 +84,27 @@ test("the agent's command line ships where the server looks for it", () => {
 });
 
 test("every extraResources entry has something to copy", () => {
-  for (const entry of extraResources()) {
+  const entries = extraResources();
+  assert.ok(entries.length >= 3, "the top-level block should hold ui, server and the CLI");
+  for (const entry of entries) {
     // dist and dist-server are build outputs, absent until a build runs.
+    // Everything else in this block is checked in, and a reference to a
+    // path that is neither is the mistake worth catching.
     if (entry.from.startsWith("dist")) continue;
     assert.ok(
       existsSync(join(root, entry.from)),
       `electron-builder copies ${entry.from}, which does not exist`,
+    );
+  }
+});
+
+test("the platform sections are not read as top-level entries", () => {
+  // A looser parser here swallowed `mac:` and asserted the Swift helpers
+  // existed in a fresh checkout, which they never do: they are built.
+  for (const entry of extraResources()) {
+    assert.ok(
+      !entry.from.startsWith("electron/resources/"),
+      `${entry.from} belongs to a platform section, not the top-level block`,
     );
   }
 });
