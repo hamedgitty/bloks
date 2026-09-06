@@ -12,7 +12,7 @@ import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, formatTime, type Bot, type Message } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { OptionCard } from "./OptionCard";
-import { GalleryComponent } from "./Gallery";
+import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
 import { showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
@@ -741,7 +741,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               case "component":
                 return m.component ? (
                   <div key={m.id} className={cn("flex", fresh && "animate-receive-in")}>
-                    <GalleryComponent component={m.component as never} />
+                    <MessageComponent message={m} threadId={bot.threadId} />
                   </div>
                 ) : null;
               case "connector":

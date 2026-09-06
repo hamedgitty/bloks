@@ -39,6 +39,7 @@ const NATIVE_SOURCE = "codex.app-server";
 const MODELS = {
   default: "gpt-5.6-sol",
   options: [
+    { id: "gpt-6-astra", label: "GPT-6 Astra" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
     { id: "gpt-5.4", label: "GPT-5.4" },
@@ -69,17 +70,20 @@ const ASK_TIMEOUT_MS = 15 * 60_000;
  * wild, so the decision vocabulary depends on which one asked. */
 const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
 const QUESTION_METHOD = "item/tool/requestUserInput";
+const MCP_ELICITATION_METHOD = "mcpServer/elicitation/request";
 const EDIT_APPROVAL_METHODS = new Set(["item/fileChange/requestApproval", "applyPatchApproval"]);
 
 /** What the agent is asking to touch, in a word the transcript can show. */
-function toolOf(method: string): string {
+function toolOf(method: string, params: any): string {
   if (EDIT_APPROVAL_METHODS.has(method)) return "edit";
   if (method === QUESTION_METHOD) return "ask_user";
+  if (method === MCP_ELICITATION_METHOD) return `mcp__${params.serverName ?? "unknown"}`;
   return "shell";
 }
 
 /** One line describing the request, from whichever field carries it. */
 function summarise(params: any, fallback: string): string {
+  if (typeof params.message === "string") return params.message;
   if (typeof params.command === "string") return params.command.slice(0, 200);
   if (Array.isArray(params.questions)) {
     return params.questions
@@ -128,7 +132,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
 
-    type Answer = (behavior: string, message?: string) => void;
+    type Answer = (behavior: string, message?: string, source?: string, reply?: boolean) => void;
     interface RunningTurn {
       turnId: string;
       abort: () => void;
@@ -189,6 +193,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
 
       const asks = new Map<string, Answer>();
+      const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
       let finished = false;
 
       const abort = () => {
@@ -214,7 +219,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const finish = (ok: boolean, stopReason: string | null) => {
         if (finished) return;
         finished = true;
-        for (const answer of [...asks.values()]) answer("deny", "Bloks: the turn ended");
+        for (const answer of [...asks.values()]) answer("deny", "Bloks: the turn ended", "turn-ended");
         rpc.failPending(new Error("turn settled"));
         running.delete(threadId);
         emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
@@ -227,21 +232,61 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const params = msg.params ?? {};
         const legacy = LEGACY_APPROVAL_METHODS.has(method);
         const isQuestion = method === QUESTION_METHOD;
-        const tool = toolOf(method);
+        const isMcp = method === MCP_ELICITATION_METHOD;
+        const tool = toolOf(method, params);
+
+        // MCP tool approval is an empty form. Other elicitations need a
+        // form/URL UI; an Allow button cannot supply their requested data.
+        if (isMcp && !(
+          params.mode === "form" &&
+          params.requestedSchema?.type === "object" &&
+          Object.keys(params.requestedSchema.properties ?? {}).length === 0 &&
+          (params.requestedSchema.required ?? []).length === 0
+        )) {
+          rpc.reply(msg.id, { action: "cancel", content: null, _meta: null });
+          emit({
+            ...envelope(threadId, turnId),
+            type: "runtime.error",
+            message: "Bloks cannot display this MCP input form or URL confirmation yet. The request was cancelled.",
+          });
+          return;
+        }
+
+        const permissionReply = (allowed: boolean, source: string) =>
+          isMcp
+            ? {
+                action: allowed ? "accept" : source === "user" ? "decline" : "cancel",
+                content: allowed ? {} : null,
+                _meta: null,
+              }
+            : { decision: allowed ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
+
+        const requestId = newId();
+        const logDecision = (stage: string, behavior?: string, source?: string) =>
+          appendNative(threadId, {
+            dir: "out",
+            source: "bloks.approval",
+            msg: {
+              stage, requestId, rpcRequestId: msg.id, method, threadId, turnId,
+              providerThreadId: params.threadId, providerTurnId: params.turnId, behavior, source,
+            },
+          });
+        logDecision("opened");
 
         // fullAuto waives approvals but never questions: a question has no
         // safe automatic answer, only a less useful one.
         if (config.fullAuto && !isQuestion) {
-          return rpc.reply(msg.id, { decision: legacy ? "approved" : "accept" });
+          logDecision("resolved", "allow", "auto");
+          return rpc.reply(msg.id, permissionReply(true, "auto"));
         }
 
-        const requestId = newId();
-
-        const answer: Answer = (behavior, message) => {
+        const answer: Answer = (behavior, message, source = "user", reply = true) => {
           if (!asks.delete(requestId)) return;
+          rpcAsks.delete(msg.id);
           clearTimeout(timer);
+          logDecision("resolved", behavior, source);
 
-          if (isQuestion) {
+          if (reply && isQuestion) {
             // Each sub-question is answered by id; we put the same text
             // against all of them, since the card asked as one thing.
             const answers: Record<string, { answers: string[] }> = {};
@@ -249,11 +294,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               answers[q.id] = { answers: [message || UNANSWERED_QUESTION] };
             }
             rpc.reply(msg.id, { answers });
-          } else {
+          } else if (reply) {
             const allowed = behavior === "allow";
-            rpc.reply(msg.id, {
-              decision: allowed ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline",
-            });
+            rpc.reply(msg.id, permissionReply(allowed, source));
           }
 
           emit({
@@ -261,17 +304,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             type: "request.resolved",
             requestId,
             behavior,
-            source: "user",
+            source,
           });
         };
 
         const timer = setTimeout(() => {
-          if (isQuestion) answer("answer", UNANSWERED_QUESTION);
-          else answer("deny", UNANSWERED_PERMISSION);
+          if (isQuestion) answer("answer", UNANSWERED_QUESTION, "timeout");
+          else answer("deny", UNANSWERED_PERMISSION, "timeout");
+          if (isMcp) emit({
+            ...envelope(threadId, turnId),
+            type: "runtime.error",
+            message: "The MCP approval timed out. Bloks cancelled the request because no answer arrived in time.",
+          });
         }, ASK_TIMEOUT_MS);
         timer.unref?.();
 
         asks.set(requestId, answer);
+        rpcAsks.set(msg.id, { requestId, providerThreadId: params.threadId });
         emit({
           ...envelope(threadId, turnId),
           type: "request.opened",
@@ -290,6 +339,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const params = msg.params ?? {};
 
         switch (msg.method) {
+          case "serverRequest/resolved": {
+            const pending = rpcAsks.get(params.requestId);
+            if (pending && pending.providerThreadId === params.threadId) {
+              asks.get(pending.requestId)?.("deny", "Bloks: the request closed", "engine", false);
+            }
+            break;
+          }
           case "item/started": {
             const item = params.item ?? {};
             const label = toolLabel(item);
@@ -503,7 +559,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
         respondToRequest: async (threadId, requestId, decision) => {
           const answer = running.get(threadId)?.asks.get(requestId);
-          if (!answer) throw new Error("no such pending request");
+          if (!answer) {
+            appendNative(threadId, {
+              dir: "out",
+              source: "bloks.approval",
+              msg: { stage: "unavailable", threadId, requestId, reason: "no matching pending request" },
+            });
+            throw new Error("no such pending request");
+          }
           answer(decision.behavior, decision.message);
         },
 

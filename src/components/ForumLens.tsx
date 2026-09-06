@@ -107,6 +107,7 @@ function ThreadRow({
             {open ? (thread.root.text ?? preview(thread.root)) : preview(thread.root)}
           </span>
           <span className="mt-1 flex flex-wrap items-center gap-x-2 text-[11.5px] text-muted-foreground">
+            {thread.root.queued && <span className="text-warning">Queued</span>}
             {replies ? <span className="text-brand-ink">{replies}</span> : <span>no replies yet</span>}
             {thread.participants.length > 1 && <span>· {thread.participants.join(", ")}</span>}
             {thread.replies.length > 0 && <span>· last {when(thread.lastAt)}</span>}
@@ -146,6 +147,7 @@ function ThreadRow({
                       <div className="mt-0.5 whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground">
                         {reply.text ?? preview(reply)}
                       </div>
+                      {reply.queued && <div className="text-[11.5px] text-warning">Queued</div>}
                     </div>
                   </div>
                 );

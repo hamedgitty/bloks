@@ -38,6 +38,8 @@ export interface TeamPlan {
 }
 
 export interface Message {
+  /** The user's selection on a decision component. */
+  decisionChoice?: number;
   /** Sent while the lane was busy; drains into the next turn. */
   queued?: boolean;
   /** Emoji to whoever pressed it: "user", or an agent's id. */

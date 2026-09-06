@@ -68,6 +68,8 @@ export interface OptionCardData {
 }
 
 export interface Message {
+  /** The user's selection on a decision component; distinct from the agent's recommendation. */
+  decisionChoice?: number;
   id: string;
   role: "bot" | "user";
   /** Which agent spoke, in a room with more than one. Absent in solo
