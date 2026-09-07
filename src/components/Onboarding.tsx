@@ -275,6 +275,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       want: "Optional. Adds a second engine your agents can use.",
     },
     {
+      kind: "pi",
+      name: "Pi",
+      command: "npm i -g --ignore-scripts @earendil-works/pi-coding-agent && npm i -g pi-acp",
+      have: "Installed. Agents can run on Pi too.",
+      want: "Optional. Install Pi and pi-acp to add a tool-running engine.",
+    },
+    {
       kind: "antigravity",
       name: "Antigravity",
       command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",

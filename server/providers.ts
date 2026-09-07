@@ -329,4 +329,12 @@ export const CLI_PROVIDERS = [
     signInHint: "Connect a Gemini key below, or run gemini to sign in with Google",
     docsUrl: "https://geminicli.com/docs/",
   },
+  {
+    kind: "pi",
+    name: "Pi",
+    auth: "cli" as const,
+    keyHint: "Install with npm i -g --ignore-scripts @earendil-works/pi-coding-agent && npm i -g pi-acp",
+    signInHint: "Run pi (or pi-acp --terminal-login) and configure providers/login",
+    docsUrl: "https://pi.dev/docs/latest",
+  },
 ];

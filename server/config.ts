@@ -280,19 +280,31 @@ export function disconnectProvider(kind: string): void {
 // provider that has been connected, whose instance id defaults to the
 // driver kind. Config-file keys are injected as per-instance environment
 // so drivers see them without needing real process env vars.
+const BUILT_IN_CLI_INSTANCES: InstanceConfigMap = {
+  claude: { driver: "claudeAgent" },
+  codex: { driver: "codex" },
+  gemini_cli: { driver: "geminiCli" },
+  opencode: { driver: "opencode" },
+  grok_cli: { driver: "grokCli" },
+  antigravity: { driver: "antigravity" },
+  pi: { driver: "pi" },
+  computer: { driver: "boxAgent" },
+};
+
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const map: InstanceConfigMap =
     cfg.instances && Object.keys(cfg.instances).length
       ? { ...cfg.instances }
-      : {
-          claude: { driver: "claudeAgent" },
-          codex: { driver: "codex" },
-          gemini_cli: { driver: "geminiCli" },
-          opencode: { driver: "opencode" },
-          grok_cli: { driver: "grokCli" },
-          antigravity: { driver: "antigravity" },
-          computer: { driver: "boxAgent" },
-        };
+      : Object.fromEntries(
+          Object.entries(BUILT_IN_CLI_INSTANCES).map(([id, entry]) => [id, { ...entry }]),
+        );
+  // A build that adds a CLI has to appear for people who already have
+  // an instances map, or the new engine is a catalog row that never
+  // probes.
+  for (const [id, entry] of Object.entries(BUILT_IN_CLI_INSTANCES)) {
+    if (Object.values(map).some((e) => e.driver === entry.driver)) continue;
+    map[id] = { ...entry };
+  }
   // A connected provider that is not already spelled out in `instances`
   // gets the obvious one: instance id = driver kind.
   for (const kind of connectedProviders(cfg)) {

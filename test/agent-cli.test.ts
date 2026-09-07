@@ -251,7 +251,7 @@ describe("the credential itself", () => {
 
 describe("who gets a credential at all", () => {
   test("only an engine that runs a process, because that is how it is handed over", () => {
-    for (const kind of ["claudeAgent", "codex", "antigravity", "opencode", "grokCli"]) {
+    for (const kind of ["claudeAgent", "codex", "antigravity", "opencode", "grokCli", "pi"]) {
       assert.equal(runsAProcess(kind), true, kind);
     }
     // an HTTP engine has nowhere to put it and no shell to spend it from

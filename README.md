@@ -51,7 +51,7 @@ provider offers and do the volume; the lead keeps its costlier model for
 review. That is the whole economics of it, and it is the same reason a
 company has juniors.
 
-**Any engine.** Claude Code, Codex and Gemini CLI run as real agents that
+**Any engine.** Claude Code, Codex, Gemini CLI and Pi run as real agents that
 use tools and touch files. Gemini, Grok, Kimi, Llama, DeepSeek, Mistral,
 Groq, OpenRouter and Ollama connect as chat engines. A custom
 OpenAI-compatible host takes a base URL and one or more keys. OpenRouter has a
@@ -128,6 +128,7 @@ You need one of these before an agent can reply. Any of them works.
 | Claude Code | `npm i -g @anthropic-ai/claude-code`, then `claude` | yes |
 | Codex | `npm i -g @openai/codex`, then `codex login` | yes |
 | Gemini CLI | `npm i -g @google/gemini-cli`, then a Google sign-in or a Gemini key | yes |
+| Pi | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent && npm i -g pi-acp`, then `pi` (or `pi-acp --terminal-login`) | yes |
 | OpenRouter | Sign in from Settings, in your browser | no |
 | Gemini, Grok, Kimi, Llama, DeepSeek, Mistral, Groq | Paste a key in Settings | no |
 | Custom (OpenAI-compatible) | Paste a base URL and key(s) in Settings | no |

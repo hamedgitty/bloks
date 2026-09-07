@@ -249,6 +249,9 @@ export interface ProviderInstance {
   readonly enabled: boolean;
   readonly models: ModelCatalog;
   readonly adapter: ProviderAdapter;
+  /** Resolves when a deferred catalog probe has finished, if this engine
+   * has one. The picker loads before that, so the harness refetches. */
+  catalogReady?: Promise<void>;
   snapshot(): Promise<ProviderSnapshot>;
   /** A cheap one-shot completion, for naming and summarising. Optional:
    * not every engine has something small enough to be worth using. */

@@ -517,6 +517,12 @@ function broadcast(payload: unknown) {
   }
 }
 
+for (const inst of registry.instances()) {
+  void inst.catalogReady?.then(async () => {
+    broadcast({ kind: "instances", instances: await registry.describe() });
+  });
+}
+
 /** Whether a frame is worth waking a sleeping phone for. Deliberately
  * narrow: a turn finishing is not worth a buzz, a turn blocked on a
  * human is exactly what the phone exists for. */

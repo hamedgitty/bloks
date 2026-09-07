@@ -46,6 +46,10 @@ export function attachRpc(options: RpcOptions): RpcLink {
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   let nextId = 1;
 
+  // A closed pipe can emit EPIPE asynchronously, beyond write's try/catch.
+  // The owner handles the child's exit and settles pending requests.
+  options.stdin.on("error", () => {});
+
   const write = (frame: unknown) => {
     try {
       options.stdin.write(JSON.stringify(frame) + "\n");

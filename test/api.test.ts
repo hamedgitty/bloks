@@ -185,6 +185,8 @@ describe("the engine catalog", () => {
     assert.equal(byKind.grokCli.auth, "cli");
     assert.equal(byKind.antigravity.auth, "cli");
     assert.equal(byKind.opencode.auth, "cli");
+    assert.equal(byKind.pi.auth, "cli");
+    assert.equal(byKind.pi.agentic, true, "Pi runs tools through pi-acp");
   });
 
   test("nothing is connected in a fresh install", async () => {

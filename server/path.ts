@@ -34,10 +34,11 @@ function candidateDirs(): string[] {
     ];
   }
 
-  const fixed = [
+  const dirs = [
     "/opt/homebrew/bin", // Apple Silicon brew
     "/usr/local/bin", // Intel brew, and half the installers ever written
     join(home, ".local", "bin"),
+    join(home, ".local", "share", "pnpm"),
     join(home, ".grok", "bin"), // the xAI installer’s private prefix
     join(home, ".npm-global", "bin"),
     join(home, "Library", "pnpm"),
@@ -50,12 +51,20 @@ function candidateDirs(): string[] {
   const nvmVersions = join(home, ".nvm", "versions", "node");
   try {
     const newest = readdirSync(nvmVersions).sort().at(-1);
-    if (newest) fixed.push(join(nvmVersions, newest, "bin"));
+    if (newest) dirs.push(join(nvmVersions, newest, "bin"));
   } catch {
     /* no nvm */
   }
 
-  return fixed;
+  const prefix = process.env.npm_config_prefix || process.env.PREFIX;
+  if (prefix) dirs.push(join(prefix, "bin"));
+
+  return dirs;
+}
+
+/** True when spawn(cli) would find something, given PATH as widenPath left it. */
+export function onPath(cli: string): boolean {
+  return (process.env.PATH ?? "").split(delimiter).some((dir) => dir && existsSync(join(dir, cli)));
 }
 
 /**
