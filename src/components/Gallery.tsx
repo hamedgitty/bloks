@@ -1,12 +1,12 @@
 // The six shapes an agent can answer with instead of a paragraph.
 //
-// Everything here renders what it was handed and reads nothing. The server
-// has already checked the shape (server/components.ts), so these are about
+// The server has already checked the shape (server/components.ts), so these are about
 // looking right rather than about being defensive, with one exception: a
 // chart still has to survive every bar being zero, or the same, or
 // negative, because those are real answers and dividing by them is not.
 //
-// They are deliberately quiet. An answer that arrives as a component
+// Decision choices are submitted by MessageComponent; the renderers only
+// receive the selection and a callback. An answer that arrives as a component
 // should read as part of the conversation, not as a dashboard that landed
 // in it, so the type sizes and the borders are the ones the chat already
 // uses.
@@ -16,6 +16,8 @@ import CircleDot from "lucide-react/dist/esm/icons/circle-dot.mjs";
 import Quote from "lucide-react/dist/esm/icons/quote.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
+import { useRef, useState } from "react";
+import { api, useStore, type Message } from "@/state/store";
 
 interface Bar {
   label: string;
@@ -51,14 +53,55 @@ function Frame({ title, note, children }: { title?: string; note?: string; child
   );
 }
 
-export function GalleryComponent({ component }: { component: Component }) {
+export function MessageComponent({ message, threadId }: { message: Message; threadId: string }) {
+  const { dispatch } = useStore();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sending = useRef(false);
+  const choose = async (choice: number) => {
+    if (sending.current || message.decisionChoice !== undefined) return;
+    sending.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await api(`/api/threads/${threadId}/messages/${message.id}/choose`, {
+        method: "POST", body: JSON.stringify({ choice }),
+      });
+      dispatch({ type: "messagePatched", threadId, message: result.message });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The answer could not be sent.");
+    } finally {
+      sending.current = false;
+      setPending(false);
+    }
+  };
+  if (!message.component) return null;
+  return (
+    <div className="min-w-0">
+      <GalleryComponent
+        component={message.component as Component}
+        onChoose={choose}
+        chosen={message.decisionChoice}
+        pending={pending}
+      />
+      {error && <p role="alert" className="mt-1 text-[12px] text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+export function GalleryComponent({ component, onChoose, chosen, pending }: {
+  component: Component;
+  onChoose?: (index: number) => void;
+  chosen?: number;
+  pending?: boolean;
+}) {
   switch (component.kind) {
     case "chart":
       return <Chart component={component} />;
     case "table":
       return <Table component={component} />;
     case "decision":
-      return <Decision component={component} />;
+      return <Decision component={component} onChoose={onChoose} chosen={chosen} pending={pending} />;
     case "steps":
       return <Steps component={component} />;
     case "quote":
@@ -141,35 +184,47 @@ function Table({ component }: { component: Extract<Component, { kind: "table" }>
   );
 }
 
-function Decision({ component }: { component: Extract<Component, { kind: "decision" }> }) {
+function Decision({ component, onChoose, chosen, pending }: {
+  component: Extract<Component, { kind: "decision" }>;
+  onChoose?: (index: number) => void;
+  chosen?: number;
+  pending?: boolean;
+}) {
   return (
     <Frame title={component.question}>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5" aria-busy={pending}>
         {component.options.map((option, i) => (
-          <div
+          <button
+            type="button"
             key={`${option.label}-${i}`}
+            onClick={() => onChoose?.(i)}
+            disabled={!onChoose || pending || chosen !== undefined}
+            aria-pressed={chosen === i}
             className={cn(
-              "flex items-start gap-2.5 rounded-xl border px-2.5 py-2",
-              option.pick ? "border-brand/40 bg-brand-soft/40" : "bg-background",
+              "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors enabled:hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+              chosen === i ? "border-brand/40 bg-brand-soft/40" : "bg-background",
             )}
           >
             <span
               className={cn(
                 "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-                option.pick ? "border-brand-ink bg-brand-ink text-brand-foreground" : "border-muted-foreground/40",
+                chosen === i ? "border-brand-ink bg-brand-ink text-brand-foreground" : "border-muted-foreground/40",
               )}
             >
-              {option.pick && <Check size={10} />}
+              {chosen === i && <Check size={10} />}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-[13px] text-foreground">{option.label}</span>
+              <span className="block break-words text-[13px] text-foreground [overflow-wrap:anywhere]">
+                {option.label}
+                {option.pick && <span className="ml-2 text-[11px] text-brand-ink">Recommended</span>}
+              </span>
               {option.detail && (
-                <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">
+                <span className="mt-0.5 block break-words text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
                   {option.detail}
                 </span>
               )}
             </span>
-          </div>
+          </button>
         ))}
       </div>
       {component.because && (

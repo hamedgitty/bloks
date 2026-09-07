@@ -32,7 +32,7 @@ import { OptionCard } from "./OptionCard";
 import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
-import { GalleryComponent } from "./Gallery";
+import { MessageComponent } from "./Gallery";
 import MoreHorizontal from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 import {
   DropdownMenu,
@@ -141,6 +141,12 @@ function RoomMessage({
           <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[14.5px] leading-relaxed text-primary-foreground">
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark />}
             {message.text}
+            {message.queued && (
+              <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70" role="status">
+                <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
+                Queued, sends when this turn finishes
+              </div>
+            )}
           </div>
           <Reactions
             reactions={message.reactions}
@@ -208,7 +214,7 @@ function RoomMessage({
           </div>
         )}
         {message.kind === "component" && message.component ? (
-          <GalleryComponent component={message.component as never} />
+          <MessageComponent message={message} threadId={roomId} />
         ) : message.kind === "options" ? (
           // an agent can need you mid-room; the ask has to be answerable here
           <OptionCard botId={speaker.id} roomId={roomId} message={message} />
