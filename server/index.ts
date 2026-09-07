@@ -775,6 +775,19 @@ bus.subscribe((event: RuntimeEvent) => {
         askMessageByRequest.set(event.requestId, message.id);
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
+        // A turn that began on a phone should not stall on a card the
+        // person cannot see. The card goes to the chat it came from, and
+        // the next message from that chat is read as the answer.
+        const chatId = telegramLive.get(bot.id);
+        if (chatId !== undefined && cfg.telegram?.token) {
+          telegramAsks.set(chatId, {
+            requestId: event.requestId,
+            botId: bot.id,
+            options: message.card?.options ?? [],
+            permission,
+          });
+          void telegram.send(cfg.telegram.token, chatId, telegram.describeCard(message.card ?? {})).catch(() => {});
+        }
       }
       // the chip turns amber the moment a lane needs a human
       broadcast({ kind: "bot", bot: clientBot(bot) });
@@ -2714,6 +2727,14 @@ const routineTimer = setInterval(() => void runDueRoutines().catch(() => {}), 30
 // typing gets one answer rather than one per message.
 const telegramRefused = new Set<number>();
 let telegramRunning = false;
+/** Agents currently answering a phone, so a card they raise can follow
+ * the conversation there instead of waiting on a screen nobody is at. */
+const telegramLive = new Map<string, number>();
+/** Cards forwarded to a chat and not yet answered, by chat. */
+const telegramAsks = new Map<
+  number,
+  { requestId: string; botId: string; options: string[]; permission: boolean }
+>();
 
 async function telegramRound(): Promise<void> {
   const state = cfg.telegram;
@@ -2747,11 +2768,39 @@ async function telegramRound(): Promise<void> {
       continue;
     }
     if (decision.kind !== "deliver") continue;
+    // A card is waiting on this chat: this message is its answer, not a
+    // new request. Free text answers a question; an approval needs one
+    // of its options, so anything else asks again rather than guessing.
+    const waiting = telegramAsks.get(decision.chatId);
+    if (waiting) {
+      const read = telegram.interpretAnswer(decision.text, waiting.options);
+      if (waiting.permission && !read.option) {
+        await telegram
+          .send(state.token, decision.chatId, "Reply 1 or 2, or yes / no.")
+          .catch(() => {});
+        continue;
+      }
+      telegramAsks.delete(decision.chatId);
+      const asked = store.bot(waiting.botId);
+      const instance = asked ? registry.get(asked.modelSelection.instanceId) : null;
+      const askThread = askThreadByRequest.get(waiting.requestId) ?? asked?.threadId ?? "";
+      const behavior = waiting.permission
+        ? read.option === waiting.options[0] ? "allow" : "deny"
+        : "answer";
+      await instance?.adapter
+        .respondToRequest(askThread, waiting.requestId, {
+          behavior,
+          message: waiting.permission ? undefined : (read.option ?? read.free),
+        })
+        .catch(() => {});
+      await telegram.send(state.token, decision.chatId, "Sent.").catch(() => {});
+      continue;
+    }
     const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
     if (!bot) continue;
     // The reply goes back to the chat that asked, and the exchange lands
     // in the agent's own thread like any other conversation.
-    const answer = await answerOverTelegram(bot.id, decision.text).catch(
+    const answer = await answerOverTelegram(bot.id, decision.text, decision.chatId).catch(
       (error: unknown) => `Could not answer: ${(error as Error).message}`,
     );
     await telegram.send(state.token, decision.chatId, answer).catch(() => {});
@@ -2768,13 +2817,21 @@ async function telegramRound(): Promise<void> {
  * how a turn that ran tools and then answered comes back as the answer
  * rather than as the running commentary.
  */
-async function answerOverTelegram(botId: string, text: string): Promise<string> {
+async function answerOverTelegram(botId: string, text: string, chatId: number): Promise<string> {
   const bot = store.bot(botId);
   if (!bot) throw new Error("that agent is gone");
   const laneId = bot.activeTaskId ?? bot.threadId;
   const before = store.messagesFor(laneId).length;
-  await startTurn(botId, text);
-  await waitForIdle(botId, 240_000);
+  telegramLive.set(botId, chatId);
+  try {
+    await startTurn(botId, text);
+    // Longer than an ordinary wait, because a card forwarded to the
+    // phone is answered on the phone's schedule, not the app's.
+    await waitForIdle(botId, 20 * 60_000);
+  } finally {
+    telegramLive.delete(botId);
+    telegramAsks.delete(chatId);
+  }
   const said = store
     .messagesFor(laneId)
     .slice(before)

@@ -160,3 +160,39 @@ export function nextOffset(current: number, messages: Incoming[]): number {
 export function cleanToken(value: unknown): string | undefined {
   return clamp(value, 120);
 }
+
+/**
+ * Read an answer typed on a phone against the choices a card offered.
+ *
+ * A number picks by position. yes/ok/allow/approve pick the first
+ * option and no/deny/decline the second, because that is what every
+ * approval card and every workflow gate offers in that order. Anything
+ * else is the answer itself, which is right for a question and wrong
+ * for an approval, so the caller decides whether free text is allowed.
+ */
+export function interpretAnswer(text: string, options: string[]): { option?: string; free?: string } {
+  const said = text.trim();
+  const n = Number(said);
+  if (Number.isInteger(n) && n >= 1 && n <= options.length) return { option: options[n - 1] };
+  const lower = said.toLowerCase();
+  const exact = options.find((o) => o.toLowerCase() === lower);
+  if (exact) return { option: exact };
+  if (/^(y|yes|ok|okay|sure|allow|approve|go|do it)\b/.test(lower) && options[0]) return { option: options[0] };
+  if (/^(n|no|nope|deny|decline|stop|don'?t)\b/.test(lower) && options[1]) return { option: options[1] };
+  return { free: said };
+}
+
+/** The card, as a message a phone can answer. */
+export function describeCard(card: { title?: string; subtitle?: string; options?: string[] }): string {
+  const lines = [card.title || "Your agent needs you"];
+  if (card.subtitle) lines.push(card.subtitle.slice(0, 600));
+  const options = card.options ?? [];
+  if (options.length) {
+    lines.push("");
+    options.forEach((o, i) => lines.push(`${i + 1}. ${o}`));
+    lines.push("", "Reply with a number, or yes / no.");
+  } else {
+    lines.push("", "Reply with your answer.");
+  }
+  return lines.join("\n");
+}

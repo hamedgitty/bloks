@@ -2,7 +2,15 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { decide, nextOffset, pairingWord, parseUpdates, type TelegramState } from "../server/telegram.ts";
+import {
+  decide,
+  describeCard,
+  interpretAnswer,
+  nextOffset,
+  pairingWord,
+  parseUpdates,
+  type TelegramState,
+} from "../server/telegram.ts";
 
 const message = (over: Partial<{ chatId: number; text: string; updateId: number }> = {}) => ({
   chatId: 42,
@@ -105,5 +113,38 @@ describe("offsets and pairing words", () => {
     const word = pairingWord();
     assert.equal(word.length, 8);
     assert.doesNotMatch(word, /[oil01]/, "0, O, 1, l and i are too easy to mistype");
+  });
+});
+
+describe("answering a card from a phone", () => {
+  const options = ["Allow", "Deny"];
+
+  test("a number picks by position", () => {
+    assert.deepEqual(interpretAnswer("2", options), { option: "Deny" });
+    assert.deepEqual(interpretAnswer(" 1 ", options), { option: "Allow" });
+  });
+
+  test("yes and no map to the first and second option", () => {
+    for (const yes of ["yes", "Yes please", "ok", "allow", "approve it"]) {
+      assert.deepEqual(interpretAnswer(yes, options), { option: "Allow" }, yes);
+    }
+    for (const no of ["no", "No thanks", "deny", "decline", "don't"]) {
+      assert.deepEqual(interpretAnswer(no, options), { option: "Deny" }, no);
+    }
+  });
+
+  test("the option's own words work", () => {
+    assert.deepEqual(interpretAnswer("deny", ["Approve", "Deny"]), { option: "Deny" });
+  });
+
+  test("an out of range number or other text is free text", () => {
+    assert.deepEqual(interpretAnswer("9", options), { free: "9" });
+    assert.deepEqual(interpretAnswer("Friday works", []), { free: "Friday works" });
+  });
+
+  test("a card reads as numbered choices", () => {
+    const text = describeCard({ title: "Approval needed", subtitle: "rm -rf build", options });
+    assert.match(text, /^Approval needed\nrm -rf build\n\n1\. Allow\n2\. Deny/);
+    assert.match(text, /yes \/ no/);
   });
 });
