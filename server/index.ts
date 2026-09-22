@@ -123,6 +123,7 @@ import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./id
 import { assemble as assembleActivity, blockedOn } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
+import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
 import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
@@ -382,6 +383,18 @@ const routines = new RoutineStore();
 routines.settleOrphanRuns();
 const usage = new UsageStore();
 const teamLibrary = new TeamLibrary();
+// A model server already running here is one nobody should have to go
+// and connect by hand. Looked for once, never written over an entry that
+// exists, and a miss costs one refused connection. See local-models.ts.
+{
+  const found = await probeOllama();
+  if (shouldAdopt(cfg, found)) {
+    saveConfig({ providers: { ...(cfg.providers ?? {}), ollama: { url: `${OLLAMA_URL}/v1` } } });
+    Object.assign(cfg, loadConfig());
+    console.log(`[bloks] found Ollama running here with ${found.models.length} model(s); connected it`);
+  }
+}
+
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 
