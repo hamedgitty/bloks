@@ -190,7 +190,50 @@ export function describe(rule: Rule): string {
  * and a gateway: the thing an empty policy replaces here is a person
  * deciding, not an open door.
  */
+/**
+ * Tools that ask the person something rather than doing something.
+ *
+ * Our own three arrive already labelled as questions. An engine's native
+ * one does not: Claude Code asks permission to *use* AskUserQuestion, so
+ * it reaches us shaped exactly like a request to run a command, and
+ * everything downstream treats it as one. That is how somebody ends up
+ * writing "always allow AskUserQuestion", after which every question is
+ * answered by the rule and the agent can never ask anything again.
+ *
+ * A rule cannot answer a question. Allowing one only means the asking may
+ * proceed, which is what was going to happen anyway, and denying one
+ * refuses a conversation rather than an action. So these are named here
+ * and kept out of the rule system at every level.
+ */
+const QUESTION_TOOLS = new Set(
+  [
+    "ask_user",
+    "askuserquestion",
+    "request_secret",
+    "request_connection",
+    "requestuserinput",
+  ].map((name) => name.toLowerCase()),
+);
+
+export function isQuestionTool(tool: string | undefined): boolean {
+  const name = (tool ?? "").trim().toLowerCase();
+  if (!name) return false;
+  if (QUESTION_TOOLS.has(name)) return true;
+  // An engine may prefix its own: mcp__bloks__ask_user, and Codex sends
+  // the method path. Match the last segment rather than listing every
+  // spelling a driver might invent.
+  const tail = name.split(/[/_]/).filter(Boolean).slice(-2).join("_");
+  return QUESTION_TOOLS.has(tail) || QUESTION_TOOLS.has(name.split("/").pop() ?? "");
+}
+
 export function decide(rules: Rule[], ask: Ask): Decision {
+  // Before any rule is read. A rule that already matches a question tool
+  // was written before this existed, and the person who wrote it lost the
+  // ability to be asked anything; ignoring it here gives that back on
+  // upgrade rather than requiring a trip to Settings.
+  if (isQuestionTool(ask.tool)) {
+    return { verdict: "ask", because: "a question is for you to answer, not a rule" };
+  }
   const live = rules.filter((rule) => rule.enabled);
   const denies = live.filter((rule) => rule.effect === "deny");
   const allows = live.filter((rule) => rule.effect === "allow");

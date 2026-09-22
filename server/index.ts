@@ -142,6 +142,7 @@ import {
   cleanRule,
   decide,
   describe as describeRule,
+  isQuestionTool,
   Wheel,
   heldRefusal,
   pausedMessage,
@@ -656,12 +657,19 @@ bus.subscribe((event: RuntimeEvent) => {
         break;
       }
       const permission = event.requestType === "permission";
+      // Whether this is really a question, whatever the engine called it.
+      const asking = !permission || isQuestionTool(event.tool);
 
       // Rules first, and only what they do not cover reaches a person.
       // Questions are never governed: an agent asking its owner something
       // is not an action, and a rule that answered it would be inventing
       // an answer. See server/policy.ts.
-      if (permission && event.requestId) {
+      // !asking rather than permission: a question the engine labelled a
+      // permission must not be governed by a rule, nor waved through by
+      // a mode. Auto mode exists to stop the interruptions that are
+      // really approvals; it was never meant to answer the agent's
+      // questions on your behalf.
+      if (!asking && event.requestId) {
         // Somebody at the wheel outranks any rule, including an allow: the
         // point of taking over is that what the agent was about to do is
         // no longer what should happen.
@@ -762,13 +770,18 @@ bus.subscribe((event: RuntimeEvent) => {
         role: "bot",
         kind: "options",
         card: {
-          title: permission ? "Approval needed" : "Your agent has a question",
+          // An engine's own question tool arrives labelled a permission,
+          // because what it literally asks is whether it may ask. Read
+          // it as the question it is, or the card says "Approval needed"
+          // over a sentence ending in a question mark.
+          title: asking ? "Your agent has a question" : "Approval needed",
           subtitle: event.summary,
-          options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
+          options: event.choices?.length ? event.choices : asking ? [] : ["Allow", "Deny"],
           requestId: event.requestId,
-          // the tool rides along so the card can offer to remember the
-          // answer as a rule
-          ...(permission && event.tool ? { tool: event.tool } : {}),
+          // The tool rides along so the card can offer to remember the
+          // answer as a rule. Never for a question: a rule cannot answer
+          // one, it can only stop it being asked.
+          ...(!asking && event.tool ? { tool: event.tool } : {}),
         },
       });
       if (event.requestId) {
@@ -6267,6 +6280,15 @@ const server = createServer(async (req, res) => {
       if ("error" in cleaned) return json(res, 400, { error: cleaned.error });
       if (cleaned.rule.botId && !store.bot(cleaned.rule.botId)) {
         return json(res, 400, { error: "no such agent" });
+      }
+      // A rule cannot answer a question, and one that matches a question
+      // tool only takes away the agent's ability to ask. Refused here as
+      // well as ignored in decide(), so the screen says why rather than
+      // accepting a rule that would silently do nothing.
+      if (cleaned.rule.field === "tool" && isQuestionTool(String(cleaned.rule.value))) {
+        return json(res, 400, {
+          error: "that tool asks you a question rather than doing something, so a rule cannot answer it",
+        });
       }
       const rule = policy.add(cleaned.rule, Date.now());
       if (!rule) return json(res, 409, { error: "that is as many rules as one workspace holds" });
