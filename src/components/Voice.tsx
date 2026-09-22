@@ -21,6 +21,7 @@ import { AgentAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { routeSpokenToRoom } from "@/lib/spokenRouting";
+import { thisComputer } from "@/lib/thisComputer";
 
 interface VoiceOption {
   provider: "elevenlabs" | "openai";
@@ -52,7 +53,7 @@ export async function claimCall(targetId: string): Promise<
   try {
     const r = await api("/api/calls/claim", {
       method: "POST",
-      body: JSON.stringify({ targetId, device: "this Mac" }),
+      body: JSON.stringify({ targetId, device: thisComputer() }),
     });
     const token: string = r.token;
     const timer = setInterval(() => {

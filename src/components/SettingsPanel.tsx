@@ -28,6 +28,7 @@ import { Switch } from "@/components/ui/switch";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { InfoTip } from "@/components/ui/info-tip";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 function Field({
   label,
@@ -984,7 +985,7 @@ function IdentityCard({ bot }: { bot: Bot }) {
       </div>
       <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
         {bot.name} signs what it does in the record, so afterwards you can tell what it really did
-        from what something merely says it did. The private half of the key never leaves this Mac.
+        from what something merely says it did. The private half of the key never leaves {thisComputer()}.
       </div>
       <button
         onClick={() => setFull((v) => !v)}

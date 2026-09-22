@@ -32,6 +32,7 @@ import { RoutinesSection } from "./RoutinesSection";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -214,7 +215,7 @@ function LocalVmCard({ bot }: { bot: Bot }) {
       ) : status !== null && !status.ready ? (
         <div className="mt-3 rounded-2xl border bg-card p-4">
           <div className="text-[12.5px] leading-relaxed text-muted-foreground">
-            The Local VM is a Cua Linux desktop in a container on this Mac. Free, and separate
+            The Local VM is a Cua Linux desktop in a container on {thisComputer()}. Free, and separate
             from your own desktop.
           </div>
           <Button

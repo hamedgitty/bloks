@@ -11,6 +11,7 @@ import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -100,7 +101,7 @@ export function SecretCard({ botId, message }: { botId: string; message: Message
             </div>
             <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground/80">
               <ShieldCheck size={11} />
-              Stored on this Mac, handed to your agent's tools, never shown in chat.
+              Stored on {thisComputer()}, handed to your agent's tools, never shown in chat.
             </div>
             {error && <div className="mt-1 text-[11.5px] text-destructive">{error}</div>}
           </>

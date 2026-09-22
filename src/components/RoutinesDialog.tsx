@@ -22,6 +22,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -236,7 +237,7 @@ export function RoutinesDialog({
               New routine
             </Button>
             <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground/70">
-              Routines run while Bloks is open. If this Mac is asleep at the scheduled time the
+              Routines run while Bloks is open. If {thisComputer()} is asleep at the scheduled time the
               run is skipped rather than piling up.
             </div>
           </div>

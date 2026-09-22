@@ -14,6 +14,7 @@ import Cloud from "lucide-react/dist/esm/icons/cloud.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { thisComputer } from "@/lib/thisComputer";
 
 const CLOUD_KEY = /^blok_live_[0-9a-f]{32}$/;
 
@@ -87,7 +88,7 @@ export function CloudSection() {
             <span className="text-[13.5px] font-semibold text-foreground">Bloks Cloud</span>
           </div>
           <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-            Reaches this Mac from your phone anywhere, not just on this network, and pushes
+            Reaches {thisComputer()} from your phone anywhere, not just on this network, and pushes
             you the moment an agent needs an answer. Your agents keep running here, and the
             keys never leave this machine.
           </div>
@@ -118,7 +119,7 @@ export function CloudSection() {
         <div className="mt-3 text-[12px] leading-relaxed text-muted-foreground">
           {status.spaceId ? (
             <>
-              Active. Pair a phone above and it will reach this Mac from anywhere.
+              Active. Pair a phone above and it will reach {thisComputer()} from anywhere.
               <span className="ml-1 font-mono text-[11.5px] text-muted-foreground/70">
                 {status.spaceId}
               </span>
@@ -167,12 +168,12 @@ export function CloudSection() {
             {phones > 0 ? (
               <>
                 {phones === 1 ? "Your phone is paired and works" : `Your ${phones} phones are paired and work`}{" "}
-                on this network. Cloud is what lets {phones === 1 ? "it" : "them"} reach this Mac
+                on this network. Cloud is what lets {phones === 1 ? "it" : "them"} reach {thisComputer()}
                 from anywhere, and buzz you when an agent needs an answer.
               </>
             ) : (
               <>
-                Pair a phone above and it will reach this Mac on this network. Cloud is what
+                Pair a phone above and it will reach {thisComputer()} on this network. Cloud is what
                 lets it reach you from anywhere.
               </>
             )}

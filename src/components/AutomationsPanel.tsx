@@ -34,6 +34,7 @@ import { Switch } from "@/components/ui/switch";
 import { JobBoard } from "./JobBoard";
 import { Workflows } from "./Workflows";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -782,7 +783,7 @@ function RoutineDetails({
     routine.runsOn === "cloud"
       ? "cloud computer"
       : routine.runsOn === "local"
-        ? "this Mac"
+        ? thisComputer()
         : routine.runsOn === "off"
           ? "no computer"
           : null;

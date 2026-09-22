@@ -18,6 +18,7 @@ import { setSetupDone, track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
 import { recommendedFor, WORK_TYPES } from "@/lib/recommend";
 import { AGENT_TEMPLATES } from "@/lib/agentTemplates";
+import { thisComputer } from "@/lib/thisComputer";
 
 type InstanceRow = {
   instanceId: string;
@@ -356,7 +357,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               Let's check your engines
             </h1>
             <p className="mt-1 text-center text-[13px] leading-relaxed text-muted-foreground">
-              Agents run on the AI tools already installed on this Mac. Everything stays local.
+              Agents run on the AI tools already installed on {thisComputer()}. Everything stays local.
             </p>
             <div className="mt-5 flex flex-col gap-2">
               {!instances ? (
@@ -533,7 +534,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <PermissionRow
                 icon={<Monitor size={17} />}
                 title="Screen preview"
-                detail="Shows this Mac's screen in the Computer panel when an agent works locally."
+                detail={`Shows ${thisComputer()}'s screen in the Computer panel when an agent works locally.`}
                 status={perms?.screen}
                 onEnable={() =>
                   navigator.mediaDevices

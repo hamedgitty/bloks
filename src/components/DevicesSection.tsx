@@ -13,6 +13,7 @@ import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { usePageVisible } from "@/lib/pageVisible";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -126,7 +127,7 @@ export function DevicesSection() {
         <div>
           <div className="text-[13.5px] font-semibold text-foreground">Phones and devices</div>
           <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-            Lets the Bloks app on your phone reach this Mac over your network.
+            Lets the Bloks app on your phone reach {thisComputer()} over your network.
           </div>
         </div>
         <Switch aria-label="Phones and devices" checked={status?.enabled ?? false} onCheckedChange={setEnabled} />

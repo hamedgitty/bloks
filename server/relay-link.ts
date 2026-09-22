@@ -28,6 +28,13 @@ import type { IncomingMessage } from "node:http";
 import { deviceKey, open, peek, seal, type RelayRequest } from "./relay-crypto.ts";
 import { pairedDevices } from "./pairing.ts";
 
+/** What to call the machine this harness runs on. Bloks ships on
+ * Windows and Linux too, where "the Mac" reads as a copy-paste slip
+ * rather than a description. */
+function thisMachine(): string {
+  return process.platform === "darwin" ? "this Mac" : process.platform === "win32" ? "this PC" : "this computer";
+}
+
 /** Proof that a replayed request came from this process, so the HTTP
  * layer can trust the device attribution without a bearer token it does
  * not have. Regenerated every boot and never written down. */
@@ -231,7 +238,7 @@ export class RelayLink {
         if (res.status === 401 || res.status === 403) {
           this.setState({
             connected: false,
-            problem: "The relay is not accepting this Mac yet. Retrying.",
+            problem: `The relay is not accepting ${thisMachine()} yet. Retrying.`,
           });
           this.retry = RETRY_MAX_MS;
           this.schedule();
@@ -364,7 +371,7 @@ export class RelayLink {
       }
       this.answer(id, res.status, body, replyKey, device.id);
     } catch {
-      this.answer(id, 502, { error: "the Mac could not answer that" }, replyKey, device.id);
+      this.answer(id, 502, { error: `${thisMachine()} could not answer that` }, replyKey, device.id);
     }
   }
 

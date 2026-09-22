@@ -11,6 +11,7 @@ import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.mjs";
 import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 interface Entry {
   seq: number;
@@ -141,7 +142,7 @@ export function RecordPanel() {
         <div className="mt-2 rounded-xl bg-muted/50 px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground">
           This proves nobody quietly changed one line, and that a signed entry
           is really from the agent it names. It does not stop someone who can
-          write to this Mac from rewriting the whole file: the agents' keys sit
+          write to {thisComputer()} from rewriting the whole file: the agents' keys sit
           next to it, and whoever can reach one can usually reach the other.
         </div>
       </div>

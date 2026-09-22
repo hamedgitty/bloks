@@ -24,6 +24,7 @@ import { InfoTip } from "@/components/ui/info-tip";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 const THEME_OPTIONS: Array<{ value: Theme; label: string; icon: React.ReactNode }> = [
   { value: "light", label: "Light", icon: <Sun size={14} /> },
@@ -273,7 +274,7 @@ function AboutYou() {
         )}
       </div>
       <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-        Optional context every agent gets. Stays on this Mac.
+        Optional context every agent gets. Stays on {thisComputer()}.
       </div>
       <Textarea
         value={value}
@@ -406,7 +407,7 @@ function QuickAskShortcut() {
     <div className="mt-4 rounded-2xl border bg-card p-4">
       <div className="text-[13.5px] font-semibold text-foreground">Quick ask</div>
       <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-        A shortcut that works anywhere on this Mac. It opens one line over whatever
+        A shortcut that works anywhere on {thisComputer()}. It opens one line over whatever
         you are doing, sends it to an agent, and gets out of the way.
       </div>
       <div className="mt-3 flex items-center gap-2">
@@ -494,7 +495,7 @@ export function AppSettingsPanel() {
                 <div className="mt-4 rounded-2xl border bg-card p-4">
                   <div className="text-[13.5px] font-semibold text-foreground">Appearance</div>
                   <div className="mt-0.5 text-[12.5px] text-muted-foreground">
-                    How Bloks looks on this Mac
+                    How Bloks looks on {thisComputer()}
                   </div>
                   <div className="mt-3 flex gap-1 rounded-xl bg-muted p-1">
                     {THEME_OPTIONS.map((option) => (
@@ -530,7 +531,7 @@ export function AppSettingsPanel() {
               <div className="mt-4 rounded-2xl border bg-card p-4">
                 <div className="text-[13.5px] font-semibold text-foreground">Apps and computers</div>
                 <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-                  Shared by all agents. Keys stay on this Mac.
+                  Shared by all agents. Keys stay on {thisComputer()}.
                 </div>
                 <div className="mt-4 flex flex-col gap-4">
                   <ApiKeyRow

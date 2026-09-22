@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 export interface RoutineRun {
   id: string;
@@ -191,7 +192,7 @@ export function RoutinesSection({
       )}
 
       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground/70">
-        Routines run while Bloks is open. If this Mac is asleep at the scheduled time the run is
+        Routines run while Bloks is open. If {thisComputer()} is asleep at the scheduled time the run is
         skipped rather than piling up.
       </div>
     </div>

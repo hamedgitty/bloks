@@ -15,6 +15,7 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -145,7 +146,7 @@ export function LocalVmSection() {
         </Button>
       </div>
       <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-        A Cua Linux desktop in a container on this Mac. Free, isolated from your own desktop, and
+        A Cua Linux desktop in a container on {thisComputer()}. Free, isolated from your own desktop, and
         recycled after 8 quiet hours; files in its workspace survive.
       </div>
 
@@ -249,7 +250,7 @@ export function LocalVmSection() {
           </Step>
 
           <div className="mt-1 rounded-xl bg-muted/50 px-3 py-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
-            The VM gets 4GB, 2 CPUs, and a viewer only this Mac can open. One host folder is
+            The VM gets 4GB, 2 CPUs, and a viewer only {thisComputer()} can open. One host folder is
             mounted as its workspace; browser sign-ins and files there survive recreation.
             <div className="mt-1 text-muted-foreground/70">
               Workspace: {s.workspace} · Driver {s.driverVersion}
