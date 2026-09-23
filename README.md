@@ -15,6 +15,7 @@
   <a href="LICENSE"><img alt="FSL-1.1-MIT licence" src="https://img.shields.io/badge/licence-FSL--1.1--MIT-3bc76b"></a>
   <a href="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS" src="https://img.shields.io/badge/macOS-desktop-6b7280">
+  <a href="https://apps.apple.com/app/bloks-ai-agents/id6804453451"><img alt="iPhone app on the App Store" src="https://img.shields.io/badge/iPhone-App_Store-6b7280"></a>
   <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-6b7280">
 </p>
 
@@ -89,15 +90,16 @@ log, each entry hash-chained to the one before it and signed by the agent
 it is about. There is a button that walks the chain and reports
 tampering.
 
-**Your phone can answer.** The iOS app reaches your own Mac over a sealed
-relay: approvals, workflow gates, and a screen showing what every agent
-is doing right now and what the day has cost. It is built and waiting on
-App Store review; the site takes an email for the day it lands.
+**Your phone can answer.** The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451) reaches your own
+Mac over a sealed relay: approvals, workflow gates, and a screen showing
+what every agent is doing right now and what the day has cost. Pair it by
+reading a six digit code off your Mac.
 
 ## Install
 
 Download it from [bloks.dev](https://bloks.dev), or from the
-[Releases](https://github.com/hamedgitty/bloks/releases) page. macOS
+[Releases](https://github.com/hamedgitty/bloks/releases) page. The iPhone
+app is [on the App Store](https://apps.apple.com/app/bloks-ai-agents/id6804453451). macOS
 builds are signed and notarized, so they open without a Gatekeeper
 warning. Windows and Linux builds are unsigned, which on Windows means
 SmartScreen warns on first run.
