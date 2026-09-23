@@ -113,7 +113,7 @@ const PUBLISHED_TOOLS = [
   {
     name: "request_secret",
     description:
-      "Ask the user for an API key or other secret value via a secure field in the chat. The value is stored on their Mac and handed to your shell tools as an environment variable on your next turn; it never appears in the conversation. After calling this, wrap up your turn: the task resumes automatically once they save it.",
+      "Ask the user for an API key or other secret value via a secure field in the chat. The value is stored on their computer and handed to your shell tools as an environment variable on your next turn; it never appears in the conversation. After calling this, wrap up your turn: the task resumes automatically once they save it.",
     inputSchema: {
       type: "object",
       properties: {

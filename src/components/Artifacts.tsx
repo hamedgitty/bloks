@@ -23,6 +23,7 @@ import { type Message } from "@/state/store";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { modKey } from "@/lib/thisComputer";
 
 type ArtifactMeta = NonNullable<Message["artifact"]>;
 
@@ -397,7 +398,7 @@ export function ArtifactViewer({
                           className="w-full resize-none rounded-lg border border-input bg-background px-2 py-1.5 text-[12px] outline-none"
                         />
                         <div className="mt-1 text-[10.5px] text-muted-foreground">
-                          Cmd-Enter saves, Escape cancels
+                          {modKey()}Enter saves, Escape cancels
                         </div>
                       </div>
                     )}

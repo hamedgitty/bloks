@@ -22,7 +22,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
-import { thisComputer } from "@/lib/thisComputer";
+import { ThisComputer, thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -464,7 +464,7 @@ function CreateForm({
             >
               <option value="">Wherever {target.name} runs</option>
               <option value="cloud">Cloud computer</option>
-              <option value="local">This Mac</option>
+              <option value="local">{ThisComputer()}</option>
               <option value="off">No computer</option>
             </select>
           </label>

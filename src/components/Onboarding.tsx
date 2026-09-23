@@ -18,7 +18,7 @@ import { setSetupDone, track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
 import { recommendedFor, WORK_TYPES } from "@/lib/recommend";
 import { AGENT_TEMPLATES } from "@/lib/agentTemplates";
-import { thisComputer } from "@/lib/thisComputer";
+import { ThisComputer, thisComputer } from "@/lib/thisComputer";
 
 type InstanceRow = {
   instanceId: string;
@@ -329,7 +329,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               Welcome back
             </h1>
             <p className="mt-1 text-center text-[13px] leading-relaxed text-muted-foreground">
-              This Mac already has a Bloks workspace: {prior.agents}{" "}
+              {ThisComputer()} already has a Bloks workspace: {prior.agents}{" "}
               {prior.agents === 1 ? "agent" : "agents"}
               {prior.rooms > 0 && `, ${prior.rooms} ${prior.rooms === 1 ? "room" : "rooms"}`} and{" "}
               {prior.messages.toLocaleString()}{" "}

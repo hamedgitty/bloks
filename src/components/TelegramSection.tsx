@@ -12,6 +12,7 @@ import { api, useStore } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { YourComputer } from "@/lib/thisComputer";
 
 interface Status {
   configured: boolean;
@@ -57,7 +58,7 @@ export function TelegramSection() {
         <div className="min-w-0 pr-3">
           <div className="text-[13.5px] font-semibold text-foreground">Telegram</div>
           <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-            Message an agent from any phone. Your Mac asks Telegram for new messages; nothing new
+            Message an agent from any phone. {YourComputer()} asks Telegram for new messages; nothing new
             listens on your network.
           </div>
         </div>

@@ -22,6 +22,7 @@ import {
   type Attachment,
 } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
+import { modKey } from "@/lib/thisComputer";
 
 /**
  * Grows with its content up to a ceiling, then scrolls.
@@ -427,7 +428,7 @@ export function Composer({
             recording
               ? "Listening…"
               : bot.busy
-                ? `${bot.name} is working. Enter queues, ⌘Enter interrupts…`
+                ? `${bot.name} is working. Enter queues, ${modKey()}Enter interrupts…`
                 : `Message ${bot.name}`
           }
           className="w-full min-w-0 resize-none self-center bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"

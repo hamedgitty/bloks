@@ -186,7 +186,7 @@ const STARTUP_FAILURE_PAGE =
       `<div style="text-align:center;max-width:380px">` +
       `<div style="font-size:42px;color:#7c8aff">▦</div>` +
       `<h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the Bloks server</h2>` +
-      `<p style="color:#8f8f99;line-height:1.5">Something else is using its ports. Quit and reopen Bloks. If it keeps happening, restart your Mac.</p>` +
+      `<p style="color:#8f8f99;line-height:1.5">Something else is using its ports. Quit and reopen Bloks. If it keeps happening, restart your ${process.platform === "darwin" ? "Mac" : "computer"}.</p>` +
       `</div></body>`,
   );
 

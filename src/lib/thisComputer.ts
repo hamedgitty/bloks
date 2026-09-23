@@ -38,3 +38,19 @@ export function deviceWord(platform?: string): string {
   if (/win/i.test(said)) return "PC";
   return "computer";
 }
+
+/** Sentence-start forms: "This PC already has a workspace." */
+export function ThisComputer(platform?: string): string {
+  return `This ${deviceWord(platform)}`;
+}
+export function YourComputer(platform?: string): string {
+  return `Your ${deviceWord(platform)}`;
+}
+
+/**
+ * The modifier a shortcut hint should name. A Windows keyboard has no
+ * Command key, and "⌘Enter" there reads as a shortcut that does not exist.
+ */
+export function modKey(platform?: string): string {
+  return deviceWord(platform) === "Mac" ? "⌘" : "Ctrl+";
+}

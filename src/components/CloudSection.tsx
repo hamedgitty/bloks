@@ -128,7 +128,7 @@ export function CloudSection() {
             "Activated. Waiting for the relay to answer."
           )}
           <div className="mt-2">
-            Paste a different key to move Cloud to another Mac. The one it was on stops
+            Paste a different key to move Cloud to another computer. The one it was on stops
             reaching your phone when you do.
           </div>
           <div className="mt-2 flex gap-2">

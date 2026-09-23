@@ -1646,7 +1646,7 @@ async function startTurn(
             : vmTurn
               ? " You have your own Linux desktop in a private VM on this machine. Reach for the computer tools whenever seeing or clicking beats describing: browsing, signing in, checking how something looks. The desktop is yours alone; files under ~/workspace survive the VM being recycled, everything else is disposable."
               : integrations.localComputer
-                ? " The computer tools work this person's own Mac, so treat it as someone else's desk. Look before you touch: take a screenshot or read the current state first. Prefer naming what you want to act on over clicking at coordinates, since a coordinate that has shifted clicks something you did not intend. When an action would be hard to undo, ask first."
+                ? " The computer tools work this person's own computer, so treat it as someone else's desk. Look before you touch: take a screenshot or read the current state first. Prefer naming what you want to act on over clicking at coordinates, since a coordinate that has shifted clicks something you did not intend. When an action would be hard to undo, ask first."
                 : integrations.sandbox
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : "") +
