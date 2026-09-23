@@ -187,11 +187,11 @@ export function CloudSection() {
             >
               Get Bloks Cloud
             </a>
-            <span className="text-[12px] text-muted-foreground">$15 a month</span>
+            <span className="text-[12px] text-muted-foreground">$5 a month or $45 a year</span>
           </div>
           <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground/80">
-            Already bought it? Your key was on the page shown right after paying, and nowhere
-            else. Paste it above.
+            Already bought it? Your key was on the page shown right after paying, and in the
+            email that came with it. Paste it above.
           </div>
         </div>
       )}
