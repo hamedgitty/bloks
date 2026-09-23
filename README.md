@@ -149,6 +149,85 @@ agent.
   <img alt="The engines list in Settings" src="docs/screenshots/engines.png" width="820">
 </p>
 
+## Pair your iPhone
+
+The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451) is a window onto Bloks running on your computer:
+the same agents, their chats, and approval cards you answer with a tap.
+Nothing runs on the phone, so it is paired with the computer once. It
+takes about a minute, with both on the same wifi. It works the same from a
+Mac, a Windows PC or Linux; the iPhone app calls it "your Mac" either way.
+
+### On your computer
+
+**1. Open Settings at the bottom of the sidebar and choose Devices.**
+
+<img src="docs/screenshots/pairing/desktop-settings.png" alt="Bloks Settings open on the Devices tab" width="720">
+
+**2. Switch on Phones and devices, then press Restart now.** Bloks only
+starts listening on your network when it starts, so this is needed once. If
+your computer asks whether Bloks may accept incoming connections, allow it.
+
+<img src="docs/screenshots/pairing/desktop-switch-on.png" alt="Phones and devices switched on, with a Restart now button" width="528">
+
+**3. When Bloks is back, press Pair a phone.**
+
+<img src="docs/screenshots/pairing/desktop-pair-button.png" alt="The Pair a phone button" width="528">
+
+**4. Bloks shows a QR code, a six digit code, and the address for the phone.**
+The code lasts five minutes and works once. If it runs out, press Pair a
+phone again.
+
+<img src="docs/screenshots/pairing/desktop-code.png" alt="A pairing QR code, a six digit code and the address to enter on the phone" width="528">
+
+### On your iPhone
+
+**5. Install [Bloks from the App Store](https://apps.apple.com/app/bloks-ai-agents/id6804453451) and open it.** Until it is
+paired it says so.
+
+**6. The quick way:** point the Camera at the QR code on your computer and tap
+the Bloks banner. Bloks opens and asks to pair; tap **Pair this device**.
+
+**7. Or by hand:** tap the round button at the top right, then **Settings**,
+then **Mac connection**. Enter the address and port your computer shows, type
+the six digit code, and tap **Pair this device**. The **Scan the QR on your
+Mac** row there scans from inside the app if the Camera route did not work.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/pairing/phone-not-paired.png" alt="Not paired yet" width="200"><br><sub>5. Not paired yet</sub></td>
+    <td align="center"><img src="docs/screenshots/pairing/phone-scan-confirm.png" alt="Pair with your computer after scanning" width="200"><br><sub>6. After scanning the QR</sub></td>
+    <td align="center"><img src="docs/screenshots/pairing/phone-menu.png" alt="The menu with Settings" width="200"><br><sub>7. The menu, top right</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/pairing/phone-settings.png" alt="Settings with Mac connection" width="200"><br><sub>7. Settings, Mac connection</sub></td>
+    <td align="center"><img src="docs/screenshots/pairing/phone-code.png" alt="Address, port and code entered" width="200"><br><sub>7. Address, port and code</sub></td>
+    <td align="center"><img src="docs/screenshots/pairing/phone-connected.png" alt="Connected" width="200"><br><sub>8. Connected</sub></td>
+  </tr>
+</table>
+
+**8. That is it.** Settings says Connected, your agents are on the phone, and
+the computer lists the phone under Paired, where the bin icon unpairs it.
+
+<p>
+  <img src="docs/screenshots/pairing/phone-agents.png" alt="The agents on the phone" width="200">
+  &nbsp;
+  <img src="docs/screenshots/pairing/desktop-paired.png" alt="The paired phone listed on the computer" width="480">
+</p>
+
+### If it does not connect
+
+- **"Not paired with your Mac yet":** there is no pairing, or it was undone on
+  the computer. Start a new code.
+- **The code was refused:** codes last five minutes, work once, and a few wrong
+  guesses close the window. Press Pair a phone for a new one.
+- **The phone cannot reach the computer:** both need the same wifi, not a guest
+  network, and no VPN on either side. Check you pressed Restart now.
+- **Firewall:** if you declined the incoming connections prompt, allow Bloks in
+  your firewall settings (on a Mac, System Settings, Network, Firewall).
+- **It worked yesterday:** the computer's address can change when it rejoins
+  the network. Enter the new one under Mac connection and tap Apply and
+  reconnect.
+
 ## Where your data lives
 
 Everything is under `~/.bloks`:
