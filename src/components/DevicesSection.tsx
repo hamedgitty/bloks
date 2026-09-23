@@ -25,6 +25,10 @@ async function api(path: string, init?: RequestInit): Promise<any> {
 interface PairStatus {
   enabled: boolean;
   pending: boolean;
+  /** The switch and what the server is actually listening on disagree,
+   * because listening is decided at start. Until a restart, a phone on
+   * the network cannot reach this machine whatever the switch says. */
+  restartRequired?: boolean;
   addresses: string[];
   devices: Array<{ id: string; name: string; pairedAt: number }>;
 }
@@ -139,7 +143,28 @@ export function DevicesSection() {
         </div>
       )}
 
-      {status?.enabled && (
+      {/* The switch alone does not open the door: the server decides what
+          it listens on when it starts. Without saying so, somebody turns
+          this on, starts a code, and watches their phone fail to connect
+          for no reason they can see. So the code waits for the restart. */}
+      {status?.restartRequired && (
+        <div className="mt-3 flex flex-wrap items-center gap-2.5 rounded-lg bg-warning/10 px-3 py-2 text-[12.5px] text-foreground">
+          <span className="min-w-0 flex-1">
+            {status.enabled
+              ? `Restart Bloks to finish turning this on. Until then your phone cannot reach ${thisComputer()}.`
+              : "Restart Bloks to stop listening on your network."}
+          </span>
+          {window.bloks?.relaunch ? (
+            <Button size="sm" variant="secondary" onClick={() => void window.bloks?.relaunch?.()}>
+              Restart now
+            </Button>
+          ) : (
+            <span className="text-muted-foreground">Quit Bloks and open it again.</span>
+          )}
+        </div>
+      )}
+
+      {status?.enabled && !status.restartRequired && (
         <div className="mt-4">
           {window_ && secondsLeft > 0 ? (
             <div className="flex items-start gap-4">

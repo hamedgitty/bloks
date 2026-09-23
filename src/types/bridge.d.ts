@@ -52,6 +52,8 @@ declare global {
       appVersion(): Promise<string>;
       /** One frame of updater state: idle, checking, downloading (with
        * percent), current, ready (with version), error, or dev. */
+      /** Quit and start again. For settings that only apply at start. */
+      relaunch?(): Promise<void>;
       updateState(): Promise<UpdateState>;
       updateCheck(): Promise<UpdateState>;
       /** Quits and hands over to the installer; only sane on "ready". */

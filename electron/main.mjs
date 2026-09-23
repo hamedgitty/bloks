@@ -700,6 +700,16 @@ ipcMain.handle("update:install", () => {
   electronUpdater.autoUpdater.quitAndInstall();
 });
 
+// Some settings only take effect at start, pairing above all: widening
+// what the server listens on is deliberately not a live change. This is
+// how the renderer offers to do the restart instead of asking somebody to
+// find Quit and then find the app again. relaunch() schedules the new
+// process; quit() then runs the normal teardown, daemon and all.
+ipcMain.handle("app:relaunch", () => {
+  app.relaunch();
+  app.quit();
+});
+
 ipcMain.handle("shortcut:apply", (_event, accelerator) =>
   applyQuickShortcut(typeof accelerator === "string" && accelerator ? accelerator : null),
 );

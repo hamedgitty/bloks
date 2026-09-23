@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld("bloks", {
   updateState: () => ipcRenderer.invoke("update:state"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
   updateInstall: () => ipcRenderer.invoke("update:install"),
+  relaunch: () => ipcRenderer.invoke("app:relaunch"),
   onUpdateState: subscription("update:state"),
   shortcutApply: (accelerator) => ipcRenderer.invoke("shortcut:apply", accelerator),
   quickHide: () => ipcRenderer.invoke("quick:hide"),
