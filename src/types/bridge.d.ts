@@ -14,6 +14,14 @@ export interface UpdateState {
   percent?: number;
 }
 
+export interface CuaPermissions {
+  available: boolean;
+  owner?: "bloks" | "cua-driver";
+  accessibility?: boolean;
+  screenRecording?: boolean;
+  reason?: string;
+}
+
 declare global {
   interface Window {
     bloks?: {
@@ -79,10 +87,15 @@ declare global {
       permRequestMic(): Promise<boolean>;
       /** Opens the matching System Settings privacy pane. macOS never
        * re-prompts once denied, so this is the only route back. */
-      permOpenSettings(pane: "mic" | "screen" | "speech"): Promise<void>;
+      permOpenSettings(pane: "mic" | "screen" | "speech" | "accessibility"): Promise<void>;
       /** Attempts a capture so macOS registers the app in the Screen
        * Recording pane, which is a precondition for it appearing there. */
       permRequestScreen(): Promise<string>;
+      /** Computer use's two grants, read for Bloks itself when it runs the
+       * driver ("bloks"), or for a separately installed CuaDriver. */
+      cuaPermissions?(): Promise<CuaPermissions>;
+      /** Asks macOS for both on Bloks' behalf, then reports again. */
+      cuaRequestPermissions?(): Promise<CuaPermissions>;
     };
   }
 }

@@ -25,6 +25,7 @@ import Power from "lucide-react/dist/esm/icons/power.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { useStore, type Bot } from "@/state/store";
+import type { CuaPermissions } from "@/types/bridge";
 import { usePageVisible } from "@/lib/pageVisible";
 import { DesktopOverlay } from "./DesktopOverlay";
 import { ApiKeyRow } from "./ApiKeys";
@@ -469,6 +470,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           </div>
         )}
 
+        {phase === "local" && <ComputerPermissions visible={visible} />}
+
         {/* Cloud-only actions */}
         {phase === "ready" && (
           <div className="mt-3 flex gap-2">
@@ -577,6 +580,79 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
  * agent would have asked permission for is refused, and it is told to
  * wait rather than to find another way.
  */
+/**
+ * The two macOS grants computer use needs, for Bloks itself. Shown only
+ * when something is missing: a panel that is working has nothing to say
+ * about permissions. Checked on a timer while open, because the person
+ * grants them in System Settings, outside this window.
+ */
+function ComputerPermissions({ visible }: { visible: boolean }) {
+  const [perms, setPerms] = useState<CuaPermissions | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [asked, setAsked] = useState(false);
+
+  useEffect(() => {
+    if (!visible || !window.bloks?.cuaPermissions) return;
+    let alive = true;
+    const check = () =>
+      window.bloks
+        ?.cuaPermissions?.()
+        .then((next) => alive && setPerms(next))
+        .catch(() => {});
+    void check();
+    const timer = setInterval(check, 4000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [visible]);
+
+  // Only Bloks' own grants are Bloks' to ask for. A developer's separate
+  // CuaDriver install manages its own.
+  if (!perms?.available || perms.owner !== "bloks") return null;
+  const missing = [
+    !perms.accessibility && { label: "Accessibility", pane: "accessibility" as const },
+    !perms.screenRecording && { label: "Screen Recording", pane: "screen" as const },
+  ].filter(Boolean) as Array<{ label: string; pane: "accessibility" | "screen" }>;
+  if (!missing.length) return null;
+
+  const ask = async () => {
+    setAsking(true);
+    const next = await window.bloks?.cuaRequestPermissions?.().catch(() => null);
+    if (next) setPerms(next);
+    setAsked(true);
+    setAsking(false);
+  };
+
+  return (
+    <div className="mt-3 rounded-2xl border bg-card p-4">
+      <div className="text-[13px] font-medium text-foreground">Computer use needs permission</div>
+      <div className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
+        To see and use {thisComputer()}, Bloks needs {missing.map((m) => m.label).join(" and ")}.
+        {asked && " If no prompt appeared, macOS has already asked once. Turn Bloks on in System Settings."}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!asked && (
+          <Button size="sm" onClick={ask} disabled={asking}>
+            {asking && <Loader2 size={14} className="animate-spin" />}
+            Grant access
+          </Button>
+        )}
+        {missing.map((m) => (
+          <Button
+            key={m.pane}
+            size="sm"
+            variant="secondary"
+            onClick={() => window.bloks?.permOpenSettings(m.pane)}
+          >
+            Open {m.label} settings
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TakeTheWheel({ bot }: { bot: Bot }) {
   // The hold rides on the agent, so this reads it rather than polling a
   // second endpoint every five seconds: taking it broadcasts the agent,

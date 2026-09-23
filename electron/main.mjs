@@ -570,6 +570,7 @@ ipcMain.handle("perm:open-settings", (_event, pane) => {
   const panes = {
     mic: "Privacy_Microphone",
     screen: "Privacy_ScreenCapture",
+    accessibility: "Privacy_Accessibility",
     speech: "Privacy_SpeechRecognition",
   };
   return shell.openExternal(

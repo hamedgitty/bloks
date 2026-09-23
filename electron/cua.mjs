@@ -80,9 +80,9 @@ function socketAnswers(socketPath) {
 /** Where the SDK is imported from. The packaged app carries its own small
  * node_modules for it in Resources (scripts/stage-cua.mjs says why), since
  * the asar holds none; from source it is the ordinary installed package. */
-function sdkEntry() {
-  if (!app.isPackaged) return "@trycua/cua-driver/embedded";
-  const entry = path.join(process.resourcesPath, "cua", "node_modules", "@trycua", "cua-driver", "dist", "embedded.js");
+function sdkEntry(sub = "embedded") {
+  if (!app.isPackaged) return sub === "index" ? "@trycua/cua-driver" : `@trycua/cua-driver/${sub}`;
+  const entry = path.join(process.resourcesPath, "cua", "node_modules", "@trycua", "cua-driver", "dist", `${sub}.js`);
   return pathToFileURL(entry).href;
 }
 
@@ -165,7 +165,32 @@ function publish(next) {
   return descriptor;
 }
 
-export function cuaPermissionsStatus() {
+/** Whether this process owns the daemon, and so owns the grants: the
+ * packaged app always does, and a development build can be told to. */
+const ownsDaemon = () => app.isPackaged || process.env.BLOKS_CUA_EMBEDDED === "1";
+
+/**
+ * Accessibility and Screen Recording, as macOS sees them for computer use.
+ *
+ * When Bloks starts the daemon itself, the grants that matter are Bloks'
+ * own, and only a probe run inside this process reads those: asking the
+ * cua-driver binary instead reports on the standalone CuaDriver app,
+ * which here is usually not installed, so it only ever said "unknown".
+ * The SDK's probe runs in the importing process and never prompts.
+ */
+export async function cuaPermissionsStatus() {
+  if (process.platform !== "darwin") return { available: false };
+  if (ownsDaemon()) {
+    try {
+      const { currentMacOsPermissionStatus } = await import(sdkEntry("index"));
+      const { accessibility, screenRecording } = currentMacOsPermissionStatus();
+      return { available: true, owner: "bloks", accessibility, screenRecording };
+    } catch (error) {
+      return { available: false, reason: `permission check failed: ${error?.message ?? error}` };
+    }
+  }
+
+  // Attached to a developer's own CuaDriver.app: its grants, its answer.
   const binary = resolveDriverBinary();
   if (!binary) return { available: false };
 
@@ -175,7 +200,7 @@ export function cuaPermissionsStatus() {
     timeout: 5000,
   });
   try {
-    return { available: true, ...JSON.parse(result.stdout) };
+    return { available: true, owner: "cua-driver", ...JSON.parse(result.stdout) };
   } catch {
     // An older binary, or one that printed something unparseable. The raw
     // text still tells a person more than a bare failure would.
@@ -195,7 +220,25 @@ export async function stopCua() {
   host = null;
 }
 
+/**
+ * Ask macOS for both grants on Bloks' behalf. The SDK makes the request
+ * from this process, so the prompt and the System Settings entry both
+ * name Bloks. macOS only ever asks once; after a refusal the answer is
+ * System Settings, which the panel links to.
+ */
+async function cuaRequestPermissions() {
+  if (process.platform !== "darwin" || !ownsDaemon()) return cuaPermissionsStatus();
+  try {
+    const { requestMacOsPermissions } = await import(sdkEntry("index"));
+    requestMacOsPermissions();
+  } catch {
+    // Report what macOS believes now rather than failing the click.
+  }
+  return cuaPermissionsStatus();
+}
+
 export function registerCuaIpc() {
   ipcMain.handle("cua:connection", () => descriptor);
   ipcMain.handle("cua:permissions", () => cuaPermissionsStatus());
+  ipcMain.handle("cua:request-permissions", () => cuaRequestPermissions());
 }

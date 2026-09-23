@@ -56,4 +56,6 @@ contextBridge.exposeInMainWorld("bloks", {
   permRequestMic: () => ipcRenderer.invoke("perm:request-mic"),
   permRequestScreen: () => ipcRenderer.invoke("perm:request-screen"),
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
+  cuaPermissions: () => ipcRenderer.invoke("cua:permissions"),
+  cuaRequestPermissions: () => ipcRenderer.invoke("cua:request-permissions"),
 });
