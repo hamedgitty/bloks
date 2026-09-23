@@ -180,6 +180,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // updates must not stall on approval cards when cwd points elsewhere
       for (const dir of turn.extraDirs ?? []) argv.push("--add-dir", dir);
 
+      // A shared room: other people are reading. --restricted drops the
+      // tools that run code and ignores the owner's settings files,
+      // --strict-mcp-config keeps the owner's own MCP servers out, and
+      // --tools names exactly what is left: nothing, or file tools that
+      // --restricted confines to the room's own folder. The two env
+      // switches below keep the owner's CLAUDE.md and auto memory out of
+      // the session, which --restricted alone does not promise.
+      if (turn.shared) {
+        argv.push("--restricted", "--tools", turn.shared.tools === "desk" ? "Read,Write,Edit,Glob,Grep" : "");
+        // and only the MCP servers this turn names: never the owner's own,
+        // which --restricted would otherwise still load
+        argv.push("--strict-mcp-config");
+      }
+
       // The persona travels as a file, never as an argument. argv is
       // readable by every process on the machine through ps, and the
       // system prompt carries whatever the user wrote about themselves
@@ -313,6 +327,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // workspace as itself rather than only describe what should happen
         ...(turn.env ?? {}),
       };
+      if (turn.shared) {
+        env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
+        env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+      }
       // A subscription login gets billed as pay-as-you-go if a key leaks
       // through, and the two CLAUDECODE markers would make the child think
       // it is a nested session of whatever spawned this server.

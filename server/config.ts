@@ -102,7 +102,8 @@ export interface AppConfig {
   setupDoneAt?: number;
   /** Shared context every agent receives, not a secret, echoed back to
    * the app so the settings field can prefill. */
-  profile?: { about?: string };
+  /** `name` is how members of a shared room see the owner. */
+  profile?: { about?: string; name?: string };
   /** How a lane is kept inside the model's window. Off means the fold
    * happens once at a threshold; on means one message is absorbed after
    * each turn instead. See the note in server/context.ts for what that
@@ -120,7 +121,7 @@ export interface AppConfig {
   /** Off unless somebody turned it on. Holds the devices allowed to
    * reach this server from the network (see server/pairing.ts); each
    * one is a name and a token digest, never a token. */
-  remote?: { enabled?: boolean; devices?: unknown[] };
+  remote?: { enabled?: boolean; devices?: unknown[]; memberDevices?: unknown[] };
   instances?: InstanceConfigMap;
 }
 

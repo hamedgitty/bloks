@@ -25,7 +25,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
-import { deviceKey, open, peek, seal, type RelayRequest } from "./relay-crypto.ts";
+import { deviceKey, inviteKey, open, peek, seal, type Envelope, type RelayRequest } from "./relay-crypto.ts";
 import { pairedDevices } from "./pairing.ts";
 
 /** What to call the machine this harness runs on. Bloks ships on
@@ -41,6 +41,25 @@ function thisMachine(): string {
 const INTERNAL = randomBytes(32).toString("hex");
 const RELAY_HEADER = "x-bloks-relay";
 const DEVICE_HEADER = "x-bloks-relay-device";
+const INVITE_HEADER = "x-bloks-relay-invite";
+
+/** The invite a replayed request speaks for: somebody who has opened an
+ * invite link but has no device yet. Null for anything else, and for
+ * anything that did not come from this file. */
+export function relayInviteFor(req: IncomingMessage): string | null {
+  if (req.headers[RELAY_HEADER] !== INTERNAL) return null;
+  const id = req.headers[INVITE_HEADER];
+  return typeof id === "string" && id.startsWith("inv_") ? id : null;
+}
+
+/** The only requests an invite envelope may carry: asking to join, and
+ * asking how that is going. Anything else under an invite key is refused
+ * here, before it reaches the server at all. */
+const INVITE_ROUTES = new Set(["POST /api/member/claim", "GET /api/member/claim"]);
+
+/** Who a wake should reach: everybody (a string) or the phones registered
+ * by the named relay client digests. */
+export type Wake = string | { reason: string; clients: string[] };
 
 /** The device id a replayed relay request speaks for, or null for
  * anything that did not come from this file. */
@@ -102,6 +121,15 @@ export class RelayLink {
   /** Told whenever the link's state changes, so the UI can follow. */
   private readonly onChange: (state: RelayState) => void;
 
+  /** How a member sees a frame (server/member-access.ts), or null when
+   * they may not see it at all. Owner devices get every frame as is. Set
+   * by the server, which knows the rooms. */
+  memberFrame: (frame: unknown, personId: string) => unknown | null = () => null;
+
+  /** The digest of an open invite's secret, for its envelope key, or null
+   * when there is no such invite or it has closed. */
+  inviteSecret: (inviteId: string) => string | null = () => null;
+
   constructor(port: number, onChange: (state: RelayState) => void = () => {}) {
     this.port = port;
     this.onChange = onChange;
@@ -149,13 +177,22 @@ export class RelayLink {
    * key and the relay is a dumb fan-out. A phone silently drops envelopes
    * addressed to anyone else.
    */
-  publish(frame: unknown, wake?: string) {
+  publish(frame: unknown, wake?: Wake) {
     if (!this.config || !this.state.connected) return;
     const devices = pairedDevices();
     // No devices still posts an empty batch: /space/agent/events touches
     // the link before it reads the body, so this is the heartbeat that
     // keeps the relay from reaping a healthy but deviceless space.
-    const frames = devices.map((d) => seal(deviceKey(d.hash, "mac-to-phone"), d.id, frame));
+    //
+    // A member's device gets the frame as member-access.ts shapes it for
+    // them, or not at all: it is sealed only for devices that may read
+    // it, so nothing about another room is even delivered as ciphertext.
+    const frames: string[] = [];
+    for (const d of devices) {
+      const shown = d.personId ? this.memberFrame(frame, d.personId) : frame;
+      if (shown === null || shown === undefined) continue;
+      frames.push(seal(deviceKey(d.hash, "mac-to-phone"), d.id, shown));
+    }
     void fetch(`${this.config.url}/space/agent/events`, {
       method: "POST",
       headers: this.headers(),
@@ -173,6 +210,59 @@ export class RelayLink {
         this.pushFailures++;
         if (this.pushFailures >= 4) this.controller?.abort();
       });
+  }
+
+  /** A relay token of its own for one member, so removing them later does
+   * not mean re-pairing anybody else. Null when the relay is not set up,
+   * is unreachable, or does not know this route yet. */
+  async mintClient(): Promise<string | null> {
+    if (!this.config) return null;
+    try {
+      const res = await fetch(`${this.config.url}/space/agent/clients`, {
+        method: "POST",
+        headers: this.headers(),
+        body: "{}",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status !== 201) return null;
+      const body = (await res.json()) as { clientToken?: unknown };
+      return typeof body.clientToken === "string" ? body.clientToken : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Takes a member's relay token away, which also hangs up their stream. */
+  async revokeClient(tokenHash: string): Promise<boolean> {
+    if (!this.config) return false;
+    try {
+      const res = await fetch(`${this.config.url}/space/agent/clients`, {
+        method: "DELETE",
+        headers: this.headers(),
+        body: JSON.stringify({ tokenHash }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Which plan this space is on, per the licence the relay last checked.
+   * Null when it could not be asked. */
+  async plan(): Promise<"cloud" | "team" | null> {
+    if (!this.config) return null;
+    try {
+      const res = await fetch(`${this.config.url}/space/agent/plan`, {
+        headers: this.headers(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { plan?: unknown };
+      return body.plan === "team" ? "team" : body.plan === "cloud" ? "cloud" : null;
+    } catch {
+      return null;
+    }
   }
 
   private headers(): Record<string, string> {
@@ -314,6 +404,7 @@ export class RelayLink {
    */
   private async serve(id: string, payload: string) {
     const envelope = peek(payload);
+    if (envelope?.d.startsWith("inv_")) return void this.serveInvite(id, envelope);
     const device = envelope ? pairedDevices().find((d) => d.id === envelope.d) : null;
     // An envelope for an unknown device is a revoked phone or a forgery,
     // and both get the same nothing.
@@ -372,6 +463,60 @@ export class RelayLink {
       this.answer(id, res.status, body, replyKey, device.id);
     } catch {
       this.answer(id, 502, { error: `${thisMachine()} could not answer that` }, replyKey, device.id);
+    }
+  }
+
+  /**
+   * A request from somebody holding an invite link and nothing else. Keyed
+   * from the invite's secret, limited to asking to join and asking how it
+   * is going, and replayed as that invite rather than as any device.
+   */
+  private async serveInvite(id: string, envelope: Envelope) {
+    const inviteId = envelope.d;
+    const secretHash = this.inviteSecret(inviteId);
+    if (!secretHash) return void this.answer(id, 401, null, null, null);
+    const readKey = inviteKey(secretHash, "phone-to-mac");
+    const replyKey = inviteKey(secretHash, "mac-to-phone");
+    const request = open(readKey, envelope) as RelayRequest | null;
+    if (!request || typeof request.method !== "string" || typeof request.path !== "string") {
+      return void this.answer(id, 400, null, replyKey, inviteId);
+    }
+    if (!INVITE_ROUTES.has(`${request.method} ${request.path}`)) {
+      return void this.answer(id, 404, { error: "no such route" }, replyKey, inviteId);
+    }
+    if (request.method !== "GET") {
+      const fresh =
+        typeof request.ts === "number" &&
+        Math.abs(Date.now() - request.ts) <= REPLAY_WINDOW_MS &&
+        typeof request.nonce === "string" &&
+        request.nonce.length > 0;
+      if (!fresh || this.seenNonces.has(request.nonce!)) {
+        return void this.answer(id, 409, { error: "stale or replayed request" }, replyKey, inviteId);
+      }
+      this.rememberNonce(request.nonce!);
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.port}${request.path}`, {
+        method: request.method,
+        headers: {
+          "content-type": "application/json",
+          origin: `http://127.0.0.1:${this.port}`,
+          [RELAY_HEADER]: INTERNAL,
+          [INVITE_HEADER]: inviteId,
+        },
+        body: request.body === undefined ? undefined : JSON.stringify(request.body),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const text = await res.text();
+      let body: unknown = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = text;
+      }
+      this.answer(id, res.status, body, replyKey, inviteId);
+    } catch {
+      this.answer(id, 502, { error: `${thisMachine()} could not answer that` }, replyKey, inviteId);
     }
   }
 

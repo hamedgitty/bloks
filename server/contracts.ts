@@ -169,6 +169,17 @@ export interface SendTurnInput {
       headers?: Record<string, string>;
     }>;
   };
+  /**
+   * Set when the turn is in a room the owner has shared with other
+   * people. The driver must switch off every tool it has beyond what is
+   * named here, and must not load the owner's own memory or settings:
+   * the people reading the replies are not the owner. Only drivers the
+   * harness lists as able to do this ever receive it (sharedSafe in
+   * server/index.ts); the rest are kept out of shared rooms.
+   *
+   * "conversation": no tools at all. "desk": read and write files in cwd.
+   */
+  shared?: { tools: "conversation" | "desk" };
   cwd?: string;
   /** Folders the agent may edit without asking, beyond its cwd. The
    * harness grants its own workspace (memory lives there) so an agent

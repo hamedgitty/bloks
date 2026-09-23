@@ -38,6 +38,21 @@ export function keyFromToken(token: string, direction: Direction): Buffer {
   return deviceKey(createHash("sha256").update(token).digest("hex"), direction);
 }
 
+/**
+ * The key for talking about one invite, before the joiner has a device.
+ *
+ * Same scheme as a device, from a different root: the digest of the
+ * invite link's secret, which only the link's holder and this machine
+ * know. Its own info string, so an invite key and a device key can never
+ * coincide even if the two digests somehow did. Envelopes sealed with it
+ * carry `inv_<id>` where a device id would go.
+ */
+export function inviteKey(secretHash: string, direction: Direction): Buffer {
+  return Buffer.from(
+    hkdfSync("sha256", Buffer.from(secretHash, "hex"), Buffer.alloc(0), `bloks-invite-v1:${direction}`, 32),
+  );
+}
+
 /** What travels through the relay. The device id is deliberately in the
  * clear: the Mac needs to know which key to try, and an opaque random id
  * tells an eavesdropper nothing it did not already know from routing. */

@@ -31,6 +31,11 @@ export interface PairedDevice {
   /** sha256 of the bearer token, hex. Never the token. */
   hash: string;
   pairedAt: number;
+  /** Set on a device that belongs to a member of a shared room rather
+   * than to the owner. Its presence is the whole difference: an owner's
+   * device reaches the remote surface, a member's reaches only what
+   * server/member-access.ts allows for their rooms. */
+  personId?: string;
 }
 
 /** What the Mac shows on its pairing screen. Carries no secrets. */
@@ -92,10 +97,51 @@ function isDevice(value: unknown): value is PairedDevice {
   );
 }
 
-/** The paired devices, digests and all. The relay link needs the digest
- * to derive each device's key; nothing else outside this file does. */
+/** The paired devices, digests and all, the owner's and members' both.
+ * The relay link needs the digest to derive each device's key; nothing
+ * else outside this file does. */
 export function pairedDevices(): PairedDevice[] {
-  return devices();
+  return [...devices(), ...memberDevices()];
+}
+
+/** Members' devices live in their own list: they do not count against the
+ * owner's sixteen, and never appear on the owner's device screen, where a
+ * guest's phone would read as one of the owner's own. */
+const MAX_MEMBER_DEVICES = 200;
+
+export function memberDevices(): PairedDevice[] {
+  const list = loadConfig().remote?.memberDevices;
+  return Array.isArray(list)
+    ? list.filter((d): d is PairedDevice => isDevice(d) && typeof d.personId === "string")
+    : [];
+}
+
+function putMemberDevices(list: PairedDevice[]): void {
+  saveConfig({ remote: { ...loadConfig().remote, memberDevices: list } });
+}
+
+/** Registers a member's device from the digest of a token the device made
+ * itself: the token never crosses to this machine, only its hash. */
+export function addMemberDevice(personId: string, name: unknown, hash: string): PairedDevice {
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("not a token digest");
+  const device: PairedDevice = {
+    id: randomBytes(8).toString("hex"),
+    name: cleanName(name),
+    hash,
+    pairedAt: Date.now(),
+    personId,
+  };
+  putMemberDevices([...memberDevices(), device].slice(-MAX_MEMBER_DEVICES));
+  return device;
+}
+
+/** Every device a person has, gone at once. Returns how many. */
+export function revokePerson(personId: string): number {
+  const list = memberDevices();
+  const left = list.filter((d) => d.personId !== personId);
+  if (left.length !== list.length) putMemberDevices(left);
+  for (const d of list) if (d.personId === personId) seen.delete(d.id);
+  return list.length - left.length;
 }
 
 function devices(): PairedDevice[] {
@@ -203,7 +249,7 @@ export function claimPairing(
 export function deviceForToken(token: string | null): PairedDevice | null {
   if (!token) return null;
   const digest = sha256(token);
-  for (const device of devices()) {
+  for (const device of pairedDevices()) {
     if (typeof device?.hash === "string" && sameSecret(digest, device.hash)) {
       seen.set(device.id, Date.now());
       return device;

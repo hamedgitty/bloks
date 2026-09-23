@@ -59,6 +59,9 @@ export interface OptionCardData {
    * to its own route (server/workflows.ts explains why a run waits on
    * disk rather than in memory). */
   runId?: string;
+  /** Set on an approval shown to a member of a shared room: it is the
+   * owner's to answer, so the member sees it waiting, without buttons. */
+  ownerOnly?: boolean;
   /** Present when a lead has proposed hiring a team (server/teams.ts). */
   team?: {
     room: string;
@@ -75,6 +78,10 @@ export interface Message {
   /** Which agent spoke, in a room with more than one. Absent in solo
    * chats, where the agent is unambiguous. */
   from?: string;
+  /** Which person wrote a user message in a shared room: a person id from
+   * server/people.ts. Absent means the owner, which is every message
+   * written before rooms could be shared. */
+  author?: string;
   kind:
     | "text"
     | "options"

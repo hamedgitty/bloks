@@ -41,7 +41,42 @@ export interface BlokRecord {
    * engines key their sessions to the folder a thread starts in. */
   pinnedCwd?: string | null;
   createdAt: number;
+  /** Present once the owner has shared the room with other people. The
+   * people themselves live in server/people.ts; this is how the room
+   * behaves while they are in it. */
+  sharing?: RoomSharing;
+  /** The lane each agent speaks in while the room is shared, by agent id.
+   * A shared room never uses an agent's ordinary lanes: those carry
+   * everything the owner said in private, and a member could otherwise
+   * ask the agent to repeat it. See startTurn. */
+  lanes?: Record<string, string>;
 }
+
+/** What members of a shared room can see and do, set by the owner. */
+export interface RoomSharing {
+  since: number;
+  /** "join": members see the room from when they joined. "all": from
+   * the start. Flippable at any time; it applies to current members. */
+  history: "join" | "all";
+  /** Whether collaborators may send invites. The owner still lets every
+   * joiner in; this only changes who can start one. */
+  collaboratorsInvite: boolean;
+  /** Whether members see what agents' tools did, beyond the tool's kind. */
+  activityDetail: boolean;
+  /** What agents may do in this room. "conversation": nothing but talk.
+   * "desk": read and write files in the room's own desk folder. */
+  tools: "conversation" | "desk";
+  /** Agents whose private memory the owner has let into this room. */
+  memoryFor?: string[];
+}
+
+export const DEFAULT_SHARING = (): RoomSharing => ({
+  since: Date.now(),
+  history: "join",
+  collaboratorsInvite: false,
+  activityDetail: false,
+  tools: "conversation",
+});
 
 const BLOKS_FILE = join(DATA_DIR, "bloks.json");
 
@@ -109,6 +144,41 @@ export class BlokStore {
     if ("section" in patch) blok.section = patch.section ?? undefined;
     this.save();
     return blok;
+  }
+
+  /** Starts sharing a room, or updates how it is shared. */
+  share(id: string, patch: Partial<Omit<RoomSharing, "since">>): BlokRecord | null {
+    const blok = this.get(id);
+    if (!blok) return null;
+    const current = blok.sharing ?? DEFAULT_SHARING();
+    const next: RoomSharing = { ...current };
+    if (patch.history === "join" || patch.history === "all") next.history = patch.history;
+    if (typeof patch.collaboratorsInvite === "boolean") next.collaboratorsInvite = patch.collaboratorsInvite;
+    if (typeof patch.activityDetail === "boolean") next.activityDetail = patch.activityDetail;
+    if (patch.tools === "conversation" || patch.tools === "desk") next.tools = patch.tools;
+    if (Array.isArray(patch.memoryFor)) {
+      next.memoryFor = patch.memoryFor.filter((x) => typeof x === "string" && blok.memberIds.includes(x));
+    }
+    blok.sharing = next;
+    this.save();
+    return blok;
+  }
+
+  /** Stops sharing. The lanes are kept, not merged back: what was said in
+   * the shared room stays out of the agents' private conversations. */
+  unshare(id: string): BlokRecord | null {
+    const blok = this.get(id);
+    if (!blok) return null;
+    delete blok.sharing;
+    this.save();
+    return blok;
+  }
+
+  setLane(id: string, botId: string, laneId: string) {
+    const blok = this.get(id);
+    if (!blok) return;
+    blok.lanes = { ...(blok.lanes ?? {}), [botId]: laneId };
+    this.save();
   }
 
   remove(id: string): boolean {
