@@ -98,15 +98,21 @@ async function startEmbeddedHost(binary) {
   host = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   const started = await host.start();
 
+  // The SDK says how an agent reaches this daemon: command, arguments and
+  // environment. Taken as given rather than rebuilt here, so the next
+  // upgrade that changes them cannot leave agents knocking on the wrong
+  // door. The fallback is what 0.23 needed, for a build that lacks it.
+  const mcp = started.mcp;
   return {
     mode: "embedded",
     socketPath: started.socketPath,
-    mcpCommand: binary,
-    mcpArgs: ["mcp", "--embedded", "--socket", started.socketPath],
+    mcpCommand: mcp?.command || binary,
+    mcpArgs: mcp?.args?.length ? mcp.args : ["mcp", "--embedded", "--socket", started.socketPath],
     mcpEnv: {
-      ...QUIET,
       CUA_DRIVER_EMBEDDED: "1",
       CUA_DRIVER_HOST_BUNDLE_ID: HOST_BUNDLE_ID,
+      ...Object.fromEntries((mcp?.environment ?? []).map(({ name, value }) => [name, value])),
+      ...QUIET,
     },
   };
 }
