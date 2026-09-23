@@ -23,6 +23,14 @@ import {
 } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
+import { composerCeiling, edgeMask } from "@/lib/composerSize";
+
+/** Fade whichever edges have more text beyond them (see edgeMask). */
+function shadeEdges(el: HTMLTextAreaElement) {
+  const mask = edgeMask(el.scrollTop, el.clientHeight, el.scrollHeight);
+  el.style.maskImage = mask;
+  el.style.webkitMaskImage = mask;
+}
 
 /**
  * Grows with its content up to a ceiling, then scrolls.
@@ -31,9 +39,21 @@ import { modKey } from "@/lib/thisComputer";
  * no height reports a scrollHeight of its own maximum rather than of one
  * line, so measuring that way left the composer standing at its ceiling
  * whenever there was nothing in it, which is every time you look at it.
+ *
+ * The ceiling is a whole number of lines, measured from the rendered line
+ * height, not a round number of pixels. A flat 200px was eight and a half
+ * lines, so a scrolled composer always showed half a line sliced off at
+ * one edge (#50).
  */
 function useAutoSize(value: string) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScroll = () => shadeEdges(el);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -43,10 +63,22 @@ function useAutoSize(value: string) {
     // the composer came to stand at its ceiling whenever it was empty.
     if (!value) {
       el.style.height = "";
+      shadeEdges(el);
       return;
     }
+    const style = getComputedStyle(el);
+    const ceiling = composerCeiling(
+      parseFloat(style.lineHeight),
+      parseFloat(style.paddingTop),
+      parseFloat(style.paddingBottom),
+    );
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, ceiling)}px`;
+    // Typing at the end, the usual case: show the end, padding included.
+    // The browser only scrolls far enough to keep the caret's line in
+    // view, which parks that line in the bottom fade.
+    if (el.selectionEnd === value.length) el.scrollTop = el.scrollHeight;
+    shadeEdges(el);
   }, [value]);
   return ref;
 }
