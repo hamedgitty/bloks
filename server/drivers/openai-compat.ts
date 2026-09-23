@@ -37,40 +37,72 @@ const CATALOG_TTL_MS = 10 * 60_000;
 
 /** Turns "meta-llama/llama-4-maverick" into "Llama 4 Maverick". */
 function labelFor(id: string): string {
-  const tail = id.split("/").pop() ?? id;
-  return tail
+  const free = /:free$/i.test(id);
+  const tail = (id.split("/").pop() ?? id).replace(/:free$/i, "");
+  const label = tail
     .replace(/[-_]/g, " ")
     .replace(/\b(gpt|ai|llm|fp8|moe)\b/gi, (s) => s.toUpperCase())
     .replace(/\b[a-z]/g, (s) => s.toUpperCase())
     .trim();
+  return free ? `${label} (free)` : label;
 }
 
 /**
  * Narrows a provider's raw model list to something a picker can hold.
  * OpenRouter alone lists hundreds; without this the rail is unusable.
  */
-export function chooseModels(spec: ProviderSpec, ids: string[]): ModelCatalog | null {
+export function chooseModels(
+  spec: ProviderSpec,
+  ids: string[],
+  /** Ids the provider says can call tools, when it says. An agent needs
+   * tools, so a free model that cannot use them is not worth offering. */
+  toolCapable?: Set<string>,
+): ModelCatalog | null {
   const clean = [...new Set(ids.filter((id) => typeof id === "string" && id))]
     // embeddings, images and audio are not chat models
     .filter((id) => !/embed|whisper|tts|guard|moderation|image|vision-only|rerank/i.test(id));
   if (!clean.length) return null;
+  // An agent sends tools on every turn, so a model the provider says
+  // cannot take them would fail the first message. Only when it says.
+  const usable = toolCapable ? clean.filter((id) => toolCapable.has(id)) : clean;
+  if (!usable.length) return null;
+  // With free slots, free models are listed together after the paid ones
+  // rather than scattered through the shortlist.
+  const pool = spec.freeSlots ? usable.filter((id) => !/:free$/i.test(id)) : usable;
 
   const ranked = spec.prefer?.length
-    ? clean
+    ? pool
         .map((id) => ({ id, rank: spec.prefer!.findIndex((re) => re.test(id)) }))
         .filter((e) => e.rank !== -1)
         .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))
         .map((e) => e.id)
-    : [...clean].sort();
-  const shortlist = (ranked.length ? ranked : [...clean].sort()).slice(0, spec.limit ?? 20);
-  if (!shortlist.length) return null;
+    : [...pool].sort();
+  const shortlist = (ranked.length ? ranked : [...pool].sort()).slice(0, spec.limit ?? 20);
 
   // keep the configured default if the provider still serves it, so a
   // refresh never silently moves an agent onto a different model
-  const preferredDefault = shortlist.includes(spec.models.default) ? spec.models.default : shortlist[0];
+  // Free models, in their own slots after the paid shortlist, preferred
+  // families first. They would otherwise never make the cut: the paid
+  // flagship of every preferred family ranks ahead of them.
+  const rankOf = (id: string) => {
+    const r = spec.prefer?.findIndex((re) => re.test(id)) ?? -1;
+    return r === -1 ? Number.MAX_SAFE_INTEGER : r;
+  };
+  const free = spec.freeSlots
+    ? usable
+        .filter((id) => /:free$/i.test(id))
+        .sort((a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b))
+        .slice(0, spec.freeSlots)
+    : [];
+
+  // A key that only reaches free models still gets a picker.
+  if (!shortlist.length && !free.length) return null;
+  const preferredDefault = shortlist.includes(spec.models.default)
+    ? spec.models.default
+    : (shortlist[0] ?? free[0]);
   return {
     default: preferredDefault,
-    options: shortlist.map((id) => ({ id, label: labelFor(id) })),
+    options: [...shortlist, ...free].map((id) => ({ id, label: labelFor(id) })),
   };
 }
 
@@ -308,9 +340,20 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             if (!res.ok) return;
             const json: any = await res.json();
             const rows: any[] = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+            // OpenRouter says which models take tools; others say nothing,
+            // and then nothing is filtered on it.
+            const described = rows.some((r) => Array.isArray(r?.supported_parameters));
+            const toolCapable = described
+              ? new Set(
+                  rows
+                    .filter((r) => Array.isArray(r?.supported_parameters) && r.supported_parameters.includes("tools"))
+                    .map((r) => String(r.id)),
+                )
+              : undefined;
             const next = chooseModels(
               spec,
               rows.map((r) => String(r?.id ?? r?.name ?? "")),
+              toolCapable,
             );
             if (next) {
               models.default = next.default;

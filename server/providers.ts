@@ -32,6 +32,10 @@ export interface ProviderSpec {
    * dropped once the list is longer than `limit`. */
   prefer?: RegExp[];
   limit?: number;
+  /** Extra picker slots kept for the provider's free models, on top of
+   * the limit. Without them the preferred paid families fill the list and
+   * the free ones are never offered at all. */
+  freeSlots?: number;
   /** Extra request headers (attribution, routing). */
   headers?: Record<string, string>;
   /** A cheap model for one-shot calls: names, titles, summaries. */
@@ -67,6 +71,9 @@ const OPENROUTER: ProviderSpec = {
   // people actually reach for.
   prefer: [/^google\//, /^anthropic\//, /^x-ai\//, /^openai\//, /^moonshotai\//, /^meta-llama\//, /^deepseek\//, /^qwen\//, /^mistralai\//],
   limit: 28,
+  // OpenRouter serves a rotating set of models at no cost, marked by a
+  // ":free" suffix. People ask for them by name; they get their own room.
+  freeSlots: 12,
   small: "google/gemini-2.5-flash",
 };
 

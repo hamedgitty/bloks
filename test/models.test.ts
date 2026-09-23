@@ -75,3 +75,34 @@ test("ids become readable labels", () => {
   const out = chooseModels(spec({ prefer: [/llama/] }), ["meta-llama/llama-4-maverick"]);
   assert.equal(out?.options[0].label, "Llama 4 Maverick");
 });
+
+// OpenRouter's free models, which the paid shortlist used to crowd out.
+test("free models get their own slots after the paid shortlist", () => {
+  const ids = [
+    "google/gemini-pro", "google/gemini-flash", "anthropic/claude",
+    "deepseek/deepseek-chat:free", "meta-llama/llama-3.3-70b:free", "google/gemma-3:free",
+  ];
+  const out = chooseModels(spec({ prefer: [/^google\//, /^anthropic\//], limit: 2, freeSlots: 2 }), ids)!;
+  const got = out.options.map((o) => o.id);
+  assert.deepEqual(got.slice(0, 2), ["google/gemini-flash", "google/gemini-pro"]);
+  // preferred family first among the free ones, then alphabetical
+  assert.deepEqual(got.slice(2), ["google/gemma-3:free", "deepseek/deepseek-chat:free"]);
+});
+
+test("a free model is labelled as free", () => {
+  const out = chooseModels(spec({ freeSlots: 5 }), ["deepseek/deepseek-chat-v3:free"])!;
+  assert.match(out.options.find((o) => o.id.endsWith(":free"))!.label, /\(free\)$/);
+});
+
+test("when the provider says which models take tools, free ones without tools are left out", () => {
+  const ids = ["a/paid", "x/with-tools:free", "y/no-tools:free"];
+  const out = chooseModels(spec({ freeSlots: 5 }), ids, new Set(["a/paid", "x/with-tools:free"]))!;
+  const got = out.options.map((o) => o.id);
+  assert.ok(got.includes("x/with-tools:free"));
+  assert.ok(!got.includes("y/no-tools:free"));
+});
+
+test("a provider without free slots offers no extra free models", () => {
+  const out = chooseModels(spec({ limit: 1 }), ["a/one", "b/two:free"])!;
+  assert.equal(out.options.length, 1);
+});
