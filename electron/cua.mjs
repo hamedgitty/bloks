@@ -27,6 +27,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Where a developer install of CuaDriver.app puts its binary and socket. */
 const INSTALLED_BINARY = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
@@ -69,11 +70,20 @@ function socketAnswers(socketPath) {
   });
 }
 
+/** Where the SDK is imported from. The packaged app carries its own small
+ * node_modules for it in Resources (scripts/stage-cua.mjs says why), since
+ * the asar holds none; from source it is the ordinary installed package. */
+function sdkEntry() {
+  if (!app.isPackaged) return "@trycua/cua-driver/embedded";
+  const entry = path.join(process.resourcesPath, "cua", "node_modules", "@trycua", "cua-driver", "dist", "embedded.js");
+  return pathToFileURL(entry).href;
+}
+
 async function startEmbeddedHost(binary) {
   // Imported here rather than at module load: the SDK carries a native
   // library, and a machine where it will not load should lose computer
   // use, not the whole app.
-  const { EmbeddedCuaDriverHost } = await import("@trycua/cua-driver/embedded");
+  const { EmbeddedCuaDriverHost } = await import(sdkEntry());
 
   host = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   const started = await host.start();

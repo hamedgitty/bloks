@@ -9,6 +9,8 @@ dist-electron
 # and is the wrong architecture half the time.
 electron/resources/speech-helper
 electron/resources/perm-helper
+# the computer use SDK, staged at package time by scripts/stage-cua.mjs
+/stage/
 release
 
 # build output

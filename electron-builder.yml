@@ -44,6 +44,15 @@ mac:
       to: perm-helper
     - from: electron/resources/auth-helper
       to: auth-helper
+    # The one node_modules that ships: the computer use SDK, which loads a
+    # native library by package lookup and so cannot be bundled into a
+    # file. Staged by scripts/stage-cua.mjs, outside the asar on purpose.
+    # Pointed at the node_modules folder itself: the builder drops any path
+    # with a node_modules segment below the source, which silently left
+    # this out when the source was its parent.
+    - from: stage/cua/node_modules
+      to: cua/node_modules
+      filter: ["**/*"]
   # universal so Intel Macs get a working build too. The Swift helpers
   # are lipo'd to universal by scripts/build-helpers.sh for the same
   # reason: they are copied into both slices verbatim.
