@@ -12,3 +12,10 @@ allowBuilds:
   electron-winstaller: true
   # A postinstall banner asking for donations. Nothing depends on it.
   core-js: false
+
+# Floors for transitive packages with a published fix the parent has not
+# picked up yet. js-yaml reaches the app through electron-updater, which
+# parses the release feed with it; below 4.3.2, merge keys with empty
+# sources can burn CPU without limit (GHSA-2883-xcg3-v3hh).
+overrides:
+  js-yaml: ^4.3.2
