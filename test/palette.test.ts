@@ -218,6 +218,7 @@ describe("the rule that keeps it that way", () => {
     "src/components/Intro.tsx": "the logo again, animated, same fixed mark",
     "src/components/ProviderIcons.tsx": "other people's logos, which are theirs and not ours to theme",
     "src/components/DevicesSection.tsx": "a QR code, which needs literal black on literal white to scan",
+    "src/components/SharePanel.tsx": "an invite QR code, which needs literal black on literal white to scan",
     "src/components/Terminal.tsx": "a fallback for when the custom property cannot be read from a canvas",
     "src/components/McpApps.tsx": "the same fallback, for a sandboxed frame",
   };

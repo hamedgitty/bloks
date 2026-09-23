@@ -475,6 +475,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "blok.deleted":
           rawDispatch({ type: "blokDeleted", blokId: frame.blokId });
           break;
+        // shared rooms: who is in them, who is at the door, who is typing
+        case "room.people":
+          if (Array.isArray(frame.people)) rawDispatch({ type: "roomPeople", roomId: frame.roomId, people: frame.people });
+          break;
+        case "room.joinRequest":
+          rawDispatch({ type: "joinRequest", roomId: frame.roomId });
+          break;
+        case "room.typing":
+          rawDispatch({ type: "roomTyping", roomId: frame.roomId, name: frame.name, at: frame.at ?? Date.now() });
+          break;
         // an OAuth sign-in finishes in the browser, so the news that an
         // engine connected arrives here rather than from a fetch
         case "providers":

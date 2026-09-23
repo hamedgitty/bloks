@@ -14,6 +14,9 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Download from "lucide-react/dist/esm/icons/download.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
+import UserPlus from "lucide-react/dist/esm/icons/user-plus.mjs";
+import type { RoomPerson } from "@/state/reducer";
+import { SharePanel } from "./SharePanel";
 import { api, useStore, formatTime, type Blok, type Bot, type Message } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
@@ -92,9 +95,25 @@ function withMentions(text: string, names: string[]): React.ReactNode[] {
   );
 }
 
+/** A person in a shared room: their initial, never an agent's avatar, so
+ * who is a person and who is an agent is never in doubt. */
+function PersonDot({ name, size = 30 }: { name: string; size?: number }) {
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full bg-secondary font-semibold text-secondary-foreground"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}
+      aria-hidden
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
+
 function RoomMessage({
   message,
   members,
+  people,
+  ownerName,
   showSpeaker,
   roomId,
   onReply,
@@ -102,12 +121,14 @@ function RoomMessage({
 }: {
   message: Message;
   members: Bot[];
+  people: RoomPerson[];
+  ownerName?: string;
   showSpeaker: boolean;
   roomId: string;
   onReply: (draft: ReplyDraft) => void;
   onForward: (message: Message, author: string) => void;
 }) {
-  const names = members.map((m) => m.name);
+  const names = [...members.map((m) => m.name), ...people.map((p) => p.name), ...(ownerName ? [ownerName] : [])];
   const speaker = message.from ? members.find((m) => m.id === message.from) : null;
   const nameOfReactor = (id: string) =>
     id === "user" ? "You" : (members.find((m) => m.id === id)?.name ?? "An agent");
@@ -128,6 +149,33 @@ function RoomMessage({
       <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start pl-11")}>
         <div className="rounded-2xl border border-dashed px-3 py-1.5 text-[13px] italic text-muted-foreground">
           Message taken back
+        </div>
+      </div>
+    );
+  }
+
+  // somebody else in a shared room: on the left, named, like an agent
+  if (message.role === "user" && message.author) {
+    const who = people.find((p) => p.id === message.author)?.name ?? "A former member";
+    return (
+      <div className="flex gap-2.5">
+        <div className="w-8 shrink-0 pt-0.5">{showSpeaker && <PersonDot name={who} />}</div>
+        <div className="min-w-0 flex-1">
+          {showSpeaker && (
+            <div className="mb-0.5 flex items-baseline gap-1.5">
+              <span className="text-[13px] font-semibold text-foreground">{who}</span>
+              <span className="text-[11px] text-muted-foreground">{formatTime(message.at)}</span>
+            </div>
+          )}
+          <div className="group flex items-center gap-1.5">
+            <div className="min-w-0 rounded-2xl rounded-tl-md bg-muted px-3.5 py-2 text-[14.5px] leading-relaxed text-foreground">
+              {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
+              {(message.text ?? "").split("\n").map((line, i) => (
+                <RoomLine key={i} line={line} names={names} />
+              ))}
+            </div>
+            {verbs(who)}
+          </div>
         </div>
       </div>
     );
@@ -156,6 +204,10 @@ function RoomMessage({
         </div>
       </div>
     );
+  }
+
+  if (message.kind === "notice" && message.event) {
+    return <div className="py-1 text-center text-[12px] text-muted-foreground">{message.text}</div>;
   }
 
   if (message.kind === "notice") {
@@ -266,6 +318,32 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const [ownerName, setOwnerName] = useState<string | undefined>(undefined);
+  const roomPeople = state.roomPeople[blok.id] ?? [];
+  const knocking = state.joinRequests[blok.id] ?? 0;
+  // the last person seen typing, for a few seconds
+  const typing = state.roomTyping[blok.id];
+  const [, tick] = useState(0);
+  const typingNow = typing && Date.now() - typing.at < 6_000 ? typing.name : null;
+  useEffect(() => {
+    if (!typing) return;
+    const timer = setTimeout(() => tick((n) => n + 1), 6_100);
+    return () => clearTimeout(timer);
+  }, [typing]);
+
+  // Who is in a shared room, fetched once here and kept current by the
+  // room.people frames the server sends when it changes.
+  useEffect(() => {
+    if (!blok.sharing) return;
+    api(`/api/bloks/${blok.id}/people`)
+      .then((next: { people: RoomPerson[]; hostName: string; invites: Array<{ claim?: unknown }> }) => {
+        dispatch({ type: "roomPeople", roomId: blok.id, people: next.people });
+        setOwnerName(next.hostName);
+        dispatch({ type: "joinRequest", roomId: blok.id, pending: next.invites.filter((i) => i.claim).length });
+      })
+      .catch(() => {});
+  }, [blok.id, blok.sharing, dispatch]);
 
   const members = blok.memberIds
     .map((id) => state.bots.find((b) => b.id === id))
@@ -277,12 +355,14 @@ export function RoomView({ blok }: { blok: Blok }) {
   const answering = members.filter((m) => !m.archivedAt);
   const mentionQuery =
     mentionAt === null ? null : text.slice(mentionAt + 1, inputRef.current?.selectionStart ?? text.length);
+  const mentionable: Array<{ id: string; name: string; title?: string; bot?: Bot }> = [
+    ...answering.map((b) => ({ id: b.id, name: b.name, title: b.title, bot: b })),
+    ...roomPeople.map((p) => ({ id: p.id, name: p.name, title: p.role === "viewer" ? "Viewer" : "Collaborator" })),
+  ];
   const mentionMatches =
     mentionQuery === null || /\s/.test(mentionQuery)
       ? []
-      : answering
-          .filter((m) => m.name.toLowerCase().startsWith(mentionQuery.toLowerCase()))
-          .slice(0, 6);
+      : mentionable.filter((m) => m.name.toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 6);
 
   /** Replace the half-typed @name with the chosen one. */
   const completeMention = (name: string) => {
@@ -435,6 +515,20 @@ export function RoomView({ blok }: { blok: Blok }) {
               </span>
             ))}
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSharingOpen(true)}
+            className={cn("relative", blok.sharing && "text-foreground")}
+            title={blok.sharing ? `Shared with ${roomPeople.length} ${roomPeople.length === 1 ? "person" : "people"}` : "Share this room with people"}
+          >
+            <UserPlus size={16} />
+            {knocking > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-brand-ink px-1 text-[10px] font-semibold leading-4 text-brand-foreground">
+                {knocking}
+              </span>
+            )}
+          </Button>
           <RoomFolderButton blok={blok} />
           <GroupCallButton blok={blok} members={answering} />
           {/* Eight controls fit a desktop header and not a phone one,
@@ -515,6 +609,8 @@ export function RoomView({ blok }: { blok: Blok }) {
           />
         </div>
       </div>
+
+      <SharePanel blok={blok} open={sharingOpen} onOpenChange={setSharingOpen} />
 
       {closing && (
         <div
@@ -620,6 +716,8 @@ export function RoomView({ blok }: { blok: Blok }) {
                 <RoomMessage
                   message={m}
                   members={members}
+                  people={roomPeople}
+                  ownerName={blok.sharing ? ownerName : undefined}
                   showSpeaker={showSpeaker}
                   roomId={blok.id}
                   onReply={setReplyTo}
@@ -642,6 +740,12 @@ export function RoomView({ blok }: { blok: Blok }) {
               {m.name} is thinking
             </div>
           ))}
+          {typingNow && (
+            <div className="flex items-center gap-2.5 pl-11 text-[12px] text-muted-foreground">
+              <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground" />
+              {typingNow} is typing
+            </div>
+          )}
         </div>
         )}
       </div>
@@ -665,7 +769,7 @@ export function RoomView({ blok }: { blok: Blok }) {
                     i === mentionPick ? "bg-accent" : "hover:bg-accent/60",
                   )}
                 >
-                  <AgentAvatar bot={m} size={22} />
+                  {m.bot ? <AgentAvatar bot={m.bot} size={22} /> : <PersonDot name={m.name} size={22} />}
                   <span className="text-[13px] font-medium text-foreground">{m.name}</span>
                   {m.title && (
                     <span className="truncate text-[12px] text-muted-foreground">{m.title}</span>

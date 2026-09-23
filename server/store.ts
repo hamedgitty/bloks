@@ -78,6 +78,9 @@ export interface Message {
   /** Which agent spoke, in a room with more than one. Absent in solo
    * chats, where the agent is unambiguous. */
   from?: string;
+  /** A notice that is something happening in the room (someone joined,
+   * someone left) rather than something going wrong. */
+  event?: boolean;
   /** Which person wrote a user message in a shared room: a person id from
    * server/people.ts. Absent means the owner, which is every message
    * written before rooms could be shared. */

@@ -3872,7 +3872,7 @@ async function serveMember(
       const blok = bloks.get(action.roomId)!;
       const { roomless } = people.removeFromRoom(personId, blok.id);
       if (roomless) await revokeMember(personId, who.relayTokenHash);
-      const notice = store.appendMessage(blok.id, { role: "bot", kind: "notice", text: `${who.name} left the room.` });
+      const notice = store.appendMessage(blok.id, { role: "bot", kind: "notice", event: true, text: `${who.name} left the room.` });
       broadcast({ kind: "message", threadId: blok.id, message: notice });
       roomPeopleFrame(blok.id);
       return json(res, 200, { ok: true });
@@ -6001,6 +6001,7 @@ const server = createServer(async (req, res) => {
       const notice = store.appendMessage(blok.id, {
         role: "bot",
         kind: "notice",
+        event: true,
         text: `${approved.person.name} joined the room as a ${inv.role}.`,
       });
       broadcast({ kind: "message", threadId: blok.id, message: notice });
@@ -6031,7 +6032,7 @@ const server = createServer(async (req, res) => {
       const { removed, roomless } = people.removeFromRoom(who.id, m[1]);
       if (!removed) return json(res, 404, { error: "no such person in that room" });
       if (roomless) await revokeMember(who.id, who.relayTokenHash);
-      const notice = store.appendMessage(m[1], { role: "bot", kind: "notice", text: `${who.name} was removed from the room.` });
+      const notice = store.appendMessage(m[1], { role: "bot", kind: "notice", event: true, text: `${who.name} was removed from the room.` });
       broadcast({ kind: "message", threadId: m[1], message: notice });
       roomPeopleFrame(m[1]);
       return json(res, 200, { ok: true });

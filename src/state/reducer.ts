@@ -71,6 +71,10 @@ export interface Message {
   role: "bot" | "user";
   /** Which agent spoke, in a room with more than one. */
   from?: string;
+  /** Which person wrote a message in a shared room. Absent: you. */
+  author?: string;
+  /** A room event (someone joined or left), not a warning. */
+  event?: boolean;
   kind: "text" | "options" | "activity" | "screen" | "notice" | "artifact" | "connector" | "secret" | "component";
   text?: string;
   card?: OptionCardData;
@@ -230,7 +234,27 @@ export interface Blok {
    * Rooms list. Shares one namespace with agents. */
   section?: string | null;
   createdAt: number;
+  /** Present while the room is shared with other people. */
+  sharing?: RoomSharing;
   messages: Message[];
+}
+
+/** How a shared room behaves, owner's choice. See server/bloks.ts. */
+export interface RoomSharing {
+  since: number;
+  history: "join" | "all";
+  collaboratorsInvite: boolean;
+  activityDetail: boolean;
+  tools: "conversation" | "desk";
+  memoryFor?: string[];
+}
+
+/** Someone in a shared room who is not you. */
+export interface RoomPerson {
+  id: string;
+  name: string;
+  role: "collaborator" | "viewer";
+  joinedAt: number;
 }
 
 /** One row of GET /api/providers: an engine and how you sign in to it. */
@@ -289,6 +313,12 @@ export interface AppState {
   streaming: Record<string, string>;
   /** the most recent picture of each agent's screen */
   screens: Record<string, { png: string; mime: string; source?: "browser" }>;
+  /** People in each shared room, by room id. */
+  roomPeople: Record<string, RoomPerson[]>;
+  /** Join requests waiting on you, by room id: how many. */
+  joinRequests: Record<string, number>;
+  /** The last person seen typing in each shared room. */
+  roomTyping: Record<string, { name: string; at: number }>;
   /** agents whose box is still being stood up, so the panel can say so */
   provisioning: Record<string, boolean>;
   connected: boolean;
@@ -299,6 +329,9 @@ export type Action =
   | { type: "hydrate"; bots: Bot[] }
   | { type: "hydrateBloks"; bloks: Blok[] }
   | { type: "blokPatched"; blok: Omit<Blok, "messages"> }
+  | { type: "roomPeople"; roomId: string; people: RoomPerson[] }
+  | { type: "joinRequest"; roomId: string; pending?: number }
+  | { type: "roomTyping"; roomId: string; name: string; at: number }
   | { type: "blokDeleted"; blokId: string }
   | { type: "createRoom"; name: string; memberIds: string[] }
   | { type: "deleteRoom"; blokId: string }
@@ -429,12 +462,28 @@ export function reducer(state: AppState, action: Action): AppState {
       const selectedId = action.bloks.some((b) => b.id === wanted) ? wanted : state.selectedId;
       return { ...state, bloks: action.bloks, selectedId };
     }
+    case "roomPeople":
+      return { ...state, roomPeople: { ...state.roomPeople, [action.roomId]: action.people } };
+    case "joinRequest":
+      return {
+        ...state,
+        joinRequests: {
+          ...state.joinRequests,
+          [action.roomId]: action.pending ?? (state.joinRequests[action.roomId] ?? 0) + 1,
+        },
+      };
+    case "roomTyping":
+      return { ...state, roomTyping: { ...state.roomTyping, [action.roomId]: { name: action.name, at: action.at } } };
     case "blokPatched": {
       const existing = state.bloks.find((b) => b.id === action.blok.id);
       return {
         ...state,
         bloks: existing
-          ? state.bloks.map((b) => (b.id === action.blok.id ? { ...b, ...action.blok } : b))
+          ? // sharing is set outright: a room that stopped being shared
+            // arrives without the key, and a merge would keep the old one
+            state.bloks.map((b) =>
+              b.id === action.blok.id ? { ...b, ...action.blok, sharing: action.blok.sharing } : b,
+            )
           : [{ ...action.blok, messages: [] }, ...state.bloks],
       };
     }
@@ -723,6 +772,9 @@ export const initialState: AppState = {
   })(),
   streaming: {},
   screens: {},
+  roomPeople: {},
+  joinRequests: {},
+  roomTyping: {},
   provisioning: {},
   connected: false,
   error: null,
