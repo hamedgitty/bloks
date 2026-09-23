@@ -1,6 +1,6 @@
 {
   "name": "bloks",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": true,
   "description": "A local-first desktop workspace for personal AI agents.",
   "license": "SEE LICENSE IN LICENSE",
