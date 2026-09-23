@@ -1625,6 +1625,11 @@ async function startTurn(
         ...(credential
           ? {
               env: {
+                // Secrets saved from a card, read fresh each turn: the
+                // engine starts a process per turn, so a value saved a
+                // moment ago is in this one without restarting anything.
+                // Listed first so a secret can never shadow the lines below.
+                ...(cfg.secrets ?? {}),
                 BLOKS_URL: `http://127.0.0.1:${PORT}`,
                 BLOKS_TOKEN: credential.token,
                 BLOKS_CLI: AGENT_CLI,
@@ -3021,7 +3026,10 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // say. They land in the transcript immediately (flagged queued), wait in
 // memory, and drain into one follow-up turn when the lane settles. A
 // restart loses only the auto-send intent; the words are already saved.
-const steerQueues = new Map<string, { botId: string; items: Array<{ messageId: string; text: string }> }>();
+// An item with no messageId is a note from Bloks itself, like the one
+// that resumes a task after a secret is saved: nothing in the transcript
+// to wait on, so it is always still due.
+const steerQueues = new Map<string, { botId: string; items: Array<{ messageId?: string; text: string }> }>();
 
 async function sendUserMessage(botId: string, text: string, options: { taskId?: string; replyTo?: ReplyRef } = {}) {
   const bot = store.bot(botId);
@@ -3068,11 +3076,12 @@ function drainSteer(threadId: string) {
   if (lane.busy) return;
   // claimed before any async work, so two racing settles fire it once
   steerQueues.delete(threadId);
-  const alive = entry.items.filter((item) =>
-    store.messagesFor(threadId).some((m) => m.id === item.messageId),
+  const alive = entry.items.filter(
+    (item) => !item.messageId || store.messagesFor(threadId).some((m) => m.id === item.messageId),
   );
   if (alive.length === 0) return;
   for (const item of alive) {
+    if (!item.messageId) continue;
     const patched = store.patchMessage(threadId, item.messageId, { queued: false });
     if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
   }
@@ -4546,15 +4555,21 @@ const server = createServer(async (req, res) => {
       // straight to the config file; the transcript never sees it
       saveConfig({ secrets: { [card.secret.envName]: value } });
       Object.assign(cfg, loadConfig());
-      await reloadProviders();
+      // No engine reload: the next turn reads secrets fresh (see startTurn).
+      // Reloading tore down every engine, killing any turn in flight,
+      // including the one the previous card had just resumed.
       patch({ status: "saved", resumed: true });
       const already = card.secret.resumed;
-      if (!already) {
-        void startTurn(
-          bot.id,
-          `The user saved "${card.secret.label}". It is available to your shell tools as the environment variable ${card.secret.envName}. Continue the task you were working on.`,
-          { taskId: threadId, presetMessage: true },
-        ).catch((e) => {
+      const note = `The user saved "${card.secret.label}". It is available to your shell tools as the environment variable ${card.secret.envName}. Continue the task you were working on.`;
+      const lane = bot.tasks.find((t) => t.id === threadId);
+      if (!already && lane?.busy) {
+        // Two cards saved back to back: the first one's resume is still
+        // running. This one waits for it rather than being refused.
+        const entry = steerQueues.get(threadId) ?? { botId: bot.id, items: [] };
+        entry.items.push({ text: note });
+        steerQueues.set(threadId, entry);
+      } else if (!already) {
+        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true }).catch((e) => {
           // Same reason as the connector resume: the mark is what stops
           // this firing twice, so leaving it set after a refusal parks
           // the task on a secret that has already been saved.
