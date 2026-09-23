@@ -368,7 +368,7 @@ function quickWindow() {
     skipTaskbar: true,
     fullscreenable: false,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: path.join(HERE, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
