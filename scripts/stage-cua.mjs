@@ -1,4 +1,5 @@
-// Stages the cua-driver SDK for the packaged Mac app.
+// Stages computer use for the packaged Mac app: the cua-driver SDK the
+// main process imports, and the cua-driver program it starts as a child.
 //
 // The packaged app ships no node_modules (electron-builder.yml says why),
 // and this is the one exception that cannot be bundled into a single file
@@ -15,7 +16,20 @@
 // to it: 50 MB saved, and whichever package pnpm skipped on this machine
 // comes from the registry at the same version.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -75,4 +89,57 @@ for (const triple of PLATFORMS) {
   const lib = join(OUT, `${ROOT}-${triple}`, "libcua_driver_sdk.dylib");
   if (!existsSync(lib)) throw new Error(`[stage-cua] missing ${lib}`);
 }
-console.log(`[stage-cua] ${ROOT}@${version} staged with ${[...copied].length} packages and ${PLATFORMS.join(", ")}`);
+// ── the program ────────────────────────────────────────────────────────
+// The SDK does not carry the daemon. electron/cua.mjs starts it from
+// Resources/cua-driver as a direct child, which is what makes macOS
+// attribute its Accessibility and Screen Recording grants to Bloks. It
+// comes from upstream's own release at the SDK's exact version, since the
+// two speak one protocol over the socket, and its checksum is pinned here
+// so a replaced download fails the build instead of shipping. A new SDK
+// version fails here too, until its checksum is added.
+const BINARY_SHA256 = {
+  "0.23.2": "0127c82ff17922df4290931a8ebf9b4a8b21656aad24cba6f21ee50e41ed4493",
+};
+const BINARY_OUT = "stage/cua-driver";
+rmSync(BINARY_OUT, { force: true });
+const pinned = BINARY_SHA256[version];
+if (!pinned) throw new Error(`[stage-cua] no pinned checksum for the cua-driver ${version} binary`);
+const asset = `cua-driver-rs-${version}-darwin-universal-binary.tar.gz`;
+const url = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${version}/${asset}`;
+const scratch = mkdtempSync(join(tmpdir(), "stage-cua-bin-"));
+try {
+  const archive = join(scratch, asset);
+  execFileSync("curl", ["-fsSL", "--retry", "3", "-o", archive, url]);
+  const actual = createHash("sha256").update(readFileSync(archive)).digest("hex");
+  if (actual !== pinned) throw new Error(`[stage-cua] ${asset} checksum ${actual} does not match the pinned ${pinned}`);
+  execFileSync("tar", ["-xzf", archive, "-C", scratch]);
+  const find = (dir) =>
+    readdirSync(dir).flatMap((name) => {
+      const full = join(dir, name);
+      return statSync(full).isDirectory() ? find(full) : name === "cua-driver" ? [full] : [];
+    });
+  const [binary] = find(scratch);
+  if (!binary) throw new Error(`[stage-cua] ${asset} has no cua-driver in it`);
+  cpSync(binary, BINARY_OUT);
+  chmodSync(BINARY_OUT, 0o755);
+} finally {
+  rmSync(scratch, { recursive: true, force: true });
+}
+// MIT asks for its notice to travel with the program, so it ships beside it.
+execFileSync("curl", [
+  "-fsSL",
+  "--retry",
+  "3",
+  "-o",
+  "stage/cua-driver-LICENSE.md",
+  `https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v${version}/LICENSE.md`,
+]);
+if (!/MIT License/.test(readFileSync("stage/cua-driver-LICENSE.md", "utf8"))) {
+  throw new Error("[stage-cua] the cua-driver licence did not download as expected");
+}
+const binArchs = execFileSync("lipo", ["-archs", BINARY_OUT], { encoding: "utf8" });
+if (!/x86_64/.test(binArchs) || !/arm64/.test(binArchs)) {
+  throw new Error(`[stage-cua] the cua-driver binary is not universal (${binArchs.trim()})`);
+}
+
+console.log(`[stage-cua] ${ROOT}@${version} staged with ${[...copied].length} packages and ${PLATFORMS.join(", ")}, and the cua-driver binary`);

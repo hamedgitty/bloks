@@ -33,6 +33,13 @@ import { pathToFileURL } from "node:url";
 const INSTALLED_BINARY = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
 const INSTALLED_SOCKET = path.join(app.getPath("home"), "Library/Caches/cua-driver/cua-driver.sock");
 
+/** cua-driver reports usage upstream and checks GitHub for updates unless
+ * told not to. Bloks keeps what happens on this machine on this machine,
+ * and the copy it ships is signed into the app and updated with it, so
+ * the daemon it starts and every MCP proxy an agent starts are told to do
+ * neither. */
+const QUIET = { CUA_DRIVER_RS_TELEMETRY_ENABLED: "0", CUA_DRIVER_RS_UPDATE_CHECK: "0" };
+
 /** Identifies this app to the daemon as the holder of the TCC grants. */
 const HOST_BUNDLE_ID = "dev.bloks.app";
 
@@ -85,6 +92,9 @@ async function startEmbeddedHost(binary) {
   // use, not the whole app.
   const { EmbeddedCuaDriverHost } = await import(sdkEntry());
 
+  // The host spawns the daemon from this process, so it inherits this
+  // environment; there is no other way to hand it one.
+  Object.assign(process.env, QUIET);
   host = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   const started = await host.start();
 
@@ -94,6 +104,7 @@ async function startEmbeddedHost(binary) {
     mcpCommand: binary,
     mcpArgs: ["mcp", "--embedded", "--socket", started.socketPath],
     mcpEnv: {
+      ...QUIET,
       CUA_DRIVER_EMBEDDED: "1",
       CUA_DRIVER_HOST_BUNDLE_ID: HOST_BUNDLE_ID,
     },
@@ -125,7 +136,7 @@ export async function startCua() {
       socketPath: INSTALLED_SOCKET,
       mcpCommand: binary,
       mcpArgs: ["mcp"],
-      mcpEnv: {},
+      mcpEnv: { ...QUIET },
     });
   }
 
@@ -153,6 +164,7 @@ export function cuaPermissionsStatus() {
   if (!binary) return { available: false };
 
   const result = spawnSync(binary, ["permissions", "status", "--json"], {
+    env: { ...process.env, ...QUIET },
     encoding: "utf8",
     timeout: 5000,
   });

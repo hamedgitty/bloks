@@ -53,6 +53,12 @@ mac:
     - from: stage/cua/node_modules
       to: cua/node_modules
       filter: ["**/*"]
+    # The daemon the SDK starts, at the path electron/cua.mjs looks for.
+    # Signed with the app, so it runs under Bloks' own identity.
+    - from: stage/cua-driver
+      to: cua-driver
+    - from: stage/cua-driver-LICENSE.md
+      to: cua-driver-LICENSE.md
   # universal so Intel Macs get a working build too. The Swift helpers
   # are lipo'd to universal by scripts/build-helpers.sh for the same
   # reason: they are copied into both slices verbatim.
