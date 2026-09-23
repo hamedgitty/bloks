@@ -67,7 +67,7 @@
     "posthog-js": "^1.434.2",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",
-    "react-dom": "^19.1.0",
+    "react-dom": "^19.3.0",
     "tailwind-merge": "^3.7.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
