@@ -67,6 +67,16 @@ describe("diagnosticsReport", () => {
     assert.match(report, /"composioConnect": true/);
   });
 
+  test("a CLI that is installed but signed out does not read as connected", () => {
+    // The one state that stops an agent answering, in the one report a stuck
+    // user is asked to paste into an issue.
+    const report = diagnosticsReport({
+      ...facts,
+      engines: [{ name: "Claude Code", connected: true, agentic: true, needsSignIn: true }],
+    });
+    assert.match(report, /Claude Code: installed, not signed in/);
+  });
+
   test("even a poisoned fact cannot carry a credential out", () => {
     const leaked = ["sk-", "abcdefghijklmnop1234"].join("");
     const poisoned = { ...facts, version: `1.0.1 ${leaked}` };

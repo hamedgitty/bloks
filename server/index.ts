@@ -4857,11 +4857,14 @@ const server = createServer(async (req, res) => {
           compactionMicro: Boolean(cfg.compaction?.micro),
           skillsPropose: Boolean(cfg.skills?.propose),
         },
-        engines: rows.map((row: { name: string; connected: boolean; agentic: boolean }) => ({
-          name: row.name,
-          connected: Boolean(row.connected),
-          agentic: Boolean(row.agentic),
-        })),
+        engines: rows.map(
+          (row: { name: string; connected: boolean; agentic: boolean; needsSignIn?: boolean }) => ({
+            name: row.name,
+            connected: Boolean(row.connected),
+            agentic: Boolean(row.agentic),
+            needsSignIn: Boolean(row.needsSignIn),
+          }),
+        ),
         counts: {
           agents: store.bots.filter((b) => !b.archivedAt).length,
           rooms: bloks.bloks.length,

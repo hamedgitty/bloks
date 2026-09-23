@@ -528,17 +528,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // first message. The CLI itself is the authority: current versions
       // keep the login in the macOS Keychain, where no file check can see
       // it. Older ones lack the subcommand, so the file is the fallback.
+      //
+      // Read stdout before looking at `error`: `claude auth status` prints
+      // its JSON and *exits 1* when there is no login, and execFile surfaces
+      // a non-zero exit as an error, so branching on the error first throws
+      // away the one answer that is authoritative and lands on the file check
+      // the comment above already says cannot see a Keychain login. The file
+      // is only a fallback for a CLI old enough not to answer at all.
       const authenticated = await new Promise<boolean>((resolve) => {
         execFile(config.cli, ["auth", "status"], { timeout: 8_000 }, (error, stdout) => {
+          try {
+            const { loggedIn } = JSON.parse(stdout) as { loggedIn?: unknown };
+            if (typeof loggedIn === "boolean") return resolve(loggedIn);
+          } catch {
+            /* not JSON: an older CLI, or one that died before printing */
+          }
           if (error) {
             return resolve(existsSync(join(homedir(), ".claude", ".credentials.json")));
           }
-          try {
-            resolve(JSON.parse(stdout).loggedIn === true);
-          } catch {
-            // it answered without erroring, which older CLIs do not
-            resolve(true);
-          }
+          // it answered without erroring, which older CLIs do not
+          resolve(true);
         });
       });
       return { state: "available", version, authenticated };

@@ -52,7 +52,7 @@ export interface DiagnosticsFacts {
   /** configStatus() output: which credentials exist, as booleans. */
   config: unknown;
   /** Engine rows reduced to name and connection state. */
-  engines: Array<{ name: string; connected: boolean; agentic: boolean }>;
+  engines: Array<{ name: string; connected: boolean; agentic: boolean; needsSignIn?: boolean }>;
   counts: { agents: number; rooms: number; skills: number };
 }
 
@@ -67,9 +67,20 @@ export function diagnosticsReport(facts: DiagnosticsFacts): string {
     `- Agents: ${facts.counts.agents}, rooms: ${facts.counts.rooms}, skills: ${facts.counts.skills}`,
     "",
     "### Engines",
+    // A CLI on PATH but signed out reads as "connected" everywhere else in
+    // the app, which is fine next to a row that also shows the sign-in hint.
+    // Here it is the whole report, so the one state that actually stops an
+    // agent from answering has to be on the line or the issue arrives blaming
+    // something else.
     ...facts.engines.map(
       (engine) =>
-        `- ${engine.name}: ${engine.connected ? "connected" : "not connected"}${engine.agentic ? "" : " (chat only)"}`,
+        `- ${engine.name}: ${
+          engine.connected
+            ? engine.needsSignIn
+              ? "installed, not signed in"
+              : "connected"
+            : "not connected"
+        }${engine.agentic ? "" : " (chat only)"}`,
     ),
     "",
     "### Configured credentials (presence only, never values)",
