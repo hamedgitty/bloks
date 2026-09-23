@@ -288,7 +288,7 @@ export interface AppState {
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
   /** the most recent picture of each agent's screen */
-  screens: Record<string, { png: string; mime: string }>;
+  screens: Record<string, { png: string; mime: string; source?: "browser" }>;
   /** agents whose box is still being stood up, so the panel can say so */
   provisioning: Record<string, boolean>;
   connected: boolean;
@@ -333,7 +333,7 @@ export type Action =
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "streamDelta"; threadId: string; delta: string }
   | { type: "streamClear"; threadId: string }
-  | { type: "screenFrame"; botId: string; png: string; mime: string }
+  | { type: "screenFrame"; botId: string; png: string; mime: string; source?: "browser" }
   | { type: "provisioning"; botId: string; on: boolean }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
@@ -605,7 +605,10 @@ export function reducer(state: AppState, action: Action): AppState {
     case "screenFrame":
       return {
         ...state,
-        screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime } },
+        screens: {
+          ...state.screens,
+          [action.botId]: { png: action.png, mime: action.mime, ...(action.source ? { source: action.source } : {}) },
+        },
         provisioning: { ...state.provisioning, [action.botId]: false },
       };
     case "provisioning":

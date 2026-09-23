@@ -458,7 +458,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "screen":
-          rawDispatch({ type: "screenFrame", botId: frame.botId, png: frame.png, mime: frame.mime ?? "image/png" });
+          rawDispatch({
+            type: "screenFrame",
+            botId: frame.botId,
+            png: frame.png,
+            mime: frame.mime ?? "image/png",
+            ...(frame.source === "browser" ? { source: "browser" as const } : {}),
+          });
           break;
         case "computer":
           rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });

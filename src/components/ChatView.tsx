@@ -449,6 +449,56 @@ function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
   );
 }
 
+/** The agent's browser while it works: the latest frame, and a way in.
+ * A click on the picture clicks the page at the same spot, and the line
+ * under it types into whatever has focus. For the logins and cookie
+ * walls an agent cannot get past on its own. */
+function LiveBrowser({ botId, frame }: { botId: string; frame: { png: string; mime: string } }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const safeMime = FRAME_MIMES.has(frame.mime) ? frame.mime : "image/png";
+  const send = (action: "click" | "type", body: Record<string, unknown>) =>
+    api(`/api/bots/${botId}/browser/${action}`, { method: "POST", body: JSON.stringify(body) })
+      .then(() => setError(null))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  return (
+    <div className="flex animate-rise-in justify-start">
+      <div className="max-w-[82%] overflow-hidden rounded-xl border sm:max-w-[68%]">
+        <div className="flex items-center gap-1.5 border-b px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
+          <span className="size-1.5 animate-pulse rounded-full bg-success" />
+          Live browser. Click or type to help it along.
+        </div>
+        <img
+          src={`data:${safeMime};base64,${frame.png}`}
+          alt="The agent's browser"
+          className="block w-full cursor-pointer"
+          onClick={(e) => {
+            const box = e.currentTarget.getBoundingClientRect();
+            void send("click", { x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height });
+          }}
+        />
+        <form
+          className="border-t"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send("type", { text, enter: true });
+            setText("");
+          }}
+        >
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Type into the page, Enter to send"
+            aria-label="Type into the agent's browser"
+            className="w-full bg-transparent px-2.5 py-1.5 text-[12.5px] outline-none placeholder:text-muted-foreground"
+          />
+        </form>
+        {error && <div className="border-t px-2.5 py-1 text-[11.5px] text-destructive">{error}</div>}
+      </div>
+    </div>
+  );
+}
+
 function StreamingBubble({ text }: { text: string }) {
   return (
     <div className="flex w-full justify-start">
@@ -520,6 +570,13 @@ function reactTo(threadId: string, messageId: string, emoji: string) {
 
 export function ChatView({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
+  // Only a frame that arrived during this turn is live. The one held from
+  // the last turn is already in the transcript, and showing it again as
+  // live would be a picture of the past with a click handler on it.
+  const frame = state.screens[bot.id];
+  const frameAtTurnStart = useMemo(() => state.screens[bot.id], [bot.busy, bot.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveBrowser =
+    bot.busy && frame?.source === "browser" && frame !== frameAtTurnStart ? frame : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const arrivals = useArrivals(bot);
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
@@ -833,6 +890,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               </div>
             </div>
           )}
+          {liveBrowser && <LiveBrowser botId={bot.id} frame={liveBrowser} />}
           {streaming ? (
             <StreamingBubble text={streaming} />
           ) : (

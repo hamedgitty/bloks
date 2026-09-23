@@ -51,6 +51,7 @@ import { MAX_TASKS, Store, type BotRecord, type Message, type NewBotProfile } fr
 import { addressees, BlokStore, MAX_MEMBERS, type BlokRecord } from "./bloks.ts";
 import { extractTeamPlan, MAX_HIRES, normalizePlan, TEAM_PROTOCOL, type TeamPlan } from "./teams.ts";
 import { houseStyle, HOUSE_STYLE } from "./house-style.ts";
+import { captureFrame, clickAt, typeText } from "./browser-view.ts";
 import { bearerToken, isLocalRequest, isSameOrigin } from "./http-guard.ts";
 import {
   bindHost,
@@ -640,6 +641,13 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.itemType === "tool") {
         const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
+        // The browser is watched from its first use in a turn, not from the
+        // turn's start: a turn that never touches it should not end with
+        // a picture of whatever page an earlier one left open. Cheap to
+        // photograph locally, so it refreshes faster than a cloud box.
+        if (bot.browser === true && /browser/i.test(event.title ?? "")) {
+          startScreenPoller(bot.id, async () => ({ ...(await captureFrame(BROWSER_PORT)), source: "browser" }), 1500);
+        }
       }
       break;
     case "request.opened": {
@@ -1006,25 +1014,33 @@ bus.subscribe((event: RuntimeEvent) => {
 });
 
 // ── watching an agent's screen while it works ─────────────────────────
-// While a turn is running its box is photographed on a timer and the
-// frames go straight out to clients, which is what the computer panel
-// renders. Whatever was on screen when the turn ended is kept and written
-// into the transcript, so the chat shows how the work finished.
-type Frame = { png: string; mime: string };
+// While a turn is running its box, or its browser, is photographed on a
+// timer and the frames go straight out to clients, which is what the
+// computer panel and the chat's live preview render. Whatever was on
+// screen when the turn ended is kept and written into the transcript, so
+// the chat shows how the work finished.
+/** source says which picture this is, so the chat only offers to click
+ * through to a browser when the frame actually came from one. */
+type Frame = { png: string; mime: string; source?: "browser" };
 const screenPollers = new Map<
   string,
   { timer: ReturnType<typeof setInterval>; capture: () => Promise<void>; last: Frame | null }
 >();
 
-function startScreenPoller(botId: string) {
-  if (screenPollers.has(botId) || !box.boxConfigured(cfg)) return;
+const boxFrame = async (botId: string): Promise<Frame> => {
+  const { png, format } = await box.screenshotBox(cfg, botId);
+  return { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
+};
+
+function startScreenPoller(botId: string, grab: (botId: string) => Promise<Frame> = boxFrame, everyMs = 4000) {
+  if (screenPollers.has(botId)) return;
+  if (grab === boxFrame && !box.boxConfigured(cfg)) return;
   let inFlight = false;
   const capture = async () => {
     if (inFlight) return;
     inFlight = true;
     try {
-      const { png, format } = await box.screenshotBox(cfg, botId);
-      const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
+      const frame = await grab(botId);
       entry.last = frame;
       broadcast({ kind: "screen", botId, ...frame });
     } catch {
@@ -1034,7 +1050,7 @@ function startScreenPoller(botId: string) {
     }
   };
   const entry = {
-    timer: setInterval(capture, 4000),
+    timer: setInterval(capture, everyMs),
     capture,
     last: null as Frame | null,
   };
@@ -4519,6 +4535,35 @@ const server = createServer(async (req, res) => {
         patch({ status: "failed", error });
         return json(res, 502, { error });
       }
+    }
+
+    // ── reaching into the agent's browser from the chat ──
+    // For the moments only a person can get past: a login, a captcha, a
+    // cookie wall. Only an agent that has a browser has one to reach into.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/browser\/(click|type)$/);
+    if (m && method === "POST") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      if (bot.browser !== true) return json(res, 409, { error: "this agent has no browser" });
+      const body = await readBody(req);
+      try {
+        if (m[2] === "click") {
+          const fx = Number(body.x);
+          const fy = Number(body.y);
+          if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) {
+            return json(res, 400, { error: "x and y are fractions of the page" });
+          }
+          await clickAt(BROWSER_PORT, fx, fy);
+        } else {
+          const text = typeof body.text === "string" ? body.text.slice(0, 2_000) : "";
+          await typeText(BROWSER_PORT, text, body.enter === true);
+        }
+      } catch (e) {
+        return json(res, 409, { error: e instanceof Error ? e.message : String(e) });
+      }
+      // show the result of what they just did, not what was there before
+      pokeScreenPoller(bot.id);
+      return json(res, 200, { ok: true });
     }
 
     // ── secret cards: a value saved from the chat, never into it ──
