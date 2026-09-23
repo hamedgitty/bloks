@@ -13,7 +13,7 @@ import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { usePageVisible } from "@/lib/pageVisible";
-import { thisComputer } from "@/lib/thisComputer";
+import { ThisComputer, thisComputer } from "@/lib/thisComputer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -41,7 +41,7 @@ function pairLink(address: string, port: number, token: string, code: string): s
   if (!/^bloks_pair_[A-Za-z0-9_-]{32}$/.test(token)) return null;
   if (!address || !Number.isInteger(port) || port < 1 || port > 65535) return null;
   const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
-  const name = encodeURIComponent((location.hostname || "This Mac").slice(0, 60));
+  const name = encodeURIComponent((location.hostname || ThisComputer()).slice(0, 60));
   return `bloks://pair?address=${encodeURIComponent(`${host}:${port}`)}&token=${token}&code=${code}&name=${name}`;
 }
 
@@ -51,6 +51,8 @@ export function DevicesSection() {
     code: string;
     qr: string | null;
     expiresAt: number;
+    /** Where the phone should dial, for somebody typing the code by hand. */
+    address: string | null;
   } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,11 @@ export function DevicesSection() {
               color: { dark: "#111111", light: "#ffffff" },
             }).catch(() => null)
           : null;
-        setWindow({ code: started.code, qr, expiresAt: started.expiresAt });
+        // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing.
+        const hostPort = address
+          ? `${address.includes(":") ? `[${address}]` : address}:${started.port}`
+          : null;
+        setWindow({ code: started.code, qr, expiresAt: started.expiresAt, address: hostPort });
         load();
       })
       .catch((e: Error) => setError(e.message));
@@ -188,6 +194,15 @@ export function DevicesSection() {
                 <div className="mt-1.5 font-mono text-[22px] font-semibold tracking-[0.2em] text-foreground">
                   {window_.code}
                 </div>
+                {/* The QR carries the address; a code typed by hand does
+                    not, and the phone asks for it. Without this line the
+                    by-hand route had no way to find where to dial. */}
+                {window_.address && (
+                  <div className="mt-1.5 text-[12px] text-muted-foreground">
+                    Address on the phone:{" "}
+                    <span className="font-mono text-foreground">{window_.address}</span>
+                  </div>
+                )}
                 <div className="mt-1 text-[11.5px] tabular-nums text-muted-foreground">
                   Expires in {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}
                   , works once.
