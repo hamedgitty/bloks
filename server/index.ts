@@ -136,6 +136,7 @@ import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
 import * as slack from "./slack.ts";
+import { agentCommands } from "./agent-commands.ts";
 import * as discord from "./discord.ts";
 import { decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
 import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
@@ -1670,6 +1671,10 @@ async function startTurn(
       disclose(attached, runsAProcess(instance.driverKind)),
       `To read one, run: node "${AGENT_CLI}" skill <id>`,
     ),
+    // The composer offers these by id after a slash (#51), so a message
+    // naming one that way is asking for it by name.
+    attached.length > 0 &&
+      "When a message names one of your skills with a slash and its id, like /id, the person is asking for that skill: follow it.",
     // Every engine gets the gallery; only the route differs. One with a
     // shell calls the CLI. One without writes the component into its own
     // answer as a fenced block, which is the only shape a model with no
@@ -5882,6 +5887,20 @@ const server = createServer(async (req, res) => {
       );
     }
 
+    // What a `/` in this agent's composer can name (server/agent-commands.ts).
+    m = path.match(/^\/api\/bots\/([\w-]+)\/commands$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      const instance = registry.get(bot.modelSelection.instanceId);
+      return json(res, 200, {
+        commands: agentCommands({
+          library: getSkills(bot.skillIds ?? []),
+          onClaudeCode: instance?.driverKind === "claudeAgent",
+          cwd: bot.cwd ?? null,
+        }),
+      });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);
     if (m && method === "POST") {
       const bot = store.bot(m[1]);

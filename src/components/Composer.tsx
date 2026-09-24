@@ -24,12 +24,21 @@ import {
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
+import { insert as insertCommand, matches as matchCommands, segments, slashAt, type Command } from "@/lib/slashCommands";
 
 /** Fade whichever edges have more text beyond them (see edgeMask). */
 function shadeEdges(el: HTMLTextAreaElement) {
   const mask = edgeMask(el.scrollTop, el.clientHeight, el.scrollHeight);
   el.style.maskImage = mask;
   el.style.webkitMaskImage = mask;
+  // the skill highlights behind the text fade and scroll with it
+  const layer = el.previousElementSibling as HTMLElement | null;
+  if (layer?.dataset.skillLayer) {
+    layer.style.maskImage = mask;
+    layer.style.webkitMaskImage = mask;
+    const inner = layer.firstElementChild as HTMLElement | null;
+    if (inner) inner.style.transform = `translateY(${-el.scrollTop}px)`;
+  }
 }
 
 /**
@@ -143,6 +152,42 @@ export function Composer({
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const pickerRef = useRef<HTMLInputElement>(null);
 
+  // The `/` list (#51): this agent's skills, fetched when the agent or
+  // its attached skills change, and filtered as the word after a slash
+  // is typed.
+  const [commands, setCommands] = useState<Command[]>([]);
+  const [slash, setSlash] = useState<{ start: number; query: string } | null>(null);
+  const [pick, setPick] = useState(0);
+  const skillKey = (bot.skillIds ?? []).join(",");
+  useEffect(() => {
+    let live = true;
+    api(`/api/bots/${bot.id}/commands`)
+      .then((r: { commands: Command[] }) => live && setCommands(r.commands ?? []))
+      .catch(() => live && setCommands([]));
+    return () => {
+      live = false;
+    };
+  }, [bot.id, skillKey]);
+  const commandIds = new Set(commands.map((c) => c.id));
+  const offered = slash ? matchCommands(commands, slash.query) : [];
+  const readSlash = (el: HTMLTextAreaElement) => {
+    setSlash(slashAt(el.value, el.selectionStart ?? el.value.length));
+    setPick(0);
+  };
+  const choose = (command: Command) => {
+    const el = inputRef.current;
+    if (!slash || !el) return;
+    // the word being typed ends where the query does; the caret is not
+    // trusted here, since a key handler can see it before it settles
+    const next = insertCommand(text, slash.start, slash.start + 1 + slash.query.length, command.id);
+    setText(next.text);
+    setSlash(null);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
   /** The one road in, whether the files came by picker, drop or paste. */
   const intake = (files: File[]) => {
     if (!files.length) return;
@@ -165,6 +210,7 @@ export function Composer({
     });
     track("message_sent", { driver: bot.modelSelection?.instanceId });
     setText("");
+    setSlash(null);
     setAttachments([]);
     setAttachNotice(null);
     onClearReply?.();
@@ -399,6 +445,47 @@ export function Composer({
           </button>
         </div>
       )}
+      {slash && (offered.length > 0 || (commands.length === 0 && slash.query === "")) && (
+        <div className="mx-auto mb-1.5 max-w-[760px]">
+          <div
+            role="listbox"
+            aria-label={`${bot.name}'s skills`}
+            className="overflow-hidden rounded-xl border bg-popover p-1 shadow-lg shadow-[--shadow-color]"
+          >
+            {offered.length === 0 ? (
+              <div className="px-2 py-1.5 text-[12.5px] text-muted-foreground">
+                {bot.name} has no skills yet. Attach some from Skills, or in {bot.name}&rsquo;s settings.
+              </div>
+            ) : (
+              offered.map((c, i) => (
+                <button
+                  key={`${c.source}:${c.id}`}
+                  role="option"
+                  aria-selected={i === pick}
+                  onMouseEnter={() => setPick(i)}
+                  // mousedown, not click, so the textarea keeps its caret
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    choose(c);
+                  }}
+                  className={cn(
+                    "flex w-full items-baseline gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
+                    i === pick ? "bg-accent" : "hover:bg-accent/60",
+                  )}
+                >
+                  <span className="shrink-0 font-mono text-[12.5px] font-medium text-brand-ink">/{c.id}</span>
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">
+                    {c.description || c.name}
+                  </span>
+                  {c.source === "engine" && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground/70">Claude Code</span>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
       <div
         className={cn(
           "mx-auto flex max-w-[760px] items-end gap-1 rounded-[22px] border bg-background p-1.5 pl-2 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150",
@@ -422,11 +509,43 @@ export function Composer({
         >
           <Plus size={18} />
         </button>
+        <div className="relative min-w-0 flex-1 self-center">
+        {/* The skills a message carries, marked behind the text (#51). The
+            layer has the textarea's exact type and padding and transparent
+            text, so each mark sits under its own word; shadeEdges keeps
+            it scrolled and faded with the textarea. */}
+        <div
+          data-skill-layer="1"
+          aria-hidden
+          className="pointer-events-none absolute inset-0 overflow-hidden px-1 py-1 text-[14.5px] leading-relaxed text-transparent [overflow-wrap:break-word] [white-space:pre-wrap]"
+        >
+          <div>
+            {segments(text, commandIds).map((run, i) =>
+              run.skill ? (
+                <span key={i} className="rounded-[5px] bg-brand-soft ring-2 ring-brand-soft">
+                  {run.text}
+                </span>
+              ) : (
+                <span key={i}>{run.text}</span>
+              ),
+            )}
+            {"\u200b"}
+          </div>
+        </div>
         <textarea
           ref={inputRef}
           rows={1}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            readSlash(e.target);
+          }}
+          onSelect={(e) => {
+            // the caret moved without typing: the word under it may have changed
+            const next = slashAt(e.currentTarget.value, e.currentTarget.selectionStart ?? 0);
+            if ((next?.start ?? -1) !== (slash?.start ?? -1)) setSlash(next);
+          }}
+          onBlur={() => setSlash(null)}
           onPaste={(e) => {
             // images in the clipboard become chips; so does a paste long
             // enough to bury the conversation
@@ -443,6 +562,23 @@ export function Composer({
             }
           }}
           onKeyDown={(e) => {
+            // the `/` list takes the arrow keys, Enter, Tab and Escape
+            // while it is open
+            if (slash && offered.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const step = e.key === "ArrowDown" ? 1 : -1;
+                return setPick((i) => (i + step + offered.length) % offered.length);
+              }
+              if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                e.preventDefault();
+                return choose(offered[Math.min(pick, offered.length - 1)]);
+              }
+            }
+            if (slash && e.key === "Escape") {
+              e.preventDefault();
+              return setSlash(null);
+            }
             // Enter sends; Shift+Enter starts a new line. While the agent
             // works, plain Enter queues behind the running turn, and
             // Cmd+Enter stops the turn first: both the patient road and
@@ -463,8 +599,9 @@ export function Composer({
                 ? `${bot.name} is working. Enter queues, ${modKey()}Enter interrupts…`
                 : `Message ${bot.name}`
           }
-          className="w-full min-w-0 resize-none self-center bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+          className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
         />
+        </div>
         {bot.busy ? (
           <button
             onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
