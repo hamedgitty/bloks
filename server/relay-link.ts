@@ -145,6 +145,13 @@ export class RelayLink {
   /** The lock screen's words for one frame, as one device is allowed to
    * see it, or null for a frame that has none. */
   previewOf: (frame: unknown) => WakePreview | null = () => null;
+  /**
+   * A webhook some platform sent to Bloks Cloud for this computer (a
+   * WhatsApp group message, today), handed over as an ask. Answers the
+   * status the relay should give the caller. Not sealed: the caller sent
+   * it readable, and its own signature is what gets checked.
+   */
+  onHook: (hook: { platform: string; body: string; signature: string | null }) => Promise<number> = async () => 404;
 
   /** The digest of an open invite's secret, for its envelope key, or null
    * when there is no such invite or it has closed. */
@@ -302,6 +309,26 @@ export class RelayLink {
     }
   }
 
+  /**
+   * Asks Bloks Cloud for a public address a platform can call with its
+   * webhooks for this computer, and tells it the token the platform will
+   * echo while the webhook is being set up. The same address each time.
+   */
+  async hookUrl(platform: "whatsapp", verifyToken: string): Promise<string> {
+    if (!this.config) throw new Error("Turn on Bloks Cloud first: WhatsApp reaches this computer through it.");
+    const res = await fetch(`${this.config.url}/space/agent/hook`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ platform, verifyToken }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await res.json().catch(() => ({}))) as { url?: unknown; error?: unknown };
+    if (!res.ok || typeof body.url !== "string") {
+      throw new Error(typeof body.error === "string" ? body.error : "Bloks Cloud could not make a webhook address.");
+    }
+    return body.url;
+  }
+
   private headers(): Record<string, string> {
     return {
       authorization: `Bearer ${this.config!.agentToken}`,
@@ -440,6 +467,7 @@ export class RelayLink {
    * surface as the device that sent it, and seal the answer back.
    */
   private async serve(id: string, payload: string) {
+    if (payload.startsWith("hook:")) return void this.serveHook(id, payload.slice(5));
     const envelope = peek(payload);
     if (envelope?.d.startsWith("inv_")) return void this.serveInvite(id, envelope);
     if (envelope?.d.startsWith("pair_")) return void this.servePairLink(id, envelope);
@@ -634,6 +662,22 @@ export class RelayLink {
     const claimed = this.pairClaim(linkId, request.body);
     if (!claimed) return void this.answer(id, 410, { error: "this pairing link was already used or has expired" }, replyKey, linkId);
     this.answer(id, 200, claimed, replyKey, linkId);
+  }
+
+  private async serveHook(id: string, raw: string) {
+    let hook: { platform?: unknown; body?: unknown; signature?: unknown };
+    try {
+      hook = JSON.parse(raw);
+    } catch {
+      return this.answer(id, 400, null, null, null);
+    }
+    if (typeof hook.platform !== "string" || typeof hook.body !== "string") return this.answer(id, 400, null, null, null);
+    const status = await this.onHook({
+      platform: hook.platform,
+      body: hook.body,
+      signature: typeof hook.signature === "string" ? hook.signature : null,
+    }).catch(() => 500);
+    this.answer(id, status, null, null, null);
   }
 
   private answer(id: string, status: number, body: unknown, key: Buffer | null, deviceId: string | null) {

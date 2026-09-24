@@ -79,7 +79,7 @@ export interface OptionCardData {
 export interface Message {
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
-  via?: "slack" | "discord";
+  via?: "slack" | "discord" | "whatsapp";
   /** The user's selection on a decision component; distinct from the agent's recommendation. */
   decisionChoice?: number;
   id: string;

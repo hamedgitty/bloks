@@ -30,7 +30,7 @@ export interface Person {
   relayTokenHash?: string;
   /** Set for someone who talks to the room from a linked chat channel
    * (server/chat-bridge.ts): which platform, and their id there. */
-  via?: { platform: "slack" | "discord"; userId: string };
+  via?: { platform: "slack" | "discord" | "whatsapp"; userId: string };
 }
 
 /** Somebody in a linked chat channel who addressed the agents and is not
@@ -39,7 +39,7 @@ export interface Person {
 export interface Knock {
   id: string;
   roomId: string;
-  platform: "slack" | "discord";
+  platform: "slack" | "discord" | "whatsapp";
   userId: string;
   name: string;
   at: number;
@@ -324,7 +324,7 @@ export function closeInvite(id: string, status: "declined" | "cancelled"): Invit
 // ── people from a linked chat channel ──────────────────────────────────
 
 /** The person a chat account belongs to in this room, if they are in it. */
-export function personInRoomByChat(roomId: string, platform: "slack" | "discord", userId: string): Person | null {
+export function personInRoomByChat(roomId: string, platform: "slack" | "discord" | "whatsapp", userId: string): Person | null {
   const data = load();
   const p = data.people.find((x) => x.via?.platform === platform && x.via.userId === userId);
   return p && data.memberships.some((m) => m.personId === p.id && m.roomId === roomId) ? p : null;

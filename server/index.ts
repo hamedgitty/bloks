@@ -138,7 +138,8 @@ import * as telegram from "./telegram.ts";
 import * as slack from "./slack.ts";
 import { agentCommands } from "./agent-commands.ts";
 import * as discord from "./discord.ts";
-import { decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
+import * as whatsapp from "./whatsapp.ts";
+import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
 import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
@@ -2616,6 +2617,7 @@ const relayLink = new RelayLink(PORT, (state) => broadcast({ kind: "relay", ...s
 // invite's envelope key comes from the invite's own secret.
 relayLink.memberFrame = (frame, personId) => memberFrame(frame, (roomId) => viewOf(personId, roomId));
 relayLink.previewOf = previewOf;
+relayLink.onHook = (hook) => onWhatsAppHook(hook);
 relayLink.pairSecret = (linkId) => pairLinkSecret(linkId);
 relayLink.pairClaim = (linkId, body) => {
   const b = (body ?? {}) as { name?: unknown; tokenHash?: unknown };
@@ -3613,6 +3615,7 @@ const chatClients: { slack?: slack.SlackSocket; discord?: discord.DiscordGateway
 const chatStatus: Record<ChatPlatform, { state: "off" | "connecting" | "connected" | "error"; detail?: string }> = {
   slack: { state: "off" },
   discord: { state: "off" },
+  whatsapp: { state: "off" },
 };
 /** Room messages already said in a channel, so a patch never repeats one. */
 const chatMirrored = new Set<string>();
@@ -3620,8 +3623,10 @@ const chatMirrored = new Set<string>();
 const chatOutbox = new Map<string, Promise<unknown>>();
 
 function startChat(platform: ChatPlatform) {
-  chatClients[platform]?.stop();
-  delete chatClients[platform];
+  if (platform !== "whatsapp") {
+    chatClients[platform]?.stop();
+    delete chatClients[platform];
+  }
   chatStatus[platform] = { state: "off" };
   const onStatus = (state: "connecting" | "connected" | "error", detail?: string) => {
     chatStatus[platform] = { state, ...(detail ? { detail } : {}) };
@@ -3634,14 +3639,61 @@ function startChat(platform: ChatPlatform) {
     client.onStatus = onStatus;
     chatClients.slack = client;
     void client.start();
-  } else {
+  } else if (platform === "discord") {
     const c = cfg.chat?.discord;
     if (!c?.enabled || !c.token) return;
     const client = new discord.DiscordGateway(c.token, (m) => void onChatMessage(m));
     client.onStatus = onStatus;
     chatClients.discord = client;
     void client.start();
+  } else {
+    // Nothing to hold open: Meta calls Bloks Cloud, which hands each call
+    // over the relay line (onHook below). Ready once it is set up.
+    const c = cfg.chat?.whatsapp;
+    if (!c?.enabled || !c.token || !c.phoneNumberId || !c.appSecret || !c.webhookUrl) return;
+    onStatus("connected");
   }
+}
+
+/**
+ * A WhatsApp webhook, handed over by Bloks Cloud. Checked against the app
+ * secret before a byte of it is read as anything, and answered with the
+ * status Meta should see: a 200 for anything handled or deliberately
+ * ignored, so Meta does not retry what will never be wanted.
+ */
+async function onWhatsAppHook(hook: { platform: string; body: string; signature: string | null }): Promise<number> {
+  if (hook.platform !== "whatsapp") return 404;
+  const c = cfg.chat?.whatsapp;
+  if (!c?.enabled || !c.appSecret) return 404;
+  if (!whatsapp.verifySignature(hook.body, hook.signature, c.appSecret)) return 401;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(hook.body);
+  } catch {
+    return 400;
+  }
+  for (const message of whatsapp.parseWebhook(parsed, c.number ?? "")) await onChatMessage(message);
+  return 200;
+}
+
+/** What the settings screen sees. Tokens never come back out, only
+ * whether they are set; WhatsApp's webhook address and verify token do,
+ * because they are what the person pastes into Meta's dashboard. */
+function chatSettings() {
+  const c = cfg.chat ?? {};
+  const wa = c.whatsapp;
+  return {
+    slack: { configured: Boolean(c.slack?.botToken && c.slack?.appToken), enabled: c.slack?.enabled === true, ...chatStatus.slack },
+    discord: { configured: Boolean(c.discord?.token), enabled: c.discord?.enabled === true, ...chatStatus.discord },
+    whatsapp: {
+      configured: Boolean(wa?.token && wa.phoneNumberId && wa.appSecret),
+      enabled: wa?.enabled === true,
+      number: wa?.number ?? null,
+      webhookUrl: wa?.webhookUrl ?? null,
+      verifyToken: wa?.verifyToken ?? null,
+      ...chatStatus.whatsapp,
+    },
+  };
 }
 
 /** Says something in a channel, in order, and never throws. */
@@ -3651,6 +3703,8 @@ function sayInChannel(platform: ChatPlatform, channelId: string, text: string) {
     try {
       if (platform === "slack" && cfg.chat?.slack?.botToken) await slack.post(cfg.chat.slack.botToken, channelId, text);
       if (platform === "discord" && cfg.chat?.discord?.token) await discord.post(cfg.chat.discord.token, channelId, text);
+      const wa = cfg.chat?.whatsapp;
+      if (platform === "whatsapp" && wa?.token && wa.phoneNumberId) await whatsapp.post(wa.token, wa.phoneNumberId, channelId, text);
     } catch (e) {
       chatStatus[platform] = { state: "error", detail: (e as Error).message };
     }
@@ -3736,7 +3790,7 @@ function mirrorToChat(payload: unknown) {
   }
 }
 
-for (const platform of ["slack", "discord"] as const) startChat(platform);
+for (const platform of CHAT_PLATFORMS) startChat(platform);
 
 // The Local VM lease dies with the turn that held it, and a VM that
 // survived a restart goes back on the idle clock.
@@ -6460,7 +6514,7 @@ const server = createServer(async (req, res) => {
         knocks: people.knocksFor(blok.id).map((k) => ({ id: k.id, name: k.name, platform: k.platform, at: k.at })),
         chat: {
           link: blok.sharing?.chat ? { platform: blok.sharing.chat.platform, channelId: blok.sharing.chat.channelId, channelName: blok.sharing.chat.channelName } : null,
-          connected: (["slack", "discord"] as const).filter((p) => chatStatus[p].state === "connected"),
+          connected: CHAT_PLATFORMS.filter((p) => chatStatus[p].state === "connected"),
         },
         // what the owner could open up to this room, by name only
         available: {
@@ -6537,8 +6591,8 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { blok: bloks.get(blok.id) });
       }
       const body = await readBody(req);
-      const platform: ChatPlatform | null = body.platform === "slack" || body.platform === "discord" ? body.platform : null;
-      const channelId = typeof body.channelId === "string" && /^[A-Za-z0-9]{1,40}$/.test(body.channelId) ? body.channelId : "";
+      const platform: ChatPlatform | null = CHAT_PLATFORMS.includes(body.platform) ? body.platform : null;
+      const channelId = typeof body.channelId === "string" && /^[A-Za-z0-9@._=:-]{1,120}$/.test(body.channelId) ? body.channelId : "";
       if (!platform || !channelId) return json(res, 400, { error: "pick a channel" });
       if (chatStatus[platform].state !== "connected") {
         return json(res, 409, { error: `Connect ${PLATFORM_NAME[platform]} in Settings first.` });
@@ -7577,18 +7631,11 @@ const server = createServer(async (req, res) => {
     }
 
     // ── Slack and Discord, for shared rooms ──
-    if (method === "GET" && path === "/api/chat") {
-      // tokens never come back out, only whether they are set
-      const c = cfg.chat ?? {};
-      return json(res, 200, {
-        slack: { configured: Boolean(c.slack?.botToken && c.slack?.appToken), enabled: c.slack?.enabled === true, ...chatStatus.slack },
-        discord: { configured: Boolean(c.discord?.token), enabled: c.discord?.enabled === true, ...chatStatus.discord },
-      });
-    }
+    if (method === "GET" && path === "/api/chat") return json(res, 200, chatSettings());
     if (method === "POST" && path === "/api/chat") {
       const body = await readBody(req);
-      const platform: ChatPlatform | null = body.platform === "slack" || body.platform === "discord" ? body.platform : null;
-      if (!platform) return json(res, 400, { error: "slack or discord" });
+      const platform: ChatPlatform | null = CHAT_PLATFORMS.includes(body.platform) ? body.platform : null;
+      if (!platform) return json(res, 400, { error: "slack, discord or whatsapp" });
       const next = { ...(cfg.chat ?? {}) };
       if (platform === "slack") {
         const cur = { ...(next.slack ?? {}) };
@@ -7607,6 +7654,35 @@ const server = createServer(async (req, res) => {
         }
         if (typeof body.enabled === "boolean") cur.enabled = body.enabled;
         next.slack = cur;
+      } else if (platform === "whatsapp") {
+        const cur = { ...(next.whatsapp ?? {}) };
+        if (body.forget === true) {
+          Object.assign(cur, { token: undefined, phoneNumberId: undefined, appSecret: undefined, number: undefined, enabled: false });
+        }
+        if (body.token !== undefined || body.phoneNumberId !== undefined || body.appSecret !== undefined) {
+          const token = whatsapp.cleanToken(body.token);
+          const phoneNumberId = whatsapp.cleanPhoneNumberId(body.phoneNumberId);
+          const appSecret = whatsapp.cleanAppSecret(body.appSecret);
+          if (!phoneNumberId) return json(res, 400, { error: "The phone number ID is the long number under your number in Meta's WhatsApp setup, not the phone number itself." });
+          if (!token) return json(res, 400, { error: "That does not look like a WhatsApp access token." });
+          if (!appSecret) return json(res, 400, { error: "The app secret is 32 letters and numbers, from App settings, Basic." });
+          let me: { number: string; name: string };
+          try {
+            me = await whatsapp.whoAmI(token, phoneNumberId);
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+          const verifyToken = cur.verifyToken ?? randomBytes(18).toString("base64url");
+          let webhookUrl: string;
+          try {
+            webhookUrl = await relayLink.hookUrl("whatsapp", verifyToken);
+          } catch (e) {
+            return json(res, 409, { error: (e as Error).message });
+          }
+          Object.assign(cur, { token, phoneNumberId, appSecret, verifyToken, webhookUrl, number: me.number, enabled: true });
+        }
+        if (typeof body.enabled === "boolean") cur.enabled = body.enabled;
+        next.whatsapp = cur;
       } else {
         const cur = { ...(next.discord ?? {}) };
         if (body.forget === true) Object.assign(cur, { token: undefined, enabled: false });
@@ -7626,23 +7702,24 @@ const server = createServer(async (req, res) => {
       saveConfig({ chat: next } as Partial<AppConfig>);
       cfg.chat = next;
       startChat(platform);
-      const c = cfg.chat;
-      return json(res, 200, {
-        slack: { configured: Boolean(c.slack?.botToken && c.slack?.appToken), enabled: c.slack?.enabled === true, ...chatStatus.slack },
-        discord: { configured: Boolean(c.discord?.token), enabled: c.discord?.enabled === true, ...chatStatus.discord },
-      });
+      return json(res, 200, chatSettings());
     }
-    m = path.match(/^\/api\/chat\/(slack|discord)\/channels$/);
+    m = path.match(/^\/api\/chat\/(slack|discord|whatsapp)\/channels$/);
     if (m && method === "GET") {
       try {
+        const wa = cfg.chat?.whatsapp;
         const list =
           m[1] === "slack"
             ? cfg.chat?.slack?.botToken
               ? await slack.channels(cfg.chat.slack.botToken)
               : []
-            : cfg.chat?.discord?.token
-              ? await discord.channels(cfg.chat.discord.token)
-              : [];
+            : m[1] === "discord"
+              ? cfg.chat?.discord?.token
+                ? await discord.channels(cfg.chat.discord.token)
+                : []
+              : wa?.token && wa.phoneNumberId
+                ? await whatsapp.groups(wa.token, wa.phoneNumberId)
+                : [];
         return json(res, 200, { channels: list });
       } catch (e) {
         return json(res, 502, { error: (e as Error).message });

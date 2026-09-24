@@ -75,6 +75,19 @@ export interface AppConfig {
   chat?: {
     slack?: { botToken?: string; appToken?: string; enabled?: boolean };
     discord?: { token?: string; enabled?: boolean };
+    /** Meta's Cloud API. The app secret checks every webhook; the verify
+     * token is what Meta echoes when the webhook is first set up. */
+    whatsapp?: {
+      token?: string;
+      phoneNumberId?: string;
+      appSecret?: string;
+      verifyToken?: string;
+      /** The business number, as Meta reports it, for spotting mentions. */
+      number?: string;
+      /** Where Meta should call, from Bloks Cloud. */
+      webhookUrl?: string;
+      enabled?: boolean;
+    };
   };
   /** Reaching agents from a phone over Telegram. The token is a
    * credential, so it lives here with the rest of them. */

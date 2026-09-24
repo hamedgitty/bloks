@@ -50,8 +50,8 @@ interface PeopleResponse {
 
 const CAPS = [0, 5, 10, 25, 50, 100, 250];
 
-type ChatPlatform = "slack" | "discord";
-const PLATFORM: Record<ChatPlatform, string> = { slack: "Slack", discord: "Discord" };
+type ChatPlatform = "slack" | "discord" | "whatsapp";
+const PLATFORM: Record<ChatPlatform, string> = { slack: "Slack", discord: "Discord", whatsapp: "WhatsApp" };
 
 function usd(n: number) {
   return `$${n < 10 ? n.toFixed(2) : Math.round(n)}`;
@@ -555,7 +555,9 @@ function ChatLinkSection({
           {platform && channels && (
             channels.length === 0 ? (
               <div className="text-[12px] leading-snug text-muted-foreground">
-                The bot is not in any channels yet. Add it to one in {PLATFORM[platform]}, then pick again.
+                {platform === "whatsapp"
+                  ? "The number is not in any groups yet. Add it to one in WhatsApp, then pick again."
+                  : `The bot is not in any channels yet. Add it to one in ${PLATFORM[platform]}, then pick again.`}
               </div>
             ) : (
               <div className="flex gap-2">

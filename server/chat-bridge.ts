@@ -1,6 +1,7 @@
 // A shared room, carried into a group chat.
 //
-// A room can be linked to one channel in Slack or Discord. Everything said
+// A room can be linked to one channel in Slack or Discord, or one WhatsApp
+// group. Everything said
 // in the room is said in the channel, and what people say to the agents in
 // the channel is said in the room. The rules are the shared room's rules,
 // not new ones: a person in the channel is a guest of the room, the owner
@@ -24,11 +25,14 @@
 //   into a bill across a chat they both sit in.
 //
 // Pure, so the rules can be read in one place and tested exhaustively.
-// The transports (server/slack.ts, server/discord.ts) only move bytes.
+// The transports (server/slack.ts, server/discord.ts, server/whatsapp.ts)
+// only move bytes.
 
-export type ChatPlatform = "slack" | "discord";
+export type ChatPlatform = "slack" | "discord" | "whatsapp";
 
-export const PLATFORM_NAME: Record<ChatPlatform, string> = { slack: "Slack", discord: "Discord" };
+export const CHAT_PLATFORMS: ChatPlatform[] = ["slack", "discord", "whatsapp"];
+
+export const PLATFORM_NAME: Record<ChatPlatform, string> = { slack: "Slack", discord: "Discord", whatsapp: "WhatsApp" };
 
 /** A room's link to one channel. Lives on the room's sharing settings. */
 export interface ChatLink {
@@ -126,21 +130,26 @@ export type Speaker = { kind: "agent"; name: string } | { kind: "person"; name: 
  */
 export function outbound(platform: ChatPlatform, speaker: Speaker, text: string): string {
   const body = neutralise(platform, clip(text, platform === "discord" ? 1_900 : 3_900));
-  // Slack bolds with one asterisk and italicises with an underscore;
-  // Discord bolds with two
-  if (speaker.kind === "notice") return platform === "slack" ? `_${body}_` : `*${body}*`;
+  // Slack and WhatsApp bold with one asterisk and italicise with an
+  // underscore; Discord bolds with two
+  const single = platform !== "discord";
+  if (speaker.kind === "notice") return single ? `_${body}_` : `*${body}*`;
   const name = escape(platform, speaker.name);
   if (speaker.kind === "person") return `${name}: ${body}`;
-  return platform === "slack" ? `*${name}* ${body}` : `**${name}** ${body}`;
+  return single ? `*${name}* ${body}` : `**${name}** ${body}`;
 }
 
 /** Nothing the room says may ping a whole channel. */
 function neutralise(platform: ChatPlatform, text: string): string {
+  // WhatsApp has no way to ping a whole group from text
+  if (platform === "whatsapp") return text;
   if (platform === "discord") return text.replace(/@(everyone|here)/gi, "@\u200b$1");
   return text.replace(/<!(channel|here|everyone)[^>]*>/gi, "@$1").replace(/<@([A-Z0-9]+)>/g, "@$1");
 }
 
 function escape(platform: ChatPlatform, text: string): string {
+  // a name cannot carry formatting into the line
+  if (platform === "whatsapp") return text.replace(/[*_~`]/g, "");
   if (platform === "slack") return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return text.replace(/([*_`~|>\\])/g, "\\$1").replace(/@/g, "@\u200b");
 }
