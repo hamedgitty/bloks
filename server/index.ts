@@ -1026,6 +1026,15 @@ bus.subscribe((event: RuntimeEvent) => {
       if (spoke && spoke !== event.threadId && bloks.get(spoke)?.sharing) {
         chargeRoom(spoke, laneRequester.get(event.threadId) ?? "owner", turnCost(event.cost, spent));
       }
+      // A turn the Mac slept through, which failed because of it, is
+      // picked up once when it wakes rather than left dead.
+      const slept = sleptLanes.get(event.threadId);
+      if (slept) {
+        sleptLanes.delete(event.threadId);
+        if (event.ok === false && slept.woke && Date.now() - slept.woke < 30 * 60_000) {
+          carryOnAfterSleep(bot.id, event.threadId, slept);
+        }
+      }
       // the final frame stops being a live preview and becomes part of
       // the conversation
       const frame = stopScreenPoller(bot.id);
@@ -1208,6 +1217,62 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
  * session is keyed to the agent, so inbound events name the agent, not
  * the room; this is how a reply finds its way back to the right room. */
 const activeRoom = new Map<string, string>(); // taskId -> blokId
+
+// ── the Mac going to sleep ─────────────────────────────────────────────
+// The desktop shell says when the machine is about to sleep and when it
+// wakes (electron/main.mjs). A turn in flight across a sleep usually
+// fails on the far side, because every connection it held was cut; that
+// is not the agent's failure and should not be the end of the work.
+
+/** Lanes that were mid-turn when the Mac went to sleep. */
+const sleptLanes = new Map<string, { botId: string; roomId?: string; requester?: string; at: number; woke?: number }>();
+
+function noteSleep() {
+  for (const bot of store.bots) {
+    for (const task of bot.tasks) {
+      if (!task.busy) continue;
+      const room = activeRoom.get(task.id);
+      sleptLanes.set(task.id, {
+        botId: bot.id,
+        ...(room && room !== task.id ? { roomId: room } : {}),
+        ...(laneRequester.has(task.id) ? { requester: laneRequester.get(task.id) } : {}),
+        at: Date.now(),
+      });
+    }
+  }
+}
+
+function noteWake() {
+  const now = Date.now();
+  for (const slept of sleptLanes.values()) slept.woke ??= now;
+  // a lane whose turn finished while nobody was watching has nothing to
+  // resume; forget anything older than a day
+  for (const [lane, slept] of sleptLanes) if (now - slept.at > 24 * 60 * 60_000) sleptLanes.delete(lane);
+}
+
+const SLEPT_TEXT =
+  "This computer went to sleep in the middle of your last step, which cut it off. Carry on from where you were; check what already happened before repeating anything.";
+
+function carryOnAfterSleep(botId: string, laneId: string, slept: { roomId?: string; requester?: string }) {
+  // after the failed turn has settled, so the lane is free again
+  setTimeout(() => {
+    const threadId = slept.roomId ?? laneId;
+    const notice = store.appendMessage(threadId, {
+      role: "bot",
+      kind: "notice",
+      ...(slept.roomId ? { from: botId } : {}),
+      text: `${store.bot(botId)?.name ?? "The agent"} was cut off when this computer slept, and is picking up where it left off.`,
+    });
+    broadcast({ kind: "message", threadId, message: notice });
+    // told to the agent, not written into the chat as if the person had
+    // typed it: the notice above is what the person reads
+    void startTurn(botId, SLEPT_TEXT, {
+      presetMessage: true,
+      ...(slept.roomId ? { roomId: slept.roomId } : { taskId: laneId }),
+      ...(slept.requester ? { requester: slept.requester } : {}),
+    }).catch((e) => sayTurnedAway(threadId, e));
+  }, 1_500);
+}
 /** Tokens of the turn in flight, per lane. Providers report a running
  * total for the turn, so this holds a high-water mark, popped when the
  * turn settles and folded into the lane's lifetime tally. */
@@ -7366,6 +7431,19 @@ const server = createServer(async (req, res) => {
     }
 
     // ── reaching agents from a phone ──
+    // ── power: the desktop shell keeping the Mac awake, and saying when
+    // it sleeps. This machine only: nothing remote has a say in it.
+    if (path === "/api/power" && (method === "GET" || method === "POST")) {
+      if (!local) return json(res, 403, { error: "not from here" });
+      if (method === "POST") {
+        const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+        if (body.state === "suspend") noteSleep();
+        if (body.state === "resume") noteWake();
+      }
+      const working = store.bots.reduce((n, b) => n + b.tasks.filter((t) => t.busy).length, 0);
+      return json(res, 200, { working });
+    }
+
     // ── Slack and Discord, for shared rooms ──
     if (method === "GET" && path === "/api/chat") {
       // tokens never come back out, only whether they are set

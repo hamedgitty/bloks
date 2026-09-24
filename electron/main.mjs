@@ -22,6 +22,8 @@ import {
   nativeImage,
   nativeTheme,
   Notification,
+  powerMonitor,
+  powerSaveBlocker,
   screen,
   session,
   shell,
@@ -862,6 +864,7 @@ app.whenReady().then(async () => {
   }
 
   void restoreQuickShortcut();
+  watchPower();
 
   app.on("activate", () => {
     // the panel is not a window worth reopening the app for
@@ -869,6 +872,48 @@ app.whenReady().then(async () => {
     if (windows.length === 0) createWindow();
   });
 });
+
+// ── sleep ─────────────────────────────────────────────────────────────
+// Two small things so a laptop is a better home for agents.
+//
+// While any agent is mid-turn, the Mac is kept from idle sleep: walking
+// away from a long task should not end it. Only idle sleep. Closing the
+// lid still sleeps the machine, which is macOS's call and the right one,
+// and the lock is let go the moment nothing is working.
+//
+// And the harness is told when the machine sleeps and wakes, so a turn
+// the sleep cut off is picked up again rather than left failed.
+let awakeLock = null;
+
+async function power(state) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${serverPort}/api/power`, {
+      method: state ? "POST" : "GET",
+      headers: { "content-type": "application/json" },
+      body: state ? JSON.stringify({ state }) : undefined,
+      signal: AbortSignal.timeout(2000),
+    });
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+function watchPower() {
+  const check = async () => {
+    const status = await power();
+    const working = Boolean(status?.working);
+    if (working && awakeLock === null) awakeLock = powerSaveBlocker.start("prevent-app-suspension");
+    if (!working && awakeLock !== null) {
+      powerSaveBlocker.stop(awakeLock);
+      awakeLock = null;
+    }
+  };
+  setInterval(() => void check(), 15_000).unref?.();
+  void check();
+  powerMonitor.on("suspend", () => void power("suspend"));
+  powerMonitor.on("resume", () => void power("resume"));
+}
 
 // The system keeps handing us these keys until we say otherwise.
 app.on("will-quit", () => globalShortcut.unregisterAll());
