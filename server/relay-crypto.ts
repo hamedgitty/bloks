@@ -121,10 +121,21 @@ export interface RelayRequest {
   body?: unknown;
   ts?: number;
   nonce?: string;
+  /** Set by a client that wants the answer as bytes rather than JSON:
+   * the desktop app working with a Bloks on another computer, which asks
+   * for avatars, files and whole transcripts. The answer is gzipped
+   * before sealing, which is what lets it fit through the relay. */
+  raw?: boolean;
+  /** A request body that is bytes (an upload), base64, with its type. */
+  bodyB64?: string;
+  type?: string;
 }
 
 /** And what it gets back. */
 export interface RelayResponse {
   status: number;
   body?: unknown;
+  /** For a raw request: the content type, and the body gzipped, base64. */
+  type?: string;
+  z?: string;
 }

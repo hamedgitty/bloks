@@ -23,6 +23,7 @@
 //   backoff; the Mac being asleep for six hours is the normal case, not
 //   an incident.
 import { randomBytes } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import type { IncomingMessage } from "node:http";
 
 import { deviceKey, inviteKey, open, peek, seal, type Envelope, type RelayRequest } from "./relay-crypto.ts";
@@ -56,6 +57,8 @@ export function relayInviteFor(req: IncomingMessage): string | null {
  * asking how that is going. Anything else under an invite key is refused
  * here, before it reaches the server at all. */
 const INVITE_ROUTES = new Set(["POST /api/member/claim", "GET /api/member/claim"]);
+/** The relay takes 2 MB a payload; sealing and base64 add about a third. */
+const MAX_RAW_ANSWER = 1_400_000;
 
 /** Who a wake should reach: everybody (a string) or the phones registered
  * by the named relay client digests. */
@@ -129,6 +132,10 @@ export class RelayLink {
   /** The digest of an open invite's secret, for its envelope key, or null
    * when there is no such invite or it has closed. */
   inviteSecret: (inviteId: string) => string | null = () => null;
+  /** Pairing through the relay (server/pairing.ts): the digest a link's
+   * envelopes are keyed from, and what spending it does. */
+  pairSecret: (linkId: string) => string | null = () => null;
+  pairClaim: (linkId: string, body: unknown) => unknown | null = () => null;
 
   constructor(port: number, onChange: (state: RelayState) => void = () => {}) {
     this.port = port;
@@ -405,6 +412,7 @@ export class RelayLink {
   private async serve(id: string, payload: string) {
     const envelope = peek(payload);
     if (envelope?.d.startsWith("inv_")) return void this.serveInvite(id, envelope);
+    if (envelope?.d.startsWith("pair_")) return void this.servePairLink(id, envelope);
     const device = envelope ? pairedDevices().find((d) => d.id === envelope.d) : null;
     // An envelope for an unknown device is a revoked phone or a forgery,
     // and both get the same nothing.
@@ -441,6 +449,7 @@ export class RelayLink {
       return void this.answer(id, 404, { error: "no such route" }, replyKey, device.id);
     }
 
+    if (request.raw) return void this.serveRaw(id, request, replyKey, device.id);
     try {
       const res = await fetch(`http://127.0.0.1:${this.port}${request.path}`, {
         method: request.method,
@@ -518,6 +527,83 @@ export class RelayLink {
     } catch {
       this.answer(id, 502, { error: `${thisMachine()} could not answer that` }, replyKey, inviteId);
     }
+  }
+
+  /**
+   * A request that wants bytes back, from an owner's device. Same checks
+   * as any other by the time it gets here; what differs is only the
+   * shape: any body type in, the answer gzipped, and a longer wait,
+   * because a file takes longer than a JSON answer.
+   */
+  private async serveRaw(id: string, request: RelayRequest, replyKey: Buffer, deviceId: string) {
+    try {
+      const body =
+        typeof request.bodyB64 === "string"
+          ? Buffer.from(request.bodyB64, "base64")
+          : request.body === undefined
+            ? undefined
+            : JSON.stringify(request.body);
+      const res = await fetch(`http://127.0.0.1:${this.port}${request.path}`, {
+        method: request.method,
+        headers: {
+          "content-type": typeof request.type === "string" ? request.type : "application/json",
+          origin: `http://127.0.0.1:${this.port}`,
+          [RELAY_HEADER]: INTERNAL,
+          [DEVICE_HEADER]: deviceId,
+        },
+        body,
+        signal: AbortSignal.timeout(60_000),
+      });
+      const bytes = Buffer.from(await res.arrayBuffer());
+      const z = gzipSync(bytes).toString("base64");
+      // what the relay will carry; past it, say so rather than send
+      // something it would drop on the floor
+      if (z.length > MAX_RAW_ANSWER) {
+        return void this.answer(id, 413, { error: "too large to open through Bloks Cloud" }, replyKey, deviceId);
+      }
+      this.answerRaw(id, res.status, res.headers.get("content-type") ?? "application/octet-stream", z, replyKey, deviceId);
+    } catch {
+      this.answer(id, 502, { error: `${thisMachine()} could not answer that` }, replyKey, deviceId);
+    }
+  }
+
+  private answerRaw(id: string, status: number, type: string, z: string, key: Buffer, deviceId: string) {
+    if (!this.config) return;
+    const payload = seal(key, deviceId, { status, type, z });
+    void fetch(`${this.config.url}/space/agent/result`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id, status, payload }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch(() => {});
+  }
+
+  /**
+   * Somebody holding a pairing link (server/pairing.ts) and nothing else.
+   * One thing can be asked: to be paired. Answered here rather than by
+   * replaying HTTP, since there is no route a link could reach anyway.
+   */
+  private servePairLink(id: string, envelope: Envelope) {
+    const linkId = envelope.d;
+    const secretHash = this.pairSecret(linkId);
+    if (!secretHash) return void this.answer(id, 401, null, null, null);
+    const readKey = inviteKey(secretHash, "phone-to-mac");
+    const replyKey = inviteKey(secretHash, "mac-to-phone");
+    const request = open(readKey, envelope) as RelayRequest | null;
+    if (!request || request.method !== "POST" || request.path !== "/api/pair/link/claim") {
+      return void this.answer(id, 404, { error: "no such route" }, replyKey, linkId);
+    }
+    const fresh =
+      typeof request.ts === "number" &&
+      Math.abs(Date.now() - request.ts) <= REPLAY_WINDOW_MS &&
+      typeof request.nonce === "string" &&
+      request.nonce.length > 0 &&
+      !this.seenNonces.has(request.nonce);
+    if (!fresh) return void this.answer(id, 409, { error: "stale or replayed request" }, replyKey, linkId);
+    this.rememberNonce(request.nonce!);
+    const claimed = this.pairClaim(linkId, request.body);
+    if (!claimed) return void this.answer(id, 410, { error: "this pairing link was already used or has expired" }, replyKey, linkId);
+    this.answer(id, 200, claimed, replyKey, linkId);
   }
 
   private answer(id: string, status: number, body: unknown, key: Buffer | null, deviceId: string | null) {

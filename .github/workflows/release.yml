@@ -146,6 +146,12 @@ jobs:
           echo "== stapled ticket =="
           xcrun stapler validate "$app"
 
+      # bloks-server, the same server with no desktop around it, for a
+      # computer that never sleeps. Built from what the step above
+      # already compiled, so it is the release's server byte for byte.
+      - name: Pack bloks-server
+        run: node scripts/pack-server.mjs
+
       # Verified, so now it can be attached. By id, to the one draft this
       # job opened, for the reason written above that step.
       - name: Attach to the release
@@ -159,7 +165,7 @@ jobs:
             echo "The draft this job opened is gone."
             exit 1
           fi
-          for f in release/*.dmg release/*.zip release/latest*.yml release/*.blockmap; do
+          for f in release/*.dmg release/*.zip release/latest*.yml release/*.blockmap release/bloks-server-*.tar.gz; do
             [ -f "$f" ] || continue
             name=$(basename "$f")
             # Skip what is already there. Nothing races this step:
@@ -190,4 +196,5 @@ jobs:
             release/*.zip
             release/latest*.yml
             release/*.blockmap
+            release/bloks-server-*.tar.gz
           retention-days: 7

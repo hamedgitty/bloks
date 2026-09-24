@@ -70,6 +70,9 @@ import {
   remoteEnabled,
   setRemoteEnabled,
   startPairing,
+  createPairLink,
+  pairLinkSecret,
+  claimPairLink,
 } from "./pairing.ts";
 import {
   clamp,
@@ -2545,6 +2548,14 @@ const relayLink = new RelayLink(PORT, (state) => broadcast({ kind: "relay", ...s
 // Members' devices get frames as member-access.ts shapes them, and an
 // invite's envelope key comes from the invite's own secret.
 relayLink.memberFrame = (frame, personId) => memberFrame(frame, (roomId) => viewOf(personId, roomId));
+relayLink.pairSecret = (linkId) => pairLinkSecret(linkId);
+relayLink.pairClaim = (linkId, body) => {
+  const b = (body ?? {}) as { name?: unknown; tokenHash?: unknown };
+  const device = claimPairLink(linkId, b.name, b.tokenHash);
+  if (!device) return null;
+  broadcast({ kind: "pairing", ...pairingStatus() });
+  return { deviceId: device.id, host: hostName() };
+};
 relayLink.inviteSecret = (inviteId) => {
   const inv = people.invite(inviteId);
   if (!inv || inv.status === "declined" || inv.status === "cancelled") return null;
@@ -7903,6 +7914,20 @@ const server = createServer(async (req, res) => {
       const status = pairingStatus();
       broadcast({ kind: "pairing", ...status });
       return json(res, 200, status);
+    }
+    // A link that pairs a device through Bloks Cloud, for a computer that
+    // is not on the same network (server/pairing.ts). This machine only:
+    // the link is the whole credential, so it is only ever shown here.
+    if (method === "POST" && path === "/api/pair/link") {
+      if (!local) return json(res, 403, { error: "not from here" });
+      if (!cfg.relay?.enabled || !cfg.relay.url || !cfg.relay.clientToken) {
+        return json(res, 409, { error: "Turn on Bloks Cloud first: pairing from anywhere goes through it." });
+      }
+      const made = createPairLink();
+      const fragment = Buffer.from(
+        JSON.stringify({ v: 1, k: "pair", r: cfg.relay.url, t: cfg.relay.clientToken, i: made.id, s: made.secret, host: hostName() }),
+      ).toString("base64url");
+      return json(res, 200, { link: `https://bloks.dev/pair#${fragment}`, expiresAt: made.expiresAt });
     }
     if (method === "POST" && path === "/api/pair/start") {
       if (!local) return json(res, 403, { error: "not from here" });

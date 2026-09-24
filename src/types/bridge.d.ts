@@ -58,6 +58,14 @@ declare global {
 
       /** The installed app's own version string. */
       appVersion(): Promise<string>;
+      /** Whether this app runs its own Bloks or uses one on another
+       * computer through Bloks Cloud (electron/remote.mjs). */
+      remoteStatus?(): Promise<{ mode: "local" } | { mode: "remote"; host: string; connected: boolean; revoked?: boolean }>;
+      /** Pairs with another computer from a bloks-server pairing link, then restarts the app. */
+      remoteConnect?(link: string): Promise<{ ok?: boolean; error?: string }>;
+      /** Back to this computer's own Bloks, then restarts the app. */
+      remoteDisconnect?(): Promise<{ ok: boolean }>;
+      onRemoteState?(callback: (state: { host: string; connected: boolean; revoked?: boolean }) => void): () => void;
       /** One frame of updater state: idle, checking, downloading (with
        * percent), current, ready (with version), error, or dev. */
       /** Quit and start again. For settings that only apply at start. */

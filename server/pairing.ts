@@ -154,6 +154,10 @@ function putDevices(list: PairedDevice[]): void {
 }
 
 export function remoteEnabled(): boolean {
+  // bloks-server: no screen to flip the switch on, and nothing but the
+  // relay can reach it (bindHost below keeps it on loopback), so the
+  // remote surface is on and the relay is its only door
+  if (process.env.BLOKS_LOOPBACK_ONLY === "1") return true;
   return loadConfig().remote?.enabled === true;
 }
 
@@ -167,6 +171,9 @@ export function setRemoteEnabled(on: boolean): void {
 
 /** Which interface to bind. Read once, at startup, by design. */
 export function bindHost(): string {
+  // bloks-server sets this: on a machine with a public address, Bloks
+  // Cloud is the only way in, whatever the pairing switch says
+  if (process.env.BLOKS_LOOPBACK_ONLY === "1") return "127.0.0.1";
   return remoteEnabled() ? "0.0.0.0" : "127.0.0.1";
 }
 
@@ -301,4 +308,68 @@ export function pairingStatus(): PairingStatus {
     })),
     addresses: enabled ? lanAddresses() : [],
   };
+}
+
+// ── pairing through the relay ──────────────────────────────────────────
+// A computer with no screen of its own (a server in a cupboard, a VPS)
+// cannot show a six digit code to a phone on the same wifi, and usually
+// is not on the same wifi at all. So it prints a link instead: the relay,
+// the owner's relay pass, and a one time secret, all after the # where no
+// server ever reads them. Whoever opens it in Bloks becomes one of the
+// owner's devices.
+//
+// That is the same trust the six digit code carries, and it holds for the
+// same reason: the link is only ever shown to whoever is at the host's own
+// terminal or screen. It works once, for fifteen minutes, and like the code
+// it never touches disk: a restart forgets every link that was not used.
+
+export const PAIR_LINK_TTL_MS = 15 * 60_000;
+
+interface PairLink {
+  id: string;
+  secretHash: string;
+  expiresAt: number;
+}
+
+const pairLinks = new Map<string, PairLink>();
+
+/** Mints a link. The secret is returned once, and only its digest kept. */
+export function createPairLink(ttlMs: number = PAIR_LINK_TTL_MS): { id: string; secret: string; expiresAt: number } {
+  const now = Date.now();
+  for (const [id, link] of pairLinks) if (link.expiresAt < now) pairLinks.delete(id);
+  const id = `pair_${randomBytes(9).toString("base64url")}`;
+  const secret = randomBytes(32).toString("base64url");
+  const link = { id, secretHash: sha256(secret), expiresAt: now + ttlMs };
+  pairLinks.set(id, link);
+  return { id, secret, expiresAt: link.expiresAt };
+}
+
+/** The digest the relay link needs to open an envelope for this link, or
+ * null once it is used, expired or unknown. */
+export function pairLinkSecret(id: string): string | null {
+  const link = pairLinks.get(id);
+  if (!link) return null;
+  if (Date.now() > link.expiresAt) {
+    pairLinks.delete(id);
+    return null;
+  }
+  return link.secretHash;
+}
+
+/** Spends a link on the device that opened it. The device made its own
+ * token and sends only that token's digest, so nothing that could be
+ * replayed crosses the relay. */
+export function claimPairLink(id: string, name: unknown, tokenHash: unknown): Omit<PairedDevice, "hash"> | null {
+  if (!pairLinkSecret(id)) return null;
+  if (typeof tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(tokenHash)) return null;
+  pairLinks.delete(id);
+  const device: PairedDevice = {
+    id: randomBytes(8).toString("hex"),
+    name: cleanName(name),
+    hash: tokenHash,
+    pairedAt: Date.now(),
+  };
+  putDevices([...devices(), device].slice(-MAX_DEVICES));
+  const { hash: _hash, ...safe } = device;
+  return safe;
 }

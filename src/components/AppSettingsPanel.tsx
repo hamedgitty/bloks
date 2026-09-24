@@ -19,6 +19,7 @@ import { CloudSection } from "./CloudSection";
 import { DevicesSection } from "./DevicesSection";
 import { TelegramSection } from "./TelegramSection";
 import { ChatSection } from "./ChatSection";
+import { RemoteSection } from "./RemoteSection";
 import { LocalVmSection } from "./LocalVmSection";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -577,6 +578,7 @@ export function AppSettingsPanel() {
 
             {tab === "devices" && (
               <>
+                <RemoteSection />
                 <DevicesSection />
                 <TelegramSection />
                 <ChatSection />

@@ -24,6 +24,7 @@ import {
   Notification,
   powerMonitor,
   powerSaveBlocker,
+  safeStorage,
   screen,
   session,
   shell,
@@ -36,6 +37,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
+import { claimPairLink, startRemoteProxy } from "./remote.mjs";
+import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
 // node_modules, so the updater travels inside electron/ pre-bundled
@@ -828,7 +831,10 @@ app.whenReady().then(async () => {
   // reports itself unavailable and everything else works.
   startCua().catch((error) => console.error("[cua] start failed:", error));
 
-  if (app.isPackaged) serverStarted = await startServer();
+  if (app.isPackaged) {
+    const remote = readRemoteProfile();
+    serverStarted = remote ? await startRemote(remote) : await startServer();
+  }
   createWindow();
 
   // Update check, after the window exists so a prompt has somewhere to
@@ -900,6 +906,8 @@ async function power(state) {
 }
 
 function watchPower() {
+  // agents on another computer are that computer's to keep awake
+  if (remoteProfile) return;
   const check = async () => {
     const status = await power();
     const working = Boolean(status?.working);
@@ -914,6 +922,83 @@ function watchPower() {
   powerMonitor.on("suspend", () => void power("suspend"));
   powerMonitor.on("resume", () => void power("resume"));
 }
+
+// ── a Bloks on another computer ───────────────────────────────────────
+// When this app is paired with an always-on computer (bloks-server), it
+// runs no server of its own: electron/remote.mjs stands in on loopback
+// and carries every call through Bloks Cloud. Running both would mean two
+// copies of the same agents answering, so it is one or the other, and
+// switching restarts the app.
+//
+// The profile holds the device token its keys come from, so it is kept
+// encrypted by the operating system's keychain, never in plain text.
+let remoteProfile = null;
+let remoteState = { connected: false };
+
+function remoteFile() {
+  return path.join(app.getPath("userData"), "remote.bin");
+}
+
+function readRemoteProfile() {
+  try {
+    if (!fs.existsSync(remoteFile()) || !safeStorage.isEncryptionAvailable()) return null;
+    const profile = JSON.parse(safeStorage.decryptString(fs.readFileSync(remoteFile())));
+    return profile?.deviceId && profile.deviceToken && profile.relayUrl ? profile : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRemoteProfile(profile) {
+  if (!profile) {
+    fs.rmSync(remoteFile(), { force: true });
+    return;
+  }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer cannot keep the pairing safely, so it was not saved.");
+  fs.writeFileSync(remoteFile(), safeStorage.encryptString(JSON.stringify(profile)), { mode: 0o600 });
+}
+
+async function startRemote(profile) {
+  try {
+    const proxy = await startRemoteProxy(profile, {
+      staticDir: path.join(process.resourcesPath, "ui"),
+      onState: (state) => {
+        remoteState = state;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send("remote:state", { host: profile.host, ...state });
+        }
+      },
+    });
+    remoteProfile = profile;
+    serverPort = proxy.port;
+    return true;
+  } catch (error) {
+    console.error("[remote] could not start:", error?.message ?? error);
+    return false;
+  }
+}
+
+ipcMain.handle("remote:status", () =>
+  remoteProfile ? { mode: "remote", host: remoteProfile.host, ...remoteState } : { mode: "local" },
+);
+ipcMain.handle("remote:connect", async (_event, link) => {
+  if (!app.isPackaged) return { error: "Connecting to another computer works in the installed app." };
+  try {
+    const profile = await claimPairLink(String(link ?? ""), `${os.hostname().replace(/\.local$/, "")} (desktop)`);
+    saveRemoteProfile(profile);
+  } catch (error) {
+    return { error: error?.message ?? String(error) };
+  }
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
+ipcMain.handle("remote:disconnect", () => {
+  saveRemoteProfile(null);
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
 
 // The system keeps handing us these keys until we say otherwise.
 app.on("will-quit", () => globalShortcut.unregisterAll());
