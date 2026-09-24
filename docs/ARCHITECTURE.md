@@ -103,6 +103,13 @@ and mtime have not moved is not read again, and regenerated folders
 (`node_modules` and friends) are skipped. An undo restores a file only if
 it is still exactly what the turn left behind.
 
+Memory has its own journal (`server/memory-journal.ts`). An agent's
+MEMORY.md and topic files are read before and after each turn, and any
+difference becomes an entry with the whole text before and after, as do
+edits made from the Memory panel. Undo follows the checkpoint rule: only
+a file still exactly as that change left it goes back, and a file that
+has become a link is never written through.
+
 Room ids and agent thread ids share one key space, which is why a room
 transcript and a solo transcript are the same kind of file.
 
@@ -116,6 +123,24 @@ every event frame is sealed for one device, and the relay in between
 carries ciphertext it cannot open. A browser keeps the two keys as
 non-extractable WebCrypto keys and never the token. Routes that mint new
 pairings answer only on this machine.
+
+## Chat platforms
+
+A shared room can be carried into Slack, Discord or a WhatsApp group
+(`server/chat-bridge.ts` holds the rules, one transport file each moves
+the bytes). Slack and Discord are connections this machine opens. WhatsApp
+can only call a public address, so Bloks Cloud gives each workspace one
+and hands every call over the relay line as an ask; the call arrives
+readable, because Meta sends it that way, and is believed only if Meta's
+signature checks out against the app secret, which stays here.
+
+## Teams as files
+
+`server/team-file.ts` reads and writes a team as one Markdown file: a
+heading per member, a few `key: value` lines, and the brief as the body.
+Rooms export to it, imports go through it, and the gallery at
+bloks.dev/teams is checked with the same parser before anything reaches
+the hire dialog.
 
 ## Boundaries worth knowing
 

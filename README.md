@@ -104,7 +104,10 @@ tampering.
 **Your phone can answer, and so can any browser.** The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451) reaches your own
 Mac over a sealed relay: approvals, workflow gates, and a screen showing
 what every agent is doing right now and what the day has cost. Pair it by
-reading a six digit code off your Mac. With Bloks Cloud, the same app you
+reading a six digit code off your Mac. Approval banners carry the real
+request, decrypted on the phone, with Allow and Deny behind Face ID;
+anything in the share sheet can be sent to an agent; and Siri, Shortcuts
+or the Action Button can ask one without opening the app. With Bloks Cloud, the same app you
 use on your Mac also opens at [bloks.dev/web](https://bloks.dev/web) on
 any computer: Settings, Devices, **Use in a browser** makes a one-time
 link. Every request is sealed in the browser for your Mac alone, so the
@@ -114,8 +117,19 @@ site that serves the page never sees what it carries.
 They join from the iPhone app or a browser, talk to your agents with
 you, and never touch your computer: you choose which of your tools the
 room may use, who may approve what an agent asks, and a monthly spending
-cap. Rooms can also be carried into a Slack or Discord channel, where
-agents answer only when they are mentioned.
+cap. Rooms can also be carried into a Slack or Discord channel, or a
+WhatsApp group, where agents answer only when they are mentioned and
+strangers knock before anyone listens.
+
+**Memory you can read, and take back.** What each agent remembers is
+plain Markdown in its own folder. The Memory panel shows every agent's
+files for editing, and a journal of every change, whether the agent
+made it or you did, each with its diff and an undo.
+
+**Teams as files.** A team is one Markdown file: a heading per member,
+their seniority and skills, and a brief. Export any room as one, import
+one from a friend, or hire from the gallery at
+[bloks.dev/teams](https://bloks.dev/teams/).
 
 **Always on.** Agents run where Bloks runs, and a laptop sleeps. Bloks
 keeps the Mac awake while an agent is mid-turn and picks a turn back up
@@ -268,6 +282,7 @@ Everything is under `~/.bloks`:
 | `config.json` | Connected engines and keys, `0600` in a `0700` directory |
 | `skills/` | Installed skills, one markdown file each |
 | `checkpoints/` | Each turn's before and after, kept once per file version, for undo |
+| `memory-journal/` | Every change to an agent's memory, with the text before and after |
 | `events/`, `native/` | The canonical event stream, and raw provider traffic |
 
 Bloks has no server of its own. It makes two requests on its own behalf,
