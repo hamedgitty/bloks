@@ -1059,6 +1059,7 @@ function TakeItWithYouCard({ bot }: { bot: Bot }) {
 }
 
 function MemoryCard({ bot }: { bot: Bot }) {
+  const { dispatch } = useStore();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -1109,7 +1110,21 @@ function MemoryCard({ bot }: { bot: Bot }) {
         <div>
           <div className="text-[13.5px] font-semibold text-foreground">Memory</div>
           <div className="mt-0.5 text-[12.5px] text-muted-foreground">
-            What this agent remembers between conversations. Yours to read and correct.
+            What this agent remembers between conversations. Yours to read and correct.{" "}
+            <span
+              role="link"
+              tabIndex={0}
+              className="text-foreground underline-offset-2 hover:underline"
+              onClick={(e) => {
+                e.stopPropagation();
+                dispatch({ type: "toggleMemory", open: true, botId: bot.id });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") dispatch({ type: "toggleMemory", open: true, botId: bot.id });
+              }}
+            >
+              Every change, with undo
+            </span>
           </div>
         </div>
         <span className="text-[12px] text-muted-foreground">{open ? "Hide" : "Show"}</span>

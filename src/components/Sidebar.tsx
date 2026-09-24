@@ -14,6 +14,7 @@ import Puzzle from "lucide-react/dist/esm/icons/puzzle.mjs";
 import Folder from "lucide-react/dist/esm/icons/folder.mjs";
 import FolderKanban from "lucide-react/dist/esm/icons/folder-kanban.mjs";
 import Activity from "lucide-react/dist/esm/icons/activity.mjs";
+import Brain from "lucide-react/dist/esm/icons/brain.mjs";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
@@ -578,6 +579,12 @@ export function Sidebar() {
         </DropdownMenuItem>
       )}
       {mobile && (
+        <DropdownMenuItem onClick={() => dispatch({ type: "toggleMemory", open: true, botId: null })}>
+          <Brain size={15} />
+          Memory
+        </DropdownMenuItem>
+      )}
+      {mobile && (
         <DropdownMenuItem onClick={() => dispatch({ type: "toggleRoutines", open: true })}>
           <CalendarClock size={15} />
           Routines
@@ -843,6 +850,7 @@ export function Sidebar() {
           [
             [Activity, "Activity", () => dispatch({ type: "toggleActivity", open: true })],
             [FolderKanban, "Projects", () => dispatch({ type: "toggleProjects", open: true })],
+            [Brain, "Memory", () => dispatch({ type: "toggleMemory", open: true, botId: null })],
             [CalendarClock, "Routines", () => dispatch({ type: "toggleRoutines", open: true })],
             [Sparkles, "Skills", () => dispatch({ type: "toggleSkills", open: true })],
             [Puzzle, "Plugins", () => dispatch({ type: "togglePlugins", open: true })],

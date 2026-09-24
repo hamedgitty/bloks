@@ -328,6 +328,9 @@ export interface AppState {
   /** the new-agent screen is the last step of setup, not a normal visit */
   newAgentFirstRun: boolean;
   skillsOpen: boolean;
+  /** The Memory panel, and which agent it opens on (null: the first). */
+  memoryOpen: boolean;
+  memoryBotId: string | null;
   routinesOpen: boolean;
   newRoomOpen: boolean;
   projectsOpen: boolean;
@@ -405,6 +408,7 @@ export type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleAppSettings"; open?: boolean }
   | { type: "toggleProjects"; open?: boolean }
+  | { type: "toggleMemory"; open?: boolean; botId?: string | null }
   | { type: "openProject"; id: string | null }
   | {
       type: "updateBot";
@@ -523,6 +527,12 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "toggleNewRoom":
       return { ...state, newRoomOpen: action.open ?? !state.newRoomOpen };
+    case "toggleMemory":
+      return {
+        ...state,
+        memoryOpen: action.open ?? !state.memoryOpen,
+        memoryBotId: action.botId === undefined ? state.memoryBotId : action.botId,
+      };
     case "toggleProjects":
       return { ...state, projectsOpen: action.open ?? !state.projectsOpen };
     case "openProject": {
@@ -787,6 +797,8 @@ export const initialState: AppState = {
   newAgentOpen: false,
   newAgentFirstRun: false,
   skillsOpen: false,
+  memoryOpen: false,
+  memoryBotId: null,
   routinesOpen: false,
   newRoomOpen: false,
   projectsOpen: false,

@@ -17,6 +17,7 @@ import { ComputerPanel } from "@/components/ComputerPanel";
 import { AutomationsPanel } from "@/components/AutomationsPanel";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { ProjectsPanel } from "@/components/ProjectsPanel";
+import { MemoryPanel } from "./components/MemoryPanel";
 import { ActivityPanel } from "@/components/Activity";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickAsk } from "@/components/QuickAsk";
@@ -68,6 +69,7 @@ function Shell() {
       {state.newRoomOpen && <NewRoomDialog />}
       {state.newAgentOpen && <NewAgentScreen />}
       {state.projectsOpen && <ProjectsPanel />}
+      {state.memoryOpen && <MemoryPanel />}
       {state.activityOpen && <ActivityPanel />}
       <CommandPalette />
     </div>

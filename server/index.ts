@@ -3,7 +3,7 @@
 // The one rule the whole shape follows: clients hold no transports. The
 // React app dispatches typed commands over HTTP and folds one SSE event
 // stream, and every provider process runs here.
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -232,6 +232,7 @@ import { widenPath } from "./path.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints } from "./checkpoints.ts";
+import { MemoryJournal } from "./memory-journal.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -378,6 +379,16 @@ async function loadCatalog(force: boolean): Promise<RegistryEntry[]> {
   return entries;
 }
 
+/** A file's text, or null when it is not there. */
+function readRaw(path: string | null): string | null {
+  if (!path) return null;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /** The team gallery on bloks.dev, fetched and kept like the catalog. */
 let gallery: { at: number; teams: GalleryTeam[] } | null = null;
 
@@ -417,6 +428,8 @@ routines.settleOrphanRuns();
 const usage = new UsageStore();
 // What each turn did to the files in its folder, and the way back.
 const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
+// What each agent remembered, and when, with a way back per change.
+const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
 /** Lanes whose last changes were undone since the agent last spoke: its
  * next turn is told, or it would carry on from files that are gone. */
 const undoneSince = new Map<string, string[]>();
@@ -1106,6 +1119,9 @@ bus.subscribe((event: RuntimeEvent) => {
       const frame = stopScreenPoller(bot.id);
       if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
       sweepArtifacts(bot.id, event.threadId, pushMessage);
+      // what the turn changed in the agent's memory, into its journal
+      const remembered = memoryJournal.finish(event.threadId);
+      if (remembered.length) broadcast({ kind: "memory.changed", botId: bot.id, changes: remembered.length });
       // what the turn did to its folder, as a card with the way back
       void checkpoints
         .finish(event.threadId)
@@ -1981,6 +1997,7 @@ async function startTurn(
       // photographed before the agent can touch it, so the turn's card
       // can show what changed and put it back
       await checkpoints.begin(task.id, bot.id, turnCwd).catch(() => {});
+      memoryJournal.begin(task.id, bot.id);
 
       await instance.adapter.sendTurn({
         threadId: task.id,
@@ -5920,8 +5937,30 @@ const server = createServer(async (req, res) => {
           error: "memory is capped at 256KB. Move long notes into memory/<topic>.md files",
         });
       }
+      const was = readRaw(memoryJournal.pathOf(m[1], "MEMORY.md"));
       workspace.writeMemoryFile(m[1], body.text);
+      if (memoryJournal.record(m[1], "MEMORY.md", "you", was, body.text)) {
+        broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
+      }
       return json(res, 200, { ok: true, truncated: workspace.readMemoryFile(m[1]).truncated });
+    }
+    // Every change to an agent's memory, newest first, with its diff.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/memory\/journal$/);
+    if (m && method === "GET") {
+      if (!store.bot(m[1])) return json(res, 404, { error: "no such agent" });
+      const entries = memoryJournal.list(m[1]).slice(-150).reverse().map((e) => memoryJournal.view(e));
+      return json(res, 200, { entries });
+    }
+    // Undo one change, if the file is still what that change left.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/memory\/journal\/([\w-]+)\/undo$/);
+    if (m && method === "POST") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      if (bot.tasks.some((t) => t.busy)) return json(res, 409, { error: "wait for the agent to finish, then undo" });
+      const done = memoryJournal.undo(m[1], m[2]);
+      if (!done.ok) return json(res, done.status, { error: done.error });
+      broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
+      return json(res, 200, { entry: memoryJournal.view(done.entry) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/memory\/topics\/(.+)$/);
     if (m && method === "GET") {
@@ -5936,6 +5975,35 @@ const server = createServer(async (req, res) => {
       const text = workspace.readMemoryTopic(m[1], name);
       if (text === null) return json(res, 404, { error: "no such topic" });
       return json(res, 200, { name, text });
+    }
+    // Editing or forgetting a topic file, from the Memory panel.
+    if (m && (method === "PUT" || method === "DELETE")) {
+      if (!store.bot(m[1])) return json(res, 404, { error: "no such agent" });
+      let name = "";
+      try {
+        name = decodeURIComponent(m[2]);
+      } catch {
+        return json(res, 400, { error: "bad topic name" });
+      }
+      const file = `memory/${name}`;
+      const target = memoryJournal.pathOf(m[1], file);
+      if (!target) return json(res, 400, { error: "a topic is a name ending in .md" });
+      const was = readRaw(target);
+      if (method === "DELETE") {
+        if (was === null) return json(res, 404, { error: "no such topic" });
+        rmSync(target, { force: true });
+        memoryJournal.record(m[1], file, "you", was, null);
+      } else {
+        const body = await readBody(req);
+        if (typeof body.text !== "string") return json(res, 400, { error: "text required" });
+        if (Buffer.byteLength(body.text, "utf8") > workspace.MEMORY_FILE_MAX_BYTES) {
+          return json(res, 400, { error: "a topic is capped at 256KB" });
+        }
+        if (!workspace.writeMemoryTopic(m[1], name, body.text)) return json(res, 400, { error: "a topic is a name ending in .md" });
+        memoryJournal.record(m[1], file, "you", was, body.text);
+      }
+      broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
+      return json(res, 200, { ok: true, topics: workspace.listMemoryTopics(m[1]) });
     }
 
     // ── notes pinned to a place in a deliverable ──
