@@ -31,7 +31,8 @@ Everything below follows from that.
    them, and broadcasts to every connected client.
 6. The reducer folds the same events into messages, streaming text, busy
    flags and approval cards.
-7. On `turn.completed` the folder is photographed again. If anything
+7. On `turn.completed` the folder (or, for a rehearsal, its clone) is
+   photographed again. If anything
    changed, a `changes` message lands under the reply, and
    `/api/checkpoints/:id/diff` and `/revert` serve its diff and its undo.
 
@@ -123,6 +124,18 @@ every event frame is sealed for one device, and the relay in between
 carries ciphertext it cannot open. A browser keeps the two keys as
 non-extractable WebCrypto keys and never the token. Routes that mint new
 pairings answer only on this machine.
+
+## Rehearsals
+
+`server/rehearsals.ts` clones the agent's folder (copy-on-write with
+`cp -c` on APFS, `--reflink=auto` on Linux, a plain copy elsewhere) and
+runs the turn in a lane of its own pinned to the clone. The checkpoint is
+taken between the real folder before and the clone after, so the card is
+the same one undo uses, marked as a rehearsal. `/api/checkpoints/:id/apply`
+writes each file only if the real one still matches what it was when the
+rehearsal began, then the record undoes like any other; applying one
+attempt of a compared task discards the rest. Copies are deleted when an
+attempt is applied or discarded, and swept after a week.
 
 ## Chat platforms
 

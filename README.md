@@ -12,6 +12,7 @@
 </p>
 
 <p align="center">
+  <a href="https://bloks.dev"><img alt="Website: bloks.dev" src="https://img.shields.io/badge/website-bloks.dev-004aad"></a>
   <a href="LICENSE"><img alt="FSL-1.1-MIT licence" src="https://img.shields.io/badge/licence-FSL--1.1--MIT-3bc76b"></a>
   <a href="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS" src="https://img.shields.io/badge/macOS-desktop-6b7280">
@@ -86,6 +87,15 @@ changed since is left alone and named, never overwritten.
 <p align="center">
   <img alt="A card under an agent's reply listing the three files it changed, with an Undo button" src="docs/screenshots/changes-card.png" width="520">
 </p>
+
+**Rehearse it first.** Press the flask beside the microphone and the
+agent does the task on an instant copy of its folder instead of the folder
+itself. What it would change comes back as the same card, with **Apply**
+and **Discard**; applying writes each file into the real folder only if you
+have not changed it since. Pick other agents in the same bar and each
+rehearses the task on its own copy, so you can compare their attempts side
+by side in the Rehearsals panel and keep the best one. A follow-up in a
+rehearsal's lane keeps refining the same copy.
 
 **Work with more than one step.** A workflow is a trigger, some steps,
 and somewhere a person says yes. Runs are state on disk rather than a
@@ -283,6 +293,7 @@ Everything is under `~/.bloks`:
 | `skills/` | Installed skills, one markdown file each |
 | `checkpoints/` | Each turn's before and after, kept once per file version, for undo |
 | `memory-journal/` | Every change to an agent's memory, with the text before and after |
+| `rehearsals/` | The copies agents rehearse in, cleared when applied, discarded, or a week old |
 | `events/`, `native/` | The canonical event stream, and raw provider traffic |
 
 Bloks has no server of its own. It makes two requests on its own behalf,
