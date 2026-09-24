@@ -580,9 +580,11 @@ export class Store {
     return null;
   }
 
-  createTask(botId: string, title: string): TaskRecord | null {
+  /** `extra` lets a lane past the cap: rehearsals run in lanes of their
+   * own and should not have to wait for one of yours to close. */
+  createTask(botId: string, title: string, extra = 0): TaskRecord | null {
     const bot = this.bot(botId);
-    if (!bot || bot.tasks.length >= MAX_TASKS) return null;
+    if (!bot || bot.tasks.length >= MAX_TASKS + extra) return null;
     const task: TaskRecord = { id: newId(), title, resumeCursors: {}, createdAt: Date.now() };
     bot.tasks.push(task);
     this.setActiveTask(botId, task.id);

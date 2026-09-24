@@ -15,6 +15,7 @@ import Folder from "lucide-react/dist/esm/icons/folder.mjs";
 import FolderKanban from "lucide-react/dist/esm/icons/folder-kanban.mjs";
 import Activity from "lucide-react/dist/esm/icons/activity.mjs";
 import Brain from "lucide-react/dist/esm/icons/brain.mjs";
+import FlaskConical from "lucide-react/dist/esm/icons/flask-conical.mjs";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
@@ -420,6 +421,22 @@ function RoomListItem({
  * the server and a second copy of it here would be a second answer. Slow
  * on purpose, because this is an ambient number and not a readout.
  */
+/** Rehearsals waiting on a decision, re-read whenever one moves. */
+function useRehearsalsReady(): number {
+  const { state } = useStore();
+  const [ready, setReady] = useState(0);
+  useEffect(() => {
+    let live = true;
+    api("/api/rehearsals")
+      .then((r) => live && setReady((r.rehearsals ?? []).filter((x: { state: string }) => x.state === "ready").length))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [state.rehearsalsTick]);
+  return ready;
+}
+
 function useActivityCount(): { running: number; waiting: number; suggested: number } {
   const [count, setCount] = useState({ running: 0, waiting: 0, suggested: 0 });
   const visible = usePageVisible();
@@ -456,6 +473,7 @@ export function Sidebar() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [filing, setFiling] = useState<FilingState | null>(null);
   const activity = useActivityCount();
+  const rehearsalsReady = useRehearsalsReady();
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -576,6 +594,12 @@ export function Sidebar() {
         <DropdownMenuItem onClick={() => dispatch({ type: "toggleProjects", open: true })}>
           <FolderKanban size={15} />
           Projects
+        </DropdownMenuItem>
+      )}
+      {mobile && (
+        <DropdownMenuItem onClick={() => dispatch({ type: "toggleRehearsals", open: true })}>
+          <FlaskConical size={15} />
+          Rehearsals
         </DropdownMenuItem>
       )}
       {mobile && (
@@ -851,6 +875,7 @@ export function Sidebar() {
             [Activity, "Activity", () => dispatch({ type: "toggleActivity", open: true })],
             [FolderKanban, "Projects", () => dispatch({ type: "toggleProjects", open: true })],
             [Brain, "Memory", () => dispatch({ type: "toggleMemory", open: true, botId: null })],
+            [FlaskConical, "Rehearsals", () => dispatch({ type: "toggleRehearsals", open: true })],
             [CalendarClock, "Routines", () => dispatch({ type: "toggleRoutines", open: true })],
             [Sparkles, "Skills", () => dispatch({ type: "toggleSkills", open: true })],
             [Puzzle, "Plugins", () => dispatch({ type: "togglePlugins", open: true })],
@@ -867,6 +892,17 @@ export function Sidebar() {
           >
             <Icon size={16} />
             {!rail && label}
+            {label === "Rehearsals" && rehearsalsReady > 0 && (
+              <span
+                className={cn(
+                  "ml-auto rounded-md bg-primary/12 px-1.5 py-0.5 text-[10.5px] tabular-nums text-foreground",
+                  rail && "absolute right-1 top-0.5 ml-0 px-1",
+                )}
+                title={`${rehearsalsReady} ready to review`}
+              >
+                {rehearsalsReady}
+              </span>
+            )}
             {((label === "Activity" && (activity.waiting > 0 || activity.running > 0)) ||
               (label === "Skills" && activity.suggested > 0)) && (
               <span

@@ -231,8 +231,9 @@ import {
 import { widenPath } from "./path.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
-import { Checkpoints } from "./checkpoints.ts";
+import { Checkpoints, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { MemoryJournal } from "./memory-journal.ts";
+import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -379,6 +380,77 @@ async function loadCatalog(force: boolean): Promise<RegistryEntry[]> {
   return entries;
 }
 
+// ── rehearsals ─────────────────────────────────────────────────────────
+
+/** What an agent is told before a rehearsed task. */
+function rehearsalBrief(r: { dir: string; copy: string }, text: string): string {
+  return [
+    `(This is a rehearsal. You are working in a private copy of ${r.dir}, at ${r.copy}. Nothing you change here reaches the real folder until the person reviews your changes and applies them.`,
+    `Work in this copy exactly as you would in the real folder. Do not do anything outside it that cannot be taken back, such as pushing, deploying, publishing or sending messages: those are as real in a rehearsal as anywhere. Finish by saying briefly what you changed and why.)`,
+    "",
+    text,
+  ].join("\n");
+}
+
+/** The folder a rehearsal clones for an agent: its working folder, or its
+ * own workspace when it has none. */
+function rehearsalDir(bot: BotRecord): string | null {
+  const dir = bot.cwd ? bot.cwd : workspace.ensureWorkspace(bot.id);
+  return dir;
+}
+
+/** A rehearsal's turn is over: its card, or a note that nothing changed. */
+async function settleRehearsalTurn(
+  r: Rehearsal,
+  record: CheckpointRecord | null,
+  ok: boolean,
+  pushMessage: (m: Omit<Message, "id" | "at">) => Message,
+) {
+  // another attempt at the same task was kept while this one ran
+  const decided = rehearsals.inGroup(r.group).some((x) => x.state === "applied");
+  if (!record) {
+    pushMessage({
+      role: "bot",
+      kind: "notice",
+      text: ok ? "The rehearsal changed no files, so there is nothing to apply." : "The rehearsal stopped before it finished. Nothing was applied.",
+    });
+    // nothing to apply, but the copy stays for a follow-up in this lane
+    if (ok) rehearsals.update(r.id, { state: "empty" });
+    else await rehearsals.settle(r.id, "failed");
+    broadcast({ kind: "rehearsals" });
+    return;
+  }
+  rehearsals.update(r.id, { state: "ready", checkpointId: record.id });
+  if (decided) checkpoints.discard(record.id);
+  const card = pushMessage({ role: "bot", kind: "changes", changes: checkpoints.summary(record) });
+  checkpoints.attachCard(record.id, r.taskId, card.id);
+  if (decided) await rehearsals.settle(r.id, "discarded");
+  broadcast({ kind: "rehearsals" });
+}
+
+/** A rehearsal card, redrawn after its decision. */
+function patchChangesCard(record: CheckpointRecord, extra: Partial<NonNullable<Message["changes"]>> = {}) {
+  if (!record.card) return;
+  const current = store.messagesFor(record.card.threadId).find((msg) => msg.id === record.card!.messageId);
+  if (!current?.changes) return;
+  const patched = store.patchMessage(record.card.threadId, record.card.messageId, {
+    changes: { ...current.changes, ...checkpoints.summary(record), ...extra },
+  });
+  if (patched) broadcast({ kind: "message.patch", threadId: record.card.threadId, message: patched });
+}
+
+/** Keeping one attempt leaves no reason to keep the others. */
+async function discardSiblings(r: Rehearsal) {
+  for (const other of rehearsals.inGroup(r.group)) {
+    if (other.id === r.id || (other.state !== "ready" && other.state !== "empty")) continue;
+    if (other.checkpointId && checkpoints.discard(other.checkpointId)) {
+      const record = checkpoints.get(other.checkpointId);
+      if (record) patchChangesCard(record);
+    }
+    await rehearsals.settle(other.id, "discarded");
+  }
+}
+
 /** A file's text, or null when it is not there. */
 function readRaw(path: string | null): string | null {
   if (!path) return null;
@@ -430,6 +502,11 @@ const usage = new UsageStore();
 const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
+// An agent doing the work on a clone of its folder, for you to apply or not.
+const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"));
+void rehearsals.sweep().catch(() => {});
+/** Rehearsal lanes may go this far past the lane cap. */
+const REHEARSAL_LANES = 3;
 /** Lanes whose last changes were undone since the agent last spoke: its
  * next turn is told, or it would carry on from files that are gone. */
 const undoneSince = new Map<string, string[]>();
@@ -1123,9 +1200,14 @@ bus.subscribe((event: RuntimeEvent) => {
       const remembered = memoryJournal.finish(event.threadId);
       if (remembered.length) broadcast({ kind: "memory.changed", botId: bot.id, changes: remembered.length });
       // what the turn did to its folder, as a card with the way back
+      const rehearsing = rehearsals.byTask(event.threadId);
       void checkpoints
         .finish(event.threadId)
-        .then((record) => {
+        .then(async (record) => {
+          if (rehearsing) {
+            await settleRehearsalTurn(rehearsing, record, event.ok !== false, pushMessage);
+            return;
+          }
           if (!record) return;
           const card = pushMessage({ role: "bot", kind: "changes", changes: checkpoints.summary(record) });
           checkpoints.attachCard(record.id, roomId, card.id);
@@ -1563,6 +1645,9 @@ async function startTurn(
     /** Who asked, in a shared room: "owner" or a person id. Decides who
      * approvals go to (always the owner for a member's turn). */
     requester?: string;
+    /** A rehearsal: the lane works in `copy`, a clone of `dir`, and the
+     * turn's card compares the two (server/rehearsals.ts). */
+    rehearsal?: { dir: string; copy: string };
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -1621,6 +1706,27 @@ async function startTurn(
     throw Object.assign(new Error("this task is already running, interrupt it or open another task"), {
       status: 409,
     });
+  }
+
+  // A rehearsal lane keeps rehearsing: a follow-up works on the same copy,
+  // and its card replaces the last one. Once the copy is gone (applied or
+  // discarded), the lane has nowhere to work and says so.
+  const rehearsed = opts.rehearsal ? null : rehearsals.forTask(task.id);
+  if (rehearsed) {
+    if ((rehearsed.state === "ready" || rehearsed.state === "empty") && rehearsals.exists(rehearsed)) {
+      if (rehearsed.checkpointId && checkpoints.discard(rehearsed.checkpointId)) {
+        const old = checkpoints.get(rehearsed.checkpointId);
+        if (old) patchChangesCard(old);
+      }
+      rehearsals.update(rehearsed.id, { state: "running", checkpointId: undefined });
+      broadcast({ kind: "rehearsals" });
+      opts = { ...opts, rehearsal: { dir: rehearsed.dir, copy: rehearsed.copy } };
+    } else if (!rehearsals.exists(rehearsed)) {
+      throw Object.assign(
+        new Error("This rehearsal is finished and its copy is gone. Start a new rehearsal, or talk to the agent in another task."),
+        { status: 409 },
+      );
+    }
   }
 
   const instance = registry.get(bot.modelSelection.instanceId);
@@ -1998,8 +2104,15 @@ async function startTurn(
       // can show what changed and put it back
       // an agent working in its own workspace writes its memory there;
       // that has its own journal, so it is not a change to undo here
-      const ownDesk = turnCwd === workspace.workspaceDir(bot.id);
-      await checkpoints.begin(task.id, bot.id, turnCwd, ownDesk ? ["MEMORY.md", "memory/"] : []).catch(() => {});
+      if (opts.rehearsal) {
+        const ownDesk = opts.rehearsal.dir === workspace.workspaceDir(bot.id);
+        await checkpoints
+          .begin(task.id, bot.id, opts.rehearsal.dir, ownDesk ? ["MEMORY.md", "memory/"] : [], opts.rehearsal.copy)
+          .catch(() => false);
+      } else {
+        const ownDesk = turnCwd === workspace.workspaceDir(bot.id);
+        await checkpoints.begin(task.id, bot.id, turnCwd, ownDesk ? ["MEMORY.md", "memory/"] : []).catch(() => {});
+      }
       memoryJournal.begin(task.id, bot.id);
 
       await instance.adapter.sendTurn({
@@ -5801,6 +5914,102 @@ const server = createServer(async (req, res) => {
     }
 
     // ── secret cards: a value saved from the chat, never into it ──
+    // Start a rehearsal: the task on a clone of the first agent's folder,
+    // by that agent and, to compare, by up to two more, each on its own
+    // clone and in a lane of its own.
+    if (method === "POST" && path === "/api/rehearsals") {
+      if (asAgent) return json(res, 403, { error: "an agent cannot start a rehearsal" });
+      const body = await readBody(req);
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text) return json(res, 400, { error: "say what to rehearse" });
+      const ids = [body.botId, ...(Array.isArray(body.compareWith) ? body.compareWith : [])].filter(
+        (id, i, all): id is string => typeof id === "string" && all.indexOf(id) === i,
+      );
+      if (ids.length > 3) return json(res, 400, { error: "compare up to three agents at a time" });
+      const bots = ids.map((id) => store.bot(id)).filter((b): b is BotRecord => Boolean(b && !b.hidden && !b.archivedAt));
+      if (!bots.length || bots.length !== ids.length) return json(res, 404, { error: "no such agent" });
+      const dir = rehearsalDir(bots[0]);
+      if (!dir || !trackable(dir)) {
+        return json(res, 400, { error: `${bots[0].name}'s folder cannot be rehearsed: it is missing, or it is a whole home folder.` });
+      }
+      for (const b of bots) {
+        if (b.tasks.length >= MAX_TASKS + REHEARSAL_LANES) {
+          return json(res, 409, { error: `${b.name} has too many lanes open. Close a finished rehearsal first.` });
+        }
+      }
+      const short = text.replace(/\s+/g, " ").slice(0, 36);
+      let group: string | undefined;
+      const attempts: Array<{ id: string; botId: string; taskId: string }> = [];
+      for (const b of bots) {
+        const active = b.activeTaskId;
+        const task = store.createTask(b.id, `Rehearsal: ${short}`, REHEARSAL_LANES);
+        if (!task) return json(res, 409, { error: `${b.name} has too many lanes open. Close a finished rehearsal first.` });
+        // the one you asked stays in view in its new lane; the others keep yours
+        if (b.id !== bots[0].id) store.setActiveTask(b.id, active);
+        let r: Rehearsal;
+        try {
+          r = await rehearsals.open({ group, botId: b.id, taskId: task.id, dir, text });
+        } catch (e) {
+          store.deleteTask(b.id, task.id);
+          return json(res, 500, { error: `The folder could not be copied: ${(e as Error).message}` });
+        }
+        group = r.group;
+        store.pinTaskCwd(task.id, r.copy);
+        const said = store.appendMessage(task.id, { role: "user", kind: "text", text });
+        broadcast({ kind: "message", threadId: task.id, message: said });
+        broadcast({ kind: "bot", bot: clientBot(store.bot(b.id)) });
+        void startTurn(b.id, rehearsalBrief(r, text), { taskId: task.id, presetMessage: true, rehearsal: { dir, copy: r.copy } }).catch(async (e) => {
+          const notice = store.appendMessage(task.id, { role: "bot", kind: "notice", text: `The rehearsal could not start: ${(e as Error).message}` });
+          broadcast({ kind: "message", threadId: task.id, message: notice });
+          await rehearsals.settle(r.id, "failed");
+          broadcast({ kind: "rehearsals" });
+        });
+        attempts.push({ id: r.id, botId: b.id, taskId: task.id });
+      }
+      broadcast({ kind: "rehearsals" });
+      return json(res, 201, { group, dir, attempts });
+    }
+    // Every rehearsal, newest first, with what each attempt changed.
+    if (method === "GET" && path === "/api/rehearsals") {
+      const list = rehearsals.all().slice(0, 60).map((r) => {
+        const record = r.checkpointId ? checkpoints.get(r.checkpointId) : undefined;
+        return {
+          ...r,
+          copy: undefined,
+          said: lastSaid(r.taskId).slice(0, 600),
+          changes: record ? checkpoints.summary(record) : null,
+        };
+      });
+      return json(res, 200, { rehearsals: list });
+    }
+    // Keep a rehearsal: its changes into the real folder, the rest of its
+    // group discarded.
+    m = path.match(/^\/api\/checkpoints\/([\w-]+)\/(apply|discard)$/);
+    if (m && method === "POST") {
+      const record = checkpoints.get(m[1]);
+      const r = rehearsals.byCheckpoint(m[1]);
+      if (!record?.rehearsal || !r) return json(res, 404, { error: "no such rehearsal" });
+      if (record.appliedAt || record.discardedAt) return json(res, 409, { error: "already decided" });
+      if (m[2] === "discard") {
+        checkpoints.discard(record.id);
+        patchChangesCard(record);
+        await rehearsals.settle(r.id, "discarded");
+        broadcast({ kind: "rehearsals" });
+        return json(res, 200, { ok: true });
+      }
+      // not while anyone is at work in the real folder: their next edit
+      // would land among these, and neither would be what anyone meant
+      const working = store.bots.find((b) => b.tasks.some((t) => t.busy && t.cwd === record.dir));
+      if (working) return json(res, 409, { error: `${working.name} is working in that folder. Apply once it finishes.` });
+      const result = await checkpoints.apply(record.id);
+      if (!result) return json(res, 409, { error: "already decided" });
+      patchChangesCard(record, {});
+      await rehearsals.settle(r.id, "applied");
+      await discardSiblings(r);
+      broadcast({ kind: "rehearsals" });
+      return json(res, 200, result);
+    }
+
     // What a turn changed, one file at a time.
     m = path.match(/^\/api\/checkpoints\/([\w-]+)\/diff$/);
     if (m && method === "GET") {

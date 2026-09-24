@@ -141,7 +141,8 @@ export function preview(message: Message, max = 140): string {
     case "screen":
       return "a screenshot";
     case "changes":
-      return message.changes ? `changed ${message.changes.total} file${message.changes.total === 1 ? "" : "s"}` : "changed files";
+      if (!message.changes) return "changed files";
+      return `${message.changes.rehearsal && message.changes.rehearsal.state !== "applied" ? "would change" : "changed"} ${message.changes.total} file${message.changes.total === 1 ? "" : "s"}`;
     default:
       return "…";
   }

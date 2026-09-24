@@ -26,6 +26,7 @@
 // friends) are skipped.
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -106,6 +107,11 @@ export interface CheckpointRecord {
   revertedAt?: number;
   /** Where its card sits, so an undo can update it. */
   card?: { threadId: string; messageId: string };
+  /** A rehearsal: the changes are in a clone, not yet in `dir`. They
+   * reach `dir` only through apply, and only then can they be undone. */
+  rehearsal?: { copy: string };
+  appliedAt?: number;
+  discardedAt?: number;
 }
 
 /** What goes on the card: small, and nothing the diff call cannot fetch. */
@@ -115,6 +121,8 @@ export interface ChangesSummary {
   /** How many files changed in all, when more than the card lists. */
   total: number;
   reverted?: { at: number; restored: number; skipped: number };
+  /** Set for a rehearsal: waiting on a decision, applied, or discarded. */
+  rehearsal?: { state: "pending" | "applied" | "discarded"; applied?: number; skipped?: number };
 }
 
 export interface DiffLine {
@@ -267,7 +275,7 @@ export class Checkpoints {
   private readonly indexFile: string;
   private records: CheckpointRecord[] = [];
   /** The photograph taken before each lane's running turn. */
-  private pending = new Map<string, { botId: string; dir: string; photo: Photo; ignore: string[] }>();
+  private pending = new Map<string, { botId: string; dir: string; photo: Photo; ignore: string[]; afterDir?: string }>();
   /** One photograph of a folder at a time, so two lanes do not race. */
   private queues = new Map<string, Promise<unknown>>();
 
@@ -286,11 +294,20 @@ export class Checkpoints {
 
   /** Photographs the folder before a turn. Never throws: a turn does not
    * wait on, or fail because of, its undo. */
-  async begin(threadId: string, botId: string, dir: string | null | undefined, ignore: string[] = []): Promise<void> {
+  async begin(
+    threadId: string,
+    botId: string,
+    dir: string | null | undefined,
+    ignore: string[] = [],
+    /** A rehearsal: the turn works in this clone of `dir`, and the
+     * difference is taken between `dir` now and the clone after. */
+    afterDir?: string,
+  ): Promise<boolean> {
     this.pending.delete(threadId);
-    if (!trackable(dir)) return;
+    if (!trackable(dir)) return false;
     const photo = await this.serial(dir, () => this.photograph(dir, ignore));
-    if (photo) this.pending.set(threadId, { botId, dir, photo, ignore });
+    if (photo) this.pending.set(threadId, { botId, dir, photo, ignore, ...(afterDir ? { afterDir } : {}) });
+    return Boolean(photo);
   }
 
   /** Photographs again after the turn, and keeps the difference. Null
@@ -299,7 +316,9 @@ export class Checkpoints {
     const before = this.pending.get(threadId);
     this.pending.delete(threadId);
     if (!before) return null;
-    const after = await this.serial(before.dir, () => this.photograph(before.dir, before.ignore));
+    const where = before.afterDir ?? before.dir;
+    const after = await this.serial(where, () => this.photograph(where, before.ignore, before.afterDir ? before.photo : undefined));
+    if (before.afterDir) this.forgetPhoto(before.afterDir);
     if (!after) return null;
     const files = this.compare(before.photo, after);
     if (files.length === 0) return null;
@@ -310,6 +329,7 @@ export class Checkpoints {
       dir: before.dir,
       at: Date.now(),
       files,
+      ...(before.afterDir ? { rehearsal: { copy: before.afterDir } } : {}),
     };
     this.records.push(record);
     if (this.records.length > MAX_RECORDS) {
@@ -338,6 +358,9 @@ export class Checkpoints {
 
   summary(record: CheckpointRecord, listed = 50): ChangesSummary {
     return {
+      ...(record.rehearsal
+        ? { rehearsal: { state: record.discardedAt ? ("discarded" as const) : record.appliedAt ? ("applied" as const) : ("pending" as const) } }
+        : {}),
       checkpointId: record.id,
       files: record.files.slice(0, listed).map(({ path, status, big, added, removed }) => ({
         path,
@@ -368,9 +391,76 @@ export class Checkpoints {
    * Puts the folder back the way it was before the turn, file by file,
    * leaving anything that has changed since alone.
    */
+  /**
+   * A rehearsal's changes, written into the real folder. Each file only
+   * if it is still exactly as it was when the rehearsal began: a file you
+   * changed meanwhile is left alone and named. From then on the record
+   * undoes like any other.
+   */
+  async apply(id: string): Promise<RevertResult | null> {
+    const record = this.get(id);
+    if (!record?.rehearsal || record.appliedAt || record.discardedAt) return null;
+    return this.serial(record.dir, async () => {
+      const result: RevertResult = { restored: [], skipped: [] };
+      for (const change of record.files) {
+        const target = join(record.dir, change.path);
+        if (relative(record.dir, target).startsWith("..") || !insideReally(record.dir, target)) {
+          result.skipped.push({ path: change.path, why: "outside the folder" });
+          continue;
+        }
+        if (change.big) {
+          // too big to have been kept, but still sitting in the clone
+          const source = join(record.rehearsal!.copy, change.path);
+          if (change.status === "deleted") {
+            unlinkSync(target);
+          } else if (existsSync(source)) {
+            mkdirSync(dirname(target), { recursive: true });
+            copyFileSync(source, target);
+          } else {
+            result.skipped.push({ path: change.path, why: "no longer in the rehearsal" });
+            continue;
+          }
+          result.restored.push(change.path);
+          continue;
+        }
+        const now = this.hashOf(target);
+        if (now !== (change.before ?? null)) {
+          result.skipped.push({ path: change.path, why: "changed since the rehearsal began" });
+          continue;
+        }
+        if (change.status === "deleted") {
+          unlinkSync(target);
+        } else {
+          const data = change.after ? this.blob(change.after) : null;
+          if (!data) {
+            result.skipped.push({ path: change.path, why: "no longer kept" });
+            continue;
+          }
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, data);
+        }
+        result.restored.push(change.path);
+      }
+      record.appliedAt = Date.now();
+      this.save();
+      return result;
+    });
+  }
+
+  /** A rehearsal left unapplied: its card says so, and it cannot be undone. */
+  discard(id: string): boolean {
+    const record = this.get(id);
+    if (!record?.rehearsal || record.appliedAt || record.discardedAt) return false;
+    record.discardedAt = Date.now();
+    this.save();
+    return true;
+  }
+
   async revert(id: string): Promise<RevertResult | null> {
     const record = this.get(id);
     if (!record) return null;
+    // a rehearsal that never reached the folder has nothing there to undo
+    if (record.rehearsal && !record.appliedAt) return null;
     return this.serial(record.dir, async () => {
       const result: RevertResult = { restored: [], skipped: [] };
       for (const change of record.files) {
@@ -422,6 +512,11 @@ export class Checkpoints {
     return next;
   }
 
+  /** A clone's photograph is of no use once the clone is gone. */
+  forgetPhoto(dir: string) {
+    rmSync(this.photoFile(dir), { force: true });
+  }
+
   private photoFile(dir: string) {
     return join(this.photos, `${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}.json`);
   }
@@ -429,12 +524,16 @@ export class Checkpoints {
   /** The folder as it is now, or null if it is too big to track. */
   /** `ignore` names paths (a file, or a folder ending in /) that are
    * someone else's to track, like an agent's own memory. */
-  private async photograph(dir: string, ignore: string[] = []): Promise<Photo | null> {
-    let last: Photo = new Map();
-    try {
-      last = new Map(Object.entries(JSON.parse(readFileSync(this.photoFile(dir), "utf8"))));
-    } catch {
-      /* the first photograph of this folder */
+  private async photograph(dir: string, ignore: string[] = [], seed?: Photo): Promise<Photo | null> {
+    // a clone keeps its original's times, so the original's photograph
+    // spares re-reading every file that the turn did not touch
+    let last: Photo = seed ? new Map(seed) : new Map();
+    if (!seed) {
+      try {
+        last = new Map(Object.entries(JSON.parse(readFileSync(this.photoFile(dir), "utf8"))));
+      } catch {
+        /* the first photograph of this folder */
+      }
     }
     const photo: Photo = new Map();
     let added = 0;

@@ -100,6 +100,8 @@ export interface Message {
     }>;
     total: number;
     reverted?: { at: number; restored: number; skipped: number };
+    /** A rehearsal: changes made on a copy, waiting for a decision. */
+    rehearsal?: { state: "pending" | "applied" | "discarded" };
   };
   text?: string;
   card?: OptionCardData;
@@ -331,6 +333,9 @@ export interface AppState {
   /** The Memory panel, and which agent it opens on (null: the first). */
   memoryOpen: boolean;
   memoryBotId: string | null;
+  /** The Rehearsals panel, and a counter bumped when any rehearsal moves. */
+  rehearsalsOpen: boolean;
+  rehearsalsTick: number;
   routinesOpen: boolean;
   newRoomOpen: boolean;
   projectsOpen: boolean;
@@ -409,6 +414,8 @@ export type Action =
   | { type: "toggleAppSettings"; open?: boolean }
   | { type: "toggleProjects"; open?: boolean }
   | { type: "toggleMemory"; open?: boolean; botId?: string | null }
+  | { type: "toggleRehearsals"; open?: boolean }
+  | { type: "rehearsalsChanged" }
   | { type: "openProject"; id: string | null }
   | {
       type: "updateBot";
@@ -527,6 +534,10 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "toggleNewRoom":
       return { ...state, newRoomOpen: action.open ?? !state.newRoomOpen };
+    case "toggleRehearsals":
+      return { ...state, rehearsalsOpen: action.open ?? !state.rehearsalsOpen };
+    case "rehearsalsChanged":
+      return { ...state, rehearsalsTick: state.rehearsalsTick + 1 };
     case "toggleMemory":
       return {
         ...state,
@@ -799,6 +810,8 @@ export const initialState: AppState = {
   skillsOpen: false,
   memoryOpen: false,
   memoryBotId: null,
+  rehearsalsOpen: false,
+  rehearsalsTick: 0,
   routinesOpen: false,
   newRoomOpen: false,
   projectsOpen: false,

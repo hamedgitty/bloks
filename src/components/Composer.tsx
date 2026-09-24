@@ -8,9 +8,11 @@ import Hand from "lucide-react/dist/esm/icons/hand.mjs";
 import Archive from "lucide-react/dist/esm/icons/archive.mjs";
 import FileIcon from "lucide-react/dist/esm/icons/file.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
+import FlaskConical from "lucide-react/dist/esm/icons/flask-conical.mjs";
 import { api, useStore, type Bot } from "@/state/store";
 import { ReplyChip, type ReplyDraft } from "./MessageActions";
 import { cn } from "@/lib/cn";
+import { AgentAvatar } from "./Avatar";
 import {
   attachmentBasename,
   composeOutgoing,
@@ -132,8 +134,15 @@ export function Composer({
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const [text, setText] = useState("");
+  // Rehearse: the next message runs on a copy of the folder, optionally
+  // by other agents too, and comes back as changes to apply or discard
+  const [rehearse, setRehearse] = useState(false);
+  const [compareWith, setCompareWith] = useState<string[]>([]);
+  const [rehearsing, setRehearsing] = useState(false);
+  const [rehearseError, setRehearseError] = useState<string | null>(null);
+  const others = state.bots.filter((b) => b.id !== bot.id && !b.hidden);
   const [recording, setRecording] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   /** A standing denial: macOS will not prompt again, so we offer the pane. */
@@ -201,6 +210,7 @@ export function Composer({
   };
 
   const send = () => {
+    if (rehearse) return void startRehearsal();
     if (!text.trim() && !attachments.length) return;
     dispatch({
       type: "send",
@@ -216,6 +226,24 @@ export function Composer({
     onClearReply?.();
   };
 
+
+  const startRehearsal = () => {
+    const task = composeOutgoing(text, attachments).trim();
+    if (!task || rehearsing) return;
+    setRehearsing(true);
+    setRehearseError(null);
+    api("/api/rehearsals", { method: "POST", body: JSON.stringify({ botId: bot.id, text: task, compareWith }) })
+      .then(() => {
+        track("rehearsal_started", { compared: compareWith.length });
+        setText("");
+        setAttachments([]);
+        setRehearse(false);
+        setCompareWith([]);
+        onClearReply?.();
+      })
+      .catch((e: Error) => setRehearseError(e.message))
+      .finally(() => setRehearsing(false));
+  };
 
   // Dictation runs through a native helper rather than the browser speech
   // APIs, which need a network round trip and are not available offline.
@@ -425,6 +453,56 @@ export function Composer({
           ))}
         </div>
       )}
+      {rehearse && (
+        <div className="mx-auto mb-2 max-w-[760px] animate-rise-in rounded-xl border bg-card px-3 py-2">
+          <div className="flex items-center gap-2 text-[12.5px] text-foreground">
+            <FlaskConical size={14} className="shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">Rehearse.</span>{" "}
+              <span className="text-muted-foreground">
+                {bot.name} works on a copy of its folder. You review the changes, then apply or discard them.
+              </span>
+            </span>
+            <button
+              onClick={() => {
+                setRehearse(false);
+                setCompareWith([]);
+              }}
+              className="shrink-0 rounded-full p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label="Stop rehearsing"
+            >
+              <X size={13} />
+            </button>
+          </div>
+          {others.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11.5px] text-muted-foreground">Compare with</span>
+              {others.slice(0, 8).map((other) => {
+                const on = compareWith.includes(other.id);
+                return (
+                  <button
+                    key={other.id}
+                    aria-pressed={on}
+                    onClick={() =>
+                      setCompareWith((cur) =>
+                        on ? cur.filter((id) => id !== other.id) : cur.length >= 2 ? cur : [...cur, other.id],
+                      )
+                    }
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2 text-[12px] transition-colors",
+                      on ? "border-foreground/40 bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <AgentAvatar bot={other} size={18} />
+                    {other.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {rehearseError && <div className="mt-1.5 text-[12px] text-destructive">{rehearseError}</div>}
+        </div>
+      )}
       {speechError && (
         <div className="mx-auto mb-2 flex max-w-[760px] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
           <span className="min-w-0 flex-1">{speechError}</span>
@@ -595,13 +673,28 @@ export function Composer({
           placeholder={
             recording
               ? "Listening…"
-              : bot.busy
+              : rehearse
+                ? compareWith.length
+                  ? "Describe the task for each of them to rehearse…"
+                  : `Describe the task for ${bot.name} to rehearse…`
+                : bot.busy
                 ? `${bot.name} is working. Enter queues, ${modKey()}Enter interrupts…`
                 : `Message ${bot.name}`
           }
           className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
         />
         </div>
+        <button
+          onClick={() => setRehearse((on) => !on)}
+          aria-pressed={rehearse}
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 active:scale-95",
+            rehearse ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+          title="Rehearse: try it on a copy first"
+        >
+          <FlaskConical size={16} />
+        </button>
         {bot.busy ? (
           <button
             onClick={() => dispatch({ type: "interrupt", botId: bot.id })}

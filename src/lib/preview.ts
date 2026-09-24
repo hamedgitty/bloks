@@ -66,7 +66,11 @@ export function previewLine(last: Message | undefined): string {
     case "component":
       return last.component ? describeComponent(last.component) : "An answer";
     case "changes":
-      return last.changes ? changedLine(last.changes.total) : "Changed files";
+      if (!last.changes) return "Changed files";
+      // a rehearsal waiting, or let go, never touched the folder
+      return last.changes.rehearsal && last.changes.rehearsal.state !== "applied"
+        ? `Would change ${last.changes.total} file${last.changes.total === 1 ? "" : "s"}`
+        : changedLine(last.changes.total);
     default:
       return last.text ? plainText(last.text) : "";
   }

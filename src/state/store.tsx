@@ -433,6 +433,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "message.patch":
           rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message });
           break;
+        case "rehearsals":
+          rawDispatch({ type: "rehearsalsChanged" });
+          break;
         case "bot": {
           const bot = frame.bot as Partial<Bot> & { id: string };
           // an unread badge on the thread already open is wrong the

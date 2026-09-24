@@ -6,7 +6,9 @@
 // the turn, except the ones that changed again since, which it names
 // rather than overwrites.
 import { useEffect, useState } from "react";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
 import FileDiff from "lucide-react/dist/esm/icons/file-diff.mjs";
+import FlaskConical from "lucide-react/dist/esm/icons/flask-conical.mjs";
 import FileMinus from "lucide-react/dist/esm/icons/file-minus.mjs";
 import FilePen from "lucide-react/dist/esm/icons/file-pen.mjs";
 import FilePlus from "lucide-react/dist/esm/icons/file-plus.mjs";
@@ -48,6 +50,19 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
   const added = changes.files.reduce((n, f) => n + (f.added ?? 0), 0);
   const removed = changes.files.reduce((n, f) => n + (f.removed ?? 0), 0);
   const undone = changes.reverted;
+  const rehearsal = changes.rehearsal?.state;
+  const pending = rehearsal === "pending";
+  const discarded = rehearsal === "discarded";
+
+  /** Apply or discard a rehearsal. */
+  const decide = (what: "apply" | "discard") => {
+    setBusy(true);
+    setError(null);
+    api(`/api/checkpoints/${changes.checkpointId}/${what}`, { method: "POST" })
+      .then((result: { skipped?: Array<{ path: string; why: string }> }) => setSkipped(result.skipped ?? []))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setBusy(false));
+  };
 
   const undo = () => {
     setBusy(true);
@@ -66,15 +81,43 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
       <div className={cn("w-full max-w-[520px] rounded-2xl border bg-card p-3", undone && "opacity-70")}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <FileDiff size={15} className="shrink-0 text-muted-foreground" />
-            <span className="truncate text-[13.5px] font-semibold text-foreground">{changedLine(changes.total)}</span>
+            {rehearsal ? (
+              <FlaskConical size={15} className="shrink-0 text-muted-foreground" />
+            ) : (
+              <FileDiff size={15} className="shrink-0 text-muted-foreground" />
+            )}
+            <span className="truncate text-[13.5px] font-semibold text-foreground">
+              {pending || discarded ? `Would change ${changes.total} file${changes.total === 1 ? "" : "s"}` : changedLine(changes.total)}
+            </span>
             {(added > 0 || removed > 0) && (
               <span className="shrink-0 font-mono text-[11.5px]">
                 <span className="text-success">+{added}</span> <span className="text-destructive">-{removed}</span>
               </span>
             )}
           </div>
-          {undone ? (
+          {discarded ? (
+            <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground">
+              Discarded
+            </span>
+          ) : pending ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                onClick={() => decide("discard")}
+                disabled={busy}
+                className="rounded-full px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Discard
+              </button>
+              <button
+                onClick={() => decide("apply")}
+                disabled={busy}
+                className="flex items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-[12px] font-semibold text-primary-foreground transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.96]"
+              >
+                {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                Apply
+              </button>
+            </div>
+          ) : undone ? (
             <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground">
               Undone
             </span>
@@ -106,6 +149,15 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
             </button>
           )}
         </div>
+        {pending && (
+          <p className="mt-2 text-[12px] text-muted-foreground">
+            A rehearsal: made on a copy of the folder, not in it. Apply writes these into the real folder, except any file
+            that changed there since.
+          </p>
+        )}
+        {rehearsal === "applied" && !undone && (
+          <p className="mt-2 text-[12px] text-muted-foreground">Applied from a rehearsal.</p>
+        )}
         {confirming && !undone && (
           <p className="mt-2 text-[12px] text-muted-foreground">
             Every file below goes back to how it was before this turn. Anything changed again since is left alone.
