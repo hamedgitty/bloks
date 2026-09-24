@@ -234,6 +234,7 @@ import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints } from "./checkpoints.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
+import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
 import * as artifacts from "./artifacts.ts";
 import * as workspace from "./workspace.ts";
 import * as speech from "./speech.ts";
@@ -375,6 +376,23 @@ async function loadCatalog(force: boolean): Promise<RegistryEntry[]> {
   const entries = parseCatalog(JSON.parse(text));
   catalog = { at: Date.now(), entries };
   return entries;
+}
+
+/** The team gallery on bloks.dev, fetched and kept like the catalog. */
+let gallery: { at: number; teams: GalleryTeam[] } | null = null;
+
+async function loadGallery(force: boolean): Promise<GalleryTeam[]> {
+  if (!force && gallery && Date.now() - gallery.at < CATALOG_TTL_MS) return gallery.teams;
+  const response = await fetch(process.env.BLOKS_TEAMS_URL || GALLERY_URL, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`the gallery answered HTTP ${response.status}`);
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > GALLERY_MAX_BYTES) throw new Error("that gallery is too large");
+  const teams = parseGallery(JSON.parse(text));
+  gallery = { at: Date.now(), teams };
+  return teams;
 }
 
 /** Installed skills, keyed for comparison against the catalog. */
@@ -6737,6 +6755,47 @@ const server = createServer(async (req, res) => {
           shape: b.shape,
         }));
       return json(res, 200, { bloksTeam: 1, name: blok.name, members });
+    }
+    // The same room as a Markdown team file, for handing to someone.
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/team\.md$/);
+    if (m && method === "GET") {
+      const blok = bloks.get(m[1]);
+      if (!blok) return json(res, 404, { error: "no such room" });
+      const members = blok.memberIds
+        .map((id) => store.bot(id))
+        .filter((b): b is BotRecord => Boolean(b))
+        .map((b) => ({
+          title: b.title || b.name,
+          description: b.description ?? "",
+          skills: b.skills ?? [],
+          seniority: b.seniority ?? 1,
+          color: b.color,
+          shape: b.shape,
+        }));
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" });
+      return res.end(writeTeamFile({ name: blok.name, members }));
+    }
+    // A team file (Markdown, or an older JSON manifest) read for the hire
+    // dialog. Nothing is created here; hiring is its own step.
+    if (method === "POST" && path === "/api/teams/parse") {
+      const body = await readBody(req);
+      const text = typeof body.text === "string" ? body.text : "";
+      try {
+        const trimmed = text.trim();
+        const team = trimmed.startsWith("{") ? teamFromManifest(JSON.parse(trimmed)) : parseTeamFile(text);
+        return json(res, 200, { team });
+      } catch (e) {
+        const message = e instanceof TeamFileError ? e.message : "That file could not be read as a team.";
+        return json(res, 400, { error: message });
+      }
+    }
+    // Teams people have written, from bloks.dev, checked on the way in.
+    if (method === "GET" && path === "/api/teams/gallery") {
+      try {
+        return json(res, 200, { teams: await loadGallery(url.searchParams.get("refresh") === "1") });
+      } catch (e) {
+        return json(res, 502, { error: `The gallery could not be reached: ${(e as Error).message}` });
+      }
     }
     // Point at a folder, get a proposed roster for the hire dialog. Read
     // only; nothing is created until the user hires.

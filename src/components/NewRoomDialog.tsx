@@ -10,6 +10,14 @@ import { AgentAvatar, BlokAvatar } from "./Avatar";
 import { TEAM_LIBRARY } from "@/lib/teamLibrary";
 import { TeamHireDialog, type HireableTeam } from "./TeamHireDialog";
 
+interface GalleryTeam {
+  slug: string;
+  name: string;
+  blurb: string;
+  author?: string;
+  members: HireableTeam["members"];
+}
+
 interface SavedTeam {
   id: string;
   name: string;
@@ -64,28 +72,35 @@ export function NewRoomDialog() {
       .catch(() => {});
   };
 
-  /** A .bloks-team.json from someone else becomes agents and a room in
-   * one step. Parsed here only to fail fast; the server clamps and
-   * validates everything for real. */
+  /** A team file from someone else, Markdown or an older JSON export,
+   * read on the server and opened in the hire dialog: nothing is made
+   * until the seats are chosen, the same as a premade team. */
+  const [importError, setImportError] = useState<string | null>(null);
   const importTeam = (file: File) => {
+    setImportError(null);
     file
       .text()
-      .then((text) => JSON.parse(text))
-      .then((manifest) =>
-        api("/api/teams/import", {
-          method: "POST",
-          body: JSON.stringify({ name: manifest.name, members: manifest.members }),
-        }),
-      )
-      .then(({ blok }) =>
-        api("/api/bloks").then(({ bloks }) => {
-          dispatch({ type: "hydrateBloks", bloks });
-          dispatch({ type: "select", id: blok.id });
-          close();
-        }),
-      )
-      .catch(() => {});
+      .then((text) => api("/api/teams/parse", { method: "POST", body: JSON.stringify({ text }) }))
+      .then(({ team }) => {
+        setTab("library");
+        hire({ name: team.name, members: team.members });
+      })
+      .catch((e: Error) => setImportError(e.message));
   };
+
+  // Teams people have written, from the gallery on bloks.dev. Asked for
+  // the first time the library is opened, not on every open of the dialog.
+  const [galleryTeams, setGalleryTeams] = useState<GalleryTeam[] | null>(null);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (tab !== "library" || galleryTeams) return;
+    api("/api/teams/gallery")
+      .then((r) => setGalleryTeams(r.teams ?? []))
+      .catch((e: Error) => {
+        setGalleryTeams([]);
+        setGalleryError(e.message);
+      });
+  }, [tab, galleryTeams]);
 
   const modelLabel = (bot: Bot) => {
     const instance = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId);
@@ -223,34 +238,48 @@ export function NewRoomDialog() {
               )}
               <div className="grid grid-cols-2 gap-2">
                 {TEAM_LIBRARY.map((team) => (
-                  <div key={team.slug} className="flex flex-col rounded-xl border bg-card p-3">
-                    <div className="text-[13.5px] font-semibold text-foreground">{team.name}</div>
-                    <div className="mt-0.5 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
-                      {team.blurb}
-                    </div>
-                    <div className="mt-2.5 flex items-center">
-                      {team.members.map((member, i) => (
-                        <span
-                          key={member.title}
-                          className={cn("rounded-full ring-2 ring-card", i > 0 && "-ml-1.5")}
-                          title={member.title}
-                        >
-                          <BlokAvatar color={member.color} shape={member.shape} size={22} />
-                        </span>
-                      ))}
-                      <span className="ml-2 text-[11px] text-muted-foreground">
-                        {team.members.length} agents
-                      </span>
-                    </div>
-                    <div className="mt-1 truncate text-[10.5px] text-muted-foreground/80">
-                      Lead: {team.members.find((m) => m.seniority === 5)?.title}
-                    </div>
-                    <Button size="sm" variant="secondary" className="mt-2.5" onClick={() => hire(team)}>
-                      Hire this team
-                    </Button>
-                  </div>
+                  <TeamCard
+                    key={team.slug}
+                    name={team.name}
+                    blurb={team.blurb}
+                    members={team.members}
+                    onHire={() => hire(team)}
+                  />
                 ))}
               </div>
+              <div className="mb-1.5 mt-4 flex items-baseline justify-between">
+                <div className="text-[11.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  From the gallery
+                </div>
+                <a
+                  href="https://bloks.dev/teams/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11.5px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  bloks.dev/teams
+                </a>
+              </div>
+              {galleryTeams === null ? (
+                <div className="rounded-xl border border-dashed p-3 text-[11.5px] text-muted-foreground">Loading the gallery</div>
+              ) : galleryTeams.length === 0 ? (
+                <div className="rounded-xl border border-dashed p-3 text-[11.5px] text-muted-foreground">
+                  {galleryError ? "The gallery could not be reached right now." : "Nothing in the gallery yet."}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {galleryTeams.map((team) => (
+                    <TeamCard
+                      key={team.slug}
+                      name={team.name}
+                      blurb={team.blurb}
+                      byline={team.author ? `by ${team.author}` : undefined}
+                      members={team.members}
+                      onHire={() => hire({ name: team.name, members: team.members })}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
             <div className="mt-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
               One step creates the agents and the room. Everything is editable afterwards.
@@ -337,12 +366,13 @@ export function NewRoomDialog() {
         )}
 
         {hiring && <TeamHireDialog team={hiring} onClose={() => setHiring(null)} />}
+        {importError && <div className="mt-2 text-center text-[11.5px] text-destructive">{importError}</div>}
 
         <label className="mt-2 block cursor-pointer text-center text-[12px] text-muted-foreground transition-colors hover:text-foreground">
-          Or import a team file
+          Or import a team file (.md)
           <input
             type="file"
-            accept=".json,application/json"
+            accept=".md,.markdown,text/markdown,.json,application/json"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -352,6 +382,48 @@ export function NewRoomDialog() {
           />
         </label>
       </div>
+    </div>
+  );
+}
+
+/** One team on a shelf: what it is for, its faces, its lead, and hire. */
+function TeamCard({
+  name,
+  blurb,
+  byline,
+  members,
+  onHire,
+}: {
+  name: string;
+  blurb: string;
+  byline?: string;
+  members: HireableTeam["members"];
+  onHire: () => void;
+}) {
+  const lead = members.reduce((best, m) => (m.seniority > best.seniority ? m : best), members[0]);
+  return (
+    <div className="flex flex-col rounded-xl border bg-card p-3">
+      <div className="text-[13.5px] font-semibold text-foreground">{name}</div>
+      <div className="mt-0.5 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">{blurb}</div>
+      <div className="mt-2.5 flex items-center">
+        {members.map((member, i) => (
+          <span
+            key={`${member.title}-${i}`}
+            className={cn("rounded-full ring-2 ring-card", i > 0 && "-ml-1.5")}
+            title={member.title}
+          >
+            <BlokAvatar color={member.color} shape={member.shape} size={22} />
+          </span>
+        ))}
+        <span className="ml-2 text-[11px] text-muted-foreground">{members.length} agents</span>
+      </div>
+      <div className="mt-1 truncate text-[10.5px] text-muted-foreground">
+        Lead: {lead?.title}
+        {byline ? ` · ${byline}` : ""}
+      </div>
+      <Button size="sm" variant="secondary" className="mt-2.5" onClick={onHire}>
+        Hire this team
+      </Button>
     </div>
   );
 }

@@ -473,14 +473,15 @@ export function RoomView({ blok }: { blok: Blok }) {
   const exportManifest = () => {
     // The manifest is the room's roles as a file, for handing to someone
     // else. It downloads rather than opens: the point is to leave with it.
-    api(`/api/bloks/${blok.id}/manifest`)
-      .then((manifest) => {
-        const url = URL.createObjectURL(
-          new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" }),
-        );
+    // A Markdown team file (server/team-file.ts): readable, editable, and
+    // what the gallery on bloks.dev is made of.
+    fetch(`/api/bloks/${blok.id}/team.md`)
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(String(res.status)))))
+      .then((text) => {
+        const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${blok.name.replace(/[^\w-]+/g, "-").toLowerCase() || "team"}.bloks-team.json`;
+        a.download = `${blok.name.replace(/[^\w-]+/g, "-").toLowerCase() || "team"}.team.md`;
         a.click();
         URL.revokeObjectURL(url);
       })
