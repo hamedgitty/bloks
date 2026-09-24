@@ -19,3 +19,9 @@ allowBuilds:
 # sources can burn CPU without limit (GHSA-2883-xcg3-v3hh).
 overrides:
   js-yaml: ^4.3.2
+  # Both reach only the packager (electron-builder, through plist and ajv),
+  # never the app, but a build machine parses untrusted plists and URLs
+  # too: @xmldom/xmldom below 0.8.15 and fast-uri below 3.1.6 carry
+  # published advisories.
+  "@xmldom/xmldom": ^0.8.15
+  fast-uri: ^3.1.6

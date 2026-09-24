@@ -3707,9 +3707,22 @@ async function onWhatsAppHook(hook: { platform: string; body: string; signature:
   } catch {
     return 400;
   }
-  for (const message of whatsapp.parseWebhook(parsed, c.number ?? "")) await onChatMessage(message);
+  for (const message of whatsapp.parseWebhook(parsed, c.number ?? "")) {
+    // Meta retries a call it thinks failed, and a signed call can be sent
+    // again by whoever saw it; either way one message is one turn
+    if (message.messageId) {
+      if (whatsappSeen.has(message.messageId)) continue;
+      whatsappSeen.add(message.messageId);
+      if (whatsappSeen.size > 4_000) {
+        for (const id of [...whatsappSeen].slice(0, 2_000)) whatsappSeen.delete(id);
+      }
+    }
+    await onChatMessage(message);
+  }
   return 200;
 }
+/** WhatsApp message ids already handled. */
+const whatsappSeen = new Set<string>();
 
 /** What the settings screen sees. Tokens never come back out, only
  * whether they are set; WhatsApp's webhook address and verify token do,
@@ -5938,7 +5951,9 @@ const server = createServer(async (req, res) => {
         });
       }
       const was = readRaw(memoryJournal.pathOf(m[1], "MEMORY.md"));
-      workspace.writeMemoryFile(m[1], body.text);
+      if (!workspace.writeMemoryFile(m[1], body.text)) {
+        return json(res, 409, { error: "MEMORY.md is a link to somewhere else now, so it was not saved. Look at the agent's workspace." });
+      }
       if (memoryJournal.record(m[1], "MEMORY.md", "you", was, body.text)) {
         broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
       }

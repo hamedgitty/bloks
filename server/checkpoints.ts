@@ -37,8 +37,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 
 import { newId } from "./contracts.ts";
 
@@ -218,6 +220,40 @@ function context(lines: DiffLine[], keep: number): DiffLine[] {
   return out;
 }
 
+/**
+ * Whether a path, as the filesystem resolves it, is still inside a
+ * folder: every existing ancestor is resolved through its links and
+ * compared with the folder's own resolved path, and the file itself must
+ * not be a link.
+ */
+export function insideReally(folder: string, target: string): boolean {
+  let root: string;
+  try {
+    root = realpathSync(folder);
+  } catch {
+    return false;
+  }
+  try {
+    if (lstatSync(target).isSymbolicLink()) return false;
+  } catch {
+    /* not there yet, which is fine: an added file being removed or a
+       deleted one coming back */
+  }
+  let parent = dirname(target);
+  while (!existsSync(parent)) {
+    const up = dirname(parent);
+    if (up === parent) return false;
+    parent = up;
+  }
+  let real: string;
+  try {
+    real = realpathSync(parent);
+  } catch {
+    return false;
+  }
+  return real === root || real.startsWith(root + sep);
+}
+
 function looksBinary(data: Buffer): boolean {
   const n = Math.min(data.length, 8000);
   for (let k = 0; k < n; k++) if (data[k] === 0) return true;
@@ -339,8 +375,10 @@ export class Checkpoints {
       const result: RevertResult = { restored: [], skipped: [] };
       for (const change of record.files) {
         const target = join(record.dir, change.path);
-        // never outside the folder, whatever a record on disk says
-        if (relative(record.dir, target).startsWith("..")) {
+        // never outside the folder, whatever a record on disk says, and
+        // not through a link: a folder the agent swapped for a symlink
+        // since would otherwise carry the write somewhere else entirely
+        if (relative(record.dir, target).startsWith("..") || !insideReally(record.dir, target)) {
           result.skipped.push({ path: change.path, why: "outside the folder" });
           continue;
         }
@@ -389,7 +427,7 @@ export class Checkpoints {
   }
 
   /** The folder as it is now, or null if it is too big to track. */
-  private photograph(dir: string): Photo | null {
+  private async photograph(dir: string): Promise<Photo | null> {
     let last: Photo = new Map();
     try {
       last = new Map(Object.entries(JSON.parse(readFileSync(this.photoFile(dir), "utf8"))));
@@ -403,7 +441,7 @@ export class Checkpoints {
       const rel = stack.pop()!;
       let names: string[];
       try {
-        names = readdirSync(join(dir, rel));
+        names = await readdir(join(dir, rel));
       } catch {
         continue;
       }
@@ -433,12 +471,14 @@ export class Checkpoints {
         }
         let data: Buffer;
         try {
-          data = readFileSync(join(dir, path));
+          // read without blocking: a first photograph of a big folder is
+          // thousands of files, and the server has a UI to keep answering
+          data = await readFile(join(dir, path));
         } catch {
           continue;
         }
         const hash = createHash("sha256").update(data).digest("hex");
-        if (this.keep(hash, data)) {
+        if (await this.keep(hash, data)) {
           added += data.length;
           if (added > MAX_NEW_BYTES) return null;
         }
@@ -485,13 +525,13 @@ export class Checkpoints {
   }
 
   /** Keeps one version of a file; true if it was new. */
-  private keep(hash: string, data: Buffer): boolean {
+  private async keep(hash: string, data: Buffer): Promise<boolean> {
     const path = this.blobPath(hash);
     if (existsSync(path)) return false;
-    mkdirSync(dirname(path), { recursive: true });
-    const temp = `${path}.${process.pid}.tmp`;
-    writeFileSync(temp, data);
-    renameSync(temp, path);
+    await mkdir(dirname(path), { recursive: true });
+    const temp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(temp, data);
+    await rename(temp, path);
     return true;
   }
 

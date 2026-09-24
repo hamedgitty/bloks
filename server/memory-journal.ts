@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { join } from "node:path";
 
 import { diffLines, type DiffLine } from "./checkpoints.ts";
+import { isLink } from "./workspace.ts";
 import { newId } from "./contracts.ts";
 
 /** Entries kept per agent; the oldest go first. */
@@ -153,6 +154,9 @@ export class MemoryJournal {
       now = readFileSync(path, "utf8");
     } catch {
       now = null;
+    }
+    if (isLink(path) || isLink(join(this.workspaceOf(botId), "memory"))) {
+      return { ok: false, status: 409, error: "that file is a link to somewhere else now, so it was left alone" };
     }
     if (now !== target.after) {
       return { ok: false, status: 409, error: "that file has changed since; undo the later changes first, or edit it directly" };

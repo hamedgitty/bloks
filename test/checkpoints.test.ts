@@ -1,6 +1,6 @@
 // What a turn changed, and undoing it without losing anything done since.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -110,6 +110,22 @@ describe("checkpoints", () => {
     assert.ok(second.get(record.id));
     await second.revert(record.id);
     assert.equal(readFileSync(join(dir, "a.txt"), "utf8"), "old\n");
+  });
+
+  test("an undo never writes through a folder swapped for a link since", async () => {
+    const dir = folder("six", { "sub/a.txt": "before\n" });
+    const outside = folder("six-outside", { "keep.txt": "untouched\n" });
+    const cp = new Checkpoints(join(scratch, "store-six"));
+    await cp.begin("lane", "bot", dir);
+    writeFileSync(join(dir, "sub", "a.txt"), "after\n");
+    const record = (await cp.finish("lane"))!;
+    // the folder the change was in becomes a link to somewhere else
+    rmSync(join(dir, "sub"), { recursive: true });
+    symlinkSync(outside, join(dir, "sub"));
+    writeFileSync(join(outside, "a.txt"), "after\n");
+    const result = (await cp.revert(record.id))!;
+    assert.deepEqual(result.skipped, [{ path: "sub/a.txt", why: "outside the folder" }]);
+    assert.equal(readFileSync(join(outside, "a.txt"), "utf8"), "after\n");
   });
 
   test("a home folder, or anything above one, is never photographed", () => {

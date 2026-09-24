@@ -10,7 +10,7 @@
 //
 // Permissions are tight (0700 dir, 0600 files): memories carry
 // personal detail and have no business being world-readable.
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -82,9 +82,23 @@ export function readMemoryFile(botId: string): { text: string; truncated: boolea
   return { text: whole, truncated: Boolean(loadMemory(botId)?.truncated) };
 }
 
-export function writeMemoryFile(botId: string, text: string) {
+/** Whether a memory path is a link. An agent can make one with its own
+ * file tools, and an edit saved from Bloks must not follow it out of the
+ * workspace to wherever it points. */
+export function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+export function writeMemoryFile(botId: string, text: string): boolean {
   ensureWorkspace(botId);
-  writeFileSync(join(workspaceDir(botId), "MEMORY.md"), text, { mode: 0o600 });
+  const path = join(workspaceDir(botId), "MEMORY.md");
+  if (isLink(path)) return false;
+  writeFileSync(path, text, { mode: 0o600 });
+  return true;
 }
 
 export function listMemoryTopics(botId: string): Array<{ name: string; bytes: number }> {
@@ -121,7 +135,9 @@ export function readMemoryTopic(botId: string, name: string): string | null {
 export function writeMemoryTopic(botId: string, name: string, text: string): boolean {
   if (!TOPIC_NAME.test(name)) return false;
   ensureWorkspace(botId);
-  writeFileSync(join(workspaceDir(botId), "memory", name), text, { mode: 0o600 });
+  const path = join(workspaceDir(botId), "memory", name);
+  if (isLink(path) || isLink(join(workspaceDir(botId), "memory"))) return false;
+  writeFileSync(path, text, { mode: 0o600 });
   return true;
 }
 
