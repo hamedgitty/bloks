@@ -23,13 +23,17 @@ Everything below follows from that.
    `/api/bots/:id/messages`.
 3. `startTurn` in `server/index.ts` builds the persona (role, skills,
    your profile, house style, and in a room the roster plus recent
-   transcript), then calls the driver's `sendTurn`.
+   transcript), photographs the agent's folder (`server/checkpoints.ts`),
+   then calls the driver's `sendTurn`.
 4. The driver translates its provider's native output into the canonical
    events in `server/contracts.ts`.
 5. The bus subscriber folds those events into the transcript, persists
    them, and broadcasts to every connected client.
 6. The reducer folds the same events into messages, streaming text, busy
    flags and approval cards.
+7. On `turn.completed` the folder is photographed again. If anything
+   changed, a `changes` message lands under the reply, and
+   `/api/checkpoints/:id/diff` and `/revert` serve its diff and its undo.
 
 The canonical event stream is the source of truth. The persisted
 transcript and every client view are projections of it.
@@ -90,9 +94,28 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `config.json` | Connected providers and keys, `0600` |
 | `skills/*.md` | Installed skills |
 | `events/`, `native/` | Canonical events, and raw provider traffic |
+| `checkpoints/` | Content-addressed file versions, one photograph per folder, and the undo records |
+
+Checkpoints are not git. On a Mac without the developer tools
+`/usr/bin/git` is a stub that opens an installer, so the store hashes
+files itself: each version is kept once by its sha256, a file whose size
+and mtime have not moved is not read again, and regenerated folders
+(`node_modules` and friends) are skipped. An undo restores a file only if
+it is still exactly what the turn left behind.
 
 Room ids and agent thread ids share one key space, which is why a room
 transcript and a solo transcript are the same kind of file.
+
+## Clients that are not on this machine
+
+The phone, a browser at bloks.dev/web, and the desktop app in remote mode
+all reach a workspace the same way. Each is a paired device with its own
+token; the workspace keeps only its sha256. Both ends derive one AES-GCM
+key per direction from it (`server/relay-crypto.ts`), every request and
+every event frame is sealed for one device, and the relay in between
+carries ciphertext it cannot open. A browser keeps the two keys as
+non-extractable WebCrypto keys and never the token. Routes that mint new
+pairings answer only on this machine.
 
 ## Boundaries worth knowing
 

@@ -64,7 +64,8 @@ into an agent's prompt. Bloks ships a starter library and shows you the
 full body of anything before it is installed, because a skill is closer
 to a script than to a note. After a conversation that worked something
 out, Bloks can read it back and offer the procedure as a skill. Nothing
-is ever installed on its own.
+is ever installed on its own. Type `/` in a message to pick one of the
+agent's skills by name, including the ones installed for Claude Code.
 
 **Rules you write in a sentence.** "Refuse when the command contains
 `rm -rf`." Rules are decided before an agent acts, not after, and only
@@ -75,6 +76,16 @@ agent: no turns start, routines skip, the job board looks elsewhere, and
 anything it was mid-way through is interrupted. Refused rather than
 queued, because a queue would replay a plan made before you changed
 things underneath it.
+
+**Undo what an agent did.** Before every turn, Bloks photographs the
+folder the agent works in, and after it, again. What changed shows up
+under the reply as a card: each file, how many lines, and its diff. One
+button puts the folder back as it was. Anything you or a later turn
+changed since is left alone and named, never overwritten.
+
+<p align="center">
+  <img alt="A card under an agent's reply listing the three files it changed, with an Undo button" src="docs/screenshots/changes-card.png" width="520">
+</p>
 
 **Work with more than one step.** A workflow is a trigger, some steps,
 and somewhere a person says yes. Runs are state on disk rather than a
@@ -90,10 +101,27 @@ log, each entry hash-chained to the one before it and signed by the agent
 it is about. There is a button that walks the chain and reports
 tampering.
 
-**Your phone can answer.** The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451) reaches your own
+**Your phone can answer, and so can any browser.** The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451) reaches your own
 Mac over a sealed relay: approvals, workflow gates, and a screen showing
 what every agent is doing right now and what the day has cost. Pair it by
-reading a six digit code off your Mac.
+reading a six digit code off your Mac. With Bloks Cloud, the same app you
+use on your Mac also opens at [bloks.dev/web](https://bloks.dev/web) on
+any computer: Settings, Devices, **Use in a browser** makes a one-time
+link. Every request is sealed in the browser for your Mac alone, so the
+site that serves the page never sees what it carries.
+
+**Share a room with people.** Invite a partner or a client into a room.
+They join from the iPhone app or a browser, talk to your agents with
+you, and never touch your computer: you choose which of your tools the
+room may use, who may approve what an agent asks, and a monthly spending
+cap. Rooms can also be carried into a Slack or Discord channel, where
+agents answer only when they are mentioned.
+
+**Always on.** Agents run where Bloks runs, and a laptop sleeps. Bloks
+keeps the Mac awake while an agent is mid-turn and picks a turn back up
+after a sleep. For agents that never stop, `bloks-server` runs the whole
+workspace on a machine that stays on (a Mac mini, a Linux box, a VPS),
+and the desktop app, the phone and the browser all reach it the same way.
 
 ## Install
 
@@ -239,6 +267,7 @@ Everything is under `~/.bloks`:
 | `messages-<id>.json` | One transcript per agent or room |
 | `config.json` | Connected engines and keys, `0600` in a `0700` directory |
 | `skills/` | Installed skills, one markdown file each |
+| `checkpoints/` | Each turn's before and after, kept once per file version, for undo |
 | `events/`, `native/` | The canonical event stream, and raw provider traffic |
 
 Bloks has no server of its own. It makes two requests on its own behalf,
