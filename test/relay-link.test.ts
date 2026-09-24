@@ -19,7 +19,7 @@ import { startHarness, type Harness } from "./helpers/server.ts";
 function stubRelay() {
   let send: ((frame: unknown) => void) | null = null;
   const results = new Map<string, { status: number; payload: string }>();
-  const pushed: Array<{ frames: string[]; wake: string | null }> = [];
+  const pushed: Array<{ frames: string[]; wake: string | { reason: string; sealed?: Record<string, string> } | null }> = [];
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? "").split("?")[0];
@@ -187,7 +187,7 @@ describe("the relay link", () => {
     assert.equal(fourth!.status, 404);
   });
 
-  test("broadcasts go out sealed, and only an approval asks for a buzz", async (t) => {
+  test("broadcasts go out sealed, and only an approval asks for a buzz, with its words sealed too", async (t) => {
     const { createServer: mkFake } = await import("node:http");
 
     // a fake engine that asks first, so an approval card exists to wake on
@@ -254,8 +254,23 @@ describe("the relay link", () => {
     });
 
     // the approval card lands, and exactly that push carries the wake
-    const buzz = await waitUntil(() => relay.pushed.find((p) => p.wake === "needs-you"));
+    const buzz = await waitUntil(() =>
+      relay.pushed.find((p) => typeof p.wake === "object" && p.wake?.reason === "needs-you"),
+    );
     assert.ok(buzz, "an approval card never asked the relay to wake the phone");
+
+    // the lock screen's words ride along, sealed for this phone alone:
+    // the relay sees a reason and ciphertext, the phone reads the question
+    const wake = buzz!.wake as { reason: string; sealed?: Record<string, string> };
+    const words = wake.sealed?.[deviceId];
+    assert.ok(words, "the wake carried no sealed preview for the paired phone");
+    assert.equal(words!.includes("Go?"), false, "the preview crossed the relay in clear");
+    const preview = open(openKey, peek(words!)!) as any;
+    assert.equal(preview.kind, "preview");
+    assert.equal(preview.category, "question");
+    assert.equal(preview.title, "Buzzer has a question");
+    assert.match(preview.body, /Go\?/);
+    assert.ok(preview.threadId, "a preview should say which thread to open");
 
     // every frame that left is ciphertext for the paired phone: the
     // typed message must not appear in any pushed payload

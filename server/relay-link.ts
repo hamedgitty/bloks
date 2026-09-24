@@ -61,8 +61,22 @@ const INVITE_ROUTES = new Set(["POST /api/member/claim", "GET /api/member/claim"
 const MAX_RAW_ANSWER = 1_400_000;
 
 /** Who a wake should reach: everybody (a string) or the phones registered
- * by the named relay client digests. */
-export type Wake = string | { reason: string; clients: string[] };
+ * by the named relay client digests. `preview` asks for the notification's
+ * real words to ride along, sealed separately for each device (see
+ * publish), so a phone can show them without the relay reading them. */
+export type Wake = string | { reason: string; clients?: string[]; preview?: boolean };
+
+/** What a phone's lock screen shows for one wake, and what its buttons act
+ * on. Small on purpose: it travels inside a push, which Apple caps. */
+export interface WakePreview {
+  title: string;
+  body: string;
+  /** "approval" gets Allow and Deny on the lock screen. */
+  category?: "approval" | "question" | "mention";
+  botId?: string;
+  requestId?: string;
+  threadId?: string;
+}
 
 /** The device id a replayed relay request speaks for, or null for
  * anything that did not come from this file. */
@@ -128,6 +142,9 @@ export class RelayLink {
    * they may not see it at all. Owner devices get every frame as is. Set
    * by the server, which knows the rooms. */
   memberFrame: (frame: unknown, personId: string) => unknown | null = () => null;
+  /** The lock screen's words for one frame, as one device is allowed to
+   * see it, or null for a frame that has none. */
+  previewOf: (frame: unknown) => WakePreview | null = () => null;
 
   /** The digest of an open invite's secret, for its envelope key, or null
    * when there is no such invite or it has closed. */
@@ -195,15 +212,28 @@ export class RelayLink {
     // them, or not at all: it is sealed only for devices that may read
     // it, so nothing about another room is even delivered as ciphertext.
     const frames: string[] = [];
+    // The notification's own words, one sealed copy per device that may
+    // see the frame, built from the frame as that device sees it: a
+    // member's lock screen never says more than their app would.
+    const sealed: Record<string, string> = {};
+    const wantsPreview = typeof wake === "object" && wake.preview === true;
     for (const d of devices) {
       const shown = d.personId ? this.memberFrame(frame, d.personId) : frame;
       if (shown === null || shown === undefined) continue;
       frames.push(seal(deviceKey(d.hash, "mac-to-phone"), d.id, shown));
+      if (wantsPreview) {
+        const preview = this.previewOf(shown);
+        if (preview) sealed[d.id] = seal(deviceKey(d.hash, "mac-to-phone"), d.id, { kind: "preview", ...preview });
+      }
     }
+    const sent =
+      typeof wake === "object"
+        ? { reason: wake.reason, ...(wake.clients ? { clients: wake.clients } : {}), ...(Object.keys(sealed).length ? { sealed } : {}) }
+        : wake;
     void fetch(`${this.config.url}/space/agent/events`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ frames, ...(wake ? { wake } : {}) }),
+      body: JSON.stringify({ frames, ...(sent ? { wake: sent } : {}) }),
       signal: AbortSignal.timeout(10_000),
     })
       .then((res) => {

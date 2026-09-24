@@ -39,7 +39,7 @@ import {
   type CustomEndpoint,
   type CustomKey,
 } from "./config.ts";
-import { RelayLink, relayDeviceFor, relayInviteFor, type Wake } from "./relay-link.ts";
+import { type WakePreview, RelayLink, relayDeviceFor, relayInviteFor, type Wake } from "./relay-link.ts";
 import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
@@ -607,7 +607,7 @@ function wakeFor(payload: unknown): Wake | undefined {
   const shared = blok?.sharing ? blok : null;
 
   if (message.kind === "options" && message.card?.requestId) {
-    if (!owner) return "needs-you";
+    if (!owner) return { reason: "needs-you", preview: true };
     const approval = Boolean(message.card.tool) || message.card.title === "Approval needed";
     // a question is every collaborator's; an approval only theirs when the
     // owner has shared approvals, and never the one who asked for it
@@ -619,7 +619,7 @@ function wakeFor(payload: unknown): Wake | undefined {
             .filter((m) => !approval || m.personId !== message.card!.askedFor)
             .map((m) => m.person.relayTokenHash!)
         : [];
-    return { reason: "needs-you", clients: [owner, ...collaborators] };
+    return { reason: "needs-you", clients: [owner, ...collaborators], preview: true };
   }
 
   // someone named in a shared room, by a person or an agent
@@ -632,9 +632,46 @@ function wakeFor(payload: unknown): Wake | undefined {
       .filter((x): x is string => Boolean(x));
     const ownerNamed = owner && message.author && said.includes(`@${hostName().toLowerCase()}`);
     const clients = [...named, ...(ownerNamed ? [owner] : [])];
-    if (clients.length) return { reason: "mention", clients };
+    if (clients.length) return { reason: "mention", clients, preview: true };
   }
   return undefined;
+}
+
+/**
+ * What a lock screen says for one frame, as the device it is sealed for
+ * sees that frame (member-access.ts has already shaped a member's copy).
+ * Short, because a push carries it, and specific, because "An agent is
+ * waiting for your approval" is the thing this replaces.
+ */
+function previewOf(frame: unknown): WakePreview | null {
+  const f = frame as { kind?: string; threadId?: string; message?: Message } | null;
+  if (f?.kind !== "message" || !f.message || !f.threadId) return null;
+  const m = f.message;
+  const bot = m.from ? store.bot(m.from) : store.botByThread(f.threadId);
+  const room = bloks.get(f.threadId);
+  const clip = (text: string) => (text.length > 178 ? `${text.slice(0, 177).trimEnd()}…` : text);
+  if (m.kind === "options" && m.card?.requestId) {
+    const approval = Boolean(m.card.tool) || m.card.title === "Approval needed";
+    const who = bot?.name ?? "An agent";
+    if (approval) {
+      // a member who cannot answer it sees that it waits, not what for
+      if (m.card.ownerOnly) return { title: who, body: `Waiting for ${hostName()} to approve something.` };
+      return {
+        title: room ? `${who} needs your approval in ${room.name}` : `${who} needs your approval`,
+        body: clip(m.card.subtitle || "An action is waiting for you."),
+        category: "approval",
+        ...(bot ? { botId: bot.id } : {}),
+        requestId: m.card.requestId,
+        threadId: f.threadId,
+      };
+    }
+    return { title: `${who} has a question`, body: clip(m.card.subtitle || m.card.title), category: "question", threadId: f.threadId };
+  }
+  if (m.kind === "text" && m.text) {
+    const speaker = m.role === "bot" ? (bot?.name ?? "An agent") : m.author ? (people.person(m.author)?.name ?? "Someone") : hostName();
+    return { title: room ? `${speaker} in ${room.name}` : speaker, body: clip(m.text), category: "mention", threadId: f.threadId };
+  }
+  return null;
 }
 
 // ── turning events into a transcript ───────────────────────────────────
@@ -2553,6 +2590,7 @@ const relayLink = new RelayLink(PORT, (state) => broadcast({ kind: "relay", ...s
 // Members' devices get frames as member-access.ts shapes them, and an
 // invite's envelope key comes from the invite's own secret.
 relayLink.memberFrame = (frame, personId) => memberFrame(frame, (roomId) => viewOf(personId, roomId));
+relayLink.previewOf = previewOf;
 relayLink.pairSecret = (linkId) => pairLinkSecret(linkId);
 relayLink.pairClaim = (linkId, body) => {
   const b = (body ?? {}) as { name?: unknown; tokenHash?: unknown };
