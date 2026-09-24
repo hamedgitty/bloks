@@ -6,6 +6,9 @@
 // what it scanned and waits for a tap. Codes last minutes, work once,
 // and a handful of wrong guesses closes the window.
 import { useCallback, useEffect, useRef, useState } from "react";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import Globe from "lucide-react/dist/esm/icons/globe.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
@@ -45,7 +48,43 @@ function pairLink(address: string, port: number, token: string, code: string): s
   return `bloks://pair?address=${encodeURIComponent(`${host}:${port}`)}&token=${token}&code=${code}&name=${name}`;
 }
 
+/** A browser rather than a phone, by the name it paired under. */
+const isBrowser = (name: string) => /\b(Chrome|Safari|Firefox|Edge|browser)\b/i.test(name);
+
 export function DevicesSection() {
+  // Running at bloks.dev/web: this UI is itself a paired device, and the
+  // pairing controls belong to the computer, not to it.
+  if (window.bloksWeb) return <ThisBrowser />;
+  return <PairingControls />;
+}
+
+function ThisBrowser() {
+  const [leaving, setLeaving] = useState(false);
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="text-[13.5px] font-semibold text-foreground">This browser</div>
+      <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
+        Connected to {window.bloksWeb?.host || "your computer"} through Bloks Cloud, sealed end to end. Disconnecting
+        forgets its keys here; remove it on your computer too to be sure it cannot come back.
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        className="mt-3"
+        disabled={leaving}
+        onClick={() => {
+          setLeaving(true);
+          void window.bloksWeb?.forget();
+        }}
+      >
+        {leaving ? <Loader2 size={13} className="animate-spin" /> : <Globe size={13} />}
+        Disconnect this browser
+      </Button>
+    </div>
+  );
+}
+
+function PairingControls() {
   const [status, setStatus] = useState<PairStatus | null>(null);
   const [window_, setWindow] = useState<{
     code: string;
@@ -54,6 +93,8 @@ export function DevicesSection() {
     /** Where the phone should dial, for somebody typing the code by hand. */
     address: string | null;
   } | null>(null);
+  const [browserLink, setBrowserLink] = useState<{ link: string; expiresAt: number } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const inflight = useRef(false);
@@ -119,6 +160,17 @@ export function DevicesSection() {
       })
       .catch((e: Error) => setError(e.message));
   };
+
+  // A link for Bloks in a browser: one use, fifteen minutes, through
+  // Bloks Cloud. Shown here only, because the link is the whole key.
+  const makeBrowserLink = () => {
+    setError(null);
+    setCopied(false);
+    api("/api/pair/link", { method: "POST" })
+      .then((made) => setBrowserLink({ link: made.webLink ?? made.link, expiresAt: made.expiresAt }))
+      .catch((e: Error) => setError(e.message));
+  };
+  const browserSecondsLeft = browserLink ? Math.max(0, Math.round((browserLink.expiresAt - now) / 1000)) : 0;
 
   const cancel = () => {
     api("/api/pair/cancel", { method: "POST" })
@@ -213,10 +265,44 @@ export function DevicesSection() {
               </div>
             </div>
           ) : (
-            <Button variant="secondary" size="sm" onClick={start}>
-              <Smartphone size={13} />
-              Pair a phone
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={start}>
+                <Smartphone size={13} />
+                Pair a phone
+              </Button>
+              <Button variant="secondary" size="sm" onClick={makeBrowserLink}>
+                <Globe size={13} />
+                Use in a browser
+              </Button>
+            </div>
+          )}
+
+          {browserLink && browserSecondsLeft > 0 && (
+            <div className="mt-3 rounded-xl border bg-muted/40 p-3" data-browser-link>
+              <div className="text-[13px] font-medium text-foreground">Open this in the browser you want to use</div>
+              <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
+                It works once, for {Math.ceil(browserSecondsLeft / 60)} more minute{browserSecondsLeft > 60 ? "s" : ""}, through
+                Bloks Cloud. Whoever opens it becomes one of your devices, so keep it to yourself.
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded-md bg-background px-2 py-1.5 font-mono text-[11.5px] text-muted-foreground">
+                  {browserLink.link}
+                </code>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(browserLink.link).then(() => setCopied(true))
+                  }
+                >
+                  {copied ? <Check size={13} /> : <Copy size={13} />}
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+                <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setBrowserLink(null)}>
+                  Done
+                </Button>
+              </div>
+            </div>
           )}
 
           {status.devices.length > 0 && (
@@ -226,7 +312,11 @@ export function DevicesSection() {
               </div>
               {status.devices.map((device) => (
                 <div key={device.id} className="flex items-center gap-2.5 rounded-lg px-1 py-1">
-                  <Smartphone size={14} className="shrink-0 text-muted-foreground" />
+                  {isBrowser(device.name) ? (
+                    <Globe size={14} className="shrink-0 text-muted-foreground" />
+                  ) : (
+                    <Smartphone size={14} className="shrink-0 text-muted-foreground" />
+                  )}
                   <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
                     {device.name}
                   </span>

@@ -8048,7 +8048,10 @@ const server = createServer(async (req, res) => {
       const fragment = Buffer.from(
         JSON.stringify({ v: 1, k: "pair", r: cfg.relay.url, t: cfg.relay.clientToken, i: made.id, s: made.secret, host: hostName() }),
       ).toString("base64url");
-      return json(res, 200, { link: `https://bloks.dev/pair#${fragment}`, expiresAt: made.expiresAt });
+      // The same link twice: one for a phone or a server's app, one that
+      // opens straight into Bloks in a browser at bloks.dev/web.
+      const site = (process.env.BLOKS_SITE_URL || "https://bloks.dev").replace(/\/+$/, "");
+      return json(res, 200, { link: `${site}/pair#${fragment}`, webLink: `${site}/web/#${fragment}`, expiresAt: made.expiresAt });
     }
     if (method === "POST" && path === "/api/pair/start") {
       if (!local) return json(res, 403, { error: "not from here" });

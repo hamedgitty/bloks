@@ -24,6 +24,12 @@ export interface CuaPermissions {
 
 declare global {
   interface Window {
+    /** Set when this UI runs at bloks.dev/web rather than in the app:
+     * which computer it reaches, and a way to disconnect this browser. */
+    bloksWeb?: {
+      readonly host: string;
+      forget(): Promise<void>;
+    };
     bloks?: {
       /** One frame of this Mac's screen as a data: URL. Goes through the
        * main process so macOS attributes Screen Recording to the app. */
