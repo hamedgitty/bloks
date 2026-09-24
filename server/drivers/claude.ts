@@ -169,7 +169,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         "--output-format", "stream-json",
         "--input-format", "stream-json",
         "--verbose", // stream-json output is refused without it
-        "--permission-mode", config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
+        // A shared room never bypasses: the approval bridge below is what
+        // holds the owner's tools to a yes. acceptEdits only waves through
+        // file edits, which --restricted confines to the room's folder.
+        "--permission-mode",
+        turn.shared
+          ? "acceptEdits"
+          : config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
       ];
       // Resuming continues the CLI's own session; otherwise name the new
       // one ourselves so the id exists before its first event arrives.
@@ -282,7 +288,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // bypassPermissions means nothing would ever ask, so there is nothing
       // to broker. Every other mode gets the bridge.
       let broker: AskBroker | undefined;
-      if (config.permissionMode !== "bypassPermissions") {
+      if (config.permissionMode !== "bypassPermissions" || turn.shared) {
         const socketPath = brokerSocket(threadId);
         broker = createAskBroker({
           socketPath,
@@ -317,7 +323,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       if (Object.keys(mcpServers).length) {
         argv.push("--mcp-config", JSON.stringify({ mcpServers }));
-        argv.push("--allowedTools", allowed.join(","));
+        // In a shared room nothing of the owner's is pre-allowed: every
+        // call to a connector, the browser or the computer goes through
+        // the bridge and becomes an approval, which is the point.
+        const allowList = turn.shared ? allowed.filter((tool) => tool === "mcp__bloks") : allowed;
+        if (allowList.length) argv.push("--allowedTools", allowList.join(","));
       }
 
       const env: Record<string, string | undefined> = {

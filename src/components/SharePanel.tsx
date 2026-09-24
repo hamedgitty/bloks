@@ -34,6 +34,19 @@ interface PeopleResponse {
   limits: { rooms: number | null; members: number } | null;
   people: Array<RoomPerson & { invitedBy: string }>;
   invites: PendingInvite[];
+  spend: { month: string; total: number; cap: number; byPerson: Array<{ id: string; name: string; usd: number }> } | null;
+  available: {
+    connectors: boolean;
+    mcp: Array<{ id: string; name: string }>;
+    computer: boolean;
+    agents: Array<{ id: string; name: string; ownerTools: boolean }>;
+  };
+}
+
+const CAPS = [0, 5, 10, 25, 50, 100, 250];
+
+function usd(n: number) {
+  return `$${n < 10 ? n.toFixed(2) : Math.round(n)}`;
 }
 
 export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -315,11 +328,70 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
                 />
                 <Toggle
                   label="Agents can work with files in this room's folder"
-                  hint="Off: agents in this room can only talk. Nothing of yours is reachable either way."
+                  hint="Off: agents in this room can only talk. Your own files stay out either way."
                   checked={shared.tools === "desk"}
                   onChange={(on) => share({ tools: on ? "desk" : "conversation" })}
                 />
               </div>
+            </section>
+
+            <OwnerToolsSection data={data} shared={shared} busy={busy !== null} share={share} />
+
+            {/* what it costs */}
+            <section>
+              <SectionTitle>Spending</SectionTitle>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[13px] text-foreground">Monthly cap for this room</div>
+                  <div className="text-[11.5px] leading-snug text-muted-foreground">
+                    Agents here run on your engines. At the cap they pause until next month or until you raise it.
+                  </div>
+                </div>
+                <select
+                  value={shared.spendCap ?? 0}
+                  onChange={(e) => share({ spendCap: Number(e.target.value) })}
+                  className="rounded-md border bg-background px-1.5 py-1 text-[12.5px]"
+                  aria-label="Monthly cap"
+                >
+                  {[...new Set([...CAPS, shared.spendCap ?? 0])].sort((a, b) => a - b).map((c) => (
+                    <option key={c} value={c}>
+                      {c === 0 ? "No cap" : `$${c}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {data.spend && (
+                <div className="mt-3 rounded-xl border bg-card px-3 py-2.5">
+                  <div className="flex items-baseline justify-between text-[12.5px]">
+                    <span className="text-muted-foreground">This month</span>
+                    <span className="font-medium tabular-nums text-foreground">
+                      {usd(data.spend.total)}
+                      {data.spend.cap > 0 && <span className="text-muted-foreground"> of ${data.spend.cap}</span>}
+                    </span>
+                  </div>
+                  {data.spend.cap > 0 && (
+                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={`h-full rounded-full ${data.spend.total >= data.spend.cap ? "bg-destructive" : "bg-brand-ink"}`}
+                        style={{ width: `${Math.min(100, (data.spend.total / data.spend.cap) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                  {data.spend.byPerson.length > 0 && (
+                    <div className="mt-2 space-y-0.5">
+                      {data.spend.byPerson.map((p) => (
+                        <div key={p.id} className="flex justify-between text-[12px] text-muted-foreground">
+                          <span className="truncate">{p.id === "owner" ? `${p.name} (you)` : p.name}</span>
+                          <span className="tabular-nums">{usd(p.usd)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+                    Estimated from what your engines report, by who asked.
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="border-t pt-4">
@@ -361,6 +433,111 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
   );
 }
 
+/**
+ * Opening some of the owner's own tools to a shared room. Team only, and
+ * each one by name. The panel says plainly that every use still waits for
+ * an approval, and which agents cannot take part.
+ */
+function OwnerToolsSection({
+  data,
+  shared,
+  busy,
+  share,
+}: {
+  data: PeopleResponse;
+  shared: RoomSharing;
+  busy: boolean;
+  share: (patch: Partial<RoomSharing>) => void;
+}) {
+  const team = data.plan === "team";
+  const tools = shared.ownerTools ?? {};
+  const set = (patch: Partial<NonNullable<RoomSharing["ownerTools"]>>) =>
+    share({ ownerTools: { connectors: false, browser: false, computer: false, mcp: [], ...tools, ...patch } });
+  const left = data.available.agents.filter((a) => !a.ownerTools);
+  const anyOn = Boolean(tools.connectors || tools.browser || tools.computer || tools.mcp?.length);
+
+  return (
+    <section>
+      <SectionTitle>Your tools</SectionTitle>
+      {!team ? (
+        <div className="text-[12px] leading-snug text-muted-foreground">
+          With Bloks Team you can let this room's agents ask to use your connected apps, a browser or
+          your computer, with each use waiting for your approval.{" "}
+          <a
+            href="https://bloks.dev/cloud/upgrade/"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-foreground underline underline-offset-2"
+          >
+            Move to Team
+          </a>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="text-[11.5px] leading-snug text-muted-foreground">
+            Agents here can ask to use what you switch on. Every use waits for an approval, even when
+            your own rules would allow it.
+          </div>
+          {data.available.connectors && (
+            <Toggle
+              label="Connected apps"
+              hint="Your email, calendar and other apps connected in Settings."
+              checked={Boolean(tools.connectors)}
+              disabled={busy}
+              onChange={(on) => set({ connectors: on })}
+            />
+          )}
+          {data.available.mcp.map((server) => (
+            <Toggle
+              key={server.id}
+              label={server.name}
+              hint="An MCP server from your settings, for agents you have given it to."
+              checked={Boolean(tools.mcp?.includes(server.id))}
+              disabled={busy}
+              onChange={(on) =>
+                set({
+                  mcp: on
+                    ? [...new Set([...(tools.mcp ?? []), server.id])]
+                    : (tools.mcp ?? []).filter((id) => id !== server.id),
+                })
+              }
+            />
+          ))}
+          <Toggle
+            label="A browser"
+            hint="A browser of the room's own, signed in to nothing of yours."
+            checked={Boolean(tools.browser)}
+            disabled={busy}
+            onChange={(on) => set({ browser: on })}
+          />
+          {data.available.computer && (
+            <Toggle
+              label="Your computer"
+              hint="The computer your agents use. You approve every action."
+              checked={Boolean(tools.computer)}
+              disabled={busy}
+              onChange={(on) => set({ computer: on })}
+            />
+          )}
+          <Toggle
+            label="Collaborators can approve"
+            hint="They can answer approvals here, except for what they asked for themselves."
+            checked={Boolean(shared.collaboratorsApprove)}
+            disabled={busy}
+            onChange={(on) => share({ collaboratorsApprove: on })}
+          />
+          {anyOn && left.length > 0 && (
+            <div className="text-[11.5px] leading-snug text-muted-foreground">
+              {left.map((a) => a.name).join(", ")} {left.length === 1 ? "runs" : "run"} on an engine that
+              cannot pause for approvals, so {left.length === 1 ? "it stays" : "they stay"} conversation only.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <div className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
@@ -369,11 +546,13 @@ function Toggle({
   label,
   hint,
   checked,
+  disabled,
   onChange,
 }: {
   label: string;
   hint: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (on: boolean) => void;
 }) {
   return (
@@ -382,7 +561,7 @@ function Toggle({
         <div className="text-[13px] text-foreground">{label}</div>
         <div className="text-[11.5px] leading-snug text-muted-foreground">{hint}</div>
       </div>
-      <Switch aria-label={label} checked={checked} onCheckedChange={onChange} />
+      <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
   );
 }
@@ -393,7 +572,15 @@ function PlanLine({ data }: { data: PeopleResponse }) {
   return (
     <div className="mt-2 text-[11.5px] leading-snug text-muted-foreground">
       Bloks Cloud includes one shared room with up to {data.limits.members} people. Bloks Team shares
-      as many rooms as you like, with up to 10 people each.
+      as many rooms as you like, with up to 10 people each.{" "}
+      <a
+        href="https://bloks.dev/cloud/upgrade/"
+        target="_blank"
+        rel="noreferrer"
+        className="font-medium text-foreground underline underline-offset-2"
+      >
+        Move to Team
+      </a>
     </div>
   );
 }

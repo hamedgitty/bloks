@@ -68,6 +68,54 @@ export interface RoomSharing {
   tools: "conversation" | "desk";
   /** Agents whose private memory the owner has let into this room. */
   memoryFor?: string[];
+  /** The owner's own tools this room's agents may reach, each switched on
+   * by name. Every call a member's message leads to still waits for an
+   * approval; this decides what can be asked for at all. */
+  ownerTools?: OwnerTools;
+  /** Whether collaborators may answer approvals in this room, except on
+   * actions they asked for themselves. */
+  collaboratorsApprove?: boolean;
+  /** US dollars a month this room's agents may spend before they pause.
+   * 0 means no cap. */
+  spendCap?: number;
+  /** What this room has spent this month, and on whose behalf. */
+  spend?: RoomSpend;
+}
+
+export interface OwnerTools {
+  /** The owner's connected apps. */
+  connectors?: boolean;
+  /** MCP servers from the owner's settings, by id. */
+  mcp?: string[];
+  /** A browser of the room's own, not the owner's profile. */
+  browser?: boolean;
+  /** The owner's computer, or its cloud computer. */
+  computer?: boolean;
+}
+
+export interface RoomSpend {
+  /** YYYY-MM, local time. A new month starts from nothing. */
+  month: string;
+  total: number;
+  /** Person id, or "owner", to dollars. */
+  byPerson: Record<string, number>;
+  /** Whether the owner has been told the room is near its cap. */
+  warned?: boolean;
+}
+
+/** A cap that keeps a busy room from surprising its owner. Editable, and
+ * 0 turns it off. */
+export const DEFAULT_SPEND_CAP = 10;
+
+export function spendMonth(at: Date = new Date()): string {
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** This month's spend, which is nothing when the ledger is from an
+ * earlier month. */
+export function currentSpend(sharing: RoomSharing, at: Date = new Date()): RoomSpend {
+  const month = spendMonth(at);
+  return sharing.spend?.month === month ? sharing.spend : { month, total: 0, byPerson: {} };
 }
 
 export const DEFAULT_SHARING = (): RoomSharing => ({
@@ -76,6 +124,7 @@ export const DEFAULT_SHARING = (): RoomSharing => ({
   collaboratorsInvite: false,
   activityDetail: false,
   tools: "conversation",
+  spendCap: DEFAULT_SPEND_CAP,
 });
 
 const BLOKS_FILE = join(DATA_DIR, "bloks.json");
@@ -159,9 +208,42 @@ export class BlokStore {
     if (Array.isArray(patch.memoryFor)) {
       next.memoryFor = patch.memoryFor.filter((x) => typeof x === "string" && blok.memberIds.includes(x));
     }
+    if (patch.ownerTools && typeof patch.ownerTools === "object") {
+      const t = patch.ownerTools;
+      next.ownerTools = {
+        connectors: t.connectors === true,
+        browser: t.browser === true,
+        computer: t.computer === true,
+        mcp: Array.isArray(t.mcp) ? t.mcp.filter((x) => typeof x === "string").slice(0, 50) : [],
+      };
+    }
+    if (typeof patch.collaboratorsApprove === "boolean") next.collaboratorsApprove = patch.collaboratorsApprove;
+    if (typeof patch.spendCap === "number" && Number.isFinite(patch.spendCap)) {
+      next.spendCap = Math.min(10_000, Math.max(0, Math.round(patch.spendCap * 100) / 100));
+    }
     blok.sharing = next;
     this.save();
     return blok;
+  }
+
+  /** Adds what one turn cost to the room's month, against whoever asked
+   * for it. Returns the month so far. */
+  noteSpend(id: string, who: string, usd: number, at: Date = new Date()): RoomSpend | null {
+    const blok = this.get(id);
+    if (!blok?.sharing || !(usd > 0)) return null;
+    const spend = { ...currentSpend(blok.sharing, at) };
+    spend.byPerson = { ...spend.byPerson, [who]: (spend.byPerson[who] ?? 0) + usd };
+    spend.total += usd;
+    blok.sharing = { ...blok.sharing, spend };
+    this.save();
+    return spend;
+  }
+
+  markSpendWarned(id: string) {
+    const blok = this.get(id);
+    if (!blok?.sharing?.spend) return;
+    blok.sharing = { ...blok.sharing, spend: { ...blok.sharing.spend, warned: true } };
+    this.save();
   }
 
   /** Stops sharing. The lanes are kept, not merged back: what was said in

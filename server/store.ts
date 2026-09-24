@@ -62,6 +62,11 @@ export interface OptionCardData {
   /** Set on an approval shown to a member of a shared room: it is the
    * owner's to answer, so the member sees it waiting, without buttons. */
   ownerOnly?: boolean;
+  /** In a shared room, the person whose message led to this approval.
+   * They can never be the one to answer it. */
+  askedFor?: string;
+  /** Who answered, when it was not the owner. */
+  answeredBy?: string;
   /** Present when a lead has proposed hiring a team (server/teams.ts). */
   team?: {
     room: string;

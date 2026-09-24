@@ -64,6 +64,9 @@ export function OptionCard({
               {card.subtitle}
             </div>
           )}
+          {card.answeredBy && (
+            <div className="mt-1 text-[12px] text-muted-foreground">Answered by {card.answeredBy}</div>
+          )}
         </div>
         <button
           onClick={() => dispatch({ type: "dismissCard", botId, roomId, messageId: message.id })}

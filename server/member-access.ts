@@ -101,6 +101,21 @@ export interface MemberView {
   joinedAt: number;
   history: "join" | "all";
   activityDetail: boolean;
+  /** Who is looking, and as what. Optional so a view built before either
+   * existed still reads as the narrowest one. */
+  personId?: string;
+  role?: MemberRole;
+  /** Whether the owner lets collaborators answer approvals here. */
+  approvals?: boolean;
+}
+
+/** Whether this member may answer this approval: the owner has handed
+ * approvals to collaborators, they are one, and it is not their own
+ * request. Nobody approves what they asked for. */
+export function mayApprove(card: { askedFor?: string }, view: MemberView): boolean {
+  return Boolean(
+    view.approvals && view.role === "collaborator" && view.personId && card.askedFor !== view.personId,
+  );
 }
 
 /** A tool's kind, never its arguments. A shell command a member cannot
@@ -148,10 +163,19 @@ export function memberMessage(message: Message, view: MemberView): Message | nul
       if (!message.card) return null;
       // An approval is the owner's to give; a member sees that it is
       // waiting and on whom, not the buttons. A question is answerable by
-      // collaborators, so its options stay.
+      // collaborators, so its options stay. So are an approval's, for a
+      // collaborator the owner has trusted with them, unless they asked.
       const approval = Boolean(message.card.tool) || message.card.title === "Approval needed";
       const { tool: _tool, team: _team, ...card } = message.card;
-      return { ...message, card: approval ? { ...card, options: [], ownerOnly: true } : card };
+      if (!approval) return { ...message, card };
+      if (mayApprove(message.card, view)) return { ...message, card: { ...card, options: ["Allow", "Deny"] } };
+      // What the action would do (an address, a query, a path) is only
+      // shown to someone deciding it, or when the owner shows tool
+      // details to the room. Everyone else sees its kind and who asked.
+      const subtitle = view.activityDetail
+        ? card.subtitle
+        : [toolKind(message.card.tool ?? ""), card.subtitle.match(/\(asked for by [^)]+\)$/)?.[0]].filter(Boolean).join(" ");
+      return { ...message, card: { ...card, subtitle, options: [], ownerOnly: true } };
     }
     case "secret":
       // what was asked for, never a way to answer it: secrets are saved on

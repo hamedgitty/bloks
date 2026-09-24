@@ -178,6 +178,10 @@ export interface SendTurnInput {
    * server/index.ts); the rest are kept out of shared rooms.
    *
    * "conversation": no tools at all. "desk": read and write files in cwd.
+   * Any integrations on a shared turn are ones the owner opened to the
+   * room, and the driver must ask before every call to them: nothing
+   * of the owner's is pre-allowed. Only the Claude driver is trusted
+   * with that (ownerToolsSafe in server/index.ts).
    */
   shared?: { tools: "conversation" | "desk" };
   cwd?: string;

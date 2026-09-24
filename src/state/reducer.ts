@@ -15,6 +15,8 @@ export interface OptionCardData {
   subtitle: string;
   options: string[];
   answered?: string;
+  /** In a shared room, the collaborator who answered, when it was not you. */
+  answeredBy?: string;
   dismissed?: boolean;
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means a setup question, which is safe to ignore. */
@@ -247,6 +249,9 @@ export interface RoomSharing {
   activityDetail: boolean;
   tools: "conversation" | "desk";
   memoryFor?: string[];
+  ownerTools?: { connectors?: boolean; mcp?: string[]; browser?: boolean; computer?: boolean };
+  collaboratorsApprove?: boolean;
+  spendCap?: number;
 }
 
 /** Someone in a shared room who is not you. */
