@@ -107,7 +107,7 @@ Agents run on the engines installed here. Install and sign in to Claude
 Code or Codex on this machine, or give agents API keys in the app.
 
 A Dockerfile and a systemd unit are included. Full guide:
-https://bloks.dev/docs/server
+https://bloks.dev/docs#server
 `,
 );
 
