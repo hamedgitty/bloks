@@ -79,3 +79,25 @@ test("names cannot be empty or carry control characters", () => {
   assert.equal(people.cleanName("Bob‮evil"), "Bobevil");
   assert.equal(people.cleanName("x".repeat(100))!.length, 40);
 });
+
+test("someone from a chat channel knocks once and is let in as a collaborator", () => {
+  const first = people.knock({ roomId: "r9", platform: "slack", userId: "U1", name: "Sam‮" });
+  const again = people.knock({ roomId: "r9", platform: "slack", userId: "U1", name: "Sam" });
+  assert.equal(first.fresh, true);
+  assert.equal(again.fresh, false);
+  // a name from a chat is cleaned like any other
+  assert.equal(first.knock.name, "Sam");
+  assert.equal(people.personInRoomByChat("r9", "slack", "U1"), null);
+  const { person } = people.approveKnock(first.knock.id)!;
+  assert.equal(people.roleIn(person.id, "r9"), "collaborator");
+  assert.equal(people.personInRoomByChat("r9", "slack", "U1")?.id, person.id);
+  // the same account on the other platform is somebody else
+  assert.equal(people.personInRoomByChat("r9", "discord", "U1"), null);
+  assert.equal(people.knocksFor("r9").length, 0);
+});
+
+test("the same chat account is the same person in a second room", () => {
+  const a = people.approveKnock(people.knock({ roomId: "rA", platform: "discord", userId: "D7", name: "Zed" }).knock.id)!;
+  const b = people.approveKnock(people.knock({ roomId: "rB", platform: "discord", userId: "D7", name: "Zed" }).knock.id)!;
+  assert.equal(a.person.id, b.person.id);
+});

@@ -15,6 +15,7 @@ import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
+import type { ChatLink } from "./chat-bridge.ts";
 
 export interface BlokRecord {
   id: string;
@@ -80,6 +81,8 @@ export interface RoomSharing {
   spendCap?: number;
   /** What this room has spent this month, and on whose behalf. */
   spend?: RoomSpend;
+  /** The chat channel this room is carried into, if any. */
+  chat?: ChatLink;
 }
 
 export interface OwnerTools {
@@ -237,6 +240,32 @@ export class BlokStore {
     blok.sharing = { ...blok.sharing, spend };
     this.save();
     return spend;
+  }
+
+  /** Links a shared room to a chat channel, or unlinks it with null. */
+  setChat(id: string, link: ChatLink | null): BlokRecord | null {
+    const blok = this.get(id);
+    if (!blok?.sharing) return null;
+    const next = { ...blok.sharing };
+    if (link) next.chat = { platform: link.platform, channelId: link.channelId, channelName: link.channelName, declined: [] };
+    else delete next.chat;
+    blok.sharing = next;
+    this.save();
+    return blok;
+  }
+
+  /** Remembers a chat account the owner turned away from this room. */
+  declineChat(id: string, userId: string) {
+    const blok = this.get(id);
+    if (!blok?.sharing?.chat) return;
+    const declined = [...new Set([...(blok.sharing.chat.declined ?? []), userId])].slice(-500);
+    blok.sharing = { ...blok.sharing, chat: { ...blok.sharing.chat, declined } };
+    this.save();
+  }
+
+  /** The shared room linked to a channel, if any. */
+  byChannel(platform: string, channelId: string): BlokRecord | null {
+    return this.bloks.find((b) => b.sharing?.chat?.platform === platform && b.sharing.chat.channelId === channelId) ?? null;
   }
 
   markSpendWarned(id: string) {

@@ -32,8 +32,13 @@ interface PeopleResponse {
   hostName: string;
   plan: "cloud" | "team" | null;
   limits: { rooms: number | null; members: number } | null;
-  people: Array<RoomPerson & { invitedBy: string }>;
+  people: Array<RoomPerson & { invitedBy: string; via?: ChatPlatform }>;
   invites: PendingInvite[];
+  knocks: Array<{ id: string; name: string; platform: ChatPlatform; at: number }>;
+  chat: {
+    link: { platform: ChatPlatform; channelId: string; channelName: string } | null;
+    connected: ChatPlatform[];
+  };
   spend: { month: string; total: number; cap: number; byPerson: Array<{ id: string; name: string; usd: number }> } | null;
   available: {
     connectors: boolean;
@@ -44,6 +49,9 @@ interface PeopleResponse {
 }
 
 const CAPS = [0, 5, 10, 25, 50, 100, 250];
+
+type ChatPlatform = "slack" | "discord";
+const PLATFORM: Record<ChatPlatform, string> = { slack: "Slack", discord: "Discord" };
 
 function usd(n: number) {
   return `$${n < 10 ? n.toFixed(2) : Math.round(n)}`;
@@ -69,7 +77,7 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
         dispatch({
           type: "joinRequest",
           roomId: blok.id,
-          pending: next.invites.filter((i) => i.claim).length,
+          pending: next.invites.filter((i) => i.claim).length + next.knocks.length,
         });
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
@@ -129,8 +137,9 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
       <DialogContent className="max-h-[86vh] max-w-[480px] overflow-y-auto">
         <DialogTitle className="text-[15px] font-semibold">Share {blok.name}</DialogTitle>
         <DialogDescription className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
-          People you invite talk to this room's agents from the Bloks app. The agents keep running on
-          this computer, and anything that touches your accounts, files or computer waits for you.
+          People you invite talk to this room's agents from the Bloks app, a browser, or a linked Slack or
+          Discord channel. The agents keep running on this computer, and anything that touches your
+          accounts, files or computer waits for you.
         </DialogDescription>
 
         {error && (
@@ -195,6 +204,36 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
                     variant="secondary"
                     disabled={busy !== null}
                     onClick={() => act(`out-${inv.id}`, () => api(`/api/invites/${inv.id}/decline`, { method: "POST" }))}
+                  >
+                    Decline
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            {/* who is asking from a linked channel */}
+            {data.knocks.map((k) => (
+              <div key={k.id} className="rounded-2xl border border-brand-ink/30 bg-brand-ink/5 p-4">
+                <div className="text-[13.5px] font-medium text-foreground">
+                  {k.name} wants to talk to the agents from {PLATFORM[k.platform]}
+                </div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  They named an agent in {data.chat.link?.channelName ?? "the linked channel"}. Let them in as a
+                  collaborator, or they are not answered.
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    className="flex-1"
+                    disabled={busy !== null}
+                    onClick={() => act(`kin-${k.id}`, () => api(`/api/knocks/${k.id}/approve`, { method: "POST" }))}
+                  >
+                    {busy === `kin-${k.id}` && <Loader2 size={14} className="animate-spin" />}
+                    Let in
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={busy !== null}
+                    onClick={() => act(`kout-${k.id}`, () => api(`/api/knocks/${k.id}/decline`, { method: "POST" }))}
                   >
                     Decline
                   </Button>
@@ -270,7 +309,10 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
                 </div>
                 {data.people.map((p) => (
                   <div key={p.id} className="flex items-center justify-between gap-2 text-[13px]">
-                    <span className="min-w-0 truncate text-foreground">{p.name}</span>
+                    <span className="min-w-0 truncate text-foreground">
+                      {p.name}
+                      {p.via && <span className="ml-1.5 text-[11.5px] text-muted-foreground">in {PLATFORM[p.via]}</span>}
+                    </span>
                     <span className="flex shrink-0 items-center gap-1">
                       <select
                         value={p.role}
@@ -334,6 +376,8 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
                 />
               </div>
             </section>
+
+            <ChatLinkSection blokId={blok.id} data={data} act={act} busy={busy !== null} />
 
             <OwnerToolsSection data={data} shared={shared} busy={busy !== null} share={share} />
 
@@ -430,6 +474,129 @@ export function SharePanel({ blok, open, onOpenChange }: { blok: Blok; open: boo
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Carrying this room into a Slack or Discord channel. The channel list is
+ * fetched only when asked for, since it is a call out to the platform.
+ */
+function ChatLinkSection({
+  blokId,
+  data,
+  act,
+  busy,
+}: {
+  blokId: string;
+  data: PeopleResponse;
+  act: (key: string, run: () => Promise<unknown>) => Promise<void>;
+  busy: boolean;
+}) {
+  const [platform, setPlatform] = useState<ChatPlatform | null>(null);
+  const [channels, setChannels] = useState<Array<{ id: string; name: string }> | null>(null);
+  const [channelId, setChannelId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const link = data.chat.link;
+
+  const pick = (next: ChatPlatform) => {
+    setPlatform(next);
+    setChannels(null);
+    setChannelId("");
+    setError(null);
+    api(`/api/chat/${next}/channels`)
+      .then((r: { channels: Array<{ id: string; name: string }> }) => setChannels(r.channels))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  };
+
+  return (
+    <section>
+      <SectionTitle>Chat channel</SectionTitle>
+      {link ? (
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 text-[13px] text-foreground">
+            Linked to <span className="font-medium">{link.channelName}</span> in {PLATFORM[link.platform]}
+            <div className="text-[11.5px] leading-snug text-muted-foreground">
+              Everything said here is said there. People there talk to the agents by naming one, once you let
+              them in.
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => act("unlink", () => api(`/api/bloks/${blokId}/chat`, { method: "DELETE" }))}
+          >
+            Unlink
+          </Button>
+        </div>
+      ) : data.chat.connected.length === 0 ? (
+        <div className="text-[12px] leading-snug text-muted-foreground">
+          Carry this room into a Slack or Discord channel. Connect one in Settings, under Devices.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="text-[11.5px] leading-snug text-muted-foreground">
+            Carry this room into a channel. The agents answer only when someone names one, and only people you
+            let in.
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {data.chat.connected.map((p) => (
+              <Button key={p} size="sm" variant={platform === p ? "default" : "secondary"} onClick={() => pick(p)}>
+                {PLATFORM[p]}
+              </Button>
+            ))}
+          </div>
+          {platform && channels === null && !error && (
+            <div className="text-[12px] text-muted-foreground">
+              <Loader2 size={12} className="mr-1 inline animate-spin" />
+              Finding channels
+            </div>
+          )}
+          {platform && channels && (
+            channels.length === 0 ? (
+              <div className="text-[12px] leading-snug text-muted-foreground">
+                The bot is not in any channels yet. Add it to one in {PLATFORM[platform]}, then pick again.
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <select
+                  value={channelId}
+                  onChange={(e) => setChannelId(e.target.value)}
+                  className="min-w-0 flex-1 rounded-lg border bg-background px-2 text-[13px]"
+                  aria-label="Channel"
+                >
+                  <option value="">Pick a channel</option>
+                  {channels.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  disabled={!channelId || busy}
+                  onClick={() =>
+                    act("link", () =>
+                      api(`/api/bloks/${blokId}/chat`, {
+                        method: "POST",
+                        body: JSON.stringify({
+                          platform,
+                          channelId,
+                          channelName: channels.find((c) => c.id === channelId)?.name ?? channelId,
+                        }),
+                      }),
+                    )
+                  }
+                >
+                  Link
+                </Button>
+              </div>
+            )
+          )}
+          {error && <div className="text-[11.5px] text-warning">{error}</div>}
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -18,6 +18,7 @@ import { EnginesPanel } from "./EnginesPanel";
 import { CloudSection } from "./CloudSection";
 import { DevicesSection } from "./DevicesSection";
 import { TelegramSection } from "./TelegramSection";
+import { ChatSection } from "./ChatSection";
 import { LocalVmSection } from "./LocalVmSection";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -578,6 +579,7 @@ export function AppSettingsPanel() {
               <>
                 <DevicesSection />
                 <TelegramSection />
+                <ChatSection />
                 <CloudSection />
               </>
             )}

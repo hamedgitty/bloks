@@ -132,6 +132,9 @@ import { draftPrompt, parseDraft } from "./draft.ts";
 import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
+import * as slack from "./slack.ts";
+import * as discord from "./discord.ts";
+import { decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
 import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
@@ -526,6 +529,10 @@ const RING_SIZE = 512;
 const frameRing: Array<{ seq: number; frame: string; payload: unknown }> = [];
 
 function broadcast(payload: unknown) {
+  // a channel that cannot be reached must never cost the room its frame
+  try {
+    mirrorToChat(payload);
+  } catch {}
   const seq = ++frameSeq;
   const frame = `data: ${JSON.stringify({ ...(payload as object), _seq: seq })}\n\n`;
   // screen frames are megabytes of now-or-never pixels; replaying them
@@ -1485,6 +1492,15 @@ async function startTurn(
       { status: 409, paused: true },
     );
   }
+  // A shared room, and above all one carried into a group chat, can be
+  // poked faster than anyone meant to pay for. Past a steady rate the
+  // room waits a minute, whoever is asking.
+  if (sharing && !turnBrake.allow(sharedRoom!.id)) {
+    throw Object.assign(
+      new Error(`${sharedRoom!.name} has started a lot of turns in the last minute, so its agents are taking a breath. Try again in a minute.`),
+      { status: 429, paused: true },
+    );
+  }
   // The owner's own tools this turn may ask to use in a shared room:
   // what the owner switched on for the room, on Team, on an engine that
   // stops to ask. Every call still raises an approval (see the driver).
@@ -2156,6 +2172,8 @@ const roomPosting = new Map<string, Promise<unknown>>();
 interface RoomAuthor {
   botId?: string;
   personId?: string;
+  /** Said in the room's linked chat channel, so it is not echoed back. */
+  via?: ChatPlatform;
   hops: number;
   toAll?: boolean;
   replyTo?: ReplyRef;
@@ -2174,6 +2192,7 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     role: author.botId ? "bot" : "user",
     ...(author.botId ? { from: author.botId } : {}),
     ...(author.personId ? { author: author.personId } : {}),
+    ...(author.via ? { via: author.via } : {}),
     kind: "text",
     text,
     queued: Boolean(previous),
@@ -2394,6 +2413,8 @@ function sayTurnedAway(threadId: string, error: unknown): boolean {
   const message = store.appendMessage(threadId, {
     role: "bot",
     kind: "notice",
+    // a pause is the room's news, so a linked channel hears it too
+    ...(refused.paused ? { event: true } : {}),
     text: String((error as Error).message ?? "Somebody has the wheel."),
   });
   broadcast({ kind: "message", threadId, message });
@@ -3438,6 +3459,140 @@ async function telegramLoop(): Promise<void> {
 }
 
 if (cfg.telegram?.enabled) void telegramLoop();
+
+// ── shared rooms in Slack and Discord ──────────────────────────────────
+// The rules are in server/chat-bridge.ts and the wire in server/slack.ts
+// and server/discord.ts. This is the plumbing between them and the room.
+
+const turnBrake = new TurnBrake();
+const chatClients: { slack?: slack.SlackSocket; discord?: discord.DiscordGateway } = {};
+const chatStatus: Record<ChatPlatform, { state: "off" | "connecting" | "connected" | "error"; detail?: string }> = {
+  slack: { state: "off" },
+  discord: { state: "off" },
+};
+/** Room messages already said in a channel, so a patch never repeats one. */
+const chatMirrored = new Set<string>();
+/** One outgoing queue per channel, so the channel reads in room order. */
+const chatOutbox = new Map<string, Promise<unknown>>();
+
+function startChat(platform: ChatPlatform) {
+  chatClients[platform]?.stop();
+  delete chatClients[platform];
+  chatStatus[platform] = { state: "off" };
+  const onStatus = (state: "connecting" | "connected" | "error", detail?: string) => {
+    chatStatus[platform] = { state, ...(detail ? { detail } : {}) };
+    broadcast({ kind: "chat.status", platform, ...chatStatus[platform] });
+  };
+  if (platform === "slack") {
+    const c = cfg.chat?.slack;
+    if (!c?.enabled || !c.botToken || !c.appToken) return;
+    const client = new slack.SlackSocket({ botToken: c.botToken, appToken: c.appToken }, (m) => void onChatMessage(m));
+    client.onStatus = onStatus;
+    chatClients.slack = client;
+    void client.start();
+  } else {
+    const c = cfg.chat?.discord;
+    if (!c?.enabled || !c.token) return;
+    const client = new discord.DiscordGateway(c.token, (m) => void onChatMessage(m));
+    client.onStatus = onStatus;
+    chatClients.discord = client;
+    void client.start();
+  }
+}
+
+/** Says something in a channel, in order, and never throws. */
+function sayInChannel(platform: ChatPlatform, channelId: string, text: string) {
+  const key = `${platform}:${channelId}`;
+  const run = (chatOutbox.get(key) ?? Promise.resolve()).then(async () => {
+    try {
+      if (platform === "slack" && cfg.chat?.slack?.botToken) await slack.post(cfg.chat.slack.botToken, channelId, text);
+      if (platform === "discord" && cfg.chat?.discord?.token) await discord.post(cfg.chat.discord.token, channelId, text);
+    } catch (e) {
+      chatStatus[platform] = { state: "error", detail: (e as Error).message };
+    }
+  });
+  chatOutbox.set(key, run);
+  void run.then(() => {
+    if (chatOutbox.get(key) === run) chatOutbox.delete(key);
+  });
+}
+
+/** Somebody said something in a channel some room is linked to. */
+async function onChatMessage(message: ChatMessage) {
+  const blok = bloks.byChannel(message.platform, message.channelId);
+  if (!blok?.sharing?.chat) return;
+  const agents = blok.memberIds.map((id) => store.bot(id)).filter((b): b is BotRecord => Boolean(b));
+  const decision = decideChat(
+    blok.sharing.chat,
+    message,
+    (platform, userId) => people.personInRoomByChat(blok.id, platform, userId)?.id ?? null,
+    agents.map((b) => b.name),
+  );
+  if (decision.kind === "ignore") return;
+  if (decision.kind === "post") {
+    for (const id of blok.memberIds) agentHops.delete(id);
+    try {
+      enqueueRoomPost(blok, decision.text, { personId: decision.personId, via: message.platform, hops: 0 });
+    } catch {}
+    return;
+  }
+  // a stranger: asked about once, told once
+  const { knock, fresh } = people.knock({ roomId: blok.id, platform: message.platform, userId: message.userId, name: message.userName });
+  if (!fresh) return;
+  sayInChannel(message.platform, message.channelId, outbound(message.platform, { kind: "notice" }, knockReply(knock.name, hostName())));
+  broadcast({ kind: "room.joinRequest", roomId: blok.id, knock });
+}
+
+/**
+ * The room's side, said in its channel. Everything a person reads in the
+ * room is readable there, except what the channel said itself (already
+ * there) and anything that is the owner's alone: approvals are only said
+ * to be waiting, never what they are for.
+ */
+function mirrorToChat(payload: unknown) {
+  const frame = payload as { kind?: string; threadId?: string; message?: Message } | null;
+  if ((frame?.kind !== "message" && frame?.kind !== "message.patch") || !frame.threadId || !frame.message) return;
+  const blok = bloks.get(frame.threadId);
+  const link = blok?.sharing?.chat;
+  if (!blok || !link) return;
+  const m = frame.message;
+  // A message that waited behind a busy room is said when it is let go,
+  // which arrives as a patch; any other patch is an edit to something
+  // the channel already has.
+  if (m.via === link.platform || m.queued || chatMirrored.has(m.id)) return;
+  if (frame.kind === "message.patch" && !(m.kind === "text" && m.role === "user")) return;
+  chatMirrored.add(m.id);
+  if (chatMirrored.size > 5_000) {
+    for (const id of [...chatMirrored].slice(0, 2_500)) chatMirrored.delete(id);
+  }
+  const say = (text: string) => sayInChannel(link.platform, link.channelId, text);
+  if (m.kind === "text" && m.text) {
+    if (m.role === "bot") {
+      const bot = m.from ? store.bot(m.from) : null;
+      say(outbound(link.platform, { kind: "agent", name: bot?.name ?? "Agent" }, m.text));
+    } else {
+      const name = m.author ? (people.person(m.author)?.name ?? "Someone") : hostName();
+      say(outbound(link.platform, { kind: "person", name }, m.text));
+    }
+    return;
+  }
+  if (m.kind === "notice" && m.event && m.text) return say(outbound(link.platform, { kind: "notice" }, m.text));
+  if (m.kind === "options" && m.card?.requestId) {
+    const bot = m.from ? store.bot(m.from) : null;
+    const approval = Boolean(m.card.tool) || m.card.title === "Approval needed";
+    say(
+      outbound(
+        link.platform,
+        { kind: "notice" },
+        approval
+          ? `${bot?.name ?? "An agent"} is waiting for ${hostName()} to approve something.`
+          : `${bot?.name ?? "An agent"} has a question for the room, in Bloks.`,
+      ),
+    );
+  }
+}
+
+for (const platform of ["slack", "discord"] as const) startChat(platform);
 
 // The Local VM lease dies with the turn that held it, and a VM that
 // survived a restart goes back on the idle clock.
@@ -6102,9 +6257,14 @@ const server = createServer(async (req, res) => {
         limits: plan ? PLAN_LIMITS[plan] : null,
         people: people
           .membersOf(blok.id)
-          .map((x) => ({ id: x.personId, name: x.person.name, role: x.role, joinedAt: x.joinedAt, invitedBy: x.invitedBy })),
+          .map((x) => ({ id: x.personId, name: x.person.name, role: x.role, joinedAt: x.joinedAt, invitedBy: x.invitedBy, via: x.person.via?.platform })),
         invites: people.invitesFor(blok.id).map(publicInvite),
         spend: blok.sharing ? spendReport(blok) : null,
+        knocks: people.knocksFor(blok.id).map((k) => ({ id: k.id, name: k.name, platform: k.platform, at: k.at })),
+        chat: {
+          link: blok.sharing?.chat ? { platform: blok.sharing.chat.platform, channelId: blok.sharing.chat.channelId, channelName: blok.sharing.chat.channelName } : null,
+          connected: (["slack", "discord"] as const).filter((p) => chatStatus[p].state === "connected"),
+        },
         // what the owner could open up to this room, by name only
         available: {
           connectors: Boolean(cfg.composio?.key),
@@ -6165,6 +6325,79 @@ const server = createServer(async (req, res) => {
       if (!bloks.get(m[1])) return json(res, 404, { error: "no such room" });
       await stopSharing(m[1]);
       return json(res, 200, { blok: bloks.get(m[1]) });
+    }
+
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/chat$/);
+    if (m && (method === "POST" || method === "DELETE")) {
+      const blok = bloks.get(m[1]);
+      if (!blok?.sharing) return json(res, 409, { error: "Share the room first." });
+      if (method === "DELETE") {
+        const was = blok.sharing.chat;
+        bloks.setChat(blok.id, null);
+        people.clearKnocks(blok.id);
+        if (was) sayInChannel(was.platform, was.channelId, outbound(was.platform, { kind: "notice" }, `This channel is no longer linked to ${blok.name}.`));
+        broadcast({ kind: "blok", blok: bloks.get(blok.id) });
+        return json(res, 200, { blok: bloks.get(blok.id) });
+      }
+      const body = await readBody(req);
+      const platform: ChatPlatform | null = body.platform === "slack" || body.platform === "discord" ? body.platform : null;
+      const channelId = typeof body.channelId === "string" && /^[A-Za-z0-9]{1,40}$/.test(body.channelId) ? body.channelId : "";
+      if (!platform || !channelId) return json(res, 400, { error: "pick a channel" });
+      if (chatStatus[platform].state !== "connected") {
+        return json(res, 409, { error: `Connect ${PLATFORM_NAME[platform]} in Settings first.` });
+      }
+      const taken = bloks.byChannel(platform, channelId);
+      if (taken && taken.id !== blok.id) return json(res, 409, { error: `That channel is already linked to ${taken.name}.` });
+      const channelName = clamp(body.channelName, 80) || channelId;
+      bloks.setChat(blok.id, { platform, channelId, channelName });
+      const names = blok.memberIds.map((id) => store.bot(id)?.name).filter(Boolean).map((n) => `@${n}`);
+      sayInChannel(
+        platform,
+        channelId,
+        outbound(
+          platform,
+          { kind: "notice" },
+          `${hostName()} linked this channel to ${blok.name}. Name an agent (${names.join(", ")}) to talk to it; ${hostName()} lets each person in.`,
+        ),
+      );
+      broadcast({ kind: "blok", blok: bloks.get(blok.id) });
+      return json(res, 200, { blok: bloks.get(blok.id) });
+    }
+
+    m = path.match(/^\/api\/knocks\/([\w-]+)\/(approve|decline)$/);
+    if (m && method === "POST") {
+      const k = people.knockById(m[1]);
+      if (!k) return json(res, 404, { error: "nobody is waiting" });
+      const blok = bloks.get(k.roomId);
+      const link = blok?.sharing?.chat;
+      if (!blok?.sharing || !link) {
+        people.dropKnock(k.id);
+        return json(res, 409, { error: "that room is no longer linked to a channel" });
+      }
+      if (m[2] === "decline") {
+        people.dropKnock(k.id);
+        bloks.declineChat(blok.id, k.userId);
+        roomPeopleFrame(blok.id);
+        return json(res, 200, { ok: true });
+      }
+      const plan = await currentPlan();
+      const limits = plan ? PLAN_LIMITS[plan] : PLAN_LIMITS.cloud;
+      if (people.membersOf(blok.id).length >= limits.members) {
+        return json(res, 402, {
+          error: plan === "team" ? `A shared room holds up to ${limits.members} people.` : "Bloks Cloud rooms hold two people. Bloks Team holds ten.",
+        });
+      }
+      const approved = people.approveKnock(k.id);
+      if (!approved) return json(res, 409, { error: "nobody is waiting" });
+      const notice = store.appendMessage(blok.id, {
+        role: "bot",
+        kind: "notice",
+        event: true,
+        text: `${approved.person.name} joined the room from ${PLATFORM_NAME[k.platform]}.`,
+      });
+      broadcast({ kind: "message", threadId: blok.id, message: notice });
+      roomPeopleFrame(blok.id);
+      return json(res, 200, { person: { id: approved.person.id, name: approved.person.name } });
     }
 
     m = path.match(/^\/api\/bloks\/([\w-]+)\/invites$/);
@@ -7133,6 +7366,79 @@ const server = createServer(async (req, res) => {
     }
 
     // ── reaching agents from a phone ──
+    // ── Slack and Discord, for shared rooms ──
+    if (method === "GET" && path === "/api/chat") {
+      // tokens never come back out, only whether they are set
+      const c = cfg.chat ?? {};
+      return json(res, 200, {
+        slack: { configured: Boolean(c.slack?.botToken && c.slack?.appToken), enabled: c.slack?.enabled === true, ...chatStatus.slack },
+        discord: { configured: Boolean(c.discord?.token), enabled: c.discord?.enabled === true, ...chatStatus.discord },
+      });
+    }
+    if (method === "POST" && path === "/api/chat") {
+      const body = await readBody(req);
+      const platform: ChatPlatform | null = body.platform === "slack" || body.platform === "discord" ? body.platform : null;
+      if (!platform) return json(res, 400, { error: "slack or discord" });
+      const next = { ...(cfg.chat ?? {}) };
+      if (platform === "slack") {
+        const cur = { ...(next.slack ?? {}) };
+        if (body.forget === true) Object.assign(cur, { botToken: undefined, appToken: undefined, enabled: false });
+        if (body.botToken !== undefined || body.appToken !== undefined) {
+          const botToken = slack.cleanBotToken(body.botToken);
+          const appToken = slack.cleanAppToken(body.appToken);
+          if (!botToken) return json(res, 400, { error: "That bot token should start with xoxb-." });
+          if (!appToken) return json(res, 400, { error: "That app-level token should start with xapp-." });
+          try {
+            await slack.whoAmI(botToken);
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+          Object.assign(cur, { botToken, appToken, enabled: true });
+        }
+        if (typeof body.enabled === "boolean") cur.enabled = body.enabled;
+        next.slack = cur;
+      } else {
+        const cur = { ...(next.discord ?? {}) };
+        if (body.forget === true) Object.assign(cur, { token: undefined, enabled: false });
+        if (body.token !== undefined) {
+          const token = discord.cleanToken(body.token);
+          if (!token) return json(res, 400, { error: "That does not look like a Discord bot token." });
+          try {
+            await discord.whoAmI(token);
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+          Object.assign(cur, { token, enabled: true });
+        }
+        if (typeof body.enabled === "boolean") cur.enabled = body.enabled;
+        next.discord = cur;
+      }
+      saveConfig({ chat: next } as Partial<AppConfig>);
+      cfg.chat = next;
+      startChat(platform);
+      const c = cfg.chat;
+      return json(res, 200, {
+        slack: { configured: Boolean(c.slack?.botToken && c.slack?.appToken), enabled: c.slack?.enabled === true, ...chatStatus.slack },
+        discord: { configured: Boolean(c.discord?.token), enabled: c.discord?.enabled === true, ...chatStatus.discord },
+      });
+    }
+    m = path.match(/^\/api\/chat\/(slack|discord)\/channels$/);
+    if (m && method === "GET") {
+      try {
+        const list =
+          m[1] === "slack"
+            ? cfg.chat?.slack?.botToken
+              ? await slack.channels(cfg.chat.slack.botToken)
+              : []
+            : cfg.chat?.discord?.token
+              ? await discord.channels(cfg.chat.discord.token)
+              : [];
+        return json(res, 200, { channels: list });
+      } catch (e) {
+        return json(res, 502, { error: (e as Error).message });
+      }
+    }
+
     if (method === "GET" && path === "/api/telegram") {
       const state = cfg.telegram ?? {};
       // The token is a credential and never comes back out; what the

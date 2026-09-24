@@ -70,6 +70,12 @@ export interface AppConfig {
   /** User-added OpenAI-compatible hosts. Same file as the other keys
    * because this is already the secrets file. */
   custom?: CustomEndpoint[];
+  /** Carrying shared rooms into Slack and Discord channels
+   * (server/chat-bridge.ts). Tokens are credentials, so they live here. */
+  chat?: {
+    slack?: { botToken?: string; appToken?: string; enabled?: boolean };
+    discord?: { token?: string; enabled?: boolean };
+  };
   /** Reaching agents from a phone over Telegram. The token is a
    * credential, so it lives here with the rest of them. */
   telegram?: {
@@ -232,6 +238,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     "compaction",
     "skills",
     "telegram",
+    "chat",
   ] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };

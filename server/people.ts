@@ -28,6 +28,21 @@ export interface Person {
   /** The relay client token digest this person's devices use, so removing
    * them from their last room can take the relay away too. */
   relayTokenHash?: string;
+  /** Set for someone who talks to the room from a linked chat channel
+   * (server/chat-bridge.ts): which platform, and their id there. */
+  via?: { platform: "slack" | "discord"; userId: string };
+}
+
+/** Somebody in a linked chat channel who addressed the agents and is not
+ * in the room yet. The chat equivalent of a claimed invite: the owner
+ * lets them in or not. */
+export interface Knock {
+  id: string;
+  roomId: string;
+  platform: "slack" | "discord";
+  userId: string;
+  name: string;
+  at: number;
 }
 
 export interface Membership {
@@ -70,6 +85,7 @@ interface PeopleFile {
   people: Person[];
   memberships: Membership[];
   invites: Invite[];
+  knocks: Knock[];
 }
 
 /** How long an invite link works. */
@@ -93,6 +109,7 @@ function load(): PeopleFile {
         people: Array.isArray(raw.people) ? raw.people : [],
         memberships: Array.isArray(raw.memberships) ? raw.memberships : [],
         invites: Array.isArray(raw.invites) ? raw.invites : [],
+        knocks: Array.isArray(raw.knocks) ? raw.knocks : [],
       };
       return cache;
     }
@@ -100,7 +117,7 @@ function load(): PeopleFile {
     // a torn file is treated as empty rather than fatal; the owner's own
     // access never depended on it
   }
-  cache = { people: [], memberships: [], invites: [] };
+  cache = { people: [], memberships: [], invites: [], knocks: [] };
   return cache;
 }
 
@@ -108,6 +125,7 @@ function save() {
   const data = load();
   const now = Date.now();
   data.invites = data.invites.filter((i) => i.createdAt + INVITE_KEEP_MS > now);
+  data.knocks = data.knocks.filter((k) => k.at + INVITE_KEEP_MS > now);
   const next = `${FILE()}.next`;
   writeFileSync(next, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(next, FILE());
@@ -301,6 +319,75 @@ export function closeInvite(id: string, status: "declined" | "cancelled"): Invit
   inv.status = status;
   save();
   return inv;
+}
+
+// ── people from a linked chat channel ──────────────────────────────────
+
+/** The person a chat account belongs to in this room, if they are in it. */
+export function personInRoomByChat(roomId: string, platform: "slack" | "discord", userId: string): Person | null {
+  const data = load();
+  const p = data.people.find((x) => x.via?.platform === platform && x.via.userId === userId);
+  return p && data.memberships.some((m) => m.personId === p.id && m.roomId === roomId) ? p : null;
+}
+
+/** Records that a stranger asked. Returns the knock and whether it is new,
+ * so the channel is told once and the owner asked once. */
+export function knock(input: Omit<Knock, "id" | "at">): { knock: Knock; fresh: boolean } {
+  const data = load();
+  const existing = data.knocks.find(
+    (k) => k.roomId === input.roomId && k.platform === input.platform && k.userId === input.userId,
+  );
+  if (existing) return { knock: existing, fresh: false };
+  const made: Knock = { ...input, name: cleanName(input.name) ?? "Someone", id: `kn_${randomBytes(9).toString("base64url")}`, at: Date.now() };
+  data.knocks.push(made);
+  save();
+  return { knock: made, fresh: true };
+}
+
+export function knocksFor(roomId: string): Knock[] {
+  return load().knocks.filter((k) => k.roomId === roomId);
+}
+
+export function knockById(id: string): Knock | null {
+  return load().knocks.find((k) => k.id === id) ?? null;
+}
+
+/** Lets a knocker in, as a collaborator. The same chat account is the
+ * same person across rooms. */
+export function approveKnock(id: string): { knock: Knock; person: Person } | null {
+  const data = load();
+  const k = data.knocks.find((x) => x.id === id);
+  if (!k) return null;
+  let p = data.people.find((x) => x.via?.platform === k.platform && x.via.userId === k.userId);
+  if (!p) {
+    p = { id: `p_${randomBytes(9).toString("base64url")}`, name: k.name, createdAt: Date.now(), via: { platform: k.platform, userId: k.userId } };
+    data.people.push(p);
+  }
+  if (!data.memberships.some((m) => m.personId === p!.id && m.roomId === k.roomId)) {
+    data.memberships.push({ personId: p.id, roomId: k.roomId, role: "collaborator", joinedAt: Date.now(), invitedBy: "owner" });
+  }
+  data.knocks = data.knocks.filter((x) => x.id !== id);
+  save();
+  return { knock: k, person: p };
+}
+
+/** Turns a knocker away. The caller remembers them on the room's link so
+ * they are not asked about again. */
+export function dropKnock(id: string): Knock | null {
+  const data = load();
+  const k = data.knocks.find((x) => x.id === id) ?? null;
+  if (!k) return null;
+  data.knocks = data.knocks.filter((x) => x.id !== id);
+  save();
+  return k;
+}
+
+/** Every knock for a room gone, e.g. when its channel is unlinked. */
+export function clearKnocks(roomId: string) {
+  const data = load();
+  const before = data.knocks.length;
+  data.knocks = data.knocks.filter((k) => k.roomId !== roomId);
+  if (data.knocks.length !== before) save();
 }
 
 // ── the check phrase ───────────────────────────────────────────────────
