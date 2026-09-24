@@ -77,7 +77,30 @@ export interface Message {
   author?: string;
   /** A room event (someone joined or left), not a warning. */
   event?: boolean;
-  kind: "text" | "options" | "activity" | "screen" | "notice" | "artifact" | "connector" | "secret" | "component";
+  kind:
+    | "text"
+    | "options"
+    | "activity"
+    | "screen"
+    | "notice"
+    | "artifact"
+    | "connector"
+    | "secret"
+    | "component"
+    | "changes";
+  /** changes messages: what one turn did to the files in its folder. */
+  changes?: {
+    checkpointId: string;
+    files: Array<{
+      path: string;
+      status: "added" | "modified" | "deleted";
+      big?: boolean;
+      added?: number;
+      removed?: number;
+    }>;
+    total: number;
+    reverted?: { at: number; restored: number; skipped: number };
+  };
   text?: string;
   card?: OptionCardData;
   /** component messages: an answer that is not a paragraph. */

@@ -230,6 +230,7 @@ import {
 import { widenPath } from "./path.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
+import { Checkpoints } from "./checkpoints.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import * as artifacts from "./artifacts.ts";
@@ -395,6 +396,11 @@ function installedMarks() {
 const routines = new RoutineStore();
 routines.settleOrphanRuns();
 const usage = new UsageStore();
+// What each turn did to the files in its folder, and the way back.
+const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
+/** Lanes whose last changes were undone since the agent last spoke: its
+ * next turn is told, or it would carry on from files that are gone. */
+const undoneSince = new Map<string, string[]>();
 const teamLibrary = new TeamLibrary();
 // A model server already running here is one nobody should have to go
 // and connect by hand. Looked for once, never written over an entry that
@@ -1081,6 +1087,15 @@ bus.subscribe((event: RuntimeEvent) => {
       const frame = stopScreenPoller(bot.id);
       if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
       sweepArtifacts(bot.id, event.threadId, pushMessage);
+      // what the turn did to its folder, as a card with the way back
+      void checkpoints
+        .finish(event.threadId)
+        .then((record) => {
+          if (!record) return;
+          const card = pushMessage({ role: "bot", kind: "changes", changes: checkpoints.summary(record) });
+          checkpoints.attachCard(record.id, roomId, card.id);
+        })
+        .catch(() => {});
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
       // whatever the agent was given to act with is spent
@@ -1928,6 +1943,12 @@ async function startTurn(
         ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
         : text;
       if (engineFresh && !nativeReplay) turnText = freshTurnText(transcript, turnText);
+      const undone = undoneSince.get(task.id);
+      if (undone) {
+        undoneSince.delete(task.id);
+        const named = undone.slice(0, 20).join(", ") + (undone.length > 20 ? `, and ${undone.length - 20} more` : "");
+        turnText = `(Since your last turn, the user undid your changes to: ${named}. Those files are back as they were before that turn.)\n\n${turnText}`;
+      }
 
       // A credential of this agent's own, for this turn only. Given only
       // to engines that run a process, because a driver that talks to an
@@ -1937,6 +1958,10 @@ async function startTurn(
       // workspace, and the saved secrets ride in the same environment.
       const credential =
         !sharing && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
+
+      // photographed before the agent can touch it, so the turn's card
+      // can show what changed and put it back
+      await checkpoints.begin(task.id, bot.id, turnCwd).catch(() => {});
 
       await instance.adapter.sendTurn({
         threadId: task.id,
@@ -5671,6 +5696,45 @@ const server = createServer(async (req, res) => {
     }
 
     // ── secret cards: a value saved from the chat, never into it ──
+    // What a turn changed, one file at a time.
+    m = path.match(/^\/api\/checkpoints\/([\w-]+)\/diff$/);
+    if (m && method === "GET") {
+      const file = url.searchParams.get("path") ?? "";
+      const diff = checkpoints.diff(m[1], file);
+      if (!diff) return json(res, 404, { error: "no such change" });
+      return json(res, 200, { diff });
+    }
+
+    // Undo a turn. Not while that agent is working: its next edit would
+    // land on files moving under it, and the undo would be half true.
+    m = path.match(/^\/api\/checkpoints\/([\w-]+)\/revert$/);
+    if (m && method === "POST") {
+      const record = checkpoints.get(m[1]);
+      if (!record) return json(res, 404, { error: "no such change" });
+      if (record.revertedAt) return json(res, 409, { error: "already undone" });
+      if (store.bot(record.botId)?.tasks.some((t) => t.busy)) {
+        return json(res, 409, { error: "wait for the agent to finish, then undo" });
+      }
+      const result = await checkpoints.revert(record.id);
+      if (!result) return json(res, 404, { error: "no such change" });
+      if (result.restored.length) {
+        undoneSince.set(record.threadId, [...(undoneSince.get(record.threadId) ?? []), ...result.restored]);
+      }
+      if (record.card) {
+        const current = store.messagesFor(record.card.threadId).find((msg) => msg.id === record.card!.messageId);
+        if (current?.changes) {
+          const patched = store.patchMessage(record.card.threadId, record.card.messageId, {
+            changes: {
+              ...current.changes,
+              reverted: { at: Date.now(), restored: result.restored.length, skipped: result.skipped.length },
+            },
+          });
+          if (patched) broadcast({ kind: "message.patch", threadId: record.card.threadId, message: patched });
+        }
+      }
+      return json(res, 200, result);
+    }
+
     m = path.match(/^\/api\/bots\/([\w-]+)\/secret-cards\/([\w-]+)\/(save|dismiss)$/);
     if (m && method === "POST") {
       const bot = store.bot(m[1]);

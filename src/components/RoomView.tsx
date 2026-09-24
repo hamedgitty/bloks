@@ -32,6 +32,7 @@ import {
   type ReplyDraft,
 } from "./MessageActions";
 import { OptionCard } from "./OptionCard";
+import { ChangesCard } from "./ChangesCard";
 import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
@@ -267,6 +268,8 @@ function RoomMessage({
         )}
         {message.kind === "component" && message.component ? (
           <MessageComponent message={message} threadId={roomId} />
+        ) : message.kind === "changes" ? (
+          <ChangesCard message={message} />
         ) : message.kind === "options" ? (
           // an agent can need you mid-room; the ask has to be answerable here
           <OptionCard botId={speaker.id} roomId={roomId} message={message} />

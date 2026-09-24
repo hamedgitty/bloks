@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ChangesSummary } from "./checkpoints.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
@@ -102,13 +103,17 @@ export interface Message {
     | "artifact"
     | "connector"
     | "secret"
-    | "component";
+    | "component"
+    | "changes";
   text?: string;
   card?: OptionCardData;
   /** component messages: an answer that is not a paragraph. Validated in
    * server/components.ts before it ever reaches a screen, because what
    * arrives is JSON an agent wrote. */
   component?: Record<string, unknown>;
+  /** changes messages: what a turn did to the files in its folder, and
+   * whether it has been undone. See server/checkpoints.ts. */
+  changes?: ChangesSummary;
   /** activity messages: tool name + outcome */
   tool?: { name: string; ok?: boolean };
   /** screen messages: what the agent's desktop looked like, base64 */

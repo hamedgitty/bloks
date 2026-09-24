@@ -24,6 +24,7 @@ import { CallButton } from "./Voice";
 import { ArtifactCard } from "./Artifacts";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretCard } from "./SecretCard";
+import { ChangesCard } from "./ChangesCard";
 import {
   ForwardDialog,
   MessageActionBar,
@@ -862,6 +863,8 @@ export function ChatView({ bot }: { bot: Bot }) {
                 return <ConnectorCard key={m.id} botId={bot.id} message={m} />;
               case "secret":
                 return <SecretCard key={m.id} botId={bot.id} message={m} />;
+              case "changes":
+                return <ChangesCard key={m.id} message={m} fresh={fresh} />;
               default:
                 return (
                   <div key={m.id} data-msg-index={absolute}>

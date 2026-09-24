@@ -65,7 +65,14 @@ export function previewLine(last: Message | undefined): string {
       return last.secret ? `Needs your ${last.secret.label}` : "Needs a key";
     case "component":
       return last.component ? describeComponent(last.component) : "An answer";
+    case "changes":
+      return last.changes ? changedLine(last.changes.total) : "Changed files";
     default:
       return last.text ? plainText(last.text) : "";
   }
+}
+
+/** "Changed 3 files", for a list row. */
+export function changedLine(total: number): string {
+  return `Changed ${total} file${total === 1 ? "" : "s"}`;
 }
