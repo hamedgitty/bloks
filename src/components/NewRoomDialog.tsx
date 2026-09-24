@@ -95,7 +95,12 @@ export function NewRoomDialog() {
   useEffect(() => {
     if (tab !== "library" || galleryTeams) return;
     api("/api/teams/gallery")
-      .then((r) => setGalleryTeams(r.teams ?? []))
+      // the premade six are on the gallery too, for people without the
+      // app; here they are already on the shelf above
+      .then((r) => {
+        const premade = new Set(TEAM_LIBRARY.map((t) => t.slug));
+        setGalleryTeams((r.teams ?? []).filter((t: GalleryTeam) => !premade.has(t.slug)));
+      })
       .catch((e: Error) => {
         setGalleryTeams([]);
         setGalleryError(e.message);

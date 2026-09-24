@@ -267,7 +267,7 @@ export class Checkpoints {
   private readonly indexFile: string;
   private records: CheckpointRecord[] = [];
   /** The photograph taken before each lane's running turn. */
-  private pending = new Map<string, { botId: string; dir: string; photo: Photo }>();
+  private pending = new Map<string, { botId: string; dir: string; photo: Photo; ignore: string[] }>();
   /** One photograph of a folder at a time, so two lanes do not race. */
   private queues = new Map<string, Promise<unknown>>();
 
@@ -286,11 +286,11 @@ export class Checkpoints {
 
   /** Photographs the folder before a turn. Never throws: a turn does not
    * wait on, or fail because of, its undo. */
-  async begin(threadId: string, botId: string, dir: string | null | undefined): Promise<void> {
+  async begin(threadId: string, botId: string, dir: string | null | undefined, ignore: string[] = []): Promise<void> {
     this.pending.delete(threadId);
     if (!trackable(dir)) return;
-    const photo = await this.serial(dir, () => this.photograph(dir));
-    if (photo) this.pending.set(threadId, { botId, dir, photo });
+    const photo = await this.serial(dir, () => this.photograph(dir, ignore));
+    if (photo) this.pending.set(threadId, { botId, dir, photo, ignore });
   }
 
   /** Photographs again after the turn, and keeps the difference. Null
@@ -299,7 +299,7 @@ export class Checkpoints {
     const before = this.pending.get(threadId);
     this.pending.delete(threadId);
     if (!before) return null;
-    const after = await this.serial(before.dir, () => this.photograph(before.dir));
+    const after = await this.serial(before.dir, () => this.photograph(before.dir, before.ignore));
     if (!after) return null;
     const files = this.compare(before.photo, after);
     if (files.length === 0) return null;
@@ -427,7 +427,9 @@ export class Checkpoints {
   }
 
   /** The folder as it is now, or null if it is too big to track. */
-  private async photograph(dir: string): Promise<Photo | null> {
+  /** `ignore` names paths (a file, or a folder ending in /) that are
+   * someone else's to track, like an agent's own memory. */
+  private async photograph(dir: string, ignore: string[] = []): Promise<Photo | null> {
     let last: Photo = new Map();
     try {
       last = new Map(Object.entries(JSON.parse(readFileSync(this.photoFile(dir), "utf8"))));
@@ -447,6 +449,7 @@ export class Checkpoints {
       }
       for (const name of names) {
         const path = rel ? `${rel}/${name}` : name;
+        if (ignore.some((skip) => (skip.endsWith("/") ? `${path}/`.startsWith(skip) : path === skip))) continue;
         let info;
         try {
           info = lstatSync(join(dir, path));

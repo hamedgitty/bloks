@@ -47,7 +47,9 @@ type Tab = "files" | "changes";
 export function MemoryPanel() {
   const { state, dispatch } = useStore();
   const agents = useMemo(() => state.bots.filter((b) => !b.hidden), [state.bots]);
-  const [botId, setBotId] = useState<string | null>(state.memoryBotId ?? agents[0]?.id ?? null);
+  // opens on the agent being looked at, when that is an agent
+  const viewing = agents.find((a) => a.id === state.selectedId)?.id;
+  const [botId, setBotId] = useState<string | null>(state.memoryBotId ?? viewing ?? agents[0]?.id ?? null);
   const [tab, setTab] = useState<Tab>("files");
   const bot = agents.find((b) => b.id === botId) ?? null;
   const close = () => dispatch({ type: "toggleMemory", open: false, botId: null });
@@ -301,6 +303,11 @@ function Files({ bot }: { bot: Bot }) {
             setNote(null);
           }}
           spellCheck={false}
+          placeholder={
+            open === "MEMORY.md"
+              ? `Nothing remembered yet. ${bot.name} adds notes here as it learns how you work, or write them yourself: one fact per line.`
+              : "Empty topic."
+          }
           className="min-h-[280px] flex-1 resize-none font-mono text-[12.5px] leading-relaxed"
           aria-label={open}
         />

@@ -1996,7 +1996,10 @@ async function startTurn(
 
       // photographed before the agent can touch it, so the turn's card
       // can show what changed and put it back
-      await checkpoints.begin(task.id, bot.id, turnCwd).catch(() => {});
+      // an agent working in its own workspace writes its memory there;
+      // that has its own journal, so it is not a change to undo here
+      const ownDesk = turnCwd === workspace.workspaceDir(bot.id);
+      await checkpoints.begin(task.id, bot.id, turnCwd, ownDesk ? ["MEMORY.md", "memory/"] : []).catch(() => {});
       memoryJournal.begin(task.id, bot.id);
 
       await instance.adapter.sendTurn({

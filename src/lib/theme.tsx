@@ -32,7 +32,17 @@ function systemPrefersDark(): boolean {
 
 function applyTheme(theme: Theme): ResolvedTheme {
   const dark = theme === "dark" || (theme === "system" && systemPrefersDark());
-  document.documentElement.classList.toggle("dark", dark);
+  if (document.documentElement.classList.contains("dark") !== dark) {
+    // A theme flip changes color on nearly every element at once, and every
+    // transition on those properties would fire together and smear the
+    // switch. Off for the flip, back on the frame after.
+    const pause = document.createElement("style");
+    pause.textContent = "*,*::before,*::after{transition:none !important}";
+    document.head.appendChild(pause);
+    document.documentElement.classList.toggle("dark", dark);
+    void document.documentElement.offsetHeight;
+    requestAnimationFrame(() => pause.remove());
+  }
   return dark ? "dark" : "light";
 }
 

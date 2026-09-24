@@ -75,6 +75,8 @@ function PlatformCard({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // the setup steps are long; they wait until someone decides to set it up
+  const [settingUp, setSettingUp] = useState(false);
 
   const post = (body: Record<string, unknown>) => {
     setBusy(true);
@@ -107,7 +109,11 @@ function PlatformCard({
         )}
       </div>
 
-      {!status.configured ? (
+      {!status.configured && !settingUp ? (
+        <Button size="sm" variant="secondary" className="mt-3" onClick={() => setSettingUp(true)}>
+          Set up {name}
+        </Button>
+      ) : !status.configured ? (
         <div className="mt-3 space-y-2">
           {platform === "slack" ? (
             <>
@@ -185,6 +191,7 @@ function WhatsAppCard({ status, onChange }: { status: WhatsAppStatus; onChange: 
   const [appSecret, setAppSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingUp, setSettingUp] = useState(false);
 
   const post = (body: Record<string, unknown>) => {
     setBusy(true);
@@ -215,13 +222,19 @@ function WhatsAppCard({ status, onChange }: { status: WhatsAppStatus; onChange: 
         )}
       </div>
 
+      {(status.configured || settingUp) && (
       <div className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
         Needs Bloks Cloud. Meta only delivers messages to a public address, so group messages reach this computer
         through Bloks Cloud, and unlike everything else it carries, they pass through readable: Meta sends them
         that way. Nothing is kept on the way.
       </div>
+      )}
 
-      {!status.configured ? (
+      {!status.configured && !settingUp ? (
+        <Button size="sm" variant="secondary" className="mt-3" onClick={() => setSettingUp(true)}>
+          Set up WhatsApp
+        </Button>
+      ) : !status.configured ? (
         <div className="mt-3 space-y-2">
           <div className="text-[12px] leading-relaxed text-muted-foreground">
             In Meta for Developers, add WhatsApp to a business app and a phone number. Paste that number's ID (not

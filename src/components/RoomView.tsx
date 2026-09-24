@@ -42,6 +42,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { replyCounts, replyLabel } from "@/lib/threads";
@@ -535,50 +536,11 @@ export function RoomView({ blok }: { blok: Blok }) {
           </Button>
           <RoomFolderButton blok={blok} />
           <GroupCallButton blok={blok} members={answering} />
-          {/* Eight controls fit a desktop header and not a phone one,
-              where they leave about ninety pixels for the room's own
-              name. Below sm the management set moves into a menu; the
-              lens and the folder stay out, because those are what you
-              reach for while reading rather than while tidying up. */}
-          <span className="hidden items-center gap-1.5 sm:flex">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setShowRoutines(true)}
-            title="Routines this room runs on a schedule"
-          >
-            <CalendarClock size={16} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={saveToLibrary}
-            title="Save this team to your library"
-          >
-            {justSaved ? <Check size={16} className="text-success" /> : <BookmarkPlus size={16} />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={exportManifest}
-            title="Export this team as a file"
-          >
-            <Download size={16} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleLeadOnly}
-            className={cn(blok.leadOnly && "bg-accent text-foreground")}
-            title={
-              blok.leadOnly
-                ? "Lead-only is on: unaddressed messages wake just the most senior agent"
-                : "Everyone answers unaddressed messages. Click so only the most senior does"
-            }
-          >
-            <Crown size={16} />
-          </Button>
-          </span>
+          {/* What you reach for while reading stays in the header: people,
+              the folder, a call and how to read it. Tidying the room
+              (routines, saving or exporting the team, lead-only, closing
+              it) is a menu, at every width, so the header never becomes a
+              toolbar of look-alike icons. */}
           <Button
             variant="ghost"
             size="icon"
@@ -592,16 +554,6 @@ export function RoomView({ blok }: { blok: Blok }) {
           >
             {lens === "stream" ? <MessagesSquare size={16} /> : <Rows3 size={16} />}
           </Button>
-          <span className="hidden sm:inline-flex">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setClosing(true)}
-              title="Archive or delete this room"
-            >
-              <Trash2 size={16} />
-            </Button>
-          </span>
           <RoomMenu
             blok={blok}
             justSaved={justSaved}
@@ -963,7 +915,7 @@ function RoomMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="sm:hidden" title="More">
+        <Button variant="ghost" size="icon" title="More" aria-label="More room actions">
           <MoreHorizontal size={16} />
         </Button>
       </DropdownMenuTrigger>
@@ -978,13 +930,14 @@ function RoomMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onExport}>
           <Download size={15} />
-          Export as a file
+          Export as a team file
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onLeadOnly}>
           <Crown size={15} />
-          {blok.leadOnly ? "Everyone answers" : "Only the lead answers"}
+          {blok.leadOnly ? "Let everyone answer" : "Only the lead answers"}
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={onClose}>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={onClose} className="text-destructive focus:text-destructive">
           <Trash2 size={15} />
           Archive or delete
         </DropdownMenuItem>

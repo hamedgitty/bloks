@@ -128,6 +128,17 @@ describe("checkpoints", () => {
     assert.equal(readFileSync(join(outside, "a.txt"), "utf8"), "after\n");
   });
 
+  test("paths someone else tracks are left out", async () => {
+    const dir = folder("seven", { "MEMORY.md": "a\n", "memory/x.md": "b\n", "notes.txt": "c\n" });
+    const cp = new Checkpoints(join(scratch, "store-seven"));
+    await cp.begin("lane", "bot", dir, ["MEMORY.md", "memory/"]);
+    writeFileSync(join(dir, "MEMORY.md"), "changed\n");
+    writeFileSync(join(dir, "memory", "x.md"), "changed\n");
+    writeFileSync(join(dir, "notes.txt"), "changed\n");
+    const record = (await cp.finish("lane"))!;
+    assert.deepEqual(record.files.map((f) => f.path), ["notes.txt"]);
+  });
+
   test("a home folder, or anything above one, is never photographed", () => {
     const home = join(scratch, "home", "me");
     mkdirSync(join(home, "project"), { recursive: true });
