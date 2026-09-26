@@ -1,7 +1,7 @@
 // Skills the workspace writes for itself, and never installs on its own.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,10 @@ import {
   fingerprintOf,
   parseProposal,
   reviewPrompt,
+  patchPrompt,
+  parseEdits,
+  applyEdits,
+  appendLesson,
   worthReviewing,
 } from "../server/proposals.ts";
 import type { Turn } from "../server/context.ts";
@@ -298,5 +302,75 @@ describe("staging, never installing", () => {
     const second = new ProposalStore(file);
     assert.equal(second.list().length, 1);
     assert.equal(second.list()[0].name, "Release notes");
+  });
+});
+
+describe("a change to a skill is an edit, not a rewrite", () => {
+  const skill = [
+    "# Release notes",
+    "",
+    "## Tone",
+    "Plain and short. No exclamation marks.",
+    "",
+    "## Sections",
+    "New, Fixed, and Known issues, in that order.",
+    "",
+    "## Reference",
+    "See docs/style.md for the house rules.",
+  ].join("\n");
+
+  test("the review asks for what is new, and the second reading is shown the skill", () => {
+    assert.match(reviewPrompt(taught(), [{ id: "notes", name: "Release notes" }]), /only what this conversation adds or corrects/);
+    const asked = patchPrompt({ name: "Release notes", body: skill }, "Link each fix to its issue.");
+    assert.ok(asked.includes(skill), "the skill as it stands is in the prompt");
+    assert.match(asked, /smallest change/);
+  });
+
+  test("edits come back as find and replace blocks", () => {
+    const edits = parseEdits(
+      [
+        "<<<FIND",
+        "New, Fixed, and Known issues, in that order.",
+        "===",
+        "New, Fixed, and Known issues, in that order. Link each fix to its issue.",
+        ">>>",
+        "",
+        "<<<FIND",
+        "===",
+        "## Links\nUse full URLs.",
+        ">>>",
+      ].join("\n"),
+    );
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].find, "");
+    const after = applyEdits(skill, edits)!;
+    assert.match(after, /Link each fix to its issue\./);
+    assert.match(after, /## Reference\nSee docs\/style\.md/, "everything else is still there");
+    assert.match(after, /## Links\nUse full URLs\.\n$/);
+  });
+
+  test("an edit that does not fit, or would gut the skill, is refused", () => {
+    assert.equal(applyEdits(skill, [{ find: "not in the skill", replace: "x" }]), null);
+    assert.equal(applyEdits("a\na\n", [{ find: "a", replace: "b" }]), null, "ambiguous");
+    assert.equal(applyEdits(skill, [{ find: skill, replace: "1. Write notes." }]), null, "a rewrite is not an edit");
+    assert.equal(applyEdits(skill, []), null);
+  });
+
+  test("the fallback only adds", () => {
+    const after = applyEdits(skill, appendLesson("Link fixes", "Link each fix to its issue."))!;
+    assert.ok(after.startsWith(skill));
+    assert.match(after, /## Link fixes\n\nLink each fix to its issue\.\n$/);
+  });
+
+  test("a whole-skill rewrite staged by an older version is not kept", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "bloks-proposals-")), "proposals.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        { id: "old", kind: "patch", skillId: "notes", name: "x", description: "", body: "1. short", because: "", at: 1, fingerprint: "f", botId: "b", botName: "B", threadId: "t" },
+        { id: "new", kind: "new", name: "y", description: "", body: "steps", because: "", at: 2, fingerprint: "g", botId: "b", botName: "B", threadId: "t" },
+      ]),
+    );
+    assert.deepEqual(new ProposalStore(file).list().map((p) => p.id), ["new"]);
   });
 });

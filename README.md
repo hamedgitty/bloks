@@ -64,8 +64,9 @@ already signed in to.
 into an agent's prompt. Bloks ships a starter library and shows you the
 full body of anything before it is installed, because a skill is closer
 to a script than to a note. After a conversation that worked something
-out, Bloks can read it back and offer the procedure as a skill. Nothing
-is ever installed on its own. Type `/` in a message to pick one of the
+out, Bloks can read it back and offer the procedure as a skill, or a
+small edit to one you have, shown as a diff that keeps the rest of the
+skill word for word. Nothing is ever installed on its own. Type `/` in a message to pick one of the
 agent's skills by name, including the ones installed for Claude Code.
 
 **Rules you write in a sentence.** "Refuse when the command contains

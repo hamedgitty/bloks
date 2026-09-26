@@ -108,7 +108,6 @@ import {
   parseCatalog,
   updateCount,
   type RegistryEntry,
-  hashBody,
 } from "./skill-registry.ts";
 import { AgentTokens, allows, capabilities, cliBriefing, runsAProcess } from "./agent-cli.ts";
 import {
@@ -169,6 +168,11 @@ import {
   fingerprintOf,
   parseProposal,
   reviewPrompt,
+  patchPrompt,
+  parseEdits,
+  applyEdits,
+  appendLesson,
+  type SkillEdit,
   worthReviewing,
 } from "./proposals.ts";
 import {
@@ -231,7 +235,7 @@ import {
 import { widenPath } from "./path.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
-import { Checkpoints, trackable, type CheckpointRecord } from "./checkpoints.ts";
+import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { MemoryJournal } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
@@ -886,6 +890,14 @@ function previewOf(frame: unknown): WakePreview | null {
 // transcript can be rebuilt after the fact and why no client is ever asked
 // to reconstruct state it missed.
 const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
+
+// Nothing is running when the server starts, so a call still marked as
+// running was cut off by the last quit or crash. Settled once, here,
+// rather than left spinning in every transcript it happened in.
+for (const bot of store.bots) {
+  for (const task of bot.tasks) store.settleOpenTools(task.id);
+}
+for (const room of bloks.bloks) store.settleOpenTools(room.id);
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
 /** A collaborator who answered an approval, by request, so the record and
  * the card say who decided rather than "you". */
@@ -1319,6 +1331,11 @@ bus.subscribe((event: RuntimeEvent) => {
         .catch(() => {});
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
+      // a call the turn never heard back from will not report now
+      for (const settled of store.settleOpenTools(roomId, inRoom ? bot.id : undefined)) {
+        broadcast({ kind: "message.patch", threadId: roomId, message: settled });
+        for (const [item, id] of toolMessageByItem) if (id === settled.id) toolMessageByItem.delete(item);
+      }
       fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
@@ -3224,33 +3241,44 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
   const parsed = parseProposal(answer);
   if (!parsed) return false;
 
-  let skillId: string | undefined;
-  let overwritesEdits = false;
-  if (parsed.kind === "patch") {
-    const target = mine.find((s) => s.id === parsed.skillId);
-    // a patch to something that is not there, or that cannot be edited,
-    // is a suggestion nobody can accept; take it as a new skill instead
-    if (target) {
-      skillId = target.id;
-      // Item 15 already knows whether this has been edited here. Saying
-      // so is what keeps approving a choice rather than a formality.
-      overwritesEdits = Boolean(target.sha256 && hashBody(target.body) !== target.sha256);
+  // A patch is an edit to the skill as it stands (server/proposals.ts):
+  // a second reading is shown the skill and answers with small edits,
+  // applied here. Edits that will not apply, or that would take away
+  // more than a sliver, give way to the lesson added at the end. The
+  // skill's own name and description stay; they are not the
+  // conversation's to change.
+  const target = parsed.kind === "patch" ? mine.find((s) => s.id === parsed.skillId) : undefined;
+  let patch: { skillId: string; name: string; description: string; body: string; edits: SkillEdit[] } | null = null;
+  if (target) {
+    let edits: SkillEdit[] = [];
+    try {
+      edits = parseEdits(await instance.generateText(patchPrompt(target, parsed.body)));
+    } catch {
+      edits = [];
     }
+    let body = applyEdits(target.body, edits);
+    if (body === null) {
+      edits = appendLesson(parsed.name, parsed.body);
+      body = applyEdits(target.body, edits);
+    }
+    if (body === null) return false;
+    patch = { skillId: target.id, name: target.name, description: target.description, body, edits };
   }
 
+  // a patch to something that is not there, or that cannot be edited, is
+  // a suggestion nobody can accept; it is taken as a new skill instead
   const staged = proposals.add({
-    kind: skillId ? "patch" : "new",
+    kind: patch ? "patch" : "new",
     botId,
     botName: bot.name,
     threadId,
-    ...(skillId ? { skillId } : {}),
-    name: parsed.name,
-    description: parsed.description,
-    body: parsed.body,
+    ...(patch ? { skillId: patch.skillId, edits: patch.edits } : {}),
+    name: patch?.name ?? parsed.name,
+    description: patch?.description ?? parsed.description,
+    body: patch?.body ?? parsed.body,
     because: parsed.because,
     at: Date.now(),
     fingerprint: fingerprintOf(turns),
-    ...(overwritesEdits ? { overwritesEdits } : {}),
   });
   if (!staged) return false;
   broadcast({ kind: "skills" });
@@ -7886,7 +7914,24 @@ const server = createServer(async (req, res) => {
     // Always staged, never installed. See server/proposals.ts for why
     // that is the whole shape of the feature rather than a caution on it.
     if (method === "GET" && path === "/api/skills/proposals") {
-      return json(res, 200, { proposals: proposals.list() });
+      // A change to a skill you have is shown as a change: the lines it
+      // adds and removes against the skill as it is now, not a wall of
+      // text to compare by eye. `stale` when the skill has moved on so
+      // far that the edits no longer fit.
+      const have = listSkills();
+      return json(res, 200, {
+        proposals: proposals.list().map((p) => {
+          if (p.kind !== "patch" || !p.skillId) return p;
+          const current = have.find((s) => s.id === p.skillId);
+          if (!current) return { ...p, stale: true };
+          const after = p.edits ? applyEdits(current.body, p.edits) : null;
+          return {
+            ...p,
+            ...(after === null ? { stale: true } : { body: after }),
+            diff: diffLines(current.body, after ?? p.body) ?? undefined,
+          };
+        }),
+      });
     }
     m = path.match(/^\/api\/skills\/proposals\/([\w-]+)$/);
     if (m && method === "POST") {
@@ -7895,12 +7940,25 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
       // Edited before approving is the ordinary case, not an exception:
       // the suggestion is a draft with the words already written.
+      // A change is applied to the skill as it is now, so anything written
+      // into it since the suggestion was made survives. Its name and
+      // description stay unless the person changed them here.
+      let patchedBody: string | null = null;
+      let current: ReturnType<typeof listSkills>[number] | undefined;
+      if (staged.kind === "patch" && staged.skillId) {
+        current = listSkills().find((s) => s.id === staged.skillId && s.source === "user");
+        if (!current) return json(res, 409, { error: "The skill this would change is gone. Dismiss the suggestion." });
+        patchedBody = staged.edits ? applyEdits(current.body, staged.edits) : null;
+        if (patchedBody === null && typeof body.body !== "string") {
+          return json(res, 409, { error: "The skill has changed since this was suggested, and the change no longer fits. Dismiss it." });
+        }
+      }
       try {
         const skill = installSkill({
           ...(staged.kind === "patch" && staged.skillId ? { id: staged.skillId } : {}),
-          name: typeof body.name === "string" ? body.name : staged.name,
-          description: typeof body.description === "string" ? body.description : staged.description,
-          body: typeof body.body === "string" ? body.body : staged.body,
+          name: typeof body.name === "string" ? body.name : (current?.name ?? staged.name),
+          description: typeof body.description === "string" ? body.description : (current?.description ?? staged.description),
+          body: typeof body.body === "string" ? body.body : (patchedBody ?? staged.body),
         });
         proposals.remove(staged.id);
         record({

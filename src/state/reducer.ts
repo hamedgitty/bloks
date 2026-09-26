@@ -110,7 +110,9 @@ export interface Message {
   /** component messages: an answer that is not a paragraph. */
   component?: Record<string, unknown>;
   /** activity messages: tool name + outcome */
-  tool?: { name: string; ok?: boolean };
+  /** `stopped`: the turn ended before this call reported back, so it
+   * will never say whether it worked. */
+  tool?: { name: string; ok?: boolean; stopped?: boolean };
   /** screen messages: what the agent's desktop looked like, base64 */
   png?: string;
   mime?: string;

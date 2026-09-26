@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { SkillCatalog } from "./SkillCatalog";
 import { cn } from "@/lib/cn";
+import { DiffLines, type DiffLine } from "./DiffLines";
 
 const MAX_SKILL_BYTES = 16_000;
 
@@ -435,6 +436,10 @@ export interface Proposal {
   because: string;
   at: number;
   overwritesEdits?: boolean;
+  /** A change to a skill you have: what it does to it, line by line. */
+  diff?: DiffLine[];
+  /** The skill has changed so much since that the change no longer fits. */
+  stale?: boolean;
 }
 
 /**
@@ -453,6 +458,11 @@ function ProposedSkill({ proposal, onDone }: { proposal: Proposal; onDone: () =>
   const [body, setBody] = useState(proposal.body);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A change to a skill you have opens as its diff. Editing the result is
+  // one press away; until then, keeping it applies the change to the
+  // skill as it is at that moment, so nothing written since is lost.
+  const patch = proposal.kind === "patch";
+  const [editing, setEditing] = useState(!patch);
 
   const act = (keep: boolean) => {
     setBusy(true);
@@ -460,7 +470,7 @@ function ProposedSkill({ proposal, onDone }: { proposal: Proposal; onDone: () =>
     const call = keep
       ? api(`/api/skills/proposals/${proposal.id}`, {
           method: "POST",
-          body: JSON.stringify({ name, description, body }),
+          body: JSON.stringify(patch && !editing ? {} : { name, description, body }),
         })
       : api(`/api/skills/proposals/${proposal.id}`, { method: "DELETE" });
     call
@@ -473,7 +483,7 @@ function ProposedSkill({ proposal, onDone }: { proposal: Proposal; onDone: () =>
     <div className="rounded-xl border border-brand/30 bg-brand-soft/30 p-3">
       <button onClick={() => setOpen((v) => !v)} className="w-full text-left">
         <div className="text-[13px] font-medium text-foreground">
-          {proposal.kind === "patch" ? `Change to ${proposal.skillId}` : name}
+          {patch ? `A change to ${proposal.name}` : name}
         </div>
         <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
           {proposal.because}
@@ -491,7 +501,29 @@ function ProposedSkill({ proposal, onDone }: { proposal: Proposal; onDone: () =>
         </div>
       )}
 
-      {open && (
+      {open && patch && proposal.stale && (
+        <div className="mt-2 rounded-lg bg-warning/10 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-warning">
+          The skill has changed since this was suggested, and the change no longer fits. Discard it.
+        </div>
+      )}
+
+      {open && patch && !editing && proposal.diff && (
+        <div className="mt-2.5">
+          <div className="max-h-[320px] overflow-auto rounded-lg border bg-background py-2">
+            <DiffLines lines={proposal.diff} />
+          </div>
+          {!proposal.stale && (
+            <button
+              onClick={() => setEditing(true)}
+              className="mt-1.5 text-[11.5px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Edit the result before keeping it
+            </button>
+          )}
+        </div>
+      )}
+
+      {open && editing && (
         <div className="mt-2.5 flex flex-col gap-2">
           <Input value={name} onChange={(e) => setName(e.target.value)} className="text-[13px]" />
           <Input
@@ -511,7 +543,11 @@ function ProposedSkill({ proposal, onDone }: { proposal: Proposal; onDone: () =>
       {error && <div className="mt-2 text-[12px] text-destructive">{error}</div>}
 
       <div className="mt-2.5 flex items-center gap-2">
-        <Button size="sm" disabled={busy || !name.trim() || !body.trim()} onClick={() => act(true)}>
+        <Button
+          size="sm"
+          disabled={busy || !name.trim() || !body.trim() || (patch && proposal.stale && !editing)}
+          onClick={() => act(true)}
+        >
           Keep it
         </Button>
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => act(false)}>

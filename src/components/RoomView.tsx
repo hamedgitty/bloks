@@ -33,6 +33,7 @@ import {
 } from "./MessageActions";
 import { OptionCard } from "./OptionCard";
 import { ChangesCard } from "./ChangesCard";
+import { ToolRun } from "./ToolRun";
 import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
@@ -233,18 +234,6 @@ function RoomMessage({
     );
   }
 
-  if (message.kind === "activity" && message.tool) {
-    return (
-      <div className="flex items-center gap-2 pl-11 text-[12px] text-muted-foreground">
-        {message.tool.ok === undefined ? (
-          <Loader2 size={11} className="animate-spin" />
-        ) : (
-          <span className={cn("size-1.5 rounded-full", message.tool.ok ? "bg-success" : "bg-destructive")} />
-        )}
-        <span className="truncate font-mono">{message.tool.name}</span>
-      </div>
-    );
-  }
 
   // the room's own opening line has no speaker
   if (!speaker) {
@@ -658,6 +647,17 @@ export function RoomView({ blok }: { blok: Blok }) {
           )}
           {visibleMessages.map((m, i) => {
             const prev = visibleMessages[i - 1];
+            // one member's run of tool calls reads as one line
+            if (m.kind === "activity" && m.tool) {
+              if (prev?.kind === "activity" && prev.from === m.from && !prev.deleted) return null;
+              const run: Message[] = [];
+              for (let j = i; j < visibleMessages.length; j++) {
+                const next = visibleMessages[j];
+                if (next.kind !== "activity" || next.from !== m.from || next.deleted || !next.tool) break;
+                run.push(next);
+              }
+              return <ToolRun key={m.id} messages={run} className="pl-11" />;
+            }
             const showSpeaker = !prev || prev.from !== m.from || prev.role !== m.role;
             const answers = replyLabel(counts.get(m.id) ?? 0);
             return (

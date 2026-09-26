@@ -115,7 +115,9 @@ export interface Message {
    * whether it has been undone. See server/checkpoints.ts. */
   changes?: ChangesSummary;
   /** activity messages: tool name + outcome */
-  tool?: { name: string; ok?: boolean };
+  /** `stopped`: the turn ended before this call reported back, so it
+   * will never say whether it worked. */
+  tool?: { name: string; ok?: boolean; stopped?: boolean };
   /** screen messages: what the agent's desktop looked like, base64 */
   png?: string;
   mime?: string;
@@ -662,6 +664,21 @@ export class Store {
     // ring shows. A running total is a different question.
     found.task.lastInput = safe(input);
     this.saveBots();
+  }
+
+  /** Tool calls in a thread that never reported back, marked stopped:
+   * the turn they belonged to is over, so no answer is coming and a
+   * spinner would say an agent is working when it is not. `from` limits
+   * it to one member's calls in a room. Returns what changed. */
+  settleOpenTools(threadId: string, from?: string): Message[] {
+    const changed: Message[] = [];
+    for (const message of this.messagesFor(threadId)) {
+      if (message.kind !== "activity" || !message.tool || message.tool.ok !== undefined || message.tool.stopped) continue;
+      if (from !== undefined && message.from !== from) continue;
+      const patched = this.patchMessage(threadId, message.id, { tool: { ...message.tool, stopped: true } });
+      if (patched) changed.push(patched);
+    }
+    return changed;
   }
 
   /** A lane starts a new engine session on its next turn, replaying

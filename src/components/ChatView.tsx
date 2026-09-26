@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
-import Check from "lucide-react/dist/esm/icons/check.mjs";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.mjs";
@@ -26,6 +25,7 @@ import { ArtifactCard } from "./Artifacts";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretCard } from "./SecretCard";
 import { ChangesCard } from "./ChangesCard";
+import { ToolRun } from "./ToolRun";
 import {
   ForwardDialog,
   MessageActionBar,
@@ -442,31 +442,6 @@ function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
         <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-foreground">
           {message.text}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ActivityChip({ message, fresh }: { message: Message; fresh?: boolean }) {
-  const tool = message.tool;
-  if (!tool) return null;
-  const failed = tool.ok === false;
-  return (
-    <div className={cn("flex justify-start", fresh && "animate-receive-in")}>
-      <div
-        className={cn(
-          "flex items-center gap-2 px-1.5 py-0.5 text-[12px]",
-          failed ? "text-destructive" : "text-muted-foreground",
-        )}
-      >
-        {tool.ok === undefined ? (
-          <Loader2 size={12} className="animate-spin" />
-        ) : failed ? (
-          <X size={12} />
-        ) : (
-          <Check size={12} className="text-success" />
-        )}
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
       </div>
     </div>
   );
@@ -904,8 +879,18 @@ export function ChatView({ bot }: { bot: Bot }) {
             switch (m.kind) {
               case "options":
                 return <OptionCard key={m.id} botId={bot.id} message={m} />;
-              case "activity":
-                return <ActivityChip key={m.id} message={m} fresh={fresh} />;
+              case "activity": {
+                // a run of tool calls is one line; it starts at the first
+                const before = visibleMessages[offset - 1];
+                if (before?.kind === "activity" && !before.deleted) return null;
+                const run: Message[] = [];
+                for (let i = offset; i < visibleMessages.length; i++) {
+                  const next = visibleMessages[i];
+                  if (next.kind !== "activity" || next.deleted) break;
+                  run.push(next);
+                }
+                return <ToolRun key={m.id} messages={run} fresh={fresh} />;
+              }
               case "notice":
                 return <Notice key={m.id} message={m} fresh={fresh} />;
               case "screen":
