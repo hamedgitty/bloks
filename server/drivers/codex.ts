@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { attachRpc } from "../harness/jsonrpc-stdio.ts";
 import type {
   DriverCreateInput,
+  ModelCatalog,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -36,15 +37,97 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
 
+/** What the picker shows until the CLI says what it serves. The installed
+ * Codex is asked for its own list (`model/list`) when the engine starts,
+ * so a model OpenAI ships next week appears without a Bloks release, and
+ * one the installed CLI is too old to run is not offered. */
 const MODELS = {
-  default: "gpt-5.6-sol",
+  default: "gpt-6-sol",
   options: [
     { id: "gpt-6-astra", label: "GPT-6 Astra" },
+    { id: "gpt-6-sol", label: "GPT-6 Sol" },
+    { id: "gpt-6-luna", label: "GPT-6 Luna" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
   ],
 };
+
+const PROBE_TIMEOUT_MS = 20_000;
+
+/** "GPT-6-Luna" as Codex spells it, "GPT-6 Luna" as the picker does. */
+export function codexLabel(displayName: string | undefined, id: string): string {
+  const name = (displayName || id).trim();
+  return name
+    .replace(/^(gpt-[\d.]+)-([a-z])/i, (_, head: string, first: string) => `${head} ${first.toUpperCase()}`)
+    .replace(/^gpt/i, "GPT");
+}
+
+/** The catalog out of one `model/list` page set: visible models, in the
+ * CLI's order, with its default first choice. Null when there is none. */
+export function catalogFromModelList(pages: any[]): ModelCatalog | null {
+  const options: ModelCatalog["options"] = [];
+  let defaultId = "";
+  for (const page of pages) {
+    for (const m of Array.isArray(page?.data) ? page.data : []) {
+      const id = typeof m?.model === "string" && m.model ? m.model : typeof m?.id === "string" ? m.id : "";
+      if (!id || m.hidden === true || options.some((o) => o.id === id)) continue;
+      options.push({ id, label: codexLabel(m.displayName, id) });
+      if (m.isDefault === true && !defaultId) defaultId = id;
+    }
+  }
+  if (!options.length) return null;
+  return { default: defaultId || options[0].id, options };
+}
+
+/** Asks the installed CLI what it can run. No thread is started and
+ * nothing is spent; the process is killed as soon as the list lands. */
+async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
+  const env: Record<string, string | undefined> = { ...process.env, NPM_CONFIG_LOGLEVEL: "error" };
+  delete env.OPENAI_API_KEY;
+  let child;
+  try {
+    child = spawn(cli, ["app-server"], { cwd: homedir(), env, stdio: ["pipe", "pipe", "pipe"] });
+  } catch {
+    return null;
+  }
+  child.stderr?.resume();
+  const rpc = attachRpc({
+    stdin: child.stdin,
+    stdout: child.stdout,
+    onRequest: (msg) => rpc.replyError(msg.id, -32601, "not supported by this client"),
+    onNotify: () => {},
+  });
+  const timer = setTimeout(() => rpc.failPending(new Error("timed out")), PROBE_TIMEOUT_MS);
+  timer.unref?.();
+  child.on("error", (e) => rpc.failPending(e instanceof Error ? e : new Error(String(e))));
+  child.on("close", () => rpc.failPending(new Error("exited")));
+  try {
+    await rpc.request("initialize", { clientInfo: { name: "bloks", version: "1" } });
+    rpc.notify("initialized", {});
+    const pages: any[] = [];
+    let cursor: string | null = null;
+    // a handful of pages is every model there is; the cap stops a CLI
+    // that keeps handing back a cursor from holding the probe open
+    for (let i = 0; i < 5; i++) {
+      const page: any = await rpc.request("model/list", cursor ? { cursor } : {});
+      pages.push(page);
+      cursor = typeof page?.nextCursor === "string" && page.nextCursor ? page.nextCursor : null;
+      if (!cursor) break;
+    }
+    return catalogFromModelList(pages);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    rpc.failPending(new Error("probe ended"));
+  }
+}
 
 export interface CodexConfig {
   cli: string;
@@ -131,6 +214,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
   async create(input: DriverCreateInput<CodexConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
+
+    // replaced in place once the CLI answers; a failed probe (not
+    // installed, too old to know model/list) keeps the list above
+    const models: ModelCatalog = { default: MODELS.default, options: [...MODELS.options] };
+    const catalogReady = probeCatalog(config.cli).then((catalog) => {
+      if (!catalog) return;
+      models.options = catalog.options;
+      models.default = catalog.default;
+    });
 
     type Answer = (behavior: string, message?: string, source?: string, reply?: boolean) => void;
     interface RunningTurn {
@@ -547,8 +639,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
-      models: MODELS,
+      models,
       snapshot,
+      catalogReady,
 
       adapter: {
         provider: DRIVER_KIND,

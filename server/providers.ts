@@ -57,14 +57,17 @@ const OPENROUTER: ProviderSpec = {
   docsUrl: "https://openrouter.ai/docs/use-cases/oauth-pkce",
   headers: { "HTTP-Referer": "https://bloks.local", "X-Title": "Bloks" },
   models: {
-    default: "google/gemini-2.5-flash",
+    default: "google/gemini-3.8-flash",
     options: [
-      { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-      { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
-      { id: "x-ai/grok-4", label: "Grok 4" },
-      { id: "moonshotai/kimi-k2", label: "Kimi K2" },
+      { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+      { id: "anthropic/claude-opus-5.5", label: "Claude Opus 5.5" },
+      { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5" },
+      { id: "openai/gpt-6-sol", label: "GPT-6 Sol" },
+      { id: "openai/gpt-6-luna", label: "GPT-6 Luna" },
+      { id: "x-ai/grok-4.7", label: "Grok 4.7" },
+      { id: "moonshotai/kimi-k3", label: "Kimi K3" },
       { id: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
-      { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
+      { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
     ],
   },
   // one sign-in reaches every lab, so the list is long. Keep the families
@@ -74,7 +77,7 @@ const OPENROUTER: ProviderSpec = {
   // OpenRouter serves a rotating set of models at no cost, marked by a
   // ":free" suffix. People ask for them by name; they get their own room.
   freeSlots: 12,
-  small: "google/gemini-2.5-flash",
+  small: "google/gemini-3.5-flash-lite",
 };
 
 const GEMINI: ProviderSpec = {
@@ -86,15 +89,16 @@ const GEMINI: ProviderSpec = {
   keyHint: "API key from Google AI Studio",
   docsUrl: "https://ai.google.dev/gemini-api/docs/openai",
   models: {
-    default: "gemini-2.5-flash",
+    default: "gemini-3.8-flash",
     options: [
-      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+      { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+      { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
     ],
   },
   prefer: [/^(models\/)?gemini/],
-  small: "gemini-2.5-flash-lite",
+  // 2.5 is closed to new projects, so the one-shot model is from 3.x
+  small: "gemini-3.5-flash-lite",
 };
 
 const XAI: ProviderSpec = {
@@ -109,15 +113,15 @@ const XAI: ProviderSpec = {
   keyPrefix: "xai-",
   docsUrl: "https://docs.x.ai/docs/api-reference",
   models: {
-    default: "grok-4",
+    default: "grok-4.7",
     options: [
-      { id: "grok-4", label: "Grok 4" },
-      { id: "grok-4-fast", label: "Grok 4 Fast" },
-      { id: "grok-3-mini", label: "Grok 3 Mini" },
+      { id: "grok-4.7", label: "Grok 4.7" },
+      { id: "grok-4.6", label: "Grok 4.6" },
+      { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20 (fast)" },
     ],
   },
   prefer: [/^grok/],
-  small: "grok-3-mini",
+  small: "grok-4.20-0309-non-reasoning",
 };
 
 const MOONSHOT: ProviderSpec = {

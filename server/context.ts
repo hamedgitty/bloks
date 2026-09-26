@@ -34,13 +34,14 @@
  */
 const LIMITS: Array<[RegExp, number]> = [
   [/^claude-fable-5-1(?:$|-)/i, 1_000_000],
+  [/^claude-opus-5-5(?:$|-)/i, 1_000_000],
   [/^claude/i, 200_000],
   [/^gemini/i, 1_000_000],
   [/^grok/i, 131_072],
   [/^(gpt-4o|gpt-4\.1|o[134])/i, 128_000],
   [/^gpt-5/i, 400_000],
-  // Codex's default window is smaller than Astra's API maximum.
-  [/^gpt-6-astra(?:$|-)/i, 272_000],
+  // Codex's default window is smaller than the GPT-6 API maximum.
+  [/^gpt-6(?:$|-)/i, 272_000],
   [/^deepseek/i, 65_536],
   [/^kimi|^moonshot/i, 131_072],
   [/^llama/i, 131_072],

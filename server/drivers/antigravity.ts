@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 
 import type {
   DriverCreateInput,
+  ModelCatalog,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -39,6 +40,12 @@ const MODELS = {
   options: [
     { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
     { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
+    { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
+    { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
+    { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (Low)" },
     { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
     { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
     { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
@@ -47,6 +54,40 @@ const MODELS = {
     { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
   ],
 };
+
+/** "gemini-3.8-flash-high" as "Gemini 3.8 Flash (High)", the way the
+ * list above spells its own. */
+export function antigravityLabel(id: string): string {
+  const known = MODELS.options.find((o) => o.id === id);
+  if (known) return known.label;
+  const parts = id.split("-");
+  const level = /^(high|medium|low|thinking)$/i.test(parts[parts.length - 1] ?? "") ? parts.pop()! : "";
+  const words = parts.map((w) => (/^gpt$|^oss$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)));
+  const name = words.join(" ").replace(/^GPT OSS/, "GPT-OSS");
+  return level ? `${name} (${level.charAt(0).toUpperCase()}${level.slice(1)})` : name;
+}
+
+/** The models out of `agy models`. Its output is for people, so this
+ * takes the word on each line that looks like a model id (letters, a
+ * dash, a digit somewhere), with any "provider/" in front dropped
+ * because the CLI only accepts the bare id. Null when nothing on
+ * the page looks like one, which covers the signed-out message. */
+export function catalogFromAgyModels(stdout: string): ModelCatalog | null {
+  const options: ModelCatalog["options"] = [];
+  for (const raw of stdout.split("\n")) {
+    // a table may put a display name first; the id is the first word
+    // on the line that is shaped like one
+    const id = raw
+      .split(/[\s|,;()]+/)
+      .map((w) => w.replace(/^[a-z0-9-]+\//i, "").replace(/[:.]$/, ""))
+      .find((w) => /^[a-z0-9.-]+$/i.test(w) && /^[a-z][a-z0-9.]*-[a-z0-9.-]*\d/i.test(w));
+    if (!id || options.some((o) => o.id === id)) continue;
+    options.push({ id, label: antigravityLabel(id) });
+  }
+  if (!options.length) return null;
+  const keep = options.find((o) => o.id === MODELS.default);
+  return { default: keep ? keep.id : options[0].id, options };
+}
 
 export interface AntigravityConfig {
   cli: string;
@@ -72,6 +113,20 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
     const running = new Map<string, { turnId: string; abort: () => void }>();
+
+    // what this account can run, from the CLI itself; signed out or
+    // unreadable leaves the list above in place
+    const models: ModelCatalog = { default: MODELS.default, options: [...MODELS.options] };
+    const catalogReady = new Promise<void>((resolve) => {
+      execFile(config.cli, ["models"], { timeout: 20_000 }, (error, stdout) => {
+        const catalog = error ? null : catalogFromAgyModels(String(stdout));
+        if (catalog) {
+          models.options = catalog.options;
+          models.default = catalog.default;
+        }
+        resolve();
+      });
+    });
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -291,8 +346,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
-      models: MODELS,
+      models,
       snapshot,
+      catalogReady,
 
       adapter: {
         provider: DRIVER_KIND,

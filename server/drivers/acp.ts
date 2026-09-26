@@ -581,6 +581,7 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     authFiles: [".local/share/opencode/auth.json"],
     // placeholder until session/new reports the real catalog, which for
     // opencode depends entirely on which providers are connected
+    probeModels: true,
     models: {
       default: "auto",
       options: [{ id: "auto", label: "Auto" }],
@@ -609,11 +610,15 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     // the bill to pay-as-you-go without anyone deciding that
     scrubEnv: ["XAI_API_KEY"],
     authFiles: [".grok/auth.json"],
+    // asked at startup, so a new Grok shows up without a Bloks release
+    probeModels: true,
     models: {
-      default: "grok-4.6",
+      default: "grok-4.7",
       options: [
+        { id: "grok-4.7", label: "Grok 4.7" },
         { id: "grok-4.6", label: "Grok 4.6" },
         { id: "grok-4.5", label: "Grok 4.5" },
+        { id: "grok-build-0.1", label: "Grok Build 0.1" },
       ],
     },
   },
@@ -628,11 +633,14 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     // credential covers both the chat engine and the agent
     keyEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     authFiles: [".gemini/oauth_creds.json"],
+    probeModels: true,
     models: {
       default: "auto",
       options: [
         { id: "auto", label: "Auto" },
-        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+        { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+        { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+        { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
       ],
     },
   },
