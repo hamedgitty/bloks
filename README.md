@@ -97,6 +97,20 @@ rehearses the task on its own copy, so you can compare their attempts side
 by side in the Rehearsals panel and keep the best one. A follow-up in a
 rehearsal's lane keeps refining the same copy.
 
+**Rewind to here.** Hover any message you sent and choose **Rewind to
+here**. That message and everything after it are taken back, the files
+the agent changed since then are put back (any you have edited since are
+left alone and named), and the agent starts over having heard only what
+is left. Your message comes back to the box, to send again or change
+first. What was rewound folds into one line you can open.
+
+**A backup engine.** Subscriptions and API keys run out: a usage limit
+until three o'clock, a rate limit, no credit, an outage. Give an agent a
+backup in its settings and a turn that hits one of those is picked up by
+the backup, with the conversation so far, instead of failing. The engine
+that ran out rests until it should be usable again, for every agent on
+it, and each agent goes back to its own engine by itself after that.
+
 **Work with more than one step.** A workflow is a trigger, some steps,
 and somewhere a person says yes. Runs are state on disk rather than a
 promise nobody can restart, so quitting the app does not lose one.

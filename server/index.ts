@@ -44,7 +44,7 @@ import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { RuntimeEvent } from "./contracts.ts";
+import type { ModelSelection, RuntimeEvent } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -232,6 +232,7 @@ import { widenPath } from "./path.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints, trackable, type CheckpointRecord } from "./checkpoints.ts";
+import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { MemoryJournal } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { summarize, UsageStore } from "./usage.ts";
@@ -500,6 +501,33 @@ routines.settleOrphanRuns();
 const usage = new UsageStore();
 // What each turn did to the files in its folder, and the way back.
 const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
+
+// Backup engines (server/failover.ts). Engines resting after running
+// out, the engine each running lane is on, what went wrong in each
+// lane's turn so far, the lanes whose turn already fell back once (it
+// falls back once: a backup that is also out is reported, not chased),
+// and the rest each lane has already been told about.
+const cooldowns = new Cooldowns();
+const laneEngine = new Map<string, ModelSelection>();
+const turnErrors = new Map<string, string[]>();
+const fellBack = new Set<string>();
+const toldOfRest = new Map<string, number>();
+/** Errors kept off the chat while a backup might take over. */
+const heldErrors = new Map<string, string>();
+
+/** Whether an engine can take a turn right now, as far as we know. */
+function engineUsable(selection: ModelSelection | null | undefined): selection is ModelSelection {
+  if (!selection?.instanceId) return false;
+  const instance = registry.get(selection.instanceId);
+  return Boolean(instance && instance.enabled !== false && !cooldowns.of(selection.instanceId));
+}
+
+function engineName(selection: ModelSelection): string {
+  const instance = registry.get(selection.instanceId);
+  const label = instance?.models.options.find((o) => o.id === selection.model)?.label ?? selection.model;
+  const name = instance?.displayName ?? instance?.driverKind ?? selection.instanceId;
+  return label && label !== name ? `${name} (${label})` : name;
+}
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
 // An agent doing the work on a clone of its folder, for you to apply or not.
@@ -691,6 +719,69 @@ for (const inst of registry.instances()) {
   void inst.catalogReady?.then(async () => {
     broadcast({ kind: "instances", instances: await registry.describe() });
   });
+}
+
+/**
+ * The end of a turn, read for one question: did the engine run out? If
+ * it did, it rests (for every agent on it), and when this agent has a
+ * backup the same message goes to the backup once, in this lane, with
+ * the conversation replayed to it. Only a solo lane retries: in a room
+ * the turn belongs to the room's order of speakers, and the rest simply
+ * applies from the next turn on.
+ */
+function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boolean, stopReason: string | null) {
+  const used = laneEngine.get(laneId);
+  const errors = turnErrors.get(laneId) ?? [];
+  const held = heldErrors.get(laneId);
+  laneEngine.delete(laneId);
+  turnErrors.delete(laneId);
+  heldErrors.delete(laneId);
+  if (ok || !used || stopReason === "interrupted") return;
+  if (handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return;
+  // an error kept back for a backup that then did not take over is shown
+  // after all, exactly as it would have been
+  if (held) {
+    const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text: held });
+    broadcast({ kind: "message", threadId: laneId, message: shown });
+  }
+}
+
+/** Rests an engine that ran out, and hands the turn to the backup when
+ * there is one to hand it to. True when the backup took it. */
+function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSelection, evidence: string): boolean {
+  const reason = outReason(evidence);
+  if (!reason) return false;
+  const rest: Rest = cooldowns.rest(used.instanceId, reason, evidence);
+
+  const fresh = store.bot(bot.id);
+  const backup = fresh?.backupSelection;
+  if (!fresh || roomId !== laneId || fellBack.has(laneId) || wheel.heldBy(bot.id) || fresh.archivedAt) return false;
+  if (!backup || backup.instanceId === used.instanceId || !engineUsable(backup)) return false;
+  const asked = [...store.messagesFor(laneId)]
+    .reverse()
+    .find((m) => m.role === "user" && m.kind === "text" && m.text && !m.deleted);
+  if (!asked?.text) return false;
+
+  fellBack.add(laneId);
+  toldOfRest.set(laneId, rest.until);
+  const notice = store.appendMessage(laneId, {
+    role: "bot",
+    kind: "notice",
+    text: `${engineName(used)} ${REASON_WORDS[reason]} ${describeRest(rest)}. ${engineName(backup)} is picking this up, with the conversation so far.`,
+  });
+  broadcast({ kind: "message", threadId: laneId, message: notice });
+  // after this event has finished settling the lane it ended
+  setTimeout(() => {
+    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true }).catch((e) => {
+      const failed = store.appendMessage(laneId, {
+        role: "bot",
+        kind: "notice",
+        text: `${engineName(backup)} could not pick it up either: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300)}`,
+      });
+      broadcast({ kind: "message", threadId: laneId, message: failed });
+    });
+  }, 0);
+  return true;
 }
 
 /**
@@ -1135,6 +1226,11 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "runtime.error": {
+      // kept for the end of the turn, which decides whether the engine
+      // ran out (server/failover.ts)
+      const said = turnErrors.get(event.threadId) ?? [];
+      if (said.length < 8) said.push(String(event.message ?? ""));
+      turnErrors.set(event.threadId, said);
       // The conversation being too big is the one failure this app should
       // fix rather than report. Our idea of a model's limit is a guess, so
       // when the provider disagrees, fold and try the same thing again
@@ -1159,6 +1255,14 @@ bus.subscribe((event: RuntimeEvent) => {
             broadcast({ kind: "message", threadId: event.threadId, message: notice });
           }
         })();
+        break;
+      }
+      // An engine running out, with a backup ready to take the message,
+      // is said once, in plain words, when the backup takes over. The
+      // raw error waits: if the backup cannot take it after all, it is
+      // shown then (see fallBackIfOut).
+      if (!inRoom && outReason(event.message) && engineUsable(bot.backupSelection) && !fellBack.has(event.threadId)) {
+        heldErrors.set(event.threadId, event.message.slice(0, 600));
         break;
       }
       // Not a failed tool call: the turn itself could not run. It gets a
@@ -1215,6 +1319,7 @@ bus.subscribe((event: RuntimeEvent) => {
         .catch(() => {});
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
+      fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
       store.patchBot(bot.id, { unread: true });
@@ -1648,6 +1753,9 @@ async function startTurn(
     /** A rehearsal: the lane works in `copy`, a clone of `dir`, and the
      * turn's card compares the two (server/rehearsals.ts). */
     rehearsal?: { dir: string; copy: string };
+    /** This turn runs on the agent's backup, because its own engine just
+     * ran out partway through the same message. */
+    fallback?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -1729,10 +1837,18 @@ async function startTurn(
     }
   }
 
-  const instance = registry.get(bot.modelSelection.instanceId);
+  // Which engine answers. The agent's own, unless it is resting after
+  // running out (or gone) and the agent has a backup that is not.
+  const own = bot.modelSelection;
+  const backup = bot.backupSelection && bot.backupSelection.instanceId !== own.instanceId ? bot.backupSelection : null;
+  const ownRest = cooldowns.of(own.instanceId);
+  const ownMissing = !registry.get(own.instanceId);
+  const selection: ModelSelection =
+    (opts.fallback || ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+  const instance = registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(
-      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable, pick another model in settings`),
+      new Error(`provider instance "${selection.instanceId}" is unavailable, pick another model in settings`),
       { status: 409 },
     );
   }
@@ -1809,7 +1925,7 @@ async function startTurn(
   // the summary itself at the front. What does not fit is summarised
   // rather than dropped, which happens after the turn so nothing waits on
   // it, and lands in the thread as a message people can read.
-  const contextLimit = contextLimitFor(bot.modelSelection.model);
+  const contextLimit = contextLimitFor(selection.model);
   // leave room for the system prompt and the reply
   const transcriptBudget = Math.max(2_000, Math.floor(contextLimit * COMPACT_AT) - 4_000);
   const buildTranscript = (): { turns: Turn[]; dropped: number } => {
@@ -2070,7 +2186,7 @@ async function startTurn(
       // any cursor the new engine holds predates the other engine's
       // turns. Session-cursor engines get the story replayed inline;
       // API engines replay the transcript themselves every turn.
-      const instanceId = bot.modelSelection.instanceId;
+      const instanceId = selection.instanceId;
       const engineFresh =
         !blok &&
         engineIsFresh({
@@ -2115,6 +2231,28 @@ async function startTurn(
       }
       memoryJournal.begin(task.id, bot.id);
 
+      // what this turn runs on, and a fresh slate for what goes wrong in it
+      laneEngine.set(task.id, selection);
+      turnErrors.delete(task.id);
+      if (!opts.fallback) fellBack.delete(task.id);
+      // Said once per rest, not once per turn: the first turn on the
+      // backup explains itself, the rest of the afternoon does not.
+      if (selection !== own && !opts.fallback) {
+        const why = ownRest ?? null;
+        if (!why || toldOfRest.get(task.id) !== why.until) {
+          if (why) toldOfRest.set(task.id, why.until);
+          const notice = store.appendMessage(roomId, {
+            role: "bot",
+            ...(blok ? { from: bot.id } : {}),
+            kind: "notice",
+            text: why
+              ? `${engineName(own)} ${REASON_WORDS[why.reason]} ${describeRest(why)}, so ${engineName(selection)} is answering. ${bot.name} goes back to it after that.`
+              : `${engineName(own)} is not available, so ${engineName(selection)} is answering.`,
+          });
+          broadcast({ kind: "message", threadId: roomId, message: notice });
+        }
+      }
+
       await instance.adapter.sendTurn({
         threadId: task.id,
         cwd: turnCwd,
@@ -2138,7 +2276,7 @@ async function startTurn(
         ...(onCloud || sharing ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
         ...(sharing ? { shared: { tools: sharing.tools } } : {}),
         text: turnText,
-        model: bot.modelSelection.model,
+        model: selection.model,
         effort: bot.effort,
         resumeCursor: engineFresh ? undefined : task.resumeCursors[instanceId],
         transcript,
@@ -5101,6 +5239,15 @@ const server = createServer(async (req, res) => {
         }
         patch.speakReplies = body.speakReplies;
       }
+      if (body.backupSelection !== undefined) {
+        const b = body.backupSelection as { instanceId?: unknown; model?: unknown } | null;
+        if (b === null) patch.backupSelection = null;
+        else if (b && typeof b.instanceId === "string" && typeof b.model === "string" && b.instanceId && b.model.length <= 200) {
+          patch.backupSelection = { instanceId: b.instanceId, model: b.model };
+        } else {
+          return json(res, 400, { error: "backupSelection is an engine and a model, or null" });
+        }
+      }
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such agent" });
       broadcast({ kind: "bot", bot: clientBot(bot) });
@@ -5753,6 +5900,96 @@ const server = createServer(async (req, res) => {
       } finally {
         choosingDecisions.delete(key);
       }
+    }
+
+    // ── rewinding ──
+    // Back to before one of your messages: every message from it on is
+    // taken back, every file the turns since then changed is put back
+    // (newest first, and only where nobody has changed it since), and the
+    // agent's next turn starts a new session that has heard only what is
+    // left. Your message comes back to you to send again or change.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/rewind$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "rewinding is for the person, not an agent" });
+      const laneId = m[1];
+      const found = store.botByThread(laneId);
+      const task = found?.tasks.find((t) => t.id === laneId);
+      if (!found || !task) {
+        return json(res, 400, { error: "Rewind works in a conversation with one agent, not in a room." });
+      }
+      if (task.busy) return json(res, 409, { error: `${found.name} is working. Stop it first, then rewind.` });
+      const speaking = activeRoom.get(laneId);
+      if (speaking && speaking !== laneId) {
+        return json(res, 409, { error: `${found.name} is speaking in a room right now. Try again when it is done.` });
+      }
+      if (rehearsals.forTask(laneId)) {
+        return json(res, 409, { error: "This is a rehearsal. Discard it instead: nothing in it reached your folder." });
+      }
+      const body = await readBody(req);
+      const messages = store.messagesFor(laneId);
+      const index = messages.findIndex((msg) => msg.id === body.messageId);
+      const target = messages[index];
+      if (!target || target.role !== "user" || target.deleted) {
+        return json(res, 400, { error: "Rewind to one of your own messages." });
+      }
+
+      const now = Date.now();
+      const restored = new Set<string>();
+      const skipped = new Map<string, string>();
+      for (const record of checkpoints.undoableSince(laneId, target.at)) {
+        const result = await checkpoints.revert(record.id).catch(() => null);
+        if (!result) continue;
+        for (const path of result.restored) {
+          restored.add(path);
+          skipped.delete(path);
+        }
+        for (const s of result.skipped) if (!restored.has(s.path)) skipped.set(s.path, s.why);
+        patchChangesCard(record);
+      }
+
+      const later = messages.slice(index).filter((msg) => !msg.deleted);
+      for (const msg of later) {
+        const patched = store.patchMessage(laneId, msg.id, { deleted: true, rewound: now });
+        if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+      }
+      // A summary that covers part of what was taken back would hand it
+      // straight back to the agent, so it goes; the next turn replays what
+      // is left instead, and summarises again when that fills up.
+      const kept = messages.slice(0, index).filter((msg) => msg.kind === "text" && msg.text && !msg.deleted).length;
+      if (task.context && task.context.through > kept) store.setTaskContext(laneId, null);
+      store.forgetLaneSessions(laneId);
+      undoneSince.delete(laneId);
+
+      const files = [...restored];
+      const left = [...skipped.entries()];
+      const named = (paths: string[]) =>
+        paths.slice(0, 6).join(", ") + (paths.length > 6 ? `, and ${paths.length - 6} more` : "");
+      const parts = [
+        `Rewound to before your message. ${found.name} no longer remembers anything said after it.`,
+        files.length
+          ? `${files.length === 1 ? "1 file is" : `${files.length} files are`} back as they were: ${named(files)}.`
+          : "",
+        left.length
+          ? `Left alone, because they changed since: ${named(left.map(([path]) => path))}.`
+          : "",
+        "Its memory notes are unchanged.",
+      ].filter(Boolean);
+      const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: parts.join(" ") });
+      broadcast({ kind: "message", threadId: laneId, message: notice });
+      record({
+        at: now,
+        kind: "conversation.rewound",
+        actor: "you",
+        summary: `Rewound a conversation with ${found.name}`,
+        detail: { agent: found.name, messages: String(later.length), files: String(files.length) },
+      });
+      broadcast({ kind: "bot", bot: clientBot(store.bot(found.id)) });
+      return json(res, 200, {
+        text: target.text ?? "",
+        rewound: later.length,
+        restored: files,
+        skipped: left.map(([path, why]) => ({ path, why })),
+      });
     }
 
     // ── editing and taking back ──

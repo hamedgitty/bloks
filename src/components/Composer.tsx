@@ -128,14 +128,20 @@ export function Composer({
   bot,
   replyTo,
   onClearReply,
+  prefill,
 }: {
   bot: Bot;
   /** reply context to send with the next message */
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
+  /** Words to put in the box, such as a message handed back by a rewind. */
+  prefill?: { text: string; nonce: number } | null;
 }) {
   const { state, dispatch } = useStore();
   const [text, setText] = useState("");
+  useEffect(() => {
+    if (prefill) setText(prefill.text);
+  }, [prefill]);
   // Rehearse: the next message runs on a copy of the folder, optionally
   // by other agents too, and comes back as changes to apply or discard
   const [rehearse, setRehearse] = useState(false);

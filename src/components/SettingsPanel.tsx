@@ -212,6 +212,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "mascotExpression"
         | "composio"
         | "browser"
+        | "backupSelection"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -506,6 +507,23 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               </div>
             </div>
             <ModelPicker bot={bot} />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card p-4">
+            <div>
+              <div className="text-[13.5px] font-semibold text-foreground">Backup engine</div>
+              <div className="mt-0.5 text-[12.5px] text-muted-foreground">
+                Answers when the model above hits a usage or rate limit, runs out of credit, or is down. The
+                conversation carries over, and the agent switches back once its own engine is usable again.
+              </div>
+            </div>
+            <ModelPicker
+              bot={bot}
+              value={bot.backupSelection ?? null}
+              onPick={(selection) => patch({ backupSelection: selection })}
+              noneLabel="No backup"
+              exclude={bot.modelSelection.instanceId}
+            />
           </div>
 
           <div className="rounded-2xl border bg-card p-4">

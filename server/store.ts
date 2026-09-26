@@ -131,6 +131,10 @@ export interface Message {
    * sense and the transcript keeps its shape, but the words are gone
    * and no engine sees it again. */
   deleted?: boolean;
+  /** Rewound: the conversation was taken back to before this message
+   * (with `deleted`, so no engine sees it). The words stay on disk so
+   * the chat can show what was rewound; the time says which rewind. */
+  rewound?: number;
   /** Who reacted with what. The key is the emoji; the values are who
    * pressed it, "user" for the person and an agent id for an agent, so
    * a room can show that Kat and you both agreed without a second
@@ -234,6 +238,10 @@ export interface BotRecord {
   avatarAt?: number | null;
   unread: boolean;
   modelSelection: ModelSelection;
+  /** The engine that answers when this one runs out: a usage limit, a
+   * rate limit, no credit, an outage (server/failover.ts). Unset means
+   * a turn that hits one of those just fails, as it always did. */
+  backupSelection?: ModelSelection | null;
   /** Where each engine thinks this conversation got to. Opaque to us;
    * handed straight back on the next turn. */
   resumeCursors: Record<string, unknown>;
@@ -653,6 +661,17 @@ export class Store {
     // The last turn's input is how full this lane was, which is what the
     // ring shows. A running total is a different question.
     found.task.lastInput = safe(input);
+    this.saveBots();
+  }
+
+  /** A lane starts a new engine session on its next turn, replaying
+   * only what is still in its transcript. Every engine's cursor goes,
+   * because each of them remembers the part being taken back. */
+  forgetLaneSessions(threadId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    found.task.resumeCursors = {};
+    delete found.task.lastInstanceId;
     this.saveBots();
   }
 

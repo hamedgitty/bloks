@@ -137,6 +137,33 @@ rehearsal began, then the record undoes like any other; applying one
 attempt of a compared task discards the rest. Copies are deleted when an
 attempt is applied or discarded, and swept after a week.
 
+## Rewind
+
+`POST /api/threads/:lane/rewind` takes a lane back to before one of the
+person's messages. It reverts the lane's checkpoints from that message
+on, newest first, with the same rule as undo: a file whose current
+content is not what the turn left is skipped and named. The message and
+everything after it are marked `rewound` (and `deleted`, so no
+transcript carries them), a context summary that covers any of them is
+dropped, and the lane's engine cursors are cleared, so the next turn is
+a fresh session that is replayed only what is left. Memory notes are not
+touched; the memory journal has its own undo. Rooms and rehearsal lanes
+refuse.
+
+## Backup engines
+
+`server/failover.ts` decides whether a failed turn failed because its
+engine is out (a usage or rate limit, no credit, an outage, signed out)
+rather than because of the work, from the turn's runtime errors and stop
+reason, and when the engine should be usable again (an epoch, "try again
+in 20m", "resets 3pm", or a default per reason, capped at twelve hours).
+The engine rests in a per-instance table in memory, so every agent on it
+skips it until then. An agent with a `backupSelection` has its failed
+solo turn started again on the backup, once, with `fallback: true`; the
+engine switch replays the transcript as any switch does. The raw error
+is held back while a backup takes over and shown if none does. Room
+turns do not retry, but the rest applies to their next turn.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group

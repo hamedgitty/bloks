@@ -462,7 +462,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           case "result":
             finish(
               frame.is_error !== true,
-              frame.stop_reason ?? frame.terminal_reason ?? null,
+              // a failed turn's own words say why ("usage limit reached"),
+              // which is what a backup engine and a routine's log need
+              (frame.is_error === true && typeof frame.result === "string" && frame.result.trim()
+                ? frame.result.trim().slice(0, 400)
+                : null) ??
+                frame.stop_reason ??
+                frame.terminal_reason ??
+                null,
               frame.total_cost_usd ?? null,
             );
             break;

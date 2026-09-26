@@ -50,6 +50,8 @@ export interface Message {
   editedAt?: number;
   /** Taken back: the row stays, the words are gone. */
   deleted?: boolean;
+  /** Rewound: taken back with everything after it (see the rewind route). */
+  rewound?: number;
   /** secret messages: a value asked for via a secure field */
   secret?: {
     envName: string;
@@ -169,6 +171,8 @@ export interface Bot {
   tasks?: TaskSummary[];
   activeTaskId?: string;
   modelSelection: ModelSelection;
+  /** The engine that answers when the agent's own runs out. */
+  backupSelection?: ModelSelection | null;
   /** Where this agent may act. Left unset it decides for itself: its own
    * box when it has one, otherwise this Mac. */
   computer?: "cloud" | "sandbox" | "local" | "off" | null;
@@ -441,6 +445,7 @@ export type Action =
           | "approvals"
           | "composio"
           | "mcpServers"
+          | "backupSelection"
         >
       >;
     };

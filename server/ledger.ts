@@ -49,7 +49,8 @@ export type LedgerKind =
   | "workflow.ran"
   | "policy.changed"
   | "control.taken"
-  | "control.released";
+  | "control.released"
+  | "conversation.rewound";
 
 export interface LedgerEntry {
   /** Counts from zero, one per entry, no gaps. */

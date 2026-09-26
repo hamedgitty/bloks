@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
-import { useStore, type Bot, type InstanceInfo } from "@/state/store";
+import { useStore, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { cn } from "@/lib/cn";
 
@@ -35,17 +35,36 @@ function effectiveModel(instance: InstanceInfo | undefined, model: string): stri
   return isKnown ? model : (instance?.models.default ?? model);
 }
 
-export function ModelPicker({ bot, className }: { bot: Bot; className?: string }) {
+export function ModelPicker({
+  bot,
+  className,
+  value,
+  onPick,
+  noneLabel,
+  exclude,
+}: {
+  bot: Bot;
+  className?: string;
+  /** Pick something other than the agent's own engine (its backup).
+   * `value` null shows `noneLabel`, and the list offers it as a choice. */
+  value?: ModelSelection | null;
+  onPick?: (selection: ModelSelection | null) => void;
+  noneLabel?: string;
+  /** An engine not to offer, such as the one the backup stands in for. */
+  exclude?: string;
+}) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
   const [railId, setRailId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const selection = bot.modelSelection;
-  const active = state.instances.find((i) => i.instanceId === selection.instanceId);
+  const custom = onPick !== undefined;
+  const selection: ModelSelection = (custom ? value : bot.modelSelection) ?? { instanceId: "", model: "" };
+  const instances = state.instances.filter((i) => i.instanceId !== exclude);
+  const active = instances.find((i) => i.instanceId === selection.instanceId);
   const railInstance =
-    state.instances.find((i) => i.instanceId === (railId ?? selection.instanceId)) ??
-    state.instances[0];
+    instances.find((i) => i.instanceId === (railId ?? selection.instanceId)) ??
+    [...instances].sort(byUsable)[0];
 
   useEffect(() => {
     if (!open) return;
@@ -62,7 +81,9 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
   }, [open]);
 
   const pick = (instance: InstanceInfo, model: string) => {
-    dispatch({ type: "setModel", botId: bot.id, selection: { instanceId: instance.instanceId, model } });
+    const next = { instanceId: instance.instanceId, model };
+    if (custom) onPick(next);
+    else dispatch({ type: "setModel", botId: bot.id, selection: next });
     setOpen(false);
   };
 
@@ -77,7 +98,9 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
         title={active ? `${active.displayName} · ${modelLabel(active, effectiveModel(active, selection.model))}` : selection.model}
       >
         {active && <ProviderMark driverKind={active.driverKind} size={13} />}
-        <span className="max-w-[140px] truncate">{modelLabel(active, effectiveModel(active, selection.model))}</span>
+        <span className="max-w-[140px] truncate">
+          {active || !custom ? modelLabel(active, effectiveModel(active, selection.model)) : (noneLabel ?? "None")}
+        </span>
         <ChevronDown size={13} className="opacity-60" />
       </button>
 
@@ -88,7 +111,7 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
         >
           {/* instance rail */}
           <div className="flex flex-col gap-0.5 border-r bg-muted/40 p-1.5">
-            {[...state.instances].sort(byUsable).map((instance) => {
+            {[...instances].sort(byUsable).map((instance) => {
               const unavailable = instance.snapshot.state !== "available";
               const onRail = instance.instanceId === railInstance?.instanceId;
               return (
@@ -114,6 +137,17 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
 
           {/* model list for the rail-selected instance */}
           <div className="min-w-0 flex-1 p-1.5">
+            {custom && active && (
+              <button
+                onClick={() => {
+                  onPick(null);
+                  setOpen(false);
+                }}
+                className="mb-1 flex w-full items-center rounded-lg px-2 py-1.5 text-left text-[13px] text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+              >
+                {noneLabel ?? "None"}
+              </button>
+            )}
             {railInstance ? (
               <>
                 <div className="px-2 pb-1 pt-1">

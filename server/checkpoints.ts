@@ -356,6 +356,23 @@ export class Checkpoints {
     return this.records.find((r) => r.id === id);
   }
 
+  /** What a lane's turns changed from `since` on and is still in the
+   * folder to undo, newest first: the order a rewind takes them back
+   * in, so each file ends as it was before the earliest of them. */
+  undoableSince(threadId: string, since: number): CheckpointRecord[] {
+    return this.records
+      .filter(
+        (r) =>
+          r.threadId === threadId &&
+          r.at >= since &&
+          !r.revertedAt &&
+          !r.discardedAt &&
+          // a rehearsal's changes are in the folder only once applied
+          (!r.rehearsal || Boolean(r.appliedAt)),
+      )
+      .sort((a, b) => b.at - a.at);
+  }
+
   summary(record: CheckpointRecord, listed = 50): ChangesSummary {
     return {
       ...(record.rehearsal

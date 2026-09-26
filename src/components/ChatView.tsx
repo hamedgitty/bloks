@@ -4,6 +4,7 @@ import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.mjs";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
+import History from "lucide-react/dist/esm/icons/history.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
@@ -245,6 +246,42 @@ function Markdownish({ text, highlight = "" }: { text: string; highlight?: strin
  * taken back gets the same line as a sentence does: anything else means
  * some kinds vanish silently and others leave a gap.
  */
+/** One line for a whole rewind, however many messages it took back.
+ * Opens to show them, faded, because "what did I throw away" is a
+ * question people ask a minute later. */
+function Rewound({ messages }: { messages: Message[] }) {
+  const [open, setOpen] = useState(false);
+  const words = messages.filter((m) => m.kind === "text" && m.text);
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-[12px] text-muted-foreground transition-colors duration-150 hover:border-foreground/25 hover:text-foreground"
+      >
+        <History size={12} />
+        {/* what was said, not the cards and notes around it */}
+        {(() => {
+          const n = words.length || messages.length;
+          return n === 1 ? "1 message rewound" : `${n} messages rewound`;
+        })()}
+        {words.length > 0 && <ChevronDown size={12} className={cn("transition-transform duration-200", open && "rotate-180")} />}
+      </button>
+      {open && words.length > 0 && (
+        <div className="flex w-full animate-fade-in flex-col gap-1.5">
+          {words.map((m) => (
+            <div key={m.id} className={cn("flex w-full", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[13px] text-muted-foreground line-through decoration-muted-foreground/50 sm:max-w-[68%]">
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TakenBack({ user }: { user: boolean }) {
   return (
     <div className={cn("flex w-full", user ? "justify-end" : "justify-start")}>
@@ -264,6 +301,7 @@ function Bubble({
   onReact,
   onEdit,
   onDelete,
+  onRewind,
   nameOf,
   highlight = "",
   isHit,
@@ -276,6 +314,7 @@ function Bubble({
   onReact?: (messageId: string, emoji: string) => void;
   onEdit?: (messageId: string, text: string) => void;
   onDelete?: (messageId: string) => void;
+  onRewind?: (messageId: string) => void;
   nameOf?: (id: string) => string;
   highlight?: string;
   isHit?: boolean;
@@ -304,6 +343,7 @@ function Bubble({
           onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
           onEdit={user && onEdit ? () => setEditing(message.text ?? "") : undefined}
           onDelete={onDelete ? () => onDelete(message.id) : undefined}
+          onRewind={onRewind ? () => onRewind(message.id) : undefined}
         />
       )}
       {/* A column, so reactions hang under the bubble they belong to
@@ -582,6 +622,17 @@ export function ChatView({ bot }: { bot: Bot }) {
   const arrivals = useArrivals(bot);
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
   const [forwarding, setForwarding] = useState<{ message: Message; author: string } | null>(null);
+  // A rewind hands your message back to the composer, to send again or
+  // change first. The nonce makes the same words land twice in a row.
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
+  const rewindTo = (threadId: string, messageId: string) => {
+    api(`/api/threads/${threadId}/rewind`, { method: "POST", body: JSON.stringify({ messageId }) })
+      .then((r) => setPrefill({ text: r.text ?? "", nonce: Date.now() }))
+      .catch((e) => {
+        dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+        setTimeout(() => dispatch({ type: "error", message: null }), 6000);
+      });
+  };
   // The terminal drawer. Only whether it is on screen lives here: the
   // shell itself is on the server and outlives this component, so closing
   // the drawer is closing a window onto it rather than ending it.
@@ -837,6 +888,18 @@ export function ChatView({ bot }: { bot: Bot }) {
           {visibleMessages.map((m, offset) => {
             const fresh = arrivals.has(m.id);
             const absolute = visibleStart + offset;
+            if (m.deleted && m.rewound) {
+              // a run of one rewind shows once, at its first message
+              const before = visibleMessages[offset - 1];
+              if (before?.deleted && before.rewound === m.rewound) return null;
+              const run: Message[] = [];
+              for (let i = offset; i < visibleMessages.length; i++) {
+                const next = visibleMessages[i];
+                if (!next.deleted || next.rewound !== m.rewound) break;
+                run.push(next);
+              }
+              return <Rewound key={m.id} messages={run} />;
+            }
             if (m.deleted) return <TakenBack key={m.id} user={m.role === "user"} />;
             switch (m.kind) {
               case "options":
@@ -877,6 +940,7 @@ export function ChatView({ bot }: { bot: Bot }) {
                     onReact={(messageId, emoji) => reactTo(bot.threadId, messageId, emoji)}
                     onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
                     onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
+                    onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
                     highlight={finding ? query : ""}
                     isHit={absolute === currentHit}
                     nameOf={(id) => (id === "user" ? "You" : (state.bots.find((b) => b.id === id)?.name ?? bot.name))}
@@ -965,7 +1029,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           </button>
         </div>
       )}
-      <Composer bot={bot} replyTo={replyTo} onClearReply={() => setReplyTo(null)} />
+      <Composer bot={bot} replyTo={replyTo} onClearReply={() => setReplyTo(null)} prefill={prefill} />
       {forwarding && (
         <ForwardDialog
           message={forwarding.message}

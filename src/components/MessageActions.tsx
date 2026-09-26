@@ -12,6 +12,7 @@ import CornerUpLeft from "lucide-react/dist/esm/icons/corner-up-left.mjs";
 import Copy from "lucide-react/dist/esm/icons/copy.mjs";
 import SmilePlus from "lucide-react/dist/esm/icons/smile-plus.mjs";
 import Pencil from "lucide-react/dist/esm/icons/pencil.mjs";
+import History from "lucide-react/dist/esm/icons/history.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import Send from "lucide-react/dist/esm/icons/send.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
@@ -80,6 +81,7 @@ export function MessageActionBar({
   onReact,
   onEdit,
   onDelete,
+  onRewind,
   className,
 }: {
   message: Message;
@@ -90,6 +92,8 @@ export function MessageActionBar({
   /** Only your own words; an agent's message is a record, not a draft. */
   onEdit?: () => void;
   onDelete?: () => void;
+  /** Your own message, in a conversation with one agent. */
+  onRewind?: () => void;
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
@@ -113,6 +117,23 @@ export function MessageActionBar({
       ? ([["Edit", <Pencil key="e" size={13} strokeWidth={1.8} />, onEdit]] as Array<
           [string, React.ReactNode, () => void]
         >)
+      : []),
+    ...(onRewind
+      ? ([
+          [
+            "Rewind to here",
+            <History key="w" size={13} strokeWidth={1.8} />,
+            () => {
+              if (
+                window.confirm(
+                  "Rewind to before this message? It and everything after it are taken back, the agent forgets them, and files it changed since are put back. Your message comes back to the box below.",
+                )
+              ) {
+                onRewind();
+              }
+            },
+          ],
+        ] as Array<[string, React.ReactNode, () => void]>)
       : []),
     ...(onDelete
       ? ([
