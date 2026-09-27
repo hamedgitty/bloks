@@ -99,3 +99,19 @@ test("solo decisions validate choices, preserve their task, and remain retryable
   const saved = JSON.parse(readFileSync(join(c.h.home, ".bloks", `messages-${taskId}.json`), "utf8"));
   assert.ok(saved.some((m: any) => m.replyTo?.messageId === card.id && m.text === "Quick review"));
 });
+
+test("saving a setting no engine reads leaves a running turn alone", async (t) => {
+  const c = await chatHarness();
+  t.after(() => c.stop());
+  await c.post(`/api/bloks/${c.blok.id}/messages`, { text: "@QueueAgent take your time" });
+  await waitFor(() => c.calls.length === 1);
+
+  // Each of these used to rebuild every engine, which ended this turn
+  // before its reply could land.
+  for (const body of [{ skills: { propose: true } }, { compaction: { micro: true } }, { shortcuts: { quickAsk: null } }]) {
+    const res = await c.h.fetch("/api/config", { method: "PUT", body: JSON.stringify(body) });
+    assert.equal(res.status, 200, JSON.stringify(body));
+  }
+  c.calls[0].finish();
+  await waitFor(async () => (await c.messages()).some((m) => m.role === "bot" && m.text === "Finished this request."));
+});

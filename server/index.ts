@@ -9897,7 +9897,11 @@ const server = createServer(async (req, res) => {
       }
       saveConfig(patch);
       Object.assign(cfg, loadConfig());
-      await reloadProviders();
+      // Only a section instanceConfigs builds engines from is worth the
+      // reload, because a reload ends every turn in flight on every agent.
+      // The rest (profile, speech, Composio, and the sections saved above)
+      // are read fresh when they are used.
+      if (patch.xai || patch.box) await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
