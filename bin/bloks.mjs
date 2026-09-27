@@ -184,6 +184,18 @@ const COMMANDS = {
       return request("PUT", `/api/bots/${me.botId}/memory`, { text: flags.write });
     },
   },
+  rename: {
+    use: "rename <title…>",
+    about: "rename the conversation you are in, when its name no longer says what it is about",
+    run: async (args) => {
+      const title = args.join(" ").trim();
+      if (!title) throw new Error("rename needs the new name");
+      const me = await request("GET", "/api/agent/whoami");
+      const { bot } = await request("PATCH", `/api/bots/${me.botId}/tasks/${me.taskId}`, { title });
+      // the task, not the whole agent record and its transcript
+      return (bot?.tasks ?? []).find((t) => t.id === me.taskId) ?? { ok: true };
+    },
+  },
   skills: {
     use: "skills",
     about: "the skill library, names and what each is for",

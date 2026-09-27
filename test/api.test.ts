@@ -2124,6 +2124,32 @@ describe("task lanes", () => {
     assert.ok(/at most 3/.test(body.error), body.error);
   });
 
+  test("a lane can be renamed, to one short line", async () => {
+    const { bots } = await h.json("/api/bots");
+    const lane = bots.find((b: any) => b.id === botId).tasks.find((t: any) => t.title === "Quarterly report");
+    const rename = (title: unknown) =>
+      h.fetch(`/api/bots/${botId}/tasks/${lane.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+
+    const res = await rename("  Q3 numbers\n for the board  ");
+    assert.equal(res.status, 200);
+    const { bot } = await res.json();
+    assert.equal(bot.tasks.find((t: any) => t.id === lane.id).title, "Q3 numbers for the board");
+
+    const long = await (await rename("x".repeat(100))).json();
+    assert.equal(long.bot.tasks.find((t: any) => t.id === lane.id).title.length, 40);
+
+    for (const blank of ["   ", "", 7, undefined]) {
+      const refused = await rename(blank);
+      assert.equal(refused.status, 400, JSON.stringify(blank));
+      assert.equal(typeof (await refused.json()).error, "string");
+    }
+    const missing = await h.fetch(`/api/bots/${botId}/tasks/no-such-lane`, {
+      method: "PATCH",
+      body: JSON.stringify({ title: "Anything" }),
+    });
+    assert.equal(missing.status, 404);
+  });
+
   test("closing a lane removes it; the last lane refuses to close", async () => {
     const { bots } = await h.json("/api/bots");
     let bot = bots.find((b: any) => b.id === botId);
@@ -4255,6 +4281,65 @@ describe("the command line an agent drives", () => {
     assert.equal(pretend.status, 200);
 
     await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
+  });
+
+  test("an agent renames the conversation it is in, and only its own", async (t) => {
+    // A stand-in for Claude Code that runs the real CLI with the turn's
+    // real credential, then tries the same route on another agent.
+    const home = mkdtempSync(join(tmpdir(), "bloks-rename-"));
+    const out = join(home, "fake-out.json");
+    const fake = join(home, "fake-claude.mjs");
+    writeFileSync(
+      fake,
+      `#!${process.execPath}
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const [first] = process.argv.slice(2);
+if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+process.stdin.resume();
+process.stdin.on("end", async () => {
+  const renamed = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(cli)}, "rename", "Q3", "numbers"], { encoding: "utf8" }));
+  const headers = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
+  const call = (method, path, body) => fetch(process.env.BLOKS_URL + path, { method, headers, body: body && JSON.stringify(body) });
+  const other = (await (await call("GET", "/api/bots")).json()).bots.find((b) => b.name === "Other");
+  const theirs = (await call("PATCH", "/api/bots/" + other.id + "/tasks/" + other.tasks[0].id, { title: "Mine now" })).status;
+  writeFileSync(${JSON.stringify(out)}, JSON.stringify({ renamed, theirs }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
+});
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(home, ".bloks"), { recursive: true });
+    writeFileSync(
+      join(home, ".bloks", "config.json"),
+      JSON.stringify({ instances: { claude: { driver: "claudeAgent", config: { cli: fake } } } }),
+    );
+    const h2 = await startHarness({ HOME: home });
+    t.after(async () => {
+      await h2.stop();
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    const { bot: other } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Other" }) });
+    const { bot } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Namer" }) });
+    await h2.fetch(`/api/bots/${bot.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }),
+    });
+    await h2.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "go" }) });
+    let seen: { renamed: any; theirs: number } | undefined;
+    for (let i = 0; i < 200 && !seen; i++) {
+      if (existsSync(out)) seen = JSON.parse(readFileSync(out, "utf8"));
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(seen, "the stand-in engine never ran a turn");
+    assert.equal(seen.renamed.title, "Q3 numbers", JSON.stringify(seen.renamed));
+    assert.equal(seen.theirs, 403, "an agent renamed another agent's conversation");
+
+    const { bots } = await h2.json("/api/bots");
+    assert.equal(bots.find((b: any) => b.id === bot.id).tasks[0].title, "Q3 numbers");
+    assert.equal(bots.find((b: any) => b.id === other.id).tasks[0].title, "General");
   });
 });
 

@@ -7287,6 +7287,19 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { bot: { ...clientBot(fresh), messages: store.messagesFor(m[2]) } });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)$/);
+    if (m && method === "PATCH") {
+      // A lane names itself from its first message, which often says
+      // nothing about what the conversation became. The title reaches a
+      // prompt ("your conversation ..."), so it is one short line.
+      const body = await readBody(req);
+      const title = clamp(typeof body.title === "string" ? body.title.replace(/\s+/g, " ") : undefined, 40);
+      if (!title) return json(res, 400, { error: "a task needs a title" });
+      if (!store.bot(m[1])?.tasks.some((t) => t.id === m![2])) return json(res, 404, { error: "no such task" });
+      store.patchTaskTitle(m[1], m[2], title);
+      const fresh = store.bot(m[1])!;
+      broadcast({ kind: "bot", bot: clientBot(fresh) });
+      return json(res, 200, { bot: { ...clientBot(fresh), messages: store.messagesFor(fresh.activeTaskId) } });
+    }
     if (m && method === "DELETE") {
       const outcome = store.deleteTask(m[1], m[2]);
       if (outcome === "missing") return json(res, 404, { error: "no such task" });

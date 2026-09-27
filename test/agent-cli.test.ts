@@ -65,6 +65,15 @@ describe("what an agent can do", () => {
     assert.equal(allows(ME, "PATCH", `/api/bots/${SOMEONE_ELSE}`).ok, false);
   });
 
+  test("renaming its own conversations, and nobody else's", () => {
+    assert.equal(allows(ME, "PATCH", `/api/bots/${ME}/tasks/lane-1`).ok, true);
+    assert.equal(allows(ME, "PATCH", `/api/bots/${SOMEONE_ELSE}/tasks/lane-1`).ok, false);
+    // renaming is all: opening, switching and closing lanes stay the person's
+    assert.equal(allows(ME, "POST", `/api/bots/${ME}/tasks`).ok, false);
+    assert.equal(allows(ME, "POST", `/api/bots/${ME}/tasks/lane-1/activate`).ok, false);
+    assert.equal(allows(ME, "DELETE", `/api/bots/${ME}/tasks/lane-1`).ok, false);
+  });
+
   test("a query string does not smuggle anything past the rules", () => {
     assert.equal(allows(ME, "GET", "/api/bots?messages=0").ok, true);
     assert.equal(allows(ME, "GET", "/api/config?x=/api/bots").ok, false);
