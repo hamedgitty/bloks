@@ -53,6 +53,13 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
       COMPOSIO_KEY: "",
       BOX_TOKEN: "",
       PATH: "/nonexistent",
+      // widenPath adds $npm_config_prefix/bin, which npx exports, and a
+      // claude or codex there would make a test's engine real
+      npm_config_prefix: "",
+      PREFIX: "",
+      // bin/bloks-server.mjs sets this, so a test run from inside a Bloks
+      // agent would inherit it and find pairing forced on
+      BLOKS_LOOPBACK_ONLY: "",
       ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
