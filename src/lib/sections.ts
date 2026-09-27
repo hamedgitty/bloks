@@ -24,3 +24,16 @@ export function sectionNames(...groups: Filed[][]): string[] {
 export function inSection<T extends Filed>(rows: T[], name: string | null): T[] {
   return rows.filter((row) => (row.section ?? null) === name);
 }
+
+/** What a folded section still shows: only the open thread, so folding
+ * a section never hides where you are. A search unfolds everything,
+ * because a match you cannot see reads as no match. */
+export function shownInSection<T extends { id: string }>(
+  rows: T[],
+  collapsed: boolean,
+  selectedId: string | null,
+  searching: boolean,
+): T[] {
+  if (!collapsed || searching) return rows;
+  return rows.filter((row) => row.id === selectedId);
+}

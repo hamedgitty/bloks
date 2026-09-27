@@ -11,6 +11,7 @@ import PinOff from "lucide-react/dist/esm/icons/pin-off.mjs";
 import Plus from "lucide-react/dist/esm/icons/plus.mjs";
 import Archive from "lucide-react/dist/esm/icons/archive.mjs";
 import Puzzle from "lucide-react/dist/esm/icons/puzzle.mjs";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
 import Folder from "lucide-react/dist/esm/icons/folder.mjs";
 import FolderKanban from "lucide-react/dist/esm/icons/folder-kanban.mjs";
 import Activity from "lucide-react/dist/esm/icons/activity.mjs";
@@ -32,7 +33,7 @@ import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/pageVisible";
 import { previewLine } from "@/lib/preview";
-import { inSection, sectionNames } from "@/lib/sections";
+import { inSection, sectionNames, shownInSection } from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
 import { useBriefs } from "./BriefPanel";
 import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
@@ -517,6 +518,22 @@ export function Sidebar() {
     setChoice(next);
     localStorage.setItem("bloks-sidebar", next ? "rail" : "full");
   };
+  // Folded sections, by name. Kept on this device like the rail choice:
+  // how much of the list you want in view depends on the screen, not on
+  // the workspace. A name that stops existing just sits here unused.
+  const [folded, setFolded] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("bloks-folded-sections") ?? "[]");
+      return Array.isArray(saved) ? saved.filter((n) => typeof n === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const toggleFolded = (name: string) => {
+    const next = folded.includes(name) ? folded.filter((n) => n !== name) : [...folded, name];
+    setFolded(next);
+    localStorage.setItem("bloks-folded-sections", JSON.stringify(next));
+  };
 
   // ⌘N new agent, ⌘K focus search, the two things you do most
   useEffect(() => {
@@ -851,16 +868,33 @@ export function Sidebar() {
               const rooms = inSection(state.bloks, name);
               const bots = inSection(visibleBots, name);
               if (!rooms.length && !bots.length) return null;
+              const isFolded = folded.includes(name);
+              const searching = Boolean(query.trim());
+              // A folded heading still says something is waiting inside.
+              const waiting = isFolded && !searching && bots.some((b) => b.unread);
               return (
                 <div key={name} className="flex flex-col gap-px">
-                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                  <button
+                    onClick={() => toggleFolded(name)}
+                    aria-expanded={!isFolded}
+                    title={isFolded ? "Show this section" : "Fold this section"}
+                    className="flex items-center gap-1.5 rounded px-2.5 pb-1 pt-3 text-left text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground"
+                  >
                     <Folder size={11} className="shrink-0" />
                     <span className="truncate">{name}</span>
-                  </div>
-                  {rooms.map((b) => (
+                    {isFolded && !searching && (
+                      <span className="shrink-0 normal-case tracking-normal">{rooms.length + bots.length}</span>
+                    )}
+                    {waiting && <span className="size-1.5 shrink-0 rounded-full bg-brand" />}
+                    <ChevronRight
+                      size={11}
+                      className={cn("ml-auto shrink-0 transition-transform", !isFolded && "rotate-90")}
+                    />
+                  </button>
+                  {shownInSection(rooms, isFolded, state.selectedId, searching).map((b) => (
                     <RoomListItem key={b.id} blok={b} onFile={setFiling} />
                   ))}
-                  {bots.map((b) => (
+                  {shownInSection(bots, isFolded, state.selectedId, searching).map((b) => (
                     <BotListItem key={b.id} bot={b} onMenu={setMenu} />
                   ))}
                 </div>
