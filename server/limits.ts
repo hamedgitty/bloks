@@ -32,6 +32,9 @@ export const MAX_CUSTOM_KEYS = 8;
 export const MAX_KEY_CHARS = 400;
 export const MAX_URL_CHARS = 400;
 
+/** A model id kept in the defaults for new agents. Real ids are short. */
+export const MAX_MODEL_ID_CHARS = 200;
+
 /** Trims a value to a cap, returning undefined when there is nothing
  * left. Callers decide whether absent means "skip" or "reject". */
 export function clamp(value: unknown, max: number): string | undefined {

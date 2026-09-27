@@ -84,6 +84,7 @@ import {
   MAX_DESCRIPTION_CHARS,
   MAX_KEY_CHARS,
   MAX_MESSAGE_CHARS,
+  MAX_MODEL_ID_CHARS,
   MAX_NAME_CHARS,
   MAX_SKILL_CHARS,
   MAX_SKILLS,
@@ -320,6 +321,23 @@ async function defaultSelection() {
   const available = described.filter((d) => d.snapshot.state === "available");
   const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
   return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
+}
+
+// The settings a new agent is born with, applied before its first turn
+// because that turn pins the chat's folder for good. Checked again here,
+// not only when saved: an engine can be removed and a folder can move.
+async function newAgentSettings(): Promise<Partial<BotRecord>> {
+  const wanted = cfg.agentDefaults ?? {};
+  const out: Partial<BotRecord> = {
+    modelSelection:
+      wanted.modelSelection && registry.get(wanted.modelSelection.instanceId)
+        ? wanted.modelSelection
+        : await defaultSelection(),
+  };
+  const folder = wanted.cwd ? workspace.validateWorkingFolder(wanted.cwd) : null;
+  if (folder?.ok && folder.path) out.cwd = folder.path;
+  if (wanted.effort) out.effort = wanted.effort;
+  return out;
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
@@ -5022,6 +5040,8 @@ function configStatus() {
     // off unless asked for: reading a session back spends tokens on work
     // nobody requested, and what it finds is staged rather than installed
     skills: { propose: Boolean(cfg.skills?.propose) },
+    // not a secret: a folder, a mode and a model, for the settings form
+    agentDefaults: cfg.agentDefaults ?? {},
     // what is already here, so a first run can offer to keep it rather
     // than silently dropping somebody into a stranger's-looking workspace
     workspace: (() => {
@@ -5713,7 +5733,7 @@ const server = createServer(async (req, res) => {
       }
 
       const bot = store.createBot(profile);
-      store.patchBot(bot.id, { modelSelection: await defaultSelection() });
+      store.patchBot(bot.id, await newAgentSettings());
       record({
         at: Date.now(),
         kind: "agent.created",
@@ -5775,7 +5795,7 @@ const server = createServer(async (req, res) => {
 
       const { profile, patch } = profileFromFile(file);
       const bot = store.createBot({ ...profile, skillIds: carried.length ? carried : undefined });
-      store.patchBot(bot.id, { ...patch, modelSelection: await defaultSelection() });
+      store.patchBot(bot.id, { ...(await newAgentSettings()), ...patch });
 
       if (file.memory) {
         if (file.memory.text.trim()) workspace.writeMemoryFile(bot.id, file.memory.text);
@@ -7571,8 +7591,10 @@ const server = createServer(async (req, res) => {
           },
         }),
       );
+      const settings = await newAgentSettings();
       for (const hire of hires) {
         store.patchBot(hire.id, {
+          ...settings,
           modelSelection: { instanceId: lead.modelSelection.instanceId, model: cheap },
         });
         broadcast({
@@ -8062,9 +8084,9 @@ const server = createServer(async (req, res) => {
           setup: { title: "Imported with the team", subtitle: "", options: [] },
         }),
       );
-      const selection = await defaultSelection();
+      const settings = await newAgentSettings();
       for (const hire of hired) {
-        store.patchBot(hire.id, { modelSelection: selection });
+        store.patchBot(hire.id, settings);
         broadcast({
           kind: "bot",
           bot: { ...clientBot(store.bot(hire.id))!, messages: store.messagesFor(hire.threadId) },
@@ -9851,6 +9873,44 @@ const server = createServer(async (req, res) => {
           saveConfig({ shortcuts: { quickAsk: accelerator } });
           Object.assign(cfg, loadConfig());
           wroteSomething = true;
+        }
+      }
+      // The same checks an agent's own settings get, so a default can
+      // never hand a new agent something PATCH /api/bots/:id would refuse.
+      if (body.agentDefaults && typeof body.agentDefaults === "object" && !Array.isArray(body.agentDefaults)) {
+        const asked = body.agentDefaults as Record<string, unknown>;
+        const next: NonNullable<AppConfig["agentDefaults"]> = {};
+        if (asked.cwd !== undefined) {
+          const checked = workspace.validateWorkingFolder(asked.cwd);
+          if (!checked.ok) return json(res, 400, { error: checked.error });
+          if (checked.path) next.cwd = checked.path;
+        }
+        if (asked.effort !== undefined) {
+          if (!["low", "medium", "high"].includes(asked.effort as string)) {
+            return json(res, 400, { error: "effort is low, medium or high" });
+          }
+          next.effort = asked.effort as "low" | "medium" | "high";
+        }
+        if (asked.modelSelection !== undefined) {
+          const pick = asked.modelSelection as { instanceId?: unknown; model?: unknown } | null;
+          if (typeof pick?.instanceId !== "string" || typeof pick.model !== "string" || !registry.get(pick.instanceId)) {
+            return json(res, 400, { error: "modelSelection must name an engine this workspace has" });
+          }
+          if (!pick.model.trim() || pick.model.length > MAX_MODEL_ID_CHARS) {
+            return json(res, 400, { error: "modelSelection.model must be a model id" });
+          }
+          next.modelSelection = { instanceId: pick.instanceId, model: pick.model };
+        }
+        saveConfig({ agentDefaults: next });
+        Object.assign(cfg, loadConfig());
+        wroteSomething = true;
+        // Nothing an engine reads, so a save of only this section answers
+        // here. Falling through reaches reloadProviders, which ends every
+        // turn running at that moment, on every agent.
+        if (Object.keys(body).every((key) => key === "agentDefaults")) {
+          const status = configStatus();
+          broadcast({ kind: "config", ...status });
+          return json(res, 200, status);
         }
       }
       if (body.setupDone === true && !cfg.setupDoneAt) {

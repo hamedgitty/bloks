@@ -142,6 +142,15 @@ export interface AppConfig {
    * Off unless asked for: it spends the person's own tokens on work they
    * did not request. What it finds is always staged, never installed. */
   skills?: { propose?: boolean };
+  /** What every new agent starts with, whoever hires it. Without this an
+   * agent's first chat pins to its own workspace before anybody can
+   * point it elsewhere. A missing key keeps the built-in start: its own
+   * workspace and the first engine that is available. */
+  agentDefaults?: {
+    cwd?: string;
+    modelSelection?: { instanceId: string; model: string };
+    effort?: "low" | "medium" | "high";
+  };
   /** The outbound line to a relay, so a phone can reach this Mac from
    * outside the house. The token names one space; the relay never holds
    * a key that could read what travels through it. */
@@ -269,6 +278,10 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   }
   if (Array.isArray((patch as Record<string, unknown>).mcpServers)) {
     disk.mcpServers = (patch as Record<string, unknown>).mcpServers;
+  }
+  // Replaced whole rather than merged, so leaving a key out clears it.
+  if (patch.agentDefaults && typeof patch.agentDefaults === "object") {
+    disk.agentDefaults = patch.agentDefaults;
   }
   if (Array.isArray((patch as Record<string, unknown>).custom)) {
     disk.custom = (patch as Record<string, unknown>).custom;

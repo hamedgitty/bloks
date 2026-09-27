@@ -1147,6 +1147,53 @@ describe("the quick ask shortcut", () => {
   });
 });
 
+describe("defaults for new agents", () => {
+  test("a hire starts in the default folder and model, refuses bad values, and clears", async () => {
+    // nothing set still reads as a section, which is what the settings card keys on
+    assert.deepEqual((await h.json("/api/config")).agentDefaults, {});
+
+    // the answer is the saved status, with the folder as the server resolved it
+    const saved = await h.fetch("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        agentDefaults: { cwd: "~", modelSelection: { instanceId: "claude", model: "claude-opus-5-5" }, effort: "high" },
+      }),
+    });
+    assert.equal(saved.status, 200);
+    const wanted = { cwd: h.home, modelSelection: { instanceId: "claude", model: "claude-opus-5-5" }, effort: "high" };
+    assert.deepEqual((await saved.json()).agentDefaults, wanted);
+    assert.deepEqual((await h.json("/api/config")).agentDefaults, wanted);
+
+    // set before the first turn, which is what pins the chat's folder
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Newcomer" }) });
+    assert.equal(bot.cwd, h.home);
+    assert.deepEqual(bot.modelSelection, wanted.modelSelection);
+    assert.equal(bot.effort, "high");
+
+    for (const bad of [
+      { cwd: "relative/path" },
+      { cwd: join(h.home, "not-here") },
+      { effort: "max" },
+      { modelSelection: { instanceId: "no-such-engine", model: "x" } },
+      { modelSelection: { instanceId: "claude", model: "x".repeat(201) } },
+    ]) {
+      const res = await h.fetch("/api/config", { method: "PUT", body: JSON.stringify({ agentDefaults: bad }) });
+      assert.equal(res.status, 400, JSON.stringify(bad));
+      assert.equal(typeof (await res.json()).error, "string", "the card shows this under the fields");
+    }
+    assert.deepEqual((await h.json("/api/config")).agentDefaults, wanted, "a refusal kept the last good save");
+
+    // an empty object is how it is turned off
+    await h.fetch("/api/config", { method: "PUT", body: JSON.stringify({ agentDefaults: {} }) });
+    const { bot: plain } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Plain" }) });
+    assert.equal(plain.cwd ?? null, null);
+    assert.equal(plain.effort ?? null, null);
+
+    await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
+    await h.fetch(`/api/bots/${plain.id}?forget=1`, { method: "DELETE" });
+  });
+});
+
 describe("editing and taking back", () => {
   test("you may fix your own words, never the agent's, and a deletion reaches the engine", async () => {
     const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Scribe" }) });
