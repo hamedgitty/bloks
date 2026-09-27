@@ -108,7 +108,12 @@ test("saving a setting no engine reads leaves a running turn alone", async (t) =
 
   // Each of these used to rebuild every engine, which ended this turn
   // before its reply could land.
-  for (const body of [{ skills: { propose: true } }, { compaction: { micro: true } }, { shortcuts: { quickAsk: null } }]) {
+  for (const body of [
+    { skills: { propose: true } },
+    { compaction: { micro: true } },
+    { shortcuts: { quickAsk: null } },
+    { agentDefaults: { effort: "low" } },
+  ]) {
     const res = await c.h.fetch("/api/config", { method: "PUT", body: JSON.stringify(body) });
     assert.equal(res.status, 200, JSON.stringify(body));
   }

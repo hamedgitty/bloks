@@ -9929,14 +9929,6 @@ const server = createServer(async (req, res) => {
         saveConfig({ agentDefaults: next });
         Object.assign(cfg, loadConfig());
         wroteSomething = true;
-        // Nothing an engine reads, so a save of only this section answers
-        // here. Falling through reaches reloadProviders, which ends every
-        // turn running at that moment, on every agent.
-        if (Object.keys(body).every((key) => key === "agentDefaults")) {
-          const status = configStatus();
-          broadcast({ kind: "config", ...status });
-          return json(res, 200, status);
-        }
       }
       if (body.setupDone === true && !cfg.setupDoneAt) {
         saveConfig({ setupDoneAt: Date.now() });
