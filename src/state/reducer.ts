@@ -278,6 +278,8 @@ export interface Blok {
   createdAt: number;
   /** Present while the room is shared with other people. */
   sharing?: RoomSharing;
+  /** Archived rooms are kept on the server and never listed here. */
+  archived?: boolean;
   messages: Message[];
 }
 
@@ -526,9 +528,12 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, bots: action.bots, selectedId };
     }
     case "hydrateBloks": {
+      // the server keeps archived rooms; the list only hides them, and a
+      // reload must not bring back what patchRoom took away
+      const bloks = action.bloks.filter((b) => !b.archived);
       const wanted = state.selectedId || readSelected();
-      const selectedId = action.bloks.some((b) => b.id === wanted) ? wanted : state.selectedId;
-      return { ...state, bloks: action.bloks, selectedId };
+      const selectedId = bloks.some((b) => b.id === wanted) ? wanted : state.selectedId;
+      return { ...state, bloks, selectedId };
     }
     case "roomPeople":
       return { ...state, roomPeople: { ...state.roomPeople, [action.roomId]: action.people } };
@@ -543,6 +548,11 @@ export function reducer(state: AppState, action: Action): AppState {
     case "roomTyping":
       return { ...state, roomTyping: { ...state.roomTyping, [action.roomId]: { name: action.name, at: action.at } } };
     case "blokPatched": {
+      // the server's echo of an archive, which would otherwise re-add
+      // the room patchRoom has just removed
+      if (action.blok.archived) {
+        return { ...state, bloks: state.bloks.filter((b) => b.id !== action.blok.id) };
+      }
       const existing = state.bloks.find((b) => b.id === action.blok.id);
       return {
         ...state,

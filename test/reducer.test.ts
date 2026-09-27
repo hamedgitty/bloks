@@ -203,3 +203,20 @@ test("creating the first agent closes the picker and drops the first-run flag", 
   assert.equal(state.newAgentFirstRun, false);
   assert.equal(state.selectedId, "chief");
 });
+
+test("an archived room stays out of the list after the server echoes it and after a reload", () => {
+  const room = { id: "r1", name: "Setup", memberIds: ["a"], createdAt: 1, messages: [] };
+  const other = { id: "r2", name: "Other", memberIds: ["a"], createdAt: 2, messages: [] };
+  let state = reducer(withState({}), { type: "hydrateBloks", bloks: [room, other] });
+  state = reducer(state, { type: "patchRoom", blokId: "r1", patch: { archived: true } });
+  assert.deepEqual(state.bloks.map((b) => b.id), ["r2"]);
+
+  // the server's broadcast of the same change
+  const { messages: _m, ...echo } = room;
+  state = reducer(state, { type: "blokPatched", blok: { ...echo, archived: true } });
+  assert.deepEqual(state.bloks.map((b) => b.id), ["r2"], "the echo brought it back");
+
+  // the next app load reads every room, archived ones included
+  state = reducer(state, { type: "hydrateBloks", bloks: [{ ...room, archived: true }, other] });
+  assert.deepEqual(state.bloks.map((b) => b.id), ["r2"], "a reload brought it back");
+});
