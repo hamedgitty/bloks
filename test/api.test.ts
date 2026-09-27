@@ -6,7 +6,8 @@
 // the limits and the status codes actually live.
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1174,6 +1175,7 @@ describe("defaults for new agents", () => {
       { cwd: "relative/path" },
       { cwd: join(h.home, "not-here") },
       { effort: "max" },
+      { approvals: "always" },
       { modelSelection: { instanceId: "no-such-engine", model: "x" } },
       { modelSelection: { instanceId: "claude", model: "x".repeat(201) } },
     ]) {
@@ -1191,6 +1193,71 @@ describe("defaults for new agents", () => {
 
     await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
     await h.fetch(`/api/bots/${plain.id}?forget=1`, { method: "DELETE" });
+  });
+
+  test("an agent never passes on or takes more approvals than it has", async (t) => {
+    // A stand-in for Claude Code that uses the turn's real credential the
+    // way the CLI does, so the checks under test are the server's own.
+    const home = mkdtempSync(join(tmpdir(), "bloks-approvals-"));
+    const out = join(home, "fake-out.json");
+    const cli = join(home, "fake-claude.mjs");
+    writeFileSync(
+      cli,
+      `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+const [first] = process.argv.slice(2);
+if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+process.stdin.resume();
+process.stdin.on("end", async () => {
+  const url = process.env.BLOKS_URL;
+  const headers = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
+  const call = (method, path, body) => fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
+  const me = (await (await call("GET", "/api/agent/whoami")).json()).botId;
+  const raise = (await call("PATCH", "/api/bots/" + me, { approvals: "auto" })).status;
+  const hired = (await (await call("POST", "/api/bots", { name: "Hired" })).json()).bot.id;
+  const lower = (await call("PATCH", "/api/bots/" + me, { approvals: "ask" })).status;
+  writeFileSync(${JSON.stringify(out)}, JSON.stringify({ me, raise, hired, lower }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
+});
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(home, ".bloks"), { recursive: true });
+    writeFileSync(
+      join(home, ".bloks", "config.json"),
+      JSON.stringify({ instances: { claude: { driver: "claudeAgent", config: { cli } } } }),
+    );
+    const h2 = await startHarness({ HOME: home });
+    t.after(async () => {
+      await h2.stop();
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    await h2.fetch("/api/config", { method: "PUT", body: JSON.stringify({ agentDefaults: { approvals: "auto" } }) });
+    // the person may hand out anything, and a hire of theirs gets the default
+    const { bot: lead } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Lead" }) });
+    assert.equal(lead.approvals, "auto");
+    await h2.fetch(`/api/bots/${lead.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ approvals: "edits", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }),
+    });
+
+    await h2.fetch(`/api/bots/${lead.id}/messages`, { method: "POST", body: JSON.stringify({ text: "go" }) });
+    let seen: { me: string; raise: number; hired: string; lower: number } | undefined;
+    for (let i = 0; i < 200 && !seen; i++) {
+      if (existsSync(out)) seen = JSON.parse(readFileSync(out, "utf8"));
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(seen, "the stand-in engine never ran a turn");
+    assert.equal(seen.me, lead.id);
+    assert.equal(seen.raise, 403, "an agent raised its own approvals");
+    assert.equal(seen.lower, 200, "lowering its own approvals is always allowed");
+
+    const { bots } = await h2.json("/api/bots");
+    // capped at the hirer's level at the moment of hiring, not the default
+    assert.equal(bots.find((b: any) => b.id === seen!.hired).approvals, "edits");
+    assert.equal(bots.find((b: any) => b.id === lead.id).approvals, "ask");
   });
 });
 

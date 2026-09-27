@@ -145,9 +145,11 @@ export interface AppConfig {
   /** What every new agent starts with, whoever hires it. Without this an
    * agent's first chat pins to its own workspace before anybody can
    * point it elsewhere. A missing key keeps the built-in start: its own
-   * workspace and the first engine that is available. */
+   * workspace, ask before acting, the first engine that is available.
+   * An agent hiring an agent never passes on more approvals than it has. */
   agentDefaults?: {
     cwd?: string;
+    approvals?: "ask" | "edits" | "auto";
     modelSelection?: { instanceId: string; model: string };
     effort?: "low" | "medium" | "high";
   };

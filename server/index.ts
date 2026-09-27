@@ -323,10 +323,17 @@ async function defaultSelection() {
   return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
 }
 
+type Approvals = NonNullable<BotRecord["approvals"]>;
+// From least to most an agent may do without asking.
+const APPROVALS: Approvals[] = ["ask", "edits", "auto"];
+const lesserApprovals = (a: Approvals, b: Approvals) => (APPROVALS.indexOf(a) <= APPROVALS.indexOf(b) ? a : b);
+
 // The settings a new agent is born with, applied before its first turn
 // because that turn pins the chat's folder for good. Checked again here,
 // not only when saved: an engine can be removed and a folder can move.
-async function newAgentSettings(): Promise<Partial<BotRecord>> {
+// `hiredBy` is the approvals of the agent doing the hiring, when an agent
+// is: a hire never gets to do more without asking than the one who made it.
+async function newAgentSettings(hiredBy?: Approvals): Promise<Partial<BotRecord>> {
   const wanted = cfg.agentDefaults ?? {};
   const out: Partial<BotRecord> = {
     modelSelection:
@@ -337,6 +344,7 @@ async function newAgentSettings(): Promise<Partial<BotRecord>> {
   const folder = wanted.cwd ? workspace.validateWorkingFolder(wanted.cwd) : null;
   if (folder?.ok && folder.path) out.cwd = folder.path;
   if (wanted.effort) out.effort = wanted.effort;
+  if (wanted.approvals) out.approvals = hiredBy ? lesserApprovals(wanted.approvals, hiredBy) : wanted.approvals;
   return out;
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
@@ -5733,7 +5741,10 @@ const server = createServer(async (req, res) => {
       }
 
       const bot = store.createBot(profile);
-      store.patchBot(bot.id, await newAgentSettings());
+      store.patchBot(
+        bot.id,
+        await newAgentSettings(asAgent ? (store.bot(asAgent.botId)?.approvals ?? "ask") : undefined),
+      );
       record({
         at: Date.now(),
         kind: "agent.created",
@@ -5905,8 +5916,16 @@ const server = createServer(async (req, res) => {
         patch.section = named.section;
       }
       if (body.approvals !== undefined) {
-        if (!["ask", "edits", "auto"].includes(body.approvals as string)) {
+        if (!APPROVALS.includes(body.approvals as Approvals)) {
           return json(res, 400, { error: "approvals is ask, edits or auto" });
+        }
+        // Lowering is always allowed. Raising is the person's call, for
+        // the same reason as the browser below: PATCH /api/bots/:me is on
+        // the agent allowlist, and a hire is capped at its hirer's level,
+        // which only holds if that level cannot be raised from inside.
+        const current = store.bot(m[1])?.approvals ?? "ask";
+        if (asAgent && lesserApprovals(body.approvals as Approvals, current) !== body.approvals) {
+          return json(res, 403, { error: "an agent cannot raise its own approvals" });
         }
         patch.approvals = body.approvals;
       }
@@ -9884,6 +9903,12 @@ const server = createServer(async (req, res) => {
           const checked = workspace.validateWorkingFolder(asked.cwd);
           if (!checked.ok) return json(res, 400, { error: checked.error });
           if (checked.path) next.cwd = checked.path;
+        }
+        if (asked.approvals !== undefined) {
+          if (!APPROVALS.includes(asked.approvals as Approvals)) {
+            return json(res, 400, { error: "approvals is ask, edits or auto" });
+          }
+          next.approvals = asked.approvals as Approvals;
         }
         if (asked.effort !== undefined) {
           if (!["low", "medium", "high"].includes(asked.effort as string)) {
