@@ -18,6 +18,7 @@ import { TerminalPanel } from "./Terminal";
 import { showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { findHits, splitHighlight, stepHit } from "@/lib/find";
 import { splitBlocks, type TableBlock } from "@/lib/markdownTable";
+import { parseInline, type InlineToken } from "@/lib/inlineMarkdown";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
 import { CallButton } from "./Voice";
@@ -106,31 +107,41 @@ function withHighlight(nodes: React.ReactNode[], query: string): React.ReactNode
   return out;
 }
 
-function inlineMd(text: string, keyBase: string): React.ReactNode[] {
-  const parts: React.ReactNode[] = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let last = 0;
-  let i = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const tok = m[0];
-    if (tok.startsWith("**")) {
-      parts.push(<strong key={`${keyBase}-${i++}`}>{tok.slice(2, -2)}</strong>);
-    } else {
-      parts.push(
-        <code
-          key={`${keyBase}-${i++}`}
-          className="rounded bg-foreground/[0.07] px-1 py-px font-mono text-[12.5px]"
-        >
-          {tok.slice(1, -1)}
-        </code>,
-      );
-    }
-    last = m.index + tok.length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
+/** Bold, code and links, as elements, with the search highlight painted
+ * into the text of each, links and bold included. */
+function inlineMd(text: string, keyBase: string, highlight: string): React.ReactNode[] {
+  const render = (tokens: InlineToken[], key: string): React.ReactNode[] =>
+    tokens.flatMap((token, i): React.ReactNode[] => {
+      const k = `${key}-${i}`;
+      switch (token.kind) {
+        case "text":
+          return withHighlight([token.text], highlight).map((node, j) =>
+            typeof node === "string" ? node : <span key={`${k}-${j}`}>{node}</span>,
+          );
+        case "code":
+          return [
+            <code key={k} className="rounded bg-foreground/[0.07] px-1 py-px font-mono text-[12.5px]">
+              {token.text}
+            </code>,
+          ];
+        case "bold":
+          return [<strong key={k}>{render(token.children, k)}</strong>];
+        case "link":
+          return [
+            <a
+              key={k}
+              href={token.href}
+              target="_blank"
+              rel="noreferrer"
+              title={token.href}
+              className="break-words underline underline-offset-2 hover:opacity-80"
+            >
+              {render(token.children, k)}
+            </a>,
+          ];
+      }
+    });
+  return render(parseInline(text), keyBase);
 }
 
 /**
@@ -154,7 +165,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
                 key={i}
                 className={cn("px-2.5 py-1.5 font-semibold whitespace-nowrap", align(i))}
               >
-                {withHighlight(inlineMd(column, `th${i}`), highlight)}
+                {inlineMd(column, `th${i}`, highlight)}
               </th>
             ))}
           </tr>
@@ -164,7 +175,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
             <tr key={r} className="border-b last:border-b-0">
               {row.map((cell, c) => (
                 <td key={c} className={cn("px-2.5 py-1.5 align-top", align(c))}>
-                  {withHighlight(inlineMd(cell, `td${r}-${c}`), highlight)}
+                  {inlineMd(cell, `td${r}-${c}`, highlight)}
                 </td>
               ))}
             </tr>
@@ -197,7 +208,7 @@ function Markdownish({ text, highlight = "" }: { text: string; highlight?: strin
         if (heading) {
           return (
             <div key={i} className="mt-1.5 font-semibold">
-              {withHighlight(inlineMd(heading[1], `h${i}`), highlight)}
+              {inlineMd(heading[1], `h${i}`, highlight)}
             </div>
           );
         }
@@ -206,7 +217,7 @@ function Markdownish({ text, highlight = "" }: { text: string; highlight?: strin
           return (
             <div key={i} className="flex gap-2 pl-1">
               <span className="text-muted-foreground">•</span>
-              <span className="min-w-0">{withHighlight(inlineMd(bullet[1], `b${i}`), highlight)}</span>
+              <span className="min-w-0">{inlineMd(bullet[1], `b${i}`, highlight)}</span>
             </div>
           );
         }
@@ -215,7 +226,7 @@ function Markdownish({ text, highlight = "" }: { text: string; highlight?: strin
           return (
             <div key={i} className="flex gap-2 pl-1">
               <span className="text-muted-foreground">{numbered[1]}.</span>
-              <span className="min-w-0">{withHighlight(inlineMd(numbered[2], `n${i}`), highlight)}</span>
+              <span className="min-w-0">{inlineMd(numbered[2], `n${i}`, highlight)}</span>
             </div>
           );
         }
@@ -229,12 +240,12 @@ function Markdownish({ text, highlight = "" }: { text: string; highlight?: strin
               key={i}
               className="my-0.5 border-l-2 border-current/25 pl-2.5 text-current/70"
             >
-              {quoted[1] ? withHighlight(inlineMd(quoted[1], `q${i}`), highlight) : null}
+              {quoted[1] ? inlineMd(quoted[1], `q${i}`, highlight) : null}
             </div>
           );
         }
         if (!line.trim()) return <div key={i} className="h-2.5" />;
-        return <div key={i}>{withHighlight(inlineMd(line, `p${i}`), highlight)}</div>;
+        return <div key={i}>{inlineMd(line, `p${i}`, highlight)}</div>;
       })}
     </>
   );
