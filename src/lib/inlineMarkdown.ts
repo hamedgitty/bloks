@@ -12,10 +12,17 @@ export type InlineToken =
   | { kind: "bold"; children: InlineToken[] }
   | { kind: "link"; href: string; children: InlineToken[] };
 
-/** The only link targets a reply can produce. */
+/** The only link targets a reply can produce. mailto is not one: the Mac
+ * shell hands only http(s) to the system browser, so a mail link would be
+ * a link that does nothing when clicked. */
 export function isSafeHref(href: string): boolean {
-  return /^https?:\/\/[^\s/?#]/i.test(href) || /^mailto:[^\s]+$/i.test(href);
+  return /^https?:\/\/[^\s/?#]/i.test(href);
 }
+
+/** Longer than any real label or link target. Caps the work a malformed
+ * line can cost; the scans below are linear anyway. */
+const MAX_LABEL = 1000;
+const MAX_TARGET = 2048;
 
 /** A bare URL, with none of the characters that end one in prose. */
 const BARE = /https?:\/\/[^\s<>"`]+/y;
@@ -27,38 +34,59 @@ const START = /`[^`]+`|\*\*[^*]+\*\*|\[|(?<![\w/@])https?:\/\//g;
 /**
  * Sentence punctuation after a bare URL belongs to the sentence, and a
  * closing bracket belongs to the URL only when the URL opened it, as in
- * Wikipedia's "Mercury_(planet)".
+ * Wikipedia's "Mercury_(planet)". Brackets are counted once, then trimmed
+ * from the end, so a URL followed by a thousand ")" costs one pass.
  */
 function trimBare(url: string): string {
-  for (;;) {
-    const last = url[url.length - 1];
-    if (/[.,;:!?'*_~]/.test(last)) url = url.slice(0, -1);
-    else if (last === ")" && count(url, "(") < count(url, ")")) url = url.slice(0, -1);
-    else if (last === "]" && count(url, "[") < count(url, "]")) url = url.slice(0, -1);
-    else return url;
+  let open = 0;
+  let close = 0;
+  let openSquare = 0;
+  let closeSquare = 0;
+  for (const ch of url) {
+    if (ch === "(") open++;
+    else if (ch === ")") close++;
+    else if (ch === "[") openSquare++;
+    else if (ch === "]") closeSquare++;
   }
+  let end = url.length;
+  while (end > 0) {
+    const last = url[end - 1];
+    if (/[.,;:!?'*_~]/.test(last)) end--;
+    else if (last === ")" && open < close) (end--, close--);
+    else if (last === "]" && openSquare < closeSquare) (end--, closeSquare--);
+    else break;
+  }
+  return url.slice(0, end);
 }
 
-function count(text: string, ch: string): number {
-  return text.split(ch).length - 1;
-}
-
-/** `[label](target)` at `at`, with balanced brackets in the target, or
- * nothing if it is not one or its target is not allowed. */
+/**
+ * `[label](target)` at `at`, with balanced brackets in the target, or
+ * nothing if it is not one or its target is not allowed.
+ *
+ * Neither scan passes a "[": a label cannot hold one, and a target that
+ * holds one is refused. So each scan stops where the next candidate link
+ * starts, and a line of "[x](" repeated costs one pass, not one per "[".
+ */
 function readLink(text: string, at: number): { label: string; href: string; end: number } | null {
-  const close = text.indexOf("]", at + 1);
+  let close = -1;
+  for (let j = at + 1; j < text.length && j <= at + 1 + MAX_LABEL; j++) {
+    if (text[j] === "[") return null;
+    if (text[j] === "]") {
+      close = j;
+      break;
+    }
+  }
   if (close <= at + 1 || text[close + 1] !== "(") return null;
-  const label = text.slice(at + 1, close);
-  if (label.includes("[")) return null;
   let depth = 0;
-  for (let j = close + 2; j < text.length; j++) {
+  const start = close + 2;
+  for (let j = start; j < text.length && j <= start + MAX_TARGET; j++) {
     const ch = text[j];
-    if (/\s/.test(ch)) return null;
+    if (ch === "[" || ch === "]" || /\s/.test(ch)) return null;
     if (ch === "(") depth++;
     else if (ch === ")") {
       if (depth === 0) {
-        const href = text.slice(close + 2, j);
-        return isSafeHref(href) ? { label, href, end: j + 1 } : null;
+        const href = text.slice(start, j);
+        return isSafeHref(href) ? { label: text.slice(at + 1, close), href, end: j + 1 } : null;
       }
       depth--;
     }
@@ -98,8 +126,14 @@ export function parseInline(text: string, links = true): InlineToken[] {
     } else {
       if (!links) continue;
       BARE.lastIndex = at;
-      const url = trimBare(BARE.exec(text)?.[0] ?? "");
-      if (!isSafeHref(url)) continue;
+      const raw = BARE.exec(text)?.[0] ?? "";
+      const url = trimBare(raw);
+      if (!isSafeHref(url)) {
+        // Resume after the whole run, not inside it, or "https://?" repeated
+        // rescans the rest of the line once per copy.
+        re.lastIndex = at + Math.max(raw.length, 1);
+        continue;
+      }
       pushText(text.slice(last, at));
       out.push({ kind: "link", href: url, children: [{ kind: "text", text: url }] });
       last = at + url.length;

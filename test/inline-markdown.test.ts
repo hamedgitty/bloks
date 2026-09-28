@@ -57,9 +57,10 @@ describe("parseInline", () => {
     ]);
   });
 
-  test("mailto is allowed, and only http, https and mailto are", () => {
-    assert.deepEqual(parseInline("[mail me](mailto:a@b.com)"), [link("mailto:a@b.com", "mail me")]);
+  test("only http and https become links; mailto stays text", () => {
     for (const bad of [
+      "[mail me](mailto:a@b.com)",
+      "mailto:a@b.com",
       "[x](javascript:alert(1))",
       "[x](JavaScript:alert(1))",
       "[x](data:text/html,<b>hi</b>)",
@@ -87,15 +88,51 @@ describe("parseInline", () => {
   test("a URL followed by an unclosed bracket in brackets", () => {
     assert.deepEqual(parseInline("[see https://a.com]"), [text("[see "), link("https://a.com"), text("]")]);
   });
+
+  test("a square bracket in a link target, or an overlong target, is not a markdown link", () => {
+    assert.deepEqual(parseInline("[x](https://a.com/[1])"), [text("[x]("), link("https://a.com/[1]"), text(")")]);
+    const long = `https://a.com/${"a".repeat(3000)}`;
+    assert.deepEqual(parseInline(`[x](${long})`), [text("[x]("), link(long), text(")")]);
+  });
+});
+
+// Each of these took from 0.7 s to 12 s on the first version, which scanned
+// to the end of the line once per candidate. Linear parsing does each in a
+// few milliseconds; the budget leaves room for a slow CI machine and still
+// fails a quadratic scan by a wide margin.
+describe("parseInline on hostile input", () => {
+  const url = "https://example.com/a";
+  const cases: [string, string][] = [
+    ["unclosed links", "[x](".repeat(50_000)],
+    ["closing brackets after a URL", url + ")".repeat(200_000)],
+    ["closing square brackets after a URL", url + "]".repeat(200_000)],
+    ["unterminated link targets", "[a](http://x".repeat(20_000)],
+    ["refused bare URLs", "https://?".repeat(30_000)],
+    ["refused bare URLs in brackets", "(https://#".repeat(30_000)],
+    ["refused targets", "[a](https://?".repeat(20_000)],
+    ["open brackets", "[".repeat(200_000)],
+    ["unmatched bold and code", "**a`".repeat(50_000)],
+  ];
+  for (const [name, input] of cases) {
+    test(name, () => {
+      const start = performance.now();
+      const out = parseInline(input);
+      const ms = performance.now() - start;
+      assert.ok(ms < 1000, `${input.length} characters took ${Math.round(ms)} ms`);
+      // nothing lost or invented
+      const flat = (ts: InlineToken[]): string =>
+        ts.map((t) => (t.kind === "text" || t.kind === "code" ? t.text : flat(t.children))).join("");
+      assert.ok(flat(out).length <= input.length);
+    });
+  }
 });
 
 describe("isSafeHref", () => {
-  test("http, https and mailto, any case", () => {
+  test("http and https, any case, and nothing else", () => {
     assert.ok(isSafeHref("https://a.com"));
     assert.ok(isSafeHref("HTTP://a.com"));
-    assert.ok(isSafeHref("mailto:a@b.com"));
+    assert.ok(!isSafeHref("mailto:a@b.com"));
     assert.ok(!isSafeHref("javascript:alert(1)"));
     assert.ok(!isSafeHref(" https://a.com"));
-    assert.ok(!isSafeHref("mailto:"));
   });
 });
