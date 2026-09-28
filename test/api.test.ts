@@ -4283,6 +4283,41 @@ describe("the command line an agent drives", () => {
     await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
   });
 
+  test("the CLI lists only the agents and rooms that are not archived", async () => {
+    const { execFile } = await import("node:child_process");
+    // an unknown bearer from this machine is the person, which is enough
+    // to read the list the command prints
+    const list = (command: string) =>
+      new Promise<any[]>((resolve) => {
+        execFile(
+          process.execPath,
+          [cli, command],
+          { env: { ...process.env, BLOKS_URL: h.url, BLOKS_TOKEN: "blk_pretend" } },
+          (_error, stdout) => resolve(JSON.parse(stdout || "[]")),
+        );
+      });
+    const { bot: live } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Live" }) });
+    const { bot: retired } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Retired" }) });
+    const room = (name: string) =>
+      h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name, memberIds: [live.id, retired.id] }) });
+    const { blok: open } = await room("Open room");
+    const { blok: shelved } = await room("Shelved room");
+    await h.json(`/api/bots/${retired.id}`, { method: "DELETE" });
+    await h.json(`/api/bloks/${shelved.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+
+    const ids = (await list("agents")).map((a) => a.id);
+    assert.ok(ids.includes(live.id), "a working agent is missing");
+    assert.ok(!ids.includes(retired.id), "an archived agent is listed as if it could answer");
+    const roomIds = (await list("rooms")).map((r) => r.id);
+    assert.ok(roomIds.includes(open.id), "an open room is missing");
+    assert.ok(!roomIds.includes(shelved.id), "an archived room is listed as if it were open");
+
+    await h.fetch(`/api/bloks/${open.id}`, { method: "DELETE" });
+    await h.fetch(`/api/bloks/${shelved.id}`, { method: "DELETE" });
+    await h.fetch(`/api/bots/${live.id}?forget=1`, { method: "DELETE" });
+    await h.fetch(`/api/bots/${retired.id}?forget=1`, { method: "DELETE" });
+  });
+
   test("an agent renames the conversation it is in, and only its own", async (t) => {
     // A stand-in for Claude Code that runs the real CLI with the turn's
     // real credential, then tries the same route on another agent.

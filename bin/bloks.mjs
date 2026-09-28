@@ -24,7 +24,9 @@ const COMMANDS = {
     about: "everyone in the workspace, with their roles and skills",
     run: async () => {
       const { bots } = await request("GET", "/api/bots?messages=0");
-      return bots.map((bot) => ({
+      // an archived agent cannot answer, so listing it by name only
+      // invites a message nobody reads; the MCP server leaves it out too
+      return bots.filter((bot) => !bot.hidden && !bot.archivedAt).map((bot) => ({
         id: bot.id,
         name: bot.name,
         title: bot.title,
@@ -38,7 +40,8 @@ const COMMANDS = {
     about: "the rooms that exist, and who is in them",
     run: async () => {
       const { bloks } = await request("GET", "/api/bloks");
-      return (bloks ?? []).map((room) => ({ id: room.id, name: room.name, members: room.memberIds }));
+      // an archived room is out of the sidebar, so it stays out of this list too
+      return (bloks ?? []).filter((room) => !room.archived).map((room) => ({ id: room.id, name: room.name, members: room.memberIds }));
     },
   },
   say: {
