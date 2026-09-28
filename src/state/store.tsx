@@ -316,13 +316,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               unanswered.current.set(action.botId, sent);
               for (const key of Object.keys(patch)) sent.set(key, (sent.get(key) ?? 0) + 1);
               api(`/api/bots/${action.botId}`, { method: "PATCH", body: JSON.stringify(patch) })
-                .catch(showError)
-                .finally(() => {
+                .then((r) => {
+                  // This save is answered: drop its unanswered marks before
+                  // adopting the response, so server-normalized values (a
+                  // trimmed section name, for example) can land. Fields with
+                  // a newer local patch or another in-flight save stay in
+                  // editing() and withoutEdits keeps them out.
                   for (const key of Object.keys(patch)) {
                     const left = (sent.get(key) ?? 1) - 1;
                     if (left > 0) sent.set(key, left);
                     else sent.delete(key);
                   }
+                  if (r?.bot) {
+                    rawDispatch({
+                      type: "botPatched",
+                      bot: withoutEdits(r.bot, editing(action.botId)),
+                    });
+                  }
+                })
+                .catch((e) => {
+                  for (const key of Object.keys(patch)) {
+                    const left = (sent.get(key) ?? 1) - 1;
+                    if (left > 0) sent.set(key, left);
+                    else sent.delete(key);
+                  }
+                  showError(e);
                 });
             }, 400),
           });
