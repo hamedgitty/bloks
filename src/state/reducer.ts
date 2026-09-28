@@ -245,6 +245,14 @@ export interface AgentDefaults {
   effort?: "low" | "medium" | "high";
 }
 
+/** A `config` frame is the whole status plus the stream's own fields.
+ * Picking fields out of it by name drops whatever was added later, and
+ * the card reading a dropped field vanishes until the next reload. */
+export function configFromFrame(frame: Record<string, unknown>): ConfigStatus {
+  const { kind: _kind, _seq, ...status } = frame;
+  return status as unknown as ConfigStatus;
+}
+
 /** One engine, as the model picker sees it. */
 export interface InstanceInfo {
   instanceId: string;

@@ -4385,7 +4385,7 @@ async function telegramRound(): Promise<void> {
       const paired = [...(cfg.telegram?.chatIds ?? []), decision.chatId];
       cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
       saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
-      broadcast({ kind: "config", config: await configStatus() });
+      broadcast({ kind: "config", ...(await configStatus()) });
       await telegram
         .send(state.token, decision.chatId, "Paired. Message me and your agent will answer.")
         .catch(() => {});

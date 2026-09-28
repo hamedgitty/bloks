@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { initialState, reducer, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
+import { configFromFrame, initialState, reducer, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
 
 const bot = (id: string, over: Partial<Bot> = {}): Bot => ({
   id,
@@ -230,4 +230,24 @@ test("a renamed lane shows its new name at once, and only that lane changes", ()
   state = reducer(state, { type: "renameTask", botId: "a", taskId: "l1", title: "Q3 numbers" });
   assert.deepEqual(state.bots[0].tasks!.map((t) => t.title), ["Q3 numbers", "General"]);
   assert.deepEqual(state.bots[1].tasks!.map((t) => t.title), ["see general", "General"], "another agent's lane of the same id");
+});
+
+test("a settings broadcast keeps the new agent defaults, so the card does not vanish", () => {
+  // what PUT /api/config broadcasts after a save, arriving after its own response
+  const frame = {
+    kind: "config",
+    _seq: 7,
+    xai: { configured: false },
+    composio: { configured: false },
+    box: { configured: false },
+    profile: { about: "" },
+    skills: { propose: true },
+    agentDefaults: { effort: "high" },
+  };
+  let state = withState({});
+  state = reducer(state, { type: "configStatus", config: configFromFrame(frame) });
+  assert.deepEqual(state.config?.agentDefaults, { effort: "high" });
+  assert.deepEqual(state.config?.skills, { propose: true });
+  assert.equal("kind" in state.config!, false, "the stream's own fields stay out");
+  assert.equal("_seq" in state.config!, false);
 });

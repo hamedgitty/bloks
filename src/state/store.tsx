@@ -22,6 +22,7 @@ import {
 import { noticeFor } from "@/lib/notify";
 import { maybeAutoSpeak } from "@/components/Voice";
 import {
+  configFromFrame,
   findCard,
   initialState,
   reducer,
@@ -531,10 +532,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // credentials changed and the engines were rebuilt, so the
         // picker needs to hear that something became usable
         case "config":
-          rawDispatch({
-            type: "configStatus",
-            config: { xai: frame.xai, composio: frame.composio, box: frame.box, profile: frame.profile },
-          });
+          rawDispatch({ type: "configStatus", config: configFromFrame(frame) });
           api("/api/instances")
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))
             .catch(() => {});
