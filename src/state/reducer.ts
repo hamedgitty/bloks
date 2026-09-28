@@ -492,6 +492,15 @@ function updateBot(state: AppState, botId: string, fn: (b: Bot) => Bot): AppStat
   return { ...state, bots: state.bots.map((b) => (b.id === botId ? fn(b) : b)) };
 }
 
+/** An agent record from the server, minus the fields the person is still
+ * typing into. The echo of a save reports what was sent, which is older
+ * than what has been typed since, and adopting it would take those
+ * keystrokes back. */
+export function withoutEdits<T extends object>(bot: T, editing: ReadonlySet<string>): T {
+  if (!editing.size) return bot;
+  return Object.fromEntries(Object.entries(bot).filter(([key]) => !editing.has(key))) as T;
+}
+
 /** The card a card action is about, in an agent's chat or in a room. */
 export function findCard(
   state: AppState,

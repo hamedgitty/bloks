@@ -3,6 +3,7 @@
 // A message arrives on one event stream carrying a threadId that could be
 // an agent or a room, and getting that wrong puts a reply in the wrong
 // conversation.
+import { withoutEdits } from "../src/state/reducer.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -219,6 +220,20 @@ test("an archived room stays out of the list after the server echoes it and afte
   // the next app load reads every room, archived ones included
   state = reducer(state, { type: "hydrateBloks", bloks: [{ ...room, archived: true }, other] });
   assert.deepEqual(state.bloks.map((b) => b.id), ["r2"], "a reload brought it back");
+});
+
+test("the echo of a save does not take back what has been typed since", () => {
+  // typed "Chris", paused, the save went out, then " Engineer" was typed
+  let state = withState({ bots: [bot("a", { name: "A" })] });
+  state = reducer(state, { type: "updateBot", botId: "a", patch: { name: "Chris" } });
+  state = reducer(state, { type: "updateBot", botId: "a", patch: { name: "Chris Engineer" } });
+  // the server's broadcast of the first save, arriving now, with a title
+  // changed somewhere else
+  const echo = { id: "a", name: "Chris", title: "Ships code" };
+  state = reducer(state, { type: "botPatched", bot: withoutEdits(echo, new Set(["name"])) });
+  assert.equal(state.bots[0].name, "Chris Engineer");
+  assert.equal(state.bots[0].title, "Ships code", "fields nobody is typing into still arrive");
+  assert.equal(withoutEdits(echo, new Set()), echo, "nothing being edited, nothing copied");
 });
 
 test("a renamed lane shows its new name at once, and only that lane changes", () => {

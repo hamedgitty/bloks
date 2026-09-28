@@ -25,6 +25,7 @@ import {
   findCard,
   initialState,
   reducer,
+  withoutEdits,
   type Action,
   type AppState,
   type Bot,
@@ -57,6 +58,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Text fields save as you type, so edits are coalesced per agent
   // rather than sending a request per keystroke.
   const patchTimers = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; patch: Record<string, unknown> }>());
+  /** Saves sent and not yet answered, per agent and field. Together with
+   * the waiting patches, these are the fields a broadcast must not
+   * overwrite, because the person has typed past what the server has. */
+  const unanswered = useRef(new Map<string, Map<string, number>>());
+  const editing = (botId: string) =>
+    new Set([
+      ...Object.keys(patchTimers.current.get(botId)?.patch ?? {}),
+      ...(unanswered.current.get(botId)?.keys() ?? []),
+    ]);
 
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {
@@ -302,7 +312,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             patch,
             timer: setTimeout(() => {
               timers.delete(action.botId);
-              api(`/api/bots/${action.botId}`, { method: "PATCH", body: JSON.stringify(patch) }).catch(showError);
+              const sent = unanswered.current.get(action.botId) ?? new Map<string, number>();
+              unanswered.current.set(action.botId, sent);
+              for (const key of Object.keys(patch)) sent.set(key, (sent.get(key) ?? 0) + 1);
+              api(`/api/bots/${action.botId}`, { method: "PATCH", body: JSON.stringify(patch) })
+                .catch(showError)
+                .finally(() => {
+                  for (const key of Object.keys(patch)) {
+                    const left = (sent.get(key) ?? 1) - 1;
+                    if (left > 0) sent.set(key, left);
+                    else sent.delete(key);
+                  }
+                });
             }, 400),
           });
           break;
@@ -474,7 +495,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               body: JSON.stringify({ unread: false }),
             }).catch(() => {});
           }
-          rawDispatch({ type: "botPatched", bot });
+          rawDispatch({ type: "botPatched", bot: withoutEdits(bot, editing(bot.id)) });
           break;
         }
         case "runtime": {
