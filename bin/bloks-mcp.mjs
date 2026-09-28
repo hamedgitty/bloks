@@ -146,7 +146,8 @@ const TOOLS = [
     run: async () => {
       const [{ bloks }, all] = await Promise.all([call("GET", "/api/bloks"), agents()]);
       const name = (id) => all.find((b) => b.id === id)?.name ?? "someone";
-      return (bloks ?? []).map((r) => `- ${r.name}: ${(r.memberIds ?? []).map(name).join(", ")}`).join("\n") || "No rooms yet.";
+      // an archived room is out of the sidebar, so it stays out of this list too
+      return (bloks ?? []).filter((r) => !r.archived).map((r) => `- ${r.name}: ${(r.memberIds ?? []).map(name).join(", ")}`).join("\n") || "No rooms yet.";
     },
   },
   {

@@ -86,4 +86,21 @@ describe("bloks-mcp", () => {
     assert.equal((await tool("waiting_on_me")).text, "Nothing is waiting on you.");
     assert.equal((await tool("morning_brief")).text, "No brief yet.");
   });
+
+  test("an archived room is left out of the room list", async () => {
+    const { bots } = await h.json("/api/bots?messages=0");
+    const { bot: second } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Editor" }) });
+    const memberIds = [bots.find((b: any) => b.name === "Writer").id, second.id];
+    const room = (name: string) => h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name, memberIds }) });
+    const { blok: open } = await room("Open room");
+    const { blok: shelved } = await room("Shelved room");
+    await h.json(`/api/bloks/${shelved.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+
+    const { text } = await tool("list_rooms");
+    assert.match(text, /- Open room: /);
+    assert.doesNotMatch(text, /Shelved room/, "an archived room is listed as if it were open");
+
+    await h.fetch(`/api/bloks/${open.id}`, { method: "DELETE" });
+    await h.fetch(`/api/bloks/${shelved.id}`, { method: "DELETE" });
+  });
 });
