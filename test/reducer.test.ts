@@ -237,14 +237,25 @@ test("the echo of a save does not take back what has been typed since", () => {
 });
 
 test("an older save response does not clear a newer unanswered mark", () => {
-  const unanswered = new Map<string, number>([["name", 2]]);
-  // save 1 finishes after save 2 was already sent
-  const stale = settleUnanswered(unanswered, new Map([["name", 1]]));
-  assert.deepEqual([...stale], ["name"]);
-  assert.equal(unanswered.get("name"), 2, "newer mark stays until its own response");
-  // save 2 finishes: mark clears, nothing stale
-  const stale2 = settleUnanswered(unanswered, new Map([["name", 2]]));
-  assert.deepEqual([...stale2], []);
+  // Generations are monotonic per field (allocated outside this helper).
+  const unanswered = new Map<string, number>();
+  const seq = new Map<string, number>();
+  const send = () => {
+    const gen = (seq.get("name") ?? 0) + 1;
+    seq.set("name", gen);
+    unanswered.set("name", gen);
+    return gen;
+  };
+  const a = send(); // 1
+  const b = send(); // 2
+  // B finishes first
+  assert.deepEqual([...settleUnanswered(unanswered, new Map([["name", b]]))], []);
+  assert.equal(unanswered.has("name"), false);
+  const c = send(); // 3, after B settled
+  // A's late response must not match C
+  assert.deepEqual([...settleUnanswered(unanswered, new Map([["name", a]]))], ["name"]);
+  assert.equal(unanswered.get("name"), c, "C's mark survives A's late response");
+  assert.deepEqual([...settleUnanswered(unanswered, new Map([["name", c]]))], []);
   assert.equal(unanswered.has("name"), false);
 });
 

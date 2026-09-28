@@ -63,6 +63,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * the waiting patches, these are the fields a broadcast must not
    * overwrite, because the person has typed past what the server has. */
   const unanswered = useRef(new Map<string, Map<string, number>>());
+  /** Monotonic per-agent, per-field save counter. Kept separate from
+   * unanswered so a settled mark does not let an older save reuse a
+   * generation and clear a newer one. */
+  const saveSeq = useRef(new Map<string, Map<string, number>>());
   const editing = (botId: string) =>
     new Set([
       ...Object.keys(patchTimers.current.get(botId)?.patch ?? {}),
@@ -315,12 +319,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               timers.delete(action.botId);
               const sent = unanswered.current.get(action.botId) ?? new Map<string, number>();
               unanswered.current.set(action.botId, sent);
-              // One generation per field per save, so an older response that
-              // lands after a newer one cannot clear the newer mark or write
-              // its value back over what was typed later.
+              const seq = saveSeq.current.get(action.botId) ?? new Map<string, number>();
+              saveSeq.current.set(action.botId, seq);
+              // One generation per field per save from a counter that is
+              // never cleared, so an older response cannot reuse a settled
+              // generation and wipe a newer mark.
               const saveGens = new Map<string, number>();
               for (const key of Object.keys(patch)) {
-                const gen = (sent.get(key) ?? 0) + 1;
+                const gen = (seq.get(key) ?? 0) + 1;
+                seq.set(key, gen);
                 sent.set(key, gen);
                 saveGens.set(key, gen);
               }
