@@ -335,14 +335,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 .then((r) => {
                   // Drop this save's marks when it is still the latest for
                   // that field, so server-normalized values (a trimmed
-                  // section name, for example) can land. Fields with a newer
-                  // local patch or a newer in-flight save stay withheld.
+                  // section name, for example) can land. Only fields this
+                  // save sent are merged: the PATCH body returns the whole
+                  // bot, and adopting other fields would let an older save
+                  // overwrite a newer edit on a different key.
                   const stale = settleUnanswered(sent, saveGens);
                   if (r?.bot) {
-                    rawDispatch({
-                      type: "botPatched",
-                      bot: withoutEdits(r.bot, new Set([...editing(action.botId), ...stale])),
-                    });
+                    const blocked = new Set([...editing(action.botId), ...stale]);
+                    const bot: Partial<Bot> & { id: string } = { id: r.bot.id };
+                    for (const key of Object.keys(patch)) {
+                      if (!blocked.has(key) && key in r.bot) {
+                        (bot as Record<string, unknown>)[key] = (r.bot as Record<string, unknown>)[key];
+                      }
+                    }
+                    rawDispatch({ type: "botPatched", bot });
                   }
                 })
                 .catch((e) => {
