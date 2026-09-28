@@ -288,6 +288,11 @@ export class JobStore {
     if (!job) return null;
     const last = job.offers[job.offers.length - 1];
     if (last) last.passed = because.slice(0, MAX_RESULT);
+    // taken off the board while they were deciding: it stays off
+    if (job.state === "cancelled") {
+      this.save();
+      return job;
+    }
     job.state = "open";
     job.claimedBy = undefined;
     job.claimedName = undefined;
@@ -341,7 +346,9 @@ export class JobStore {
   releaseAgent(botId: string, _now: number, why = "The agent that took this was deleted.") {
     let touched = false;
     for (const job of this.jobs) {
-      if (job.claimedBy !== botId) continue;
+      // claimedBy outlives the claim, so a job this agent finished, or
+      // one that was cancelled under it, still names it
+      if (job.claimedBy !== botId || job.state !== "claimed") continue;
       job.state = "open";
       job.claimedBy = undefined;
       job.claimedName = undefined;

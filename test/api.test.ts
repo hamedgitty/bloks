@@ -4214,15 +4214,98 @@ describe("the job board", () => {
     await h.fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
   });
 
-  test("a job with nothing to do is refused, and one taken off the board is gone", async () => {
+  /** An engine that holds every answer until the test gives one. */
+  async function heldEngine(t: any) {
+    const { createServer } = await import("node:http");
+    let answer: string | null = null;
+    const waiting: Array<() => void> = [];
+    const fake = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        if (req.url?.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "grok-4" }] }));
+        const reply = () =>
+          res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: answer }, finish_reason: "stop" }] }));
+        if (answer === null) waiting.push(reply);
+        else reply();
+      });
+    });
+    await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+    t.after(() => fake.close());
+    await h.fetch("/api/providers/grok/connect", {
+      method: "POST",
+      body: JSON.stringify({ key: "xai-test-000000000000", url: `http://127.0.0.1:${(fake.address() as any).port}` }),
+    });
+    return (content: string) => {
+      answer = content;
+      for (const reply of waiting.splice(0)) reply();
+    };
+  }
+
+  const onBoard = async (id: string) => (await h.json("/api/jobs")).jobs.find((j: any) => j.id === id);
+
+  test("a job with nothing to do is refused, and one taken off the board is gone", async (t) => {
+    // Posting offers a job at once to whoever ranks first, before the
+    // POST answers, so what DELETE does depends on whether somebody took
+    // it. Both cases are set up here rather than left to whichever agents
+    // earlier tests leave behind, which made this flaky.
+    const answer = await heldEngine(t);
+    const clerk = await agent("Quill", "Filing clerk", ["Filing"]);
+
     const empty = await h.fetch("/api/jobs", { method: "POST", body: JSON.stringify({ title: "  " }) });
     assert.equal(empty.status, 400);
 
+    // somebody is on it: cancelled rather than erased, since their turn is still out there
+    const { job: taken } = await h.json("/api/jobs", { method: "POST", body: JSON.stringify({ title: "Filing" }) });
+    assert.equal(taken.claimedBy, clerk.id);
+    await h.fetch(`/api/jobs/${taken.id}`, { method: "DELETE" });
+    assert.equal((await onBoard(taken.id))?.state, "cancelled");
+
+    // nobody is on it, because the one who fits is busy: it is gone
     const { job } = await h.json("/api/jobs", { method: "POST", body: JSON.stringify({ title: "Filing" }) });
+    assert.equal(job.state, "open");
     await h.fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
-    const { jobs } = await h.json("/api/jobs");
-    assert.equal(jobs.some((j: any) => j.id === job.id), false);
+    assert.equal(await onBoard(job.id), undefined);
     assert.equal((await h.fetch(`/api/jobs/${job.id}`, { method: "DELETE" })).status, 404);
+
+    // the clerk hands the cancelled one back: it stays off the board
+    // rather than going to the next agent
+    answer("PASS not mine");
+    const handedBack = await waitFor(async () => {
+      const j = await onBoard(taken.id);
+      return j?.offers[0]?.passed ? j : null;
+    });
+    assert.ok(handedBack, "the hand-back never landed");
+    assert.equal(handedBack.state, "cancelled");
+    assert.equal(handedBack.offers.length, 1, "nobody else was asked");
+
+    // and the clerk leaving does not put it back either
+    await h.fetch(`/api/bots/${clerk.id}?forget=1`, { method: "DELETE" });
+    assert.equal((await onBoard(taken.id))?.state, "cancelled");
+    await h.fetch(`/api/jobs/${taken.id}`, { method: "DELETE" });
+  });
+
+  test("an agent that goes away leaves the jobs it finished as they were", async (t) => {
+    await engine(t, () => "Catalogued all of it.");
+    const keeper = await agent("Wren", "Herbarium keeper", ["Herbarium cataloguing"]);
+    const { job } = await h.json("/api/jobs", {
+      method: "POST",
+      body: JSON.stringify({ title: "Herbarium cataloguing" }),
+    });
+    assert.equal(job.claimedBy, keeper.id);
+    const done = await waitFor(async () => {
+      const j = await onBoard(job.id);
+      return j?.state === "done" ? j : null;
+    });
+    assert.ok(done, "the job was never done");
+
+    // archiving and deleting both let go of what an agent holds; neither
+    // should reopen what it already finished
+    await h.fetch(`/api/bots/${keeper.id}`, { method: "DELETE" });
+    assert.equal((await onBoard(job.id))?.state, "done", "archiving reopened a finished job");
+    await h.fetch(`/api/bots/${keeper.id}?forget=1`, { method: "DELETE" });
+    assert.equal((await onBoard(job.id))?.state, "done", "deleting reopened a finished job");
+    await h.fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
   });
 
   test("posting to the board is in the record", async () => {
