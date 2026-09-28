@@ -24,12 +24,13 @@ export function isSafeHref(href: string): boolean {
 const MAX_LABEL = 1000;
 const MAX_TARGET = 2048;
 
-/** A bare URL, with none of the characters that end one in prose. */
-const BARE = /https?:\/\/[^\s<>"`]+/y;
+/** A bare URL, with none of the characters that end one in prose. It
+ * also ends before "**", which closes the bold it sits in. */
+const BARE = /https?:\/\/(?:[^\s<>"`*]|\*(?!\*))+/iy;
 
 /** What starts a token. A bare URL must not continue a word, so
  * "foohttps://" and the url inside "[a](https://...)" are not seen here. */
-const START = /`[^`]+`|\*\*[^*]+\*\*|\[|(?<![\w/@])https?:\/\//g;
+const START = /`[^`]+`|\*\*[^*]+\*\*|\[|(?<![\w/@])https?:\/\//gi;
 
 /**
  * Sentence punctuation after a bare URL belongs to the sentence, and a
@@ -102,7 +103,7 @@ export function parseInline(text: string, links = true): InlineToken[] {
     if (prev?.kind === "text") prev.text += s;
     else out.push({ kind: "text", text: s });
   };
-  const re = new RegExp(START.source, "g");
+  const re = new RegExp(START.source, START.flags);
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {

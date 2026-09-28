@@ -89,6 +89,16 @@ describe("parseInline", () => {
     assert.deepEqual(parseInline("[see https://a.com]"), [text("[see "), link("https://a.com"), text("]")]);
   });
 
+  test("the scheme in any case, and a URL ends where bold closes", () => {
+    assert.deepEqual(parseInline("HTTPS://A.COM/x and Http://b.com"), [link("HTTPS://A.COM/x"), text(" and "), link("Http://b.com")]);
+    assert.deepEqual(parseInline("https://a.com/**x** done"), [
+      link("https://a.com/"),
+      { kind: "bold", children: [text("x")] },
+      text(" done"),
+    ]);
+    assert.deepEqual(parseInline("https://a.com/a*b"), [link("https://a.com/a*b")]);
+  });
+
   test("a square bracket in a link target, or an overlong target, is not a markdown link", () => {
     assert.deepEqual(parseInline("[x](https://a.com/[1])"), [text("[x]("), link("https://a.com/[1]"), text(")")]);
     const long = `https://a.com/${"a".repeat(3000)}`;
@@ -112,6 +122,7 @@ describe("parseInline on hostile input", () => {
     ["refused targets", "[a](https://?".repeat(20_000)],
     ["open brackets", "[".repeat(200_000)],
     ["unmatched bold and code", "**a`".repeat(50_000)],
+    ["asterisks after a URL", url + "*".repeat(200_000)],
   ];
   for (const [name, input] of cases) {
     test(name, () => {
