@@ -3,7 +3,7 @@
 // A message arrives on one event stream carrying a threadId that could be
 // an agent or a room, and getting that wrong puts a reply in the wrong
 // conversation.
-import { withoutEdits } from "../src/state/reducer.ts";
+import { settleUnanswered, withoutEdits } from "../src/state/reducer.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -234,6 +234,18 @@ test("the echo of a save does not take back what has been typed since", () => {
   assert.equal(state.bots[0].name, "Chris Engineer");
   assert.equal(state.bots[0].title, "Ships code", "fields nobody is typing into still arrive");
   assert.equal(withoutEdits(echo, new Set()), echo, "nothing being edited, nothing copied");
+});
+
+test("an older save response does not clear a newer unanswered mark", () => {
+  const unanswered = new Map<string, number>([["name", 2]]);
+  // save 1 finishes after save 2 was already sent
+  const stale = settleUnanswered(unanswered, new Map([["name", 1]]));
+  assert.deepEqual([...stale], ["name"]);
+  assert.equal(unanswered.get("name"), 2, "newer mark stays until its own response");
+  // save 2 finishes: mark clears, nothing stale
+  const stale2 = settleUnanswered(unanswered, new Map([["name", 2]]));
+  assert.deepEqual([...stale2], []);
+  assert.equal(unanswered.has("name"), false);
 });
 
 test("a renamed lane shows its new name at once, and only that lane changes", () => {

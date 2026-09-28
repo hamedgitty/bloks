@@ -501,6 +501,22 @@ export function withoutEdits<T extends object>(bot: T, editing: ReadonlySet<stri
   return Object.fromEntries(Object.entries(bot).filter(([key]) => !editing.has(key))) as T;
 }
 
+/** Drop this save's unanswered marks when it is still the latest for that
+ * field, and return the fields whose response is stale (a newer save is
+ * still in flight). The caller withholds those from the merge so an
+ * older HTTP response cannot overwrite newer text. */
+export function settleUnanswered(
+  unanswered: Map<string, number>,
+  saveGens: ReadonlyMap<string, number>,
+): Set<string> {
+  const stale = new Set<string>();
+  for (const [key, gen] of saveGens) {
+    if (unanswered.get(key) === gen) unanswered.delete(key);
+    else stale.add(key);
+  }
+  return stale;
+}
+
 /** The card a card action is about, in an agent's chat or in a room. */
 export function findCard(
   state: AppState,

@@ -25,6 +25,7 @@ import {
   findCard,
   initialState,
   reducer,
+  settleUnanswered,
   withoutEdits,
   type Action,
   type AppState,
@@ -58,7 +59,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Text fields save as you type, so edits are coalesced per agent
   // rather than sending a request per keystroke.
   const patchTimers = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; patch: Record<string, unknown> }>());
-  /** Saves sent and not yet answered, per agent and field. Together with
+  /** Latest unanswered save generation per agent and field. Together with
    * the waiting patches, these are the fields a broadcast must not
    * overwrite, because the person has typed past what the server has. */
   const unanswered = useRef(new Map<string, Map<string, number>>());
@@ -314,32 +315,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               timers.delete(action.botId);
               const sent = unanswered.current.get(action.botId) ?? new Map<string, number>();
               unanswered.current.set(action.botId, sent);
-              for (const key of Object.keys(patch)) sent.set(key, (sent.get(key) ?? 0) + 1);
+              // One generation per field per save, so an older response that
+              // lands after a newer one cannot clear the newer mark or write
+              // its value back over what was typed later.
+              const saveGens = new Map<string, number>();
+              for (const key of Object.keys(patch)) {
+                const gen = (sent.get(key) ?? 0) + 1;
+                sent.set(key, gen);
+                saveGens.set(key, gen);
+              }
               api(`/api/bots/${action.botId}`, { method: "PATCH", body: JSON.stringify(patch) })
                 .then((r) => {
-                  // This save is answered: drop its unanswered marks before
-                  // adopting the response, so server-normalized values (a
-                  // trimmed section name, for example) can land. Fields with
-                  // a newer local patch or another in-flight save stay in
-                  // editing() and withoutEdits keeps them out.
-                  for (const key of Object.keys(patch)) {
-                    const left = (sent.get(key) ?? 1) - 1;
-                    if (left > 0) sent.set(key, left);
-                    else sent.delete(key);
-                  }
+                  // Drop this save's marks when it is still the latest for
+                  // that field, so server-normalized values (a trimmed
+                  // section name, for example) can land. Fields with a newer
+                  // local patch or a newer in-flight save stay withheld.
+                  const stale = settleUnanswered(sent, saveGens);
                   if (r?.bot) {
                     rawDispatch({
                       type: "botPatched",
-                      bot: withoutEdits(r.bot, editing(action.botId)),
+                      bot: withoutEdits(r.bot, new Set([...editing(action.botId), ...stale])),
                     });
                   }
                 })
                 .catch((e) => {
-                  for (const key of Object.keys(patch)) {
-                    const left = (sent.get(key) ?? 1) - 1;
-                    if (left > 0) sent.set(key, left);
-                    else sent.delete(key);
-                  }
+                  settleUnanswered(sent, saveGens);
                   showError(e);
                 });
             }, 400),
