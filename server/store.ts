@@ -350,16 +350,6 @@ export interface NewBotProfile {
 
 const DEFAULT_GREETING = "I'm ready. Tell me what you need and I'll get to work.";
 
-const DEFAULT_SETUP: OptionCardData = {
-  title: "How should we work together?",
-  subtitle: "This shapes how much I check in versus just handle things.",
-  options: [
-    "Check with me before acting",
-    "Act on the small stuff, ask on the big",
-    "Keep me posted, I trust you",
-  ],
-};
-
 export class Store {
   bots: BotRecord[] = [];
   private messages = new Map<string, Message[]>();
@@ -477,8 +467,11 @@ export class Store {
     return this.bots.find((b) => b.tasks.some((t) => t.id === threadId)) ?? null;
   }
 
-  /** Creates an agent, seeded with its role's own greeting and setup
-   * question, a new agent is never anonymous or generically onboarded. */
+  /** Creates an agent, seeded with its role's own greeting and, when the
+   * caller brings one, its setup question. No question is invented for a
+   * caller that sent none: answering one only posts its text, so a stock
+   * "how should we work together" asks about approvals without setting
+   * them, on every agent another agent hires. */
   createBot(profile: NewBotProfile = {}): BotRecord {
     const bot: BotRecord = {
       id: newId(),
@@ -509,11 +502,9 @@ export class Store {
       kind: "text",
       text: profile.greeting?.trim() || DEFAULT_GREETING,
     });
-    this.appendMessage(bot.threadId, {
-      role: "bot",
-      kind: "options",
-      card: profile.setup ?? DEFAULT_SETUP,
-    });
+    if (profile.setup) {
+      this.appendMessage(bot.threadId, { role: "bot", kind: "options", card: profile.setup });
+    }
     return bot;
   }
 

@@ -117,6 +117,26 @@ describe("input limits", () => {
     await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
   });
 
+  test("a new agent opens with a setup question only when one was sent", async () => {
+    const { bot: plain } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Plain" }) });
+    assert.deepEqual(
+      plain.messages.map((m: any) => m.kind),
+      ["text"],
+      "a hire without a setup question starts with its greeting alone",
+    );
+
+    const setup = { title: "Which inbox first?", subtitle: "", options: ["Work", "Personal"] };
+    const { bot: asked } = await h.json("/api/bots", {
+      method: "POST",
+      body: JSON.stringify({ name: "Asked", setup }),
+    });
+    assert.deepEqual(asked.messages.map((m: any) => m.kind), ["text", "options"]);
+    assert.equal(asked.messages[1].card.title, setup.title);
+
+    await h.fetch(`/api/bots/${plain.id}?forget=1`, { method: "DELETE" });
+    await h.fetch(`/api/bots/${asked.id}?forget=1`, { method: "DELETE" });
+  });
+
   test("a room needs at least two real agents", async () => {
     const { bots } = await h.json("/api/bots");
     const tooFew = await h.fetch("/api/bloks", {
@@ -4884,7 +4904,10 @@ describe("taking back an answer that is not a paragraph", () => {
     // A question you took back is not a question. The card used to
     // survive the deletion, so the buttons stayed live on every open
     // client and the thing you took back could still be answered.
-    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Asker" }) });
+    const { bot } = await h.json("/api/bots", {
+      method: "POST",
+      body: JSON.stringify({ name: "Asker", setup: { title: "Which first?", subtitle: "", options: ["This", "That"] } }),
+    });
     const thread = bot.threadId;
 
     const asked = await waitFor(async () => {
