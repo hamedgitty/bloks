@@ -10,14 +10,22 @@
 // out. The same goes for an engine with a newer release: a model that is
 // not in the list is usually a CLI that is out of date, so the list says
 // so, and the corner of it opens the engine settings.
+//
+// A long list (OpenRouter has hundreds) gets a search box, focused on
+// open, matching every word typed against the name or the id. Enter
+// takes the first match; Escape clears the search, then closes.
 import { useEffect, useRef, useState } from "react";
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
+import Search from "lucide-react/dist/esm/icons/search.mjs";
 import { useStore, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { EngineUpdateNote } from "./EngineSetup";
 import { cn } from "@/lib/cn";
+
+/** Lists this long or shorter are read at a glance, not searched. */
+const SEARCH_ABOVE = 8;
 
 function modelLabel(instance: InstanceInfo | undefined, model: string): string {
   return instance?.models.options.find((o) => o.id === model)?.label ?? model;
@@ -62,6 +70,7 @@ export function ModelPicker({
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
   const [railId, setRailId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
 
   const custom = onPick !== undefined;
@@ -77,7 +86,8 @@ export function ModelPicker({
     const onDown = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    // the search box takes the first Escape to clear itself
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && setOpen(false);
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
     return () => {
@@ -85,6 +95,13 @@ export function ModelPicker({
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const options = (railInstance?.models.options ?? []).filter((o) => {
+    const text = `${o.label} ${o.id}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+  const searchable = (railInstance?.models.options.length ?? 0) > SEARCH_ABOVE;
 
   const pick = (instance: InstanceInfo, model: string) => {
     const next = { instanceId: instance.instanceId, model };
@@ -98,6 +115,7 @@ export function ModelPicker({
       <button
         onClick={() => {
           setRailId(selection.instanceId);
+          setQuery("");
           setOpen((o) => !o);
         }}
         className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-[0.98]"
@@ -192,7 +210,33 @@ export function ModelPicker({
                   </div>
                   <EngineUpdateNote kind={railInstance.driverKind} name={railInstance.displayName} className="mt-1.5" />
                 </div>
-                {railInstance.models.options.map((option) => {
+                {searchable && (
+                  <div className="sticky -top-1.5 z-10 -mt-1.5 bg-popover pb-1 pt-1.5">
+                    <div className="flex items-center gap-1.5 rounded-lg bg-accent/70 px-2 py-[5px] transition-colors duration-150 focus-within:bg-accent">
+                      <Search size={13} className="shrink-0 text-muted-foreground" />
+                      <input
+                        autoFocus
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape" && query) {
+                            e.preventDefault();
+                            setQuery("");
+                          } else if (e.key === "Enter" && options[0] && railInstance.snapshot.state === "available") {
+                            pick(railInstance, options[0].id);
+                          }
+                        }}
+                        placeholder="Search models"
+                        aria-label="Search models"
+                        className="w-full bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
+                      />
+                    </div>
+                  </div>
+                )}
+                {options.length === 0 && (
+                  <div className="px-2 py-3 text-[13px] text-muted-foreground">No models match.</div>
+                )}
+                {options.map((option) => {
                   const current =
                     selection.instanceId === railInstance.instanceId &&
                     effectiveModel(railInstance, selection.model) === option.id;
