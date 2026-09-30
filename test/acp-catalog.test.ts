@@ -204,6 +204,45 @@ test("session/load history replay is not folded into the next turn", async () =>
     });
 });
 
+test("pi-acp's startup banner is not taken for the answer", async () => {
+    // pi-acp 0.0.34 builds a startup listing (pi version, skills,
+    // extensions) and returns it in session/new's _meta.piAcp.startupInfo,
+    // then emits the same text as an agent_message_chunk on a setTimeout(0)
+    // after the reply. That lands after we have sent session/prompt, so the
+    // replay gate does not catch it. Here it is emitted on receipt of the
+    // prompt, which is the order seen on the wire with real pi-acp.
+    const banner = "## Extensions\\n- npm:pi-web-access\\n  - index.ts\\n";
+    const fake = [
+        "#!/usr/bin/env node",
+        "const say = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');",
+        "const reply = (id, result) => say({ jsonrpc: '2.0', id, result });",
+        "const chunk = (text) => say({ jsonrpc: '2.0', method: 'session/update', params: {",
+        "  sessionId: 's1',",
+        "  update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },",
+        "} });",
+        `const banner = "${banner}";`,
+        "require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {",
+        "  let msg; try { msg = JSON.parse(line); } catch { return; }",
+        "  if (msg.method === 'initialize') reply(msg.id, { protocolVersion: 1, agentCapabilities: {} });",
+        "  else if (msg.method === 'session/new') reply(msg.id, { sessionId: 's1', _meta: { piAcp: { startupInfo: banner } } });",
+        "  else if (msg.method === 'session/prompt') { chunk(banner); chunk('ANSWER'); reply(msg.id, { stopReason: 'end_turn' }); }",
+        "});",
+    ].join("\n");
+
+    await withPiHome(fake, async () => {
+        const inst = await createPi();
+        const events: { type: string; delta?: string; text?: string; itemType?: string }[] = [];
+        inst.adapter.onEvent((e) => events.push(e as (typeof events)[number]));
+        await inst.adapter.sendTurn({ threadId: "t1", text: "what is the capital of France?" });
+        await waitUntil(() => events.some((e) => e.type === "turn.completed"));
+        const deltas = events.filter((e) => e.type === "content.delta").map((e) => e.delta).join("");
+        const completed = events.find((e) => e.type === "item.completed" && e.itemType === "assistant_text");
+        assert.equal(deltas, "ANSWER", "the startup listing must not stream as the reply");
+        assert.equal(completed?.text, "ANSWER");
+        await inst.dispose();
+    });
+});
+
 test("Pi's snapshot is available when pi-acp is installed off PATH", async () => {
     const home = mkdtempSync(join(tmpdir(), "bloks-pi-snap-"));
     const bin = join(home, ".local", "bin");

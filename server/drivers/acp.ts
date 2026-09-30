@@ -257,7 +257,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           detached: true,
         });
 
-        const state = { settled: false, text: "", live: false };
+        // `banner` is pi-acp's startup listing, which it also sends as an
+        // ordinary agent message (see handleUpdate).
+        const state = { settled: false, text: "", live: false, banner: null as string | null };
         const asks = new Map<string, (behavior: string, message?: string) => void>();
 
         const stop = () => {
@@ -363,11 +365,26 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
         // ── streaming updates ──
         function handleUpdate(params: any) {
+          const update = params?.update ?? {};
+          // pi-acp returns its startup listing (pi version, skills,
+          // extensions) in session/new's _meta.piAcp.startupInfo and then
+          // sends the same text as an agent_message_chunk from a timer
+          // after the reply. It arrives after session/prompt has gone out,
+          // so the gate below does not catch it and it would be taken for
+          // the answer. It comes as one chunk; drop it once, by exact text.
+          if (
+            state.banner &&
+            update.sessionUpdate === "agent_message_chunk" &&
+            update.content?.type === "text" &&
+            update.content.text === state.banner
+          ) {
+            state.banner = null;
+            return;
+          }
           // session/load replays history as the same notifications a live
           // turn uses. Until we have sent session/prompt, none of it is
           // this turn's output.
           if (!state.live) return;
-          const update = params?.update ?? {};
           switch (update.sessionUpdate) {
             case "agent_message_chunk": {
               const text = update.content?.type === "text" ? String(update.content.text ?? "") : "";
@@ -478,6 +495,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             }
             sessionId = session?.sessionId ?? null;
             if (!sessionId) throw new Error(`${spec.name} did not open a session`);
+            const startupInfo = session?._meta?.piAcp?.startupInfo;
+            if (typeof startupInfo === "string" && startupInfo.trim()) state.banner = startupInfo;
 
             // the agent knows its own model list better than we do
             const catalog = catalogFromSession(session);
