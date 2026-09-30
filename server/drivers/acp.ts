@@ -42,6 +42,7 @@ import { onPath, widenPath } from "../path.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
+import { OWN_GROUP } from "../no-console.ts";
 
 export interface AcpSpec {
   kind: string;
@@ -128,7 +129,7 @@ function catalogFromSession(session: any): ModelCatalog | null {
  * so there is no cheaper question. No prompt is sent: nothing is spent,
  * and the child is killed as soon as the answer lands. */
 async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, string | undefined>): Promise<ModelCatalog | null> {
-  const child = spawn(cli, spec.args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(cli, spec.args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   // a chatty CLI can fill stderr and stall if nobody reads it
   child.stderr?.resume();
 
@@ -254,7 +255,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           cwd: turn.cwd ?? homedir(),
           env: childEnv(turn.env),
           stdio: ["pipe", "pipe", "pipe"],
-          detached: true,
+          detached: OWN_GROUP,
+          windowsHide: true,
         });
 
         const state = { settled: false, text: "", live: false };
@@ -530,7 +532,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const version = spec.probePath
           ? (onPath(config.cli) ? basename(config.cli) : null)
           : await new Promise<string | null>((resolve) => {
-              execFile(config.cli, ["--version"], { timeout: 8_000 }, (err, stdout) =>
+              execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (err, stdout) =>
                 resolve(err ? null : stdout.trim().split("\n").pop()!.trim()),
               );
             });

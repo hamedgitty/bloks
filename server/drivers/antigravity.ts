@@ -32,6 +32,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
+import { OWN_GROUP } from "../no-console.ts";
 
 const DRIVER_KIND = "antigravity";
 
@@ -118,7 +119,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     // unreadable leaves the list above in place
     const models: ModelCatalog = { default: MODELS.default, options: [...MODELS.options] };
     const catalogReady = new Promise<void>((resolve) => {
-      execFile(config.cli, ["models"], { timeout: 20_000 }, (error, stdout) => {
+      execFile(config.cli, ["models"], { timeout: 20_000, windowsHide: true }, (error, stdout) => {
         const catalog = error ? null : catalogFromAgyModels(String(stdout));
         if (catalog) {
           models.options = catalog.options;
@@ -166,7 +167,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         // the turn's own credential (see server/agent-cli.ts)
         env: { ...process.env, ...(turn.env ?? {}) },
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
+        detached: OWN_GROUP,
+        windowsHide: true,
       });
 
       let finished = false;
@@ -331,7 +333,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8_000 }, (error, stdout) =>
+        execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) =>
           resolve(error ? null : stdout.trim()),
         );
       });

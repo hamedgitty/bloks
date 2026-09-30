@@ -77,7 +77,7 @@ function sh(binary: string, args: string[], timeoutMs = 15_000): Promise<RunResu
       binary,
       args,
       // screenshots come back through stdout as base64; give them room
-      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
       (error, stdout, stderr) => {
         const code = (error as any)?.code;
         resolve({

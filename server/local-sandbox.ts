@@ -42,7 +42,7 @@ interface RunResult {
 
 function run(binary: string, args: string[], timeoutMs = 60_000): Promise<RunResult> {
   return new Promise((resolve) => {
-    execFile(binary, args, { timeout: timeoutMs, maxBuffer: 4_000_000 }, (error, stdout, stderr) => {
+    execFile(binary, args, { timeout: timeoutMs, maxBuffer: 4_000_000, windowsHide: true }, (error, stdout, stderr) => {
       const code = (error as any)?.code;
       resolve({
         ok: !error,

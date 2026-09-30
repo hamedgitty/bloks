@@ -287,7 +287,7 @@ function sandboxExec(handle: { runtime: string; name: string }, command: string)
     execFile(
       handle.runtime,
       ["exec", handle.name, "sh", "-lc", command.slice(0, 4000)],
-      { timeout: 120_000, maxBuffer: 4_000_000 },
+      { timeout: 120_000, maxBuffer: 4_000_000, windowsHide: true },
       (error, stdout, stderr) => {
         const code = error ? ((error as any).code ?? 1) : 0;
         const tail = stderr ? `\n[stderr]\n${String(stderr).slice(-1500)}` : "";

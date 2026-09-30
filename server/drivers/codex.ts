@@ -34,6 +34,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
+import { OWN_GROUP } from "../no-console.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -88,7 +89,7 @@ async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
   delete env.OPENAI_API_KEY;
   let child;
   try {
-    child = spawn(cli, ["app-server"], { cwd: homedir(), env, stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(cli, ["app-server"], { cwd: homedir(), env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   } catch {
     return null;
   }
@@ -282,7 +283,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
+        detached: OWN_GROUP,
+        windowsHide: true,
       });
 
       const asks = new Map<string, Answer>();
@@ -637,7 +639,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8_000 }, (error, stdout) =>
+        execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) =>
           resolve(error ? null : stdout.trim()),
         );
       });
@@ -648,7 +650,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // login writes, and a key in the environment counts as signed in.
       const authenticated = await new Promise<boolean>((resolve) => {
         if (process.env.OPENAI_API_KEY) return resolve(true);
-        execFile(config.cli, ["login", "status"], { timeout: 8_000 }, (error, stdout, stderr) => {
+        execFile(config.cli, ["login", "status"], { timeout: 8_000, windowsHide: true }, (error, stdout, stderr) => {
           if (!error) return resolve(true);
           const said = `${stdout}\n${stderr}`;
           if (/not logged in|logged out/i.test(said)) return resolve(false);

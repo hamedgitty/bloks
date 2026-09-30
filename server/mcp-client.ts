@@ -75,6 +75,7 @@ function connectStdio(config: McpServerConfig): McpConnection {
   const child = spawn(config.command, config.args ?? [], {
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env,
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 
   let link: RpcLink | null = attachRpc({

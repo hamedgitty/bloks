@@ -50,6 +50,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
+import { OWN_GROUP } from "../no-console.ts";
 
 const DRIVER_KIND = "claudeAgent";
 
@@ -362,7 +363,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         env,
         stdio: ["pipe", "pipe", "pipe"],
         // its own process group, so killing -pid takes the MCP servers too
-        detached: true,
+        detached: OWN_GROUP,
+        windowsHide: true,
       });
 
       let finished = false;
@@ -578,7 +580,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8_000 }, (error, stdout) =>
+        execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) =>
           resolve(error ? null : stdout.trim()),
         );
       });
@@ -597,7 +599,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // the comment above already says cannot see a Keychain login. The file
       // is only a fallback for a CLI old enough not to answer at all.
       const authenticated = await new Promise<boolean>((resolve) => {
-        execFile(config.cli, ["auth", "status"], { timeout: 8_000 }, (error, stdout) => {
+        execFile(config.cli, ["auth", "status"], { timeout: 8_000, windowsHide: true }, (error, stdout) => {
           try {
             const { loggedIn } = JSON.parse(stdout) as { loggedIn?: unknown };
             if (typeof loggedIn === "boolean") return resolve(loggedIn);
@@ -654,7 +656,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           execFile(
             config.cli,
             ["-p", prompt, "--model", ONE_SHOT_MODEL, "--output-format", "text"],
-            { timeout: 60_000, env: { ...process.env } },
+            { timeout: 60_000, env: { ...process.env }, windowsHide: true },
             (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
           );
         }),
