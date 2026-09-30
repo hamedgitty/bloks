@@ -177,12 +177,29 @@ async function startServerOn(port) {
       BLOKS_PORT: String(port),
     },
     // stderr is read as well as passed on, so a server that dies while
-    // starting can say why on the page instead of "ports"
-    stdio: ["ignore", "inherit", "pipe"],
+    // starting can say why on the page instead of "ports".
+    //
+    // stdout is piped too, never "inherit" next to a "pipe": on Windows,
+    // Electron fills an inherited slot with GetStdHandle(), which is NULL
+    // for an app opened from a shortcut (no console), and Chromium's
+    // LaunchProcess then dies on PCHECK(SetHandleInformation(NULL, ...))
+    // before the window exists. Two pipes are always valid handles.
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  // Pass the server's output on when there is somewhere to pass it; a
+  // Windows app opened from a shortcut has no console, and a write that
+  // fails there must not take the main process with it.
+  const passOn = (target, chunk) => {
+    try {
+      target.write(chunk);
+    } catch {
+      /* no console to write to */
+    }
+  };
+  child.stdout?.on("data", (chunk) => passOn(process.stdout, chunk));
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
-    process.stderr.write(chunk);
+    passOn(process.stderr, chunk);
     stderr = (stderr + chunk.toString()).slice(-4000);
   });
 
