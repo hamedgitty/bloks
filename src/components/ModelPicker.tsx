@@ -202,16 +202,19 @@ export function ModelPicker({
                       key={option.id}
                       disabled={disabled}
                       onClick={() => pick(railInstance, option.id)}
+                      title={option.label === option.id ? option.id : `${option.label}\n${option.id}`}
                       className={cn(
-                        "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors duration-150",
+                        "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] leading-snug transition-colors duration-150",
                         disabled
                           ? "cursor-not-allowed text-muted-foreground/50"
                           : "text-foreground hover:bg-accent",
                         current && "bg-accent",
                       )}
                     >
+                      {/* long names (OpenRouter's run to fifty characters) get two
+                          lines before they are cut, and the tooltip has the rest */}
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate">{option.label}</span>
+                        <span className="line-clamp-2 [overflow-wrap:anywhere]">{option.label}</span>
                         {option.id === railInstance.models.default && (
                           <span className="shrink-0 rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
                             default
