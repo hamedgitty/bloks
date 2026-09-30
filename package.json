@@ -37,7 +37,7 @@
     "test": "node --test \"test/*.test.ts\"",
     "test:watch": "node --test --watch \"test/*.test.ts\"",
     "preview": "vite preview",
-    "build:server": "tsc -p tsconfig.server.build.json",
+    "build:server": "tsc -p tsconfig.server.build.json && node scripts/mark-server-esm.mjs",
     "build:helpers": "bash scripts/build-helpers.sh",
     "build:icon": "node scripts/render-icon.mjs",
     "package:prep": "pnpm build && pnpm build:server && pnpm build:helpers && node scripts/stage-cua.mjs",

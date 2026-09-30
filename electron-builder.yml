@@ -25,6 +25,9 @@ asar: true
 extraResources:
   - from: dist
     to: ui
+  # dist-server carries its own package.json ({"type": "module"}, written
+  # by `pnpm build:server`), so how Node reads the server never depends on
+  # a package.json that happens to sit above the install folder.
   - from: dist-server
     to: server
   # The agent's own command line. It is resolved at runtime relative to
