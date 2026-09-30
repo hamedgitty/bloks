@@ -263,6 +263,7 @@ import {
 } from "./watchers.ts";
 import { MemoryJournal } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
+import { RoomTagQueues } from "./room-tags.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -3424,62 +3425,47 @@ async function dispatchRound(
   }
 }
 
-/**
- * Room lines addressed to an agent while it was mid-turn, by agent and
- * then room. Skipping a busy agent used to drop the line: it was in the
- * transcript, nobody woke for it, and the room read as the agent choosing
- * not to answer. Kept in memory like a busy lane's queued messages, and
- * delivered when the agent is free, as one turn per room.
- */
-const roomTagQueues = new Map<string, Map<string, { texts: string[]; hops?: number; requester?: string }>>();
+/** Room lines for agents that were mid-turn (server/room-tags.ts). */
+const roomTags = new RoomTagQueues();
 
 function queueRoomTag(botId: string, roomId: string, text: string, requester?: string) {
-  const rooms = roomTagQueues.get(botId) ?? new Map();
-  const entry = rooms.get(roomId) ?? { texts: [], requester };
-  if (!entry.texts.includes(text)) entry.texts.push(text);
   // where the chain stood when this agent was named, so a delivery later
   // counts against the same hop limit
-  entry.hops = Math.max(entry.hops ?? 0, agentHops.get(botId) ?? 0);
-  rooms.set(roomId, entry);
-  roomTagQueues.set(botId, rooms);
+  roomTags.add(botId, roomId, text, requester, agentHops.get(botId) ?? 0);
 }
 
 /** Deliver an agent's waiting room lines once it is free. Called whenever
  * one of its turns settles. */
 function drainRoomTags(botId: string) {
-  const rooms = roomTagQueues.get(botId);
-  if (!rooms) return;
+  const waiting = roomTags.of(botId);
+  if (!waiting.length) return;
   const bot = store.bot(botId);
-  if (!bot) {
-    roomTagQueues.delete(botId);
-    return;
-  }
   // a message queued in one of its own lanes was there first, and its
   // turn is about to start; the room waits for the settle after it
-  if ([...steerQueues.values()].some((q) => q.botId === botId)) return;
-  for (const [roomId, entry] of rooms) {
+  if (bot && [...steerQueues.values()].some((q) => q.botId === botId)) return;
+  for (const entry of waiting) {
+    const { roomId } = entry;
     const blok = bloks.get(roomId);
-    if (!blok || !blok.memberIds.includes(botId)) {
-      rooms.delete(roomId);
+    if (!bot || !blok || !blok.memberIds.includes(botId)) {
+      roomTags.take(botId, entry);
       continue;
     }
     if (blok.sharing ? laneBusy(bot, roomId) : bot.busy) continue;
     // claimed before any async work, so two racing settles fire it once
-    rooms.delete(roomId);
+    roomTags.take(botId, entry);
     const previous = roomPosting.get(roomId);
     const run = (previous ?? Promise.resolve())
       .catch(() => {})
       .then(() => {
         if (entry.hops) agentHops.set(botId, entry.hops);
         else agentHops.delete(botId);
-        return dispatchRound(roomId, [[botId, entry.texts.join("\n")]], entry.hops ?? 0, entry.requester);
+        return dispatchRound(roomId, [[botId, entry.texts.join("\n")]], entry.hops, entry.requester);
       });
     roomPosting.set(roomId, run);
     void run.finally(() => {
       if (roomPosting.get(roomId) === run) roomPosting.delete(roomId);
     }).catch(() => {});
   }
-  if (!rooms.size) roomTagQueues.delete(botId);
 }
 
 /**

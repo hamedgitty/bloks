@@ -1,8 +1,37 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
+import { RoomTagQueues } from "../server/room-tags.ts";
 import { waitFor } from "./helpers/chat-interactions.ts";
 import { startHarness } from "./helpers/server.ts";
+
+test("lines from different people for one busy agent wait as separate turns", () => {
+  const q = new RoomTagQueues();
+  q.add("bot_a", "room_1", "@A deploy it", "owner", 0);
+  q.add("bot_a", "room_1", "@A delete the backups", "p_sam", 0);
+  const waiting = q.of("bot_a");
+  assert.equal(waiting.length, 2, "an owner line and a member line never join");
+  // who asked decides whose approvals and whose spend the turn runs under
+  assert.deepEqual(
+    waiting.map((w) => [w.requester, w.texts]),
+    [["owner", ["@A deploy it"]], ["p_sam", ["@A delete the backups"]]],
+  );
+});
+
+test("lines from one person in one room join, and no requester means the owner", () => {
+  const q = new RoomTagQueues();
+  q.add("bot_a", "room_1", "@A first", undefined, 1);
+  q.add("bot_a", "room_1", "@A second", "owner", 2);
+  q.add("bot_a", "room_1", "@A second", "owner", 0);
+  q.add("bot_a", "room_2", "@A elsewhere", "owner", 0);
+  const [here, there] = q.of("bot_a");
+  assert.deepEqual(here, { roomId: "room_1", requester: "owner", texts: ["@A first", "@A second"], hops: 2 });
+  assert.equal(there.roomId, "room_2", "each room is its own turn");
+  q.take("bot_a", here);
+  assert.deepEqual(q.of("bot_a").map((w) => w.roomId), ["room_2"]);
+  q.take("bot_a", there);
+  assert.deepEqual(q.of("bot_a"), []);
+});
 
 /**
  * Two agents on a stand-in provider, each on its own model name so a call
