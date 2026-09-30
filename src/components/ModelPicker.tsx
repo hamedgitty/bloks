@@ -63,6 +63,7 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [railId, setRailId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const custom = onPick !== undefined;
   const selection: ModelSelection = (custom ? value : bot?.modelSelection) ?? { instanceId: "", model: "" };
@@ -85,6 +86,18 @@ export function ModelPicker({
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // A long catalog (Pi with several providers, OpenRouter) scrolls inside
+  // the list; opening it or switching engines starts at the chosen model,
+  // or at the top when this engine holds none of them.
+  const railKey = railInstance?.instanceId;
+  useEffect(() => {
+    const list = listRef.current;
+    if (!open || !list) return;
+    const current = list.querySelector<HTMLElement>('[aria-current="true"]');
+    if (current) current.scrollIntoView({ block: "nearest" });
+    else list.scrollTop = 0;
+  }, [open, railKey]);
 
   const pick = (instance: InstanceInfo, model: string) => {
     const next = { instanceId: instance.instanceId, model };
@@ -123,11 +136,13 @@ export function ModelPicker({
       {open && (
         <div
           data-model-picker-content
-          className="absolute right-0 top-full z-30 mt-1.5 flex w-[300px] max-w-[92vw] origin-top-right animate-pop-in flex-col overflow-hidden rounded-xl border bg-popover shadow-lg shadow-(color:--shadow-color)"
+          // capped to the window, so a long list scrolls instead of running
+          // off the bottom where nothing can reach it
+          className="absolute right-0 top-full z-30 mt-1.5 flex max-h-[min(34rem,calc(100dvh-4.5rem))] w-[300px] max-w-[92vw] origin-top-right animate-pop-in flex-col overflow-hidden rounded-xl border bg-popover shadow-lg shadow-(color:--shadow-color)"
         >
-          <div className="flex min-h-0">
+          <div className="flex min-h-0 flex-1">
           {/* instance rail */}
-          <div className="flex flex-col gap-0.5 border-r bg-muted/40 p-1.5">
+          <div className="flex shrink-0 flex-col gap-0.5 overflow-y-auto overscroll-contain border-r bg-muted/40 p-1.5">
             {[...instances].sort(byUsable).map((instance) => {
               const unavailable = instance.snapshot.state !== "available";
               const onRail = instance.instanceId === railInstance?.instanceId;
@@ -158,7 +173,7 @@ export function ModelPicker({
           </div>
 
           {/* model list for the rail-selected instance */}
-          <div className="min-w-0 flex-1 p-1.5">
+          <div ref={listRef} className="min-w-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
             {custom && active && (
               <button
                 onClick={() => {
@@ -201,6 +216,7 @@ export function ModelPicker({
                     <button
                       key={option.id}
                       disabled={disabled}
+                      aria-current={current ? "true" : undefined}
                       onClick={() => pick(railInstance, option.id)}
                       className={cn(
                         "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors duration-150",
@@ -233,7 +249,7 @@ export function ModelPicker({
           {/* the way to everything this list cannot do: connect an engine,
               sign in, update, add a key */}
           {!custom && (
-            <div className="flex justify-end border-t px-1.5 py-1">
+            <div className="flex shrink-0 justify-end border-t px-1.5 py-1">
               <button
                 onClick={() => {
                   setOpen(false);
