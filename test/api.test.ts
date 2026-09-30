@@ -1316,6 +1316,67 @@ process.stdin.on("end", () => {
     assert.match(notices[0].text, /not signed in.*run claude/i);
   });
 
+  test("a Codex turn the provider refuses says why in the chat", async (t) => {
+    const home = mkdtempSync(join(tmpdir(), "bloks-codex-fail-"));
+    const cli = join(home, "fake-codex.mjs");
+    // A stand-in for \`codex app-server\` that fails every turn the way the
+    // real one does when the provider keeps answering 429: an \`error\`
+    // notification, then a failed \`turn/completed\`. A message saying
+    // "quietly" gets only the failed turn, the way an engine that gives
+    // no error of its own ends one.
+    writeFileSync(
+      cli,
+      `#!${process.execPath}
+import { createInterface } from "node:readline";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("codex-cli 9.9.9"); process.exit(0); }
+if (args[0] === "login") { console.log("Logged in using an API key"); process.exit(0); }
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+const failure = { message: "exceeded retry limit, last status: 429 Too Many Requests", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } } };
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (m.method === "model/list") return send({ id: m.id, result: { data: [{ id: "gpt-test", model: "gpt-test", displayName: "gpt-test", isDefault: true, hidden: false }] } });
+  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: "codex-thread" }, model: "gpt-test" } });
+  if (m.method === "turn/start") {
+    send({ id: m.id, result: { turn: { id: "codex-turn", status: "inProgress" } } });
+    const quietly = JSON.stringify(m.params.input).includes("quietly");
+    if (!quietly) send({ method: "error", params: { error: failure, willRetry: false, threadId: "codex-thread", turnId: "codex-turn" } });
+    return send({ method: "turn/completed", params: { threadId: "codex-thread", turn: { id: "codex-turn", status: "failed", error: failure } } });
+  }
+  if (m.id !== undefined && m.method) send({ id: m.id, result: {} });
+});
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(home, ".bloks"), { recursive: true });
+    writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances: { codex: { driver: "codex", config: { cli } } } }));
+    const h2 = await startHarness({ HOME: home });
+    t.after(async () => {
+      await h2.stop();
+      rmSync(home, { recursive: true, force: true });
+    });
+    const { bot } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Refused" }) });
+    await h2.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-test" } }) });
+    const notices = async (count: number) =>
+      waitFor(async () => {
+        const found = (await h2.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
+        const shown = found.messages.filter((m: any) => m.kind === "notice");
+        return !found.busy && shown.length >= count ? shown : null;
+      });
+
+    await h2.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "hello" }) });
+    const first = await notices(1);
+    assert.ok(first, "the failed turn ended in silence");
+    assert.equal(first.length, 1, "one notice, not one per layer");
+    assert.match(first[0].text, /429 Too Many Requests/);
+
+    await h2.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "try again, quietly" }) });
+    const second = await notices(2);
+    assert.ok(second, "a failed turn with only a stop reason ended in silence");
+    assert.equal(second.length, 2);
+    assert.match(second[1].text, /429 Too Many Requests/);
+  });
+
   test("full access takes Claude Code's own prompts off, and every other mode keeps them", async (t) => {
     const home = mkdtempSync(join(tmpdir(), "bloks-full-"));
     const seen = join(home, "argv.json");

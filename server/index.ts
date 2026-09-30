@@ -916,21 +916,31 @@ for (const inst of registry.instances()) {
  * the turn belongs to the room's order of speakers, and the rest simply
  * applies from the next turn on.
  */
-function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boolean, stopReason: string | null) {
+function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boolean, stopReason: string | null): boolean {
   const used = laneEngine.get(laneId);
   const errors = turnErrors.get(laneId) ?? [];
   const held = heldErrors.get(laneId);
   laneEngine.delete(laneId);
   turnErrors.delete(laneId);
   heldErrors.delete(laneId);
-  if (ok || !used || stopReason === "interrupted") return;
-  if (handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return;
+  if (ok || !used || stopReason === "interrupted") return false;
+  if (handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
   // an error kept back for a backup that then did not take over is shown
   // after all, exactly as it would have been
   if (held) {
     const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text: held });
     broadcast({ kind: "message", threadId: laneId, message: shown });
   }
+  return false;
+}
+
+/** What a failed turn that gave no reason of its own says. A reason
+ * that reads as a sentence is shown as it is; a bare status word is
+ * put in one. */
+function failedTurnNotice(stopReason: string | null | undefined): string {
+  const reason = (stopReason ?? "").trim();
+  if (/\s/.test(reason)) return reason.slice(0, 600);
+  return reason ? `The turn did not finish (${reason.slice(0, 80)}).` : "The turn did not finish.";
 }
 
 /** Rests an engine that ran out, and hands the turn to the backup when
@@ -1702,7 +1712,15 @@ bus.subscribe((event: RuntimeEvent) => {
         broadcast({ kind: "message.patch", threadId: roomId, message: settled });
         for (const [item, id] of toolMessageByItem) if (id === settled.id) toolMessageByItem.delete(item);
       }
-      fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
+      // An engine that fails a turn normally says why with a runtime.error,
+      // shown above as a notice. Some only put the reason on the turn's
+      // end (a Codex turn the provider refused, Antigravity's status), and
+      // a turn that ends in silence reads as the agent not answering.
+      const saidWhy = (turnErrors.get(event.threadId)?.length ?? 0) > 0;
+      const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
+      if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted") {
+        pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
+      }
       replyByMail(event.threadId, event.ok !== false);
       collectMeetingItems(event.threadId, event.ok !== false);
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);

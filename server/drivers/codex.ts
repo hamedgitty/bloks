@@ -510,11 +510,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             break;
           }
 
-          case "error":
-            if (params.message) {
-              emit({ ...envelope(threadId, turnId), type: "runtime.error", message: params.message });
+          case "error": {
+            // The app-server nests the text (`error.message`); older ones
+            // had it at the top. One it is about to retry is not the end
+            // of the turn, so only the last one is said.
+            const message = params.error?.message ?? params.message;
+            if (typeof message === "string" && message.trim() && params.willRetry !== true) {
+              emit({ ...envelope(threadId, turnId), type: "runtime.error", message });
             }
             break;
+          }
         }
       }
 
