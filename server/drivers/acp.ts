@@ -114,7 +114,38 @@ function toolTitle(update: any): string {
   return typeof update?.kind === "string" ? update.kind : "tool";
 }
 
+/** The session's model choice as an ACP config option, if the agent
+ * describes it that way. Agents that do (pi-acp among them) may not
+ * implement the older session/set_model at all. */
+function modelOption(session: any): any | null {
+  const options: any[] = Array.isArray(session?.configOptions) ? session.configOptions : [];
+  return (
+    options.find((o) => o?.type === "select" && (o.category === "model" || o.id === "model")) ?? null
+  );
+}
+
+/** A select option's values, flattening the grouped form the spec allows. */
+function selectValues(option: any): { value: string; name: string }[] {
+  const out: { value: string; name: string }[] = [];
+  for (const entry of Array.isArray(option?.options) ? option.options : []) {
+    const inner = Array.isArray(entry?.options) ? entry.options : [entry];
+    for (const o of inner) {
+      if (o?.value === undefined || o?.value === null) continue;
+      out.push({ value: String(o.value), name: String(o.name || o.value) });
+    }
+  }
+  return out;
+}
+
 function catalogFromSession(session: any): ModelCatalog | null {
+  const option = modelOption(session);
+  const values = selectValues(option);
+  if (values.length) {
+    return {
+      default: String(option.currentValue ?? values[0].value),
+      options: values.map((v) => ({ id: v.value, label: v.name })),
+    };
+  }
   const available: any[] = session?.models?.availableModels ?? [];
   if (!available.length) return null;
   return {
@@ -485,11 +516,42 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               models.options = catalog.options;
               models.default = catalog.default;
             }
-            if (turn.model && catalog?.options.some((m) => m.id === turn.model)) {
-              await rpc.request("session/set_model", { sessionId, modelId: turn.model }).catch(() => {});
+            // A model the agent will not switch to must not quietly become
+            // a turn on whatever model it already had: say so and stop
+            // before anything is sent or spent.
+            if (turn.model && turn.model !== catalog?.default && catalog?.options.some((m) => m.id === turn.model)) {
+              const option = modelOption(session);
+              try {
+                if (option) {
+                  await rpc.request("session/set_config_option", {
+                    sessionId,
+                    configId: String(option.id),
+                    value: turn.model,
+                  });
+                } else {
+                  await rpc.request("session/set_model", { sessionId, modelId: turn.model });
+                }
+              } catch (e) {
+                throw new Error(
+                  `${spec.name} could not switch to ${turn.model} (${(e as Error).message}), so the message was not sent. Pick another model, or try again.`,
+                );
+              }
             }
-            if (config.fullAuto || (turn.fullAccess && !turn.shared)) {
-              await rpc.request("session/set_mode", { sessionId, modeId: "yolo" }).catch(() => {});
+            // "yolo" is gemini-cli's mode for acting without asking. Other
+            // agents use modes for something else entirely (pi-acp's are
+            // thinking levels), so only ask for it where it exists.
+            const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
+            if ((config.fullAuto || (turn.fullAccess && !turn.shared)) && modes.some((m) => m?.id === "yolo")) {
+              try {
+                await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
+              } catch (e) {
+                // failing safe: the turn still runs, with approvals as they were
+                emit({
+                  ...base(threadId, turnId),
+                  type: "runtime.error",
+                  message: `${spec.name} did not accept full access (${(e as Error).message}), so it may ask before acting.`,
+                });
+              }
             }
 
             emit({
