@@ -34,7 +34,7 @@ import { previewLine } from "@/lib/preview";
 import { inSection, sectionNames, shownInSection } from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
 import { useBriefs } from "./BriefPanel";
-import { ConversationRows, LaneRing, SidebarFooter, WaitingRow } from "./SidebarParts";
+import { ConversationRows, SidebarFooter, WaitingRow } from "./SidebarParts";
 import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
 import ListTree from "lucide-react/dist/esm/icons/list-tree.mjs";
 import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
@@ -301,9 +301,7 @@ function BotListItem({
   }
   if (compact) {
     const lanes = bot.tasks ?? [];
-    const many = lanes.length > 1;
     const newest = Math.max(...lanes.map((t) => t.lastAt ?? t.createdAt), last?.at ?? 0);
-    const single = lanes[0];
     return (
       <div className="group/agent relative">
         <button
@@ -314,9 +312,9 @@ function BotListItem({
           }}
           className={cn(
             "flex h-[38px] w-full items-center gap-2.5 rounded-xl px-2.5 text-left transition-[background-color,scale] duration-150 ease-out active:scale-[0.99]",
-            // an agent with several conversations is a heading for them; the
+            // the agent is a heading for its conversations; the
             // conversation rows carry the selection
-            selected && !many ? "bg-accent" : "hover:bg-accent/60",
+            "hover:bg-accent/60",
           )}
         >
           <AgentAvatar bot={bot} size={24} />
@@ -327,10 +325,7 @@ function BotListItem({
           {/* the trailing state steps aside for the + on hover, all of it,
               so the two never sit on top of each other */}
           <span className="flex shrink-0 items-center gap-1.5 transition-opacity duration-150 group-hover/agent:opacity-0">
-            {!many && single && <LaneRing lane={single} />}
-            {!many && single?.state === "needs-you" ? (
-              <span className="text-[11px] text-warning">waiting</span>
-            ) : bot.busy || (!many && single?.state === "working") ? (
+            {bot.busy ? (
               <Loader2
                 size={12}
                 className="animate-spin text-brand motion-reduce:animate-none"
@@ -341,7 +336,6 @@ function BotListItem({
                 <span className="text-[11px] tabular-nums text-muted-foreground/80">{formatWhen(newest)}</span>
               )
             )}
-            {!many && bot.unread && <span className="size-1.5 rounded-full bg-brand" />}
           </span>
         </button>
         {/* a new conversation, from the agent it is with */}

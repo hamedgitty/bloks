@@ -189,16 +189,19 @@ function LaneRename({ title, onDone }: { title: string; onDone: (next: string | 
   );
 }
 
-/** An agent's conversations, under its row. Only agents with more than
- * one get them: a single conversation is the agent. Titles line up with
- * the agent's name above, and the state mark sits in the gutter left of
- * them, under the avatar. */
+/** An agent's conversations, under its row. Every conversation gets one,
+ * including the first: an agent that stands in for its only conversation
+ * has nowhere to put that conversation's own state, and the row it was
+ * standing in for appears beside a new one the moment a second is
+ * started, which reads as the same conversation twice. Titles line up
+ * with the agent's name above, and the state mark sits in the gutter
+ * left of them, under the avatar. */
 export function ConversationRows({ bot, open }: { bot: Bot; open: boolean }) {
   const { state, dispatch } = useStore();
   const [menu, setMenu] = useState<LaneMenuState | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const lanes = bot.tasks ?? [];
-  const showing = open && lanes.length > 1;
+  const showing = open && lanes.length > 0;
   const activeId = state.selectedId === bot.id ? (bot.activeTaskId ?? bot.threadId) : null;
   return (
     <>
