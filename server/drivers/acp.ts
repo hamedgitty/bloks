@@ -38,7 +38,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { attachRpc } from "../harness/jsonrpc-stdio.ts";
-import { onPath, widenPath } from "../path.ts";
+import { killTree, launchSpec, onPath, widenPath } from "../path.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
@@ -128,7 +128,14 @@ function catalogFromSession(session: any): ModelCatalog | null {
  * so there is no cheaper question. No prompt is sent: nothing is spent,
  * and the child is killed as soon as the answer lands. */
 async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, string | undefined>): Promise<ModelCatalog | null> {
-  const child = spawn(cli, spec.args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
+  const launch = launchSpec(cli, spec.args);
+  const child = spawn(launch.command, launch.args, {
+    cwd: tmpdir(),
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    windowsVerbatimArguments: launch.windowsVerbatimArguments,
+  });
   // a chatty CLI can fill stderr and stall if nobody reads it
   child.stderr?.resume();
 
@@ -153,7 +160,7 @@ async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, stri
   } finally {
     clearTimeout(timer);
     try {
-      child.kill("SIGTERM");
+      killTree(child.pid, () => child.kill("SIGTERM"));
     } catch {
       /* already gone */
     }
@@ -250,17 +257,31 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           }) ?? []),
         ];
         widenPath();
-        const child = spawn(config.cli, argv, {
+        // an npm-installed agent is a .cmd on Windows; see launchSpec
+        let launch: ReturnType<typeof launchSpec>;
+        try {
+          launch = launchSpec(config.cli, argv);
+        } catch (e) {
+          throw new Error(`${spec.name} could not start: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        const child = spawn(launch.command, launch.args, {
           cwd: turn.cwd ?? homedir(),
           env: childEnv(turn.env),
           stdio: ["pipe", "pipe", "pipe"],
-          detached: true,
+          // process groups are POSIX; on Windows the kill takes the tree
+          detached: process.platform !== "win32",
+          windowsHide: true,
+          windowsVerbatimArguments: launch.windowsVerbatimArguments,
         });
 
         const state = { settled: false, text: "", live: false };
         const asks = new Map<string, (behavior: string, message?: string) => void>();
 
         const stop = () => {
+          if (process.platform === "win32") {
+            killTree(child.pid, () => child.kill("SIGTERM"));
+            return;
+          }
           try {
             process.kill(-child.pid!, "SIGTERM");
           } catch {
@@ -530,8 +551,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const version = spec.probePath
           ? (onPath(config.cli) ? basename(config.cli) : null)
           : await new Promise<string | null>((resolve) => {
-              execFile(config.cli, ["--version"], { timeout: 8_000 }, (err, stdout) =>
-                resolve(err ? null : stdout.trim().split("\n").pop()!.trim()),
+              const launch = launchSpec(config.cli, ["--version"]);
+              execFile(
+                launch.command,
+                launch.args,
+                { timeout: 8_000, windowsHide: true, windowsVerbatimArguments: launch.windowsVerbatimArguments },
+                (err, stdout) => resolve(err ? null : stdout.trim().split("\n").pop()!.trim()),
               );
             });
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
