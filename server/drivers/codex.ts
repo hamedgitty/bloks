@@ -572,13 +572,20 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           };
 
           if (cursor) {
+            // The picked model is stated on resume too. Without it a thread
+            // keeps the model and the provider it started with, so a model
+            // picked later never reached Codex. With it, Codex serves the
+            // model from its configured provider, as it does a new thread.
+            const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard };
+            if (turn.model) resumeParams.model = turn.model;
             try {
               const resumed = await within(
-                rpc.request("thread/resume", { threadId: cursor, ...guard }),
+                rpc.request("thread/resume", resumeParams),
                 "reopening the conversation",
                 "Codex",
               );
               codexThread = resumed?.thread?.id ?? cursor;
+              reportedModel = resumed?.model ?? null;
             } catch {
               /* forgotten or unsupported; a fresh thread below */
             }
