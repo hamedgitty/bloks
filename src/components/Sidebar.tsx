@@ -8,6 +8,7 @@ import PanelLeftOpen from "lucide-react/dist/esm/icons/panel-left-open.mjs";
 import Pin from "lucide-react/dist/esm/icons/pin.mjs";
 import PinOff from "lucide-react/dist/esm/icons/pin-off.mjs";
 import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Archive from "lucide-react/dist/esm/icons/archive.mjs";
 import Puzzle from "lucide-react/dist/esm/icons/puzzle.mjs";
@@ -35,7 +36,7 @@ import { inSection, sectionNames, shownInSection } from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
 import { useBriefs } from "./BriefPanel";
 import { ConversationRows, LaneRing, SidebarFooter, WaitingRow } from "./SidebarParts";
-import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
+import { setLanesInSidebar, useConversationsView, useLanesInSidebar } from "@/lib/conversationsView";
 import ListTree from "lucide-react/dist/esm/icons/list-tree.mjs";
 import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
 import {
@@ -168,6 +169,7 @@ function BotContextMenu({
 }) {
   const { state, dispatch } = useStore();
   const bot = state.bots.find((b) => b.id === menu.botId);
+  const lanesInSidebar = useLanesInSidebar();
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -185,6 +187,10 @@ function BotContextMenu({
   }, [onClose]);
 
   if (!bot) return null;
+  // The single conversation an agent's own row stands for, when the
+  // sidebar is the only place it appears.
+  const lanes = bot.tasks ?? [];
+  const only = lanesInSidebar && lanes.length === 1 && lanes[0].state !== "working" ? lanes[0] : null;
   // keep the menu on-screen near the click
   const top = Math.min(menu.y, window.innerHeight - 300);
   const left = Math.min(menu.x, window.innerWidth - 220);
@@ -247,6 +253,24 @@ function BotContextMenu({
         item(<ClipboardCopy size={15} className="text-muted-foreground" />, "Copy conversation ID", () => {
           void navigator.clipboard?.writeText(bot.threadId);
         }),
+        // An agent's only conversation has no row of its own, and the
+        // strip that used to close it is gone once the sidebar lists
+        // conversations. Without this there is no way to close it.
+        only &&
+          item(
+            <X size={15} />,
+            "Close conversation",
+            () => {
+              if (
+                window.confirm(
+                  "Close this conversation? Its messages are deleted, and a fresh one opens in its place.",
+                )
+              ) {
+                dispatch({ type: "closeTask", botId: bot.id, taskId: only.id });
+              }
+            },
+            { danger: true },
+          ),
         divider("d2"),
         // One reversible action here, and the irreversible one behind the
         // drawer where the confirm can name what goes. Archiving takes
