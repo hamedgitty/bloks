@@ -7580,14 +7580,6 @@ const server = createServer(async (req, res) => {
       const title = clamp(body.title, 40) || `Task ${bot.tasks.length + 1}`;
       const task = store.createTask(bot.id, title);
       if (!task) return json(res, 409, { error: `an agent runs at most ${MAX_TASKS} tasks` });
-      // Closing the last conversation leaves a blank General so the agent
-      // stays reachable. Starting a real one replaces that stand-in, if
-      // nothing was said in it, rather than listing a blank beside it.
-      for (const lane of [...bot.tasks]) {
-        if (lane.placeholder && lane.id !== task.id && !lane.busy && store.messagesFor(lane.id).length === 0) {
-          store.deleteTask(bot.id, lane.id);
-        }
-      }
       const fresh = store.bot(bot.id)!;
       broadcast({ kind: "bot", bot: clientBot(fresh) });
       return json(res, 201, { bot: { ...clientBot(fresh), ...laneFor(task.id) }, seq: frameSeq });
@@ -7622,6 +7614,7 @@ const server = createServer(async (req, res) => {
       const outcome = store.deleteTask(m[1], m[2]);
       if (outcome === "missing") return json(res, 404, { error: "no such task" });
       if (outcome === "busy") return json(res, 409, { error: "that task is running, interrupt it first" });
+      if (outcome === "general") return json(res, 409, { error: "General is cleared, not closed" });
       const fresh = store.bot(m[1])!;
       broadcast({ kind: "bot", bot: clientBot(fresh) });
       return json(

@@ -2464,6 +2464,19 @@ describe("task lanes", () => {
     assert.equal(missing.status, 404);
   });
 
+  test("General is never closed", async () => {
+    const { bots } = await h.json("/api/bots");
+    const bot = bots.find((b: any) => b.id === botId);
+    const general = bot.tasks[0];
+
+    const res = await h.fetch(`/api/bots/${botId}/tasks/${general.id}`, { method: "DELETE" });
+    assert.equal(res.status, 409);
+    assert.equal(typeof (await res.json()).error, "string");
+
+    const { bots: after } = await h.json("/api/bots");
+    assert.equal(after.find((b: any) => b.id === botId).tasks[0].id, general.id);
+  });
+
   test("clearing empties a conversation in place", async () => {
     const { bots } = await h.json("/api/bots");
     const bot = bots.find((b: any) => b.id === botId);
@@ -2483,44 +2496,30 @@ describe("task lanes", () => {
     assert.equal(missing.status, 404);
   });
 
-  test("closing a lane removes it; closing the last opens a fresh General", async () => {
+  test("closing a lane removes it, and an agent falls back to General", async () => {
     const { bots } = await h.json("/api/bots");
-    let bot = bots.find((b: any) => b.id === botId);
+    const bot = bots.find((b: any) => b.id === botId);
+    const general = bot.tasks[0];
+    await h.json(`/api/bots/${botId}/tasks/${bot.tasks[1].id}/activate`, { method: "POST" });
+
     for (const lane of bot.tasks.slice(1)) {
-      const res = await h.fetch(`/api/bots/${botId}/tasks/${lane.id}?forget=1`, { method: "DELETE" });
+      const res = await h.fetch(`/api/bots/${botId}/tasks/${lane.id}`, { method: "DELETE" });
       assert.equal(res.status, 200);
     }
-    ({ bots: bot } = { bots: null } as any);
+
     const { bots: after } = await h.json("/api/bots");
     const remaining = after.find((b: any) => b.id === botId);
-    assert.equal(remaining.tasks.length, 1);
-    const old = remaining.tasks[0];
-    const last = await h.fetch(`/api/bots/${botId}/tasks/${old.id}?forget=1`, { method: "DELETE" });
-    assert.equal(last.status, 200);
-    // the conversation is gone, and the agent is still there to talk to
-    const { bot: fresh } = await last.json();
-    assert.equal(fresh.tasks.length, 1);
-    assert.notEqual(fresh.tasks[0].id, old.id, "a new lane, not the old one renamed");
-    assert.equal(fresh.tasks[0].title, "General");
-    assert.equal(fresh.activeTaskId, fresh.tasks[0].id);
-    assert.equal(fresh.threadId, fresh.tasks[0].id);
-    assert.deepEqual(fresh.messages, [], "the new lane starts empty");
+    assert.deepEqual(remaining.tasks.map((t: any) => t.id), [general.id]);
+    assert.equal(remaining.activeTaskId, general.id);
+    assert.equal(remaining.threadId, general.id);
   });
 
-  test("a new conversation replaces the blank General that closing the last one left", async () => {
-    // the state the test above leaves: one fresh, empty General
-    const { bots } = await h.json("/api/bots");
-    const stand = bots.find((b: any) => b.id === botId).tasks;
-    assert.equal(stand.length, 1);
+  test("a new conversation opens beside General", async () => {
     const { bot } = await h.json(`/api/bots/${botId}/tasks`, { method: "POST", body: JSON.stringify({ title: "Real work" }) });
-    assert.deepEqual(
-      bot.tasks.map((t: any) => t.title),
-      ["Real work"],
-      "the empty stand-in stayed listed beside the new conversation",
-    );
-    // an ordinary new lane is left alone: only the stand-in is replaced
+    assert.deepEqual(bot.tasks.map((t: any) => t.title), ["General", "Real work"]);
+
     const { bot: two } = await h.json(`/api/bots/${botId}/tasks`, { method: "POST", body: JSON.stringify({ title: "Second" }) });
-    assert.equal(two.tasks.length, 2);
+    assert.equal(two.tasks.length, 3);
   });
 
   test("a conversation action's answer says which frame it matches, so a later one wins", async () => {

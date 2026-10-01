@@ -177,9 +177,6 @@ export interface TaskRecord {
   id: ThreadId;
   title: string;
   busy?: boolean;
-  /** The General opened in place of a closed last conversation. A new
-   * conversation replaces it while it is still empty. */
-  placeholder?: boolean;
   /** Something landed here that nobody has read. Per lane, so opening an
    * agent can go to the conversation that pinged you rather than the one
    * you last had open; the agent's own flag is "any of these". */
@@ -616,20 +613,15 @@ export class Store {
     return true;
   }
 
-  /** Closing a lane deletes its transcript. An agent always has a lane to
-   * talk in (threadId names it everywhere), so closing the last one opens
-   * a fresh General in its place: the conversation ends, the agent stays
-   * reachable, and nobody has to open a lane just to close another. */
-  deleteTask(botId: string, taskId: string): "ok" | "busy" | "missing" {
+  /** Closing a lane deletes it and its transcript. General, the first
+   * lane, is never closed; it is cleared instead. */
+  deleteTask(botId: string, taskId: string): "ok" | "busy" | "missing" | "general" {
     const bot = this.bot(botId);
     const task = bot?.tasks.find((t) => t.id === taskId);
     if (!bot || !task) return "missing";
     if (task.busy) return "busy";
-    if (bot.tasks.length <= 1) {
-      const fresh = this.createTask(botId, "General");
-      // a stand-in, so a conversation started next can take its place
-      if (fresh) fresh.placeholder = true;
-    }
+    if (task === bot.tasks[0]) return "general";
+
     bot.tasks = bot.tasks.filter((t) => t.id !== taskId);
     this.dropTranscript(task.id);
     // a closed lane's unread goes with it
