@@ -505,6 +505,7 @@ export type Action =
   | { type: "newTask"; botId: string }
   | { type: "selectTask"; botId: string; taskId: string }
   | { type: "closeTask"; botId: string; taskId: string }
+  | { type: "clearTask"; botId: string; taskId: string }
   | { type: "renameTask"; botId: string; taskId: string; title: string }
   | { type: "botAdded"; bot: Bot }
   | { type: "deleteBot"; botId: string; forget?: boolean }
@@ -788,6 +789,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "newTask":
     case "selectTask":
     case "closeTask":
+    case "clearTask":
       return state;
     case "renameTask":
       // shown at once; the server's answer (one line, 40 characters)

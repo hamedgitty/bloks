@@ -14,7 +14,7 @@
 // behind anything else.
 //
 // Up to twenty lanes per agent, each running one turn at a time. Any of
-// them can be closed, the last one too: closing it opens a fresh General,
+// them can be closed except General, the first, which is cleared instead,
 // because an agent always has somewhere to be talked to.
 //
 // A lane names itself from the first words of its first message, which
@@ -162,6 +162,7 @@ export function TaskStrip({
   onSelect,
   onNew,
   onClose,
+  onClear,
   onRename,
 }: {
   tasks: TaskChipData[];
@@ -169,6 +170,7 @@ export function TaskStrip({
   onSelect: (id: string) => void;
   onNew: () => void;
   onClose: (id: string) => void;
+  onClear: (id: string) => void;
   onRename?: (id: string, title: string) => void;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -177,9 +179,10 @@ export function TaskStrip({
 
   return (
     <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-background/95 px-3 py-2.5 md:px-4">
-      {tasks.map((task) => {
+      {tasks.map((task, index) => {
         const active = task.id === activeId;
-        const only = tasks.length === 1;
+        // General, the first, is cleared rather than closed
+        const isGeneral = index === 0;
         if (renaming === task.id) {
           return (
             <RenameChip
@@ -235,11 +238,11 @@ export function TaskStrip({
             <span
               role="button"
               tabIndex={-1}
-              aria-label={only ? `Close ${task.title} and start fresh` : `Close ${task.title}`}
-              title={only ? "Close and start a fresh conversation" : "Close this conversation"}
+              aria-label={isGeneral ? `Clear ${task.title}` : `Close ${task.title}`}
+              title={isGeneral ? "Clear this conversation" : "Close this conversation"}
               onClick={(e) => {
                 e.stopPropagation();
-                onClose(task.id);
+                (isGeneral ? onClear : onClose)(task.id);
               }}
               className={cn(
                 "flex size-4 items-center justify-center rounded-full opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100",

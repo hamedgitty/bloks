@@ -302,6 +302,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(adoptAnswer)
             .catch(showError);
           break;
+        case "clearTask":
+          api(`/api/bots/${action.botId}/tasks/${action.taskId}/clear`, { method: "POST" })
+            .then(adoptAnswer)
+            .catch(showError);
+          break;
         case "renameTask":
           api(`/api/bots/${action.botId}/tasks/${action.taskId}`, {
             method: "PATCH",
