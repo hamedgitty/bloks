@@ -631,10 +631,7 @@ export class Store {
       if (fresh) fresh.placeholder = true;
     }
     bot.tasks = bot.tasks.filter((t) => t.id !== taskId);
-    this.messages.delete(task.id);
-    try {
-      unlinkSync(messagesFile(task.id));
-    } catch {}
+    this.dropTranscript(task.id);
     // a closed lane's unread goes with it
     bot.unread = bot.tasks.some((t) => t.unread);
     if (bot.activeTaskId === task.id) {
@@ -643,6 +640,13 @@ export class Store {
       this.saveBots();
     }
     return "ok";
+  }
+
+  private dropTranscript(taskId: string) {
+    this.messages.delete(taskId);
+    try {
+      unlinkSync(messagesFile(taskId));
+    } catch {}
   }
 
   /** Read or unread, one lane at a time, with the agent's flag following
