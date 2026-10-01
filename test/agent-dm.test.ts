@@ -101,4 +101,39 @@ process.stdin.on("end", async () => {
   // the person's own words still go to what they have open (the new lane)
   const mine = await h.json(`/api/bots/${recipient.id}/messages`, { method: "POST", body: JSON.stringify({ text: "and this is me" }) });
   assert.equal(mine.taskId, impostor);
+
+  // A watcher fires and makes its own lane, and the person opens it to see
+  // what happened. Agents' messages still go to General, not to Watching.
+  const idle = async () => {
+    for (let i = 0; i < 200; i++) {
+      const { bots } = await h.json("/api/bots");
+      if (!bots.find((b: any) => b.id === recipient.id).busy) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  // a folder watcher skips its look while the agent works
+  await idle();
+  const dir = mkdtempSync(join(tmpdir(), "bloks-dm-watched-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "old.txt"), "x");
+  const { watcher } = await h.json("/api/watchers", {
+    method: "POST",
+    body: JSON.stringify({ botId: recipient.id, kind: "folder", target: dir, instruction: "Note new files." }),
+  });
+  let baseline = false;
+  for (let i = 0; i < 200 && !baseline; i++) {
+    baseline = Boolean((await h.json("/api/watchers")).watchers.find((w: any) => w.id === watcher.id)?.lastCheck);
+    if (!baseline) await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.ok(baseline, "the watcher never took its first look");
+  writeFileSync(join(dir, "new.txt"), "y");
+  const fired = await h.json(`/api/watchers/${watcher.id}/check`, { method: "POST" });
+  assert.equal(fired.fired, true, fired.note);
+  const watching = (await h.json("/api/watchers")).watchers.find((w: any) => w.id === watcher.id).laneId as string;
+  assert.ok(watching, "the watcher made no lane");
+  await h.fetch(`/api/bots/${recipient.id}/tasks/${watching}/activate`, { method: "POST" });
+  await idle();
+  said = await ping();
+  assert.ok(said, "the third turn never ran");
+  assert.equal(said.body.taskId, general, `with Watching open it landed in ${said.body.lane}`);
 });
