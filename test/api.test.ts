@@ -2464,6 +2464,25 @@ describe("task lanes", () => {
     assert.equal(missing.status, 404);
   });
 
+  test("clearing empties a conversation in place", async () => {
+    const { bots } = await h.json("/api/bots");
+    const bot = bots.find((b: any) => b.id === botId);
+    const general = bot.tasks[0];
+    const others = bot.tasks.slice(1).map((t: any) => t.id);
+    const { bot: before } = await h.json(`/api/bots/${botId}/tasks/${general.id}/activate`, { method: "POST" });
+    assert.ok(before.messages.length > 0, "General has the greeting to clear");
+    const res = await h.fetch(`/api/bots/${botId}/tasks/${general.id}/clear`, { method: "POST" });
+    assert.equal(res.status, 200);
+    const { bot: after, seq } = await res.json();
+    assert.equal(typeof seq, "number", "the answer says which frame it matches");
+    assert.equal(after.tasks[0].id, general.id, "the same lane, so everything routed to it still arrives");
+    assert.equal(after.tasks[0].title, general.title);
+    assert.deepEqual(after.tasks.slice(1).map((t: any) => t.id), others, "the other lanes are left alone");
+    assert.deepEqual(after.messages, [], "its messages are gone");
+    const missing = await h.fetch(`/api/bots/${botId}/tasks/no-such-lane/clear`, { method: "POST" });
+    assert.equal(missing.status, 404);
+  });
+
   test("closing a lane removes it; closing the last opens a fresh General", async () => {
     const { bots } = await h.json("/api/bots");
     let bot = bots.find((b: any) => b.id === botId);

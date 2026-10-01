@@ -642,6 +642,23 @@ export class Store {
     return "ok";
   }
 
+  /** Clearing a lane empties it in place: the same id and title, with a
+   * fresh transcript and session. */
+  clearTask(botId: string, taskId: string): "ok" | "busy" | "missing" {
+    const bot = this.bot(botId);
+    const index = bot?.tasks.findIndex(({ id }) => id === taskId) ?? -1;
+    if (!bot || index < 0) return "missing";
+
+    const task = bot.tasks[index];
+    if (task.busy) return "busy";
+
+    bot.tasks[index] = { id: task.id, title: task.title, resumeCursors: {}, createdAt: Date.now() };
+    this.dropTranscript(task.id);
+    bot.unread = bot.tasks.some(({ unread }) => unread);
+    this.saveBots();
+    return "ok";
+  }
+
   private dropTranscript(taskId: string) {
     this.messages.delete(taskId);
     try {

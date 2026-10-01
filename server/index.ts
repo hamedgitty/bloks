@@ -7633,6 +7633,22 @@ const server = createServer(async (req, res) => {
       );
     }
 
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/clear$/);
+    if (m && method === "POST") {
+      const outcome = store.clearTask(m[1], m[2]);
+      if (outcome === "missing") return json(res, 404, { error: "no such task" });
+      if (outcome === "busy") return json(res, 409, { error: "that task is running, interrupt it first" });
+
+      // the lane keeps its id, so nothing from before the clear may follow it
+      undoneSince.delete(m[2]);
+
+      const fresh = store.bot(m[1])!;
+
+      // every window showing it empties too, not just this one
+      broadcast({ kind: "bot", bot: { ...clientBot(fresh), ...(fresh.activeTaskId === m[2] ? { messages: [] } : {}) } });
+      return json(res, 200, { bot: { ...clientBot(fresh), ...laneFor(fresh.activeTaskId) }, seq: frameSeq });
+    }
+
     // What a `/` in this agent's composer can name (server/agent-commands.ts).
     m = path.match(/^\/api\/bots\/([\w-]+)\/commands$/);
     if (m && method === "GET") {
