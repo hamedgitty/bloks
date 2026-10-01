@@ -6516,8 +6516,14 @@ const server = createServer(async (req, res) => {
       }
       const text = clamp(body.text, MAX_MESSAGE_CHARS);
       if (!text) return json(res, 400, { error: "text required" });
-      // a lane may be named; otherwise the one that is open
-      const taskId = typeof body.taskId === "string" && body.taskId ? body.taskId : undefined;
+      // a lane may be named; otherwise the one the person has open, or, for
+      // another agent writing, General: which lane the person happened to
+      // be reading is no business of an agent's message
+      let taskId = typeof body.taskId === "string" && body.taskId ? body.taskId : undefined;
+      if (!taskId && asAgent) {
+        const to = store.bot(m[1]);
+        taskId = (to?.tasks.find((t) => t.title === "General") ?? to?.tasks[0])?.id;
+      }
       const result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo) });
       return json(res, 202, result);
     }
