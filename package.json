@@ -65,7 +65,7 @@
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.47.0",
     "motion": "^13.4.4",
-    "posthog-js": "^1.434.4",
+    "posthog-js": "^1.434.17",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
