@@ -124,6 +124,10 @@ function LaneMenu({
     </button>
   );
   const busy = lane.state === "working";
+
+  // General, the first, is cleared rather than closed
+  const isGeneral = lane.id === bot.tasks?.[0]?.id;
+
   return (
     <div
       data-lane-menu
@@ -140,7 +144,20 @@ function LaneMenu({
       })}
       <div className="mx-2 my-1 h-px bg-border" />
       {busy ? (
-        <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground">Stop it before closing</div>
+        <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground">
+          {isGeneral ? "Stop it before clearing" : "Stop it before closing"}
+        </div>
+      ) : isGeneral ? (
+        item(
+          <X size={15} />,
+          "Clear conversation",
+          () => {
+            if (window.confirm("Clear this conversation? Its messages are deleted.")) {
+              dispatch({ type: "clearTask", botId: bot.id, taskId: lane.id });
+            }
+          },
+          true,
+        )
       ) : (
         item(
           <X size={15} />,
