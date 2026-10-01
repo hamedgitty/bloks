@@ -67,12 +67,16 @@ process.stdin.on("end", async () => {
     .tasks.find((x: any) => x.title === "Rehearsal").id;
   await h.fetch(`/api/bots/${recipient.id}/tasks/${side}/activate`, { method: "POST" });
 
-  await h.fetch(`/api/bots/${sender.id}/messages`, { method: "POST", body: JSON.stringify({ text: `PING ${recipient.id}` }) });
-  let said: { status: number; body: any } | undefined;
-  for (let i = 0; i < 200 && !said; i++) {
-    if (existsSync(out)) said = JSON.parse(readFileSync(out, "utf8"));
-    else await new Promise((r) => setTimeout(r, 50));
-  }
+  const ping = async () => {
+    rmSync(out, { force: true });
+    await h.fetch(`/api/bots/${sender.id}/messages`, { method: "POST", body: JSON.stringify({ text: `PING ${recipient.id}` }) });
+    for (let i = 0; i < 200; i++) {
+      if (existsSync(out)) return JSON.parse(readFileSync(out, "utf8")) as { status: number; body: any };
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return undefined;
+  };
+  let said = await ping();
   assert.ok(said, "the sender's turn never ran");
   assert.ok(said.status < 300, JSON.stringify(said));
   assert.equal(said.body.taskId, general, `landed in ${said.body.lane}`);
@@ -84,7 +88,17 @@ process.stdin.on("end", async () => {
   assert.equal(await inLane(general), true);
   assert.equal(await inLane(side), false);
 
-  // the person's own words still go to what they have open
+  // an agent renames its own conversation (`bloks rename`), as one renamed
+  // General to "Team Leads": a lookup by title would miss it
+  await h.fetch(`/api/bots/${recipient.id}/tasks/${general}`, { method: "PATCH", body: JSON.stringify({ title: "Team Leads" }) });
+  // and a later lane takes the name, so the title now points elsewhere
+  const impostor = (await h.json(`/api/bots/${recipient.id}/tasks`, { method: "POST", body: JSON.stringify({ title: "General" }) })).bot
+    .activeTaskId as string;
+  said = await ping();
+  assert.ok(said, "the second turn never ran");
+  assert.equal(said.body.taskId, general, `after the rename it landed in ${said.body.lane}`);
+
+  // the person's own words still go to what they have open (the new lane)
   const mine = await h.json(`/api/bots/${recipient.id}/messages`, { method: "POST", body: JSON.stringify({ text: "and this is me" }) });
-  assert.equal(mine.taskId, side);
+  assert.equal(mine.taskId, impostor);
 });
