@@ -86,6 +86,8 @@ import {
   MAX_DESCRIPTION_CHARS,
   MAX_KEY_CHARS,
   MAX_MESSAGE_CHARS,
+  MAX_WEBHOOK_QUEUE_ITEMS,
+  MAX_WEBHOOK_QUEUE_BYTES,
   MAX_MODEL_ID_CHARS,
   MAX_NAME_CHARS,
   MAX_SKILL_CHARS,
@@ -5233,7 +5235,7 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // An item with no messageId is a note from Bloks itself, like the one
 // that resumes a task after a secret is saved: nothing in the transcript
 // to wait on, so it is always still due.
-const steerQueues = new Map<string, { botId: string; items: Array<{ messageId?: string; text: string }> }>();
+const steerQueues = new Map<string, { botId: string; items: Array<{ messageId?: string; text: string; source?: "webhook" }> }>();
 
 /** What an engine is told about a message another agent sent: who it is
  * from and how to answer. The transcript keeps the words alone, with the
@@ -5245,7 +5247,7 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
 async function sendUserMessage(
   botId: string,
   text: string,
-  options: { taskId?: string; replyTo?: ReplyRef; from?: { botId: string; name: string } } = {},
+  options: { taskId?: string; replyTo?: ReplyRef; from?: { botId: string; name: string }; source?: "webhook" } = {},
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
@@ -5269,7 +5271,7 @@ async function sendUserMessage(
     });
     broadcast({ kind: "message", threadId: lane.id, message });
     const entry = steerQueues.get(lane.id) ?? { botId: bot.id, items: [] };
-    entry.items.push({ messageId: message.id, text: options.from ? fromAgentPrompt(options.from, text) : text });
+    entry.items.push({ messageId: message.id, text: options.from ? fromAgentPrompt(options.from, text) : text, source: options.source });
     steerQueues.set(lane.id, entry);
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title };
   }
@@ -5848,8 +5850,26 @@ const server = createServer(async (req, res) => {
     } catch {
       raw = "";
     }
-    webhooks.noteFired(hook.id, raw);
     const text = webhookMessage(hook.name, raw);
+    // A named Webhooks lane can accept queued work while busy. Only a
+    // new lane needs the ordinary background-lane allocation/fallback.
+    const botTargetId = !hook.workflowId && !hook.blokId ? hook.botId : undefined;
+    const laneId = botTargetId
+      ? store.bot(botTargetId)?.tasks.find((t) => t.title === "Webhooks")?.id ?? backgroundTaskId(botTargetId, "Webhooks")
+      : undefined;
+    if (botTargetId && !laneId) {
+      return json(res, 503, { error: "No background lane is available. Retry this webhook later." });
+    }
+    if (botTargetId && laneId && store.bot(botTargetId)?.tasks.find((t) => t.id === laneId)?.busy) {
+      const queued = steerQueues.get(laneId)?.items.filter((item) => item.source === "webhook") ?? [];
+      // Bound webhook work for the next turn, including
+      // the new event. User messages share the queue but not this cap.
+      const bytes = queued.reduce((sum, item) => sum + Buffer.byteLength(item.text) + 1, Buffer.byteLength(text) + 1);
+      if (queued.length >= MAX_WEBHOOK_QUEUE_ITEMS || bytes > MAX_WEBHOOK_QUEUE_BYTES) {
+        return json(res, 503, { error: "Webhook queue is full. Retry this webhook later." });
+      }
+    }
+    webhooks.noteFired(hook.id, raw);
 
     // Answer before the turn runs: webhook senders time out fast and
     // retry on failure, and an agent turn outlives both.
@@ -5864,9 +5884,13 @@ const server = createServer(async (req, res) => {
           const blok = bloks.get(hook.blokId);
           if (blok) await postToRoom(blok, text, { hops: 0 });
         } else if (hook.botId) {
-          const laneId = backgroundTaskId(hook.botId, "Webhooks");
-          if (!laneId) return; // lane busy; the sender's retry will land
-          await startTurn(hook.botId, text, { taskId: laneId });
+          if (!laneId) throw new Error("no webhook lane");
+          const lane = store.bot(hook.botId)?.tasks.find((t) => t.id === laneId);
+          if (lane?.busy) {
+            await sendUserMessage(hook.botId, text, { taskId: laneId, source: "webhook" });
+          } else {
+            await startTurn(hook.botId, text, { taskId: laneId });
+          }
         }
       } catch (e) {
         // The sender is long gone; the failure belongs in the chat.
