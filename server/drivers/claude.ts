@@ -160,6 +160,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
 
+    // Snapshot control was added in Claude Code 2.1.257. Probe before any
+    // turns can start, and refresh with the normal health check after a CLI
+    // update. An older or unrecognised CLI keeps its existing arguments.
+    let snapshotOffSupported = false;
+    const readVersion = () => new Promise<string | null>((resolve) => {
+      execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) => {
+        const version = error ? null : stdout.trim();
+        const parts = version?.match(/^(\d+)\.(\d+)\.(\d+)(?:\s|$)/);
+        const [major, minor, patch] = parts?.slice(1).map(Number) ?? [];
+        snapshotOffSupported = major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 257)));
+        resolve(version);
+      });
+    });
+    await readVersion();
+
     interface RunningTurn {
       turnId: string;
       abort: () => void;
@@ -213,8 +228,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       ];
       // Resuming continues the CLI's own session; otherwise name the new
       // one ourselves so the id exists before its first event arrives.
-      if (resume) argv.push("--resume", resume);
-      else argv.push("--session-id", newId());
+      if (resume) {
+        argv.push("--resume", resume);
+        // Continue the same history, but use this turn's current persona
+        // rather than the system prompt the session started with.
+        if (snapshotOffSupported) argv.push("--system-prompt-snapshot", "off");
+      } else argv.push("--session-id", newId());
       if (turn.model) argv.push("--model", turn.model);
       // this agent's owner switched hooks off: a plugin's session-start
       // text would otherwise land in its context as if it were an order
@@ -648,11 +667,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) =>
-          resolve(error ? null : stdout.trim()),
-        );
-      });
+      const version = await readVersion();
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
 
       // Installed and signed in are different states, and the difference is
