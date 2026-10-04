@@ -255,6 +255,14 @@ describe("what the preview says before you say yes", () => {
   });
 });
 
+describe("the engines it ran on", () => {
+  test("the backup engine travels with the main one", () => {
+    const file = round({ bot: { ...bot, backupSelection: { instanceId: "inst-b", model: "gpt-x" } }, exportedAt: 1 });
+    assert.deepEqual(file.agent.model, { instanceId: "inst-a", model: "claude-opus-5" });
+    assert.deepEqual(file.agent.backup, { instanceId: "inst-b", model: "gpt-x" });
+  });
+});
+
 describe("what an import actually creates", () => {
   test("the profile is the agent, and nothing it was granted here", () => {
     const file = packAgent({

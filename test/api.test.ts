@@ -2886,6 +2886,38 @@ describe("taking an agent somewhere else", () => {
     }
   });
 
+  test("an imported agent runs on the engines it ran on, its backup included", async () => {
+    const { bot } = await furnished();
+    const { instances } = await h.json("/api/instances");
+    const [first, second] = instances.map((i: any) => i.instanceId);
+    assert.ok(first && second, "the harness needs two engines for this test");
+    const model = { instanceId: first, model: "main-model" };
+    const backup = { instanceId: second, model: "backup-model" };
+    await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: model, backupSelection: backup }) });
+    const file = await (await h.fetch(`/api/bots/${bot.id}/export`)).json();
+    assert.deepEqual(file.agent.backup, backup);
+
+    const { bot: arrived, preview } = await h.json("/api/agents/import", { method: "POST", body: JSON.stringify({ file }) });
+    assert.deepEqual(arrived.modelSelection, model, "the main engine was not applied");
+    assert.deepEqual(arrived.backupSelection, backup, "the backup engine was dropped");
+    // routines, webhooks and watchers belong to the workspace, not the file
+    assert.ok(preview.notes.some((n: string) => /routines, webhooks and watchers/i.test(n)));
+    await h.fetch(`/api/bots/${arrived.id}?forget=1`, { method: "DELETE" });
+  });
+
+  test("an engine this workspace does not have leaves the default in place", async () => {
+    const { bot } = await furnished();
+    const file = await (await h.fetch(`/api/bots/${bot.id}/export`)).json();
+    const elsewhere = {
+      ...file,
+      agent: { ...file.agent, model: { instanceId: "not-here", model: "m" }, backup: { instanceId: "nor-here", model: "m" } },
+    };
+    const { bot: arrived } = await h.json("/api/agents/import", { method: "POST", body: JSON.stringify({ file: elsewhere }) });
+    assert.notEqual(arrived.modelSelection.instanceId, "not-here");
+    assert.ok(!arrived.backupSelection || arrived.backupSelection.instanceId !== "nor-here");
+    await h.fetch(`/api/bots/${arrived.id}?forget=1`, { method: "DELETE" });
+  });
+
   test("a website cannot make you import an agent", async () => {
     const res = await h.fetchAs("https://evil.example", "/api/agents/import", {
       method: "POST",

@@ -97,6 +97,9 @@ export interface PortableAgent {
   /** A wish, not a binding: the engine may not exist on the machine this
    * lands on, in which case the workspace default is used instead. */
   model?: { instanceId: string; model: string };
+  /** The engine a turn moves to when the agent's own runs out. A wish in
+   * the same way: kept only when that engine exists where it lands. */
+  backup?: { instanceId: string; model: string };
   /** Carried because how an agent sounds is part of who it is. Needs a
    * key at the other end, which the preview says out loud. */
   voice?: { provider: "elevenlabs" | "openai"; id: string; name?: string };
@@ -140,6 +143,7 @@ export interface PackInput {
     effort?: "low" | "medium" | "high";
     mascotExpression?: BlokExpression | null;
     modelSelection?: { instanceId: string; model: string };
+    backupSelection?: { instanceId: string; model: string } | null;
     voice?: { provider: "elevenlabs" | "openai"; id: string; name?: string } | null;
   };
   memory?: string;
@@ -197,6 +201,12 @@ export function packAgent(input: PackInput): AgentFile {
     agent.model = {
       instanceId: String(bot.modelSelection.instanceId).slice(0, 120),
       model: String(bot.modelSelection.model).slice(0, 200),
+    };
+  }
+  if (bot.backupSelection?.instanceId && bot.backupSelection.model) {
+    agent.backup = {
+      instanceId: String(bot.backupSelection.instanceId).slice(0, 120),
+      model: String(bot.backupSelection.model).slice(0, 200),
     };
   }
   if (bot.voice?.id && (bot.voice.provider === "elevenlabs" || bot.voice.provider === "openai")) {
@@ -327,6 +337,12 @@ export function parseAgentFile(value: unknown): ParseResult {
     agent.model = {
       instanceId: raw.model.instanceId.slice(0, 120),
       model: raw.model.model.slice(0, 200),
+    };
+  }
+  if (isRecord(raw.backup) && typeof raw.backup.instanceId === "string" && typeof raw.backup.model === "string") {
+    agent.backup = {
+      instanceId: raw.backup.instanceId.slice(0, 120),
+      model: raw.backup.model.slice(0, 200),
     };
   }
   if (
@@ -494,6 +510,9 @@ export function describeAgentFile(file: AgentFile, ctx: PreviewContext): AgentPr
     notes.push("Its memory comes with it, so it arrives knowing what it knew.");
   }
   notes.push("Its conversations stay behind. This is the agent, not the history.");
+  // Workspace setup that names an agent is not part of the agent, and an
+  // imported one is a new agent here, so say so before anyone relies on it.
+  notes.push("Its routines, webhooks and watchers stay behind too. Set them up again for it here if you need them.");
 
   return {
     name: file.agent.name,

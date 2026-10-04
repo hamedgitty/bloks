@@ -6279,8 +6279,16 @@ const server = createServer(async (req, res) => {
       if (carried.length) broadcast({ kind: "skills" });
 
       const { profile, patch } = profileFromFile(file);
-      const bot = store.createBot({ ...profile, skillIds: carried.length ? carried : undefined });
-      store.patchBot(bot.id, { ...(await newAgentSettings()), ...patch });
+      const bot = store.createBot({
+        ...profile,
+        skillIds: carried.length ? carried : undefined,
+      });
+      // The engines it ran on, where this workspace has them; otherwise
+      // the workspace default stands, as the preview said it would.
+      const engines: Partial<BotRecord> = {};
+      if (file.agent.model && registry.get(file.agent.model.instanceId)) engines.modelSelection = file.agent.model;
+      if (file.agent.backup && registry.get(file.agent.backup.instanceId)) engines.backupSelection = file.agent.backup;
+      store.patchBot(bot.id, { ...(await newAgentSettings()), ...engines, ...patch });
 
       if (file.memory) {
         if (file.memory.text.trim()) workspace.writeMemoryFile(bot.id, file.memory.text);
