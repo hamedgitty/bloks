@@ -268,15 +268,28 @@ function readConfiguredPort() {
   }
 }
 
+/** The server that holds ~/.bloks, when ours refused to start beside it. */
+function dataFolderHolder(stderr) {
+  const found = /DATA_FOLDER_IN_USE pid=(\d+) port=(\d+)/.exec(stderr ?? "");
+  return found ? { pid: Number(found[1]), port: Number(found[2]) } : null;
+}
+
 /** What the window shows when no server came up. Set by startServer. */
 let startupFailure = null;
 
 async function startServer() {
   const attempts = [];
   let crash = "";
+  // Another Bloks server already using ~/.bloks, as the server reports it
+  // (server/data-lock.ts). Another port would not help: it is the data
+  // folder that is taken, and two servers on it undo each other's work.
+  let inUse = null;
   // Quit-and-reopen can race the previous instance's teardown, so the
-  // whole sweep is tried twice before giving up.
-  for (let round = 0; round < 2; round++) {
+  // whole sweep is tried twice before giving up; a folder still held is
+  // given a few more rounds, since that is most often the last instance
+  // on its way out.
+  for (let round = 0; round < (inUse ? 5 : 2); round++) {
+    inUse = null;
     const ports = portOrder({ env: process.env.BLOKS_PORT, configured: readConfiguredPort(), last: readLastPort() });
     // every usual port busy is not the end: any free port will do
     const spare = await anyFreePort();
@@ -298,6 +311,8 @@ async function startServer() {
         return true;
       }
       if (started.why === "exited" && started.stderr) crash = started.stderr;
+      inUse = dataFolderHolder(started.stderr);
+      if (inUse) break;
       if (round === 1) attempts.push({ port, why: started.why, holder: null });
     }
     await pause(2500);
@@ -305,6 +320,7 @@ async function startServer() {
   startupFailure = failurePage({
     attempts,
     crash,
+    inUse,
     backdrop: DARK_BACKDROP,
     machine: process.platform === "darwin" ? "Mac" : "computer",
   });

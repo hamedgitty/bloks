@@ -90,6 +90,7 @@ export const RULES: Rule[] = [
   // between one agent and one person into a workspace.
   { method: "POST", path: "/api/bots/:id/messages", why: "say something to another agent" },
   { method: "POST", path: "/api/bloks/:room/messages", why: "say something in a room it is in" },
+  { method: "GET", path: "/api/bloks/:room/messages", why: "read what was said in a room it is in" },
 
   // Getting a colleague, and somewhere to work with them.
   { method: "POST", path: "/api/bots", why: "hire a teammate" },
@@ -110,6 +111,10 @@ export const RULES: Rule[] = [
   // Its own notes, and nobody else's.
   { method: "GET", path: "/api/bots/:me/memory", why: "read its own memory" },
   { method: "GET", path: "/api/bots/:me/recall", why: "look something up in its own past conversations" },
+  { method: "GET", path: "/api/bots/:me/recall/:id", why: "read in full a message its recall found" },
+  // Stopping is an authority: the route allows it only for an agent the
+  // caller hired, or one it outranks in a room they share.
+  { method: "POST", path: "/api/bots/:id/interrupt", why: "stop the current turn of an agent it hired or leads in a room" },
   { method: "POST", path: "/api/bots/:me/notes", why: "suggest a short note about the person, for them to keep or not" },
   { method: "PUT", path: "/api/bots/:me/memory", why: "write its own memory" },
   { method: "GET", path: "/api/bots/:me/artifacts", why: "list what it has produced" },

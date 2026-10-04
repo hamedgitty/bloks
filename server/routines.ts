@@ -55,6 +55,10 @@ export interface Routine {
   thread?: string;
   enabled: boolean;
   createdAt: number;
+  /** When its schedule was last set: made, retimed, or switched back on.
+   * A slot before this was never this routine's to run, so the grace for
+   * a missed slot does not reach back past it (GitHub 142). */
+  scheduledAt?: number;
   /** When it last actually fired. Absent until the first run. */
   lastRunAt?: number;
   /** The last few runs, newest first. A routine you cannot inspect is a
@@ -176,6 +180,9 @@ export function isDue(routine: Routine, now: Date, graceMs: number = GRACE_MS): 
   if (!slot) return false;
   // Missed by too much to be useful. Wait for the next one.
   if (now.getTime() - slot.getTime() > graceMs) return false;
+  // A slot from before the routine had this schedule was not missed; it
+  // never existed. Made at 19:01 for 18:00 means tomorrow at 18:00.
+  if (routine.scheduledAt !== undefined && slot.getTime() < routine.scheduledAt) return false;
   // Already served this slot.
   if (routine.lastRunAt !== undefined && routine.lastRunAt >= slot.getTime()) return false;
   return true;
@@ -284,7 +291,8 @@ export class RoutineStore {
 
   create(input: Omit<Routine, "id" | "createdAt">): Routine | null {
     if (this.routines.length >= MAX_ROUTINES) return null;
-    const routine: Routine = { ...input, id: newId(), createdAt: Date.now() };
+    const now = Date.now();
+    const routine: Routine = { ...input, id: newId(), createdAt: now, scheduledAt: now };
     this.routines.push(routine);
     this.save();
     return routine;
@@ -295,6 +303,15 @@ export class RoutineStore {
     if (!routine) return null;
     // Spelled out rather than looped over a key list: the cast that makes
     // the loop compile also lets a typo write a field that does not exist.
+    // a schedule that changes, or a routine switched back on, starts
+    // counting its slots from now
+    const rescheduled =
+      (patch.time !== undefined && patch.time !== routine.time) ||
+      (patch.days !== undefined && patch.days.join(",") !== routine.days.join(",")) ||
+      ("repeat" in patch && patch.repeat !== routine.repeat) ||
+      ("date" in patch && patch.date !== routine.date) ||
+      (patch.enabled === true && !routine.enabled);
+    if (rescheduled) routine.scheduledAt = Date.now();
     if (patch.prompt !== undefined) routine.prompt = patch.prompt;
     if (patch.time !== undefined) routine.time = patch.time;
     if (patch.days !== undefined) routine.days = patch.days;

@@ -74,14 +74,19 @@ const COMMANDS = {
     },
   },
   recall: {
-    use: "recall <words…>",
+    use: "recall <words…> | recall --id <message-id>",
     about: "look something up in your own past conversations: a decision, a name, a preference",
     run: async (args) => {
+      const flags = parseFlags(args);
+      const me = await request("GET", "/api/agent/whoami");
+      // one message in full, for a hit that was cut short
+      if (flags.id && flags.id !== "true") {
+        return (await request("GET", `/api/bots/${me.botId ?? me.id}/recall/${encodeURIComponent(flags.id)}`)).message;
+      }
       const words = args.join(" ").trim();
       if (!words) throw new Error("recall needs something to look for");
-      const me = await request("GET", "/api/agent/whoami");
       const { hits } = await request("GET", `/api/bots/${me.botId ?? me.id}/recall?q=${encodeURIComponent(words)}`);
-      return hits;
+      return hits.map((hit) => (hit.clipped ? { ...hit, full: `bloks recall --id ${hit.messageId}` } : hit));
     },
   },
   watch: {
@@ -119,6 +124,42 @@ const COMMANDS = {
     run: (args) => {
       if (!args[0]) throw new Error("unwatch needs a watcher id");
       return request("DELETE", `/api/watchers/${args[0]}`);
+    },
+  },
+  history: {
+    use: "history <room-id> [--limit <n>]",
+    about: "read what was said in a room you are in, newest last, so you can join a discussion with its context",
+    run: async (args) => {
+      const [room] = args;
+      if (!room || room.startsWith("--")) throw new Error("history needs a room id, from `rooms`");
+      const flags = parseFlags(args.slice(1));
+      const limit = Math.max(1, Math.min(200, Number(flags.limit) || 40));
+      const [{ messages }, { bots }] = await Promise.all([
+        request("GET", `/api/bloks/${encodeURIComponent(room)}/messages?limit=${limit}`),
+        request("GET", "/api/bots?messages=0"),
+      ]);
+      const names = new Map((bots ?? []).map((b) => [b.id, b.name]));
+      return (messages ?? [])
+        .filter((m) => m.kind === "text" && m.text && !m.deleted)
+        .map((m) => ({
+          id: m.id,
+          at: localStamp(new Date(m.at)),
+          // only the person's own words read as the person's
+          who: m.from ? (names.get(m.from) ?? "an agent") : m.author ? "a member" : "the person",
+          by: m.from ? "agent" : m.author ? "member" : "person",
+          ...(m.from ? { agentId: m.from } : {}),
+          text: m.text,
+        }));
+    },
+  },
+  stop: {
+    use: 'stop <agent-id> ["<why>"]',
+    about: "stop the current turn of an agent you hired, or one you outrank in a room you share; your reason is the next thing it hears",
+    run: (args) => {
+      const [target, ...rest] = args;
+      if (!target) throw new Error("stop needs the agent to stop");
+      const why = rest.join(" ").trim();
+      return request("POST", `/api/bots/${encodeURIComponent(target)}/interrupt`, why ? { text: why } : {});
     },
   },
   note: {

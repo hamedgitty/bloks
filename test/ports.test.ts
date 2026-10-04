@@ -63,3 +63,19 @@ test("a server that crashed is not blamed on ports, and its words are shown safe
   assert.match(page, /&lt;boom&gt; &amp; more/);
   assert.doesNotMatch(page, /<boom>/);
 });
+
+test("another server holding the data folder is explained, not blamed on ports (GitHub 140)", () => {
+  const page = decodeURIComponent(
+    failurePage({
+      attempts: [{ port: 18799, why: "exited", holder: null }],
+      crash: "[bloks] DATA_FOLDER_IN_USE pid=4242 port=8799 dir=/Users/x/.bloks",
+      inUse: { pid: 4242, port: 8799 },
+      backdrop: "#000",
+      machine: "Mac",
+    }),
+  );
+  assert.match(page, /Bloks is already running on this Mac/);
+  assert.match(page, /process 4242/);
+  assert.match(page, /http:\/\/127\.0\.0\.1:8799/);
+  assert.doesNotMatch(page, /stopped while starting|not about ports/);
+});

@@ -20,4 +20,11 @@ export interface PortAttempt {
 }
 
 export function describeAttempt(attempt: PortAttempt): string;
-export function failurePage(input: { attempts: PortAttempt[]; crash: string; backdrop: string; machine: string }): string;
+export function failurePage(input: {
+  attempts: PortAttempt[];
+  crash: string;
+  backdrop: string;
+  machine: string;
+  /** another Bloks server already holds ~/.bloks (server/data-lock.ts) */
+  inUse?: { pid: number; port: number } | null;
+}): string;

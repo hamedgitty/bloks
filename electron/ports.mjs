@@ -80,13 +80,21 @@ export function describeAttempt(attempt) {
  * port problem, so its own last words lead when there are any; otherwise
  * the ports and what held them, and the way to pick one yourself.
  */
-export function failurePage({ attempts, crash, backdrop, machine }) {
-  const crashed = attempts.some((a) => a.why === "exited") && crash;
-  const title = crashed ? "The Bloks server stopped while starting" : "Couldn't find a free port for Bloks";
-  const lead = crashed
+export function failurePage({ attempts, crash, backdrop, machine, inUse = null }) {
+  const crashed = !inUse && attempts.some((a) => a.why === "exited") && crash;
+  const title = inUse
+    ? "Bloks is already running on this " + machine
+    : crashed
+      ? "The Bloks server stopped while starting"
+      : "Couldn't find a free port for Bloks";
+  const lead = inUse
+    ? `Another Bloks server (process ${inUse.pid}) is using your Bloks data in ~/.bloks, at http://127.0.0.1:${inUse.port}. ` +
+      "Two servers on one data folder overwrite each other's changes, so this window does not start a second one. " +
+      "Open that address in a browser to use it, or stop that server and reopen Bloks."
+    : crashed
     ? "This is not about ports. Its last words are below; quit and reopen Bloks, and if it happens again, please include them in a bug report."
     : `Every port Bloks tried was taken. Quit whatever is using them, or choose a port by adding "port": 9123 to ~/.bloks/config.json, then reopen Bloks. If it keeps happening, restart your ${machine}.`;
-  const lines = attempts.map((a) => `<li>${escapeHtml(describeAttempt(a))}</li>`).join("");
+  const lines = inUse ? "" : attempts.map((a) => `<li>${escapeHtml(describeAttempt(a))}</li>`).join("");
   const tail = crashed
     ? `<pre style="text-align:left;white-space:pre-wrap;background:#1b1b1f;color:#c9c9d1;border-radius:10px;padding:10px 12px;font:12px ui-monospace,Menlo,monospace;max-height:180px;overflow:auto">${escapeHtml(crash.slice(-1500))}</pre>`
     : "";

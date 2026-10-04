@@ -264,6 +264,9 @@ export interface BotRecord {
   /** How senior this agent is in a room, 1 to 5. The most senior member
    * of a room carries the final call when members disagree. */
   seniority?: number;
+  /** The agent that hired this one, when an agent did. One of the two
+   * relationships that let one agent stop another's turn (GitHub 141). */
+  hiredBy?: string;
   /** How hard the engine should think, where the engine has the dial.
    * Unset means the engine's own default. */
   effort?: "low" | "medium" | "high";

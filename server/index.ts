@@ -240,6 +240,7 @@ import {
   vmStop,
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
+import { claimDataFolder, inUseMessage } from "./data-lock.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -281,6 +282,17 @@ import { speakable } from "./speech-text.ts";
 // BLOKS_PORT first (the desktop app always sets it), then a port chosen in
 // config.json, then the usual one
 const PORT = Number(process.env.BLOKS_PORT || loadConfig().port || 8799);
+
+// One server per data folder, claimed before any store below reads or
+// writes it (server/data-lock.ts, GitHub 140).
+{
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const claim = claimDataFolder(DATA_DIR, PORT);
+  if (!claim.ok) {
+    console.error(inUseMessage(DATA_DIR, claim.holder));
+    process.exit(3);
+  }
+}
 const STATIC_DIR = process.env.BLOKS_STATIC_DIR || null;
 const MIME: Record<string, string> = {
   ".html": "text/html",
@@ -1367,6 +1379,18 @@ bus.subscribe((event: RuntimeEvent) => {
           : suggestNote(bot, (event.input as { fact?: unknown } | undefined)?.fact, event.threadId);
         void laneInstance(bot, event.threadId)
           ?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "answer", message: answer })
+          .catch(() => {});
+        break;
+      }
+      // reading one message recall cut short
+      if (event.tool === "read_message" && event.requestId) {
+        const id = String((event.input as { message_id?: unknown } | undefined)?.message_id ?? "").trim();
+        const found = /^[\w-]{1,80}$/.test(id) ? recalledMessage(bot, id, event.threadId) : null;
+        void laneInstance(bot, event.threadId)
+          ?.adapter.respondToRequest(event.threadId, event.requestId, {
+            behavior: "answer",
+            message: found ? `${found.who}${found.by === "agent" ? " (another agent)" : ""}, ${found.where}:\n${found.text}` : "No message with that id in your conversations.",
+          })
           .catch(() => {});
         break;
       }
@@ -3345,11 +3369,27 @@ function recallSources(bot: BotRecord, laneId?: string | null): RecallSource[] {
   return sources;
 }
 
+/** One message in full, from the places recall searches and nowhere
+ * else, for a hit recall cut short (GitHub 143). */
+function recalledMessage(bot: BotRecord, messageId: string, laneId?: string | null) {
+  for (const source of recallSources(bot, laneId)) {
+    const message = source.messages.find((m) => m.id === messageId);
+    if (!message || message.deleted || !message.text) continue;
+    return { messageId, threadId: source.threadId, where: source.where, at: message.at, ...speakerFor(bot)(message), text: message.text };
+  }
+  return null;
+}
+
 function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit = 8) {
+  return recall(query, recallSources(bot, laneId), speakerFor(bot), limit);
+}
+
+/** Who said a message, as recall reports it. A message another agent
+ * sent lands as a user message with the sender in `agent`; reading only
+ * the role named it the person (GitHub 136). */
+function speakerFor(bot: BotRecord) {
   const person = cfg.profile?.name?.trim() || "the person";
-  // A message another agent sent lands as a user message with the sender
-  // in `agent`; reading only the role named it the person (GitHub 136).
-  return recall(query, recallSources(bot, laneId), (message): Speaker => {
+  return (message: RecallSource["messages"][number]): Speaker => {
     if (message.agent?.dir === "in") {
       return { who: store.bot(message.agent.peerId)?.name ?? message.agent.peerName, by: "agent", agentId: message.agent.peerId };
     }
@@ -3359,7 +3399,20 @@ function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit 
     }
     if (message.from && message.from !== bot.id) return { who: store.bot(message.from)?.name ?? "an agent", by: "agent", agentId: message.from };
     return { who: bot.name, by: "self", agentId: bot.id };
-  }, limit);
+  };
+}
+
+/** Why `callerId` may stop `targetId`'s turn, or null when it may not:
+ * it hired that agent, or it outranks it in a room they are both in. The
+ * same seniority that gives the lead the final call in a room (GitHub 141). */
+function mayStop(callerId: string, targetId: string): "hired" | "senior" | null {
+  const target = store.bot(targetId);
+  const caller = store.bot(callerId);
+  if (!target || !caller || callerId === targetId) return null;
+  if (target.hiredBy === callerId) return "hired";
+  const outranks = (caller.seniority ?? 1) > (target.seniority ?? 1);
+  if (outranks && bloks.bloks.some((room) => room.memberIds.includes(callerId) && room.memberIds.includes(targetId))) return "senior";
+  return null;
 }
 
 /** The owner's name as members see it. */
@@ -5483,7 +5536,11 @@ async function sendUserMessage(
   }
   if (lane.busy) {
     queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
-    return { ok: true, queued: true, taskId: lane.id, lane: lane.title };
+    // Said to the sender too: an agent that thought its "stop" landed would
+    // carry on as if the other had stopped (GitHub 141).
+    const waits = `${bot.name} is in the middle of a turn; this waits until that turn ends.`;
+    const stop = options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
+    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
@@ -6343,6 +6400,7 @@ const server = createServer(async (req, res) => {
       store.patchBot(bot.id, {
         ...(await newAgentSettings(asAgent ? (store.bot(asAgent.botId)?.approvals ?? "ask") : undefined)),
         ...(section ? { section } : {}),
+        ...(asAgent ? { hiredBy: asAgent.botId } : {}),
       });
       record({
         at: Date.now(),
@@ -8203,6 +8261,24 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such agent" });
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      if (asAgent) {
+        // Another agent stopping this one: only the one that hired it, or
+        // one that outranks it in a room they share. It stops the
+        // conversation that agent's messages go to, and its reason is the
+        // next thing said there (GitHub 141).
+        const caller = store.bot(asAgent.botId)!;
+        if (!mayStop(caller.id, bot.id)) {
+          return json(res, 403, { error: `${caller.name} can stop only an agent it hired, or one it outranks in a room they are both in` });
+        }
+        const lane = mainLaneOf(bot);
+        if (!lane.busy) return json(res, 200, { ok: true, stopped: false, note: `${bot.name} was not working; nothing to stop.` });
+        await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id);
+        const notice = store.appendMessage(lane.id, { role: "bot", kind: "notice", text: `${caller.name} stopped this turn.` });
+        broadcast({ kind: "message", threadId: lane.id, message: notice });
+        const why = clamp(body.text, MAX_MESSAGE_CHARS);
+        if (why) await sendUserMessage(bot.id, why, { taskId: lane.id, from: { botId: caller.id, name: caller.name } }).catch(() => {});
+        return json(res, 200, { ok: true, stopped: true, ...(why ? { said: why } : {}) });
+      }
       // a named lane is interruptible even when another lane is on screen
       const laneId =
         typeof body.taskId === "string" && bot.tasks.some((t) => t.id === body.taskId)
@@ -9390,6 +9466,13 @@ const server = createServer(async (req, res) => {
     // An agent's own past, for the command line (server/recall.ts). The
     // agent guard only lets an agent ask about itself; the lane decides
     // how far back it may look.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/recall\/([\w-]+)$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      const found = recalledMessage(bot, m[2], asAgent?.taskId);
+      return found ? json(res, 200, { message: found }) : json(res, 404, { error: "no such message in your conversations" });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/recall$/);
     if (m && method === "GET") {
       const bot = store.bot(m[1]);

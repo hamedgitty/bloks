@@ -57,6 +57,8 @@ export interface RecallHit {
   by: Speaker["by"];
   agentId?: string;
   text: string;
+  /** Cut at 600 characters; the whole of it is a read by messageId away. */
+  clipped?: boolean;
   /** What was said just before, for context. */
   before?: { who: string; by: Speaker["by"]; agentId?: string; text: string };
 }
@@ -123,6 +125,7 @@ export function recall(
             by: speaker.by,
             ...(speaker.agentId ? { agentId: speaker.agentId } : {}),
             text: clip(message.text!, 600),
+            ...(clip(message.text!, 600).endsWith("…") && message.text!.replace(/\s+/g, " ").trim().length > 600 ? { clipped: true } : {}),
             ...(previous && earlier
               ? {
                   before: {
@@ -159,7 +162,8 @@ export function recallText(hits: RecallHit[], query: string): string {
     .map((hit) => {
       const when = new Date(hit.at).toISOString().slice(0, 16).replace("T", " ");
       const before = hit.before ? `\n  (just before, ${label(hit.before)}: ${hit.before.text})` : "";
-      return `- ${when}, ${hit.where}, ${label(hit)}: ${hit.text}${before}`;
+      const cut = hit.clipped ? ` [cut short: message ${hit.messageId} has the rest]` : "";
+      return `- ${when}, ${hit.where}, ${label(hit)}: ${hit.text}${cut}${before}`;
     })
     .join("\n");
 }

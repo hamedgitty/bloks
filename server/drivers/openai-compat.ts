@@ -167,6 +167,19 @@ function toolSchemas(hasComputer: boolean, hasSandbox: boolean) {
     {
       type: "function",
       function: {
+        name: "read_message",
+        description:
+          "Read in full one message that search_history found but cut short (it says which message id has the rest).",
+        parameters: {
+          type: "object",
+          properties: { message_id: { type: "string", description: "The message id search_history gave" } },
+          required: ["message_id"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "note_about_person",
         description:
           "Suggest one short, lasting note about the person you work for (how they like answers, their role, their timezone, names they use). They decide whether to keep it. Never secrets or anything sensitive.",
@@ -628,7 +641,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
               result = await requestConnection(threadId, turnId, args);
             } else if (name === "request_secret") {
               result = await requestSecret(threadId, turnId, args);
-            } else if (name === "search_history" || name === "note_about_person") {
+            } else if (name === "search_history" || name === "read_message" || name === "note_about_person") {
               result = await askWorkspace(threadId, turnId, name, args ?? {});
             } else if (name === "sandbox_exec" && sandbox) {
               result = await sandboxExec(sandbox, String(args.command ?? ""));

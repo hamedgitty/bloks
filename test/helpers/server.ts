@@ -125,10 +125,21 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
     logs: () => io.out + io.err,
     async stop() {
       child.kill("SIGTERM");
-      await new Promise((r) => {
-        child.once("exit", r);
-        setTimeout(r, 3_000);
+      // Really gone before this returns: a test that starts another
+      // server on the same home would otherwise find this one still
+      // holding the data folder (server/data-lock.ts).
+      const gone = await new Promise<boolean>((r) => {
+        if (child.exitCode !== null || child.signalCode !== null) return r(true);
+        child.once("exit", () => r(true));
+        setTimeout(() => r(false), 10_000);
       });
+      if (!gone) {
+        child.kill("SIGKILL");
+        await new Promise((r) => {
+          child.once("exit", r);
+          setTimeout(r, 2_000);
+        });
+      }
       // The harness can outlive SIGTERM by a moment: a sandbox teardown,
       // a helper, a last write of a store on its way out. Removing the
       // home while one of those is still writing raises ENOTEMPTY, which

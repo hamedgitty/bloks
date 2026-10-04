@@ -152,3 +152,54 @@ test("the schedule reads like something a person would say", () => {
   assert.equal(describe(routine({ days: [3] })), "Every Wednesday at 09:00");
   assert.equal(describe(routine({ days: [1, 4] })), "Mon, Thu at 09:00");
 });
+
+test("a routine made or retimed after its slot waits for the next one (GitHub 142)", () => {
+  // Made at 19:01 for 18:00: the 18:00 an hour ago was not missed, it was
+  // never this routine's. The grace is for slots the Mac slept through.
+  const made = at("2026-03-17T19:01:00").getTime();
+  const r = routine({ time: "18:00", createdAt: made, scheduledAt: made });
+  assert.equal(isDue(r, at("2026-03-17T19:01:30")), false);
+  assert.equal(isDue(r, at("2026-03-17T20:30:00")), false);
+  assert.equal(isDue(r, at("2026-03-18T18:00:10")), true, "tomorrow's slot runs as usual");
+
+  // a slot after the schedule was set, missed while asleep, still runs late within the grace
+  const set = at("2026-03-17T17:00:00").getTime();
+  assert.equal(isDue(routine({ time: "18:00", scheduledAt: set }), at("2026-03-17T19:30:00")), true);
+
+  // and a routine from before this field existed behaves as it always did
+  assert.equal(isDue(routine({ time: "18:00" }), at("2026-03-17T19:01:30")), true);
+});
+
+test("changing a routine's time, days or date, or switching it back on, restarts its slots", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  // RoutineStore writes under the real data folder, so it runs in a child with its own HOME
+  const home = mkdtempSync(join(tmpdir(), "bloks-routine-store-"));
+  try {
+    const script = `
+      import { RoutineStore } from ${JSON.stringify(new URL("../server/routines.ts", import.meta.url).href)};
+      const store = new RoutineStore();
+      const r = store.create({ targetId: "b", targetKind: "agent", prompt: "x", time: "21:00", days: [], enabled: true });
+      const made = r.scheduledAt;
+      await new Promise((ok) => setTimeout(ok, 20));
+      store.patch(r.id, { prompt: "y" });
+      const sameAfterPrompt = store.get(r.id).scheduledAt === made;
+      store.patch(r.id, { time: "18:00" });
+      const movedOnRetime = store.get(r.id).scheduledAt > made;
+      const retimed = store.get(r.id).scheduledAt;
+      await new Promise((ok) => setTimeout(ok, 20));
+      store.patch(r.id, { enabled: false });
+      const sameOnPause = store.get(r.id).scheduledAt === retimed;
+      store.patch(r.id, { enabled: true });
+      const movedOnResume = store.get(r.id).scheduledAt > retimed;
+      console.log(JSON.stringify({ made: typeof made === "number", sameAfterPrompt, movedOnRetime, sameOnPause, movedOnResume }));
+    `;
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8" });
+    const result = JSON.parse(run.stdout.trim().split("\n").pop() ?? "{}");
+    assert.deepEqual(result, { made: true, sameAfterPrompt: true, movedOnRetime: true, sameOnPause: true, movedOnResume: true }, run.stderr);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
