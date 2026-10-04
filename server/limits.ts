@@ -28,6 +28,12 @@ export const MAX_BODY_BYTES = 2_000_000;
 export const MAX_WEBHOOK_QUEUE_ITEMS = 20;
 export const MAX_WEBHOOK_QUEUE_BYTES = 100_000;
 
+/** How long a message may wait through a restart and still be sent when
+ * Bloks starts again. A restart is usually minutes; a message older than
+ * this was written for a moment that has passed, so it is marked not
+ * sent and left for the person to send again, never run on its own. */
+export const MAX_QUEUED_RECOVERY_MS = 12 * 60 * 60_000;
+
 /** Simultaneous event-stream listeners. One app needs one. */
 export const MAX_SSE_CLIENTS = 32;
 

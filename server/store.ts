@@ -148,6 +148,13 @@ export interface Message {
   artifact?: { name: string; mime: string; size: number };
   /** sent while the lane was busy; drains into the next turn */
   queued?: boolean;
+  /** When it was queued. Written since 2.5.19; a queued message without
+   * it predates recovery after a restart and is never run by it. */
+  queuedAt?: number;
+  /** Queued, then never sent: it was still waiting when Bloks restarted
+   * and was too old, or too old a format, to run unattended. Kept in the
+   * transcript for the person to send again if it still matters. */
+  unsent?: boolean;
   /** When this message was last edited. Absent means never. */
   editedAt?: number;
   /** Taken back. The row stays so replies pointing at it still make

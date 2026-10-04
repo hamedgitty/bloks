@@ -1,5 +1,8 @@
-// Watchers (server/watchers.ts): a folder, a page or a feed, and what an
-// agent should do when it changes.
+// Watchers (server/watchers.ts): a folder, a page, a feed or a check, and
+// what an agent should do when it changes.
+//
+// A check runs a command unattended, so one an agent filed shows the
+// command and waits for an Approve here before it ever runs.
 //
 // The list on the left, the one you are looking at on the right: what is
 // watched, what the agent is told, how often it looks, and the last few
@@ -11,6 +14,8 @@ import Folder from "lucide-react/dist/esm/icons/folder.mjs";
 import Globe from "lucide-react/dist/esm/icons/globe.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Rss from "lucide-react/dist/esm/icons/rss.mjs";
+import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.mjs";
+import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import { api, useStore } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
@@ -20,7 +25,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/cn";
 
-type Kind = "folder" | "page" | "feed";
+type Kind = "folder" | "page" | "feed" | "check";
 
 interface WatcherRow {
   id: string;
@@ -37,13 +42,20 @@ interface WatcherRow {
   lastError?: string;
   laneId?: string;
   fires: Array<{ at: number; summary: string }>;
+  approvedBy?: "person" | "mode";
 }
 
 const KIND: Record<Kind, { icon: typeof Folder; label: string; placeholder: string }> = {
   folder: { icon: Folder, label: "Folder", placeholder: "/Users/you/Invoices" },
   page: { icon: Globe, label: "Web page", placeholder: "https://example.com/pricing" },
   feed: { icon: Rss, label: "Feed", placeholder: "https://example.com/blog/rss.xml" },
+  check: { icon: SquareTerminal, label: "Check", placeholder: "python3 scripts/supplier_replied.py" },
 };
+
+/** Whether a check may run now: approved here, or filed by an agent that
+ * still runs commands without asking. Mirrors checkAllowed on the server. */
+const mayRun = (w: WatcherRow, approvals?: string) =>
+  w.kind !== "check" || w.approvedBy === "person" || (w.approvedBy === "mode" && (approvals === "auto" || approvals === "full"));
 
 const ago = (at?: number) => {
   if (!at) return "never";
@@ -111,7 +123,9 @@ function Draft({ onMade }: { onMade: (id: string) => void }) {
             ? "When a new invoice arrives, rename it by date and vendor and add it to the expenses sheet."
             : kind === "page"
               ? "If the price drops below $400, tell me."
-              : "Summarise each new post in two lines and tell me if it mentions us."
+              : kind === "check"
+                ? "A supplier replied: read it and decide the next step."
+                : "Summarise each new post in two lines and tell me if it mentions us."
         }
         className="min-h-[90px] text-[13px]"
       />
@@ -136,9 +150,10 @@ function Draft({ onMade }: { onMade: (id: string) => void }) {
         </Button>
       </div>
       <p className="text-[12px] leading-relaxed text-muted-foreground">
-        The first look only notes how things are. From then on, a change gives the agent a turn in a lane of its own. Pages
-        and feeds are checked every 30 minutes; folders within seconds. You can also tell an agent in a chat to keep an eye
-        on something, and it files the watcher itself.
+        The first look only notes how things are. From then on, a change gives the agent a turn in a lane of its own. Pages,
+        feeds and checks are looked at every 30 minutes; folders within seconds. A check is a command run in the agent's
+        folder without waking it: exit 0 means act on what it printed, exit 1 means nothing to do. You can also tell an
+        agent in a chat to keep an eye on something, and it files the watcher itself.
       </p>
     </div>
   );
@@ -151,7 +166,7 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
   const [checking, setChecking] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => setInstruction(w.instruction), [w.id, w.instruction]);
-  const patch = (body: Partial<WatcherRow>) =>
+  const patch = (body: Partial<WatcherRow> & { approved?: boolean }) =>
     api(`/api/watchers/${w.id}`, { method: "PATCH", body: JSON.stringify(body) }).then(onChanged).catch((e: Error) => setNote(e.message));
   const check = () => {
     setChecking(true);
@@ -161,15 +176,44 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
       .catch((e: Error) => setNote(e.message))
       .finally(() => setChecking(false));
   };
-  const Icon = KIND[w.kind].icon;
+  const Icon = (KIND[w.kind] ?? KIND.page).icon;
+  const waiting = !mayRun(w, bot?.approvals);
   return (
     <div className="flex flex-col gap-4">
+      {w.kind === "check" && waiting && (
+        <div className="flex flex-col gap-2 rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-3 text-[12.5px] text-foreground">
+          <div className="flex items-center gap-2 font-medium">
+            <ShieldCheck size={14} className="text-warning" /> {bot?.name ?? "An agent"} wants to run this command on its own
+          </div>
+          <code className="block break-all rounded-lg bg-background px-2.5 py-1.5 font-mono text-[12px]">{w.target}</code>
+          <div className="text-muted-foreground">
+            Every {w.every < 60 ? `${w.every} minutes` : `${Math.round(w.every / 60)} hours`}, in its working folder, without asking each time.
+            It does not run until you approve it.
+          </div>
+          <div>
+            <Button size="sm" onClick={() => patch({ approved: true })}>
+              Approve this command
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-[15px] font-semibold text-foreground">
             <Icon size={15} className="text-muted-foreground" /> {w.name}
           </div>
           <div className="mt-0.5 break-all font-mono text-[12px] text-muted-foreground">{w.target}</div>
+          {w.kind === "check" && !waiting && (
+            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+              <ShieldCheck size={12} />
+              {w.approvedBy === "person" ? "You approved this command." : `Runs because ${bot?.name ?? "its agent"} may run commands without asking.`}
+              {w.approvedBy === "person" && (
+                <button className="underline underline-offset-2" onClick={() => patch({ approved: false })}>
+                  Withdraw
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <Switch checked={w.enabled} onCheckedChange={(on) => patch({ enabled: on })} aria-label="Watching" />
       </div>
@@ -209,7 +253,9 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
       <div>
         <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Fired</div>
         {w.fires.length === 0 ? (
-          <div className="text-[12.5px] text-muted-foreground">Not yet. It fires the first time something changes.</div>
+          <div className="text-[12.5px] text-muted-foreground">
+            {w.kind === "check" ? "Not yet. It fires when the check finds something new." : "Not yet. It fires the first time something changes."}
+          </div>
         ) : (
           <ul className="flex flex-col gap-1">
             {w.fires.map((f) => (
@@ -275,7 +321,8 @@ export function WatchersTab() {
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {(rows ?? []).map((w) => {
             const bot = state.bots.find((b) => b.id === w.botId);
-            const Icon = KIND[w.kind].icon;
+            const Icon = (KIND[w.kind] ?? KIND.page).icon;
+            const waiting = !mayRun(w, bot?.approvals);
             const active = showing !== "new" && showing?.id === w.id;
             return (
               <button
@@ -289,8 +336,8 @@ export function WatchersTab() {
                     <Icon size={12} className="shrink-0 text-muted-foreground" />
                     <span className="truncate">{w.name}</span>
                   </span>
-                  <span className={cn("block truncate text-[11px]", w.lastError ? "text-warning" : w.enabled ? "text-muted-foreground" : "text-muted-foreground/70")}>
-                    {!w.enabled ? "Paused" : w.lastError ? "Needs a look" : w.fires[0] ? `Fired ${ago(w.fires[0].at)}` : `Looked ${ago(w.lastCheck)}`}
+                  <span className={cn("block truncate text-[11px]", waiting || w.lastError ? "text-warning" : w.enabled ? "text-muted-foreground" : "text-muted-foreground/70")}>
+                    {!w.enabled ? "Paused" : waiting ? "Needs your approval" : w.lastError ? "Needs a look" : w.fires[0] ? `Fired ${ago(w.fires[0].at)}` : `Looked ${ago(w.lastCheck)}`}
                   </span>
                 </span>
               </button>

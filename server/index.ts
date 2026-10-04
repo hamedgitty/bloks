@@ -88,6 +88,7 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_WEBHOOK_QUEUE_BYTES,
   MAX_WEBHOOK_QUEUE_ITEMS,
+  MAX_QUEUED_RECOVERY_MS,
   MAX_MODEL_ID_CHARS,
   MAX_NAME_CHARS,
   MAX_SKILL_CHARS,
@@ -250,6 +251,8 @@ import { localDate } from "./usage.ts";
 import { engineReport, TurnLogStore, type Outcome, type TurnLog } from "./engine-report.ts";
 import { actionItems, cleanSegment, MAX_SEGMENTS, notesPrompt, transcriptOf, type Meeting } from "./meetings.ts";
 import {
+  checkAllowed,
+  checkOutcome,
   cleanWatcher,
   describeFolderChanges,
   folderChanges,
@@ -259,6 +262,7 @@ import {
   newLines,
   pageText,
   parseFeed,
+  runCheck,
   SETTLE_MS,
   watcherTurn,
   type Watcher,
@@ -2140,7 +2144,7 @@ function roomTranscript(blokId: string, speakerId: string): string {
   };
   return store
     .messagesFor(blokId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued)
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
     .slice(-30)
     .map((m) =>
       m.replyTo
@@ -2445,9 +2449,10 @@ async function startTurn(
   const transcriptBudget = Math.max(2_000, Math.floor(contextLimit * COMPACT_AT) - 4_000);
   const buildTranscript = (): { turns: Turn[]; dropped: number } => {
     if (blok) return { turns: [], dropped: 0 };
+    // a message marked not sent was never said, so no engine hears it
     const settled = store
       .messagesFor(roomId)
-      .filter((m) => m.kind === "text" && m.text && !m.deleted)
+      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent)
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         text: m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text!) : m.text!,
@@ -3092,6 +3097,28 @@ async function fetchWatched(url: string): Promise<string> {
   return text.slice(0, 2_000_000);
 }
 
+/** Checks running right now, across every watcher. A few at a time is
+ * plenty for a schedule measured in minutes, and keeps a workspace full
+ * of slow checks from crowding the machine. */
+const MAX_CHECKS_AT_ONCE = 3;
+let runningChecks = 0;
+
+/** Where a check runs: the agent's working folder, as its turns do. */
+function checkFolder(bot: BotRecord): string {
+  return bot.cwd && existsSync(bot.cwd) ? bot.cwd : workspace.ensureWorkspace(bot.id);
+}
+
+/** What a check runs with: this machine's environment and the secrets
+ * saved for agents, never an agent's workspace credential, which lives
+ * for one turn and a check is not a turn. */
+function checkEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(cfg.secrets ?? {}) };
+  delete env.BLOKS_TOKEN;
+  return env;
+}
+
+const runsCommandsUnasked = (bot: BotRecord | null | undefined) => bot?.approvals === "auto" || bot?.approvals === "full";
+
 /** The lane a watcher's turns run in, made on first use. */
 function watcherLane(w: Watcher, bot: BotRecord) {
   const known = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
@@ -3134,9 +3161,27 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     if (!bot || bot.archivedAt) throw new Error("its agent is gone or archived");
     const lane = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
     if (lane?.busy || (w.kind === "folder" && bot.busy)) return { fired: false, note: `${bot.name} is working; it will look again shortly` };
+    if (!checkAllowed(w, bot.approvals)) {
+      w.lastCheck = Date.now();
+      w.lastError = `Waiting for approval: its command does not run until ${hostName()} approves it here.`;
+      return { fired: false, note: w.lastError };
+    }
 
     let what: string | null = null;
-    if (w.kind === "folder") {
+    if (w.kind === "check") {
+      if (runningChecks >= MAX_CHECKS_AT_ONCE) return { fired: false, note: "other checks are running; it will look again shortly" };
+      runningChecks++;
+      let result: Awaited<ReturnType<typeof runCheck>>;
+      try {
+        result = await runCheck(w.target, checkFolder(bot), checkEnv());
+      } finally {
+        runningChecks--;
+      }
+      const outcome = checkOutcome(result, w.seen);
+      if (outcome.error) throw new Error(outcome.error);
+      w.seen = outcome.seen;
+      what = outcome.what;
+    } else if (w.kind === "folder") {
       if (!existsSync(w.target)) throw new Error("the folder is not there any more");
       const now = folderSnapshot(w.target);
       if (w.seen) what = describeFolderChanges(folderChanges(JSON.parse(w.seen), now));
@@ -3985,7 +4030,7 @@ async function foldContext(botId: string, threadId: string, force = false): Prom
 
   const settled = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted);
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent);
   const already = task.context?.through ?? 0;
   const carried = settled.slice(already);
   const asTurns: Turn[] = carried.map((m) => ({
@@ -4047,7 +4092,7 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
 
   const settled = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted);
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent);
   const asTurns: Turn[] = settled.map((m) => ({
     role: m.role === "user" ? ("user" as const) : ("assistant" as const),
     text: m.text!,
@@ -4111,7 +4156,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
 
   const turns: Turn[] = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted)
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent)
     .map((m) => ({
       role: m.role === "user" ? ("user" as const) : ("assistant" as const),
       text: m.text!,
@@ -5289,7 +5334,7 @@ function queueOnLane(
   options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" } = {},
 ) {
   const message = store.appendMessage(laneId, {
-    role: "user", kind: "text", text, queued: true,
+    role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
@@ -5305,12 +5350,26 @@ function queueOnLane(
   return message;
 }
 
-/** After a restart, every message still flagged queued is waiting again,
- * and runs once its lane is free, as it would have before the restart. */
-function recoverQueued() {
+/**
+ * After a restart, a message still flagged queued is waiting again and
+ * runs once its lane is free, as it would have before the restart. Only
+ * a recent one: being queued is not standing permission to act. A queued
+ * message older than MAX_QUEUED_RECOVERY_MS, or written before queued
+ * messages carried the time they were queued (so its age is unknown,
+ * and an older version may well have answered it already), is marked
+ * not sent instead. That clears the flag, so a later restart does not
+ * consider it again either.
+ */
+function recoverQueued(now = Date.now()) {
   for (const bot of store.bots) {
     for (const lane of bot.tasks) {
-      const waiting = store.messagesFor(lane.id).filter((m) => m.queued && m.role === "user" && !m.deleted && m.text);
+      const flagged = store.messagesFor(lane.id).filter((m) => m.queued && m.role === "user" && !m.deleted && m.text);
+      const fresh = (m: Message) => typeof m.queuedAt === "number" && now - m.queuedAt <= MAX_QUEUED_RECOVERY_MS && m.queuedAt <= now;
+      for (const m of flagged.filter((m) => !fresh(m))) {
+        const patched = store.patchMessage(lane.id, m.id, { queued: false, unsent: true });
+        if (patched) broadcast({ kind: "message.patch", threadId: lane.id, message: patched });
+      }
+      const waiting = flagged.filter(fresh);
       if (!waiting.length) continue;
       steerQueues.set(lane.id, {
         botId: bot.id,
@@ -9034,13 +9093,26 @@ const server = createServer(async (req, res) => {
       if (!checked.ok) return json(res, 400, { error: checked.error });
       if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
       const w: Watcher = { id: newId(), ...checked.value, createdAt: Date.now(), fires: [] };
+      // A check runs a command with nobody watching. The person filing one
+      // has approved it by writing it; an agent's waits for the person,
+      // unless that agent already runs commands without asking.
+      if (w.kind === "check") {
+        const approvedBy = !asAgent ? "person" : runsCommandsUnasked(store.bot(w.botId)) ? "mode" : undefined;
+        if (approvedBy) w.approvedBy = approvedBy;
+      }
       watchers.push(w);
       saveWatchers();
       armWatcher(w);
       // the first look is the baseline, taken now so the next change counts
       void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
-      return json(res, 201, { watcher: watcherView(w) });
+      const waiting = w.kind === "check" && !w.approvedBy;
+      return json(res, 201, {
+        watcher: watcherView(w),
+        ...(waiting
+          ? { note: `Filed, but its command does not run until ${hostName()} approves it in Watchers. Tell them it is waiting and what it runs.` }
+          : {}),
+      });
     }
     m = path.match(/^\/api\/watchers\/([\w-]+)$/);
     if (m && (method === "PATCH" || method === "DELETE")) {
@@ -9057,14 +9129,33 @@ const server = createServer(async (req, res) => {
       const checked = cleanWatcher({ ...w, ...body, botId: asAgent ? w.botId : (body.botId ?? w.botId) }, (id) => Boolean(store.bot(id)));
       if (!checked.ok) return json(res, 400, { error: checked.error });
       const moved = checked.value.target !== w.target || checked.value.kind !== w.kind;
+      const owner = store.bot(checked.value.botId);
+      const couldRun = checkAllowed(w, owner?.approvals);
       Object.assign(w, checked.value);
       if (moved) {
         delete w.seen;
         delete w.seenItems;
       }
+      if (w.kind !== "check") delete w.approvedBy;
+      else if (asAgent) {
+        // a command an agent rewrites is a new command: approved again,
+        // unless the agent runs commands unasked anyway
+        if (moved) {
+          if (runsCommandsUnasked(owner)) w.approvedBy = "mode";
+          else delete w.approvedBy;
+        }
+      } else if (typeof body.approved === "boolean") {
+        if (body.approved) w.approvedBy = "person";
+        else delete w.approvedBy;
+      } else if (moved) {
+        w.approvedBy = "person";
+      }
+      const canRun = checkAllowed(w, owner?.approvals);
+      if (canRun && !couldRun) w.lastError = undefined;
       saveWatchers();
       armWatcher(w);
-      if (moved && w.enabled) void checkWatcher(w.id);
+      // approving a check takes its baseline straight away
+      if ((moved || (canRun && !couldRun)) && w.enabled) void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
       return json(res, 200, { watcher: watcherView(w) });
     }
@@ -10435,9 +10526,14 @@ const server = createServer(async (req, res) => {
       return json(res, 201, { routine: { ...routine, summary: describeRoutine(routine) } });
     }
     m = path.match(/^\/api\/routines\/([\w-]+)$/);
+    // An agent changes and drops its own routines, as with watchers, and
+    // nobody else's: one agent tidying up must not take away a routine the
+    // person set for another.
+    const notMine = (r: { targetKind: string; targetId: string } | null) =>
+      Boolean(asAgent && r && (r.targetKind !== "agent" || r.targetId !== asAgent.botId));
     if (m && method === "PATCH") {
       const existing = routines.get(m[1]);
-      if (!existing) return json(res, 404, { error: "no such routine" });
+      if (!existing || notMine(existing)) return json(res, 404, { error: "no such routine" });
       const body = await readBody(req);
       // Only the fields a person edits. Never lastRunAt: rewriting when it
       // last ran is how you make a routine fire twice.
@@ -10461,6 +10557,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { routine: { ...routine!, summary: describeRoutine(routine!) } });
     }
     if (m && method === "DELETE") {
+      if (notMine(routines.get(m[1]))) return json(res, 404, { error: "no such routine" });
       const ok = routines.remove(m[1]);
       if (ok) broadcast({ kind: "routines" });
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "no such routine" });

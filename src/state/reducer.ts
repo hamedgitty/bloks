@@ -57,6 +57,9 @@ export interface Message {
   decisionChoice?: number;
   /** Sent while the lane was busy; drains into the next turn. */
   queued?: boolean;
+  /** Queued, but still waiting when Bloks restarted and too old to send
+   * on its own (server/index.ts, recoverQueued). */
+  unsent?: boolean;
   /** Emoji to whoever pressed it: "user", or an agent's id. */
   reactions?: Record<string, string[]>;
   /** When this message was last edited. Absent means never. */

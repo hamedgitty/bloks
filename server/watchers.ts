@@ -21,18 +21,36 @@
 // fires at most once per quiet period and a few times an hour, and a
 // folder change made by the watcher's own agent while it works is not a
 // change to react to.
+//
+// A fourth kind is a check: a short command the agent wrote once, run on
+// a schedule without a model, so a turn is spent only when there is
+// something to do ("use intelligence once to write the check, then run it
+// without intelligence"). It runs in the agent's working folder, with the
+// workspace's saved secrets but never the agent's workspace credential,
+// under a timeout and an output cap. Because nobody is there to approve
+// each run, a check an agent files runs only once the person has approved
+// its command, unless that agent already runs commands without asking
+// (approvals set to auto or full). Its outcome is the exit status:
+//
+//   0          there is something to do; what it printed says what
+//   1          nothing to do (the grep and test convention)
+//   other      the check itself is broken, shown on the watcher
+//
+// and, as with every watcher, the first look only takes a baseline and
+// the same finding twice in a row is not news.
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
-export type WatchKind = "folder" | "page" | "feed";
+export type WatchKind = "folder" | "page" | "feed" | "check";
 
 export interface Watcher {
   id: string;
   botId: string;
   name: string;
   kind: WatchKind;
-  /** A folder path, or an http(s) URL. */
+  /** A folder path, an http(s) URL, or for a check the command it runs. */
   target: string;
   /** What the agent should do when it changes. */
   instruction: string;
@@ -51,6 +69,11 @@ export interface Watcher {
   lastError?: string;
   laneId?: string;
   fires: Array<{ at: number; summary: string }>;
+  /** Checks only: who allowed its command to run unattended. "person"
+   * is the owner, in the app; "mode" is the agent's own approvals being
+   * auto or full when it filed it, which holds only while they still
+   * are. Absent means nobody yet, and it does not run. */
+  approvedBy?: "person" | "mode";
 }
 
 export const MIN_EVERY = 5;
@@ -171,6 +194,105 @@ export function parseFeed(xml: string): FeedItem[] {
   return items;
 }
 
+// ── checks ─────────────────────────────────────────────────────────────
+
+/** A check that has not answered in this long is stopped and counts as
+ * broken, so a stuck one cannot pile up behind itself. */
+export const CHECK_TIMEOUT_MS = 30_000;
+/** What a check may print before the rest is ignored, and how much of it
+ * the agent is shown. */
+export const CHECK_MAX_BYTES = 64_000;
+export const CHECK_SHOWN_CHARS = 4_000;
+export const MAX_CHECK_COMMAND = 500;
+
+export interface CheckResult {
+  code: number | null;
+  output: string;
+  errors: string;
+  timedOut: boolean;
+}
+
+/** Runs one check: its own process group, killed whole on timeout. */
+export function runCheck(command: string, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = CHECK_TIMEOUT_MS): Promise<CheckResult> {
+  return new Promise((resolve) => {
+    const windows = process.platform === "win32";
+    let output = "";
+    let errors = "";
+    let timedOut = false;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, { cwd, env, shell: true, detached: !windows, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (e) {
+      resolve({ code: null, output: "", errors: (e as Error).message, timedOut: false });
+      return;
+    }
+    const kill = () => {
+      try {
+        if (!windows && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (output.length < CHECK_MAX_BYTES) output += chunk.toString("utf8").slice(0, CHECK_MAX_BYTES - output.length);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (errors.length < 4_000) errors += chunk.toString("utf8").slice(0, 4_000 - errors.length);
+    });
+    child.on("error", (e) => {
+      errors ||= e.message;
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      // anything the check left running in the background goes with it
+      if (!windows) kill();
+      resolve({ code: timedOut ? null : code, output, errors, timedOut });
+    });
+  });
+}
+
+/**
+ * What one run of a check means, given what the last run saw. `seen` is
+ * what to remember for next time; `what` is set when the agent should get
+ * a turn; `error` when the check itself is broken.
+ */
+export function checkOutcome(
+  result: CheckResult,
+  previous: string | undefined,
+): { seen: string | undefined; what: string | null; error: string | null } {
+  if (result.timedOut) return { seen: previous, what: null, error: `The check took longer than ${CHECK_TIMEOUT_MS / 1000} seconds and was stopped.` };
+  if (result.code !== 0 && result.code !== 1) {
+    const why = result.errors.trim().split("\n")[0]?.slice(0, 160);
+    return { seen: previous, what: null, error: `The check failed (exit ${result.code ?? "unknown"})${why ? `: ${why}` : "."}` };
+  }
+  const printed = result.output.trim();
+  const now = { state: result.code === 0 ? "yes" : "no", hash: hashOf(printed) };
+  let before: { state?: string; hash?: string } | null = null;
+  try {
+    before = previous ? JSON.parse(previous) : null;
+  } catch {
+    before = null;
+  }
+  const seen = JSON.stringify(now);
+  // the first look is the baseline; after that, only a new finding
+  const news = before !== null && now.state === "yes" && (before.state !== "yes" || before.hash !== now.hash);
+  if (!news) return { seen, what: null, error: null };
+  const shown = printed.length > CHECK_SHOWN_CHARS ? `${printed.slice(0, CHECK_SHOWN_CHARS)}\n(and more, cut off here)` : printed;
+  return { seen, what: shown || "The check passed and printed nothing.", error: null };
+}
+
+/** Whether a check's command may run now, for an agent with these approvals. */
+export function checkAllowed(w: Pick<Watcher, "kind" | "approvedBy">, approvals: string | undefined): boolean {
+  if (w.kind !== "check") return true;
+  if (w.approvedBy === "person") return true;
+  return w.approvedBy === "mode" && (approvals === "auto" || approvals === "full");
+}
+
 // ── firing ─────────────────────────────────────────────────────────────
 
 /** Whether the watcher may start another turn now. */
@@ -180,6 +302,18 @@ export function mayFire(w: Pick<Watcher, "fires">, now: number): boolean {
 
 /** What the agent is told. */
 export function watcherTurn(w: Pick<Watcher, "kind" | "target" | "instruction" | "name">, what: string): string {
+  if (w.kind === "check") {
+    return [
+      `Your watcher "${w.name}" ran its check (\`${w.target}\`) and it found something.`,
+      "",
+      "What the check printed:",
+      what,
+      "",
+      `What you were asked to do when this happens: ${w.instruction}`,
+      "",
+      "If this does not call for that, say so in one line and stop.",
+    ].join("\n");
+  }
   const where = w.kind === "folder" ? `the folder ${w.target}` : w.kind === "feed" ? `the feed ${w.target}` : `the page ${w.target}`;
   return [
     `Your watcher "${w.name}" noticed a change in ${where}.`,
@@ -197,11 +331,16 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled"> }
   | { ok: false; error: string } {
   const kind = raw.kind;
-  if (kind !== "folder" && kind !== "page" && kind !== "feed") return { ok: false, error: "kind is folder, page or feed" };
+  if (kind !== "folder" && kind !== "page" && kind !== "feed" && kind !== "check") return { ok: false, error: "kind is folder, page, feed or check" };
   const botId = typeof raw.botId === "string" ? raw.botId : "";
   if (!botExists(botId)) return { ok: false, error: "no such agent" };
   const target = String(raw.target ?? "").trim();
-  if (kind === "folder") {
+  if (kind === "check") {
+    if (!target) return { ok: false, error: "a check is the command to run" };
+    // one line: a longer script belongs in a file the check runs
+    if (/[\r\n\0]/.test(target)) return { ok: false, error: "a check is one command on one line; put anything longer in a script and run that" };
+    if (target.length > MAX_CHECK_COMMAND) return { ok: false, error: `a check is at most ${MAX_CHECK_COMMAND} characters` };
+  } else if (kind === "folder") {
     if (!target.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(target)) return { ok: false, error: "a folder is a full path" };
   } else if (!/^https?:\/\/[^\s]+$/i.test(target)) {
     return { ok: false, error: "a page or feed is an http or https address" };
@@ -216,7 +355,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
       botId,
       kind,
       target: target.slice(0, 1_000),
-      name: (String(raw.name ?? "").trim() || target.split(/[\\/]/).filter(Boolean).pop() || kind).slice(0, 60),
+      name: (String(raw.name ?? "").trim() || (kind === "check" ? target.split(/\s+/).slice(0, 3).join(" ") : target.split(/[\\/]/).filter(Boolean).pop()) || kind).slice(0, 60),
       instruction,
       ...(mentions && kind === "page" ? { mentions } : {}),
       mode: raw.mode === "rehearse" ? "rehearse" : "act",

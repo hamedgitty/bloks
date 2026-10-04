@@ -146,6 +146,7 @@ function Bubble({
   onEdit,
   onDelete,
   onRewind,
+  onResend,
   nameOf,
   highlight = "",
   isHit,
@@ -159,6 +160,7 @@ function Bubble({
   onEdit?: (messageId: string, text: string) => void;
   onDelete?: (messageId: string) => void;
   onRewind?: (messageId: string) => void;
+  onResend?: (text: string) => void;
   nameOf?: (id: string) => string;
   highlight?: string;
   isHit?: boolean;
@@ -252,6 +254,16 @@ function Bubble({
             <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70">
               <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
               Queued, sends when this turn finishes
+            </div>
+          )}
+          {user && message.unsent && (
+            <div className="mt-1 text-[10.5px] font-medium opacity-80">
+              Not sent: it was still waiting when Bloks restarted, too long ago to send on its own.
+              {onResend && message.text ? (
+                <button className="ml-1.5 underline underline-offset-2" onClick={() => onResend(message.text ?? "")}>
+                  Send again
+                </button>
+              ) : null}
             </div>
           )}
         </div>
@@ -984,6 +996,7 @@ export function ChatView({ bot }: { bot: Bot }) {
                     onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
                     onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
                     onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
+                    onResend={(text) => dispatch({ type: "send", botId: bot.id, text })}
                     highlight={finding ? query : ""}
                     isHit={absolute === currentHit}
                     nameOf={(id) => (id === "user" ? "You" : (state.bots.find((b) => b.id === id)?.name ?? bot.name))}

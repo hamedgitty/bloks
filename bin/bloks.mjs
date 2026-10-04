@@ -85,12 +85,15 @@ const COMMANDS = {
     },
   },
   watch: {
-    use: 'watch --folder <path> | --page <url> | --feed <url> --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--rehearse]',
-    about: "act when a folder, a web page or a feed changes",
+    use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--rehearse]',
+    about:
+      "act when a folder, a web page or a feed changes, or when a cheap check you wrote finds something: " +
+      "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
+      "Unless you may run commands without asking, the person approves the command before it runs",
     run: (args) => {
       const flags = parseFlags(args);
-      const kind = flags.folder ? "folder" : flags.page ? "page" : flags.feed ? "feed" : null;
-      if (!kind) throw new Error("watch needs --folder, --page or --feed");
+      const kind = flags.folder ? "folder" : flags.page ? "page" : flags.feed ? "feed" : flags.check ? "check" : null;
+      if (!kind) throw new Error("watch needs --folder, --page, --feed or --check");
       if (!flags.do) throw new Error('watch needs --do "what to do when it changes"');
       return request("POST", "/api/watchers", {
         kind,
@@ -164,16 +167,34 @@ const COMMANDS = {
   },
   routines: {
     use: "routines",
-    about: "what is scheduled, for everyone",
-    run: () => request("GET", "/api/routines"),
+    about: "what is scheduled, for everyone: when each runs next, and which run once",
+    run: async () => {
+      const { routines } = await request("GET", "/api/routines");
+      // what an agent needs to decide whether to file another, not every
+      // past run of every routine
+      return (routines ?? []).map((r) => ({
+        id: r.id,
+        name: r.name ?? r.prompt.slice(0, 60),
+        for: r.targetId,
+        when: r.summary,
+        ...(r.repeat === "once" ? { once: r.date } : {}),
+        next: r.nextRunAt ? localStamp(new Date(r.nextRunAt)) : null,
+        enabled: r.enabled,
+      }));
+    },
   },
   routine: {
-    use: 'routine --prompt <text> --time HH:MM [--days "1,2,3"] [--name <name>] [--thread <conversation>]',
-    about: "file a routine for yourself",
+    use: 'routine --prompt <text> --time HH:MM [--date YYYY-MM-DD | --days "1,2,3"] [--name <name>] [--thread <conversation>]',
+    about: "file a routine for yourself: weekly, or once on --date to come back to something later",
     run: async (args) => {
       const flags = parseFlags(args);
       if (!flags.prompt) throw new Error("a routine needs a --prompt");
       if (!/^\d{1,2}:\d{2}$/.test(flags.time ?? "")) throw new Error("a routine needs a --time like 09:00");
+      let once = null;
+      if (flags.date !== undefined) {
+        if (flags.days !== undefined) throw new Error("a routine runs once on a --date or weekly on --days, not both");
+        once = onceAt(flags.date, flags.time);
+      }
       const me = await request("GET", "/api/agent/whoami");
       return request("POST", "/api/routines", {
         targetId: me.botId,
@@ -183,8 +204,18 @@ const COMMANDS = {
         time: flags.time,
         // its own conversation, so it does not share context with the rest
         ...(flags.thread ? { thread: flags.thread } : {}),
-        days: (flags.days ?? "").split(",").map((d) => Number(d.trim())).filter((d) => Number.isInteger(d)),
+        ...(once
+          ? { repeat: "once", date: once, days: [] }
+          : { days: (flags.days ?? "").split(",").map((d) => Number(d.trim())).filter((d) => Number.isInteger(d)) }),
       });
+    },
+  },
+  unroutine: {
+    use: "unroutine <routine-id>",
+    about: "drop a routine, one you no longer need or a one-time one you filed by mistake",
+    run: (args) => {
+      if (!args[0]) throw new Error("unroutine needs a routine id, from `routines`");
+      return request("DELETE", `/api/routines/${encodeURIComponent(args[0])}`);
     },
   },
   jobs: {
@@ -267,6 +298,28 @@ const COMMANDS = {
     },
   },
 };
+
+/** The date a one-time routine runs, checked here so a typo is an error
+ * now and not a routine that silently never fires: a real day, at a time
+ * that has not passed yet on this Mac. */
+function onceAt(date, time) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date ?? "");
+  if (!match) throw new Error("--date is a day like 2026-10-08");
+  const [hours, minutes] = time.split(":").map(Number);
+  if (hours > 23 || minutes > 59) throw new Error("--time is a time of day like 09:00");
+  const at = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), hours, minutes);
+  if (at.getFullYear() !== Number(match[1]) || at.getMonth() !== Number(match[2]) - 1 || at.getDate() !== Number(match[3])) {
+    throw new Error(`there is no ${date}`);
+  }
+  if (at.getTime() <= Date.now()) throw new Error(`${date} ${time} has already passed`);
+  return date;
+}
+
+/** A moment in this Mac's own time, the way routines are written. */
+function localStamp(at) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
 
 /** `--flag value` and `--flag=value`, both of which somebody will type. */
 function parseFlags(args) {
