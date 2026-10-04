@@ -4,7 +4,7 @@
 // relay carries only so much in one answer. What stayed on the computer is
 // counted in `olderMessages` and fetched a page at a time from here, when
 // somebody actually scrolls up for it.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, useStore, type Message } from "@/state/store";
 
 export function useEarlier(
@@ -13,8 +13,12 @@ export function useEarlier(
 ) {
   const { dispatch } = useStore();
   const [loading, setLoading] = useState(false);
+  // state alone lags a render behind, and scrolling fires many times in
+  // one; this is what keeps it to one page at a time
+  const inFlight = useRef(false);
   const load = async () => {
-    if (loading) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     const query = new URLSearchParams();
     const first = target.messages[0];
@@ -33,6 +37,7 @@ export function useEarlier(
       dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
       setTimeout(() => dispatch({ type: "error", message: null }), 6000);
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   };

@@ -21,7 +21,7 @@ import { api, useStore, formatTime, type Blok, type Bot, type Message } from "@/
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { GroupCallButton } from "./Voice";
-import { windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { shouldLoadEarlier, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { ArtifactCard } from "./Artifacts";
 import {
@@ -367,10 +367,15 @@ export function RoomView({ blok }: { blok: Blok }) {
   const visibleMessages = blok.messages.slice(start);
 
   const pinned = useRef(true);
+  const scrolledTo = useRef(0);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // scrolling up near the top brings the next page in without a press
+    const lastTop = scrolledTo.current;
+    scrolledTo.current = el.scrollTop;
+    if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
   };
 
   useLayoutEffect(() => {

@@ -15,7 +15,7 @@ import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
-import { showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { shouldLoadEarlier, showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
@@ -678,10 +678,15 @@ export function ChatView({ bot }: { bot: Bot }) {
 
   // follow the tail only while the reader is actually at the tail
   const pinned = useRef(true);
+  const scrolledTo = useRef(0);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // scrolling up near the top brings the next page in without a press
+    const lastTop = scrolledTo.current;
+    scrolledTo.current = el.scrollTop;
+    if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
   };
 
   useEffect(() => {

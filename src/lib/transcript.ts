@@ -31,3 +31,18 @@ export function windowStart(total: number, boundary: number | null): number {
   if (boundary === null || boundary >= total) return Math.max(0, total - TRANSCRIPT_WINDOW);
   return Math.max(0, boundary);
 }
+
+/** How close to the top, in pixels, scrolling up starts on the next
+ * page, so it is usually there before the reader reaches the edge. */
+export const EARLIER_AHEAD_PX = 400;
+
+/**
+ * Whether a scroll should bring in earlier messages: only while the
+ * reader is moving up, near the top, with more to show and nothing
+ * already on its way. Moving up is what makes it the reader's doing: the
+ * jump to the newest message on opening, and the place being restored
+ * after a page lands, both move down and never start another.
+ */
+export function shouldLoadEarlier(o: { top: number; lastTop: number; more: boolean; loading: boolean }): boolean {
+  return o.more && !o.loading && o.top < o.lastTop && o.top <= EARLIER_AHEAD_PX;
+}
