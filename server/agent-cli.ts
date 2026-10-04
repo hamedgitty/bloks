@@ -127,6 +127,7 @@ export const RULES: Rule[] = [
   { method: "PATCH", path: "/api/bots/:id", why: "file a teammate into a sidebar section (only its section)" },
   { method: "PATCH", path: "/api/bots/:me/tasks/:id", why: "rename one of its own conversations" },
   { method: "DELETE", path: "/api/bots/:me/tasks/:id", why: "close one of its own conversations, once its turn there ends" },
+  { method: "POST", path: "/api/bots/:me/tasks/:id/fresh", why: "start a fresh engine session in the conversation it is in, keeping the transcript" },
 ];
 
 /**

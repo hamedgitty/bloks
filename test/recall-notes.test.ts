@@ -7,7 +7,7 @@ import { after, before, describe, test } from "node:test";
 
 import { allows } from "../server/agent-cli.ts";
 import { cleanNote, MAX_SUGGESTED, noteBriefing, ProfileNotes } from "../server/profile-notes.ts";
-import { recall, recallText, termsOf } from "../server/recall.ts";
+import { recall, recallText, termsOf, type RecallSource, type Speaker } from "../server/recall.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
 const source = (threadId: string, where: string, lines: Array<[string, string, boolean?]>) => ({
@@ -22,7 +22,8 @@ const source = (threadId: string, where: string, lines: Array<[string, string, b
     ...(deleted ? { deleted: true } : {}),
   })),
 });
-const name = (m: { role: string }) => (m.role === "user" ? "Hamed" : "Scout");
+const name = (m: { role: string }): Speaker =>
+  m.role === "user" ? { who: "Hamed", by: "person" } : { who: "Scout", by: "self", agentId: "b1" };
 
 describe("recall", () => {
   const past = [
@@ -52,6 +53,32 @@ describe("recall", () => {
     assert.deepEqual(termsOf("what did we decide about the budget?"), ["decide", "about", "budget"]);
     assert.match(recallText([], "unicorns"), /Nothing in your past conversations matches "unicorns"/);
     assert.match(recallText(recall("budget", past, name), "budget"), /Hamed: Great, and keep the budget under 400/);
+  });
+
+  test("another agent's words are never the person's (GitHub 136)", () => {
+    const sources: RecallSource[] = [
+      {
+        threadId: "lane",
+        where: 'your conversation "General"',
+        messages: [
+          { id: "m1", at: 1, role: "user", kind: "text", text: "Zebra report: the client agreed to the new price.", agent: { dir: "in", peerId: "alpha-1", peerName: "Alpha" } },
+          { id: "m2", at: 2, role: "user", kind: "text", text: "Yes, go with the zebra price." },
+          { id: "m3", at: 3, role: "user", kind: "text", text: "Zebra looks fine to me too.", author: "member-1" },
+        ],
+      },
+    ];
+    const speakerOf = (m: RecallSource["messages"][number]): Speaker =>
+      m.agent ? { who: m.agent.peerName, by: "agent", agentId: m.agent.peerId } : m.author ? { who: "Dana", by: "member" } : { who: "Hamed", by: "person" };
+    const hits = recall("zebra", sources, speakerOf);
+    const byId = Object.fromEntries(hits.map((h) => [h.messageId, h]));
+    assert.deepEqual([byId.m1.by, byId.m1.agentId, byId.m1.who], ["agent", "alpha-1", "Alpha"]);
+    assert.equal(byId.m2.by, "person");
+    assert.equal(byId.m3.by, "member");
+    assert.equal(byId.m2.before?.by, "agent", "context lines are labelled too");
+    const text = recallText(hits, "zebra");
+    assert.match(text, /Alpha \(another agent, alpha-1\): Zebra report/);
+    assert.match(text, /Dana \(a member of the room\): Zebra looks fine/);
+    assert.match(text, /, Hamed: Yes, go with the zebra price/);
   });
 });
 

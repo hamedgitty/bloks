@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
+import { SessionCosts } from "./session-costs.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
@@ -52,6 +53,9 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { OWN_GROUP } from "../no-console.ts";
+
+/** Each session's last reported total, so a turn is charged its own share. */
+const sessionCosts = new SessionCosts();
 
 const DRIVER_KIND = "claudeAgent";
 
@@ -392,6 +396,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       let finished = false;
       let exited = false;
+      // the session this process reports for, from its init frame
+      let sessionId: string | null = resume;
+      // A result that did nothing (see `case "result"`), held until the
+      // real one arrives or the process ends without one.
+      let held: any = null;
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finished) return;
         finished = true;
@@ -414,6 +423,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost });
       };
 
+      /** End the turn on a result frame, charging only this turn's share
+       * of the session's running total (GitHub 137). */
+      const settle = (frame: any) => {
+        const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
+        const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
+        finish(
+          frame.is_error !== true,
+          // a failed turn's own words say why ("usage limit reached"),
+          // which is what a backup engine and a routine's log need
+          (frame.is_error === true && typeof frame.result === "string" && frame.result.trim()
+            ? frame.result.trim().slice(0, 400)
+            : null) ??
+            frame.stop_reason ??
+            frame.terminal_reason ??
+            null,
+          total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null,
+        );
+      };
+
       const consume = (raw: string) => {
         let frame: any;
         try {
@@ -426,6 +454,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         switch (frame.type) {
           case "system":
             if (frame.subtype === "init") {
+              if (typeof frame.session_id === "string") sessionId = frame.session_id;
               emit({
                 ...envelope(threadId, turnId),
                 type: "session.started",
@@ -518,18 +547,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             break;
 
           case "result":
-            finish(
-              frame.is_error !== true,
-              // a failed turn's own words say why ("usage limit reached"),
-              // which is what a backup engine and a routine's log need
-              (frame.is_error === true && typeof frame.result === "string" && frame.result.trim()
-                ? frame.result.trim().slice(0, 400)
-                : null) ??
-                frame.stop_reason ??
-                frame.terminal_reason ??
-                null,
-              frame.total_cost_usd ?? null,
-            );
+            // On --resume Claude Code can first settle something the last
+            // session left running (a background shell it stopped) with a
+            // result of its own: no model turns, no API time. The answer to
+            // this turn comes after it in the same process, so that result
+            // is held rather than taken as the end. Ending there revoked the
+            // turn's credential while the agent was still working and showed
+            // it idle, so a second turn could start on the same session
+            // (GitHub 134).
+            if (frame.is_error !== true && frame.num_turns === 0 && !frame.duration_api_ms) {
+              held = frame;
+              break;
+            }
+            settle(frame);
             break;
         }
       };
@@ -576,6 +606,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           if (!kept.size) afterTurn.delete(threadId);
         }
         if (finished) return;
+        // a held result was the whole turn after all
+        if (held) return settle(held);
         // Exiting without a `result` frame means it never got as far as
         // answering, so stderr is the only thing that can explain it.
         emit({

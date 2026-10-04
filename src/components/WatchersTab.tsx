@@ -41,6 +41,8 @@ interface WatcherRow {
   lastCheck?: number;
   lastError?: string;
   laneId?: string;
+  /** the conversation its turns go to, by title; absent is a lane of its own */
+  thread?: string;
   fires: Array<{ at: number; summary: string }>;
   approvedBy?: "person" | "mode";
 }
@@ -163,6 +165,10 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
   const { state, dispatch } = useStore();
   const bot = state.bots.find((b) => b.id === w.botId);
   const [instruction, setInstruction] = useState(w.instruction);
+  const [thread, setThread] = useState(w.thread ?? "");
+  useEffect(() => setThread(w.thread ?? ""), [w.id, w.thread]);
+  // where its turns land: the named conversation, or its own lane
+  const laneId = w.thread ? bot?.tasks?.find((t) => t.title === w.thread)?.id : w.laneId;
   const [checking, setChecking] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => setInstruction(w.instruction), [w.id, w.instruction]);
@@ -226,6 +232,19 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
           className="min-h-[80px] text-[13px] text-foreground"
         />
       </label>
+      <label className="flex flex-col gap-1.5 text-[12.5px] text-muted-foreground">
+        Which conversation it speaks in
+        <Input
+          value={thread}
+          onChange={(e) => setThread(e.target.value)}
+          onBlur={() => thread.trim() !== (w.thread ?? "") && patch({ thread: thread.trim() })}
+          placeholder={`Its own, "Watching: ${w.name}"`}
+          className="text-[13px] text-foreground"
+        />
+        <span className="text-[11.5px]">
+          Name one, like General, for work the agent started there; it is made if it does not exist, and a busy one queues the turn.
+        </span>
+      </label>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-muted-foreground">
         {w.kind !== "folder" && (
           <label className="flex items-center gap-1.5">
@@ -271,12 +290,12 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
         <Button variant="secondary" size="sm" disabled={checking} onClick={check}>
           {checking ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />} Look now
         </Button>
-        {w.laneId && bot && (
+        {laneId && bot && (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => {
-              dispatch({ type: "select", id: bot.id, lane: w.laneId! });
+              dispatch({ type: "select", id: bot.id, lane: laneId });
             }}
           >
             Open its lane

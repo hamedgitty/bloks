@@ -758,6 +758,18 @@ export class Store {
     this.saveBots();
   }
 
+  /** A new engine session on the lane's next turn, without the old one's
+   * context: every cursor goes, but the engine that served it is kept, so
+   * the next turn is not treated as an engine that missed the conversation
+   * and handed the whole transcript instead (GitHub 139). The transcript
+   * itself stays. */
+  startFreshSession(threadId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    found.task.resumeCursors = {};
+    this.saveBots();
+  }
+
   /** Record what a lane's earlier messages were folded into. */
   setTaskContext(
     threadId: string,

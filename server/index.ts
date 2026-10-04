@@ -244,7 +244,7 @@ import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutin
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
-import { recall, recallText, type RecallSource } from "./recall.ts";
+import { recall, recallText, type RecallSource, type Speaker } from "./recall.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
 import { localDate } from "./usage.ts";
@@ -1863,6 +1863,8 @@ bus.subscribe((event: RuntimeEvent) => {
         );
       }
       drainRoomTags(bot.id);
+      // before anything queued starts the next turn on the old session
+      freshIfAsked(event.threadId);
       drainSteer(event.threadId);
       closeIfAsked(event.threadId);
       replyingTo.delete(event.threadId);
@@ -2857,6 +2859,7 @@ async function startTurn(
       turnStarted.delete(task.id);
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
       drainRoomTags(bot.id);
+      freshIfAsked(task.id);
       drainSteer(task.id);
       closeIfAsked(task.id);
     }
@@ -3132,10 +3135,35 @@ function watcherLane(w: Watcher, bot: BotRecord) {
   return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
 }
 
+/** The conversation titled `title`, made if there is none, without
+ * moving the person off the one they have open. */
+function laneTitled(bot: BotRecord, title: string) {
+  const named = bot.tasks.find((t) => t.title === title);
+  if (named) return named;
+  const active = bot.activeTaskId;
+  const made = store.createTask(bot.id, title);
+  if (!made) throw new Error(`${bot.name} has too many tasks open to start "${title}". Close one.`);
+  store.setActiveTask(bot.id, active);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
+}
+
 async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
   const text = watcherTurn(w, what);
   if (w.mode === "rehearse") {
+    // a rehearsal keeps its own conversations, whatever the watcher names
     await openRehearsals([bot], text, { quiet: true, via: "watcher" });
+  } else if (w.thread) {
+    // Into the conversation the work belongs to, where its context is.
+    // Busy, it waits in the same queue as a person's message would.
+    const lane = laneTitled(bot, w.thread);
+    if (lane.busy) {
+      queueOnLane(bot.id, lane.id, text, { via: "watcher" });
+    } else {
+      const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
+      broadcast({ kind: "message", threadId: lane.id, message: said });
+      await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true });
+    }
   } else {
     const lane = watcherLane(w, bot);
     const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
@@ -3161,6 +3189,10 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     if (!bot || bot.archivedAt) throw new Error("its agent is gone or archived");
     const lane = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
     if (lane?.busy || (w.kind === "folder" && bot.busy)) return { fired: false, note: `${bot.name} is working; it will look again shortly` };
+    // A person holding the agent would have its turn refused, so a look
+    // now would only use the change up. The first look after the release
+    // finds it instead (GitHub 135).
+    if (wheel.heldBy(bot.id)) return { fired: false, note: `${bot.name} is being held right now; it will look again once released` };
     if (!checkAllowed(w, bot.approvals)) {
       w.lastCheck = Date.now();
       w.lastError = `Waiting for approval: its command does not run until ${hostName()} approves it here.`;
@@ -3168,6 +3200,9 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     }
 
     let what: string | null = null;
+    // What this look saw, kept here until the turn it calls for has
+    // started: a turn refused now leaves the change to be found again.
+    const next: { seen?: string; seenItems?: string[] } = {};
     if (w.kind === "check") {
       if (runningChecks >= MAX_CHECKS_AT_ONCE) return { fired: false, note: "other checks are running; it will look again shortly" };
       runningChecks++;
@@ -3179,13 +3214,13 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       }
       const outcome = checkOutcome(result, w.seen);
       if (outcome.error) throw new Error(outcome.error);
-      w.seen = outcome.seen;
+      next.seen = outcome.seen;
       what = outcome.what;
     } else if (w.kind === "folder") {
       if (!existsSync(w.target)) throw new Error("the folder is not there any more");
       const now = folderSnapshot(w.target);
       if (w.seen) what = describeFolderChanges(folderChanges(JSON.parse(w.seen), now));
-      w.seen = JSON.stringify(now);
+      next.seen = JSON.stringify(now);
     } else if (w.kind === "page") {
       const text = pageText(await fetchWatched(w.target)).slice(0, 60_000);
       if (w.seen !== undefined && hashOf(text) !== hashOf(w.seen)) {
@@ -3195,7 +3230,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
           what = added.length ? added.map((line) => `+ ${line}`).join("\n") : "Some text was removed from the page.";
         }
       }
-      w.seen = text;
+      next.seen = text;
     } else {
       const items = parseFeed(await fetchWatched(w.target));
       if (w.seenItems) {
@@ -3203,7 +3238,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         const fresh = items.filter((i) => !had.has(i.id)).slice(0, 5);
         if (fresh.length) what = fresh.map((i) => `- ${i.title}${i.link ? ` (${i.link})` : ""}`).join("\n");
       }
-      w.seenItems = [...new Set([...items.map((i) => i.id), ...(w.seenItems ?? [])])].slice(0, 400);
+      next.seenItems = [...new Set([...items.map((i) => i.id), ...(w.seenItems ?? [])])].slice(0, 400);
     }
     w.lastCheck = Date.now();
     w.lastError = undefined;
@@ -3216,6 +3251,9 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         w.lastError = "Held back: it already started six turns in the last hour.";
       }
     }
+    // reached only if any turn this look called for has started
+    if ("seen" in next) w.seen = next.seen;
+    if (next.seenItems) w.seenItems = next.seenItems;
     return { fired, note: fired ? "changed, and the agent is on it" : what ? w.lastError ?? "" : manual ? "no change since the last look" : "" };
   } catch (e) {
     w.lastError = (e as Error).message.slice(0, 200);
@@ -3309,9 +3347,19 @@ function recallSources(bot: BotRecord, laneId?: string | null): RecallSource[] {
 
 function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit = 8) {
   const person = cfg.profile?.name?.trim() || "the person";
-  return recall(query, recallSources(bot, laneId), (message) =>
-    message.role === "user" ? person : message.from ? (store.bot(message.from)?.name ?? "an agent") : bot.name,
-  limit);
+  // A message another agent sent lands as a user message with the sender
+  // in `agent`; reading only the role named it the person (GitHub 136).
+  return recall(query, recallSources(bot, laneId), (message): Speaker => {
+    if (message.agent?.dir === "in") {
+      return { who: store.bot(message.agent.peerId)?.name ?? message.agent.peerName, by: "agent", agentId: message.agent.peerId };
+    }
+    if (message.role === "user") {
+      if (message.author) return { who: people.person(message.author)?.name ?? "a member", by: "member" };
+      return { who: person, by: "person" };
+    }
+    if (message.from && message.from !== bot.id) return { who: store.bot(message.from)?.name ?? "an agent", by: "agent", agentId: message.from };
+    return { who: bot.name, by: "self", agentId: bot.id };
+  }, limit);
 }
 
 /** The owner's name as members see it. */
@@ -3608,6 +3656,29 @@ const spokeInTurn = new Set<string>();
  * A lane cannot close while it is working, and the agent asking is the
  * thing keeping it busy, so the close waits for the turn to end. */
 const closeAfterTurn = new Set<string>();
+
+/** Conversations whose agent asked, from inside a turn there, for a fresh
+ * engine session. The turn's own session is still being written until it
+ * ends, so the reset waits for that (GitHub 139). */
+const freshAfterTurn = new Set<string>();
+
+/** Starts the fresh session an agent asked for, and says so in the chat. */
+function freshIfAsked(laneId: string) {
+  if (!freshAfterTurn.delete(laneId)) return;
+  startFresh(laneId);
+}
+
+function startFresh(laneId: string) {
+  const found = store.taskByThread(laneId);
+  if (!found) return;
+  store.startFreshSession(laneId);
+  const notice = store.appendMessage(laneId, {
+    role: "bot",
+    kind: "notice",
+    text: `${found.bot.name} starts its next turn here in a fresh session, without the earlier context. Everything above stays in the conversation.`,
+  });
+  broadcast({ kind: "message", threadId: laneId, message: notice });
+}
 
 /** Closes a lane its agent asked to close, once nothing is running or
  * waiting in it. A message queued meanwhile goes first; the close then
@@ -5331,7 +5402,7 @@ function queueOnLane(
   botId: string,
   laneId: string,
   text: string,
-  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" } = {},
+  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher" } = {},
 ) {
   const message = store.appendMessage(laneId, {
     role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
@@ -7994,6 +8065,24 @@ const server = createServer(async (req, res) => {
         // answer from a newer record it already has
         { bot: { ...clientBot(fresh), ...laneFor(fresh.activeTaskId) }, seq: frameSeq },
       );
+    }
+
+    // A fresh engine session in one conversation, its transcript kept. An
+    // agent asks for the conversation it is in, from inside its turn there,
+    // so the reset waits for that turn to end (GitHub 139).
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/fresh$/);
+    if (m && method === "POST") {
+      if (asAgent && asAgent.taskId !== m[2]) {
+        return json(res, 403, { error: "an agent can start a fresh session only in the conversation it is in" });
+      }
+      const lane = store.bot(m[1])?.tasks.find((t) => t.id === m![2]);
+      if (!lane) return json(res, 404, { error: "no such task" });
+      if (lane.busy) {
+        freshAfterTurn.add(lane.id);
+        return json(res, 202, { ok: true, fresh: "when this turn ends" });
+      }
+      startFresh(lane.id);
+      return json(res, 200, { ok: true, fresh: "now" });
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/clear$/);

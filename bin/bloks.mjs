@@ -85,11 +85,12 @@ const COMMANDS = {
     },
   },
   watch: {
-    use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--rehearse]',
+    use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--thread <conversation>] [--rehearse]',
     about:
       "act when a folder, a web page or a feed changes, or when a cheap check you wrote finds something: " +
       "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
-      "Unless you may run commands without asking, the person approves the command before it runs",
+      "Unless you may run commands without asking, the person approves the command before it runs. " +
+      "--thread sends its turns to that conversation (made if missing), so work you started in the background is picked up where its context is",
     run: (args) => {
       const flags = parseFlags(args);
       const kind = flags.folder ? "folder" : flags.page ? "page" : flags.feed ? "feed" : flags.check ? "check" : null;
@@ -102,6 +103,7 @@ const COMMANDS = {
         name: flags.name,
         every: flags.every ? Number(flags.every) : undefined,
         mentions: flags.mentions,
+        ...(flags.thread ? { thread: flags.thread } : {}),
         mode: flags.rehearse ? "rehearse" : "act",
       });
     },
@@ -260,6 +262,15 @@ const COMMANDS = {
     run: async () => {
       const me = await request("GET", "/api/agent/whoami");
       return request("DELETE", `/api/bots/${me.botId}/tasks/${me.taskId}`);
+    },
+  },
+  fresh: {
+    use: "fresh",
+    about:
+      "start a fresh engine session in the conversation you are in, once this turn ends: the transcript stays, but your next turn begins without the old context. Put anything you need to keep in memory first",
+    run: async () => {
+      const me = await request("GET", "/api/agent/whoami");
+      return request("POST", `/api/bots/${me.botId}/tasks/${me.taskId}/fresh`);
     },
   },
   skills: {

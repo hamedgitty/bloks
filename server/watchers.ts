@@ -68,6 +68,11 @@ export interface Watcher {
   lastCheck?: number;
   lastError?: string;
   laneId?: string;
+  /** The conversation its turns go to, by title, so the agent hears in
+   * the context the work came from (GitHub 138). Absent means a lane of
+   * its own, "Watching: <name>". Made if no conversation has the title;
+   * a busy one queues the turn like a person's message. */
+  thread?: string;
   fires: Array<{ at: number; summary: string }>;
   /** Checks only: who allowed its command to run unattended. "person"
    * is the owner, in the app; "mode" is the agent's own approvals being
@@ -328,7 +333,7 @@ export function watcherTurn(w: Pick<Watcher, "kind" | "target" | "instruction" |
 }
 
 export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: string) => boolean):
-  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled"> }
+  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled" | "thread"> }
   | { ok: false; error: string } {
   const kind = raw.kind;
   if (kind !== "folder" && kind !== "page" && kind !== "feed" && kind !== "check") return { ok: false, error: "kind is folder, page, feed or check" };
@@ -349,6 +354,8 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   if (!instruction) return { ok: false, error: "say what the agent should do when it changes" };
   const every = Math.min(MAX_EVERY, Math.max(MIN_EVERY, Math.round(Number(raw.every) || 30)));
   const mentions = String(raw.mentions ?? "").trim().slice(0, 120);
+  // a lane title: one line, as short as any other lane's
+  const thread = typeof raw.thread === "string" ? raw.thread.replace(/\s+/g, " ").trim().slice(0, 40) : "";
   return {
     ok: true,
     value: {
@@ -359,6 +366,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
       instruction,
       ...(mentions && kind === "page" ? { mentions } : {}),
       mode: raw.mode === "rehearse" ? "rehearse" : "act",
+      thread: thread || undefined,
       every,
       enabled: raw.enabled !== false,
     },
