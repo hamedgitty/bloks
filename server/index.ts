@@ -647,6 +647,21 @@ function engineUsable(selection: ModelSelection | null | undefined): selection i
   return Boolean(instance && instance.enabled !== false && !cooldowns.of(selection.instanceId));
 }
 
+/** Which engine a turn on this agent runs on: its own, unless it is resting
+ * after running out (or gone) and it has a backup that is not. startTurn and
+ * the webhook receiver both ask here, so they cannot disagree about it. */
+function selectEngine(bot: BotRecord, fallback = false): ModelSelection {
+  const own = bot.modelSelection;
+  const backup = bot.backupSelection && bot.backupSelection.instanceId !== own.instanceId ? bot.backupSelection : null;
+  const ownRest = cooldowns.of(own.instanceId);
+  const ownMissing = !registry.get(own.instanceId);
+  return (fallback || ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+}
+
+function unavailableEngineMessage(instanceId: string): string {
+  return `provider instance "${instanceId}" is unavailable, pick another model in settings`;
+}
+
 /**
  * The engine running a lane's turn right now, which is where anything
  * about that turn (an answer, an approval, an interrupt) has to go. Not
@@ -2193,6 +2208,38 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
   return fallback?.id;
 }
 
+/** Lanes a webhook has been handed a turn for, from acceptance until
+ * startTurn returns. startTurn marks its lane busy only after a few awaits,
+ * so two events arriving together would both see the lane idle. */
+const webhookLanes = new Set<string>();
+
+/** Why this agent cannot take a webhook turn right now, decided by the same
+ * checks startTurn makes first (hold, then engine). A hold is temporary, so
+ * it is a retryable 503; a missing engine needs a settings change, so it is
+ * a 409, a configuration refusal. Whether a sender retries a 409 is the
+ * sender's policy, not this receiver's. startTurn keeps its own checks, so a
+ * hold placed after this runs still stops the turn there. The body is generic:
+ * the caller holds only the webhook token, so the bot's name, the hold's
+ * reason and the engine's ID stay with the owner (chat and logs). */
+function webhookRefusal(botId: string): { status: number; retryAfter?: string; error: string } | undefined {
+  const bot = store.bot(botId);
+  if (!bot) return { status: 409, error: "no such agent" };
+  const hold = wheel.heldBy(bot.id);
+  if (hold) return { status: 503, retryAfter: "60", error: "agent temporarily unavailable" };
+  const selection = selectEngine(bot);
+  if (!registry.get(selection.instanceId)) return { status: 409, error: "agent cannot take events right now" };
+  return undefined;
+}
+
+/** The lane a webhook event can start its turn in now, or undefined when the
+ * lane is busy or another webhook event has already claimed it. */
+function claimWebhookLane(botId: string): string | undefined {
+  const laneId = backgroundTaskId(botId, "Webhooks");
+  if (!laneId || webhookLanes.has(laneId)) return undefined;
+  webhookLanes.add(laneId);
+  return laneId;
+}
+
 async function startTurn(
   botId: string,
   text: string,
@@ -2303,20 +2350,12 @@ async function startTurn(
     }
   }
 
-  // Which engine answers. The agent's own, unless it is resting after
-  // running out (or gone) and the agent has a backup that is not.
   const own = bot.modelSelection;
-  const backup = bot.backupSelection && bot.backupSelection.instanceId !== own.instanceId ? bot.backupSelection : null;
   const ownRest = cooldowns.of(own.instanceId);
-  const ownMissing = !registry.get(own.instanceId);
-  const selection: ModelSelection =
-    (opts.fallback || ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+  const selection = selectEngine(bot, opts.fallback);
   const instance = registry.get(selection.instanceId);
   if (!instance) {
-    throw Object.assign(
-      new Error(`provider instance "${selection.instanceId}" is unavailable, pick another model in settings`),
-      { status: 409 },
-    );
+    throw Object.assign(new Error(unavailableEngineMessage(selection.instanceId)), { status: 409 });
   }
   if (sharing && !sharedSafe(instance.driverKind)) {
     throw Object.assign(
@@ -5848,12 +5887,39 @@ const server = createServer(async (req, res) => {
     } catch {
       raw = "";
     }
-    webhooks.noteFired(hook.id, raw);
-    const text = webhookMessage(hook.name, raw);
+    // An agent that cannot take the event is refused before it is
+    // acknowledged. A 202 followed by a dropped turn looks delivered to the
+    // sender and never reaches the agent, so the sender has to see the
+    // refusal to retry (503) or to stop (409). A refused event records no
+    // delivery and leaves no lane behind.
+    const agentId = hook.workflowId || hook.blokId ? undefined : hook.botId;
+    const refusal = agentId ? webhookRefusal(agentId) : undefined;
+    if (refusal) {
+      if (refusal.retryAfter) res.setHeader("retry-after", refusal.retryAfter);
+      return json(res, refusal.status, { error: refusal.error });
+    }
+    const laneId = agentId ? claimWebhookLane(agentId) : undefined;
+    if (agentId && !laneId) {
+      res.setHeader("retry-after", "30");
+      return json(res, 503, { error: "that agent is busy with another turn; send this event again shortly" });
+    }
 
-    // Answer before the turn runs: webhook senders time out fast and
-    // retry on failure, and an agent turn outlives both.
-    json(res, 202, { ok: true });
+    // From here to the async turn below, a throw must release the claim, or
+    // the lane would refuse every later event until the process restarts.
+    let text: string;
+    try {
+      webhooks.noteFired(hook.id, raw);
+      text = webhookMessage(hook.name, raw);
+
+      // Answer before the turn runs: webhook senders time out fast and
+      // retry on failure, and an agent turn outlives both.
+      json(res, 202, { ok: true });
+    } catch (e) {
+      // Answer, so the sender sees a failure rather than a hung connection.
+      if (laneId) webhookLanes.delete(laneId);
+      if (!res.headersSent) return json(res, 500, { error: "event not accepted; send it again" });
+      throw e;
+    }
     void (async () => {
       try {
         if (hook.workflowId) {
@@ -5864,8 +5930,6 @@ const server = createServer(async (req, res) => {
           const blok = bloks.get(hook.blokId);
           if (blok) await postToRoom(blok, text, { hops: 0 });
         } else if (hook.botId) {
-          const laneId = backgroundTaskId(hook.botId, "Webhooks");
-          if (!laneId) return; // lane busy; the sender's retry will land
           await startTurn(hook.botId, text, { taskId: laneId });
         }
       } catch (e) {
@@ -5879,6 +5943,10 @@ const server = createServer(async (req, res) => {
           text: `The webhook "${hook.name}" fired but the turn could not start: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300)}`,
         });
         broadcast({ kind: "message", threadId, message: failure });
+      } finally {
+        // by now startTurn has marked the lane busy (or failed before it
+        // could), so the lane's own busy flag carries the claim from here on
+        if (laneId) webhookLanes.delete(laneId);
       }
     })();
     return;

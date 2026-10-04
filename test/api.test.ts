@@ -29,6 +29,27 @@ async function waitFor<T>(check: () => Promise<T | null>, timeoutMs = 15_000): P
   return null;
 }
 
+/** An agent whose engine is gone. A PATCH cannot name an engine the
+ * workspace lacks, so the agent picks a real custom endpoint and the
+ * endpoint is then removed, the way an agent loses its engine in use. */
+async function agentWithoutEngine(name: string): Promise<string> {
+  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name }) });
+  const { endpoints } = await h.json("/api/custom-endpoints", {
+    method: "POST",
+    body: JSON.stringify({ name: `${name} host`, url: "http://127.0.0.1:9/v1", key: "sk-test-orphan" }),
+  });
+  const endpoint = endpoints.find((e: any) => e.name === `${name} host`);
+  const picked = await h.fetch(`/api/bots/${bot.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ modelSelection: { instanceId: endpoint.instanceId, model: "x" } }),
+  });
+  assert.equal(picked.status, 200);
+  assert.equal((await h.fetch(`/api/custom-endpoints/${endpoint.id}`, { method: "DELETE" })).status, 200);
+  const { instances } = await h.json("/api/instances");
+  assert.ok(!instances.some((i: any) => i.instanceId === endpoint.instanceId), "the endpoint's engine is still registered");
+  return bot.id;
+}
+
 before(async () => {
   h = await startHarness();
 });
@@ -598,28 +619,18 @@ describe("webhooks", () => {
     const got = await h.fetch(`/hook/${webhook.token}`);
     assert.equal(got.status, 405);
 
-    // the real token answers immediately, before any turn resolves
-    const fired = await h.fetch(`/hook/${webhook.token}`, {
+    // an agent with no engine cannot take the turn, so the receiver answers
+    // with a 409 (a configuration refusal) rather than a 202 and a dropped event
+    const orphan = await agentWithoutEngine("Orphan");
+    const orphanHook = await h.json("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify({ name: "Orphaned", botId: orphan }),
+    });
+    const refused = await h.fetch(`/hook/${orphanHook.webhook.token}`, {
       method: "POST",
       body: JSON.stringify({ event: "build_failed", branch: "main" }),
     });
-    assert.equal(fired.status, 202);
-
-    // no engine exists in this harness, so the turn fails, and that
-    // failure must land in a transcript rather than vanish. Deliveries
-    // run in their own "Webhooks" lane so they never hijack the active
-    // conversation, the trace lives there.
-    const note = await waitFor(async () => {
-      const { bots: after } = await h.json("/api/bots");
-      const bot = after.find((b: any) => b.id === bots[0].id);
-      const lane = bot.tasks.find((t: any) => t.title === "Webhooks");
-      if (!lane) return null;
-      const { bot: opened } = await h.json(`/api/bots/${bot.id}/tasks/${lane.id}/activate`, {
-        method: "POST",
-      });
-      return opened.messages.find((m: any) => m.kind === "notice" || m.kind === "activity") ?? null;
-    });
-    assert.ok(note, "the fired webhook left no trace in any lane");
+    assert.equal(refused.status, 409);
   });
 
   test("a deleted webhook stops answering", async () => {
@@ -634,10 +645,20 @@ describe("webhooks", () => {
   });
 
   test("a hook keeps its story: rename, deliveries, and a fresh URL", async () => {
-    const { bots } = await h.json("/api/bots");
+    // a room target, so the delivery is recorded whatever state the agent's
+    // engine is in; an agent that cannot take a turn refuses the event instead
+    // its own agents, so a turn the room starts cannot hold a shared one busy
+    const members = [];
+    for (const name of ["Deploy A", "Deploy B"]) {
+      members.push((await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name }) })).bot.id);
+    }
+    const { blok } = await h.json("/api/bloks", {
+      method: "POST",
+      body: JSON.stringify({ name: "Deploy room", memberIds: members }),
+    });
     const { webhook } = await h.json("/api/webhooks", {
       method: "POST",
-      body: JSON.stringify({ name: "Deploys", botId: bots[0].id }),
+      body: JSON.stringify({ name: "Deploys", blokId: blok.id }),
     });
 
     const renamed = await h.json(`/api/webhooks/${webhook.id}`, {
@@ -5907,5 +5928,191 @@ describe("a credential this server does not know", () => {
       assert.equal(said.out.error, REFUSAL.error);
     }
     assert.ok(!h2.logs().includes(token.slice(4)), "the log holds the credential");
+  });
+});
+
+describe("webhook dispatch", () => {
+  /** A fake engine that answers only when released, so a webhook turn stays
+   * busy for as long as a test needs its lane to be busy. */
+  async function heldEngine(t: { after(fn: () => void): void }) {
+    const { createServer } = await import("node:http");
+    const waiting: Array<() => void> = [];
+    let open = false;
+    let requests = 0;
+    const fake = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        if (req.url?.endsWith("/models")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ data: [{ id: "grok-4" }] }));
+        }
+        requests++;
+        const answer = () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              choices: [{ message: { role: "assistant", content: "Noted." } }],
+              usage: { prompt_tokens: 5, completion_tokens: 2 },
+            }),
+          );
+        };
+        if (open) answer();
+        else waiting.push(answer);
+      });
+    });
+    await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+    t.after(() => fake.close());
+
+    await h.fetch("/api/providers/grok/connect", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "xai-test-000000000000",
+        url: `http://127.0.0.1:${(fake.address() as any).port}`,
+      }),
+    });
+    const made = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Watcher" }) });
+    const botId: string = made.bot.id;
+    await h.fetch(`/api/bots/${botId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ modelSelection: { instanceId: "grok", model: "grok-4" } }),
+    });
+    const { webhook } = await h.json("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify({ name: "Ticker", botId }),
+    });
+
+    return {
+      botId,
+      fire: (payload: unknown) => h.fetch(`/hook/${webhook.token}`, { method: "POST", body: JSON.stringify(payload) }),
+      /** Turns that have reached the engine and are waiting for release. */
+      parked: () => waiting.length,
+      requests: () => requests,
+      release() {
+        open = true;
+        for (const answer of waiting.splice(0)) answer();
+      },
+    };
+  }
+
+  async function bot(botId: string) {
+    const { bots } = await h.json("/api/bots");
+    return bots.find((b: any) => b.id === botId);
+  }
+
+  async function webhookLane(botId: string) {
+    return (await bot(botId)).tasks.find((t: any) => t.title === "Webhooks");
+  }
+
+  /** Waits for a condition and fails the test if it never holds, rather
+   * than carrying on as though it had. */
+  async function settles(check: () => Promise<boolean>, what: string) {
+    assert.ok(await waitFor(async () => ((await check()) ? true : null)), what);
+  }
+
+  /** The transcript of one lane, read the way the app reads it. */
+  async function laneText(botId: string, laneId: string) {
+    const { bot: opened } = await h.json(`/api/bots/${botId}/tasks/${laneId}/activate`, { method: "POST" });
+    return opened.messages.map((m: any) => m.text ?? "").join("\n");
+  }
+
+  test("a busy lane refuses the event with a retry, and the retry lands once the turn ends", async (t) => {
+    const eng = await heldEngine(t);
+    assert.equal((await eng.fire({ symbol: "FIRST" })).status, 202);
+    await settles(async () => eng.parked() === 1, "no turn reached the engine");
+
+    // Acknowledging this with 202 and then dropping it is the bug: the
+    // sender would count it delivered and the agent would never see it.
+    const busy = await eng.fire({ symbol: "SECOND-BUSY" });
+    assert.equal(busy.status, 503);
+    assert.equal(busy.headers.get("retry-after"), "30");
+
+    eng.release();
+    await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
+    const lane = await webhookLane(eng.botId);
+    assert.equal(eng.requests(), 1, "the refused event must not start a turn");
+    assert.doesNotMatch(await laneText(eng.botId, lane.id), /SECOND-BUSY/);
+
+    const retry = await eng.fire({ symbol: "SECOND-BUSY" });
+    assert.equal(retry.status, 202);
+    await settles(async () => (await webhookLane(eng.botId))?.state === "idle" && eng.requests() === 2, "the retry did not finish");
+    assert.match(await laneText(eng.botId, lane.id), /SECOND-BUSY/);
+  });
+
+  test("a burst on an idle lane is accepted once and refused the rest", async (t) => {
+    const eng = await heldEngine(t);
+    // The first claim has to hold until startTurn has marked the lane busy,
+    // which takes several awaits, so the others must see the claim and not
+    // an idle lane.
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => eng.fire({ symbol: `BURST-${i}` })));
+    const statuses = results.map((r) => r.status).sort();
+    assert.equal(statuses.filter((s) => s === 202).length, 1, `statuses: ${statuses}`);
+    assert.equal(statuses.filter((s) => s === 503).length, 5, `statuses: ${statuses}`);
+
+    await settles(async () => eng.parked() === 1, "no turn reached the engine");
+    eng.release();
+    await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
+    assert.equal(eng.requests(), 1);
+  });
+
+  test("an agent on hold refuses the event before any lane or turn is made", async (t) => {
+    const eng = await heldEngine(t);
+    const held = await h.fetch(`/api/bots/${eng.botId}/wheel`, {
+      method: "POST",
+      body: JSON.stringify({ why: "taking over" }),
+    });
+    assert.equal(held.status, 200);
+
+    const refused = await eng.fire({ symbol: "HELD" });
+    assert.equal(refused.status, 503);
+    assert.equal(refused.headers.get("retry-after"), "60");
+    assert.equal(await webhookLane(eng.botId), undefined, "a refused event must not create a lane");
+    assert.equal(eng.requests(), 0);
+    const main = await bot(eng.botId);
+    assert.ok(!main.messages.some((m: any) => /could not start/.test(m.text ?? "")), "refused at the door, not a chat notice");
+
+    // handing the wheel back is what lets the retry land
+    assert.equal((await h.fetch(`/api/bots/${eng.botId}/wheel`, { method: "DELETE" })).status, 200);
+    assert.equal((await eng.fire({ symbol: "HELD" })).status, 202);
+    await settles(async () => eng.parked() === 1, "no turn reached the engine");
+    eng.release();
+    await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
+    assert.equal(eng.requests(), 1);
+  });
+
+  test("an agent with no engine refuses the event with a 409 and creates no lane", async () => {
+    const orphan = await agentWithoutEngine("Stranded");
+    const { webhook } = await h.json("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify({ name: "Stranded", botId: orphan }),
+    });
+
+    const res = await h.fetch(`/hook/${webhook.token}`, { method: "POST", body: JSON.stringify({ x: 1 }) });
+    assert.equal(res.status, 409);
+    assert.equal(res.headers.get("retry-after"), null);
+    assert.equal(await webhookLane(orphan), undefined, "a refused event must not create a lane");
+    const after = await bot(orphan);
+    assert.ok(!after.messages.some((m: any) => /could not start/.test(m.text ?? "")));
+  });
+
+  test("a throw before the event is handed on frees the lane for the next event", async (t) => {
+    const eng = await heldEngine(t);
+    // The lane is claimed, then noteFired saves webhooks.json. A directory in
+    // its place makes that save throw, in the disposable home only, before
+    // the event reaches the turn.
+    const file = join(h.home, ".bloks", "webhooks.json");
+    rmSync(file);
+    mkdirSync(file);
+    const failed = await eng.fire({ x: 1 });
+    assert.equal(failed.status, 500, "the sender must see a failure, not a hung connection");
+    assert.equal(eng.requests(), 0);
+
+    rmSync(file, { recursive: true });
+    const next = await eng.fire({ x: 2 });
+    assert.equal(next.status, 202, "a leaked claim would refuse this event with a busy 503");
+    await settles(async () => eng.parked() === 1, "the next event never reached the engine");
+    eng.release();
+    await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
+    assert.equal(eng.requests(), 1);
   });
 });
