@@ -6016,43 +6016,43 @@ describe("webhook dispatch", () => {
     return opened.messages.map((m: any) => m.text ?? "").join("\n");
   }
 
-  test("a busy lane refuses the event with a retry, and the retry lands once the turn ends", async (t) => {
+  test("an event for a busy lane waits and is delivered once the turn ends", async (t) => {
     const eng = await heldEngine(t);
     assert.equal((await eng.fire({ symbol: "FIRST" })).status, 202);
     await settles(async () => eng.parked() === 1, "no turn reached the engine");
 
-    // Acknowledging this with 202 and then dropping it is the bug: the
-    // sender would count it delivered and the agent would never see it.
+    // Acknowledging this with 202 and then dropping it was the bug: the
+    // sender counted it delivered and the agent never saw it. Now a 202
+    // means it is saved and goes in the next turn.
     const busy = await eng.fire({ symbol: "SECOND-BUSY" });
-    assert.equal(busy.status, 503);
-    assert.equal(busy.headers.get("retry-after"), "30");
+    assert.equal(busy.status, 202);
+    assert.equal((await busy.json()).queued, true);
+    assert.equal(eng.requests(), 1, "a waiting event must not run beside the busy turn");
 
     eng.release();
+    await settles(async () => eng.requests() === 2, "the waiting event never reached the engine");
     await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
     const lane = await webhookLane(eng.botId);
-    assert.equal(eng.requests(), 1, "the refused event must not start a turn");
-    assert.doesNotMatch(await laneText(eng.botId, lane.id), /SECOND-BUSY/);
-
-    const retry = await eng.fire({ symbol: "SECOND-BUSY" });
-    assert.equal(retry.status, 202);
-    await settles(async () => (await webhookLane(eng.botId))?.state === "idle" && eng.requests() === 2, "the retry did not finish");
-    assert.match(await laneText(eng.botId, lane.id), /SECOND-BUSY/);
+    assert.equal((await laneText(eng.botId, lane.id)).match(/SECOND-BUSY/g)?.length, 1, "delivered once");
   });
 
-  test("a burst on an idle lane is accepted once and refused the rest", async (t) => {
+  test("a burst on an idle lane starts one turn and the rest wait for the next", async (t) => {
     const eng = await heldEngine(t);
     // The first claim has to hold until startTurn has marked the lane busy,
-    // which takes several awaits, so the others must see the claim and not
-    // an idle lane.
+    // which takes several awaits, so the others must see the claim and
+    // wait behind it rather than start a second turn in the same lane.
     const results = await Promise.all(Array.from({ length: 6 }, (_, i) => eng.fire({ symbol: `BURST-${i}` })));
-    const statuses = results.map((r) => r.status).sort();
-    assert.equal(statuses.filter((s) => s === 202).length, 1, `statuses: ${statuses}`);
-    assert.equal(statuses.filter((s) => s === 503).length, 5, `statuses: ${statuses}`);
+    assert.deepEqual(results.map((r) => r.status), [202, 202, 202, 202, 202, 202]);
 
     await settles(async () => eng.parked() === 1, "no turn reached the engine");
     eng.release();
+    // the five that waited go in one follow-up turn
+    await settles(async () => eng.requests() === 2, "the waiting events never ran");
     await settles(async () => (await webhookLane(eng.botId))?.state === "idle", "the lane never went idle");
-    assert.equal(eng.requests(), 1);
+    assert.equal(eng.requests(), 2);
+    const lane = await webhookLane(eng.botId);
+    const text = await laneText(eng.botId, lane.id);
+    for (let i = 0; i < 6; i++) assert.equal(text.match(new RegExp(`BURST-${i}\\b`, "g"))?.length, 1, `BURST-${i}`);
   });
 
   test("an agent on hold refuses the event before any lane or turn is made", async (t) => {

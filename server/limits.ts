@@ -23,6 +23,11 @@ export const MAX_SKILLS = 12;
 /** Request bodies. Screen frames are the only large ones. */
 export const MAX_BODY_BYTES = 2_000_000;
 
+/** Webhook events waiting on one busy lane, and their total size with
+ * framing and separators. Past either, the sender is told to retry. */
+export const MAX_WEBHOOK_QUEUE_ITEMS = 20;
+export const MAX_WEBHOOK_QUEUE_BYTES = 100_000;
+
 /** Simultaneous event-stream listeners. One app needs one. */
 export const MAX_SSE_CLIENTS = 32;
 

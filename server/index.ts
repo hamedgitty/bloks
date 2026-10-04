@@ -86,6 +86,8 @@ import {
   MAX_DESCRIPTION_CHARS,
   MAX_KEY_CHARS,
   MAX_MESSAGE_CHARS,
+  MAX_WEBHOOK_QUEUE_BYTES,
+  MAX_WEBHOOK_QUEUE_ITEMS,
   MAX_MODEL_ID_CHARS,
   MAX_NAME_CHARS,
   MAX_SKILL_CHARS,
@@ -5268,11 +5270,60 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // Words said to a busy lane are not an error; they are the next thing to
 // say. They land in the transcript immediately (flagged queued), wait in
 // memory, and drain into one follow-up turn when the lane settles. A
-// restart loses only the auto-send intent; the words are already saved.
+// restart rebuilds the waiting from the transcript (recoverQueued), so
+// nothing flagged queued is left behind waiting forever.
 // An item with no messageId is a note from Bloks itself, like the one
 // that resumes a task after a secret is saved: nothing in the transcript
 // to wait on, so it is always still due.
-const steerQueues = new Map<string, { botId: string; items: Array<{ messageId?: string; text: string }> }>();
+const steerQueues = new Map<
+  string,
+  { botId: string; items: Array<{ messageId?: string; text: string; source?: "webhook" }> }
+>();
+
+/** Saves a message for a lane that is mid-turn, to go in the turn after.
+ * The transcript keeps the words; the engine is told who they are from. */
+function queueOnLane(
+  botId: string,
+  laneId: string,
+  text: string,
+  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" } = {},
+) {
+  const message = store.appendMessage(laneId, {
+    role: "user", kind: "text", text, queued: true,
+    ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+    ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
+    ...(options.via ? { via: options.via } : {}),
+  });
+  broadcast({ kind: "message", threadId: laneId, message });
+  const entry = steerQueues.get(laneId) ?? { botId, items: [] };
+  entry.items.push({
+    messageId: message.id,
+    text: options.from ? fromAgentPrompt(options.from, text) : text,
+    ...(options.via === "webhook" ? { source: "webhook" as const } : {}),
+  });
+  steerQueues.set(laneId, entry);
+  return message;
+}
+
+/** After a restart, every message still flagged queued is waiting again,
+ * and runs once its lane is free, as it would have before the restart. */
+function recoverQueued() {
+  for (const bot of store.bots) {
+    for (const lane of bot.tasks) {
+      const waiting = store.messagesFor(lane.id).filter((m) => m.queued && m.role === "user" && !m.deleted && m.text);
+      if (!waiting.length) continue;
+      steerQueues.set(lane.id, {
+        botId: bot.id,
+        items: waiting.map((m) => ({
+          messageId: m.id,
+          text: m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text!) : m.text!,
+          ...(m.via === "webhook" ? { source: "webhook" as const } : {}),
+        })),
+      });
+      drainSteer(lane.id);
+    }
+  }
+}
 
 /** What an engine is told about a message another agent sent: who it is
  * from and how to answer. The transcript keeps the words alone, with the
@@ -5301,15 +5352,7 @@ async function sendUserMessage(
     throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), { status: 409 });
   }
   if (lane.busy) {
-    const message = store.appendMessage(lane.id, {
-      role: "user", kind: "text", text, queued: true,
-      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
-      ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
-    });
-    broadcast({ kind: "message", threadId: lane.id, message });
-    const entry = steerQueues.get(lane.id) ?? { botId: bot.id, items: [] };
-    entry.items.push({ messageId: message.id, text: options.from ? fromAgentPrompt(options.from, text) : text });
-    steerQueues.set(lane.id, entry);
+    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from });
@@ -5899,9 +5942,20 @@ const server = createServer(async (req, res) => {
       return json(res, refusal.status, { error: refusal.error });
     }
     const laneId = agentId ? claimWebhookLane(agentId) : undefined;
+    // The Webhooks lane is mid-turn, or another event has just claimed it:
+    // this one waits behind it and goes in the next turn, as a message to
+    // a busy chat does. The wait is bounded, and past it the sender is told
+    // to retry; a 202 always means the event is saved and will be handled.
+    let waitIn: string | undefined;
     if (agentId && !laneId) {
-      res.setHeader("retry-after", "30");
-      return json(res, 503, { error: "that agent is busy with another turn; send this event again shortly" });
+      waitIn = store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id;
+      const framed = webhookMessage(hook.name, raw);
+      const queued = waitIn ? (steerQueues.get(waitIn)?.items.filter((item) => item.source === "webhook") ?? []) : [];
+      const bytes = queued.reduce((sum, item) => sum + Buffer.byteLength(item.text) + 1, Buffer.byteLength(framed) + 1);
+      if (!waitIn || queued.length >= MAX_WEBHOOK_QUEUE_ITEMS || bytes > MAX_WEBHOOK_QUEUE_BYTES) {
+        res.setHeader("retry-after", "30");
+        return json(res, 503, { error: "that agent is busy and has as many events waiting as it holds; retry this event shortly" });
+      }
     }
 
     // From here to the async turn below, a throw must release the claim, or
@@ -5911,14 +5965,21 @@ const server = createServer(async (req, res) => {
       webhooks.noteFired(hook.id, raw);
       text = webhookMessage(hook.name, raw);
 
+      if (waitIn) queueOnLane(agentId!, waitIn, text, { via: "webhook" });
+
       // Answer before the turn runs: webhook senders time out fast and
       // retry on failure, and an agent turn outlives both.
-      json(res, 202, { ok: true });
+      json(res, 202, waitIn ? { ok: true, queued: true } : { ok: true });
     } catch (e) {
       // Answer, so the sender sees a failure rather than a hung connection.
       if (laneId) webhookLanes.delete(laneId);
       if (!res.headersSent) return json(res, 500, { error: "event not accepted; send it again" });
       throw e;
+    }
+    if (waitIn) {
+      // the turn it waited on may have ended a moment ago; if so, now
+      if (!webhookLanes.has(waitIn)) drainSteer(waitIn);
+      return;
     }
     void (async () => {
       try {
@@ -5946,7 +6007,11 @@ const server = createServer(async (req, res) => {
       } finally {
         // by now startTurn has marked the lane busy (or failed before it
         // could), so the lane's own busy flag carries the claim from here on
-        if (laneId) webhookLanes.delete(laneId);
+        if (laneId) {
+          webhookLanes.delete(laneId);
+          // events that queued behind a turn that never started go now
+          drainSteer(laneId);
+        }
       }
     })();
     return;
@@ -10947,6 +11012,8 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 });
 server.listen(PORT, BIND, () => {
   console.log(`bloks server on http://127.0.0.1:${PORT}`);
+  // messages that were waiting on a turn when Bloks last stopped
+  recoverQueued();
   // Where this server is, for the tools on this machine that look for it
   // (bin/bloks-mcp.mjs, bin/bloks.mjs). The desktop app can end up on a
   // port nobody would guess when the usual ones are taken.

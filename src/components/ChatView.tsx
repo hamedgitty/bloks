@@ -193,9 +193,9 @@ function Bubble({
       {/* A column, so reactions hang under the bubble they belong to
           rather than beside it where they would push the text around. */}
       <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
-        {user && (message.via === "watcher" || message.via === "email") && (
+        {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook") && (
           <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
-            {message.via === "watcher" ? "From your watcher" : "By email"}
+            {message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
           </div>
         )}
         <div

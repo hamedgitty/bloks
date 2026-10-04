@@ -64,7 +64,7 @@ export interface Message {
   /** Taken back: the row stays, the words are gone. */
   deleted?: boolean;
   /** Came in some other way than you typing it here. */
-  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email";
+  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook";
   /** Rewound: taken back with everything after it (see the rewind route). */
   rewound?: number;
   /** secret messages: a value asked for via a secure field */
