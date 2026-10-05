@@ -66,6 +66,8 @@ export function chooseModels(
   /** Ids the provider says can call tools, when it says. An agent needs
    * tools, so a free model that cannot use them is not worth offering. */
   toolCapable?: Set<string>,
+  /** When each model was added, in seconds, when the provider says. */
+  created?: Map<string, number>,
 ): ModelCatalog | null {
   const clean = [...new Set(ids.filter((id) => typeof id === "string" && id))]
     // embeddings, images and audio are not chat models
@@ -76,17 +78,20 @@ export function chooseModels(
   const usable = toolCapable ? clean.filter((id) => toolCapable.has(id)) : clean;
   if (!usable.length) return null;
   // With free slots, free models are listed together after the paid ones
-  // rather than scattered through the shortlist.
-  const pool = spec.freeSlots ? usable.filter((id) => !/:free$/i.test(id)) : usable;
+  // rather than scattered through the shortlist. A gateway's routing
+  // variant (OpenRouter's ":batch", ":nitro" and the rest) of a model that
+  // is listed anyway is the same model twice, and the plain one is the one
+  // an agent wants. Named suffixes only: Ollama's "qwen3:8b" is a size.
+  const listed = new Set(usable);
+  const variant = (id: string) => {
+    const m = /^(.+):(batch|nitro|floor|online|thinking|extended|exacto|beta)$/i.exec(id);
+    return Boolean(m && listed.has(m[1]));
+  };
+  const pool = usable.filter((id) => !variant(id) && !(spec.freeSlots && /:free$/i.test(id)));
 
-  const ranked = spec.prefer?.length
-    ? pool
-        .map((id) => ({ id, rank: spec.prefer!.findIndex((re) => re.test(id)) }))
-        .filter((e) => e.rank !== -1)
-        .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))
-        .map((e) => e.id)
-    : [...pool].sort();
-  const shortlist = (ranked.length ? ranked : [...pool].sort()).slice(0, spec.limit ?? 20);
+  const limit = spec.limit ?? 20;
+  const ranked = spec.prefer?.length ? byFamily(spec, pool, limit, created) : [];
+  const shortlist = ranked.length ? ranked : [...pool].sort().slice(0, limit);
 
   // keep the configured default if the provider still serves it, so a
   // refresh never silently moves an agent onto a different model
@@ -113,6 +118,44 @@ export function chooseModels(
     default: preferredDefault,
     options: [...shortlist, ...free].map((id) => ({ id, label: labelFor(id) })),
   };
+}
+
+/**
+ * The shortlist for a provider that lists families: every family gets a
+ * turn before any family gets a second one. Ranked family by family and
+ * cut at the limit, the first family alone filled it: OpenRouter serves
+ * dozens of Google models that take tools, so a sign-in that reaches
+ * every lab offered Gemini and nothing else.
+ *
+ * Within a family the models this app names in its own catalog go first,
+ * then the newest, so a family's turn goes to its current flagship rather
+ * than to whatever sorts first by name. The result reads lab by lab, in
+ * the order the spec prefers them.
+ */
+function byFamily(spec: ProviderSpec, pool: string[], limit: number, created?: Map<string, number>): string[] {
+  const prefer = spec.prefer ?? [];
+  const named = new Set(spec.models.options.map((o) => o.id));
+  const families: string[][] = prefer.map(() => []);
+  for (const id of pool) {
+    const rank = prefer.findIndex((re) => re.test(id));
+    if (rank !== -1) families[rank].push(id);
+  }
+  for (const family of families) {
+    family.sort(
+      (a, b) =>
+        Number(named.has(b)) - Number(named.has(a)) ||
+        (created?.get(b) ?? 0) - (created?.get(a) ?? 0) ||
+        a.localeCompare(b),
+    );
+  }
+  const picked = new Set<string>();
+  for (let turn = 0; picked.size < limit && families.some((f) => f.length > turn); turn++) {
+    for (const family of families) {
+      if (picked.size >= limit) break;
+      if (turn < family.length) picked.add(family[turn]);
+    }
+  }
+  return families.flatMap((family) => family.filter((id) => picked.has(id)));
 }
 
 // ── the tool loop ──────────────────────────────────────────────────────
@@ -397,10 +440,18 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
                     .map((r) => String(r.id)),
                 )
               : undefined;
+            // OpenRouter dates its models, which is how a family's newest
+            // gets its turn in the shortlist ahead of last year's
+            const created = new Map<string, number>(
+              rows
+                .filter((r) => typeof r?.created === "number" && r?.id)
+                .map((r) => [String(r.id), Number(r.created)] as [string, number]),
+            );
             const next = chooseModels(
               spec,
               rows.map((r) => String(r?.id ?? r?.name ?? "")),
               toolCapable,
+              created.size ? created : undefined,
             );
             if (next) {
               models.default = next.default;
