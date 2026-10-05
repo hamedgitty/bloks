@@ -88,6 +88,13 @@ mac:
   extendInfo:
     NSMicrophoneUsageDescription: Bloks uses the microphone for voice dictation, calls with your agents, and meeting notes. Speech is transcribed on this Mac.
     NSSpeechRecognitionUsageDescription: Bloks transcribes your voice on-device to type messages for you.
+    # Dropbox, Google Drive, OneDrive and Box keep their files in
+    # ~/Library/CloudStorage, behind a file provider. macOS asks before an
+    # app reads them, and the agents' processes ask as Bloks. Without this
+    # string macOS has nothing to show, the likeliest reason an agent's ls
+    # of a Dropbox folder waited forever on an answer nobody could give
+    # (GitHub 147).
+    NSFileProviderDomainUsageDescription: Your agents can read and edit files in your cloud folders, such as Dropbox, Google Drive and OneDrive, when you ask them to.
   # Notarization is on. electron-builder reads APPLE_ID,
   # APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID from the environment,
   # then staples the ticket. Without a signing identity there is nothing
