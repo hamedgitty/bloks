@@ -51,6 +51,7 @@ import type { ModelSelection, RuntimeEvent } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+import { slimNativeLogs } from "./drivers/native.ts";
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
@@ -11455,6 +11456,16 @@ server.listen(PORT, BIND, () => {
   console.log(`bloks server on http://127.0.0.1:${PORT}`);
   // messages that were waiting on a turn when Bloks last stopped
   recoverQueued();
+  // Copies written before the native log stopped repeating Codex's thread
+  // history (server/drivers/native.ts), slimmed once, after startup has
+  // had its moment.
+  setTimeout(() => {
+    void slimNativeLogs()
+      .then(({ files, saved }) => {
+        if (files) console.log(`[bloks] native logs: ${files} slimmed, ${Math.round(saved / 1e6)} MB freed`);
+      })
+      .catch(() => {});
+  }, 30_000).unref?.();
   // Where this server is, for the tools on this machine that look for it
   // (bin/bloks-mcp.mjs, bin/bloks.mjs). The desktop app can end up on a
   // port nobody would guess when the usual ones are taken.
