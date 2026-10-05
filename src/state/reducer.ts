@@ -57,6 +57,10 @@ export interface Message {
   decisionChoice?: number;
   /** Sent while the lane was busy; drains into the next turn. */
   queued?: boolean;
+  /** When it was queued, and when it stopped waiting and went to the
+   * agent. Together they are how long it waited. */
+  queuedAt?: number;
+  deliveredAt?: number;
   /** Queued, but still waiting when Bloks restarted and too old to send
    * on its own (server/index.ts, recoverQueued). */
   unsent?: boolean;

@@ -22,9 +22,14 @@ test("room messages are visible and persisted while queued, then drain in order"
   assert.equal(messages.filter((m) => m.queued).length, 2);
   const disk = JSON.parse(readFileSync(join(c.h.home, ".bloks", `messages-${c.blok.id}.json`), "utf8"));
   assert.equal(disk.find((m: any) => m.id === second.id).queued, true);
+  assert.equal(messages.find((m) => m.id === second.id)?.deliveredAt, undefined, "a waiting message has not gone anywhere yet");
+  const released = Date.now();
   c.calls[0].finish();
   await waitFor(() => c.calls.length === 2);
-  assert.equal((await c.messages()).find((m) => m.id === second.id).queued, false);
+  const went = (await c.messages()).find((m) => m.id === second.id);
+  assert.equal(went.queued, false);
+  // when it went to the room's agents, not when it was queued
+  assert.ok(went.deliveredAt >= released, "the time a room message stopped waiting is kept");
   assert.ok(!JSON.stringify(c.calls[1].body).includes("third request"), "future queued text must not reach the current turn");
   c.calls[1].finish();
   await waitFor(() => c.calls.length === 3);

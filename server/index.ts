@@ -3663,7 +3663,7 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     const room = bloks.get(blok.id);
     if (!room || !current || current.deleted) return message;
     if (current.queued) {
-      const patched = store.patchMessage(blok.id, message.id, { queued: false });
+      const patched = store.patchMessage(blok.id, message.id, { queued: false, deliveredAt: Date.now() });
       broadcast({ kind: "message.patch", threadId: blok.id, message: patched! });
     }
     return postToRoomNow(room, current.text ?? text, author, current);
@@ -5649,9 +5649,11 @@ function drainSteer(threadId: string) {
     (item) => !item.messageId || store.messagesFor(threadId).some((m) => m.id === item.messageId),
   );
   if (alive.length === 0) return;
+  // one moment for the whole burst, because one turn takes all of it
+  const deliveredAt = Date.now();
   for (const item of alive) {
     if (!item.messageId) continue;
-    const patched = store.patchMessage(threadId, item.messageId, { queued: false });
+    const patched = store.patchMessage(threadId, item.messageId, { queued: false, deliveredAt });
     if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
   }
   // one turn answers the whole burst

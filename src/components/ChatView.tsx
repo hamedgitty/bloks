@@ -9,7 +9,7 @@ import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
 import Square from "lucide-react/dist/esm/icons/square.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
-import { api, useStore, formatTime, openLaneWorking, type Bot, type Message } from "@/state/store";
+import { api, useStore, openLaneWorking, type Bot, type Message } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
@@ -19,6 +19,7 @@ import { shouldLoadEarlier, showTypingDots, windowStart, TRANSCRIPT_WINDOW } fro
 import { useEarlier } from "@/lib/useEarlier";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
+import { dayLine, queuedLine, stamp, timeSaidBelow } from "@/lib/when";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
 import { AfterAgentLink, AgentExchangeDialog, AgentExchangeRow } from "./AgentExchange";
@@ -150,8 +151,11 @@ function Bubble({
   nameOf,
   highlight = "",
   isHit,
+  hideTime,
 }: {
   message: Message;
+  /** The next bubble says the same time, so this one leaves it out. */
+  hideTime?: boolean;
   fresh?: boolean;
   author: string;
   onReply: (draft: ReplyDraft) => void;
@@ -174,115 +178,129 @@ function Bubble({
   return (
     <div
       className={cn(
-        "group flex w-full items-center gap-1.5",
-        user ? "justify-end" : "justify-start",
+        "flex flex-col",
+        user ? "items-end" : "items-start",
         // arriving messages rise into place from the side they belong to
         fresh && (user ? "animate-send-in" : "animate-receive-in"),
       )}
     >
-      {user && (
-        <MessageActionBar
-          message={message}
-          author={author}
-          onReply={onReply}
-          onForward={onForward}
-          onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-          onEdit={user && onEdit ? () => setEditing(message.text ?? "") : undefined}
-          onDelete={onDelete ? () => onDelete(message.id) : undefined}
-          onRewind={onRewind ? () => onRewind(message.id) : undefined}
-        />
-      )}
-      {/* A column, so reactions hang under the bubble they belong to
-          rather than beside it where they would push the text around. */}
-      <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
-        {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook") && (
-          <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
-            {message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
-          </div>
+      <div className={cn("group flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+        {user && (
+          <MessageActionBar
+            message={message}
+            author={author}
+            onReply={onReply}
+            onForward={onForward}
+            onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
+            onEdit={user && onEdit ? () => setEditing(message.text ?? "") : undefined}
+            onDelete={onDelete ? () => onDelete(message.id) : undefined}
+            onRewind={onRewind ? () => onRewind(message.id) : undefined}
+          />
         )}
-        <div
-          className={cn(
-            "px-3.5 py-2 text-[14.5px] leading-relaxed",
-            user
-              ? "whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary text-primary-foreground"
-              : "rounded-2xl rounded-bl-md bg-muted text-foreground",
-            // the hit you are standing on, so n and N feel like movement
-            isHit && "ring-2 ring-warning/70",
+        {/* A column, so reactions hang under the bubble they belong to
+            rather than beside it where they would push the text around. */}
+        <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
+          {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook") && (
+            <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
+              {message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
+            </div>
           )}
-        >
-          {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark={user} />}
-          {editing !== null ? (
-            <div className="flex flex-col gap-1.5">
-              <textarea
-                autoFocus
-                value={editing}
-                onChange={(e) => setEditing(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setEditing(null);
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (editing.trim()) onEdit?.(message.id, editing.trim());
-                    setEditing(null);
-                  }
-                }}
-                rows={Math.min(8, editing.split("\n").length + 1)}
-                className="w-full resize-none rounded-lg bg-black/15 px-2 py-1 text-[14.5px] leading-relaxed outline-none"
-              />
-              <div className="flex items-center gap-2 text-[11.5px] opacity-80">
-                <button
-                  onClick={() => {
-                    if (editing.trim()) onEdit?.(message.id, editing.trim());
-                    setEditing(null);
+          <div
+            className={cn(
+              "px-3.5 py-2 text-[14.5px] leading-relaxed",
+              user
+                ? "whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary text-primary-foreground"
+                : "rounded-2xl rounded-bl-md bg-muted text-foreground",
+              // the hit you are standing on, so n and N feel like movement
+              isHit && "ring-2 ring-warning/70",
+            )}
+          >
+            {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark={user} />}
+            {editing !== null ? (
+              <div className="flex flex-col gap-1.5">
+                <textarea
+                  autoFocus
+                  value={editing}
+                  onChange={(e) => setEditing(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setEditing(null);
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (editing.trim()) onEdit?.(message.id, editing.trim());
+                      setEditing(null);
+                    }
                   }}
-                  className="font-medium underline underline-offset-2"
-                >
-                  Save
-                </button>
-                <button onClick={() => setEditing(null)}>Cancel</button>
-                <span className="opacity-70">Enter saves, Escape cancels</span>
+                  rows={Math.min(8, editing.split("\n").length + 1)}
+                  className="w-full resize-none rounded-lg bg-black/15 px-2 py-1 text-[14.5px] leading-relaxed outline-none"
+                />
+                <div className="flex items-center gap-2 text-[11.5px] opacity-80">
+                  <button
+                    onClick={() => {
+                      if (editing.trim()) onEdit?.(message.id, editing.trim());
+                      setEditing(null);
+                    }}
+                    className="font-medium underline underline-offset-2"
+                  >
+                    Save
+                  </button>
+                  <button onClick={() => setEditing(null)}>Cancel</button>
+                  <span className="opacity-70">Enter saves, Escape cancels</span>
+                </div>
               </div>
-            </div>
-          ) : user ? (
-            <UserText text={message.text ?? ""} highlight={highlight} />
-          ) : (
-            <Markdownish text={message.text ?? ""} highlight={highlight} />
-          )}
-          {message.editedAt && editing === null && (
-            <span className="ml-1.5 align-baseline text-[10.5px] opacity-60">edited</span>
-          )}
-          {user && message.queued && (
-            <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70">
-              <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
-              Queued, sends when this turn finishes
-            </div>
-          )}
-          {user && message.unsent && (
-            <div className="mt-1 text-[10.5px] font-medium opacity-80">
-              Not sent: it was still waiting when Bloks restarted, too long ago to send on its own.
-              {onResend && message.text ? (
-                <button className="ml-1.5 underline underline-offset-2" onClick={() => onResend(message.text ?? "")}>
-                  Send again
-                </button>
-              ) : null}
-            </div>
-          )}
+            ) : user ? (
+              <UserText text={message.text ?? ""} highlight={highlight} />
+            ) : (
+              <Markdownish text={message.text ?? ""} highlight={highlight} />
+            )}
+            {message.editedAt && editing === null && (
+              <span className="ml-1.5 align-baseline text-[10.5px] opacity-60">edited</span>
+            )}
+            {user && message.queued && (
+              <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70">
+                <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
+                Queued, sends when this turn finishes
+              </div>
+            )}
+            {user && message.unsent && (
+              <div className="mt-1 text-[10.5px] font-medium opacity-80">
+                Not sent: it was still waiting when Bloks restarted, too long ago to send on its own.
+                {onResend && message.text ? (
+                  <button className="ml-1.5 underline underline-offset-2" onClick={() => onResend(message.text ?? "")}>
+                    Send again
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <Reactions
+            reactions={message.reactions}
+            onToggle={(emoji: string) => onReact?.(message.id, emoji)}
+            nameOf={nameOf ?? ((id) => (id === "user" ? "You" : author))}
+          />
         </div>
-        <Reactions
-          reactions={message.reactions}
-          onToggle={(emoji: string) => onReact?.(message.id, emoji)}
-          nameOf={nameOf ?? ((id) => (id === "user" ? "You" : author))}
-        />
+        {!user && (
+          <MessageActionBar
+            message={message}
+            author={author}
+            onReply={onReply}
+            onForward={onForward}
+            onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
+            onDelete={onDelete ? () => onDelete(message.id) : undefined}
+          />
+        )}
       </div>
-      {!user && (
-        <MessageActionBar
-          message={message}
-          author={author}
-          onReply={onReply}
-          onForward={onForward}
-          onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-          onDelete={onDelete ? () => onDelete(message.id) : undefined}
-        />
-      )}
+      {/* Under the row rather than in it, so the action bar stays centred
+          on the words. One that waited for a turn says both times. */}
+      {message.at && !hideTime ? (
+        <time
+          dateTime={new Date(message.at).toISOString()}
+          className="mt-0.5 px-1 text-[11px] leading-4 tabular-nums text-muted-foreground"
+        >
+          {message.deliveredAt
+            ? queuedLine(message.queuedAt ?? message.at, message.deliveredAt)
+            : stamp(message.at)}
+        </time>
+      ) : null}
     </div>
   );
 }
@@ -905,7 +923,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           ) : (
             first && (
               <div className="py-3 text-center text-[12px] text-muted-foreground">
-                Today {formatTime(first.at)}
+                {dayLine(first.at)}
               </div>
             )
           )}
@@ -993,6 +1011,7 @@ export function ChatView({ bot }: { bot: Bot }) {
                   )}
                   <Bubble
                     message={m}
+                    hideTime={timeSaidBelow(m, visibleMessages[offset + 1])}
                     fresh={fresh}
                     author={m.role === "user" ? "You" : bot.name}
                     onReply={setReplyTo}

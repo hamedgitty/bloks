@@ -151,6 +151,11 @@ export interface Message {
   /** When it was queued. Written since 2.5.19; a queued message without
    * it predates recovery after a restart and is never run by it. */
   queuedAt?: number;
+  /** When a queued message stopped waiting and went to the turn that
+   * answers it. With `queuedAt` it says how long it waited. Absent on a
+   * message that never waited, one still waiting, one never sent, and
+   * one that went before this was recorded. */
+  deliveredAt?: number;
   /** Queued, then never sent: it was still waiting when Bloks restarted
    * and was too old, or too old a format, to run unattended. Kept in the
    * transcript for the person to send again if it still matters. */

@@ -17,7 +17,7 @@ import Users from "lucide-react/dist/esm/icons/users.mjs";
 import UserPlus from "lucide-react/dist/esm/icons/user-plus.mjs";
 import type { RoomPerson } from "@/state/reducer";
 import { SharePanel } from "./SharePanel";
-import { api, useStore, formatTime, type Blok, type Bot, type Message } from "@/state/store";
+import { api, useStore, type Blok, type Bot, type Message } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { GroupCallButton } from "./Voice";
@@ -49,6 +49,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { replyCounts, replyLabel } from "@/lib/threads";
+import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 
 /** A reaction in a room is the cheapest thing anyone can say, and often
@@ -142,7 +143,7 @@ function RoomMessage({
           {showSpeaker && (
             <div className="mb-0.5 flex items-baseline gap-1.5">
               <span className="text-[13px] font-semibold text-foreground">{who}</span>
-              <span className="text-[11px] text-muted-foreground">{formatTime(message.at)}</span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">{stamp(message.at)}</span>
             </div>
           )}
           <div className="group relative flex items-center gap-1.5">
@@ -177,6 +178,11 @@ function RoomMessage({
             onToggle={(emoji: string) => reactTo(roomId, message.id, emoji)}
             nameOf={nameOfReactor}
           />
+          {message.deliveredAt && (
+            <div className="mt-0.5 px-1 text-[11px] leading-4 tabular-nums text-muted-foreground">
+              {queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -226,7 +232,7 @@ function RoomMessage({
         {showSpeaker && (
           <div className="mb-0.5 flex items-baseline gap-1.5">
             <span className="text-[13px] font-semibold text-foreground">{speaker.name}</span>
-            <span className="text-[11px] text-muted-foreground">{formatTime(message.at)}</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground">{stamp(message.at)}</span>
           </div>
         )}
         {message.kind === "component" && message.component ? (

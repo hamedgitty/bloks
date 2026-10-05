@@ -17,10 +17,11 @@ import { useEffect, useRef, useState } from "react";
 import ArrowDownLeft from "lucide-react/dist/esm/icons/arrow-down-left.mjs";
 import ArrowUpRight from "lucide-react/dist/esm/icons/arrow-up-right.mjs";
 import CornerDownRight from "lucide-react/dist/esm/icons/corner-down-right.mjs";
-import { api, formatTime, useStore, type Message } from "@/state/store";
+import { api, useStore, type Message } from "@/state/store";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { AgentAvatar } from "./Avatar";
 import { Markdownish } from "./Markdown";
+import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 
 interface ExchangeEntry {
@@ -73,7 +74,15 @@ export function AgentExchangeRow({
           <span className={cn("shrink-0", failed && "text-destructive")}>({STATUS_WORDS[note.status]})</span>
         )}
         {preview && <span className="min-w-0 truncate">{preview}</span>}
-        {message.at ? <span className="shrink-0 tabular-nums text-muted-foreground/70">{formatTime(message.at)}</span> : null}
+        {/* still one line: how long it waited is a hover away */}
+        {message.at ? (
+          <span
+            title={message.deliveredAt ? queuedLine(message.queuedAt ?? message.at, message.deliveredAt) : undefined}
+            className="shrink-0 tabular-nums text-muted-foreground/70"
+          >
+            {stamp(message.at)}
+          </span>
+        ) : null}
       </button>
     </div>
   );
@@ -174,7 +183,7 @@ export function AgentExchangeDialog({
                     {/* context, not a message: it stayed in the speaker's own chat */}
                     <span>{entry.dir === "reply" ? `in its own chat, not sent to ${entry.toName}` : `to ${entry.toName}`}</span>
                     {entry.status === "failed" && <span className="text-destructive">not delivered</span>}
-                    <span className="ml-auto shrink-0 tabular-nums">{formatTime(entry.at)}</span>
+                    <span className="ml-auto shrink-0 tabular-nums">{stamp(entry.at)}</span>
                   </div>
                   {newLane && (
                     <div className="mb-1 text-[11px] text-muted-foreground/80">
