@@ -12,12 +12,18 @@ import { CodexDriver } from "../server/drivers/codex.ts";
 
 // Exercise the real driver and JSON-RPC transport against an in-memory
 // app-server. No account, network, subprocess, or workspace data is used.
-async function setup(t: TestContext, fullAuto = false) {
+async function setup(t: TestContext, fullAuto = false,
+  responses: Record<string, (request: any, send: (frame: any) => void) => any> = {}) {
   const peers: ReturnType<typeof makePeer>[] = [];
   const logs: any[] = [];
   function makePeer() {
     const frames: any[] = [];
+    const wire: { dir: "in" | "out"; msg: any }[] = [];
     const stdout = new PassThrough();
+    const send = (frame: any) => {
+      wire.push({ dir: "in", msg: frame });
+      stdout.write(JSON.stringify(frame) + "\n");
+    };
     const peer = Object.assign(new EventEmitter(), {
       stdout,
       stderr: new PassThrough(),
@@ -26,19 +32,19 @@ async function setup(t: TestContext, fullAuto = false) {
         write(chunk, _encoding, done) {
           const frame = JSON.parse(String(chunk));
           frames.push(frame);
+          wire.push({ dir: "out", msg: frame });
           if (frame.method && frame.id !== undefined) {
-            queueMicrotask(() => stdout.write(JSON.stringify({
+            queueMicrotask(() => send(responses[frame.method]?.(frame, send) ?? {
               id: frame.id,
               result: frame.method === "thread/start" ? { thread: { id: "codex-thread" } } : {},
-            }) + "\n"));
+            }));
           }
           done();
         },
       }),
     });
     return {
-      peer, frames,
-      send(frame: unknown) { stdout.write(JSON.stringify(frame) + "\n"); },
+      peer, frames, wire, send,
       reply(id: unknown) { return frames.find((f) => f.id === id && (f.result || f.error)); },
     };
   }
@@ -70,6 +76,87 @@ async function setup(t: TestContext, fullAuto = false) {
   }
   return { instance, events, logs, start };
 }
+
+test("resume logs omit repeated history but preserve the cursor, metadata and other frames", async (t) => {
+  const history = Array.from({ length: 1000 }, (_, id) => ({ id, items: [{ text: "fixture history ".repeat(20) }] }));
+  const h = await setup(t, false, {
+    "thread/resume": (request) => ({
+      jsonrpc: "2.0", id: request.id,
+      result: { model: "fixture-model", extra: "keep", thread: {
+        id: "restored-thread", cwd: "/fixture", status: { type: "idle" }, turns: history,
+      } },
+    }),
+  });
+  const peer = await h.start("task-a", { resumeCursor: "saved-thread" });
+  const resume = peer.frames.find((frame) => frame.method === "thread/resume");
+  assert.equal(peer.frames.find((frame) => frame.method === "turn/start").params.threadId, "restored-thread");
+  assert.ok(!peer.frames.some((frame) => frame.method === "thread/start"));
+  const usage = { method: "thread/tokenUsage/updated", params: { threadId: "restored-thread", tokenUsage: {
+    total: { totalTokens: 120, inputTokens: 100, cachedInputTokens: 75, outputTokens: 20 },
+    last: { totalTokens: 30, inputTokens: 25, cachedInputTokens: 20, outputTokens: 5 },
+    modelContextWindow: 200000,
+  } } };
+  peer.send(usage);
+  peer.send({ id: 991, result: { thread: { turns: history.slice(0, 1) } } });
+  // Once its response was consumed, an unsolicited same-ID frame is not
+  // another resume response and must remain untranslated too.
+  peer.send({ id: resume.id, result: { thread: { turns: history.slice(0, 1) } } });
+  const expected = structuredClone(peer.wire);
+  const expectedResume = expected.find((frame) => frame.dir === "in" && frame.msg.id === resume.id)!;
+  delete expectedResume.msg.result.thread.turns;
+  const native = h.logs.filter((entry) => entry.source === "codex.app-server");
+  assert.deepEqual(native.map(({ dir, msg }) => ({ dir, msg })), expected);
+  const loggedResume = native.find((entry) => entry.dir === "in" && entry.msg.id === resume.id)!;
+  assert.ok(JSON.stringify(loggedResume).length < 1000);
+  assert.ok(JSON.stringify(peer.wire.find((frame) => frame.dir === "in" && frame.msg.id === resume.id)).length > 300000);
+  assert.deepEqual(native.find((entry) => entry.msg.method === usage.method)!.msg, usage);
+});
+
+test("an incoming approval with the resume ID does not consume its response correlation", async (t) => {
+  const h = await setup(t, true, {
+    "thread/resume": (request, send) => {
+      send(elicitation(request.id));
+      return { id: request.id, result: { thread: { id: "restored-thread", turns: [{ id: "old-turn" }] } } };
+    },
+  });
+  const peer = await h.start("task-a", { resumeCursor: "saved-thread" });
+  const resume = peer.frames.find((frame) => frame.method === "thread/resume");
+  assert.equal(peer.reply(resume.id).result.action, "accept");
+  const native = h.logs.filter((entry) => entry.source === "codex.app-server");
+  assert.deepEqual(native.find((entry) => entry.dir === "in" && entry.msg.method === "mcpServer/elicitation/request")!.msg, elicitation(resume.id));
+  assert.deepEqual(native.find((entry) => entry.dir === "in" && entry.msg.result?.thread)!.msg,
+    { id: resume.id, result: { thread: { id: "restored-thread" } } });
+  assert.equal(peer.frames.find((frame) => frame.method === "turn/start").params.threadId, "restored-thread");
+});
+
+test("failed resume and fresh-thread history stay untranslated", async (t) => {
+  const h = await setup(t, false, {
+    "thread/resume": (request) => ({ id: request.id, error: { code: -32000, message: "fixture missing thread" } }),
+    "thread/start": (request) => ({ id: request.id, result: { thread: { id: "fresh-thread", turns: [{ id: "fresh-turn" }] } } }),
+  });
+  const peer = await h.start("task-a", { resumeCursor: "missing-thread" });
+  assert.equal(peer.frames.find((frame) => frame.method === "turn/start").params.threadId, "fresh-thread");
+  assert.deepEqual(h.logs.filter((entry) => entry.source === "codex.app-server").map(({ dir, msg }) => ({ dir, msg })), peer.wire);
+});
+
+test("resume replies without a history array retain their wire shape", async (t) => {
+  const shapes: Record<string, unknown>[] = [{ id: "restored-thread" }, { id: "restored-thread", turns: null },
+    { id: "restored-thread", turns: "future-format" }, { id: "restored-thread", turns: [] }];
+  for (const thread of shapes) {
+    await t.test(JSON.stringify(thread), async (sub) => {
+      const h = await setup(sub, false, {
+        "thread/resume": (request) => ({ id: request.id, result: { thread } }),
+      });
+      const peer = await h.start("task-a", { resumeCursor: "saved-thread" });
+      const resume = peer.frames.find((frame) => frame.method === "thread/resume");
+      const expected = { ...thread };
+      if (Array.isArray(thread.turns)) delete expected.turns;
+      assert.deepEqual(h.logs.find((entry) => entry.source === "codex.app-server" && entry.dir === "in" && entry.msg.id === resume.id)!.msg,
+        { id: resume.id, result: { thread: expected } });
+      assert.equal(peer.frames.find((frame) => frame.method === "turn/start").params.threadId, "restored-thread");
+    });
+  }
+});
 
 function elicitation(id: number | string = 0, tool = "COMPOSIO_MULTI_EXECUTE_TOOL") {
   return {

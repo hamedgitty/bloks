@@ -290,6 +290,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
       let finished = false;
+      let nativeResumeId: unknown;
 
       const abort = () => {
         try {
@@ -306,7 +307,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const rpc = attachRpc({
         stdin: child.stdin,
         stdout: child.stdout,
-        onFrame: (msg, dir) => appendNative(threadId, { dir, source: NATIVE_SOURCE, msg }),
+        onFrame: (msg, dir) => {
+          let logged = msg;
+          if (dir === "out" && msg.method === "thread/resume") {
+            nativeResumeId = msg.id;
+          } else if (dir === "in" && msg.id !== undefined && msg.id === nativeResumeId
+            && (msg.result !== undefined || msg.error !== undefined)) {
+            nativeResumeId = undefined;
+            // Resume repeats the entire history on each turn. Omit only
+            // that array from the log, keeping the live RPC result intact.
+            if (Array.isArray(msg.result?.thread?.turns)) {
+              const { turns, ...thread } = msg.result.thread;
+              logged = { ...msg, result: { ...msg.result, thread } };
+            }
+          }
+          appendNative(threadId, { dir, source: NATIVE_SOURCE, msg: logged });
+        },
         onRequest: (msg) => onAgentRequest(msg),
         onNotify: (msg) => onAgentNotification(msg),
       });
