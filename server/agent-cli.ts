@@ -348,6 +348,14 @@ export class AgentTokens {
 /** What the agent is told, once, when it has a credential. Short on
  * purpose: a paragraph of instructions in every prompt is a paragraph
  * competing with the actual request. */
+/** The opening of a turn whose session last ran the CLI some other way.
+ * `before` is the command it was told then, when that was recorded. */
+export function cliMovedNote(command: string, before?: string): string {
+  return before
+    ? `(Bloks has moved since your earlier turns. Run its command as \`${command}\` from now on. Earlier commands in this conversation that run \`${before}\` reach the copy that used to be there, so do not reuse them.)`
+    : `(Run the bloks command as \`${command}\` from now on. Earlier commands in this conversation that run bloks.mjs from a written-out path may reach an older copy of Bloks that has since moved, so do not reuse them.)`;
+}
+
 export function cliBriefing(command: string): string {
   return [
     `You can act on this workspace yourself, not only describe what should happen. Run \`${command} help\` to see how.`,

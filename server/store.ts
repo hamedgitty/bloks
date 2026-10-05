@@ -202,6 +202,9 @@ export interface TaskRecord {
    * time means that engine missed everything since and needs the story
    * replayed. Never shipped to clients. */
   lastInstanceId?: string;
+  /** The CLI command this lane's engine was last told to run. A resumed
+   * session told something else gets a note saying so. Never shipped. */
+  briefedCli?: string;
   id: ThreadId;
   title: string;
   busy?: boolean;
@@ -809,11 +812,14 @@ export class Store {
     this.saveBots();
   }
 
-  markTaskDispatched(botId: string, taskId: string, instanceId: string): void {
+  markTaskDispatched(botId: string, taskId: string, instanceId: string, cli?: string): void {
     const bot = this.bot(botId);
     const task = bot?.tasks.find((t) => t.id === taskId);
-    if (!task || task.lastInstanceId === instanceId) return;
+    if (!task) return;
+    const cliChanged = cli !== undefined && task.briefedCli !== cli;
+    if (task.lastInstanceId === instanceId && !cliChanged) return;
     task.lastInstanceId = instanceId;
+    if (cliChanged) task.briefedCli = cli;
     this.saveBots();
   }
 

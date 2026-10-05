@@ -119,7 +119,7 @@ import {
   updateCount,
   type RegistryEntry,
 } from "./skill-registry.ts";
-import { AgentTokens, allows, capabilities, cliBriefing, runsAProcess } from "./agent-cli.ts";
+import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess } from "./agent-cli.ts";
 import {
   COMPACT_AT,
   compactionNotice,
@@ -468,6 +468,16 @@ const agentTokens = new AgentTokens();
 const turnAlive = (taskId: string) => turnStarted.has(taskId) && Boolean(store.taskByThread(taskId)?.task.busy);
 setInterval(() => agentTokens.sweep(Date.now(), turnAlive), 5 * 60_000).unref?.();
 const AGENT_CLI = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
+/** How an agent with a shell is told to run the CLI. The path is wherever
+ * this copy of Bloks is installed, and that changes: a standalone server
+ * gives way to the app, a download lands in another folder. An engine
+ * session outlives the move, and an agent reaches first for commands it
+ * has already run, so a written-out path goes on reaching the old copy
+ * long after the instructions say otherwise (GitHub 150). BLOKS_CLI is set
+ * fresh on every turn, so a command that names it stays right wherever
+ * Bloks goes. Not on Windows, where an engine's shell may be PowerShell,
+ * which reads "$BLOKS_CLI" as a variable of its own. */
+const CLI_COMMAND = process.platform === "win32" ? `node "${AGENT_CLI}"` : `node "$BLOKS_CLI"`;
 /** Bloks as an MCP server for other AI apps (bin/bloks-mcp.mjs). */
 const MCP_CLI = fileURLToPath(new URL("../bin/bloks-mcp.mjs", import.meta.url));
 
@@ -2529,6 +2539,9 @@ async function startTurn(
   ]
     .filter(Boolean)
     .join(" ");
+  // Only a turn that gets a credential gets BLOKS_CLI in its environment
+  // (see below), so anything else is told the path itself.
+  const cliCommand = !sharing && runsAProcess(instance.driverKind) ? CLI_COMMAND : `node "${AGENT_CLI}"`;
   const persona = [
     `You are ${bot.name}, a personal agent in Bloks.`,
     connectorHint,
@@ -2544,7 +2557,7 @@ async function startTurn(
     // fetch it would be losing the instruction rather than deferring it.
     skillsPrompt(
       disclose(attached, runsAProcess(instance.driverKind)),
-      `To read one, run: node "${AGENT_CLI}" skill <id>`,
+      `To read one, run: ${cliCommand} skill <id>`,
     ),
     // The composer offers these by id after a slash (#51), so a message
     // naming one that way is asking for it by name.
@@ -2557,7 +2570,7 @@ async function startTurn(
     galleryPrompt(
       bot.withoutComponents,
       runsAProcess(instance.driverKind)
-        ? `To use one, run: node "${AGENT_CLI}" show <kind> '<json>'`
+        ? `To use one, run: ${cliCommand} show <kind> '<json>'`
         : 'To use one, write it as a fenced block on its own:\n```bloks\n{ "kind": "table", ... }\n```',
     ),
     // In a shared room the owner's private context stays out unless the
@@ -2569,7 +2582,7 @@ async function startTurn(
     // what every agent has learned about them and they confirmed, and how
     // to add to it; never in a room other people are reading
     !sharing && profileNotes.prompt(),
-    !sharing && noteBriefing(runsAProcess(instance.driverKind) ? `node "${AGENT_CLI}"` : null),
+    !sharing && noteBriefing(runsAProcess(instance.driverKind) ? cliCommand : null),
     (!sharing || sharing.memoryFor?.includes(bot.id)) && workspace.memoryPrompt(bot.id),
     sharing && sharedBriefing(sharedRoom!, sharing, roomTools),
     `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,
@@ -2802,6 +2815,15 @@ async function startTurn(
       const credential =
         !sharing && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
 
+      // A session that has run the CLI before may have run it from a copy
+      // of Bloks that is no longer where it was. Said once, in the turn
+      // itself: an engine that keeps the first system prompt of a session
+      // never reads a newer one (GitHub 150).
+      const resumeCursor = engineFresh ? undefined : task.resumeCursors[instanceId];
+      if (credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
+        turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
+      }
+
       // photographed before the agent can touch it, so the turn's card
       // can show what changed and put it back
       // an agent working in its own workspace writes its memory there;
@@ -2869,7 +2891,7 @@ async function startTurn(
         model: selection.model,
         effort: bot.effort,
         ...(bot.engineHooks === false ? { noHooks: true } : {}),
-        resumeCursor: engineFresh ? undefined : task.resumeCursors[instanceId],
+        resumeCursor,
         transcript,
         system:
           persona +
@@ -2882,12 +2904,12 @@ async function startTurn(
                 : integrations.sandbox
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : "") +
-          (credential ? `\n\n${cliBriefing(`node "${AGENT_CLI}"`)}` : "") +
+          (credential ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
           (project ? `\n\n${briefFor(project)}` : ""),
         integrations,
       });
       if (integrations.computer) startScreenPoller(bot.id);
-      store.markTaskDispatched(bot.id, task.id, instanceId);
+      store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
       const message = redactSecrets(e instanceof Error ? e.message : String(e));
       const failure = store.appendMessage(roomId, {
