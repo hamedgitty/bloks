@@ -145,6 +145,8 @@ function Bubble({
   onForward,
   onReact,
   onEdit,
+  onEditQueued,
+  onSendNow,
   onDelete,
   onRewind,
   onResend,
@@ -162,6 +164,12 @@ function Bubble({
   onForward: (message: Message, author: string) => void;
   onReact?: (messageId: string, emoji: string) => void;
   onEdit?: (messageId: string, text: string) => void;
+  /** Opens the editor on a queued message, holding back the turn it
+   * waits for, and hands back how to close it: with words to save, or
+   * without them to cancel. */
+  onEditQueued?: (messageId: string) => (text?: string) => void;
+  /** Stops the running turn, so what is queued behind it goes now. */
+  onSendNow?: () => void;
   onDelete?: (messageId: string) => void;
   onRewind?: (messageId: string) => void;
   onResend?: (text: string) => void;
@@ -173,7 +181,30 @@ function Bubble({
   // Editing happens where the message already is. Sending it back to
   // the composer would lose your place and pretend it is a new message.
   const [editing, setEditing] = useState<string | null>(null);
-
+  // A queued message open in the editor holds back the turn it waits
+  // for, so the old words never go out from under it. When the editor
+  // was opened on one, this is how it closes again: with words to save,
+  // or without them to cancel.
+  const closeQueued = useRef<((text?: string) => void) | null>(null);
+  const startEditing = () => {
+    if (editing !== null) return;
+    setEditing(message.text ?? "");
+    if (message.queued && onEditQueued) closeQueued.current = onEditQueued(message.id);
+  };
+  const stopEditing = (text?: string) => {
+    const close = closeQueued.current;
+    closeQueued.current = null;
+    if (close) close(text);
+    else if (text) onEdit?.(message.id, text);
+    setEditing(null);
+  };
+  // a bubble that goes mid-edit, to another conversation or because the
+  // message was taken back, lets go of what it held
+  useEffect(() => () => closeQueued.current?.(), []);
+  // A queued message is still a draft in all but name, so a double-click
+  // opens it as Edit does. One already sent keeps the browser's own
+  // double-click, which selects a word.
+  const draft = user && Boolean(message.queued) && Boolean(onEdit) && editing === null;
 
   return (
     <div
@@ -192,7 +223,8 @@ function Bubble({
             onReply={onReply}
             onForward={onForward}
             onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-            onEdit={user && onEdit ? () => setEditing(message.text ?? "") : undefined}
+            onEdit={user && onEdit ? startEditing : undefined}
+            onSendNow={message.queued ? onSendNow : undefined}
             onDelete={onDelete ? () => onDelete(message.id) : undefined}
             onRewind={onRewind ? () => onRewind(message.id) : undefined}
           />
@@ -214,6 +246,16 @@ function Bubble({
               // the hit you are standing on, so n and N feel like movement
               isHit && "ring-2 ring-warning/70",
             )}
+            // the second press of a double-click would select a word
+            // just before the editor takes its place
+            onMouseDown={
+              draft
+                ? (e) => {
+                    if (e.detail > 1) e.preventDefault();
+                  }
+                : undefined
+            }
+            onDoubleClick={draft ? startEditing : undefined}
           >
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark={user} />}
             {editing !== null ? (
@@ -223,11 +265,10 @@ function Bubble({
                   value={editing}
                   onChange={(e) => setEditing(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Escape") setEditing(null);
+                    if (e.key === "Escape") stopEditing();
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      if (editing.trim()) onEdit?.(message.id, editing.trim());
-                      setEditing(null);
+                      stopEditing(editing.trim() || undefined);
                     }
                   }}
                   rows={Math.min(8, editing.split("\n").length + 1)}
@@ -235,15 +276,12 @@ function Bubble({
                 />
                 <div className="flex items-center gap-2 text-[11.5px] opacity-80">
                   <button
-                    onClick={() => {
-                      if (editing.trim()) onEdit?.(message.id, editing.trim());
-                      setEditing(null);
-                    }}
+                    onClick={() => stopEditing(editing.trim() || undefined)}
                     className="font-medium underline underline-offset-2"
                   >
                     Save
                   </button>
-                  <button onClick={() => setEditing(null)}>Cancel</button>
+                  <button onClick={() => stopEditing()}>Cancel</button>
                   <span className="opacity-70">Enter saves, Escape cancels</span>
                 </div>
               </div>
@@ -258,7 +296,9 @@ function Bubble({
             {user && message.queued && (
               <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70">
                 <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
-                Queued, sends when this turn finishes
+                {editing !== null && onEditQueued
+                  ? "Queued, waits until you save or cancel"
+                  : "Queued, sends when this turn finishes"}
               </div>
             )}
             {user && message.unsent && (
@@ -596,6 +636,28 @@ function editMessage(threadId: string, messageId: string, text: string) {
     method: "PATCH",
     body: JSON.stringify({ text }),
   }).catch(() => {});
+}
+
+/** Opens the editor on a queued message: the server holds back the turn
+ * it waits for until the editor closes (GitHub 155). What comes back
+ * closes it, saving the words given or cancelling without any. Either
+ * one waits for the opening to land first, so a quick Escape never
+ * arrives ahead of the hold it is meant to end. A save lets go on the
+ * server's side, once the new words are in; one the server refuses lets
+ * go here instead, rather than leaving the burst to its timeout. */
+function editQueued(threadId: string, messageId: string) {
+  const path = `/api/threads/${threadId}/messages/${messageId}`;
+  const editing = (on: boolean) => api(`${path}/editing`, { method: "POST", body: JSON.stringify({ editing: on }) });
+  const opened = editing(true).catch(() => {});
+  return (text?: string) => {
+    void opened
+      .then(() =>
+        text
+          ? api(path, { method: "PATCH", body: JSON.stringify({ text }) }).catch(() => editing(false))
+          : editing(false),
+      )
+      .catch(() => {});
+  };
 }
 
 function deleteMessage(threadId: string, messageId: string) {
@@ -1018,6 +1080,11 @@ export function ChatView({ bot }: { bot: Bot }) {
                     onForward={(message, author) => setForwarding({ message, author })}
                     onReact={(messageId, emoji) => reactTo(bot.threadId, messageId, emoji)}
                     onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
+                    onEditQueued={(messageId) => editQueued(bot.threadId, messageId)}
+                    // the same stop Cmd+Enter makes before it sends: the
+                    // turn ends, and what waited behind it goes together
+                    // in the next one, as when a turn ends on its own
+                    onSendNow={working ? () => dispatch({ type: "interrupt", botId: bot.id }) : undefined}
                     onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
                     onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
                     onResend={(text) => dispatch({ type: "send", botId: bot.id, text })}

@@ -54,6 +54,24 @@ test("a queued room message taken back does not run", async (t) => {
   assert.ok(!prompt.includes("cancelled request"));
 });
 
+test("a queued room message edited while it waits runs with its new words", async (t) => {
+  const c = await chatHarness();
+  t.after(() => c.stop());
+  const path = `/api/bloks/${c.blok.id}/messages`;
+  await c.post(path, { text: "@QueueAgent first request" });
+  await waitFor(() => c.calls.length === 1);
+  const { message } = await c.post(path, { text: "@QueueAgent original wording" });
+  const edited = await c.h.fetch(`/api/threads/${c.blok.id}/messages/${message.id}`, {
+    method: "PATCH", body: JSON.stringify({ text: "@QueueAgent better wording" }),
+  });
+  assert.equal(edited.status, 200);
+  c.calls[0].finish();
+  await waitFor(() => c.calls.length === 2);
+  const prompt = JSON.stringify(c.calls[1].body);
+  assert.match(prompt, /better wording/);
+  assert.ok(!prompt.includes("original wording"));
+});
+
 test("room decision options send a single queued reply and persist the user's choice", async (t) => {
   const c = await chatHarness();
   t.after(() => c.stop());

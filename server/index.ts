@@ -3232,7 +3232,7 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
     // Into the conversation the work belongs to, where its context is.
     // Busy, it waits in the same queue as a person's message would.
     const lane = laneTitled(bot, w.thread);
-    if (lane.busy) {
+    if (laneWaits(lane)) {
       queueOnLane(bot.id, lane.id, text, { via: "watcher" });
     } else {
       const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
@@ -5525,13 +5525,74 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // memory, and drain into one follow-up turn when the lane settles. A
 // restart rebuilds the waiting from the transcript (recoverQueued), so
 // nothing flagged queued is left behind waiting forever.
+// An item with a messageId carries no words of its own. They are read
+// from the transcript when the burst goes, because the person can still
+// edit a waiting message or take it back, and what the agent hears has
+// to be what the chat shows (GitHub 155).
 // An item with no messageId is a note from Bloks itself, like the one
 // that resumes a task after a secret is saved: nothing in the transcript
-// to wait on, so it is always still due.
+// to wait on, so it is always still due, and its words travel with it.
 const steerQueues = new Map<
   string,
-  { botId: string; items: Array<{ messageId?: string; text: string; source?: "webhook" }> }
+  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook" }> }
 >();
+
+/** What one waiting item says now, or null for a message that no longer
+ * says anything: taken back, rewound, or gone from the lane. A message
+ * from another agent is framed the way it would have been when it was
+ * queued, with who it is from and how to answer. */
+function steerWords(laneId: string, item: { messageId?: string; text?: string }): string | null {
+  if (!item.messageId) return item.text ?? null;
+  const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
+  if (!m || m.deleted || !m.text) return null;
+  return m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text) : m.text;
+}
+
+// ── rewording a queued message ──
+// While the person has a queued message open in its editor, the lane's
+// whole burst waits for them: the turn that would take it is held until
+// they save or cancel, so what goes is the words they settle on, in the
+// order they were said, and never the old ones from under the editor.
+// Kept in memory only. Nobody is mid-edit across a restart, and a restart
+// has its own way back to whatever was queued (recoverQueued).
+const beingEdited = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
+
+/** How long one open editor may hold a burst back. Generous, because
+ * rewording takes a while; bounded, because a window closed mid-edit
+ * never says it stopped, and what was queued has to go in the end.
+ * Tests shorten it through the environment. */
+const EDIT_HOLD_MS = Number(process.env.BLOKS_EDIT_HOLD_MS) || 3 * 60_000;
+
+/** The editor opened on a queued message. Opening it again starts the
+ * clock again, since that is the person, still there. */
+function editOpened(laneId: string, messageId: string) {
+  const open = beingEdited.get(laneId) ?? new Map<string, ReturnType<typeof setTimeout>>();
+  clearTimeout(open.get(messageId));
+  const timer = setTimeout(() => editClosed(laneId, messageId), EDIT_HOLD_MS);
+  timer.unref?.();
+  open.set(messageId, timer);
+  beingEdited.set(laneId, open);
+}
+
+/** The editor closed: saved, cancelled, taken back, or left open too
+ * long. With no other editor open on the lane, what waited goes now, if
+ * the lane is free to take it. */
+function editClosed(laneId: string, messageId: string) {
+  const open = beingEdited.get(laneId);
+  if (!open?.has(messageId)) return;
+  clearTimeout(open.get(messageId));
+  open.delete(messageId);
+  if (open.size) return;
+  beingEdited.delete(laneId);
+  drainSteer(laneId);
+}
+
+/** Whether words said to a lane now wait in its queue rather than start
+ * a turn: it is mid-turn, or a burst is held ahead of them for an open
+ * editor, and going first would put them before things said earlier. */
+function laneWaits(lane: { id: string; busy?: boolean }) {
+  return Boolean(lane.busy) || beingEdited.has(lane.id);
+}
 
 /** Saves a message for a lane that is mid-turn, to go in the turn after.
  * The transcript keeps the words; the engine is told who they are from. */
@@ -5551,7 +5612,6 @@ function queueOnLane(
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
   entry.items.push({
     messageId: message.id,
-    text: options.from ? fromAgentPrompt(options.from, text) : text,
     ...(options.via === "webhook" ? { source: "webhook" as const } : {}),
   });
   steerQueues.set(laneId, entry);
@@ -5583,7 +5643,6 @@ function recoverQueued(now = Date.now()) {
         botId: bot.id,
         items: waiting.map((m) => ({
           messageId: m.id,
-          text: m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text!) : m.text!,
           ...(m.via === "webhook" ? { source: "webhook" as const } : {}),
         })),
       });
@@ -5618,12 +5677,15 @@ async function sendUserMessage(
   if (bot.archivedAt) {
     throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), { status: 409 });
   }
-  if (lane.busy) {
+  if (laneWaits(lane)) {
     queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
     // Said to the sender too: an agent that thought its "stop" landed would
     // carry on as if the other had stopped (GitHub 141).
-    const waits = `${bot.name} is in the middle of a turn; this waits until that turn ends.`;
-    const stop = options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
+    const waits = lane.busy
+      ? `${bot.name} is in the middle of a turn; this waits until that turn ends.`
+      : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
+    const stop =
+      lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from });
@@ -5646,23 +5708,37 @@ function drainSteer(threadId: string) {
     return;
   }
   if (lane.busy) return;
+  // Somebody is rewording one of these. The whole burst waits rather than
+  // the rest going ahead, so the edited one does not arrive after words
+  // that were said after it; closing the editor drains it (editClosed).
+  if (beingEdited.has(threadId)) return;
   // claimed before any async work, so two racing settles fire it once
   steerQueues.delete(threadId);
-  const alive = entry.items.filter(
-    (item) => !item.messageId || store.messagesFor(threadId).some((m) => m.id === item.messageId),
-  );
-  if (alive.length === 0) return;
+  // the words as they stand now, not as they stood when they were queued
+  const alive = entry.items.flatMap((item) => {
+    const words = steerWords(threadId, item);
+    return words === null ? [] : [{ item, words }];
+  });
+  if (alive.length === 0) {
+    // Everything that waited was taken back, so no turn starts, and no
+    // settle comes along after it to do what a settle does once the
+    // queue is clear: the room lines and the close that stood aside for
+    // this burst would wait for a turn that never runs.
+    drainRoomTags(entry.botId);
+    closeIfAsked(threadId);
+    return;
+  }
   // one moment for the whole burst, because one turn takes all of it
   const deliveredAt = Date.now();
-  for (const item of alive) {
+  for (const { item } of alive) {
     if (!item.messageId) continue;
     const patched = store.patchMessage(threadId, item.messageId, { queued: false, deliveredAt });
     if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
   }
   // one turn answers the whole burst
-  const joined = alive.map((item) => item.text).join("\n");
+  const joined = alive.map((said) => said.words).join("\n");
   // a burst that is all one agent's messages is that exchange's to answer
-  const notes = alive.map((item) => store.messagesFor(threadId).find((m) => m.id === item.messageId)?.agent);
+  const notes = alive.map(({ item }) => store.messagesFor(threadId).find((m) => m.id === item.messageId)?.agent);
   const peer = notes[0];
   const answering =
     peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId) ? { peerId: peer.peerId, peerName: peer.peerName } : undefined;
@@ -6226,7 +6302,10 @@ const server = createServer(async (req, res) => {
       waitIn = store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id;
       const framed = webhookMessage(hook.name, raw);
       const queued = waitIn ? (steerQueues.get(waitIn)?.items.filter((item) => item.source === "webhook") ?? []) : [];
-      const bytes = queued.reduce((sum, item) => sum + Buffer.byteLength(item.text) + 1, Buffer.byteLength(framed) + 1);
+      const bytes = queued.reduce(
+        (sum, item) => sum + Buffer.byteLength(steerWords(waitIn!, item) ?? "") + 1,
+        Buffer.byteLength(framed) + 1,
+      );
       if (!waitIn || queued.length >= MAX_WEBHOOK_QUEUE_ITEMS || bytes > MAX_WEBHOOK_QUEUE_BYTES) {
         res.setHeader("retry-after", "30");
         return json(res, 503, { error: "that agent is busy and has as many events waiting as it holds; retry this event shortly" });
@@ -7688,6 +7767,8 @@ const server = createServer(async (req, res) => {
           component: undefined,
         });
         broadcast({ kind: "message.patch", threadId: m[1], message: patched! });
+        // taken back from under its own editor: nothing left to wait for
+        editClosed(m[1], m[2]);
         return json(res, 200, { message: patched });
       }
 
@@ -7703,7 +7784,31 @@ const server = createServer(async (req, res) => {
       if (text.length > MAX_MESSAGE_CHARS) return json(res, 413, { error: "that message is too long" });
       const patched = store.patchMessage(m[1], m[2], { text, editedAt: Date.now() });
       broadcast({ kind: "message.patch", threadId: m[1], message: patched! });
+      // A save closes the editor it came from. Here rather than in a
+      // second request from the app, so the burst it held can only go
+      // once the new words are in.
+      editClosed(m[1], m[2]);
       return json(res, 200, { message: patched });
+    }
+
+    // The editor opening and closing on a queued message, so the turn it
+    // waits for is held while the words are still changing (see
+    // editOpened). A message that is not waiting any more, because its
+    // turn took it a moment ago, is an ordinary edit and holds nothing.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/editing$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      if (body.editing === false) {
+        editClosed(m[1], m[2]);
+        return json(res, 200, { holding: false });
+      }
+      const message = store.messagesFor(m[1]).find((msg) => msg.id === m![2]);
+      const waiting = steerQueues.get(m[1])?.items.some((item) => item.messageId === m![2]);
+      if (!message || message.role !== "user" || message.deleted || !message.queued || !waiting) {
+        return json(res, 200, { holding: false });
+      }
+      editOpened(m[1], m[2]);
+      return json(res, 200, { holding: true });
     }
 
     // ── reactions ──
