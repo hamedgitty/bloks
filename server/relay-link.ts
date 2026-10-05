@@ -82,6 +82,16 @@ export interface WakePreview {
   threadId?: string;
 }
 
+/** The build label a sealed request carried, as the header a request on
+ * the network would have sent it in. Shaped like a header value or not at
+ * all: it ends up in one. */
+function clientHeader(request: RelayRequest): Record<string, string> {
+  const label = request.client;
+  return typeof label === "string" && label.length <= 40 && /^[\w .()+/-]+$/.test(label)
+    ? { "x-bloks-client": label }
+    : {};
+}
+
 /** The device id a replayed relay request speaks for, or null for
  * anything that did not come from this file. */
 export function relayDeviceFor(req: IncomingMessage): string | null {
@@ -637,6 +647,7 @@ export class RelayLink {
           origin: `http://127.0.0.1:${this.port}`,
           [RELAY_HEADER]: INTERNAL,
           [DEVICE_HEADER]: device.id,
+          ...clientHeader(request),
         },
         body: request.body === undefined ? undefined : JSON.stringify(request.body),
         signal: AbortSignal.timeout(15_000),
@@ -729,6 +740,7 @@ export class RelayLink {
           origin: `http://127.0.0.1:${this.port}`,
           [RELAY_HEADER]: INTERNAL,
           [DEVICE_HEADER]: deviceId,
+          ...clientHeader(request),
         },
         body,
         signal: AbortSignal.timeout(60_000),

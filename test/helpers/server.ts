@@ -25,7 +25,7 @@ export interface Harness {
    * this drops to node:http, which will. */
   fetchRemote(
     path: string,
-    init?: { method?: string; body?: string; token?: string; origin?: string; host?: string },
+    init?: { method?: string; body?: string; token?: string; origin?: string; host?: string; headers?: Record<string, string> },
   ): Promise<{ status: number; body: any }>;
   /** Everything the harness has printed. A test that cares whether a
    * credential leaked has to look where a leak would actually land. */
@@ -166,6 +166,7 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         };
         if (init.token) headers.authorization = `Bearer ${init.token}`;
         if (init.origin) headers.origin = init.origin;
+        Object.assign(headers, init.headers);
         const req = httpRequest(
           { host: "127.0.0.1", port, path, method: init.method ?? "GET", headers },
           (res) => {

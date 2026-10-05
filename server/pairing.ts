@@ -47,7 +47,7 @@ export interface PairingStatus {
   listening: "loopback" | "network";
   restartRequired: boolean;
   pending: boolean;
-  devices: Array<{ id: string; name: string; pairedAt: number; lastSeen?: number }>;
+  devices: Array<{ id: string; name: string; pairedAt: number; lastSeen?: number; client?: string }>;
   /** Addresses a phone on the same network can reach, for the QR/URL. */
   addresses: string[];
 }
@@ -70,6 +70,12 @@ let boundToNetwork = false;
 /** Last request time per device, kept off disk: writing a file on every
  * request to record that a request happened is not a trade worth making. */
 const seen = new Map<string, number>();
+
+/** The app build each device said it runs on its last request, the way it
+ * said it ("iOS 2.1.6 (15)"). Off disk for the same reason as `seen`, and
+ * because it is learned again on the very next request anyway. */
+const clients = new Map<string, string>();
+const MAX_CLIENT = 40;
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -267,18 +273,32 @@ export function deviceForToken(token: string | null): PairedDevice | null {
   return null;
 }
 
+/** Remember which build of the app a paired device runs, from the
+ * x-bloks-client header (or the relay's `client` field) it sends. The App
+ * Store and this Mac update on their own schedules, so when a phone
+ * misbehaves the first question is which phone, and this answers it on
+ * the device list. Anything but a short plain label is ignored. */
+export function noteClient(deviceId: string, label: unknown): void {
+  if (typeof label !== "string") return;
+  const clean = label.trim();
+  if (!clean || clean.length > MAX_CLIENT || !/^[\w .()+/-]+$/.test(clean)) return;
+  clients.set(deviceId, clean);
+}
+
 export function revokeDevice(id: string): boolean {
   const list = devices();
   const left = list.filter((d) => d.id !== id);
   if (left.length === list.length) return false;
   putDevices(left);
   seen.delete(id);
+  clients.delete(id);
   return true;
 }
 
 export function revokeAll(): void {
   putDevices([]);
   seen.clear();
+  clients.clear();
 }
 
 /** Addresses on this machine a phone could actually reach: IPv4, not
@@ -307,6 +327,7 @@ export function pairingStatus(): PairingStatus {
       name: d.name,
       pairedAt: d.pairedAt,
       ...(seen.has(d.id) ? { lastSeen: seen.get(d.id) } : {}),
+      ...(clients.has(d.id) ? { client: clients.get(d.id) } : {}),
     })),
     addresses: enabled ? lanAddresses() : [],
   };

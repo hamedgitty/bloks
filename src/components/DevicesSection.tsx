@@ -33,7 +33,9 @@ interface PairStatus {
    * the network cannot reach this machine whatever the switch says. */
   restartRequired?: boolean;
   addresses: string[];
-  devices: Array<{ id: string; name: string; pairedAt: number }>;
+  /** `client` is the app build the device last said it runs, once it has
+   * made a request since this Mac started. */
+  devices: Array<{ id: string; name: string; pairedAt: number; client?: string }>;
 }
 
 /** The deep link a phone camera understands. Built defensively: any
@@ -320,6 +322,11 @@ function PairingControls() {
                   <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
                     {device.name}
                   </span>
+                  {device.client && (
+                    <span className="shrink-0 text-[11.5px] text-muted-foreground tabular-nums" title="The Bloks version on this device">
+                      {device.client}
+                    </span>
+                  )}
                   <span className="shrink-0 text-[11.5px] text-muted-foreground">
                     {new Date(device.pairedAt).toLocaleDateString([], { month: "short", day: "numeric" })}
                   </span>

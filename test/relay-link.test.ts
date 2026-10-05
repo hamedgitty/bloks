@@ -214,6 +214,14 @@ describe("the relay link", () => {
     assert.equal(fourth!.status, 404);
   });
 
+  test("the build a phone names inside its sealed request shows on the Mac's device list", async () => {
+    relay.ask("ask-client", seal(sealKey, deviceId, { method: "GET", path: "/api/bots", client: "iOS 2.1.6 (15)" }));
+    await waitUntil(() => relay.results.get("ask-client"));
+    const status = await h.json("/api/pair");
+    const device = status.devices.find((d: { id: string }) => d.id === deviceId);
+    assert.equal(device?.client, "iOS 2.1.6 (15)");
+  });
+
   test("an answer lost on the way is sent again until it lands", async () => {
     // a relay that errors once and then loses the socket: the phone still
     // gets its answer, on the third try

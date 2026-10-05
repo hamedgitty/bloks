@@ -129,6 +129,9 @@ export interface RelayRequest {
   /** A request body that is bytes (an upload), base64, with its type. */
   bodyB64?: string;
   type?: string;
+  /** Which build of the app sent it ("iOS 2.1.6 (15)"), the same label a
+   * phone on the network sends as x-bloks-client. Sealed like the rest. */
+  client?: string;
 }
 
 /** And what it gets back. */

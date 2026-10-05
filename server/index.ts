@@ -15,6 +15,7 @@ import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engine-setup.ts";
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
+import { FEATURES } from "./features.ts";
 import * as scout from "./scout.ts";
 import {
   ArtifactCommentStore,
@@ -71,6 +72,7 @@ import {
   pairingStatus,
   revokeAll,
   revokeDevice,
+  noteClient,
   remoteEnabled,
   setRemoteEnabled,
   startPairing,
@@ -6328,6 +6330,7 @@ const server = createServer(async (req, res) => {
     : local
       ? null
       : deviceForToken(bearerToken(req));
+  if (caller) noteClient(caller.id, req.headers["x-bloks-client"]);
   // One conversation's transcript as this caller may receive it: whole
   // here and on the same network, its newest part through Bloks Cloud,
   // with the count of what is left to ask for. olderMessages is always
@@ -8404,9 +8407,18 @@ const server = createServer(async (req, res) => {
 
     // How the desktop shell recognises the server it just started. A
     // developer's own harness answers this route identically, so the pid
-    // is the part that distinguishes ours from theirs.
+    // is the part that distinguishes ours from theirs. A phone reads the
+    // version and features: it is updated by the App Store on a schedule
+    // of its own, and this is how it knows what this Mac can do for it
+    // (server/features.ts).
     if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "bloks", pid: process.pid, static: Boolean(STATIC_DIR) });
+      return json(res, 200, {
+        app: "bloks",
+        pid: process.pid,
+        static: Boolean(STATIC_DIR),
+        version: APP_VERSION,
+        features: FEATURES,
+      });
     }
 
     // ── provider instances (model picker) ──
@@ -11363,7 +11375,10 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    return json(res, 404, { error: `no route: ${method} ${path}` });
+    // The code is what a client reads: a phone newer than this Mac asking
+    // for something it does not have yet tells its person to update here,
+    // rather than showing them a method and a path.
+    return json(res, 404, { error: `no route: ${method} ${path}`, code: "unknown_route" });
   } catch (e) {
     const status = (e as any)?.status ?? 500;
     return json(res, status, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
