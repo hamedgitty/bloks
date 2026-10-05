@@ -394,6 +394,7 @@ Everything is under `~/.bloks`:
 | --- | --- |
 | `bots.json` | Agents, their roles, models and resume cursors |
 | `bloks.json` | Rooms and their members |
+| `sidebar.json` | The order of the sidebar's sections |
 | `messages-<id>.json` | One transcript per agent or room |
 | `config.json` | Connected engines and keys, `0600` in a `0700` directory |
 | `skills/` | Installed skills, one markdown file each |

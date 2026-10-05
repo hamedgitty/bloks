@@ -57,6 +57,7 @@ import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile } from "./store.ts";
 import { addressees, BlokStore, currentSpend, MAX_MEMBERS, type BlokRecord, type RoomSharing } from "./bloks.ts";
+import { cleanSectionOrder, placeAt, SidebarStore, sidebarView, upgradePlaces, type Placed } from "./sidebar.ts";
 import { extractTeamPlan, MAX_HIRES, normalizePlan, TEAM_PROTOCOL, type TeamPlan } from "./teams.ts";
 import { houseStyle, HOUSE_STYLE } from "./house-style.ts";
 import { captureFrame, clickAt, typeText } from "./browser-view.ts";
@@ -139,7 +140,7 @@ import {
 } from "./context.ts";
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
 import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
-import { assemble as assembleActivity, blockedOn } from "./activity.ts";
+import { assemble as assembleActivity, blockedOn, lastWithYou, towardYou } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
 import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
@@ -390,6 +391,8 @@ async function newAgentSettings(hiredBy?: Approvals): Promise<Partial<BotRecord>
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
 const bloks = new BlokStore();
+// the order of the sidebar's headings; pins and activity live on the rows
+const sidebar = new SidebarStore();
 const webhooks = new WebhookStore();
 const artifactComments = new ArtifactCommentStore();
 // Consequential actions, hash-chained. Nothing waits on it and nothing
@@ -789,6 +792,175 @@ function normalizeSection(
   return { ok: true, section: name };
 }
 
+/** Every row the sidebar shows, as placing one needs it: agents still in
+ * service and rooms not archived. */
+function sidebarRows(): Placed[] {
+  return [
+    ...bloks.bloks
+      .filter((room) => !room.archived)
+      .map((room) => ({
+        id: room.id,
+        kind: "room" as const,
+        name: room.name,
+        section: room.section ?? null,
+        pinned: room.pinned,
+        pinOrder: room.pinOrder,
+        createdAt: room.createdAt,
+      })),
+    ...store.bots
+      .filter((bot) => !bot.hidden && !bot.archivedAt)
+      .map((bot) => ({
+        id: bot.id,
+        kind: "agent" as const,
+        name: bot.name,
+        section: bot.section ?? null,
+        pinned: bot.pinned,
+        pinOrder: bot.pinOrder,
+        createdAt: bot.createdAt,
+      })),
+  ];
+}
+
+/** The fields that say where a row sits in the sidebar, which is all one
+ * agent may change about another. */
+const SIDEBAR_FIELDS = new Set(["section", "pinned", "position"]);
+
+/** Where a row was asked to go. Each part left out is left as it is. */
+interface Arrangement {
+  section?: string | null;
+  pinned?: boolean;
+  /** Its place among the pins of its section, 1 the top; past the end
+   * means the end. Implies pinned. */
+  position?: number;
+}
+
+/** The section, pin and place a request body asks for, checked. One
+ * reading for agents and rooms, for the person and for agents, and for
+ * a hire, so they cannot come to mean different things. */
+function readArrangement(body: Record<string, unknown>): { ok: true; ask: Arrangement } | { ok: false; error: string } {
+  const ask: Arrangement = {};
+  if (body.section !== undefined) {
+    const named = normalizeSection(body.section);
+    if (!named.ok) return named;
+    ask.section = named.section;
+  }
+  if (body.pinned !== undefined) {
+    if (typeof body.pinned !== "boolean") return { ok: false, error: "pinned is true or false" };
+    ask.pinned = body.pinned;
+  }
+  if (body.position !== undefined) {
+    const position = body.position;
+    if (typeof position !== "number" || !Number.isInteger(position) || position < 1 || position > 10_000) {
+      return { ok: false, error: "position is a place among the pins of a section, 1 at the top" };
+    }
+    if (ask.pinned === false) return { ok: false, error: "a position is a place among the pins, so it cannot come with pinned: false" };
+    ask.position = position;
+  }
+  return { ok: true, ask };
+}
+
+/**
+ * Puts one agent or room where it was asked to go: into a section, held
+ * or not, and at a place among the pins, numbering the pins around it
+ * again. Without a place, a pin keeps the one it has, and one that is
+ * new to its pins (just pinned, or just filed elsewhere) goes after them.
+ * Unpinning lets go of the place, so pinning it later starts at the end.
+ *
+ * Everything that moved is broadcast, except `except`, which the caller
+ * is about to send itself with the rest of what it changed.
+ */
+function arrange(kind: "agent" | "room", id: string, ask: Arrangement, except?: string): boolean {
+  const record = kind === "agent" ? store.bot(id) : bloks.get(id);
+  if (!record) return false;
+  const was = { section: record.section ?? null, pinned: Boolean(record.pinned) };
+  const section = ask.section !== undefined ? ask.section : was.section;
+  const pinned = ask.position !== undefined ? true : (ask.pinned ?? was.pinned);
+  const own: { section?: string | null; pinned: boolean; pinOrder?: number | null } = { pinned };
+  if (ask.section !== undefined) own.section = section;
+  const neighbours: Array<{ id: string; kind: "agent" | "room"; pinOrder: number }> = [];
+  if (!pinned) {
+    own.pinOrder = null;
+  } else if (ask.position !== undefined) {
+    // the section as it will be, with this row already standing in it
+    const rows: Placed[] = [
+      ...sidebarRows().filter((row) => row.id !== id),
+      { id, kind, name: record.name, section, pinned: true, pinOrder: record.pinOrder, createdAt: record.createdAt },
+    ];
+    for (const place of placeAt(rows, id, section, ask.position)) {
+      if (place.id === id) own.pinOrder = place.pinOrder;
+      else neighbours.push(place);
+    }
+  } else if (section !== was.section || !was.pinned) {
+    own.pinOrder = null;
+  }
+  type Move = { id: string; patch: { section?: string | null; pinned?: boolean; pinOrder?: number | null } };
+  const agents: Move[] = neighbours.filter((n) => n.kind === "agent").map((n) => ({ id: n.id, patch: { pinOrder: n.pinOrder } }));
+  const rooms: Move[] = neighbours.filter((n) => n.kind === "room").map((n) => ({ id: n.id, patch: { pinOrder: n.pinOrder } }));
+  (kind === "agent" ? agents : rooms).push({ id, patch: own });
+  for (const bot of store.patchBots(agents)) if (bot.id !== except) broadcast({ kind: "bot", bot: clientBot(bot) });
+  for (const room of bloks.arrange(rooms)) if (room.id !== except) broadcast({ kind: "blok", blok: room });
+  return true;
+}
+
+/** The lanes an agent's background work runs in: routines, jobs,
+ * webhooks, watchers, and its lanes for shared rooms. What lands there
+ * was not the person talking to it, whatever it looks like. */
+function backgroundLanes(bot: BotRecord): Set<string> {
+  const titles = new Set([
+    "Routines",
+    "Jobs",
+    "Webhooks",
+    ...routines.routines.filter((r) => r.targetId === bot.id && r.thread).map((r) => r.thread!),
+  ]);
+  const lanes = new Set<string>([
+    ...watchers.filter((w) => w.botId === bot.id && w.laneId).map((w) => w.laneId!),
+    ...bloks.roomsFor(bot.id).map((r) => r.lanes?.[bot.id]).filter((lane): lane is string => Boolean(lane)),
+  ]);
+  for (const task of bot.tasks) if (titles.has(task.title)) lanes.add(task.id);
+  return lanes;
+}
+
+/**
+ * A workspace from before the sidebar kept its order with the rows,
+ * brought up to it on the first start, so the list means something the
+ * moment the update lands rather than once everything has been talked to
+ * again. Rooms become pinned in the order they were listed and pinned
+ * agents keep theirs (server/sidebar.ts, upgradePlaces); every agent and
+ * room is given the last time it had something to do with the person, as
+ * well as its transcripts can say. Each part only touches records that
+ * do not have it yet, so later starts find nothing to do.
+ */
+function settleSidebar() {
+  const placed = (rows: Array<BotRecord | BlokRecord>, kind: "agent" | "room"): Placed[] =>
+    rows.map((row) => ({
+      id: row.id,
+      kind,
+      name: row.name,
+      section: row.section ?? null,
+      pinned: row.pinned,
+      pinOrder: row.pinOrder,
+      createdAt: row.createdAt,
+    }));
+  const upgrade = upgradePlaces(placed(bloks.bloks, "room"), placed(store.bots, "agent"));
+  bloks.arrange(upgrade.rooms.map((p) => ({ id: p.id, patch: { pinned: true, pinOrder: p.pinOrder } })));
+  store.patchBots(upgrade.agents.map((p) => ({ id: p.id, patch: { pinOrder: p.pinOrder } })));
+
+  store.patchBots(
+    store.bots
+      .filter((bot) => typeof bot.activeWithYouAt !== "number")
+      .map((bot) => {
+        const background = backgroundLanes(bot);
+        const at = Math.max(0, ...bot.tasks.filter((t) => !background.has(t.id)).map((t) => lastWithYou(store.messagesFor(t.id))));
+        return { id: bot.id, patch: { activeWithYouAt: at } };
+      }),
+  );
+  bloks.arrange(
+    bloks.bloks
+      .filter((room) => typeof room.activeWithYouAt !== "number")
+      .map((room) => ({ id: room.id, patch: { activeWithYouAt: lastWithYou(store.messagesFor(room.id)) } })),
+  );
+}
+
 /** How much transcript one answer through Bloks Cloud may carry, as JSON.
  * The relay takes 2 MB a payload and sealing grows a body by about 1.8x,
  * so a list of every conversation in full stops arriving once a few of
@@ -1035,7 +1207,7 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
   broadcast({ kind: "message", threadId: laneId, message: notice });
   // after this event has finished settling the lane it ended
   setTimeout(() => {
-    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true }).catch((e) => {
+    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId) }).catch((e) => {
       const failed = store.appendMessage(laneId, {
         role: "bot",
         kind: "notice",
@@ -1709,7 +1881,7 @@ bus.subscribe((event: RuntimeEvent) => {
         void (async () => {
           const folded = await foldContext(bot.id, event.threadId, true).catch(() => false);
           if (folded && said?.text) {
-            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true }).catch(
+            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, byYou: turnsForYou.has(event.threadId) }).catch(
               () => {},
             );
           } else {
@@ -2023,6 +2195,52 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
  * the room; this is how a reply finds its way back to the right room. */
 const activeRoom = new Map<string, string>(); // taskId -> blokId
 
+// ── who the person has been with ──────────────────────────────────────
+// Whatever is not pinned in the sidebar sorts by the last time it had
+// something to do with the person (GitHub 156). What counts is decided in
+// server/activity.ts (towardYou); what it needs from here is who started
+// each turn, which only the places that start turns know, and a word from
+// every route the person speaks through.
+
+/** Lanes whose latest turn the person started, so what it says back is a
+ * reply to them. Left in place when the turn ends: a turn that picks the
+ * same work up again (a backup engine, a retry once the conversation was
+ * folded, waking after the Mac slept) is still answering them, and the
+ * next turn that starts afresh says whose it is. */
+const turnsForYou = new Set<string>();
+
+/** An agent or a room just had something to do with the person, which
+ * moves it up the sidebar. Never backwards, so an older moment arriving
+ * late cannot sink a row. */
+function withYou(target: { bot: BotRecord } | { room: BlokRecord }, at = Date.now()) {
+  if ("bot" in target) {
+    if ((target.bot.activeWithYouAt ?? 0) >= at) return;
+    const bot = store.patchBot(target.bot.id, { activeWithYouAt: at });
+    if (bot) broadcast({ kind: "bot", bot: clientBot(bot) });
+    return;
+  }
+  if ((target.room.activeWithYouAt ?? 0) >= at) return;
+  const [room] = bloks.arrange([{ id: target.room.id, patch: { activeWithYouAt: at } }]);
+  if (room) broadcast({ kind: "blok", blok: room });
+}
+
+// Every message, whichever route wrote it: a reply in a turn the person
+// started, or anything asking something of them, moves the conversation
+// it lands in.
+store.onAppend = (threadId, message) => {
+  const room = bloks.get(threadId);
+  if (room) {
+    // in a room the speaker's turn runs in one of its own lanes, the one
+    // speaking in this room now
+    const speaker = message.from ? store.bot(message.from) : null;
+    const lane = speaker?.tasks.find((task) => activeRoom.get(task.id) === threadId)?.id;
+    if (towardYou(message, Boolean(lane && turnsForYou.has(lane)))) withYou({ room }, message.at);
+    return;
+  }
+  const bot = store.botByThread(threadId);
+  if (bot && towardYou(message, turnsForYou.has(threadId))) withYou({ bot }, message.at);
+};
+
 // ── the Mac going to sleep ─────────────────────────────────────────────
 // The desktop shell says when the machine is about to sleep and when it
 // wakes (electron/main.mjs). A turn in flight across a sleep usually
@@ -2075,6 +2293,7 @@ function carryOnAfterSleep(botId: string, laneId: string, slept: { roomId?: stri
       presetMessage: true,
       ...(slept.roomId ? { roomId: slept.roomId } : { taskId: laneId }),
       ...(slept.requester ? { requester: slept.requester } : {}),
+      byYou: turnsForYou.has(laneId),
     }).catch((e) => sayTurnedAway(threadId, e));
   }, 1_500);
 }
@@ -2333,6 +2552,10 @@ async function startTurn(
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
+    /** The person started this turn, so what it says back is a reply to
+     * them and moves the conversation up the sidebar. Unset for anything
+     * else: another agent, a routine, a watcher, a job, a webhook. */
+    byYou?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -2470,6 +2693,10 @@ async function startTurn(
   // keyed by the lane, so a room turn in one lane never bleeds messages
   // into a solo turn running in another
   activeRoom.set(task.id, roomId);
+  // decided before the person's own message below is written, so the
+  // door every message passes reads this turn and not the last one
+  if (opts.byYou) turnsForYou.add(task.id);
+  else turnsForYou.delete(task.id);
 
   // In a room the prompt already carries the labelled history, and the
   // triggering message is already on the record; only a solo chat writes
@@ -3387,8 +3614,10 @@ async function openRehearsals(bots: BotRecord[], text: string, opts: { quiet?: b
     store.pinTaskCwd(task.id, r.copy);
     const said = store.appendMessage(task.id, { role: "user", kind: "text", text, ...(opts.via ? { via: opts.via } : {}) });
     broadcast({ kind: "message", threadId: task.id, message: said });
+    // the one the person asked, when somebody asked
+    if (!opts.quiet && b.id === bots[0].id) withYou({ bot: b }, said.at);
     broadcast({ kind: "bot", bot: clientBot(store.bot(b.id)) });
-    void startTurn(b.id, rehearsalBrief(r, text), { taskId: task.id, presetMessage: true, rehearsal: { dir, copy: r.copy } }).catch(async (e) => {
+    void startTurn(b.id, rehearsalBrief(r, text), { taskId: task.id, presetMessage: true, rehearsal: { dir, copy: r.copy }, byYou: !opts.quiet }).catch(async (e) => {
       const notice = store.appendMessage(task.id, { role: "bot", kind: "notice", text: `The rehearsal could not start: ${(e as Error).message}` });
       broadcast({ kind: "message", threadId: task.id, message: notice });
       await rehearsals.settle(r.id, "failed");
@@ -3639,6 +3868,10 @@ interface RoomAuthor {
   hops: number;
   toAll?: boolean;
   replyTo?: ReplyRef;
+  /** The person wrote it, in the app. A routine's post has no author
+   * either, so this is said rather than worked out: it decides whether
+   * the members' answers are replies to the person. */
+  byYou?: boolean;
 }
 
 async function postToRoom(blok: BlokRecord, text: string, author: RoomAuthor) {
@@ -3751,15 +3984,19 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
     targets.map((id) => [id, text] as const),
     author.hops,
     requester,
+    author.byYou,
   );
   return message;
 }
 
+/** `byYou` is the first round's: whoever the person's message woke is
+ * answering them, and whoever those name in turn is answering an agent. */
 async function dispatchRound(
   roomId: string,
   work: ReadonlyArray<readonly [string, string]>,
   hops: number,
   requester?: string,
+  byYou?: boolean,
 ) {
   // While this loop runs, handoffs queue instead of firing. Otherwise the
   // lead would be pulled in the moment the first member reported, spend
@@ -3768,7 +4005,7 @@ async function dispatchRound(
   const queue = new Map<string, string>();
   dispatching.set(roomId, queue);
   try {
-    await speakInTurn(roomId, work, hops, requester);
+    await speakInTurn(roomId, work, hops, requester, byYou);
     // whoever was named while the room was busy speaks now, and anyone
     // they name in turn goes round again until the chain runs out
     for (let round = 0; round < MAX_AGENT_HOPS && queue.size; round++) {
@@ -3885,6 +4122,7 @@ async function speakInTurn(
   work: ReadonlyArray<readonly [string, string]>,
   hops: number,
   requester?: string,
+  byYou?: boolean,
 ) {
   // In a shared room an agent speaks in the room's own lane, so what it is
   // doing elsewhere is no reason to skip it or to wait on it.
@@ -3902,7 +4140,7 @@ async function speakInTurn(
   for (const [member, text] of ordered) {
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
-    await startTurn(member.id, text, { roomId, hops, requester }).catch((e) =>
+    await startTurn(member.id, text, { roomId, hops, requester, byYou }).catch((e) =>
       (e as { busy?: boolean })?.busy ? queueRoomTag(member.id, roomId, text, requester) : sayTurnedAway(roomId, e),
     );
     if (shared) await waitForLaneIdle(member.id, roomId);
@@ -5028,8 +5266,10 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   const laneId = bot.activeTaskId ?? bot.threadId;
   const before = store.messagesFor(laneId).length;
   telegramLive.set(botId, chatId);
+  // only chats the person allowed get this far: this is them, on a phone
+  withYou({ bot });
   try {
-    await startTurn(botId, text);
+    await startTurn(botId, text, { byYou: true });
     // Longer than an ordinary wait, because a card forwarded to the
     // phone is answered on the phone's schedule, not the app's.
     await waitForIdle(botId, 20 * 60_000);
@@ -5502,7 +5742,7 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
   void startTurn(
     botId,
     `${names} ${live.length === 1 ? "is" : "are"} now connected. Continue the task you were working on before asking for the connection.`,
-    { taskId: threadId, presetMessage: true },
+    { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId) },
   ).catch((e) => {
     // The cards are already marked resumed, and this guard only fires
     // once, so a swallowed refusal leaves the task parked on a
@@ -5658,10 +5898,13 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
   return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`.)\n\n${text}`;
 }
 
+/** `yours` says the person wrote it, which moves the agent up the
+ * sidebar and makes its answer a reply to them. Said by the caller,
+ * because an agent writing to itself has no `from` either. */
 async function sendUserMessage(
   botId: string,
   text: string,
-  options: { taskId?: string; replyTo?: ReplyRef; from?: { botId: string; name: string } } = {},
+  options: { taskId?: string; replyTo?: ReplyRef; from?: { botId: string; name: string }; yours?: boolean } = {},
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
@@ -5677,6 +5920,9 @@ async function sendUserMessage(
   if (bot.archivedAt) {
     throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), { status: 409 });
   }
+  // waiting behind a turn or not, it was said to this agent now
+  const yours = Boolean(options.yours && !options.from);
+  if (yours) withYou({ bot });
   if (laneWaits(lane)) {
     queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
     // Said to the sender too: an agent that thought its "stop" landed would
@@ -5688,7 +5934,7 @@ async function sendUserMessage(
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
   }
-  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from });
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
   // which conversation it went to, so a caller outside the app (the MCP
   // connector) reads the answer from there and not from whichever lane
@@ -5742,7 +5988,13 @@ function drainSteer(threadId: string) {
   const peer = notes[0];
   const answering =
     peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId) ? { peerId: peer.peerId, peerName: peer.peerName } : undefined;
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering }).catch((e) => {
+  // The person's own words wait here with nothing on them; another
+  // agent's carry who sent them, a watcher's or a webhook's say so. A
+  // burst of Bloks' own notes (a key saved, say) carries on the turn
+  // it resumes, so it answers whoever that one did.
+  const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
+  const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou }).catch((e) => {
     const failure = store.appendMessage(threadId, {
       role: "bot",
       kind: "notice",
@@ -6556,20 +6808,19 @@ const server = createServer(async (req, res) => {
         };
       }
 
-      // filed at hire, by the same rule as a later move
-      let section: string | null = null;
-      if (body.section !== undefined) {
-        const named = normalizeSection(body.section);
-        if (!named.ok) return json(res, 400, { error: named.error });
-        section = named.section;
-      }
+      // filed, pinned and placed at hire, by the same rules as a later move
+      const placing = readArrangement({ section: body.section, pinned: body.pinned, position: body.position });
+      if (!placing.ok) return json(res, 400, { error: placing.error });
 
       const bot = store.createBot(profile);
       store.patchBot(bot.id, {
         ...(await newAgentSettings(asAgent ? (store.bot(asAgent.botId)?.approvals ?? "ask") : undefined)),
-        ...(section ? { section } : {}),
         ...(asAgent ? { hiredBy: asAgent.botId } : {}),
+        // made by the person is time spent with them; hired by an agent
+        // is not, and it waits below until the person is
+        activeWithYouAt: asAgent ? 0 : Date.now(),
       });
+      if (Object.keys(placing.ask).length) arrange("agent", bot.id, placing.ask, bot.id);
       record({
         at: Date.now(),
         kind: "agent.created",
@@ -6644,7 +6895,7 @@ const server = createServer(async (req, res) => {
       const engines: Partial<BotRecord> = {};
       if (file.agent.model && registry.get(file.agent.model.instanceId)) engines.modelSelection = file.agent.model;
       if (file.agent.backup && registry.get(file.agent.backup.instanceId)) engines.backupSelection = file.agent.backup;
-      store.patchBot(bot.id, { ...(await newAgentSettings()), ...engines, ...patch });
+      store.patchBot(bot.id, { ...(await newAgentSettings()), ...engines, ...patch, activeWithYouAt: Date.now() });
 
       if (file.memory) {
         if (file.memory.text.trim()) workspace.writeMemoryFile(bot.id, file.memory.text);
@@ -6711,14 +6962,22 @@ const server = createServer(async (req, res) => {
     let m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
-      // Another agent may file this one into a sidebar section, and that
-      // is all: every other field is the agent's own, or the person's.
+      // Another agent may say where this one sits in the sidebar (its
+      // section, whether it is pinned, its place among the pins) and
+      // that is all: every other field is the agent's own, or the
+      // person's.
       if (asAgent && asAgent.botId !== m[1]) {
-        const other = Object.keys(body ?? {}).filter((key) => key !== "section");
-        if (body?.section === undefined || other.length) {
-          return json(res, 403, { error: "an agent can change only the section of another agent" });
+        const keys = Object.keys(body ?? {});
+        if (!keys.length || keys.some((key) => !SIDEBAR_FIELDS.has(key))) {
+          return json(res, 403, {
+            error: "an agent can change only where another agent sits in the sidebar: its section, whether it is pinned, and its place among the pins",
+          });
         }
       }
+      // checked before anything else is written, so a bad place cannot
+      // leave half a change behind
+      const placing = readArrangement(body);
+      if (!placing.ok) return json(res, 400, { error: placing.error });
       // Hiding is how an agent leaves the list, and archiving now moves
       // with it. PATCH /api/bots/:me is on the agent allowlist, so
       // without this an agent could take itself off its own routines and
@@ -6770,18 +7029,13 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "modelSelection must name an engine this workspace has and a model id" });
         }
       }
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "computer", "color", "shape", "skills", "skillIds", "seniority", "effort", "mascotExpression", "pinned", "hidden"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "computer", "color", "shape", "skills", "skillIds", "seniority", "effort", "mascotExpression", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.cwd !== undefined) {
         const checked = workspace.validateWorkingFolder(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.path;
-      }
-      if (body.section !== undefined) {
-        const named = normalizeSection(body.section);
-        if (!named.ok) return json(res, 400, { error: named.error });
-        patch.section = named.section;
       }
       if (body.approvals !== undefined) {
         if (!APPROVALS.includes(body.approvals as Approvals)) {
@@ -6860,6 +7114,9 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "backupSelection is an engine and a model, or null" });
         }
       }
+      // where it sits, last: moving it renumbers the pins around it, which
+      // go out on their own, and it goes out below with everything else
+      if (Object.keys(placing.ask).length) arrange("agent", m[1], placing.ask, m[1]);
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such agent" });
       broadcast({ kind: "bot", bot: clientBot(bot) });
@@ -7221,7 +7478,7 @@ const server = createServer(async (req, res) => {
       };
       let result;
       try {
-        result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo), from });
+        result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo), from, yours: !asAgent });
       } catch (e) {
         noteSent("failed");
         throw e;
@@ -7630,10 +7887,11 @@ const server = createServer(async (req, res) => {
       choosingDecisions.add(key);
       try {
         if (room) {
-          enqueueRoomPost(room, text, { hops: 0, replyTo });
+          withYou({ room });
+          enqueueRoomPost(room, text, { hops: 0, replyTo, byYou: true });
           triggersFired({ kind: "message", targetId: room.id, text, fromUser: true });
         } else {
-          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo });
+          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo, yours: true });
         }
         const message = store.patchMessage(threadId, messageId, { decisionChoice: choice });
         broadcast({ kind: "message.patch", threadId, message: message! });
@@ -8080,7 +8338,7 @@ const server = createServer(async (req, res) => {
         entry.items.push({ text: note });
         steerQueues.set(threadId, entry);
       } else if (!already) {
-        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true }).catch((e) => {
+        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId) }).catch((e) => {
           // Same reason as the connector resume: the mark is what stops
           // this firing twice, so leaving it set after a refusal parks
           // the task on a secret that has already been saved.
@@ -8260,7 +8518,7 @@ const server = createServer(async (req, res) => {
       // might not have, not only the two this route happened to know
       // about: a busy lane and a missing engine end the same way, with
       // nothing running and the person told it was sent.
-      const refused = await startTurn(botId, text).then(
+      const refused = await startTurn(botId, text, { byYou: true }).then(
         () => null,
         (e: unknown) => ({
           status: (e as { status?: number }).status ?? 500,
@@ -8268,6 +8526,7 @@ const server = createServer(async (req, res) => {
         }),
       );
       if (refused) return json(res, refused.status, { error: refused.error });
+      withYou({ bot });
       return json(res, 202, { sent: open.length });
     }
 
@@ -8479,6 +8738,11 @@ const server = createServer(async (req, res) => {
           behavior: body.behavior,
           message: body.message,
         });
+        // An answer is the person in the conversation as much as a
+        // message is; in a room, the card was the room's.
+        const askedIn = activeRoom.get(askThread);
+        const room = askedIn && askedIn !== askThread ? bloks.get(askedIn) : null;
+        withYou(room ? { room } : { bot });
         return json(res, 200, { ok: true, outcome: "delivered" });
       } catch {
         // The ask is gone: the turn ended, or the engine died. Failing
@@ -8842,6 +9106,7 @@ const server = createServer(async (req, res) => {
         store.patchBot(hire.id, {
           ...settings,
           modelSelection: { instanceId: lead.modelSelection.instanceId, model: cheap },
+          activeWithYouAt: Date.now(),
         });
         broadcast({
           kind: "bot",
@@ -8849,7 +9114,8 @@ const server = createServer(async (req, res) => {
         });
       }
 
-      const blok = bloks.create(pending.plan.room, [lead.id, ...hires.map((h) => h.id)]);
+      // the person said yes to this, which is time spent with them
+      const blok = bloks.create(pending.plan.room, [lead.id, ...hires.map((h) => h.id)], Date.now());
       broadcast({ kind: "blok", blok });
 
       // settle the proposal so it reads as decided everywhere
@@ -8871,6 +9137,30 @@ const server = createServer(async (req, res) => {
         blok: { ...blok, messages: store.messagesFor(blok.id) },
         hired: hires.map((h) => h.id),
       });
+    }
+
+    // ── the sidebar's arrangement (server/sidebar.ts) ──
+    // Read by the app for the order of the headings, and by agents to see
+    // where things stand before they file or pin anything. Pins and
+    // activity travel on the agents and rooms themselves.
+    if (method === "GET" && path === "/api/sidebar") {
+      return json(res, 200, {
+        sectionOrder: sidebar.sectionOrder,
+        // whether anyone has placed a heading yet: a device that kept an
+        // order of its own before this hands it over only while not
+        sectionOrderSaved: sidebar.saved,
+        sections: sidebarView(sidebarRows(), sidebar.sectionOrder),
+      });
+    }
+    // The person's own: the order of the headings is how they read the
+    // list, and an agent tidying its part of it has pins for that.
+    if (method === "PUT" && path === "/api/sidebar/sections") {
+      const body = await readBody(req);
+      const order = cleanSectionOrder(body.order);
+      if (!order) return json(res, 400, { error: "order is a list of section names" });
+      sidebar.setSectionOrder(order);
+      broadcast({ kind: "sidebar", sectionOrder: order });
+      return json(res, 200, { sectionOrder: order });
     }
 
     // ── rooms (bloks with more than one agent) ──
@@ -8906,7 +9196,7 @@ const server = createServer(async (req, res) => {
       // Whoever opened it is in it. An agent that left itself off the
       // roster would have made a room it cannot speak in.
       if (asAgent && !memberIds.includes(asAgent.botId)) memberIds.unshift(asAgent.botId);
-      const blok = bloks.create(clamp(body.name, MAX_NAME_CHARS) ?? "", memberIds);
+      const blok = bloks.create(clamp(body.name, MAX_NAME_CHARS) ?? "", memberIds, asAgent ? 0 : Date.now());
       // open with the roster so the transcript explains itself later
       const names = memberIds.map((id) => store.bot(id)!.name).join(", ");
       store.appendMessage(blok.id, {
@@ -8920,15 +9210,13 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/bloks\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
-      const patch: { name?: string; memberIds?: string[]; leadOnly?: boolean; cwd?: string; archived?: boolean; section?: string | null } = {};
+      const patch: { name?: string; memberIds?: string[]; leadOnly?: boolean; cwd?: string; archived?: boolean } = {};
       if (typeof body.name === "string") patch.name = body.name;
       if (typeof body.leadOnly === "boolean") patch.leadOnly = body.leadOnly;
       if (typeof body.archived === "boolean") patch.archived = body.archived;
-      if (body.section !== undefined) {
-        const named = normalizeSection(body.section);
-        if (!named.ok) return json(res, 400, { error: named.error });
-        patch.section = named.section;
-      }
+      // its section, its pin and its place, by the same reading as an agent's
+      const placing = readArrangement(body);
+      if (!placing.ok) return json(res, 400, { error: placing.error });
       if ("cwd" in body) {
         const existing = bloks.get(m[1]);
         if (existing?.pinnedCwd !== undefined) {
@@ -8947,6 +9235,7 @@ const server = createServer(async (req, res) => {
       }
       const blok = bloks.patch(m[1], patch);
       if (!blok) return json(res, 404, { error: "no such room" });
+      if (Object.keys(placing.ask).length) arrange("room", blok.id, placing.ask, blok.id);
       broadcast({ kind: "blok", blok });
       return json(res, 200, { blok });
     }
@@ -8984,7 +9273,11 @@ const server = createServer(async (req, res) => {
       const { message } = enqueueRoomPost(blok, text, {
         hops: 0,
         replyTo: replyRef(roomBody.replyTo),
+        byYou: !asAgent,
       });
+      // an agent's `bloks say` into a room comes through here too, and is
+      // not the person being in the room
+      if (!asAgent) withYou({ room: blok }, message.at);
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });
       return json(res, message.queued ? 202 : 201, { message });
     }
@@ -9342,7 +9635,7 @@ const server = createServer(async (req, res) => {
       );
       const settings = await newAgentSettings();
       for (const hire of hired) {
-        store.patchBot(hire.id, settings);
+        store.patchBot(hire.id, { ...settings, activeWithYouAt: Date.now() });
         broadcast({
           kind: "bot",
           bot: { ...clientBot(store.bot(hire.id))!, messages: store.messagesFor(hire.threadId) },
@@ -9351,6 +9644,7 @@ const server = createServer(async (req, res) => {
       const blok = bloks.create(
         clamp(body.name, MAX_NAME_CHARS) ?? "Imported team",
         [...existing, ...hired.map((h) => h.id)],
+        Date.now(),
       );
       // one desk for the whole room, when they were pointed at a folder
       if (resolvedDesk?.ok && resolvedDesk.path) bloks.patch(blok.id, { cwd: resolvedDesk.path });
@@ -9439,7 +9733,9 @@ const server = createServer(async (req, res) => {
         });
         broadcast({ kind: "message", threadId: laneId, message: shown });
         meetingLanes.set(laneId, meeting.id);
-        void startTurn(bot.id, notesPrompt(meeting, transcript, team, person), { taskId: laneId, presetMessage: true }).catch((e) => {
+        // the person pressed stop and asked for the notes
+        withYou({ bot }, shown.at);
+        void startTurn(bot.id, notesPrompt(meeting, transcript, team, person), { taskId: laneId, presetMessage: true, byYou: true }).catch((e) => {
           meetingLanes.delete(laneId);
           const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: `The notes could not be written: ${(e as Error).message}` });
           broadcast({ kind: "message", threadId: laneId, message: notice });
@@ -9456,7 +9752,7 @@ const server = createServer(async (req, res) => {
       if (!meeting || !item) return json(res, 404, { error: "no such action item" });
       if (!item.botId || !store.bot(item.botId)) return json(res, 400, { error: `${item.owner} is not one of your agents` });
       if (item.sentAt) return json(res, 409, { error: "already handed over" });
-      await sendUserMessage(item.botId, `From the meeting${meeting.title ? ` "${meeting.title}"` : ""}: ${item.text}`);
+      await sendUserMessage(item.botId, `From the meeting${meeting.title ? ` "${meeting.title}"` : ""}: ${item.text}`, { yours: true });
       item.sentAt = Date.now();
       saveMeetings();
       broadcast({ kind: "meetings" });
@@ -11559,6 +11855,8 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   }
   throw error;
 });
+// before the first request, so nobody sees the sidebar half arranged
+settleSidebar();
 server.listen(PORT, BIND, () => {
   console.log(`bloks server on http://127.0.0.1:${PORT}`);
   // messages that were waiting on a turn when Bloks last stopped

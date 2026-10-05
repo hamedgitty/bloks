@@ -34,6 +34,21 @@ export interface BlokRecord {
   /** The sidebar heading this room files under. One namespace shared
    * with agents; absent or null means the plain Rooms list. */
   section?: string | null;
+  /** Held in place in the sidebar. Rooms are made pinned, and a room from
+   * before rooms could be unpinned (no value at all) is pinned on the
+   * first start, in the order it was listed; false is somebody's choice
+   * and stays. */
+  pinned?: boolean;
+  /** Where a pinned room stands among the pins of its section, 1 first,
+   * agents and rooms counted together. Null on a pin given no place yet
+   * (a new room), which stands after the placed ones, and on a room that
+   * is not pinned. See BotRecord.pinOrder in server/store.ts. */
+  pinOrder?: number | null;
+  /** When this room last had something to do with the person: their own
+   * message in it, a reply in a turn they started, or anything asking
+   * something of them. 0 means never. Same rule as an agent's
+   * (BotRecord.activeWithYouAt); an unpinned room sorts by it. */
+  activeWithYouAt?: number;
   /** The room's shared desk. Every member's room turn runs here instead
    * of in its own folder. Three states matter: undefined = never
    * dispatched, null = each member keeps its own, a path = the desk. */
@@ -168,12 +183,18 @@ export class BlokStore {
     return blok.pinnedCwd;
   }
 
-  create(name: string, memberIds: string[]): BlokRecord {
+  /** A new room starts pinned, after the pins already placed, so it
+   * keeps its place the way rooms always have. `withYouAt` is when the
+   * person made it, or 0 when an agent did. */
+  create(name: string, memberIds: string[], withYouAt = 0): BlokRecord {
     const blok: BlokRecord = {
       id: newId(),
       name: name.trim() || "New room",
       memberIds: [...new Set(memberIds)].slice(0, MAX_MEMBERS),
       createdAt: Date.now(),
+      pinned: true,
+      pinOrder: null,
+      activeWithYouAt: withYouAt,
     };
     this.bloks.unshift(blok);
     this.save();
@@ -193,9 +214,28 @@ export class BlokStore {
     if (typeof patch.leadOnly === "boolean") blok.leadOnly = patch.leadOnly;
     if (typeof patch.archived === "boolean") blok.archived = patch.archived || undefined;
     if ("cwd" in patch) blok.cwd = patch.cwd ?? undefined;
-    if ("section" in patch) blok.section = patch.section ?? undefined;
+    // null rather than gone: a room frame is merged into what a client
+    // already holds, and a missing key would leave the old heading there
+    if ("section" in patch) blok.section = patch.section ?? null;
     this.save();
     return blok;
+  }
+
+  /** Where rooms stand in the sidebar, several at once and written once,
+   * because moving one pin renumbers its neighbours. Returns the rooms
+   * that exist. */
+  arrange(
+    changes: ReadonlyArray<{ id: string; patch: Partial<Pick<BlokRecord, "section" | "pinned" | "pinOrder" | "activeWithYouAt">> }>,
+  ): BlokRecord[] {
+    const changed: BlokRecord[] = [];
+    for (const { id, patch } of changes) {
+      const blok = this.get(id);
+      if (!blok) continue;
+      Object.assign(blok, patch);
+      changed.push(blok);
+    }
+    if (changed.length) this.save();
+    return changed;
   }
 
   /** Starts sharing a room, or updates how it is shared. */

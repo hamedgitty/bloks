@@ -91,6 +91,7 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | --- | --- |
 | `bots.json` | Agent records, model selection, resume cursors |
 | `bloks.json` | Rooms and members |
+| `sidebar.json` | The order of the sidebar's section headings |
 | `messages-<id>.json` | One transcript per agent or room, same key space |
 | `config.json` | Connected providers and keys, `0600` |
 | `skills/*.md` | Installed skills |
@@ -291,6 +292,21 @@ lane (`POST .../tasks/:id/activate`) reads it; `PATCH /api/bots/:id` with
 the lane that pinged (`pingedLane` in `src/state/reducer.ts`) unless it is
 given one, so a dot on an agent always leads somewhere. `clientBot` ships
 each lane's `unread` and `lastAt` for the sidebar.
+
+Inside each list of the sidebar (a section, or the unfiled Rooms and
+Agents at the top) the order is one rule, `compareRows` in
+`src/lib/sections.ts`: pinned rows first by `pinOrder`, then the rest by
+`activeWithYouAt`, most recent first, with `createdAt` and the id settling
+ties. All of those fields live on the agent and room records, so every
+device draws the same list; `sidebarLayout` gives the whole sidebar in
+that order for anything that walks it. `activeWithYouAt` moves when the
+person writes, when a turn they started replies, and when anything asks
+them something (`towardYou` in `server/activity.ts`), never for one
+agent messaging another or a routine waking one. Pins and places are set
+through `PATCH /api/bots/:id` and `PATCH /api/bloks/:id` with `section`,
+`pinned` and `position`, which renumber the section's pins; the order of
+the headings is `GET /api/sidebar` and `PUT /api/sidebar/sections`, kept
+in `sidebar.json` and announced as a `sidebar` frame.
 
 The sidebar's conversations view (`src/components/SidebarParts.tsx`) is a
 per-device choice in `localStorage`. Settings is a page beside the

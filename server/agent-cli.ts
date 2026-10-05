@@ -85,6 +85,10 @@ export const RULES: Rule[] = [
   // returns nothing secret.
   { method: "GET", path: "/api/bots", why: "see who else is in the workspace" },
   { method: "GET", path: "/api/bloks", why: "see which rooms exist" },
+  // How the sidebar is arranged, so an agent filing or pinning a teammate
+  // can see where things stand first. The order of the headings is read
+  // here and only the person moves it.
+  { method: "GET", path: "/api/sidebar", why: "see how the sidebar is arranged: its sections in order, and what is pinned where" },
 
   // Saying something to somebody. This is the one that turns a chat
   // between one agent and one person into a workspace.
@@ -127,10 +131,11 @@ export const RULES: Rule[] = [
   // Answering with something other than a paragraph.
   { method: "POST", path: "/api/bots/:me/show", why: "answer with a chart, a table or another component" },
   { method: "PATCH", path: "/api/bots/:me", why: "change its own settings" },
-  // A section is a sidebar label: it changes nothing another agent can do
-  // or see, and the person can move it back. The route itself refuses
-  // anything else on an agent that is not the caller.
-  { method: "PATCH", path: "/api/bots/:id", why: "file a teammate into a sidebar section (only its section)" },
+  // A section, a pin and a place among the pins are where a row sits in
+  // the sidebar: they change nothing another agent can do or see, and the
+  // person can move them back. The route itself refuses anything else on
+  // an agent that is not the caller.
+  { method: "PATCH", path: "/api/bots/:id", why: "file a teammate into a sidebar section, pin it or place it among the pins (nothing else of its)" },
   { method: "PATCH", path: "/api/bots/:me/tasks/:id", why: "rename one of its own conversations" },
   { method: "DELETE", path: "/api/bots/:me/tasks/:id", why: "close one of its own conversations, once its turn there ends" },
   { method: "POST", path: "/api/bots/:me/tasks/:id/fresh", why: "start a fresh engine session in the conversation it is in, keeping the transcript" },

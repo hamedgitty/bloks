@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import { noticeFor } from "@/lib/notify";
+import { placeRow, type Listed } from "@/lib/sections";
 import { maybeAutoSpeak } from "@/components/Voice";
 import {
   configFromFrame,
@@ -38,6 +39,51 @@ import {
 } from "./reducer";
 
 export * from "./reducer";
+
+/** Every row the sidebar could show, as placing one needs it. */
+export function sidebarRows(state: Pick<AppState, "bots" | "bloks">): Listed[] {
+  return [
+    ...state.bloks.map((b) => ({
+      kind: "room" as const,
+      id: b.id,
+      section: b.section ?? null,
+      pinned: b.pinned,
+      pinOrder: b.pinOrder,
+      activeWithYouAt: b.activeWithYouAt,
+      createdAt: b.createdAt,
+    })),
+    ...state.bots
+      .filter((b) => !b.hidden)
+      .map((b) => ({
+        kind: "agent" as const,
+        id: b.id,
+        section: b.section ?? null,
+        pinned: b.pinned,
+        pinOrder: b.pinOrder,
+        activeWithYouAt: b.activeWithYouAt,
+        createdAt: b.createdAt,
+      })),
+  ];
+}
+
+/** The section order this device kept before the workspace kept one
+ * (it lived here until GitHub 156). Read once, to hand it over. */
+const LOCAL_SECTION_ORDER = "bloks-section-order";
+function localSectionOrder(): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOCAL_SECTION_ORDER) ?? "[]");
+    return Array.isArray(saved) ? saved.filter((n) => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function forgetLocalSectionOrder() {
+  try {
+    localStorage.removeItem(LOCAL_SECTION_ORDER);
+  } catch {
+    /* nothing to forget */
+  }
+}
 
 // ── talking to the harness ─────────────────────────────────────────────
 export async function api(path: string, init?: RequestInit): Promise<any> {
@@ -289,6 +335,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify(action.patch),
           }).catch(() => {});
           break;
+        case "placeRow": {
+          // Shown at once, neighbours and all, by the same steps the server
+          // takes; its broadcasts then say what this already shows. Sent
+          // straight away rather than with the agent's typing, which waits
+          // for a pause: a drop is one act, and the list should hold still
+          // after it.
+          const to = { section: action.section, pinned: action.pinned, position: action.position };
+          rawDispatch({ type: "placed", rows: placeRow(sidebarRows(stateRef.current), action.id, to) });
+          api(action.kind === "agent" ? `/api/bots/${action.id}` : `/api/bloks/${action.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              section: action.section,
+              pinned: action.pinned,
+              ...(action.pinned && action.position !== undefined ? { position: action.position } : {}),
+            }),
+          }).catch(showError);
+          break;
+        }
+        case "moveSections":
+          api("/api/sidebar/sections", { method: "PUT", body: JSON.stringify({ order: action.order }) }).catch(showError);
+          break;
         case "deleteRoom":
           api(`/api/bloks/${action.blokId}`, { method: "DELETE" })
             .then(() => rawDispatch({ type: "blokDeleted", blokId: action.blokId }))
@@ -523,6 +590,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api("/api/config")
         .then((config) => alive && rawDispatch({ type: "configStatus", config }))
         .catch(() => {});
+      api("/api/sidebar")
+        .then(({ sectionOrder, sectionOrderSaved }) => {
+          if (!alive) return;
+          // The headings used to be ordered per device. The first device
+          // to connect with an order of its own hands it to the workspace;
+          // every device after that takes the workspace's and lets its own
+          // go, so none of them drifts again.
+          const local = localSectionOrder();
+          if (!sectionOrderSaved && local.length) {
+            rawDispatch({ type: "sectionOrder", order: local });
+            api("/api/sidebar/sections", { method: "PUT", body: JSON.stringify({ order: local }) })
+              .then(forgetLocalSectionOrder)
+              .catch(() => {});
+            return;
+          }
+          rawDispatch({ type: "sectionOrder", order: Array.isArray(sectionOrder) ? sectionOrder : [] });
+          if (local.length) forgetLocalSectionOrder();
+        })
+        .catch(() => {});
     };
     // The stream carries sequence numbers, and reconnecting with the last
     // one seen replays exactly the missed frames. Only when the server
@@ -648,6 +734,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "blok.deleted":
           rawDispatch({ type: "blokDeleted", blokId: frame.blokId });
+          break;
+        // the headings were put in a new order, here or on another device
+        case "sidebar":
+          if (Array.isArray(frame.sectionOrder)) rawDispatch({ type: "sectionOrder", order: frame.sectionOrder });
           break;
         // shared rooms: who is in them, who is at the door, who is typing
         case "room.people":

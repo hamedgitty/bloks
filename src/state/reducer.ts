@@ -237,7 +237,15 @@ export interface Bot {
   fingerprint?: string;
   /** Components this agent may not answer with. */
   withoutComponents?: string[];
+  /** Held in place in the sidebar rather than sorted by activity. */
   pinned?: boolean;
+  /** Its place among the pins of its section, lowest first; null is a
+   * pin with no place yet, after the rest. See src/lib/sections.ts. */
+  pinOrder?: number | null;
+  /** When it last had something to do with the person (server/store.ts
+   * says what counts). The unpinned rows sort by it. */
+  activeWithYouAt?: number;
+  createdAt?: number;
   /** The sidebar heading this agent files under; unset means the plain
    * Agents list. Shares one namespace with rooms. */
   section?: string | null;
@@ -391,6 +399,12 @@ export interface Blok {
   /** The sidebar heading this room files under; unset means the plain
    * Rooms list. Shares one namespace with agents. */
   section?: string | null;
+  /** Held in place in the sidebar; rooms start that way. */
+  pinned?: boolean;
+  /** Its place among the pins of its section, as an agent's is. */
+  pinOrder?: number | null;
+  /** When it last had something to do with the person. */
+  activeWithYouAt?: number;
   createdAt: number;
   /** Present while the room is shared with other people. */
   sharing?: RoomSharing;
@@ -497,6 +511,9 @@ export interface AppState {
    * A lens: nothing is hidden from anywhere else, and leaving puts the
    * whole workspace back. */
   projectId: string | null;
+  /** The order the sidebar's section headings were dragged into, kept
+   * with the workspace so every device has the same one. */
+  sectionOrder: string[];
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
   /** Threads whose turn has ended and no new one begun. A delta for one
@@ -534,6 +551,23 @@ export type Action =
   | { type: "createRoom"; name: string; memberIds: string[] }
   | { type: "deleteRoom"; blokId: string }
   | { type: "patchRoom"; blokId: string; patch: { archived?: boolean; name?: string; section?: string | null } }
+  /** Where an agent or a room sits in the sidebar: its section, whether
+   * it is pinned, and its place among the pins (1 the top) when one was
+   * chosen. The store works out what that does to the neighbours. */
+  | { type: "placeRow"; kind: "agent" | "room"; id: string; section: string | null; pinned: boolean; position?: number }
+  /** What a placement changed, row by row, shown before the server says. */
+  | {
+      type: "placed";
+      rows: Array<{
+        kind: "agent" | "room";
+        id: string;
+        patch: { section?: string | null; pinned?: boolean; pinOrder?: number | null };
+      }>;
+    }
+  /** The section order the workspace keeps, as the server has it. */
+  | { type: "sectionOrder"; order: string[] }
+  /** The person dragged a heading: the new order, to show and to keep. */
+  | { type: "moveSections"; order: string[] }
   | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"] }
   | { type: "toggleNewRoom"; open?: boolean }
   | { type: "openTeamLink"; slug: string | null }
@@ -1025,6 +1059,23 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "updateBot":
       return updateBot(state, action.botId, (b) => ({ ...b, ...action.patch }));
+    case "placeRow":
+      // worked out in the store, which knows every row, and applied as "placed"
+      return state;
+    case "placed": {
+      const patches = (kind: "agent" | "room") =>
+        new Map(action.rows.filter((row) => row.kind === kind).map((row) => [row.id, row.patch]));
+      const agents = patches("agent");
+      const rooms = patches("room");
+      return {
+        ...state,
+        bots: state.bots.map((b) => (agents.has(b.id) ? { ...b, ...agents.get(b.id) } : b)),
+        bloks: state.bloks.map((b) => (rooms.has(b.id) ? { ...b, ...rooms.get(b.id) } : b)),
+      };
+    }
+    case "sectionOrder":
+    case "moveSections":
+      return { ...state, sectionOrder: action.order };
     case "patchRoom": {
       // archived rooms leave the list the moment the choice is made; the
       // server confirms on its own broadcast
@@ -1104,6 +1155,7 @@ export const initialState: AppState = {
       return null;
     }
   })(),
+  sectionOrder: [],
   streaming: {},
   settledTurns: {},
   screens: {},

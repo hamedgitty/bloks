@@ -353,3 +353,30 @@ test("only the conversation on screen reads as working, not every one of the age
   // a harness too old to report lanes keeps the agent-wide flag
   assert.equal(openLaneWorking({ threadId: "t-a", busy: true }), true);
 });
+
+test("a placement lands on the agents and rooms it names, and nowhere else", () => {
+  // a drop shows at once, neighbours and all; the server's frames follow
+  const room = { id: "r1", name: "Standup", memberIds: ["a"], createdAt: 1, pinned: true, pinOrder: 1, messages: [] };
+  const state = withState({ bots: [bot("a", { pinned: true, pinOrder: 2 }), bot("b")], bloks: [room] });
+  const next = reducer(state, {
+    type: "placed",
+    rows: [
+      { kind: "agent", id: "b", patch: { section: null, pinned: true, pinOrder: 1 } },
+      { kind: "room", id: "r1", patch: { pinOrder: 2 } },
+      { kind: "agent", id: "a", patch: { pinOrder: 3 } },
+    ],
+  });
+  assert.deepEqual(next.bots.map((b) => [b.id, b.pinned, b.pinOrder]), [
+    ["a", true, 3],
+    ["b", true, 1],
+  ]);
+  assert.equal(next.bloks[0].pinOrder, 2);
+  assert.equal(next.bots[0].messages, state.bots[0].messages, "a placement touched a transcript");
+});
+
+test("the order of the headings comes from the workspace, and a drag replaces it", () => {
+  const loaded = reducer(withState({}), { type: "sectionOrder", order: ["Travel", "Ops"] });
+  assert.deepEqual(loaded.sectionOrder, ["Travel", "Ops"]);
+  const moved = reducer(loaded, { type: "moveSections", order: ["Ops", "Travel"] });
+  assert.deepEqual(moved.sectionOrder, ["Ops", "Travel"]);
+});

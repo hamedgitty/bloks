@@ -69,6 +69,13 @@ describe("what an agent can do", () => {
     assert.equal(allows(ME, "PUT", `/api/bots/${SOMEONE_ELSE}/memory`).ok, false);
   });
 
+  test("the sidebar's arrangement is read freely, and its headings stay the person's", () => {
+    // pins and places ride on PATCH /api/bots/:id and the room's own route,
+    // which narrow them themselves (test/agent-sections.test.ts)
+    assert.equal(allows(ME, "GET", "/api/sidebar").ok, true);
+    assert.equal(allows(ME, "PUT", "/api/sidebar/sections").ok, false);
+  });
+
   test("how much every agent may do without asking is never an agent's to set", () => {
     assert.equal(allows(ME, "PUT", "/api/approvals").ok, false);
     assert.equal(allows(ME, "GET", "/api/approvals").ok, false);

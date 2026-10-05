@@ -44,6 +44,9 @@ const COMMANDS = {
         title: bot.title,
         skills: bot.skills ?? [],
         busy: Boolean(bot.busy),
+        // where it sits in the sidebar; `sidebar` has the places
+        section: bot.section ?? null,
+        pinned: Boolean(bot.pinned),
       }));
     },
   },
@@ -183,27 +186,67 @@ const COMMANDS = {
     },
   },
   hire: {
-    use: 'hire --name <name> --title <role> [--about <description>] [--skills "a,b,c"] [--section <name>]',
-    about: "add a teammate to the workspace, optionally filed into a sidebar section",
+    use: 'hire --name <name> --title <role> [--about <description>] [--skills "a,b,c"] [--section <name>] [--pin] [--at <position>]',
+    about:
+      "add a teammate to the workspace, optionally filed into a sidebar section, and pinned there " +
+      "(--pin puts it after the pins already there; --at puts it at that place among them, 1 at the top)",
     run: (args) => {
       const flags = parseFlags(args);
       if (!flags.name) throw new Error("hire needs a --name");
+      const at = flags.at === undefined ? undefined : placeNumber(flags.at);
       return request("POST", "/api/bots", {
         name: flags.name,
         title: flags.title ?? "",
         description: flags.about ?? "",
         skills: flags.skills ? flags.skills.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
         ...(flags.section !== undefined ? { section: flags.section } : {}),
+        ...(flags.pin !== undefined || at !== undefined ? { pinned: true } : {}),
+        ...(at !== undefined ? { position: at } : {}),
       });
     },
   },
+  sidebar: {
+    use: "sidebar",
+    about:
+      "how the person's sidebar is arranged: its sections in order (section null is the unfiled list at the top), " +
+      "and in each what is pinned at which position and what else is there. Read it before you file, pin or move anything",
+    run: async () => {
+      const { sections } = await request("GET", "/api/sidebar");
+      return (sections ?? []).map((s) => ({ section: s.name, pinned: s.pinned, others: s.others }));
+    },
+  },
   file: {
-    use: "file <agent-id> <section…>",
-    about: "file an agent (yourself or a teammate) into a sidebar section; an empty section unfiles it",
+    use: "file <agent-id|room-id> <section…>",
+    about: "file an agent (yourself or a teammate) or a room you are in into a sidebar section; an empty section unfiles it. A pinned one stays pinned, after the pins already there",
     run: (args) => {
       const [target, ...rest] = args;
-      if (!target) throw new Error("file needs an agent id, then the section");
-      return request("PATCH", `/api/bots/${target}`, { section: rest.join(" ").trim() });
+      if (!target) throw new Error("file needs an agent or room id, then the section");
+      return place(target, { section: rest.join(" ").trim() });
+    },
+  },
+  pin: {
+    use: "pin <agent-id|room-id> [--at <position>] [--section <name>]",
+    about:
+      "hold an agent, or a room you are in, in place in the sidebar instead of letting it sort by recent activity with the person: " +
+      "at --at among the pins of its section (1 is the top; without it, after the pins already there), and filed into --section first when given",
+    run: (args) => {
+      const [target, ...rest] = args;
+      if (!target || target.startsWith("--")) throw new Error("pin needs an agent or room id, from `sidebar`");
+      const flags = parseFlags(rest);
+      if (flags.section === "true") throw new Error('--section needs a name, quoted when it has spaces: --section "Travel desk"');
+      return place(target, {
+        pinned: true,
+        ...(flags.at !== undefined ? { position: placeNumber(flags.at) } : {}),
+        ...(flags.section !== undefined ? { section: flags.section } : {}),
+      });
+    },
+  },
+  unpin: {
+    use: "unpin <agent-id|room-id>",
+    about: "let an agent, or a room you are in, sort by recent activity with the person again",
+    run: ([target]) => {
+      if (!target) throw new Error("unpin needs an agent or room id, from `sidebar`");
+      return place(target, { pinned: false });
     },
   },
   room: {
@@ -360,6 +403,36 @@ const COMMANDS = {
     },
   },
 };
+
+/** A place among the pins, checked here so a typo is an error now. */
+function placeNumber(raw) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) throw new Error("--at is a place among the pins: 1, 2, 3, with 1 at the top");
+  return n;
+}
+
+/**
+ * Where an agent or a room sits in the sidebar, changed, and read back as
+ * the sidebar now has it. An id is either; the agent is tried first
+ * because that is what most of them are, as `say` does.
+ */
+async function place(target, body) {
+  const id = encodeURIComponent(target);
+  try {
+    await request("PATCH", `/api/bots/${id}`, body);
+  } catch (error) {
+    if (!/no such agent/i.test(String(error.message))) throw error;
+    await request("PATCH", `/api/bloks/${id}`, body);
+  }
+  const { sections } = await request("GET", "/api/sidebar");
+  for (const section of sections ?? []) {
+    const pin = section.pinned.find((row) => row.id === target);
+    if (pin) return { ...pin, section: section.name, pinned: true };
+    const other = section.others.find((row) => row.id === target);
+    if (other) return { ...other, section: section.name, pinned: false };
+  }
+  return { ok: true };
+}
 
 /** The date a one-time routine runs, checked here so a typo is an error
  * now and not a routine that silently never fires: a real day, at a time

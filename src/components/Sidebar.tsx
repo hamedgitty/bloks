@@ -25,7 +25,7 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
-import { api, useStore, formatWhen, type Action, type Blok, type Bot } from "@/state/store";
+import { api, sidebarRows, useStore, formatWhen, type Action, type Blok, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
@@ -34,13 +34,22 @@ import { usePageVisible } from "@/lib/pageVisible";
 import { previewLine } from "@/lib/preview";
 import {
   acceptsRow,
-  inSection,
+  landingOver,
+  layoutRows,
   moveSection,
+  movesRow,
   orderSections,
+  pinPosition,
+  placeOfRow,
   ROW_TYPE,
   SECTION_TYPE,
   sectionNames,
   shownInSection,
+  sidebarLayout,
+  sidebarOrder,
+  type Landing,
+  type Listed,
+  type Place,
 } from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
 import { useBriefs } from "./BriefPanel";
@@ -71,33 +80,62 @@ function preview(bot: Bot): string {
 }
 
 interface MenuState {
-  botId: string;
+  kind: "agent" | "room";
+  id: string;
   x: number;
   y: number;
 }
 
-/** What is being filed under a section right now, if anything. */
+/** A row being moved right now, by the picker or by hand. */
 interface FilingState {
-  kind: "bot" | "room";
+  kind: "agent" | "room";
   id: string;
   name: string;
   current: string | null;
+  pinned: boolean;
 }
 
-/** Files a row under a section, or takes it out of one with null. The
- * picker and a drop both end here, so the two ways of filing can never
- * come to mean different things. */
+/** Puts a row somewhere: a section, held or not, and a place among the
+ * pins. The picker, a drop and Pin in the menu all end here, so the ways
+ * of moving a row can never come to mean different things. */
+function placeIn(dispatch: React.Dispatch<Action>, row: FilingState, to: Place) {
+  dispatch({ type: "placeRow", kind: row.kind, id: row.id, section: to.section, pinned: to.pinned, position: to.position });
+}
+
+/** Files a row under a section, or takes it out of one with null. A
+ * pinned row stays pinned, after the pins already there. */
 function fileUnder(dispatch: React.Dispatch<Action>, row: FilingState, section: string | null) {
-  if (row.kind === "bot") {
-    dispatch({ type: "updateBot", botId: row.id, patch: { section } });
-  } else {
-    dispatch({ type: "patchRoom", blokId: row.id, patch: { section } });
-  }
+  placeIn(dispatch, row, { section, pinned: row.pinned });
 }
 
-/** What lets a row be dragged into another section. The browser holds
- * off until the pointer has travelled a few pixels, so a click that does
- * not move is still a click and opens the row as it always has. */
+/** What a row in the full list is drawn from: the agent or room itself,
+ * and what its place is decided by, with activity held still while the
+ * pointer is over the list (see Sidebar). */
+type Row = (Listed & { kind: "agent"; bot: Bot }) | (Listed & { kind: "room"; room: Blok });
+
+/** Where a row in hand would land if let go now. */
+interface RowDrop extends Place {
+  line?: Landing["line"];
+  /** Into another section than its own, which lights the section up. */
+  filing?: boolean;
+}
+
+/** The line a drop would land on, drawn in the gap above or below a row. */
+function DropLine({ edge }: { edge: "top" | "bottom" }) {
+  return (
+    <span
+      className={cn(
+        "pointer-events-none absolute inset-x-2 z-10 h-0.5 rounded-full bg-brand",
+        edge === "top" ? "-top-px" : "-bottom-px",
+      )}
+    />
+  );
+}
+
+/** What lets a row be dragged into another section, or to another place
+ * among the pins of its own. The browser holds off until the pointer has
+ * travelled a few pixels, so a click that does not move is still a click
+ * and opens the row as it always has. */
 function rowDrag(row: FilingState, onDrag?: (row: FilingState | null) => void) {
   if (!onDrag) return {};
   return {
@@ -120,16 +158,6 @@ function rowDrag(row: FilingState, onDrag?: (row: FilingState | null) => void) {
  * field for a new name, and a way back out. Sections come from what is
  * already filed, so this list is never stale and never empty-but-real.
  */
-/** The order sections were dragged into on this device (see Sidebar). */
-function savedSectionOrder(): string[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem("bloks-section-order") ?? "[]");
-    return Array.isArray(saved) ? saved.filter((n) => typeof n === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 function SectionPicker({ filing, onClose }: { filing: FilingState; onClose: () => void }) {
   const { state, dispatch } = useStore();
   const [draft, setDraft] = useState("");
@@ -139,7 +167,7 @@ function SectionPicker({ filing, onClose }: { filing: FilingState; onClose: () =
       state.bots.filter((b) => !b.hidden),
       state.bloks,
     ),
-    savedSectionOrder(),
+    state.sectionOrder,
   );
 
   const fileTo = (section: string | null) => {
@@ -209,7 +237,16 @@ function SectionPicker({ filing, onClose }: { filing: FilingState; onClose: () =
   );
 }
 
-function BotContextMenu({
+/** A row as it is moved: its name, its section and whether it is pinned. */
+function filingOf(kind: "agent", row: Bot): FilingState;
+function filingOf(kind: "room", row: Blok): FilingState;
+function filingOf(kind: "agent" | "room", row: Bot | Blok): FilingState {
+  return { kind, id: row.id, name: row.name, current: row.section ?? null, pinned: Boolean(row.pinned) };
+}
+
+/** Right-click on a row. A room's menu is the part of an agent's that
+ * applies to a room: where it sits in the sidebar. */
+function RowMenu({
   menu,
   onClose,
   onFile,
@@ -219,7 +256,8 @@ function BotContextMenu({
   onFile: (filing: FilingState) => void;
 }) {
   const { state, dispatch } = useStore();
-  const bot = state.bots.find((b) => b.id === menu.botId);
+  const bot = menu.kind === "agent" ? state.bots.find((b) => b.id === menu.id) : undefined;
+  const room = menu.kind === "room" ? state.bloks.find((b) => b.id === menu.id) : undefined;
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -236,12 +274,13 @@ function BotContextMenu({
     };
   }, [onClose]);
 
-  if (!bot) return null;
+  const filing = bot ? filingOf("agent", bot) : room ? filingOf("room", room) : null;
+  if (!filing) return null;
 
-  const general = bot.tasks?.[0];
+  const general = bot?.tasks?.[0];
 
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - 300);
+  const top = Math.min(menu.y, window.innerHeight - (bot ? 300 : 100));
   const left = Math.min(menu.x, window.innerWidth - 220);
 
   const item = (
@@ -268,6 +307,18 @@ function BotContextMenu({
     </button>
   );
   const divider = (key: string) => <div key={key} className="mx-2 my-1 h-px bg-border" />;
+  // Pinning from here holds it after the pins already in its section;
+  // dragging is how it gets a particular place.
+  const pin = item(
+    filing.pinned ? (
+      <PinOff size={15} className="text-muted-foreground" />
+    ) : (
+      <Pin size={15} className="text-muted-foreground" />
+    ),
+    filing.pinned ? "Unpin" : "Pin",
+    () => placeIn(dispatch, filing, { section: filing.current, pinned: !filing.pinned }),
+  );
+  const move = item(<Folder size={15} className="text-muted-foreground" />, "Move to section…", () => onFile(filing));
 
   return (
     <div
@@ -275,25 +326,15 @@ function BotContextMenu({
       style={{ top, left }}
       className="fixed z-40 w-[208px] animate-pop-in rounded-xl border bg-popover p-1 shadow-lg shadow-(color:--shadow-color)"
     >
-      {[
-        item(
-          bot.pinned ? (
-            <PinOff size={15} className="text-muted-foreground" />
-          ) : (
-            <Pin size={15} className="text-muted-foreground" />
-          ),
-          bot.pinned ? "Unpin" : "Pin",
-          () => dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } }),
-        ),
+      {!bot ? [pin, move] : [
+        pin,
         // the agent stands for General, so that is the conversation it marks
         item(
           <BellDot size={15} className="text-muted-foreground" />,
           "Mark as unread",
           () => general && dispatch({ type: "markLaneUnread", botId: bot.id, taskId: general.id }),
         ),
-        item(<Folder size={15} className="text-muted-foreground" />, "Move to section…", () =>
-          onFile({ kind: "bot", id: bot.id, name: bot.name, current: bot.section ?? null }),
-        ),
+        move,
         divider("d1"),
         item(<Pencil size={15} className="text-muted-foreground" />, "Edit profile", () => {
           dispatch({ type: "select", id: bot.id });
@@ -340,7 +381,7 @@ function BotListItem({
 }: {
   bot: Bot;
   onMenu: (menu: MenuState) => void;
-  /** Given where there are sections to drag the row into. */
+  /** Given in the full list, where a row can be dragged to a place. */
   onDrag?: (row: FilingState | null) => void;
   rail?: boolean;
   /** The conversations view: one line per agent, with its other
@@ -350,7 +391,7 @@ function BotListItem({
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
   const last = bot.messages[bot.messages.length - 1];
-  const drag = rowDrag({ kind: "bot", id: bot.id, name: bot.name, current: bot.section ?? null }, onDrag);
+  const drag = rowDrag(filingOf("agent", bot), onDrag);
   if (rail) {
     // the collapsed sidebar: just the face, with the unread dot riding
     // the avatar the way the phone app does it
@@ -363,7 +404,7 @@ function BotListItem({
         onClick={() => dispatch({ type: "select", id: bot.id })}
         onContextMenu={(e) => {
           e.preventDefault();
-          onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
+          onMenu({ kind: "agent", id: bot.id, x: e.clientX, y: e.clientY });
         }}
         title={bot.name}
         className={cn(
@@ -394,7 +435,7 @@ function BotListItem({
           onClick={() => dispatch({ type: "select", id: bot.id, lane: general?.id })}
           onContextMenu={(e) => {
             e.preventDefault();
-            onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
+            onMenu({ kind: "agent", id: bot.id, x: e.clientX, y: e.clientY });
           }}
           {...drag}
           className={cn(
@@ -403,12 +444,9 @@ function BotListItem({
           )}
         >
           <AgentAvatar bot={bot} size={24} />
-          {/* the pin trails the name, so pinned names start where the
-              rest do and the column of names stays one straight edge */}
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13.5px] font-semibold text-foreground">
-            <span className="truncate">{bot.name}</span>
-            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" aria-label="pinned" />}
-          </span>
+          {/* No pin on the row: the line under a list's last pin says what
+              is held, and every name starts on the same edge. */}
+          <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-foreground">{bot.name}</span>
           {/* the trailing state steps aside for the + on hover, all of it,
               so the two never sit on top of each other */}
           <span className="flex shrink-0 items-center gap-1.5 transition-opacity duration-150 group-hover/agent:opacity-0">
@@ -451,7 +489,7 @@ function BotListItem({
       onClick={() => dispatch({ type: "select", id: bot.id })}
       onContextMenu={(e) => {
         e.preventDefault();
-        onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
+        onMenu({ kind: "agent", id: bot.id, x: e.clientX, y: e.clientY });
       }}
       {...drag}
       className={cn(
@@ -462,10 +500,7 @@ function BotListItem({
       <AgentAvatar bot={bot} size={42} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[14px] font-semibold text-foreground">
-            <span className="truncate">{bot.name}</span>
-            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" aria-label="pinned" />}
-          </span>
+          <span className="min-w-0 truncate text-[14px] font-semibold text-foreground">{bot.name}</span>
           {last && (
             <span className="shrink-0 text-[11.5px] tabular-nums text-muted-foreground">
               {formatWhen(last.at)}
@@ -495,13 +530,13 @@ function BotListItem({
 function RoomListItem({
   blok,
   rail,
-  onFile,
+  onMenu,
   onDrag,
 }: {
   blok: Blok;
   rail?: boolean;
-  onFile?: (filing: FilingState) => void;
-  /** Given where there are sections to drag the row into. */
+  onMenu?: (menu: MenuState) => void;
+  /** Given in the full list, where a row can be dragged to a place. */
   onDrag?: (row: FilingState | null) => void;
 }) {
   const { state, dispatch } = useStore();
@@ -538,11 +573,11 @@ function RoomListItem({
       data-sidebar-row={blok.id}
       onClick={() => dispatch({ type: "select", id: blok.id })}
       onContextMenu={(e) => {
-        if (!onFile) return;
+        if (!onMenu) return;
         e.preventDefault();
-        onFile({ kind: "room", id: blok.id, name: blok.name, current: blok.section ?? null });
+        onMenu({ kind: "room", id: blok.id, x: e.clientX, y: e.clientY });
       }}
-      {...rowDrag({ kind: "room", id: blok.id, name: blok.name, current: blok.section ?? null }, onDrag)}
+      {...rowDrag(filingOf("room", blok), onDrag)}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-[background-color,transform] duration-150 active:scale-[0.99]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -705,28 +740,34 @@ export function Sidebar() {
     localStorage.setItem("bloks-folded-sections", JSON.stringify(next));
   };
 
-  // The order sections are dragged into, by name, kept on this device
-  // like folding. Until someone drags one, they stay alphabetical.
-  const [sectionOrder, setSectionOrder] = useState<string[]>(savedSectionOrder);
-  const saveSectionOrder = (next: string[]) => {
-    setSectionOrder(next);
-    try {
-      localStorage.setItem("bloks-section-order", JSON.stringify(next));
-    } catch {
-      /* kept for this visit only */
-    }
-  };
+  // The order sections are dragged into, by name. Kept with the workspace,
+  // unlike folding, so the Mac and the phone list them the same way;
+  // until someone drags one, they stay alphabetical.
+  const saveSectionOrder = (next: string[]) => dispatch({ type: "moveSections", order: next });
   // which heading a dragged section would land against, and on which side
   const [sectionDrop, setSectionDrop] = useState<{ name: string; place: "before" | "after" } | null>(null);
 
-  // Filing by drag, which files exactly as Move to section does. Three
-  // pieces: the row in hand, read by each section as it passes over; the
-  // same row for drawing, which catches up a moment later (see below);
-  // and the section it would land in if let go now, null for the
-  // unfiled list at the top.
+  // What is not pinned sorts by the last time it had something to do with
+  // you, which moves while you are looking. While the pointer is over the
+  // list that part holds still, as it stood when the pointer arrived, so a
+  // row cannot slide away just as it is clicked; the list catches up when
+  // the pointer leaves. Pins, sections and drops are your own doing and
+  // show at once.
+  const [heldActivity, setHeldActivity] = useState<Map<string, number> | null>(null);
+  const holdActivity = () =>
+    setHeldActivity(
+      new Map([...state.bots, ...state.bloks].map((row) => [row.id, row.activeWithYouAt ?? 0] as const)),
+    );
+
+  // Moving by drag, which files exactly as Move to section does and also
+  // places: dropped among a list's pins, a row takes that place and is
+  // pinned; dropped below them, it sorts by activity. Three pieces: the
+  // row in hand, read by each list as it passes over; the same row for
+  // drawing, which catches up a moment later (see below); and where it
+  // would land if let go now.
   const draggedRow = useRef<FilingState | null>(null);
   const [dragging, setDragging] = useState<FilingState | null>(null);
-  const [rowDrop, setRowDrop] = useState<{ section: string | null } | null>(null);
+  const [rowDrop, setRowDrop] = useState<RowDrop | null>(null);
   const onRowDrag = (row: FilingState | null) => {
     draggedRow.current = row;
     if (row) {
@@ -739,15 +780,69 @@ export function Sidebar() {
       setRowDrop(null);
     }
   };
-  // Each section, and the unfiled list, answers only to a row on its way
-  // somewhere new. A heading being dragged passes over them untouched,
-  // and a row over the section it is already in finds nowhere to land.
-  const fileZone = (section: string | null) => ({
+  /**
+   * Where the row in hand lands if let go over this list now, or null
+   * when that would leave it exactly where it is. `drawn` is the list as
+   * it is on screen for this row: a section's rows, or in the unfiled
+   * list only the Rooms or the Agents, since a room let go among the
+   * agents still stands with the rooms. A row under the pointer sets the
+   * place (landingOver); anywhere else in the list, the heading of a
+   * folded section included, files it and keeps whatever pin it has.
+   */
+  const planDrop = (
+    row: FilingState,
+    section: string | null,
+    drawn: readonly Listed[],
+    e: React.DragEvent<HTMLElement>,
+  ): RowDrop | null => {
+    const over = (e.target as HTMLElement).closest<HTMLElement>("[data-row]");
+    const overId = over?.dataset.row;
+    let landing: Landing = { pinned: row.pinned };
+    if (over && overId && drawn.some((r) => r.id === overId)) {
+      const box = over.getBoundingClientRect();
+      landing = landingOver(drawn, row.id, overId, e.clientY < box.top + box.height / 2 ? "top" : "bottom");
+    }
+    // The place is counted among every pin in the section, not only the
+    // ones a search or a project is showing, so a hidden pin keeps its own.
+    const everything = sidebarRows(state);
+    const pins = sidebarOrder(everything.filter((r) => r.id !== row.id && r.pinned && (r.section ?? null) === section));
+    const to: Place = {
+      section,
+      pinned: landing.pinned,
+      ...(landing.pinned && landing.line ? { position: pinPosition(pins, landing.line) } : {}),
+    };
+    const from = placeOfRow(everything, row.id);
+    if (!from || !movesRow(from, to)) return null;
+    return landing.line ? { ...to, line: landing.line } : to;
+  };
+  // Each section, and the unfiled list, answers only to a row, and only
+  // where letting go would change something: another section, or another
+  // place among the pins of its own. A heading being dragged passes over
+  // them untouched.
+  const fileZone = (section: string | null, drawn: (kind: FilingState["kind"]) => readonly Listed[]) => ({
     onDragOver: (e: React.DragEvent<HTMLElement>) => {
       const row = draggedRow.current;
-      if (!row || !acceptsRow(e.dataTransfer.types, row.current, section)) return;
+      if (!row || !e.dataTransfer.types.includes(ROW_TYPE)) return;
+      const plan = planDrop(row, section, drawn(row.kind), e);
+      if (!plan) {
+        setRowDrop((d) => (d?.section === section ? null : d));
+        return;
+      }
       e.preventDefault();
-      setRowDrop((d) => (d?.section === section ? d : { section }));
+      // the list lights up only for a row coming in from elsewhere; inside
+      // its own, the line alone says where it goes
+      const filing = acceptsRow(e.dataTransfer.types, row.current, section);
+      setRowDrop((d) =>
+        d &&
+        d.section === plan.section &&
+        d.filing === filing &&
+        d.pinned === plan.pinned &&
+        d.position === plan.position &&
+        d.line?.id === plan.line?.id &&
+        d.line?.edge === plan.line?.edge
+          ? d
+          : { ...plan, filing },
+      );
     },
     onDragLeave: (e: React.DragEvent<HTMLElement>) => {
       // Crossing from one row to the next fires a leave as well; the
@@ -758,10 +853,12 @@ export function Sidebar() {
     },
     onDrop: (e: React.DragEvent<HTMLElement>) => {
       const row = draggedRow.current;
-      if (!row || !acceptsRow(e.dataTransfer.types, row.current, section)) return;
+      if (!row || !e.dataTransfer.types.includes(ROW_TYPE)) return;
+      const plan = planDrop(row, section, drawn(row.kind), e);
+      if (!plan) return;
       e.preventDefault();
       onRowDrag(null);
-      fileUnder(dispatch, row, section);
+      placeIn(dispatch, row, plan);
     },
   });
 
@@ -816,10 +913,37 @@ export function Sidebar() {
           (b) =>
             !query.trim() ||
             `${b.name} ${b.title}`.toLowerCase().includes(query.trim().toLowerCase()),
-        )
-        .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false)),
+        ),
     [state.bots, query, projectMembers],
   );
+
+  // The whole list in the one order every surface follows (sidebarLayout
+  // in src/lib/sections.ts), with activity held still under the pointer.
+  const layout = useMemo(() => {
+    const rows: Row[] = [
+      ...state.bloks.map((room) => ({
+        kind: "room" as const,
+        id: room.id,
+        section: room.section ?? null,
+        pinned: room.pinned,
+        pinOrder: room.pinOrder,
+        activeWithYouAt: heldActivity?.get(room.id) ?? room.activeWithYouAt,
+        createdAt: room.createdAt,
+        room,
+      })),
+      ...visibleBots.map((bot) => ({
+        kind: "agent" as const,
+        id: bot.id,
+        section: bot.section ?? null,
+        pinned: bot.pinned,
+        pinOrder: bot.pinOrder,
+        activeWithYouAt: heldActivity?.get(bot.id) ?? bot.activeWithYouAt,
+        createdAt: bot.createdAt,
+        bot,
+      })),
+    ];
+    return sidebarLayout(rows, state.sectionOrder);
+  }, [state.bloks, visibleBots, heldActivity, state.sectionOrder]);
 
   const newMenuItems = (
     <DropdownMenuContent align="end" className="min-w-[160px]">
@@ -913,12 +1037,13 @@ export function Sidebar() {
             {newMenuItems}
           </DropdownMenu>
           <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-0.5">
-            {state.bloks.map((b) => (
-              <RoomListItem key={b.id} blok={b} rail />
-            ))}
-            {visibleBots.map((b) => (
-              <BotListItem key={b.id} bot={b} onMenu={setMenu} rail />
-            ))}
+            {layoutRows(layout).map((row) =>
+              row.kind === "room" ? (
+                <RoomListItem key={row.id} blok={row.room} rail />
+              ) : (
+                <BotListItem key={row.id} bot={row.bot} onMenu={setMenu} rail />
+              ),
+            )}
           </div>
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
@@ -928,22 +1053,55 @@ export function Sidebar() {
             <SettingsIcon size={16} />
           </button>
         </header>
-        {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
+        {menu && <RowMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
         {filing && <SectionPicker filing={filing} onClose={() => setFiling(null)} />}
         {showArchived && <ArchivedAgents onClose={() => setShowArchived(false)} />}
       </>
     );
   }
 
-  const unfiledRooms = rail ? state.bloks : inSection(state.bloks, null);
-  const unfiledBots = rail ? visibleBots : inSection(visibleBots, null);
-  // Rows drag only where there are headings to drag them under: never on
-  // the rail, and not before the first section has been named.
-  const fileDrag = !rail && sectionNames(visibleBots, state.bloks).length ? onRowDrag : undefined;
+  const unfiledRooms = layout.unfiled.rooms;
+  const unfiledBots = layout.unfiled.agents;
+  // Rows drag wherever there is a place to put them: into a section, or
+  // to a place among the pins of their own list. Never on the rail.
+  const fileDrag = !rail ? onRowDrag : undefined;
   // The unfiled list is the way out of a section. With everything on
   // show filed it has no rows to let go over, so while a filed row is in
   // hand it opens a place for one.
   const unfiling = !unfiledRooms.length && !unfiledBots.length ? (dragging?.current ?? null) : null;
+  const searching = Boolean(query.trim());
+
+  /** One list as it is drawn: each row with the line a drop would land
+   * on, and a hairline under the last pin when rows sorted by activity
+   * follow it. That line is the whole of what pinning shows: above it is
+   * held in your order, below it moves with what you are doing. */
+  const drawList = (rows: readonly Row[], folded = false) =>
+    rows.map((row, i) => {
+      const line = rowDrop?.line?.id === row.id ? rowDrop.line.edge : null;
+      const next = rows[i + 1];
+      return (
+        <div key={row.id} className="flex flex-col">
+          <div data-row={row.id} className="relative flex flex-col">
+            {line && <DropLine edge={line} />}
+            {row.kind === "room" ? (
+              <RoomListItem blok={row.room} onMenu={setMenu} onDrag={fileDrag} />
+            ) : (
+              <>
+                <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
+                <ConversationRows bot={row.bot} open={conversations && !folded} />
+              </>
+            )}
+          </div>
+          {row.pinned && next && !next.pinned && (
+            <div
+              role="separator"
+              aria-label="Pinned above, most recent with you below"
+              className="mx-3 my-1 h-px bg-border/70"
+            />
+          )}
+        </div>
+      );
+    });
 
   return (
     <aside
@@ -1076,61 +1234,67 @@ export function Sidebar() {
       {/* The list. Filed rows stand under their section's heading; the
           unfiled majority keeps the plain Rooms and Agents lists it has
           always had, so sections cost nothing until the first one is
-          named. The rail has no room for headings and stays flat. */}
-      <div className="flex-1 overflow-y-auto px-2 pt-1">
-        <div className={cn("flex flex-col", rail ? "gap-1" : "gap-px")}>
+          named. Inside each list, pins first in your order, then the
+          rest by recent activity with you. The rail has no room for
+          headings and runs the same order flat. */}
+      <div
+        className="flex-1 overflow-y-auto px-2 pt-1"
+        onMouseEnter={holdActivity}
+        onMouseLeave={() => setHeldActivity(null)}
+      >
+        {rail ? (
+          <div className="flex flex-col gap-1">
+            {unfiledRooms.map((row) => row.kind === "room" && <RoomListItem key={row.id} blok={row.room} rail />)}
+            {/* the rooms at the top keep the line that always set them apart */}
+            {unfiledRooms.length > 0 && <div className="mx-3 my-1 border-t" />}
+            {[...unfiledBots, ...layout.sections.flatMap((s) => s.rows)].map((row) =>
+              row.kind === "room" ? (
+                <RoomListItem key={row.id} blok={row.room} rail />
+              ) : (
+                <BotListItem key={row.id} bot={row.bot} onMenu={setMenu} rail />
+              ),
+            )}
+          </div>
+        ) : (
+        <div className="flex flex-col gap-px">
           {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling) && (
             <div
-              {...fileZone(null)}
+              {...fileZone(null, (kind) => (kind === "room" ? unfiledRooms : unfiledBots))}
               className={cn(
-                "flex flex-col rounded-xl transition-colors duration-150",
-                rail ? "gap-1" : "gap-px",
-                rowDrop?.section === null && "bg-brand-soft",
+                "flex flex-col gap-px rounded-xl transition-colors duration-150",
+                rowDrop?.section === null && rowDrop.filing && "bg-brand-soft",
               )}
             >
               {unfiledRooms.length > 0 && (
                 <>
-                  {!rail && (
-                    <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                      Rooms
-                      <button
-                        onClick={() => dispatch({ type: "toggleNewRoom", open: true })}
-                        className="rounded p-0.5 transition-colors hover:text-foreground"
-                        title="New room"
-                      >
-                        <Plus size={12} />
-                      </button>
-                    </div>
-                  )}
-                  {unfiledRooms.map((b) => (
-                    <RoomListItem key={b.id} blok={b} rail={rail} onFile={setFiling} onDrag={fileDrag} />
-                  ))}
-                  {rail ? (
-                    <div className="mx-3 my-1 border-t" />
-                  ) : (
-                    <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                      Agents
-                      <button
-                        onClick={() => setConversations(!conversations)}
-                        aria-pressed={conversations}
-                        className={cn(
-                          "rounded p-0.5 transition-colors hover:text-foreground",
-                          conversations && "text-foreground",
-                        )}
-                        title={conversations ? "Hide conversations" : "Show each agent's conversations"}
-                      >
-                        <ListTree size={12} />
-                      </button>
-                    </div>
-                  )}
+                  <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    Rooms
+                    <button
+                      onClick={() => dispatch({ type: "toggleNewRoom", open: true })}
+                      className="rounded p-0.5 transition-colors hover:text-foreground"
+                      title="New room"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  {drawList(unfiledRooms)}
+                  <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    Agents
+                    <button
+                      onClick={() => setConversations(!conversations)}
+                      aria-pressed={conversations}
+                      className={cn(
+                        "rounded p-0.5 transition-colors hover:text-foreground",
+                        conversations && "text-foreground",
+                      )}
+                      title={conversations ? "Hide conversations" : "Show each agent's conversations"}
+                    >
+                      <ListTree size={12} />
+                    </button>
+                  </div>
                 </>
               )}
-              {unfiledBots.map((b) => (
-                <div key={b.id} className="flex flex-col">
-                  <BotListItem bot={b} onMenu={setMenu} onDrag={fileDrag} rail={rail} compact={conversations} />
-                  {!rail && <ConversationRows bot={b} open={conversations} />}
-                </div>
-              ))}
+              {drawList(unfiledBots)}
               {unfiling && (
                 <div
                   className={cn(
@@ -1143,102 +1307,89 @@ export function Sidebar() {
               )}
             </div>
           )}
-          {!rail &&
-            (() => {
-              const shownSections = orderSections(sectionNames(visibleBots, state.bloks), sectionOrder);
-              return shownSections.map((name, index) => {
-              const rooms = inSection(state.bloks, name);
-              const bots = inSection(visibleBots, name);
-              if (!rooms.length && !bots.length) return null;
-              const isFolded = folded.includes(name);
-              const searching = Boolean(query.trim());
-              // A folded heading still says something is waiting inside.
-              const waiting = isFolded && !searching && bots.some((b) => b.unread);
-              const hint = sectionDrop?.name === name ? sectionDrop.place : null;
-              return (
-                <div
-                  key={name}
-                  // the whole section takes a row, heading and rows alike,
-                  // so a folded one still does and stays folded after
-                  {...fileZone(name)}
-                  className={cn(
-                    "relative flex flex-col gap-px rounded-xl transition-colors duration-150",
-                    rowDrop?.section === name && "bg-brand-soft",
-                  )}
-                >
-                  {hint && (
-                    <span
-                      className={cn(
-                        "pointer-events-none absolute inset-x-2 z-10 h-0.5 rounded-full bg-brand",
-                        hint === "before" ? "top-1" : "-bottom-px",
-                      )}
-                    />
-                  )}
-                  <button
-                    onClick={() => toggleFolded(name)}
-                    aria-expanded={!isFolded}
-                    title={isFolded ? "Show this section. Drag to reorder" : "Fold this section. Drag to reorder"}
-                    // Drag a heading to put the sections in your own order;
-                    // Alt with an arrow key does the same from the keyboard.
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData(SECTION_TYPE, name);
-                      e.dataTransfer.effectAllowed = "move";
-                    }}
-                    onDragOver={(e) => {
-                      if (!e.dataTransfer.types.includes(SECTION_TYPE)) return;
-                      e.preventDefault();
-                      const box = e.currentTarget.getBoundingClientRect();
-                      const place = e.clientY < box.top + box.height / 2 ? "before" : "after";
-                      if (sectionDrop?.name !== name || sectionDrop.place !== place) setSectionDrop({ name, place });
-                    }}
-                    onDragLeave={() => setSectionDrop((d) => (d?.name === name ? null : d))}
-                    onDrop={(e) => {
-                      const dragged = e.dataTransfer.getData(SECTION_TYPE);
-                      setSectionDrop(null);
-                      if (!dragged) return;
-                      e.preventDefault();
-                      saveSectionOrder(moveSection(shownSections, dragged, name, hint ?? "before"));
-                    }}
-                    onDragEnd={() => setSectionDrop(null)}
-                    onKeyDown={(e) => {
-                      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-                      e.preventDefault();
-                      const neighbour = shownSections[index + (e.key === "ArrowUp" ? -1 : 1)];
-                      if (neighbour) saveSectionOrder(moveSection(shownSections, name, neighbour, e.key === "ArrowUp" ? "before" : "after"));
-                    }}
-                    className="flex cursor-grab items-center gap-1.5 rounded px-2.5 pb-1 pt-3 text-left text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
-                  >
-                    <Folder size={11} className="shrink-0" />
-                    <span className="truncate">{name}</span>
-                    {isFolded && !searching && (
-                      <span className="shrink-0 normal-case tracking-normal">{rooms.length + bots.length}</span>
+          {layout.sections.map(({ name, rows }, index) => {
+            const shownSections = layout.sections.map((s) => s.name);
+            const isFolded = folded.includes(name);
+            const shown = shownInSection(rows, isFolded, state.selectedId, searching);
+            // A folded heading still says something is waiting inside.
+            const waiting = isFolded && !searching && rows.some((row) => row.kind === "agent" && row.bot.unread);
+            const hint = sectionDrop?.name === name ? sectionDrop.place : null;
+            return (
+              <div
+                key={name}
+                // the whole section takes a row, heading and rows alike,
+                // so a folded one still does and stays folded after
+                {...fileZone(name, () => shown)}
+                className={cn(
+                  "relative flex flex-col gap-px rounded-xl transition-colors duration-150",
+                  rowDrop?.section === name && rowDrop.filing && "bg-brand-soft",
+                )}
+              >
+                {hint && (
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute inset-x-2 z-10 h-0.5 rounded-full bg-brand",
+                      hint === "before" ? "top-1" : "-bottom-px",
                     )}
-                    {waiting && <span className="size-1.5 shrink-0 rounded-full bg-brand" />}
-                    <ChevronRight
-                      size={11}
-                      className={cn("ml-auto shrink-0 transition-transform", !isFolded && "rotate-90")}
-                    />
-                  </button>
-                  {shownInSection(rooms, isFolded, state.selectedId, searching).map((b) => (
-                    <RoomListItem key={b.id} blok={b} onFile={setFiling} onDrag={fileDrag} />
-                  ))}
-                  {shownInSection(bots, isFolded, state.selectedId, searching).map((b) => (
-                    <div key={b.id} className="flex flex-col">
-                      <BotListItem bot={b} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
-                      <ConversationRows bot={b} open={conversations && !isFolded} />
-                    </div>
-                  ))}
-                </div>
-              );
-              });
-            })()}
-          {visibleBots.length === 0 && !rail && (query || state.hydrated) && (
+                  />
+                )}
+                <button
+                  onClick={() => toggleFolded(name)}
+                  aria-expanded={!isFolded}
+                  title={isFolded ? "Show this section. Drag to reorder" : "Fold this section. Drag to reorder"}
+                  // Drag a heading to put the sections in your own order;
+                  // Alt with an arrow key does the same from the keyboard.
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(SECTION_TYPE, name);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    if (!e.dataTransfer.types.includes(SECTION_TYPE)) return;
+                    e.preventDefault();
+                    const box = e.currentTarget.getBoundingClientRect();
+                    const place = e.clientY < box.top + box.height / 2 ? "before" : "after";
+                    if (sectionDrop?.name !== name || sectionDrop.place !== place) setSectionDrop({ name, place });
+                  }}
+                  onDragLeave={() => setSectionDrop((d) => (d?.name === name ? null : d))}
+                  onDrop={(e) => {
+                    const dragged = e.dataTransfer.getData(SECTION_TYPE);
+                    setSectionDrop(null);
+                    if (!dragged) return;
+                    e.preventDefault();
+                    saveSectionOrder(moveSection(shownSections, dragged, name, hint ?? "before"));
+                  }}
+                  onDragEnd={() => setSectionDrop(null)}
+                  onKeyDown={(e) => {
+                    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+                    e.preventDefault();
+                    const neighbour = shownSections[index + (e.key === "ArrowUp" ? -1 : 1)];
+                    if (neighbour) saveSectionOrder(moveSection(shownSections, name, neighbour, e.key === "ArrowUp" ? "before" : "after"));
+                  }}
+                  className="flex cursor-grab items-center gap-1.5 rounded px-2.5 pb-1 pt-3 text-left text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+                >
+                  <Folder size={11} className="shrink-0" />
+                  <span className="truncate">{name}</span>
+                  {isFolded && !searching && (
+                    <span className="shrink-0 normal-case tracking-normal">{rows.length}</span>
+                  )}
+                  {waiting && <span className="size-1.5 shrink-0 rounded-full bg-brand" />}
+                  <ChevronRight
+                    size={11}
+                    className={cn("ml-auto shrink-0 transition-transform", !isFolded && "rotate-90")}
+                  />
+                </button>
+                {drawList(shown, isFolded)}
+              </div>
+            );
+          })}
+          {visibleBots.length === 0 && (query || state.hydrated) && (
             <div className="px-3 py-8 text-center text-[13px] text-muted-foreground">
               {query ? "No agents match" : "No agents yet. Create one with +"}
             </div>
           )}
         </div>
+        )}
       </div>
 
       <UpdateCard rail={rail} />
@@ -1254,7 +1405,7 @@ export function Sidebar() {
         }}
       />
 
-      {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
+      {menu && <RowMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
       {filing && <SectionPicker filing={filing} onClose={() => setFiling(null)} />}
       {showArchived && <ArchivedAgents onClose={() => setShowArchived(false)} />}
     </aside>

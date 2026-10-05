@@ -324,7 +324,23 @@ export interface BotRecord {
    * else, and a list of everything permitted goes stale as the gallery
    * grows. See server/components.ts. */
   withoutComponents?: string[];
+  /** Held in place in the sidebar rather than sorted by activity. */
   pinned?: boolean;
+  /** Where a pinned agent stands among the pins of its section, 1 first,
+   * rooms and agents counted together. Null on a pin given no place yet,
+   * which stands after the placed ones, and on an agent that is not
+   * pinned. Null rather than absent once it has been set, so a client
+   * merging a patch cannot keep a place the agent no longer has. The
+   * order itself is compareRows in src/lib/sections.ts. */
+  pinOrder?: number | null;
+  /** When this agent last had something to do with the person, in ms:
+   * the person's own message to it, a reply in a turn the person
+   * started, or anything asking something of them (server/activity.ts,
+   * towardYou). Another agent's message, a routine, a watcher or a job
+   * waking it, does not move it. 0 means never; absent only on a record
+   * from before this was kept, until the first start seeds it from the
+   * transcripts. Unpinned agents sort by it, most recent first. */
+  activeWithYouAt?: number;
   hidden?: boolean;
   /** The sidebar heading this agent files under. One namespace shared
    * with rooms; absent or null means the plain Agents list. */
@@ -408,6 +424,10 @@ export class Store {
   bots: BotRecord[] = [];
   private messages = new Map<string, Message[]>();
   private defaultSelection: () => ModelSelection;
+  /** Told about every message as it is written. Messages arrive through
+   * forty-odd doors, and something that cares about all of them (who the
+   * person has been with, in server/index.ts) watches this one instead. */
+  onAppend?: (threadId: string, message: Message) => void;
 
   constructor(defaultSelection: () => ModelSelection) {
     this.defaultSelection = defaultSelection;
@@ -463,6 +483,7 @@ export class Store {
     const list = this.messagesFor(threadId);
     list.push(full);
     writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
+    this.onAppend?.(threadId, full);
     return full;
   }
 
@@ -544,6 +565,9 @@ export class Store {
       modelSelection: this.defaultSelection(),
       resumeCursors: {},
       createdAt: Date.now(),
+      // nothing with the person yet; a route the person made it through
+      // says otherwise
+      activeWithYouAt: 0,
       tasks: [],
       activeTaskId: "",
     };
@@ -637,6 +661,21 @@ export class Store {
     Object.assign(bot, patch);
     this.saveBots();
     return bot;
+  }
+
+  /** Several agents at once, written once: moving one pin renumbers its
+   * neighbours, and a file written per neighbour is a file half written
+   * if anything stops partway. Returns the agents that exist. */
+  patchBots(changes: ReadonlyArray<{ id: string; patch: Partial<BotRecord> }>): BotRecord[] {
+    const changed: BotRecord[] = [];
+    for (const { id, patch } of changes) {
+      const bot = this.bot(id);
+      if (!bot) continue;
+      Object.assign(bot, patch);
+      changed.push(bot);
+    }
+    if (changed.length) this.saveBots();
+    return changed;
   }
 
   /** Cursors are per-lane: the thread that produced the session owns it. */

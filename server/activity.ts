@@ -192,6 +192,94 @@ export function blockedOn(
   return null;
 }
 
+/**
+ * Whether a message, as it lands, asks something of the person: an
+ * approval or a question a turn is waiting on, a workflow gate, a team a
+ * lead wants to hire, a key or a connection asked for, a decision put to
+ * them. Who started the turn does not matter here. A routine that stops
+ * on an approval at nine in the morning wants the person as much as a
+ * turn they started does.
+ *
+ * Wider than blockedOn on purpose: that asks whether a lane is stopped
+ * right now, with somebody still listening, and this asks whether the
+ * conversation just turned to the person, which a decision or a key does
+ * without stopping anything.
+ */
+export function asksYou(message: Message): boolean {
+  if (!asked(message)) return false;
+  if (message.kind === "options") return !message.card?.answered && !message.card?.dismissed;
+  if (message.kind === "secret") return message.secret?.status === "needs-value";
+  if (message.kind === "connector") return message.connector?.status === "needs-auth";
+  return message.decisionChoice === undefined;
+}
+
+/** Whether a message is one of those asks at all, settled since or not:
+ * read back from a transcript, a card answered an hour later still asked
+ * the person something at the moment it was written. */
+function asked(message: Message): boolean {
+  if (message.agent || message.afterAgent || message.deleted) return false;
+  if (message.kind === "options") {
+    const card = message.card;
+    return Boolean(card && (card.requestId || card.runId || card.team));
+  }
+  if (message.kind === "secret") return Boolean(message.secret);
+  if (message.kind === "connector") return Boolean(message.connector);
+  return message.kind === "component" && message.component?.kind === "decision";
+}
+
+/**
+ * Whether a message just written is the conversation turning toward the
+ * person, which is what moves a row up the sidebar (GitHub 156).
+ *
+ * Two ways. Anything that asks something of them (asksYou). And a reply,
+ * but only in a turn the person started: `yourTurn` is the caller's to
+ * know, because a reply to a routine and a reply to the person read the
+ * same. An agent answering another agent, a routine, a watcher or a job
+ * waking it, does not count, or a team that talks among itself all day
+ * would reshuffle the list all day.
+ *
+ * The person's own messages are not decided here. By the time one is in
+ * a transcript it looks like a routine's prompt or a job's offer, so the
+ * routes the person speaks through say so themselves.
+ */
+export function towardYou(message: Message, yourTurn: boolean): boolean {
+  if (asksYou(message)) return true;
+  if (!yourTurn || message.role !== "bot" || message.agent || message.afterAgent || message.event) return false;
+  return message.kind === "text" || message.kind === "component" || message.kind === "artifact";
+}
+
+/** Whether a message reads as the person's own: typed by them, here,
+ * rather than arriving from a watcher, an email or a webhook, from
+ * another agent, or from a member of a shared room. */
+function yours(message: Message): boolean {
+  return message.role === "user" && message.kind === "text" && !message.agent && !message.author && !message.via;
+}
+
+/**
+ * The last moment a transcript had something to do with the person, or
+ * 0. Used once, to start a workspace from before this was kept with an
+ * order that already means something, so it reads the transcript the
+ * only way a transcript can be read: the person's own messages, anything
+ * that asked something of them, and a reply that came after one of
+ * theirs. A routine's prompt is written like the person's, so the caller
+ * leaves out the lanes routines and other background work run in.
+ */
+export function lastWithYou(messages: readonly Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (yours(message) || asked(message)) return message.at ?? 0;
+    if (!towardYou(message, true)) continue;
+    // a reply counts when the last thing said to it was the person
+    for (let j = i - 1; j >= 0; j--) {
+      const before = messages[j];
+      if (before.role !== "user") continue;
+      if (yours(before)) return message.at ?? 0;
+      break;
+    }
+  }
+  return 0;
+}
+
 /** What set this lane off, in the words a person would use. */
 export function whyBusy(
   threadId: string,

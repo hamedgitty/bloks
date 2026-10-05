@@ -2,7 +2,17 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { assemble, blockedOn, tally, whyBusy, type Block, type Lane } from "../server/activity.ts";
+import {
+  asksYou,
+  assemble,
+  blockedOn,
+  lastWithYou,
+  tally,
+  towardYou,
+  whyBusy,
+  type Block,
+  type Lane,
+} from "../server/activity.ts";
 import type { Message } from "../server/store.ts";
 
 const card = (over: Partial<Message> & { card: Message["card"] }): Message => ({
@@ -335,5 +345,79 @@ describe("a room is not an agent", () => {
     assert.equal(out.waiting.length, 1);
     assert.equal(out.waiting[0].botName, "Sales");
     assert.deepEqual(out.agents, [], "a room was counted as an agent");
+  });
+});
+
+// What moves a row up the sidebar (GitHub 156): the person's own words, a
+// reply to them, or anything asking something of them. Not one agent
+// talking to another, and not a routine or a watcher waking one.
+describe("time spent with the person", () => {
+  const said = (over: Partial<Message>): Message => ({ id: "m", role: "bot", kind: "text", text: "ok", at: 5_000, ...over });
+
+  test("a reply counts only in a turn the person started", () => {
+    assert.equal(towardYou(said({}), true), true);
+    assert.equal(towardYou(said({}), false), false, "a routine's or a watcher's answer moved the row");
+    assert.equal(towardYou(said({ kind: "component", component: { kind: "chart" } }), true), true);
+  });
+
+  test("agents talking among themselves never count, whoever started the turn", () => {
+    assert.equal(towardYou(said({ afterAgent: { peerId: "b", peerName: "B" } }), true), false);
+    assert.equal(towardYou(said({ kind: "activity", agent: { dir: "out", peerId: "b", peerName: "B" } }), true), false);
+    assert.equal(towardYou(said({ role: "user", agent: { dir: "in", peerId: "b", peerName: "B" } }), true), false);
+  });
+
+  test("tool runs and notices are not replies", () => {
+    assert.equal(towardYou(said({ kind: "activity", tool: { name: "Bash" } }), true), false);
+    assert.equal(towardYou(said({ kind: "notice", text: "Folded the conversation." }), true), false);
+  });
+
+  test("a question, an approval or a gate counts whoever started the turn", () => {
+    // a routine that stops on an approval at nine wants the person as much as anything they started
+    assert.equal(towardYou(card({ card: { title: "Approval needed", subtitle: "", options: [], requestId: "r" } }), false), true);
+    assert.equal(towardYou(card({ card: { title: "Ship it?", subtitle: "", options: [], runId: "run" } }), false), true);
+    assert.equal(
+      towardYou(card({ card: { title: "Hire?", subtitle: "", options: [], team: { room: "R", brief: "", members: [] } } }), false),
+      true,
+    );
+    assert.equal(towardYou(said({ kind: "component", component: { kind: "decision" } }), false), true);
+    assert.equal(towardYou(said({ kind: "secret", secret: { envName: "K", label: "Key", status: "needs-value" } }), false), true);
+    assert.equal(
+      towardYou(said({ kind: "connector", connector: { slug: "gmail", label: "Gmail", status: "needs-auth" } }), false),
+      true,
+    );
+  });
+
+  test("but not once it is settled, nor a setup question that is safe to ignore", () => {
+    assert.equal(asksYou(card({ card: { title: "How should we work?", subtitle: "", options: ["A"] } })), false);
+    assert.equal(asksYou(card({ card: { title: "Run?", subtitle: "", options: [], requestId: "r", answered: "Allow" } })), false);
+    assert.equal(asksYou(said({ kind: "component", component: { kind: "decision" }, decisionChoice: 1 })), false);
+    assert.equal(asksYou(said({ kind: "secret", secret: { envName: "K", label: "Key", status: "saved" } })), false);
+  });
+
+  test("read back from a transcript: the person's last word, or a reply to it", () => {
+    const yours = said({ role: "user", text: "find me a flight", at: 1_000 });
+    const reply = said({ text: "found three", at: 2_000 });
+    assert.equal(lastWithYou([yours, reply]), 2_000);
+    assert.equal(lastWithYou([yours]), 1_000);
+    assert.equal(lastWithYou([]), 0);
+  });
+
+  test("read back: another agent's message, and what came after it, are not the person", () => {
+    const fromAgent = said({ role: "user", agent: { dir: "in", peerId: "b", peerName: "B" }, at: 3_000 });
+    const answer = said({ text: "sure", at: 4_000, afterAgent: { peerId: "b", peerName: "B" } });
+    const before = said({ role: "user", text: "hello", at: 1_000 });
+    assert.equal(lastWithYou([before, fromAgent, answer]), 1_000);
+    // a watcher or a webhook speaking, and the greeting an agent is made with
+    assert.equal(lastWithYou([said({ role: "user", via: "watcher", at: 2_000 }), said({ at: 2_500 })]), 0);
+    assert.equal(lastWithYou([said({ text: "I'm ready.", at: 100 })]), 0);
+  });
+
+  test("read back: a card that asked the person counts at the moment it asked", () => {
+    // answered since, but it asked then: the row was with the person at that moment
+    const ask = card({ at: 7_000, card: { title: "Approval needed", subtitle: "", options: [], requestId: "r", answered: "Allow" } });
+    assert.equal(lastWithYou([said({ role: "user", at: 1_000 }), ask]), 7_000);
+    // and a setup question never asked anything
+    const setup = card({ at: 9_000, card: { title: "How should we work?", subtitle: "", options: ["A"] } });
+    assert.equal(lastWithYou([said({ role: "user", at: 1_000 }), setup]), 1_000);
   });
 });
