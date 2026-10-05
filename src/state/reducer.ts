@@ -195,6 +195,10 @@ export interface Bot {
   /** Retired. The row leaves the list and the agent stops working, but
    * everything about it is kept and it can be brought back. */
   archivedAt?: number | null;
+  /** The agent that archived it, when one did rather than you, and the
+   * note it left about the finished work. */
+  archivedBy?: string;
+  archiveNote?: string;
   tasks?: TaskSummary[];
   activeTaskId?: string;
   modelSelection: ModelSelection;

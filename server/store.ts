@@ -340,6 +340,10 @@ export interface BotRecord {
    * still be in an older phone's list, live and unanswerable.
    */
   archivedAt?: number;
+  /** The agent that archived it, when one did rather than the person,
+   * and the note it left: which work it judged finished (GitHub 148). */
+  archivedBy?: string;
+  archiveNote?: string;
   /** Derived: true while ANY task runs. Task-level busy is the gate;
    * this stays for sidebar and composer affordances. */
   busy?: boolean;
@@ -558,12 +562,30 @@ export class Store {
    * agent in the list that cannot answer, or one out of the list that
    * can. Written here so no call site can get the pair wrong.
    */
-  archiveBot(id: string, now: number): BotRecord | null {
+  archiveBot(id: string, now: number, by?: { botId: string; note?: string }): BotRecord | null {
     const bot = this.bot(id);
     if (!bot || bot.archivedAt) return null;
+    const before = { hidden: bot.hidden, archivedBy: bot.archivedBy, archiveNote: bot.archiveNote };
     bot.archivedAt = now;
     bot.hidden = true;
-    this.saveBots();
+    if (by) {
+      bot.archivedBy = by.botId;
+      if (by.note) bot.archiveNote = by.note;
+      else delete bot.archiveNote;
+    }
+    try {
+      this.saveBots();
+    } catch (e) {
+      // not saved is not archived: the agent stays as it was, in service
+      delete bot.archivedAt;
+      bot.hidden = before.hidden;
+      bot.archivedBy = before.archivedBy;
+      bot.archiveNote = before.archiveNote;
+      if (bot.hidden === undefined) delete bot.hidden;
+      if (bot.archivedBy === undefined) delete bot.archivedBy;
+      if (bot.archiveNote === undefined) delete bot.archiveNote;
+      throw e;
+    }
     return bot;
   }
 
@@ -581,6 +603,8 @@ export class Store {
     if (!bot || (!bot.archivedAt && !bot.hidden)) return null;
     delete bot.archivedAt;
     delete bot.hidden;
+    delete bot.archivedBy;
+    delete bot.archiveNote;
     this.saveBots();
     return bot;
   }

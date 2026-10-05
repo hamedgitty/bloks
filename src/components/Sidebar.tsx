@@ -1147,8 +1147,13 @@ function ArchivedAgents({ onClose }: { onClose: () => void }) {
               <AgentAvatar bot={bot} size={30} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13.5px] font-medium text-foreground">{bot.name}</span>
-                {bot.title && (
-                  <span className="block truncate text-[11.5px] text-muted-foreground">{bot.title}</span>
+                {bot.archivedBy ? (
+                  <span className="block truncate text-[11.5px] text-muted-foreground" title={bot.archiveNote}>
+                    Archived by {state.bots.find((b) => b.id === bot.archivedBy)?.name ?? "the agent that hired it"}
+                    {bot.archiveNote ? `: ${bot.archiveNote}` : ""}
+                  </span>
+                ) : (
+                  bot.title && <span className="block truncate text-[11.5px] text-muted-foreground">{bot.title}</span>
                 )}
               </span>
               <Button

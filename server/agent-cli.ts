@@ -115,6 +115,7 @@ export const RULES: Rule[] = [
   // Stopping is an authority: the route allows it only for an agent the
   // caller hired, or one it outranks in a room they share.
   { method: "POST", path: "/api/bots/:id/interrupt", why: "stop the current turn of an agent it hired or leads in a room" },
+  { method: "POST", path: "/api/bots/:id/archive", why: "archive an agent it hired, once that agent has nothing left to do" },
   { method: "POST", path: "/api/bots/:me/notes", why: "suggest a short note about the person, for them to keep or not" },
   { method: "PUT", path: "/api/bots/:me/memory", why: "write its own memory" },
   { method: "GET", path: "/api/bots/:me/artifacts", why: "list what it has produced" },

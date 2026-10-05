@@ -162,6 +162,16 @@ const COMMANDS = {
       return request("POST", `/api/bots/${encodeURIComponent(target)}/interrupt`, why ? { text: why } : {});
     },
   },
+  archive: {
+    use: 'archive <agent-id> ["<what was finished>"]',
+    about: "archive an agent you hired once its work is done and nothing is left running, waiting or scheduled for it; the person can restore it",
+    run: (args) => {
+      const [target, ...rest] = args;
+      if (!target) throw new Error("archive needs the agent to archive");
+      const note = rest.join(" ").trim();
+      return request("POST", `/api/bots/${encodeURIComponent(target)}/archive`, note ? { note } : {});
+    },
+  },
   note: {
     use: 'note "<one short fact about the person>"',
     about: "suggest a lasting note about the person you work for; they decide whether to keep it",

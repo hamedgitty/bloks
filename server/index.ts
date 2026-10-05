@@ -3439,6 +3439,39 @@ function mayStop(callerId: string, targetId: string): "hired" | "senior" | null 
   return null;
 }
 
+/**
+ * What still ties an agent to work, in words: why an agent that hired it
+ * may not archive it yet (GitHub 148). Archiving is for an agent whose
+ * work is done, so anything running, waiting or scheduled is a reason to
+ * leave it be and say so, never something to cancel on its behalf.
+ */
+function pendingWork(bot: BotRecord): string[] {
+  const lanes = new Set(bot.tasks.map((t) => t.id));
+  const named = (titles: string[]) => titles.map((t) => `"${t}"`).join(", ");
+  const out: string[] = [];
+  const busy = bot.tasks.filter((t) => t.busy);
+  if (busy.length) out.push(`it is working in ${named(busy.map((t) => t.title))}`);
+  const queued = bot.tasks.filter((t) => store.messagesFor(t.id).some((m) => m.queued && !m.unsent && !m.deleted));
+  if (queued.length) out.push(`messages are waiting for it in ${named(queued.map((t) => t.title))}`);
+  const asks = [...askThreadByRequest.values()].filter((thread) => lanes.has(thread)).length;
+  if (asks) out.push(`${asks} question${asks === 1 ? " is" : "s are"} waiting on an answer`);
+  const claimed = jobs.list().filter((j) => j.claimedBy === bot.id && j.state === "claimed");
+  if (claimed.length) out.push(`it has claimed ${claimed.length === 1 ? "a job" : `${claimed.length} jobs`} on the board`);
+  const scheduled = routines.routines.filter((r) => r.enabled && r.targetKind === "agent" && (r.targetId === bot.id || lanes.has(r.targetId)));
+  if (scheduled.length) out.push(`${scheduled.length === 1 ? "a routine is" : `${scheduled.length} routines are`} on for it`);
+  const watching = watchers.filter((w) => w.botId === bot.id && w.enabled);
+  if (watching.length) out.push(`${watching.length === 1 ? "a watcher is" : `${watching.length} watchers are`} on for it`);
+  const hooks = webhooks.for({ botId: bot.id }).filter((h) => h.enabled);
+  if (hooks.length) out.push(`${hooks.length === 1 ? "a webhook points" : `${hooks.length} webhooks point`} at it`);
+  const runs = workflows
+    .list()
+    .filter((w) => w.trigger?.targetId === bot.id || w.steps?.some((step) => step.targetId === bot.id))
+    .flatMap((w) => (w.runs ?? []).filter((r) => r.state === "running" || r.state === "waiting"));
+  if (runs.length) out.push(`${runs.length === 1 ? "a workflow run involving it is" : `${runs.length} workflow runs involving it are`} not finished`);
+  if (wheel.heldBy(bot.id)) out.push("it is on hold");
+  return out;
+}
+
 /** The owner's name as members see it. */
 function hostName(): string {
   return cfg.profile?.name?.trim() || "The owner";
@@ -6722,6 +6755,61 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such agent" });
       broadcast({ kind: "bot", bot: clientBot(bot) });
       return json(res, 200, { bot: clientBot(bot) });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/archive$/);
+    if (m && method === "POST") {
+      // An agent retiring one it hired, once that agent's work is done
+      // (GitHub 148). The hire was the delegation, the same relationship
+      // `bloks stop` rests on; seniority in a room is not, and neither is
+      // anything else. Archive only: conversations, files, rules, rooms
+      // and key all stay, and the person can restore it. The person's own
+      // archive is DELETE /api/bots/:id, which also winds work down; this
+      // one refuses instead of interrupting anything.
+      if (!asAgent) return json(res, 403, { error: "this route is for an agent; archive from the agent's own menu" });
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      const caller = store.bot(asAgent.botId)!;
+      if (caller.id === bot.id) return json(res, 403, { error: "an agent cannot retire itself" });
+      if (bot.hiredBy !== caller.id) {
+        return json(res, 403, { error: `${caller.name} can archive only an agent it hired, and it did not hire ${bot.name}` });
+      }
+      // a second ask reports, and keeps who archived it and why
+      if (bot.archivedAt) return json(res, 200, { ok: true, archived: false, note: `${bot.name} is already archived.` });
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const note = clamp(body.note, 300)?.trim() || undefined;
+      const blockers = pendingWork(bot);
+      if (blockers.length) {
+        return json(res, 409, {
+          error: `${bot.name} is not finished: ${blockers.join("; ")}. Nothing was changed; archive it once that is done, or ask the person.`,
+          blockers,
+        });
+      }
+      // Nothing awaits between the check above and this line, so a
+      // message arriving now either started first (and was refused above
+      // as work) or finds the agent archived and is turned away.
+      let archived: BotRecord | null;
+      try {
+        archived = store.archiveBot(bot.id, Date.now(), { botId: caller.id, note });
+      } catch {
+        return json(res, 500, { error: `${bot.name} could not be archived: its record would not save. It is still in service.` });
+      }
+      if (!archived) return json(res, 200, { ok: true, archived: false, note: `${bot.name} is already archived.` });
+      record({
+        at: Date.now(),
+        kind: "agent.archived",
+        actor: caller.name,
+        summary: `${caller.name} archived ${bot.name}`,
+        detail: { agent: bot.name, by: caller.name, ...(note ? { note } : {}), key: "kept" },
+      });
+      // What the person's archive also does, minus winding work down:
+      // there is none, or it would have been refused above.
+      stopScreenPoller(bot.id);
+      terminals.close(bot.id);
+      agentTokens.revokeBot(bot.id);
+      void stopSandbox(bot.id).catch(() => {});
+      void box.sleepBox(cfg, bot.id).catch(() => {});
+      broadcast({ kind: "bot", bot: clientBot(archived) });
+      return json(res, 200, { ok: true, archived: true, note: `${bot.name} is archived. The person can restore it.` });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/restore$/);
     if (m && method === "POST") {
