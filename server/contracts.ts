@@ -141,6 +141,9 @@ export interface SendTurnInput {
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
   /** Who this agent is, as a system prompt. */
   system?: string;
+  /** How long a tool call may go without a word from the engine before
+   * the turn is stopped; 0 is never. Drivers that cannot tell ignore it. */
+  stallMs?: number;
   /** Capabilities to hand the agent as tools, decided per turn because
    * they depend on the agent's settings and on what is provisioned. */
   integrations?: {

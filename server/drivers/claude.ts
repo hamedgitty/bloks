@@ -52,6 +52,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
+import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
@@ -208,6 +209,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const turnId = newId();
       const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
+      // Tool calls the engine has started and not yet reported back on,
+      // whether somebody is being asked something, and when the engine
+      // last said anything at all: what tells a silent call from work
+      // (GitHub 146). See stall.ts.
+      const openCalls = new Map<string, OpenCall>();
+      let asking = 0;
+      let lastSign = Date.now();
+      /** Set once Stop (or a stalled call) has asked this process to end. */
+      let stopping = false;
+      /** What a stalled call was, as the person read it. */
+      let stalled: string | null = null;
+      /** The turn ended without the process letting go; ignore it from here. */
+      let abandoned = false;
+
       // Nothing asks when the engine is set to bypass, or when this agent is
       // in full access; a shared room is never either.
       const bypass = !turn.shared && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
@@ -348,7 +363,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const socketPath = brokerSocket(threadId, turnId);
         broker = createAskBroker({
           socketPath,
-          onAsk: (ask) =>
+          onAsk: (ask) => {
+            asking++;
+            lastSign = Date.now();
             emit({
               ...envelope(threadId, turnId),
               type: "request.opened",
@@ -358,15 +375,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               input: ask.input,
               summary: summarise(ask),
               choices: askChoices(ask.input),
-            }),
-          onResolve: (resolved) =>
+            });
+          },
+          onResolve: (resolved) => {
+            asking = Math.max(0, asking - 1);
+            // the call only starts running once it has its answer
+            lastSign = Date.now();
             emit({
               ...envelope(threadId, turnId),
               type: "request.resolved",
               requestId: resolved.id,
               behavior: resolved.behavior,
               source: resolved.source,
-            }),
+            });
+          },
         });
         argv.push("--permission-prompt-tool", "mcp__bloks__approve");
         mcpServers.bloks = {
@@ -420,10 +442,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // A result that did nothing (see `case "result"`), held until the
       // real one arrives or the process ends without one.
       let held: any = null;
+      let watch: ReturnType<typeof setInterval> | null = null;
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finished) return;
         finished = true;
-        if (broker && !exited) {
+        if (watch) clearInterval(watch);
+        if (broker && !exited && !abandoned) {
           broker.retire();
           const kept = afterTurn.get(threadId) ?? new Set<AskBroker>();
           kept.add(broker);
@@ -447,6 +471,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const settle = (frame: any) => {
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
+        if (stopping) {
+          finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null);
+          return;
+        }
         finish(
           frame.is_error !== true,
           // a failed turn's own words say why ("usage limit reached"),
@@ -462,6 +490,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
 
       const consume = (raw: string) => {
+        if (abandoned) return;
+        lastSign = Date.now();
         let frame: any;
         try {
           frame = JSON.parse(raw);
@@ -530,6 +560,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             for (const block of Array.isArray(message.content) ? message.content : []) {
               if (block.type !== "tool_use") continue;
+              if (typeof block.id === "string") {
+                openCalls.set(block.id, { name: String(block.name ?? "A tool call"), input: block.input, since: Date.now() });
+              }
               emit({
                 ...envelope(threadId, turnId),
                 type: "item.started",
@@ -555,6 +588,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // tool results come back addressed to the tool_use they answer
             for (const block of Array.isArray(frame.message?.content) ? frame.message.content : []) {
               if (block.type !== "tool_result") continue;
+              openCalls.delete(block.tool_use_id);
               emit({
                 ...envelope(threadId, turnId),
                 type: "item.completed",
@@ -617,14 +651,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         finish(false, "spawn_error");
       });
 
-      child.on("close", (code) => {
-        exited = true;
-        const kept = afterTurn.get(threadId);
-        if (broker && kept?.delete(broker)) {
-          broker.close();
-          if (!kept.size) afterTurn.delete(threadId);
-        }
+      /** A stopped turn ends quietly: the person asked for it, or the
+       * stall has already said why. */
+      const endStopped = () => finish(false, stalled ? "tool_stalled" : "interrupted");
+
+      const ended = (code: number | null) => {
         if (finished) return;
+        if (stopping) return endStopped();
         // a held result was the whole turn after all
         if (held) return settle(held);
         // Exiting without a `result` frame means it never got as far as
@@ -638,20 +671,79 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           }),
         });
         finish(false, "exit_before_result");
+      };
+
+      child.on("close", (code) => {
+        exited = true;
+        const kept = afterTurn.get(threadId);
+        if (broker && kept?.delete(broker)) {
+          broker.close();
+          if (!kept.size) afterTurn.delete(threadId);
+        }
+        ended(code);
       });
 
-      const abort = () => {
+      // The output can outlive the process: something it started that
+      // escaped the group still holds the pipe, and "close" waits for
+      // that. The process is what the turn was, so give the pipe a moment
+      // and then stop waiting on it.
+      child.on("exit", (code) => {
+        const late = setTimeout(() => {
+          if (finished) return;
+          abandoned = true;
+          ended(code);
+        }, STOP_GRACE_MS);
+        late.unref?.();
+      });
+
+      const signal = (sig: NodeJS.Signals) => {
         try {
-          process.kill(-child.pid!, "SIGTERM");
+          process.kill(-child.pid!, sig);
         } catch {
           // no process group (already reaped, or platform quirk)
           try {
-            child.kill("SIGTERM");
+            child.kill(sig);
           } catch {
             /* gone */
           }
         }
       };
+
+      // SIGTERM, then SIGKILL, then the turn ends whether or not the
+      // process let go. A CLI stuck in a tool call sat through SIGTERM
+      // for two hours (GitHub 146), and a process blocked in a read the
+      // kernel will not interrupt survives SIGKILL too, until the read
+      // returns. Whatever it says after that is dropped.
+      const abort = () => {
+        if (finished || stopping) return;
+        stopping = true;
+        signal("SIGTERM");
+        const kill = setTimeout(() => {
+          if (!exited) signal("SIGKILL");
+        }, STOP_GRACE_MS);
+        kill.unref?.();
+        const giveUp = setTimeout(() => {
+          if (finished) return;
+          abandoned = true;
+          endStopped();
+        }, STOP_GRACE_MS * 2);
+        giveUp.unref?.();
+      };
+
+      // A call gone silent ends the turn, and says which call it was.
+      const limitMs = typeof turn.stallMs === "number" ? turn.stallMs : DEFAULT_STALL_MINUTES * 60_000;
+      if (limitMs > 0) {
+        watch = setInterval(() => {
+          if (finished || stopping) return;
+          const now = Date.now();
+          if (!isStalled({ open: openCalls.size, asking, lastSign, now, limitMs })) return;
+          const oldest = [...openCalls.values()].sort((a, b) => a.since - b.since)[0];
+          stalled = describeStall(oldest, now - lastSign);
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: stalled });
+          abort();
+        }, Math.max(250, Math.min(15_000, limitMs / 4)));
+        watch.unref?.();
+      }
 
       running.set(threadId, { turnId, abort, broker });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });

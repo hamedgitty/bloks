@@ -50,6 +50,7 @@ import type { ModelSelection, RuntimeEvent } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile } from "./store.ts";
@@ -707,6 +708,17 @@ const REHEARSAL_LANES = 3;
 /** Lanes whose last changes were undone since the agent last spoke: its
  * next turn is told, or it would carry on from files that are gone. */
 const undoneSince = new Map<string, string[]>();
+/** Lanes whose last turn Bloks stopped because a tool call went silent,
+ * with what the person was told: the agent hears it at the start of its
+ * next turn, so it does not walk back into the same wait (GitHub 146). */
+const stalledSince = new Map<string, string>();
+
+/** How long a tool call may go without a word before its turn is
+ * stopped; 0 is never. The person's choice, in Settings. */
+function stallLimitMs(): number {
+  const minutes = cfg.turns?.stallMinutes;
+  return (typeof minutes === "number" && Number.isFinite(minutes) && minutes >= 0 ? minutes : DEFAULT_STALL_MINUTES) * 60_000;
+}
 const teamLibrary = new TeamLibrary();
 // A model server already running here is one nobody should have to go
 // and connect by hand. Looked for once, never written over an entry that
@@ -963,7 +975,9 @@ function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boole
   turnErrors.delete(laneId);
   heldErrors.delete(laneId);
   if (ok || !used || stopReason === "interrupted") return false;
-  if (handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
+  // a call that went silent is about the work, not the engine running
+  // out, whatever words the stuck command happened to contain
+  if (stopReason !== "tool_stalled" && handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
   // an error kept back for a backup that then did not take over is shown
   // after all, exactly as it would have been
   if (held) {
@@ -1794,6 +1808,10 @@ bus.subscribe((event: RuntimeEvent) => {
       // end (a Codex turn the provider refused, Antigravity's status), and
       // a turn that ends in silence reads as the agent not answering.
       const saidWhy = (turnErrors.get(event.threadId)?.length ?? 0) > 0;
+      if (event.stopReason === "tool_stalled") {
+        const said = turnErrors.get(event.threadId)?.at(-1);
+        if (said) stalledSince.set(event.threadId, said);
+      }
       const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted") {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
@@ -2767,6 +2785,11 @@ async function startTurn(
         const named = undone.slice(0, 20).join(", ") + (undone.length > 20 ? `, and ${undone.length - 20} more` : "");
         turnText = `(Since your last turn, the user undid your changes to: ${named}. Those files are back as they were before that turn.)\n\n${turnText}`;
       }
+      const stalledNote = stalledSince.get(task.id);
+      if (stalledNote) {
+        stalledSince.delete(task.id);
+        turnText = `${stallPreface(stalledNote)}\n\n${turnText}`;
+      }
 
       // A credential of this agent's own, for this turn only. Given only
       // to engines that run a process, because a driver that talks to an
@@ -2840,6 +2863,7 @@ async function startTurn(
         // shared room, where the approvals protect other people
         ...(bot.approvals === "full" && !sharing ? { fullAccess: true } : {}),
         text: turnText,
+        stallMs: stallLimitMs(),
         model: selection.model,
         effort: bot.effort,
         ...(bot.engineHooks === false ? { noHooks: true } : {}),
@@ -5616,6 +5640,8 @@ function configStatus() {
     // off unless asked for: reading a session back spends tokens on work
     // nobody requested, and what it finds is staged rather than installed
     skills: { propose: Boolean(cfg.skills?.propose) },
+    // how long a silent tool call may hold a turn, in minutes; 0 is never
+    turns: { stallMinutes: stallLimitMs() / 60_000 },
     // not a secret: a folder, a mode and a model, for the settings form
     agentDefaults: cfg.agentDefaults ?? {},
     // what is already here, so a first run can offer to keep it rather
@@ -10924,6 +10950,17 @@ const server = createServer(async (req, res) => {
         const micro = (body.compaction as Record<string, unknown>).micro;
         if (typeof micro === "boolean") {
           saveConfig({ compaction: { micro } });
+          Object.assign(cfg, loadConfig());
+          wroteSomething = true;
+        }
+      }
+      if (body.turns && typeof body.turns === "object" && !Array.isArray(body.turns)) {
+        const minutes = (body.turns as Record<string, unknown>).stallMinutes;
+        if (minutes !== undefined) {
+          if (!STALL_CHOICES.includes(minutes as (typeof STALL_CHOICES)[number])) {
+            return json(res, 400, { error: `stallMinutes is one of ${STALL_CHOICES.join(", ")} (0 is never)` });
+          }
+          saveConfig({ turns: { stallMinutes: minutes as number } });
           Object.assign(cfg, loadConfig());
           wroteSomething = true;
         }

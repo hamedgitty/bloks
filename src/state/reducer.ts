@@ -257,6 +257,8 @@ export interface ConfigStatus {
   compaction?: { micro: boolean };
   /** Whether finished sessions are read back for something worth keeping. */
   skills?: { propose: boolean };
+  /** How long a silent tool call may hold a turn, in minutes; 0 is never. */
+  turns?: { stallMinutes: number };
   /** Where a new agent starts, applied before its first turn. Absent on
    * a server that does not know about it, and then Settings says nothing. */
   agentDefaults?: AgentDefaults;

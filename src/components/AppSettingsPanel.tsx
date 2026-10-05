@@ -91,6 +91,52 @@ function Compaction() {
   );
 }
 
+const SILENT_CALL_LIMITS = [
+  { value: "5", label: "5 min" },
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "1 hour" },
+  { value: "0", label: "Never" },
+] as const;
+
+/**
+ * How long one tool call may sit without a word from the engine before
+ * its turn is stopped (GitHub 146). The model thinking, or a command that
+ * keeps reporting, is never cut short; only a call that has gone silent,
+ * and never while an approval card is waiting on you.
+ */
+function SilentCallLimit() {
+  const { state, dispatch } = useStore();
+  const minutes = String(state.config?.turns?.stallMinutes ?? 15);
+  const [saving, setSaving] = useState(false);
+
+  const set = (next: string) => {
+    setSaving(true);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ turns: { stallMinutes: Number(next) } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingRow
+      label="Stop a tool call that goes silent"
+      info="Now and then a command waits on something that never answers: a cloud folder holding a read, a prompt nobody can see. The engine says nothing more and the agent stays on working. After this long with no word, Bloks ends the turn and tells you and the agent which call it was. Thinking, writing, and commands that keep reporting are never cut short, and time spent waiting on your approval does not count."
+      description="End the turn when one call has made no progress for this long."
+    >
+      {/* five choices do not fit beside the label, so they sit under it */}
+      <div className="mt-3">
+        <Segmented
+          aria-label="Stop a tool call that goes silent"
+          value={SILENT_CALL_LIMITS.some((o) => o.value === minutes) ? minutes : "15"}
+          onChange={(next) => !saving && set(next)}
+          options={SILENT_CALL_LIMITS.map((o) => ({ value: o.value, label: o.label }))}
+        />
+      </div>
+    </SettingRow>
+  );
+}
+
 /**
  * Whether a finished session gets read back for something worth keeping.
  *
@@ -623,6 +669,7 @@ function GeneralPage() {
         <QuickAskShortcut />
         <ProposeSkills />
         <Compaction />
+        <SilentCallLimit />
       </SettingsGroup>
     </>
   );

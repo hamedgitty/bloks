@@ -146,6 +146,10 @@ export interface AppConfig {
    * Off unless asked for: it spends the person's own tokens on work they
    * did not request. What it finds is always staged, never installed. */
   skills?: { propose?: boolean };
+  /** How long a tool call may go without a word from the engine before
+   * Bloks stops the turn, in minutes; 0 is never. Unset is the default
+   * in server/drivers/stall.ts. */
+  turns?: { stallMinutes?: number };
   /** What every new agent starts with, whoever hires it. Without this an
    * agent's first chat pins to its own workspace before anybody can
    * point it elsewhere. A missing key keeps the built-in start: its own
@@ -274,6 +278,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     "shortcuts",
     "compaction",
     "skills",
+    "turns",
     "telegram",
     "chat",
     "brief",
