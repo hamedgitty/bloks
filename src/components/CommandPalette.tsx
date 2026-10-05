@@ -6,14 +6,23 @@
 // to the exact conversation and lane it lives in. One flat keyboard
 // cursor runs across all sections, because reaching for arrow keys
 // should never care about headings.
+//
+// The few things the app can be told to do sit under the agents and
+// rooms, each with its key beside it (from src/lib/shortcuts.ts), so the
+// palette teaches the shortcut that would have skipped it next time.
 import { useEffect, useMemo, useRef, useState } from "react";
+import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import CornerDownLeft from "lucide-react/dist/esm/icons/corner-down-left.mjs";
+import Keyboard from "lucide-react/dist/esm/icons/keyboard.mjs";
 import MessageSquare from "lucide-react/dist/esm/icons/message-square.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
+import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
-import { api, useStore, type Bot } from "@/state/store";
+import { api, useStore, type Action, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { SETTINGS_PAGES } from "./AppSettingsPanel";
+import { Keys } from "./Shortcuts";
+import { keysFor, platformOf } from "@/lib/shortcuts";
 import { cn } from "@/lib/cn";
 
 interface MessageHit {
@@ -26,6 +35,22 @@ interface MessageHit {
   name: string;
   task?: string;
 }
+
+/** Things to do rather than places to go. `id` is the command's line in
+ * the shortcuts list, when it has a key. */
+const COMMANDS: ReadonlyArray<{
+  id: string;
+  label: string;
+  /** Words people search for that the label does not say. */
+  keywords: string;
+  icon: React.ComponentType<{ size?: number }>;
+  action: Action;
+}> = [
+  { id: "newAgent", label: "New agent", keywords: "create add hire bot", icon: BotIcon, action: { type: "toggleNewAgent", open: true } },
+  { id: "newRoom", label: "New room", keywords: "create add group team", icon: Users, action: { type: "toggleNewRoom", open: true } },
+  { id: "settings", label: "Settings", keywords: "preferences options", icon: SettingsIcon, action: { type: "toggleAppSettings", open: true } },
+  { id: "shortcuts", label: "Keyboard shortcuts", keywords: "keys hotkeys help", icon: Keyboard, action: { type: "toggleShortcuts", open: true } },
+];
 
 /** Name ranking: prefix beats substring, and input order (recency,
  * pinning) survives inside each tier. */
@@ -95,6 +120,13 @@ export function CommandPalette() {
     () => rankByName(state.bloks, (r) => r.name, query.trim()),
     [state.bloks, query],
   );
+  // Every command on an empty query, at the foot of the switcher where
+  // they cost the jump-to-an-agent habit nothing; the matching ones once
+  // something is typed.
+  const commands = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return COMMANDS.filter((c) => words.every((w) => `${c.label} ${c.keywords}`.toLowerCase().includes(w)));
+  }, [query]);
   // Settings pages by what they hold, so "voice" or "telegram" goes
   // straight to the page rather than through the Settings menu.
   const pages = useMemo(() => {
@@ -104,7 +136,7 @@ export function CommandPalette() {
       words.every((w) => `${p.label} ${p.keywords}`.toLowerCase().includes(w)),
     );
   }, [query]);
-  const total = bots.length + rooms.length + pages.length + hits.length;
+  const total = bots.length + rooms.length + commands.length + pages.length + hits.length;
 
   useEffect(() => {
     setCursor((c) => Math.min(c, Math.max(0, total - 1)));
@@ -112,15 +144,22 @@ export function CommandPalette() {
 
   if (!open) return null;
 
+  // where each section starts in the one flat cursor
+  const commandsAt = bots.length + rooms.length;
+  const pagesAt = commandsAt + commands.length;
+  const hitsAt = pagesAt + pages.length;
+
   const activate = (index: number) => {
     if (index < bots.length) {
       dispatch({ type: "select", id: bots[index].id });
-    } else if (index < bots.length + rooms.length) {
+    } else if (index < commandsAt) {
       dispatch({ type: "select", id: rooms[index - bots.length].id });
-    } else if (index < bots.length + rooms.length + pages.length) {
-      dispatch({ type: "toggleAppSettings", open: true, page: pages[index - bots.length - rooms.length].id });
+    } else if (index < pagesAt) {
+      dispatch(commands[index - commandsAt].action);
+    } else if (index < hitsAt) {
+      dispatch({ type: "toggleAppSettings", open: true, page: pages[index - pagesAt].id });
     } else {
-      const hit = hits[index - bots.length - rooms.length - pages.length];
+      const hit = hits[index - hitsAt];
       if (!hit) return;
       if (hit.blokId) {
         dispatch({ type: "select", id: hit.blokId });
@@ -162,6 +201,7 @@ export function CommandPalette() {
   );
 
   let index = -1;
+  const platform = platformOf();
 
   return (
     <div
@@ -238,6 +278,26 @@ export function CommandPalette() {
               )}
             </Section>
           )}
+          {commands.length > 0 && (
+            <Section label="Commands">
+              {commands.map((command, i) => {
+                const Icon = command.icon;
+                return row(
+                  ++index,
+                  <>
+                    <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                      <Icon size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-foreground">
+                      {command.label}
+                    </span>
+                    <Keys keys={keysFor(command.id, platform)} />
+                  </>,
+                  () => activate(commandsAt + i),
+                );
+              })}
+            </Section>
+          )}
           {pages.length > 0 && (
             <Section label="Settings">
               {pages.map((page, i) => {
@@ -253,7 +313,7 @@ export function CommandPalette() {
                       <span className="block truncate text-[11.5px] text-muted-foreground">{page.description}</span>
                     </span>
                   </>,
-                  () => activate(bots.length + rooms.length + i),
+                  () => activate(pagesAt + i),
                 );
               })}
             </Section>
@@ -277,7 +337,7 @@ export function CommandPalette() {
                       </span>
                     </span>
                   </>,
-                  () => activate(bots.length + rooms.length + pages.length + i),
+                  () => activate(hitsAt + i),
                 ),
               )}
             </Section>

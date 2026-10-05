@@ -129,6 +129,7 @@ export function Composer({
   replyTo,
   onClearReply,
   prefill,
+  onEditLast,
 }: {
   bot: Bot;
   /** reply context to send with the next message */
@@ -136,6 +137,9 @@ export function Composer({
   onClearReply?: () => void;
   /** Words to put in the box, such as a message handed back by a rewind. */
   prefill?: { text: string; nonce: number } | null;
+  /** ↑ in the empty box: open your last message for editing. False when
+   * there is none that can be. */
+  onEditLast?: () => boolean;
 }) {
   const { state, dispatch } = useStore();
   const [text, setText] = useState("");
@@ -714,6 +718,24 @@ export function Composer({
             if (slash && e.key === "Escape") {
               e.preventDefault();
               return setSlash(null);
+            }
+            // ↑ in an empty box edits the last thing you said, the way
+            // chat apps do. With anything in the box, a chip included, it
+            // is only the caret moving, and it stays that.
+            if (
+              e.key === "ArrowUp" &&
+              !e.altKey &&
+              !e.metaKey &&
+              !e.ctrlKey &&
+              !e.shiftKey &&
+              !text &&
+              !attachments.length &&
+              e.currentTarget.selectionStart === 0 &&
+              e.currentTarget.selectionEnd === 0 &&
+              onEditLast?.()
+            ) {
+              e.preventDefault();
+              return;
             }
             // Enter sends; Shift+Enter starts a new line. While the agent
             // works, plain Enter queues behind the running turn, and

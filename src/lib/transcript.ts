@@ -1,4 +1,4 @@
-// Two small truths about the end and the beginning of a transcript.
+// Small truths about the end and the beginning of a transcript.
 //
 // The tail: a turn settles across three separate frames (the reply, the
 // completion, the busy flip), and a typing indicator keyed on busy alone
@@ -8,6 +8,9 @@
 // The head: a long thread mounts hundreds of rows the reader has already
 // read. Rendering the last window and offering the rest behind a pill
 // keeps the DOM light without touching what is stored.
+//
+// And the last thing you said: ↑ in an empty composer opens it for
+// editing, the way chat apps have taught everyone to expect.
 import type { Message } from "@/state/reducer";
 
 /** Whether the typing dots are owed. Not busy or already streaming means
@@ -45,4 +48,21 @@ export const EARLIER_AHEAD_PX = 400;
  */
 export function shouldLoadEarlier(o: { top: number; lastTop: number; more: boolean; loading: boolean }): boolean {
   return o.more && !o.loading && o.top < o.lastTop && o.top <= EARLIER_AHEAD_PX;
+}
+
+/**
+ * The message ↑ in an empty composer opens for editing: the newest one
+ * you typed here that still has words to edit. A message taken back has
+ * none left, so the one before it is the last thing you said. What came
+ * in another way (a watcher, an email, a chat app) and what passed
+ * between agents is not yours to rewrite from this box, and is passed
+ * over the same way.
+ */
+export function lastEditable(messages: readonly Message[]): Message | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || m.deleted || m.via || m.agent) continue;
+    if (m.kind === "text" && m.text) return m;
+  }
+  return null;
 }

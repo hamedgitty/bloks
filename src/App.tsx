@@ -24,6 +24,8 @@ import { BriefPanel } from "./components/BriefPanel";
 import { RehearsalsPanel } from "./components/RehearsalsPanel";
 import { ActivityPanel } from "@/components/Activity";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ShortcutKeys } from "@/components/Shortcuts";
+import { Switcher } from "@/components/Switcher";
 import { QuickAsk } from "@/components/QuickAsk";
 
 function Shell() {
@@ -93,6 +95,12 @@ function Shell() {
       {state.briefOpen && <BriefPanel />}
       {state.activityOpen && <ActivityPanel />}
       <CommandPalette />
+      <ShortcutKeys />
+      {/* what is on screen, for Ctrl+Tab to come back to: a room, or one
+          of an agent's conversations */}
+      <Switcher
+        shown={room ? { id: room.id } : bot ? { id: bot.id, lane: bot.activeTaskId ?? bot.threadId } : null}
+      />
     </div>
   );
 }

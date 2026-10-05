@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
+import { appMenuTemplate } from "./app-menu.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
 import os from "node:os";
 
@@ -144,6 +145,30 @@ ipcMain.handle("link:pending", () => {
   const link = pendingLink;
   pendingLink = null;
   return link;
+});
+
+// A choice from the macOS menu bar (electron/app-menu.mjs) that the
+// workspace window carries out, such as Settings. macOS keeps the app
+// running with every window closed, and the menu still works then, so a
+// window is opened for it and asks for the choice once it is listening,
+// the same way a link waits above.
+let pendingMenuCommand = null;
+function menuCommand(command) {
+  const main = BrowserWindow.getAllWindows().find((w) => w !== quickWin && !w.isDestroyed());
+  if (!main || main.webContents.isLoading()) {
+    pendingMenuCommand = command;
+    if (!main) createWindow();
+    return;
+  }
+  if (main.isMinimized()) main.restore();
+  main.show();
+  main.focus();
+  main.webContents.send("menu:command", command);
+}
+ipcMain.handle("menu:pending", () => {
+  const command = pendingMenuCommand;
+  pendingMenuCommand = null;
+  return command;
 });
 
 app.on("second-instance", (_event, argv = []) => {
@@ -971,9 +996,16 @@ app.whenReady().then(async () => {
 
   // The stock File/Edit/View menu says nothing this app needs: it has its
   // own right-click menu for editing, and nothing else in the bar is
-  // reachable from the UI. macOS keeps its menu: the hidden-inset
-  // titlebar and the platform conventions expect one.
-  if (process.platform !== "darwin") Menu.setApplicationMenu(null);
+  // reachable from the UI. macOS keeps a menu: the hidden-inset titlebar
+  // and the platform conventions expect one, and it is the stock one with
+  // Settings added (electron/app-menu.mjs).
+  if (process.platform === "darwin") {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(appMenuTemplate({ name: app.name, packaged: app.isPackaged, command: menuCommand })),
+    );
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 
   // getDisplayMedia in the renderer routed through here keeps the whole
   // capture inside the app's processes, which is the path macOS reliably

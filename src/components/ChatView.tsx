@@ -15,7 +15,7 @@ import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
-import { shouldLoadEarlier, showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { lastEditable, shouldLoadEarlier, showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
@@ -154,10 +154,13 @@ function Bubble({
   highlight = "",
   isHit,
   hideTime,
+  editNow,
 }: {
   message: Message;
   /** The next bubble says the same time, so this one leaves it out. */
   hideTime?: boolean;
+  /** Changes when ↑ in the empty composer asks to edit this message. */
+  editNow?: number;
   fresh?: boolean;
   author: string;
   onReply: (draft: ReplyDraft) => void;
@@ -186,17 +189,27 @@ function Bubble({
   // was opened on one, this is how it closes again: with words to save,
   // or without them to cancel.
   const closeQueued = useRef<((text?: string) => void) | null>(null);
+  // Opened from the keyboard, it hands the keyboard back when it closes,
+  // so the next thing typed lands in the composer again.
+  const returnTo = useRef<HTMLElement | null>(null);
   const startEditing = () => {
     if (editing !== null) return;
     setEditing(message.text ?? "");
     if (message.queued && onEditQueued) closeQueued.current = onEditQueued(message.id);
   };
+  useEffect(() => {
+    if (!editNow) return;
+    returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    startEditing();
+  }, [editNow]); // eslint-disable-line react-hooks/exhaustive-deps
   const stopEditing = (text?: string) => {
     const close = closeQueued.current;
     closeQueued.current = null;
     if (close) close(text);
     else if (text) onEdit?.(message.id, text);
     setEditing(null);
+    returnTo.current?.focus();
+    returnTo.current = null;
   };
   // a bubble that goes mid-edit, to another conversation or because the
   // message was taken back, lets go of what it held
@@ -687,6 +700,22 @@ export function ChatView({ bot }: { bot: Bot }) {
   // A rewind hands your message back to the composer, to send again or
   // change first. The nonce makes the same words land twice in a row.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
+  // ↑ in the empty composer opens your last message for editing in its
+  // bubble, the same edit as the bubble's own Edit button. The bubble
+  // watches the nonce, so every press is heard.
+  const [editAsk, setEditAsk] = useState<{ id: string; nonce: number } | null>(null);
+  const editLast = () => {
+    const mine = lastEditable(bot.messages);
+    if (!mine) return false;
+    setEditAsk({ id: mine.id, nonce: Date.now() });
+    return true;
+  };
+  // Asked once. The bubble has opened by the time this runs (a child's
+  // effects run first), and one drawn again later, after a trip to
+  // another agent, must not open itself a second time.
+  useEffect(() => {
+    if (editAsk) setEditAsk(null);
+  }, [editAsk]);
   const rewindTo = (threadId: string, messageId: string) => {
     api(`/api/threads/${threadId}/rewind`, { method: "POST", body: JSON.stringify({ messageId }) })
       .then((r) => setPrefill({ text: r.text ?? "", nonce: Date.now() }))
@@ -1090,6 +1119,7 @@ export function ChatView({ bot }: { bot: Bot }) {
                     onResend={(text) => dispatch({ type: "send", botId: bot.id, text })}
                     highlight={finding ? query : ""}
                     isHit={absolute === currentHit}
+                    editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
                     nameOf={(id) => (id === "user" ? "You" : (state.bots.find((b) => b.id === id)?.name ?? bot.name))}
                   />
                   </div>
@@ -1179,7 +1209,13 @@ export function ChatView({ bot }: { bot: Bot }) {
       )}
       <OtherLaneWaiting bot={bot} />
       <EngineBanner bot={bot} />
-      <Composer bot={bot} replyTo={replyTo} onClearReply={() => setReplyTo(null)} prefill={prefill} />
+      <Composer
+        bot={bot}
+        replyTo={replyTo}
+        onClearReply={() => setReplyTo(null)}
+        prefill={prefill}
+        onEditLast={editLast}
+      />
       {exchange && (
         <AgentExchangeDialog
           botId={bot.id}

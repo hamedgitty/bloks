@@ -356,6 +356,10 @@ function BotListItem({
     // the avatar the way the phone app does it
     return (
       <button
+        // what ⌥↑ and ⌥↓ step through (Shortcuts.tsx): which row this
+        // is, and whether it is unread or waiting on you
+        data-sidebar-row={bot.id}
+        data-sidebar-waiting={Boolean(bot.unread || bot.tasks?.some((t) => t.state === "needs-you"))}
         onClick={() => dispatch({ type: "select", id: bot.id })}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -381,7 +385,11 @@ function BotListItem({
     const timestamp = general ? (general.lastAt ?? general.createdAt) : 0;
 
     return (
-      <div className="group/agent relative">
+      <div
+        className="group/agent relative"
+        data-sidebar-row={bot.id}
+        data-sidebar-waiting={Boolean(bot.unread || bot.tasks?.some((t) => t.state === "needs-you"))}
+      >
         <button
           onClick={() => dispatch({ type: "select", id: bot.id, lane: general?.id })}
           onContextMenu={(e) => {
@@ -438,6 +446,8 @@ function BotListItem({
   }
   return (
     <button
+      data-sidebar-row={bot.id}
+      data-sidebar-waiting={Boolean(bot.unread || bot.tasks?.some((t) => t.state === "needs-you"))}
       onClick={() => dispatch({ type: "select", id: bot.id })}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -505,6 +515,7 @@ function RoomListItem({
   if (rail) {
     return (
       <button
+        data-sidebar-row={blok.id}
         onClick={() => dispatch({ type: "select", id: blok.id })}
         title={blok.name}
         className={cn(
@@ -524,6 +535,7 @@ function RoomListItem({
   }
   return (
     <button
+      data-sidebar-row={blok.id}
       onClick={() => dispatch({ type: "select", id: blok.id })}
       onContextMenu={(e) => {
         if (!onFile) return;

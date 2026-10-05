@@ -479,6 +479,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return bridge.onLink(open);
   }, []);
 
+  // The macOS menu bar's own items (electron/app-menu.mjs): Settings…,
+  // and Keyboard Shortcuts under Help. One chosen while no window was
+  // open is waiting for this one.
+  useEffect(() => {
+    const bridge = window.bloks;
+    if (!bridge?.onMenuCommand) return;
+    const run = (command: string | null) => {
+      if (command === "settings") rawDispatch({ type: "toggleAppSettings", open: true });
+      if (command === "shortcuts") rawDispatch({ type: "toggleShortcuts", open: true });
+    };
+    void bridge.pendingMenuCommand?.().then(run).catch(() => {});
+    return bridge.onMenuCommand(run);
+  }, []);
+
   // Clicking a banner opens what it was about.
   useEffect(() => {
     const bridge = window.bloks;
