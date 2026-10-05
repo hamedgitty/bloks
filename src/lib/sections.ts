@@ -47,6 +47,24 @@ export function moveSection(
   return [...without.slice(0, at), dragged, ...without.slice(at)];
 }
 
+/** What a heading carries while it is dragged to reorder the sections. */
+export const SECTION_TYPE = "application/x-bloks-section";
+
+/** What an agent or room row carries while it is dragged to be filed.
+ * A type of its own, so a row passing over a heading is never taken for
+ * a heading being reordered, and a heading passing over rows is never
+ * taken for a filing. */
+export const ROW_TYPE = "application/x-bloks-row";
+
+/** Whether a drag over a section, or over the unfiled list when `into`
+ * is null, is one that section should take. It has to be a row (not a
+ * heading, not a file from the Finder), and it has to be going somewhere
+ * new: letting a row go over the section it already stands in is not a
+ * move, so the section does not light up for it. */
+export function acceptsRow(types: readonly string[], from: string | null, into: string | null): boolean {
+  return types.includes(ROW_TYPE) && from !== into;
+}
+
 /** One section's slice of a list, in the list's own order. */
 export function inSection<T extends Filed>(rows: T[], name: string | null): T[] {
   return rows.filter((row) => (row.section ?? null) === name);

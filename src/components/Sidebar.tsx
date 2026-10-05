@@ -25,14 +25,23 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
-import { api, useStore, formatWhen, type Blok, type Bot } from "@/state/store";
+import { api, useStore, formatWhen, type Action, type Blok, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/pageVisible";
 import { previewLine } from "@/lib/preview";
-import { inSection, moveSection, orderSections, sectionNames, shownInSection } from "@/lib/sections";
+import {
+  acceptsRow,
+  inSection,
+  moveSection,
+  orderSections,
+  ROW_TYPE,
+  SECTION_TYPE,
+  sectionNames,
+  shownInSection,
+} from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
 import { useBriefs } from "./BriefPanel";
 import { ConversationRows, LaneRing, SidebarFooter, WaitingRow } from "./SidebarParts";
@@ -75,6 +84,37 @@ interface FilingState {
   current: string | null;
 }
 
+/** Files a row under a section, or takes it out of one with null. The
+ * picker and a drop both end here, so the two ways of filing can never
+ * come to mean different things. */
+function fileUnder(dispatch: React.Dispatch<Action>, row: FilingState, section: string | null) {
+  if (row.kind === "bot") {
+    dispatch({ type: "updateBot", botId: row.id, patch: { section } });
+  } else {
+    dispatch({ type: "patchRoom", blokId: row.id, patch: { section } });
+  }
+}
+
+/** What lets a row be dragged into another section. The browser holds
+ * off until the pointer has travelled a few pixels, so a click that does
+ * not move is still a click and opens the row as it always has. */
+function rowDrag(row: FilingState, onDrag?: (row: FilingState | null) => void) {
+  if (!onDrag) return {};
+  return {
+    draggable: true,
+    onDragStart: (e: React.DragEvent<HTMLElement>) => {
+      e.dataTransfer.setData(ROW_TYPE, row.id);
+      e.dataTransfer.effectAllowed = "move";
+      onDrag(row);
+      // Heard on the row itself rather than through React: a drop that
+      // files the row redraws it in another part of the list, and the
+      // old row, which is the one the drag ends on, is out of the page
+      // by then and passes nothing up.
+      e.currentTarget.addEventListener("dragend", () => onDrag(null), { once: true });
+    },
+  };
+}
+
 /**
  * The filing dialog: existing sections as one-click destinations, a
  * field for a new name, and a way back out. Sections come from what is
@@ -103,11 +143,7 @@ function SectionPicker({ filing, onClose }: { filing: FilingState; onClose: () =
   );
 
   const fileTo = (section: string | null) => {
-    if (filing.kind === "bot") {
-      dispatch({ type: "updateBot", botId: filing.id, patch: { section } });
-    } else {
-      dispatch({ type: "patchRoom", blokId: filing.id, patch: { section } });
-    }
+    fileUnder(dispatch, filing, section);
     onClose();
   };
 
@@ -298,11 +334,14 @@ function BotContextMenu({
 function BotListItem({
   bot,
   onMenu,
+  onDrag,
   rail,
   compact,
 }: {
   bot: Bot;
   onMenu: (menu: MenuState) => void;
+  /** Given where there are sections to drag the row into. */
+  onDrag?: (row: FilingState | null) => void;
   rail?: boolean;
   /** The conversations view: one line per agent, with its other
    * conversations listed underneath instead of one conversation's preview. */
@@ -311,6 +350,7 @@ function BotListItem({
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
   const last = bot.messages[bot.messages.length - 1];
+  const drag = rowDrag({ kind: "bot", id: bot.id, name: bot.name, current: bot.section ?? null }, onDrag);
   if (rail) {
     // the collapsed sidebar: just the face, with the unread dot riding
     // the avatar the way the phone app does it
@@ -348,15 +388,18 @@ function BotListItem({
             e.preventDefault();
             onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
           }}
+          {...drag}
           className={cn(
             "flex h-[38px] w-full items-center gap-2.5 rounded-xl px-2.5 text-left transition-[background-color,scale] duration-150 ease-out active:scale-[0.99]",
             generalOpen ? "bg-accent" : "hover:bg-accent/60",
           )}
         >
           <AgentAvatar bot={bot} size={24} />
+          {/* the pin trails the name, so pinned names start where the
+              rest do and the column of names stays one straight edge */}
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13.5px] font-semibold text-foreground">
-            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" />}
             <span className="truncate">{bot.name}</span>
+            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" aria-label="pinned" />}
           </span>
           {/* the trailing state steps aside for the + on hover, all of it,
               so the two never sit on top of each other */}
@@ -400,6 +443,7 @@ function BotListItem({
         e.preventDefault();
         onMenu({ botId: bot.id, x: e.clientX, y: e.clientY });
       }}
+      {...drag}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-[background-color,transform] duration-150 active:scale-[0.99]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -409,8 +453,8 @@ function BotListItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5 truncate text-[14px] font-semibold text-foreground">
-            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" />}
             <span className="truncate">{bot.name}</span>
+            {bot.pinned && <Pin size={11} className="shrink-0 text-muted-foreground" aria-label="pinned" />}
           </span>
           {last && (
             <span className="shrink-0 text-[11.5px] tabular-nums text-muted-foreground">
@@ -442,10 +486,13 @@ function RoomListItem({
   blok,
   rail,
   onFile,
+  onDrag,
 }: {
   blok: Blok;
   rail?: boolean;
   onFile?: (filing: FilingState) => void;
+  /** Given where there are sections to drag the row into. */
+  onDrag?: (row: FilingState | null) => void;
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === blok.id;
@@ -483,6 +530,7 @@ function RoomListItem({
         e.preventDefault();
         onFile({ kind: "room", id: blok.id, name: blok.name, current: blok.section ?? null });
       }}
+      {...rowDrag({ kind: "room", id: blok.id, name: blok.name, current: blok.section ?? null }, onDrag)}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-[background-color,transform] duration-150 active:scale-[0.99]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -659,6 +707,52 @@ export function Sidebar() {
   // which heading a dragged section would land against, and on which side
   const [sectionDrop, setSectionDrop] = useState<{ name: string; place: "before" | "after" } | null>(null);
 
+  // Filing by drag, which files exactly as Move to section does. Three
+  // pieces: the row in hand, read by each section as it passes over; the
+  // same row for drawing, which catches up a moment later (see below);
+  // and the section it would land in if let go now, null for the
+  // unfiled list at the top.
+  const draggedRow = useRef<FilingState | null>(null);
+  const [dragging, setDragging] = useState<FilingState | null>(null);
+  const [rowDrop, setRowDrop] = useState<{ section: string | null } | null>(null);
+  const onRowDrag = (row: FilingState | null) => {
+    draggedRow.current = row;
+    if (row) {
+      // Redrawing the list inside dragstart can make the browser give up
+      // on the drag, and would shift the row before its picture is
+      // taken, so the list only hears about it once the drag is under way.
+      setTimeout(() => setDragging(draggedRow.current));
+    } else {
+      setDragging(null);
+      setRowDrop(null);
+    }
+  };
+  // Each section, and the unfiled list, answers only to a row on its way
+  // somewhere new. A heading being dragged passes over them untouched,
+  // and a row over the section it is already in finds nowhere to land.
+  const fileZone = (section: string | null) => ({
+    onDragOver: (e: React.DragEvent<HTMLElement>) => {
+      const row = draggedRow.current;
+      if (!row || !acceptsRow(e.dataTransfer.types, row.current, section)) return;
+      e.preventDefault();
+      setRowDrop((d) => (d?.section === section ? d : { section }));
+    },
+    onDragLeave: (e: React.DragEvent<HTMLElement>) => {
+      // Crossing from one row to the next fires a leave as well; the
+      // pointer has only left once it is outside the whole box.
+      const box = e.currentTarget.getBoundingClientRect();
+      if (e.clientX > box.left && e.clientX < box.right && e.clientY > box.top && e.clientY < box.bottom) return;
+      setRowDrop((d) => (d?.section === section ? null : d));
+    },
+    onDrop: (e: React.DragEvent<HTMLElement>) => {
+      const row = draggedRow.current;
+      if (!row || !acceptsRow(e.dataTransfer.types, row.current, section)) return;
+      e.preventDefault();
+      onRowDrag(null);
+      fileUnder(dispatch, row, section);
+    },
+  });
+
   // ⌘N for a new agent. ⌘K is the command palette's (CommandPalette.tsx),
   // which searches everything this box does and more; both answering it
   // meant two things grabbing focus at once.
@@ -829,6 +923,16 @@ export function Sidebar() {
     );
   }
 
+  const unfiledRooms = rail ? state.bloks : inSection(state.bloks, null);
+  const unfiledBots = rail ? visibleBots : inSection(visibleBots, null);
+  // Rows drag only where there are headings to drag them under: never on
+  // the rail, and not before the first section has been named.
+  const fileDrag = !rail && sectionNames(visibleBots, state.bloks).length ? onRowDrag : undefined;
+  // The unfiled list is the way out of a section. With everything on
+  // show filed it has no rows to let go over, so while a filed row is in
+  // hand it opens a place for one.
+  const unfiling = !unfiledRooms.length && !unfiledBots.length ? (dragging?.current ?? null) : null;
+
   return (
     <aside
       className={cn(
@@ -963,53 +1067,73 @@ export function Sidebar() {
           named. The rail has no room for headings and stays flat. */}
       <div className="flex-1 overflow-y-auto px-2 pt-1">
         <div className={cn("flex flex-col", rail ? "gap-1" : "gap-px")}>
-          {(rail ? state.bloks : inSection(state.bloks, null)).length > 0 && (
-            <>
-              {!rail && (
-                <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                  Rooms
-                  <button
-                    onClick={() => dispatch({ type: "toggleNewRoom", open: true })}
-                    className="rounded p-0.5 transition-colors hover:text-foreground"
-                    title="New room"
-                  >
-                    <Plus size={12} />
-                  </button>
-                </div>
+          {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling) && (
+            <div
+              {...fileZone(null)}
+              className={cn(
+                "flex flex-col rounded-xl transition-colors duration-150",
+                rail ? "gap-1" : "gap-px",
+                rowDrop?.section === null && "bg-brand-soft",
               )}
-              {(rail ? state.bloks : inSection(state.bloks, null)).map((b) => (
-                <RoomListItem key={b.id} blok={b} rail={rail} onFile={setFiling} />
+            >
+              {unfiledRooms.length > 0 && (
+                <>
+                  {!rail && (
+                    <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                      Rooms
+                      <button
+                        onClick={() => dispatch({ type: "toggleNewRoom", open: true })}
+                        className="rounded p-0.5 transition-colors hover:text-foreground"
+                        title="New room"
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                  )}
+                  {unfiledRooms.map((b) => (
+                    <RoomListItem key={b.id} blok={b} rail={rail} onFile={setFiling} onDrag={fileDrag} />
+                  ))}
+                  {rail ? (
+                    <div className="mx-3 my-1 border-t" />
+                  ) : (
+                    <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                      Agents
+                      <button
+                        onClick={() => setConversations(!conversations)}
+                        aria-pressed={conversations}
+                        className={cn(
+                          "rounded p-0.5 transition-colors hover:text-foreground",
+                          conversations && "text-foreground",
+                        )}
+                        title={conversations ? "Hide conversations" : "Show each agent's conversations"}
+                      >
+                        <ListTree size={12} />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+              {unfiledBots.map((b) => (
+                <div key={b.id} className="flex flex-col">
+                  <BotListItem bot={b} onMenu={setMenu} onDrag={fileDrag} rail={rail} compact={conversations} />
+                  {!rail && <ConversationRows bot={b} open={conversations} />}
+                </div>
               ))}
-              {rail ? (
-                <div className="mx-3 my-1 border-t" />
-              ) : (
-                <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                  Agents
-                  <button
-                    onClick={() => setConversations(!conversations)}
-                    aria-pressed={conversations}
-                    className={cn(
-                      "rounded p-0.5 transition-colors hover:text-foreground",
-                      conversations && "text-foreground",
-                    )}
-                    title={conversations ? "Hide conversations" : "Show each agent's conversations"}
-                  >
-                    <ListTree size={12} />
-                  </button>
+              {unfiling && (
+                <div
+                  className={cn(
+                    "rounded-xl border border-dashed px-2.5 py-2 text-center text-[12px] text-muted-foreground transition-colors duration-150",
+                    rowDrop?.section === null && "border-brand/40 text-foreground",
+                  )}
+                >
+                  Remove from {unfiling}
                 </div>
               )}
-            </>
-          )}
-          {(rail ? visibleBots : inSection(visibleBots, null)).map((b) => (
-            <div key={b.id} className="flex flex-col">
-              <BotListItem bot={b} onMenu={setMenu} rail={rail} compact={conversations} />
-              {!rail && <ConversationRows bot={b} open={conversations} />}
             </div>
-          ))}
+          )}
           {!rail &&
             (() => {
               const shownSections = orderSections(sectionNames(visibleBots, state.bloks), sectionOrder);
-              const SECTION_TYPE = "application/x-bloks-section";
               return shownSections.map((name, index) => {
               const rooms = inSection(state.bloks, name);
               const bots = inSection(visibleBots, name);
@@ -1020,7 +1144,16 @@ export function Sidebar() {
               const waiting = isFolded && !searching && bots.some((b) => b.unread);
               const hint = sectionDrop?.name === name ? sectionDrop.place : null;
               return (
-                <div key={name} className="relative flex flex-col gap-px">
+                <div
+                  key={name}
+                  // the whole section takes a row, heading and rows alike,
+                  // so a folded one still does and stays folded after
+                  {...fileZone(name)}
+                  className={cn(
+                    "relative flex flex-col gap-px rounded-xl transition-colors duration-150",
+                    rowDrop?.section === name && "bg-brand-soft",
+                  )}
+                >
                   {hint && (
                     <span
                       className={cn(
@@ -1076,11 +1209,11 @@ export function Sidebar() {
                     />
                   </button>
                   {shownInSection(rooms, isFolded, state.selectedId, searching).map((b) => (
-                    <RoomListItem key={b.id} blok={b} onFile={setFiling} />
+                    <RoomListItem key={b.id} blok={b} onFile={setFiling} onDrag={fileDrag} />
                   ))}
                   {shownInSection(bots, isFolded, state.selectedId, searching).map((b) => (
                     <div key={b.id} className="flex flex-col">
-                      <BotListItem bot={b} onMenu={setMenu} compact={conversations} />
+                      <BotListItem bot={b} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
                       <ConversationRows bot={b} open={conversations && !isFolded} />
                     </div>
                   ))}

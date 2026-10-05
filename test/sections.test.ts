@@ -2,7 +2,16 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { inSection, moveSection, orderSections, sectionNames, shownInSection } from "../src/lib/sections.ts";
+import {
+  acceptsRow,
+  inSection,
+  moveSection,
+  orderSections,
+  ROW_TYPE,
+  SECTION_TYPE,
+  sectionNames,
+  shownInSection,
+} from "../src/lib/sections.ts";
 
 describe("sectionNames", () => {
   test("names come from both lists, once each, alphabetically", () => {
@@ -81,5 +90,30 @@ describe("ordering sections", () => {
     assert.deepEqual(moveSection(names, "Travel", "Admin", "before"), ["Travel", "Admin", "Clients", "Ops"]);
     assert.deepEqual(moveSection(names, "Admin", "Ops", "after"), ["Clients", "Ops", "Admin", "Travel"]);
     assert.deepEqual(moveSection(names, "Ops", "Ops", "before"), names, "dropping on itself changes nothing");
+  });
+});
+
+describe("filing a row by dragging it", () => {
+  const row = [ROW_TYPE];
+
+  test("a row is taken by another section, or by the unfiled list", () => {
+    assert.equal(acceptsRow(row, "Clients", "Ops"), true);
+    assert.equal(acceptsRow(row, null, "Ops"), true, "an unfiled row goes into a section");
+    assert.equal(acceptsRow(row, "Clients", null), true, "a filed row comes out of its section");
+  });
+
+  test("letting it go where it already is changes nothing", () => {
+    assert.equal(acceptsRow(row, "Clients", "Clients"), false);
+    assert.equal(acceptsRow(row, null, null), false);
+  });
+
+  test("a heading being reordered is never taken for a row", () => {
+    assert.notEqual(ROW_TYPE, SECTION_TYPE);
+    assert.equal(acceptsRow([SECTION_TYPE], "Clients", "Ops"), false);
+  });
+
+  test("neither is anything dragged in from outside", () => {
+    assert.equal(acceptsRow(["Files"], "Clients", "Ops"), false);
+    assert.equal(acceptsRow([], null, "Ops"), false);
   });
 });

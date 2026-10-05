@@ -462,11 +462,15 @@ export function AgentAvatar({
   className?: string;
 }) {
   if (bot.avatarAt) {
+    // Not draggable by itself: a face belongs to the row it sits in, and
+    // a photo the browser lifted on its own would be dragged in place of
+    // that row (and offered to the composer as a file to attach).
     return (
       <img
         src={`/api/bots/${bot.id}/avatar?v=${bot.avatarAt}`}
         width={size}
         height={size}
+        draggable={false}
         alt=""
         className={cn("shrink-0 rounded-full object-cover", className)}
         style={{ width: size, height: size }}
