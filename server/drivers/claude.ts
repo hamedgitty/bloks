@@ -28,6 +28,16 @@ import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broke
 
 /** The answerable options of an ask, wherever the tool put them: a flat
  * choices list, or AskUserQuestion's nested option objects. */
+/** Claude Code's own file tools, and the file each one writes. A command
+ * that writes a file says nothing about it, which is the honest gap. */
+const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+function editedPaths(name: unknown, input: any): string[] {
+  if (typeof name !== "string" || !FILE_TOOLS.has(name)) return [];
+  const path = input?.file_path ?? input?.notebook_path;
+  return typeof path === "string" && path ? [path] : [];
+}
+
 function askChoices(input: any): string[] | undefined {
   if (Array.isArray(input?.choices)) return (input.choices as string[]).slice(0, 5);
   const options = input?.questions?.[0]?.options;
@@ -563,12 +573,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               if (typeof block.id === "string") {
                 openCalls.set(block.id, { name: String(block.name ?? "A tool call"), input: block.input, since: Date.now() });
               }
+              const paths = editedPaths(block.name, block.input);
               emit({
                 ...envelope(threadId, turnId),
                 type: "item.started",
                 itemType: "tool",
                 itemId: block.id,
                 title: block.name,
+                ...(paths.length ? { paths } : {}),
               });
             }
             if (message.usage) {

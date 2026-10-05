@@ -5,6 +5,11 @@
 // file opens into its diff. Undo puts every file back as it was before
 // the turn, except the ones that changed again since, which it names
 // rather than overwrites.
+//
+// A turn that ran beside another agent in the same folder cannot be sure
+// which writes were its own, so the server marks the files its engine did
+// not say it edited (GitHub 153). They are listed apart, under who else
+// was working there, and Undo leaves them alone.
 import { useEffect, useState } from "react";
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import FileDiff from "lucide-react/dist/esm/icons/file-diff.mjs";
@@ -14,7 +19,7 @@ import FilePen from "lucide-react/dist/esm/icons/file-pen.mjs";
 import FilePlus from "lucide-react/dist/esm/icons/file-plus.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Undo2 from "lucide-react/dist/esm/icons/undo-2.mjs";
-import { api, type Message } from "@/state/store";
+import { api, useStore, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { changedLine } from "@/lib/preview";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -33,9 +38,17 @@ interface FileDiffBody {
 }
 
 const ICON = { added: FilePlus, modified: FilePen, deleted: FileMinus } as const;
+
+/** "Ada", "Ada and Linus", "Ada, Linus and 2 others". */
+function namesOf(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "another agent";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} other${names.length === 3 ? "" : "s"}`;
+}
 const VERB = { added: "Added", modified: "Changed", deleted: "Deleted" } as const;
 
 export function ChangesCard({ message, fresh }: { message: Message; fresh?: boolean }) {
+  const { state } = useStore();
   const changes = message.changes;
   const [open, setOpen] = useState<Change | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -44,8 +57,15 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
   const [skipped, setSkipped] = useState<Array<{ path: string; why: string }>>([]);
   if (!changes) return null;
 
-  const added = changes.files.reduce((n, f) => n + (f.added ?? 0), 0);
-  const removed = changes.files.reduce((n, f) => n + (f.removed ?? 0), 0);
+  const ownFiles = changes.files.filter((f) => !f.shared);
+  const sharedFiles = changes.files.filter((f) => f.shared);
+  const sharedTotal = changes.shared?.total ?? 0;
+  const ownTotal = changes.total - sharedTotal;
+  const alongside = namesOf([
+    ...new Set((changes.shared?.alongside ?? []).map((id) => state.bots.find((b) => b.id === id)?.name ?? "another agent")),
+  ]);
+  const added = ownFiles.reduce((n, f) => n + (f.added ?? 0), 0);
+  const removed = ownFiles.reduce((n, f) => n + (f.removed ?? 0), 0);
   const undone = changes.reverted;
   const rehearsal = changes.rehearsal?.state;
   const pending = rehearsal === "pending";
@@ -84,7 +104,11 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
               <FileDiff size={15} className="shrink-0 text-muted-foreground" />
             )}
             <span className="truncate text-[13.5px] font-semibold text-foreground">
-              {pending || discarded ? `Would change ${changes.total} file${changes.total === 1 ? "" : "s"}` : changedLine(changes.total)}
+              {pending || discarded
+                ? `Would change ${changes.total} file${changes.total === 1 ? "" : "s"}`
+                : ownTotal > 0
+                  ? changedLine(ownTotal)
+                  : changedLine(0, sharedTotal)}
             </span>
             {(added > 0 || removed > 0) && (
               <span className="shrink-0 font-mono text-[11.5px]">
@@ -118,7 +142,7 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
             <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground">
               Undone
             </span>
-          ) : confirming ? (
+          ) : ownTotal === 0 ? null : confirming ? (
             <div className="flex shrink-0 items-center gap-1.5">
               <button
                 onClick={() => setConfirming(false)}
@@ -157,44 +181,21 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
         )}
         {confirming && !undone && (
           <p className="mt-2 text-[12px] text-muted-foreground">
-            Every file below goes back to how it was before this turn. Anything changed again since is left alone.
+            {sharedTotal > 0
+              ? "This turn's files go back to how they were before it. Anything changed again since, and the files changed while others were working here, are left alone."
+              : "Every file below goes back to how it was before this turn. Anything changed again since is left alone."}
           </p>
         )}
-        <ul className="mt-2 flex flex-col">
-          {changes.files.map((file) => {
-            const Icon = ICON[file.status];
-            return (
-              <li key={file.path}>
-                <button
-                  onClick={() => setOpen(file)}
-                  className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-accent"
-                  title={`${VERB[file.status]} ${file.path}`}
-                >
-                  <Icon
-                    size={13}
-                    className={cn(
-                      "shrink-0",
-                      file.status === "added" && "text-success",
-                      file.status === "deleted" && "text-destructive",
-                      file.status === "modified" && "text-muted-foreground",
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{file.path}</span>
-                  {file.big ? (
-                    <span className="shrink-0 text-[11px] text-muted-foreground">large file</span>
-                  ) : (
-                    (file.added !== undefined || file.removed !== undefined) && (
-                      <span className="shrink-0 font-mono text-[11px]">
-                        <span className="text-success">+{file.added ?? 0}</span>{" "}
-                        <span className="text-destructive">-{file.removed ?? 0}</span>
-                      </span>
-                    )
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        {ownFiles.length > 0 && <FileList files={ownFiles} onOpen={setOpen} />}
+        {sharedFiles.length > 0 && (
+          <>
+            <div className={cn("px-1.5 text-[11.5px] text-muted-foreground", ownFiles.length > 0 ? "mt-2.5" : "mt-2")}>
+              Changed while {alongside} {alongside.includes(" and ") ? "were" : "was"} working here. They may not be this
+              turn's, so Undo leaves them alone.
+            </div>
+            <FileList files={sharedFiles} onOpen={setOpen} muted />
+          </>
+        )}
         {changes.total > changes.files.length && (
           <div className="mt-1 px-1.5 text-[11.5px] text-muted-foreground">
             and {changes.total - changes.files.length} more
@@ -203,7 +204,7 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
         {undone && (
           <div className="mt-2 px-1.5 text-[11.5px] text-muted-foreground">
             Put back {undone.restored} file{undone.restored === 1 ? "" : "s"}
-            {undone.skipped > 0 && `, left ${undone.skipped} that changed since`}.
+            {undone.skipped - sharedTotal > 0 && `, left ${undone.skipped - sharedTotal} that changed since`}.
           </div>
         )}
         {skipped.length > 0 && (
@@ -219,6 +220,48 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
       </div>
       {open && <DiffDialog checkpointId={changes.checkpointId} file={open} onClose={() => setOpen(null)} />}
     </div>
+  );
+}
+
+/** One group of files on the card. A muted one is the files changed
+ * while others were working here: there, and openable, but quieter. */
+function FileList({ files, onOpen, muted }: { files: Change[]; onOpen: (file: Change) => void; muted?: boolean }) {
+  return (
+    <ul className={cn("flex flex-col", muted ? "mt-1 opacity-75" : "mt-2")}>
+      {files.map((file) => {
+        const Icon = ICON[file.status];
+        return (
+          <li key={file.path}>
+            <button
+              onClick={() => onOpen(file)}
+              className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-accent"
+              title={`${VERB[file.status]} ${file.path}`}
+            >
+              <Icon
+                size={13}
+                className={cn(
+                  "shrink-0",
+                  file.status === "added" && "text-success",
+                  file.status === "deleted" && "text-destructive",
+                  file.status === "modified" && "text-muted-foreground",
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{file.path}</span>
+              {file.big ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">large file</span>
+              ) : (
+                (file.added !== undefined || file.removed !== undefined) && (
+                  <span className="shrink-0 font-mono text-[11px]">
+                    <span className="text-success">+{file.added ?? 0}</span>{" "}
+                    <span className="text-destructive">-{file.removed ?? 0}</span>
+                  </span>
+                )
+              )}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

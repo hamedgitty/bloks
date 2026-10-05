@@ -19,6 +19,16 @@
 // it since, it is left alone and named, because quietly throwing away
 // work done after the fact is the one thing an undo must never do.
 //
+// A folder can be shared, by several agents or by two conversations of
+// one, and a turn that ran beside another one there cannot tell from two
+// photographs whose writes were whose (GitHub 153). So a turn knows which
+// other turns overlapped it in the same folder, or one inside the other,
+// and keeps as its own only the files its engine said it edited. The rest
+// are on its card apart, as changed while others were working here, and
+// Undo leaves them alone: undoing another agent's work is the same harm
+// as undoing a later turn's. A turn that ran alone claims everything, as
+// it always did.
+//
 // Limits, all of them deliberate: folders too big to photograph in a
 // moment are not tracked (the card says so rather than pretending), files
 // over MAX_FILE are noted as changed but not kept, and a handful of
@@ -47,7 +57,7 @@ import {
 } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realpathSync } from "node:fs";
 
 import { newId } from "./contracts.ts";
@@ -100,6 +110,10 @@ export interface FileChange {
   after?: string;
   /** Too big to keep, so shown but not undoable. */
   big?: boolean;
+  /** Changed while another turn was working in the folder, and not a file
+   * this turn's engine said it edited: possibly the other turn's, so it is
+   * shown apart and Undo leaves it alone. */
+  shared?: boolean;
   /** For a big file, its size and time before the turn, which is all a
    * rehearsal's Apply has to tell whether it was changed since. */
   beforeStat?: { size: number; mtimeMs: number };
@@ -117,6 +131,8 @@ export interface CheckpointRecord {
   revertedAt?: number;
   /** Where its card sits, so an undo can update it. */
   card?: { threadId: string; messageId: string };
+  /** The agents whose turns overlapped this one in the folder. */
+  alongside?: string[];
   /** A rehearsal: the changes are in a clone, not yet in `dir`. They
    * reach `dir` only through apply, and only then can they be undone. */
   rehearsal?: { copy: string };
@@ -127,7 +143,10 @@ export interface CheckpointRecord {
 /** What goes on the card: small, and nothing the diff call cannot fetch. */
 export interface ChangesSummary {
   checkpointId: string;
-  files: Array<Pick<FileChange, "path" | "status" | "big" | "added" | "removed">>;
+  /** This turn's own first, then any changed while others worked here. */
+  files: Array<Pick<FileChange, "path" | "status" | "big" | "added" | "removed" | "shared">>;
+  /** Files changed while other agents were working here, and who they were. */
+  shared?: { total: number; alongside: string[] };
   /** How many files changed in all, when more than the card lists. */
   total: number;
   reverted?: { at: number; restored: number; skipped: number };
@@ -152,6 +171,14 @@ export interface FileDiff {
 export interface RevertResult {
   restored: string[];
   skipped: Array<{ path: string; why: string }>;
+}
+
+/** Two folders where a write in one can land in the other: the same
+ * folder, or one inside the other. */
+export function overlapping(a: string, b: string): boolean {
+  const x = resolve(a);
+  const y = resolve(b);
+  return x === y || x.startsWith(y + sep) || y.startsWith(x + sep);
 }
 
 /** A folder worth photographing: never a home directory or anything above
@@ -318,6 +345,12 @@ export class Checkpoints {
   private pending = new Map<string, { botId: string; dir: string; photo: Photo; ignore: string[]; afterDir?: string }>();
   /** One photograph of a folder at a time, so two lanes do not race. */
   private queues = new Map<string, Promise<unknown>>();
+  /** Every turn working in a folder right now, from the moment it starts
+   * being photographed, and the other turns that overlapped it there. */
+  private active = new Map<string, { botId: string; dir: string; real: string; alongside: Map<string, string> }>();
+  /** The files each running turn's engine said it edited, relative to the
+   * turn's folder. */
+  private edited = new Map<string, Set<string>>();
 
   constructor(root: string) {
     this.root = root;
@@ -344,7 +377,12 @@ export class Checkpoints {
     afterDir?: string,
   ): Promise<boolean> {
     this.pending.delete(threadId);
+    this.active.delete(threadId);
+    this.edited.delete(threadId);
     if (!trackable(dir)) return false;
+    // A rehearsal writes into its own copy, so it neither touches the
+    // folder nor sees what others write there.
+    if (!afterDir) this.arrive(threadId, botId, dir);
     const photo = await this.serial(dir, () => this.photograph(dir, ignore));
     if (photo) this.pending.set(threadId, { botId, dir, photo, ignore, ...(afterDir ? { afterDir } : {}) });
     return Boolean(photo);
@@ -355,13 +393,21 @@ export class Checkpoints {
   async finish(threadId: string): Promise<CheckpointRecord | null> {
     const before = this.pending.get(threadId);
     this.pending.delete(threadId);
+    const turn = this.active.get(threadId);
+    this.active.delete(threadId);
+    const edited = this.edited.get(threadId) ?? new Set<string>();
+    this.edited.delete(threadId);
     if (!before) return null;
     const where = before.afterDir ?? before.dir;
     const after = await this.serial(where, () => this.photograph(where, before.ignore, before.afterDir ? before.photo : undefined));
     if (before.afterDir) this.forgetPhoto(before.afterDir);
     if (!after) return null;
-    const files = this.compare(before.photo, after);
-    if (files.length === 0) return null;
+    const compared = this.compare(before.photo, after);
+    if (compared.length === 0) return null;
+    const alongside = turn ? [...new Set(turn.alongside.values())] : [];
+    if (alongside.length) for (const change of compared) if (!edited.has(change.path)) change.shared = true;
+    // this turn's own first, so the card leads with what it is sure of
+    const files = [...compared.filter((f) => !f.shared), ...compared.filter((f) => f.shared)];
     const record: CheckpointRecord = {
       id: newId(),
       threadId,
@@ -369,6 +415,7 @@ export class Checkpoints {
       dir: before.dir,
       at: Date.now(),
       files,
+      ...(alongside.length ? { alongside } : {}),
       ...(before.afterDir ? { rehearsal: { copy: before.afterDir } } : {}),
     };
     this.records.push(record);
@@ -383,6 +430,45 @@ export class Checkpoints {
   /** Forgets a turn that never ran. */
   cancel(threadId: string) {
     this.pending.delete(threadId);
+    this.active.delete(threadId);
+    this.edited.delete(threadId);
+  }
+
+  /** Files a running turn's engine says it is editing, as it says them:
+   * absolute, or relative to the turn's folder. Anything outside the
+   * folder is not this card's business and is dropped. */
+  noteEdits(threadId: string, paths: readonly string[]) {
+    const turn = this.active.get(threadId);
+    if (!turn) return;
+    const mine = this.edited.get(threadId) ?? new Set<string>();
+    for (const path of paths) {
+      if (typeof path !== "string" || !path) continue;
+      const rel = relative(turn.dir, resolve(turn.dir, path));
+      if (!rel || rel.startsWith("..") || isAbsolute(rel)) continue;
+      mine.add(rel.split(sep).join("/"));
+    }
+    this.edited.set(threadId, mine);
+  }
+
+  /** A turn starting in a folder: every other turn already working in it,
+   * or in a folder inside or around it, overlaps this one and is overlapped
+   * by it. Kept for as long as both are running, so a turn that came and
+   * went in the middle of a long one still counts. */
+  private arrive(threadId: string, botId: string, dir: string) {
+    const here = resolve(dir);
+    // compared by where it really is, so a link to a shared folder is
+    // still that folder; edits are read against the path the engine uses
+    let real = here;
+    try {
+      real = realpathSync(here);
+    } catch {}
+    const mine = { botId, dir: here, real, alongside: new Map<string, string>() };
+    for (const [other, turn] of this.active) {
+      if (other === threadId || !overlapping(turn.real, real)) continue;
+      turn.alongside.set(threadId, botId);
+      mine.alongside.set(other, turn.botId);
+    }
+    this.active.set(threadId, mine);
   }
 
   attachCard(id: string, threadId: string, messageId: string) {
@@ -419,14 +505,18 @@ export class Checkpoints {
         ? { rehearsal: { state: record.discardedAt ? ("discarded" as const) : record.appliedAt ? ("applied" as const) : ("pending" as const) } }
         : {}),
       checkpointId: record.id,
-      files: record.files.slice(0, listed).map(({ path, status, big, added, removed }) => ({
+      files: record.files.slice(0, listed).map(({ path, status, big, added, removed, shared }) => ({
         path,
         status,
         ...(big ? { big } : {}),
         ...(added !== undefined ? { added } : {}),
         ...(removed !== undefined ? { removed } : {}),
+        ...(shared ? { shared } : {}),
       })),
       total: record.files.length,
+      ...(record.alongside?.length
+        ? { shared: { total: record.files.filter((f) => f.shared).length, alongside: record.alongside } }
+        : {}),
     };
   }
 
@@ -537,6 +627,10 @@ export class Checkpoints {
         }
         if (change.big) {
           result.skipped.push({ path: change.path, why: "too large to have been kept" });
+          continue;
+        }
+        if (change.shared) {
+          result.skipped.push({ path: change.path, why: "changed while another agent was working here" });
           continue;
         }
         const now = this.hashOf(target);

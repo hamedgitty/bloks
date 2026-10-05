@@ -112,6 +112,17 @@ function connectorsHelper(): string {
 }
 
 /** ACP tool kinds, mapped to something worth reading in a transcript. */
+/** The files a call writes, by ACP's own account: an edit, delete or
+ * move names them in its locations, and a diff names its file. */
+function writesOf(update: any): string[] {
+  if (!["edit", "delete", "move"].includes(update?.kind)) return [];
+  const named = [
+    ...(Array.isArray(update.locations) ? update.locations.map((l: any) => l?.path) : []),
+    ...(Array.isArray(update.content) ? update.content.filter((c: any) => c?.type === "diff").map((c: any) => c?.path) : []),
+  ];
+  return [...new Set(named.filter((p): p is string => typeof p === "string" && p.length > 0))];
+}
+
 function toolTitle(update: any): string {
   const title = typeof update?.title === "string" ? update.title : null;
   if (title) return title.slice(0, 100);
@@ -452,15 +463,18 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             case "agent_thought_chunk":
               emit({ ...base(threadId, turnId), type: "item.updated", itemType: "reasoning", tokens: null });
               break;
-            case "tool_call":
+            case "tool_call": {
+              const paths = writesOf(update);
               emit({
                 ...base(threadId, turnId),
                 type: "item.started",
                 itemType: "tool",
                 itemId: String(update.toolCallId ?? newId()),
                 title: toolTitle(update),
+                ...(paths.length ? { paths } : {}),
               });
               break;
+            }
             case "tool_call_update": {
               const status = update.status;
               if (status !== "completed" && status !== "failed") break;

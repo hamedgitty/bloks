@@ -70,13 +70,18 @@ export function previewLine(last: Message | undefined): string {
       // a rehearsal waiting, or let go, never touched the folder
       return last.changes.rehearsal && last.changes.rehearsal.state !== "applied"
         ? `Would change ${last.changes.total} file${last.changes.total === 1 ? "" : "s"}`
-        : changedLine(last.changes.total);
+        : changedLine(last.changes.total - (last.changes.shared?.total ?? 0), last.changes.shared?.total);
     default:
       return last.text ? plainText(last.text) : "";
   }
 }
 
-/** "Changed 3 files", for a list row. */
-export function changedLine(total: number): string {
-  return `Changed ${total} file${total === 1 ? "" : "s"}`;
+/** "Changed 3 files", for a list row. A turn that ran beside other
+ * agents in its folder claims only its own, and says how many more
+ * changed around it rather than counting them as its work. */
+export function changedLine(total: number, shared = 0): string {
+  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+  if (!shared) return `Changed ${files(total)}`;
+  if (!total) return `${files(shared)} changed while others were working here`;
+  return `Changed ${files(total)}, ${shared} more while others were working here`;
 }

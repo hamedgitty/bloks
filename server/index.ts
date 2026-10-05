@@ -1384,6 +1384,8 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.started":
       if (event.itemType === "tool") {
+        // what the change card can be sure is this turn's own
+        if (event.paths?.length) checkpoints.noteEdits(event.threadId, event.paths);
         const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
         // The browser is watched from its first use in a turn, not from the

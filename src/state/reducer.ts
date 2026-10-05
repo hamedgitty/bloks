@@ -121,8 +121,14 @@ export interface Message {
       big?: boolean;
       added?: number;
       removed?: number;
+      /** Changed while another agent was working in the folder, and not
+       * one this turn said it edited: shown apart, left out of Undo. */
+      shared?: boolean;
     }>;
     total: number;
+    /** How many of the files are shared, and the agents who were working
+     * there at the same time. */
+    shared?: { total: number; alongside: string[] };
     reverted?: { at: number; restored: number; skipped: number };
     /** A rehearsal: changes made on a copy, waiting for a decision. */
     rehearsal?: { state: "pending" | "applied" | "discarded" };

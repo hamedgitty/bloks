@@ -446,12 +446,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const item = params.item ?? {};
             const label = toolLabel(item);
             if (!label) break;
+            // a patch names every file it touches, a rename both ends
+            const paths =
+              item.type === "fileChange" && Array.isArray(item.changes)
+                ? item.changes.flatMap((c: any) => [c?.path, c?.kind?.move_path].filter((p) => typeof p === "string" && p))
+                : [];
             emit({
               ...envelope(threadId, turnId),
               type: "item.started",
               itemType: "tool",
               itemId: item.id,
               title: label,
+              ...(paths.length ? { paths } : {}),
             });
             break;
           }

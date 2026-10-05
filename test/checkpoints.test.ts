@@ -7,7 +7,7 @@ import { after, describe, test } from "node:test";
 
 import { execFileSync } from "node:child_process";
 
-import { Checkpoints, diffLines, gitIgnored, MAX_FILE, trackable } from "../server/checkpoints.ts";
+import { Checkpoints, diffLines, gitIgnored, MAX_FILE, overlapping, trackable } from "../server/checkpoints.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "bloks-checkpoints-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -216,5 +216,109 @@ describe("checkpoints", () => {
     const result = await cp.apply(record!.id);
     assert.deepEqual(result!.restored, ["made.bin"]);
     assert.equal(readFileSync(join(dir, "made.bin")).length, MAX_FILE + 1);
+  });
+});
+
+// GitHub 153: two agents in one folder. A turn that ran beside another
+// keeps as its own only what its engine said it edited; the rest is
+// listed apart and Undo leaves it alone.
+describe("turns that share a folder", () => {
+  test("each turn claims what it said it edited, and Undo leaves the other agent's work", async () => {
+    const dir = folder("shared", { "notes.md": "a\n", "log.md": "b\n", "skill.md": "c\n" });
+    const cp = new Checkpoints(join(scratch, "store-shared"));
+    await cp.begin("lane-a", "ada", dir);
+    await cp.begin("lane-b", "linus", dir);
+
+    // A edits notes.md with its file tool; B edits log.md the same way and
+    // skill.md from a shell command it never names
+    cp.noteEdits("lane-a", [join(dir, "notes.md")]);
+    writeFileSync(join(dir, "notes.md"), "a, by Ada\n");
+    cp.noteEdits("lane-b", ["log.md"]);
+    writeFileSync(join(dir, "log.md"), "b, by Linus\n");
+    writeFileSync(join(dir, "skill.md"), "c, by a script\n");
+
+    const a = (await cp.finish("lane-a"))!;
+    const own = a.files.filter((f) => !f.shared).map((f) => f.path);
+    const shared = a.files.filter((f) => f.shared).map((f) => f.path).sort();
+    assert.deepEqual(own, ["notes.md"]);
+    assert.deepEqual(shared, ["log.md", "skill.md"]);
+    assert.deepEqual(a.alongside, ["linus"]);
+    assert.equal(a.files[0].path, "notes.md", "its own come first on the card");
+    const summary = cp.summary(a);
+    assert.deepEqual(summary.shared, { total: 2, alongside: ["linus"] });
+
+    const undo = (await cp.revert(a.id))!;
+    assert.deepEqual(undo.restored, ["notes.md"]);
+    assert.deepEqual(undo.skipped.map((s) => s.path).sort(), ["log.md", "skill.md"]);
+    assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "a\n");
+    assert.equal(readFileSync(join(dir, "log.md"), "utf8"), "b, by Linus\n", "the other agent's work is untouched");
+
+    // B still running after A finished: it overlapped A, so it is just as careful
+    const b = (await cp.finish("lane-b"))!;
+    assert.deepEqual(b.files.filter((f) => !f.shared).map((f) => f.path), ["log.md"]);
+    assert.deepEqual(b.alongside, ["ada"]);
+  });
+
+  test("a turn that came and went in the middle of a long one still counts", async () => {
+    const dir = folder("brief", { "x.md": "1\n", "y.md": "2\n" });
+    const cp = new Checkpoints(join(scratch, "store-brief"));
+    await cp.begin("long", "ada", dir);
+    await cp.begin("short", "linus", dir);
+    writeFileSync(join(dir, "y.md"), "2, by Linus\n");
+    await cp.finish("short");
+    writeFileSync(join(dir, "x.md"), "1, by Ada\n");
+    cp.noteEdits("long", ["x.md"]);
+    const long = (await cp.finish("long"))!;
+    assert.deepEqual(long.files.find((f) => f.path === "y.md")?.shared, true);
+    assert.equal(long.files.find((f) => f.path === "x.md")?.shared, undefined);
+  });
+
+  test("a turn that ran alone claims everything, as before", async () => {
+    const dir = folder("alone", { "x.md": "1\n" });
+    const cp = new Checkpoints(join(scratch, "store-alone"));
+    await cp.begin("lane", "ada", dir);
+    writeFileSync(join(dir, "x.md"), "2\n");
+    writeFileSync(join(dir, "z.md"), "new\n");
+    const record = (await cp.finish("lane"))!;
+    assert.ok(record.files.every((f) => !f.shared));
+    assert.equal(record.alongside, undefined);
+    assert.equal(cp.summary(record).shared, undefined);
+    // and a later turn elsewhere, or after this one ended, changes nothing
+    const other = folder("elsewhere", { "q.md": "q\n" });
+    await cp.begin("lane-2", "linus", other);
+    await cp.begin("lane-3", "linus", dir);
+    writeFileSync(join(dir, "x.md"), "3\n");
+    const third = (await cp.finish("lane-3"))!;
+    assert.ok(third.files.every((f) => !f.shared), "a turn elsewhere is not in this folder");
+    cp.cancel("lane-2");
+  });
+
+  test("a folder inside another is the same place, and a path outside the folder is never claimed", async () => {
+    assert.equal(overlapping("/work/repo", "/work/repo/sub"), true);
+    assert.equal(overlapping("/work/repo/sub", "/work/repo"), true);
+    assert.equal(overlapping("/work/repo", "/work/repo2"), false);
+    const dir = folder("nested", { "top.md": "t\n", "sub/inner.md": "i\n" });
+    const cp = new Checkpoints(join(scratch, "store-nested"));
+    await cp.begin("outer", "ada", dir);
+    await cp.begin("inner", "linus", join(dir, "sub"));
+    cp.noteEdits("outer", ["../somewhere-else.md", "/etc/hosts", "top.md"]);
+    writeFileSync(join(dir, "top.md"), "t2\n");
+    writeFileSync(join(dir, "sub", "inner.md"), "i2\n");
+    const outer = (await cp.finish("outer"))!;
+    assert.deepEqual(outer.files.filter((f) => !f.shared).map((f) => f.path), ["top.md"]);
+    assert.deepEqual(outer.files.filter((f) => f.shared).map((f) => f.path), ["sub/inner.md"]);
+    cp.cancel("inner");
+  });
+
+  test("a rehearsal works in its own copy, so it neither shares the folder nor makes others share it", async () => {
+    const dir = folder("rehearsed", { "r.md": "r\n" });
+    const copy = folder("rehearsed-copy", { "r.md": "r\n" });
+    const cp = new Checkpoints(join(scratch, "store-rehearsed"));
+    await cp.begin("real", "ada", dir);
+    await cp.begin("rehearsal", "linus", dir, [], copy);
+    writeFileSync(join(dir, "r.md"), "r, by Ada\n");
+    const real = (await cp.finish("real"))!;
+    assert.ok(real.files.every((f) => !f.shared));
+    cp.cancel("rehearsal");
   });
 });
