@@ -14,9 +14,14 @@
 //   bloks-server pair            print a link that pairs a phone or the
 //                                desktop app, from anywhere
 //   bloks-server status          is it up, and is Cloud connected
+//   bloks-server drain [--minutes 20]
+//                                before restarting it: start nothing new,
+//                                let what is running finish, and return
+//                                once nothing is (or the minutes are up)
+//   bloks-server drain cancel    never mind, start things again
 //
-// The last three talk to the running server, so run them in a second
-// shell on the same machine.
+// The rest talk to the running server, so run them in a second shell on
+// the same machine.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -137,6 +142,38 @@ switch (command) {
   case "status":
     await status();
     break;
+  case "drain": {
+    if (args[0] === "cancel") {
+      await call("DELETE", "/api/maintenance/drain");
+      console.log("Called off. Bloks starts new work again, and what waited goes now.");
+      break;
+    }
+    const at = args.indexOf("--minutes");
+    const minutes = at >= 0 ? Number(args[at + 1]) : 20;
+    if (!(minutes > 0)) fail("Usage: bloks-server drain [--minutes 20], or bloks-server drain cancel");
+    let state = await call("POST", "/api/maintenance/drain", { seconds: minutes * 60 });
+    console.log(
+      `Draining: nothing new starts, and what arrives waits until Bloks is back. Waiting for what is running until ${new Date(state.deadline).toLocaleTimeString()}.`,
+    );
+    // Ctrl-C stops the waiting, not the drain: that lasts until Bloks
+    // restarts, or until drain cancel
+    let said = -1;
+    while (!state.done) {
+      if (state.running.length !== said) {
+        said = state.running.length;
+        console.log(`${said} ${said === 1 ? "turn" : "turns"} still running`);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+      state = await call("GET", "/api/maintenance/drain");
+      if (!state.draining) fail("The drain was called off.");
+    }
+    console.log(
+      state.idle
+        ? "Nothing is running. Restart Bloks now."
+        : `Out of time with ${state.running.length} still running. Restart Bloks now; they pick up where they left off when it is back.`,
+    );
+    break;
+  }
   default:
-    fail("Commands: bloks-server [start], activate KEY, pair, status");
+    fail("Commands: bloks-server [start], activate KEY, pair, status, drain");
 }

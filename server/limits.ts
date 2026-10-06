@@ -41,6 +41,12 @@ export const MAX_QUEUED_RECOVERY_MS = 12 * 60 * 60_000;
 export const MAX_TURNS_IN_FLIGHT = 200;
 export const MAX_SESSION_REF_CHARS = 200;
 
+/** Room lines waiting for a busy agent, on disk so a restart does not
+ * lose them (server/room-tags.ts): agents, rooms and people waited for at
+ * once, and lines joined into one waiting turn. */
+export const MAX_WAITING_ROOM_LINES = 200;
+export const MAX_LINES_PER_WAIT = 50;
+
 /** Simultaneous event-stream listeners. One app needs one. */
 export const MAX_SSE_CLIENTS = 32;
 

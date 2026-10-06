@@ -93,6 +93,7 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `bloks.json` | Rooms and members |
 | `sidebar.json` | The order of the sidebar's section headings |
 | `turns-in-flight.json` | Every turn while it runs, so one cut off by a stop is picked up |
+| `room-lines.json` | Room lines waiting for a busy agent, or for Bloks to be back |
 | `messages-<id>.json` | One transcript per agent or room, same key space |
 | `config.json` | Connected providers and keys, `0600` |
 | `skills/*.md` | Installed skills |
@@ -221,6 +222,34 @@ message window (twelve hours), or a pickup cut off in its turn, gets a
 notice with Continue instead. Questions and approvals the old engine was
 waiting on are marked cut off, and `/respond` delivers nothing for an ask
 this run did not raise.
+
+## Restarting for an update
+
+Before a planned restart Bloks drains (`server/drain.ts`): nothing new
+starts, what is running carries on, and the restart waits until nothing
+is running or a deadline passes (twenty minutes unless asked otherwise,
+an hour at most). The updater asks for it before it installs, and
+`bloks-server drain` does the same for a server you restart yourself;
+both go through `/api/maintenance/drain`, which answers only this
+computer. A turn still running at the deadline is cut off and picked up
+like any other, from the record it already has. While the updater
+waits, the update card says how many turns it is waiting for and how
+long is left, and offers to restart now (what is running is picked up
+after) or to call the drain off and update later
+(`electron/drain-wait.mjs`).
+
+Nothing that arrives meanwhile is turned away. `startTurn` is where every
+turn starts, so it is where a drain holds them: words for one of an
+agent's lanes wait in that lane's queue, as they would behind a busy
+turn, and that queue is the transcript, so it outlives the restart and
+joins any pickup. Room lines wait the way they do for a busy agent, now
+on disk too. What has no queue waits where it already would: a routine
+stays due and fires late, inside its grace window; a workflow step waits
+for its lane; a job stays open on the board; a watcher set to rehearse
+keeps the change unseen and sees it again; an email waits in its line,
+which is in memory, as it does for a busy Email lane. Questions, approvals and
+workflow gates are left exactly as they are. A drain lives in memory,
+so a restart ends it, and calling it off lets everything held go at once.
 
 ## Chat platforms
 
