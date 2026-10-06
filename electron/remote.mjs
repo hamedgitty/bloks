@@ -161,7 +161,7 @@ function readBody(req) {
  * workspace. Resolves with the port and a stop function. `onState` hears
  * whether the other computer is reachable.
  */
-export async function startRemoteProxy(profile, { staticDir, port = 0, onState = () => {} } = {}) {
+export async function startRemoteProxy(profile, { staticDir, port = 0, onState = () => {}, client } = {}) {
   const keys = deviceKeys(profile.deviceToken);
   const streams = new Set();
   let stopped = false;
@@ -170,6 +170,8 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     const payload = seal(keys.seal, profile.deviceId, {
       ...request,
       raw: true,
+      // the other computer lists this app by the build it names here
+      ...(client ? { client } : {}),
       ...(request.method !== "GET" && request.method !== "HEAD" ? { ts: Date.now(), nonce: randomUUID() } : {}),
     });
     const res = await fetch(`${profile.relayUrl}/space/client/ask`, {

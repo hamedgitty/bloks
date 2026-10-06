@@ -1197,8 +1197,10 @@ function readRemotePort() {
 
 async function startRemote(profile) {
   try {
+    const system = { darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] ?? process.platform;
     const options = {
       staticDir: path.join(process.resourcesPath, "ui"),
+      client: `${system} ${app.getVersion()}`,
       onState: (state) => {
         remoteState = state;
         for (const win of BrowserWindow.getAllWindows()) {
