@@ -3,10 +3,11 @@
 // An artifact message renders as a file card; opening it viewers the
 // file in place, because "download it and go look" is not a product.
 // What renders natively: HTML in a sandboxed frame, PDFs through the
-// browser's own viewer, images, CSV/TSV and XLSX as tables, markdown,
-// text and JSON as text. Formats with no honest in-browser renderer
-// (pptx, docx, zip) keep the card and a download; agents are told to
-// save an HTML companion for decks, so the viewable version exists.
+// browser's own viewer, images, CSV/TSV and XLSX as tables, markdown
+// drawn the way a reply is, text and JSON as text. Formats with no
+// honest in-browser renderer (pptx, docx, zip) keep the card and a
+// download; agents are told to save an HTML companion for decks, so
+// the viewable version exists.
 //
 // The xlsx parser is imported lazily: it is heavier than every other
 // viewer combined and most conversations never open a spreadsheet.
@@ -20,6 +21,7 @@ import FileSpreadsheet from "lucide-react/dist/esm/icons/file-spreadsheet.mjs";
 import FileText from "lucide-react/dist/esm/icons/file-text.mjs";
 import Presentation from "lucide-react/dist/esm/icons/presentation.mjs";
 import { type Message } from "@/state/store";
+import { Markdownish } from "@/components/Markdown";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -36,7 +38,7 @@ function humanSize(bytes: number): string {
 function kindOf(artifact: ArtifactMeta): {
   label: string;
   icon: React.ReactNode;
-  viewer: "iframe" | "pdf" | "image" | "table" | "sheet" | "text" | "none";
+  viewer: "iframe" | "pdf" | "image" | "table" | "sheet" | "markdown" | "text" | "none";
 } {
   const { mime, name } = artifact;
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -49,8 +51,9 @@ function kindOf(artifact: ArtifactMeta): {
     return { label: "Spreadsheet", icon: <FileSpreadsheet size={18} />, viewer: "sheet" };
   if (ext === "pptx") return { label: "Slides", icon: <Presentation size={18} />, viewer: "none" };
   if (ext === "docx") return { label: "Document", icon: <FileText size={18} />, viewer: "none" };
-  if (["md", "txt", "json"].includes(ext))
-    return { label: ext === "md" ? "Markdown" : ext === "json" ? "JSON" : "Text", icon: <FileText size={18} />, viewer: "text" };
+  if (ext === "md") return { label: "Markdown", icon: <FileText size={18} />, viewer: "markdown" };
+  if (ext === "txt" || ext === "json")
+    return { label: ext === "json" ? "JSON" : "Text", icon: <FileText size={18} />, viewer: "text" };
   return { label: "File", icon: <FileText size={18} />, viewer: "none" };
 }
 
@@ -234,6 +237,9 @@ export function ArtifactViewer({
   const [text, setText] = useState<string | null>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A report reads rendered; the source is one click away for copying
+  // a section out exactly as the agent wrote it.
+  const [source, setSource] = useState(false);
   // Notes pinned to places in this file. They live beside the artifact
   // rather than inside it: writing a note into somebody's spreadsheet
   // would corrupt the thing being discussed.
@@ -276,7 +282,7 @@ export function ArtifactViewer({
           setRows(grid);
         })
         .catch((e) => alive && setError(String(e)));
-    } else if (kind.viewer === "text") {
+    } else if (kind.viewer === "text" || kind.viewer === "markdown") {
       fetch(href)
         .then((r) => r.text())
         .then((t) => alive && setText(t.slice(0, 200_000)))
@@ -294,6 +300,14 @@ export function ArtifactViewer({
         <div className="flex h-[52px] shrink-0 items-center gap-3 border-b px-5">
           <span className="text-brand-ink">{kind.icon}</span>
           <DialogTitle className="min-w-0 flex-1 truncate text-[14px]">{artifact.name}</DialogTitle>
+          {kind.viewer === "markdown" && (
+            <button
+              onClick={() => setSource((s) => !s)}
+              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {source ? "Show rendered" : "Show source"}
+            </button>
+          )}
           <a
             href={`${href}?download`}
             download={artifact.name}
@@ -457,6 +471,22 @@ export function ArtifactViewer({
                   </div>
                 </div>
               </div>
+            ) : (
+              !error && <div className="p-6 text-[13px] text-muted-foreground">Loading…</div>
+            ))}
+          {kind.viewer === "markdown" &&
+            (text !== null ? (
+              source ? (
+                <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-[12.5px] leading-relaxed text-foreground">
+                  {text}
+                </pre>
+              ) : (
+                <div className="size-full overflow-auto bg-background">
+                  <div className="mx-auto max-w-[720px] px-6 py-6 text-[14px] leading-relaxed text-foreground">
+                    <Markdownish text={text} />
+                  </div>
+                </div>
+              )
             ) : (
               !error && <div className="p-6 text-[13px] text-muted-foreground">Loading…</div>
             ))}
