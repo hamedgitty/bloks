@@ -33,7 +33,7 @@ export function drainingLine(draining: NonNullable<UpdateState["draining"]>, now
   const what = n > 0 ? `${n} running ${n === 1 ? "turn" : "turns"}` : "what is running";
   const minutes = draining.deadline ? Math.ceil((draining.deadline - now) / 60_000) : null;
   const left = minutes === null ? "" : minutes > 1 ? ` (${minutes} minutes left)` : " (under a minute left)";
-  return `Finishing ${what} before restarting${left}…`;
+  return `Finishing ${what} before restarting…${left}`;
 }
 
 export function UpdateCard({ rail }: { rail: boolean }) {
