@@ -37,7 +37,6 @@ import {
   saveConfig,
   AVATARS_DIR,
   EVENTS_DIR,
-  NATIVE_DIR,
   type AppConfig,
   type CustomEndpoint,
   type CustomKey,
@@ -51,7 +50,7 @@ import type { ModelSelection, RuntimeEvent } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
-import { slimNativeLogs } from "./drivers/native.ts";
+import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.ts";
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
@@ -7283,13 +7282,13 @@ const server = createServer(async (req, res) => {
       usage.forget(bot.id);
       store.deleteBot(bot.id);
       // Every lane, not just the first: an agent with three lanes used
-      // to leave two files behind.
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        for (const task of bot.tasks) {
-          try {
-            unlinkSync(join(dir, `${task.id}.ndjson`));
-          } catch {}
-        }
+      // to leave two files behind. The native copy goes with its gzipped
+      // older ones.
+      for (const task of bot.tasks) {
+        try {
+          unlinkSync(join(EVENTS_DIR, `${task.id}.ndjson`));
+        } catch {}
+        forgetNative(task.id);
       }
       broadcast({ kind: "bot.deleted", botId: bot.id });
       return json(res, 200, { ok: true, archived: false });
@@ -11867,11 +11866,17 @@ server.listen(PORT, BIND, () => {
   recoverQueued();
   // Copies written before the native log stopped repeating Codex's thread
   // history (server/drivers/native.ts), slimmed once, after startup has
-  // had its moment.
+  // had its moment. Then any still too big are moved aside and gzipped,
+  // after the slimming so the two never work on the same file at once.
   setTimeout(() => {
     void slimNativeLogs()
       .then(({ files, saved }) => {
         if (files) console.log(`[bloks] native logs: ${files} slimmed, ${Math.round(saved / 1e6)} MB freed`);
+      })
+      .catch(() => {})
+      .then(() => tidyNativeLogs())
+      .then(({ rotated }) => {
+        if (rotated) console.log(`[bloks] native logs: ${rotated} too big, moved aside and gzipped`);
       })
       .catch(() => {});
   }, 30_000).unref?.();

@@ -12,11 +12,17 @@
 // and over (GitHub 157). That history says nothing about the wire format
 // that the first copy did not, so it is written as a count instead. Every
 // other frame, the token usage ones included, is left as it came.
+//
+// Even slimmed, a copy only ever grew: one machine had a single lane's
+// file at 9.4 GB (GitHub 159). So a lane's file is moved aside once it
+// passes a size, gzipped in the background, and only the newest few of
+// those are kept. The live file is never cut short or rewritten for it.
 import {
   appendFileSync,
   createReadStream,
   createWriteStream,
   existsSync,
+  mkdirSync,
   readdirSync,
   renameSync,
   statSync,
@@ -25,18 +31,177 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 
 import { NATIVE_DIR } from "../config.ts";
 
-export function appendNative(threadId: string, entry: { dir: "in" | "out"; source: string; msg: unknown }) {
+/** Past this, a lane's file is moved aside and a new one started. */
+export const NATIVE_CAP = 20 * 1024 * 1024;
+/** Gzipped copies kept per lane; older ones are deleted. */
+export const NATIVE_KEPT = 3;
+/** Inside the native folder, where the moved-aside copies go. */
+const ARCHIVE = "archive";
+
+/** Roughly how big each lane's file is, so an append needs no stat: one
+ * the first time a lane writes, then a running count. */
+const sizes = new Map<string, number>();
+/** Moved-aside files being gzipped right now, so a sweep leaves them be. */
+const compressing = new Map<string, Promise<void>>();
+
+export function appendNative(
+  threadId: string,
+  entry: { dir: "in" | "out"; source: string; msg: unknown },
+  dir: string = NATIVE_DIR,
+) {
   try {
-    appendFileSync(
-      join(NATIVE_DIR, `${threadId}.ndjson`),
-      JSON.stringify({ at: new Date().toISOString(), ...entry, msg: slimFrame(entry.msg) }) + "\n",
-    );
+    const path = join(dir, `${threadId}.ndjson`);
+    const line = JSON.stringify({ at: new Date().toISOString(), ...entry, msg: slimFrame(entry.msg) }) + "\n";
+    let size = sizes.get(path);
+    // The count can run high (the slimming pass shrinks files under it),
+    // so it is checked against the disk before anything is moved. A file
+    // already too big when Bloks started is moved on its first append.
+    if (size === undefined || size >= NATIVE_CAP) size = sizeOf(path);
+    if (size >= NATIVE_CAP) {
+      try {
+        void rotateNative(threadId, dir);
+        size = 0;
+      } catch {
+        /* still written below, just not moved aside */
+      }
+    }
+    appendFileSync(path, line);
+    sizes.set(path, size + Buffer.byteLength(line));
   } catch {
     /* never let logging break a run */
   }
+}
+
+function sizeOf(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** UTC time for an archive name, compact, and sorting in time order. */
+const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:.]/g, "");
+
+/**
+ * Moves a lane's file aside and starts gzipping it. A rename, so the
+ * next append starts a fresh file and nothing written is lost or copied
+ * twice. Resolves once the gzip is done.
+ */
+export function rotateNative(threadId: string, dir: string = NATIVE_DIR): Promise<void> {
+  const path = join(dir, `${threadId}.ndjson`);
+  const archive = join(dir, ARCHIVE);
+  mkdirSync(archive, { recursive: true, mode: 0o700 });
+  // two in the same millisecond would share a name; the later one moves
+  // a millisecond on, which keeps the names in order
+  let at = Date.now();
+  let moved = join(archive, `${threadId}.${stamp(at)}.ndjson`);
+  while (existsSync(moved) || existsSync(`${moved}.gz`)) moved = join(archive, `${threadId}.${stamp(++at)}.ndjson`);
+  renameSync(path, moved);
+  sizes.set(path, 0);
+  return compress(moved).then(() => prune(archive, threadId));
+}
+
+/** Gzips a moved-aside file beside itself, streamed, since it can be
+ * gigabytes. The plain copy is deleted only once the gzip is whole. */
+function compress(path: string): Promise<void> {
+  const running = compressing.get(path);
+  if (running) return running;
+  const partial = `${path}.gz.partial`;
+  const done = pipeline(createReadStream(path), createGzip(), createWriteStream(partial, { mode: 0o600 }))
+    .then(() => {
+      // the lane was deleted while this ran
+      if (!existsSync(path)) return unlinkSync(partial);
+      renameSync(partial, `${path}.gz`);
+      unlinkSync(path);
+    })
+    .catch(() => {
+      // a full disk, say: the plain copy stays for the next start
+      try {
+        unlinkSync(partial);
+      } catch {}
+    })
+    .finally(() => compressing.delete(path));
+  compressing.set(path, done);
+  return done;
+}
+
+/** Deletes all but a lane's newest gzipped copies. */
+function prune(archive: string, threadId: string) {
+  try {
+    const old = readdirSync(archive)
+      .filter((name) => name.startsWith(`${threadId}.`) && name.endsWith(".ndjson.gz"))
+      .sort()
+      .slice(0, -NATIVE_KEPT);
+    for (const name of old) unlinkSync(join(archive, name));
+  } catch {}
+}
+
+/** Everything a lane left in the native folder, gone with the lane. */
+export function forgetNative(threadId: string, dir: string = NATIVE_DIR) {
+  const path = join(dir, `${threadId}.ndjson`);
+  sizes.delete(path);
+  try {
+    unlinkSync(path);
+  } catch {}
+  try {
+    const archive = join(dir, ARCHIVE);
+    for (const name of readdirSync(archive)) {
+      if (!name.startsWith(`${threadId}.`)) continue;
+      try {
+        unlinkSync(join(archive, name));
+      } catch {}
+    }
+  } catch {}
+}
+
+/** Waits for any gzip still running. For the tests. */
+export async function nativeSettled() {
+  await Promise.all(compressing.values());
+}
+
+/**
+ * Once per start. Moves aside files that were already too big, which
+ * matters for lanes nobody writes to any more, and finishes what a quit
+ * or a crash cut short: a half-written gzip is thrown away and its plain
+ * copy gzipped again.
+ */
+export async function tidyNativeLogs(dir: string = NATIVE_DIR): Promise<{ rotated: number }> {
+  let rotated = 0;
+  if (!existsSync(dir)) return { rotated };
+  const work: Promise<void>[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".ndjson")) continue;
+    try {
+      if (statSync(join(dir, name)).size < NATIVE_CAP) continue;
+      work.push(rotateNative(name.slice(0, -".ndjson".length), dir));
+      rotated++;
+    } catch {}
+  }
+  const archive = join(dir, ARCHIVE);
+  if (!existsSync(archive)) return { rotated };
+  const lanes = new Set<string>();
+  for (const name of readdirSync(archive)) {
+    const path = join(archive, name);
+    lanes.add(name.split(".")[0]);
+    try {
+      if (name.endsWith(".gz.partial") && !compressing.has(path.slice(0, -".gz.partial".length))) {
+        unlinkSync(path);
+      } else if (name.endsWith(".ndjson") && !compressing.has(path)) {
+        // gzipped, then stopped before the plain copy was deleted
+        if (existsSync(`${path}.gz`)) unlinkSync(path);
+        else work.push(compress(path));
+      }
+    } catch {}
+  }
+  await Promise.all(work);
+  for (const lane of lanes) prune(archive, lane);
+  return { rotated };
 }
 
 /** A frame as the copy keeps it: a thread handed back whole loses its
