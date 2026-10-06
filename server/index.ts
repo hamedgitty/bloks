@@ -246,7 +246,7 @@ import {
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, RoutineStore } from "./routines.ts";
+import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
@@ -11240,6 +11240,8 @@ const server = createServer(async (req, res) => {
     }
     if (method === "POST" && path === "/api/routines") {
       const body = await readBody(req);
+      const tooLong = promptTooLong(body?.prompt);
+      if (tooLong) return json(res, 400, { error: tooLong });
       const clean = normalizeRoutine(body);
       if (!clean) return json(res, 400, { error: "a routine needs a target, something to say, and a time" });
       // A routine aimed at nothing would fire forever into the void.
@@ -11261,6 +11263,8 @@ const server = createServer(async (req, res) => {
       const existing = routines.get(m[1]);
       if (!existing || notMine(existing)) return json(res, 404, { error: "no such routine" });
       const body = await readBody(req);
+      const tooLong = promptTooLong(body.prompt);
+      if (tooLong) return json(res, 400, { error: tooLong });
       // Only the fields a person edits. Never lastRunAt: rewriting when it
       // last ran is how you make a routine fire twice.
       const merged = normalizeRoutine({
