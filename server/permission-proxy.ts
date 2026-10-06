@@ -12,12 +12,18 @@
 // claude.ts), which turns it into a card in the transcript and waits for a
 // human to press something.
 //
-// Two tools are published:
+// Two kinds of tool are published:
 //
 //   approve    the CLI's own permission checkpoint. The reply has to match
 //              the shape `--permission-prompt-tool` expects.
 //   ask_user   the agent choosing to ask. Whatever the person typed comes
-//              back as the tool result, unedited.
+//              back as the tool result, unedited. request_secret and
+//              request_connection are asks of the same kind.
+//
+// On full access there is no checkpoint, but the agent can still ask, so
+// the harness names the tools to publish in BLOKS_PUBLISH and leaves
+// approve out. Nothing else is answered then: a call to a tool that was
+// not published is refused, never read as a permission request.
 //
 // It is its own entry file rather than a mode of the main server because
 // the CLI spawns it with `process.execPath`, and a shared entry point that
@@ -79,7 +85,7 @@ function askHuman(request: object): Promise<any> {
 
 const writeFrame = (frame: unknown) => process.stdout.write(JSON.stringify(frame) + "\n");
 
-const PUBLISHED_TOOLS = [
+const ALL_TOOLS = [
   {
     name: "approve",
     description: "Ask the Bloks user whether a tool use is allowed",
@@ -145,6 +151,9 @@ const PUBLISHED_TOOLS = [
   },
 ];
 
+const only = process.env.BLOKS_PUBLISH?.split(",").filter(Boolean);
+const PUBLISHED_TOOLS = only ? ALL_TOOLS.filter((tool) => only.includes(tool.name)) : ALL_TOOLS;
+
 /** The CLI sometimes proposes permission rules of its own alongside a
  * request. On an "always allow" they are echoed back untouched so it can
  * stop asking at its own layer. Echoing beats inventing: the rule syntax
@@ -194,6 +203,14 @@ async function dispatch(message: any) {
       const isQuestion = name === "ask_user";
       const isConnection = name === "request_connection";
       const isSecret = name === "request_secret";
+
+      if (!PUBLISHED_TOOLS.some((tool) => tool.name === name)) {
+        return writeFrame({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { isError: true, content: [{ type: "text", text: `Bloks: there is no ${String(name)} tool here` }] },
+        });
+      }
 
       const reply = await askHuman(
         isSecret

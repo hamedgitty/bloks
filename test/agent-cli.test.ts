@@ -13,6 +13,7 @@ import {
   cliBriefing,
   matches,
   runsAProcess,
+  secretHint,
 } from "../server/agent-cli.ts";
 
 const ME = "bot-me";
@@ -58,6 +59,13 @@ describe("what an agent can do", () => {
     const refused = allows(ME, "GET", `/api/bots/${SOMEONE_ELSE}/memory`);
     assert.equal(refused.ok, false);
     assert.match(refused.reason ?? "", /only read and write its own/);
+  });
+
+  test("it can ask for a secret for itself, and for nobody else", () => {
+    assert.equal(allows(ME, "POST", `/api/bots/${ME}/secrets`).ok, true);
+    assert.equal(allows(ME, "POST", `/api/bots/${SOMEONE_ELSE}/secrets`).ok, false);
+    // asking is all: the saved values stay out of reach
+    assert.equal(allows(ME, "GET", `/api/bots/${ME}/secrets`).ok, false);
   });
 
   test("its own settings, and nobody else's", () => {
@@ -321,6 +329,16 @@ describe("what the agent is told", () => {
     assert.match(briefing, /\/opt\/bloks\/bin\/bloks\.mjs/);
     assert.match(briefing, /help/);
     assert.ok(briefing.length < 500, "a paragraph in every prompt competes with the request");
+  });
+
+  test("how to ask for a key is the way this engine actually has (#172)", () => {
+    const command = 'node "$BLOKS_CLI"';
+    assert.match(secretHint("tool", command) ?? "", /request_secret tool/);
+    // an engine without the tool is not sent looking for it
+    const cli = secretHint("cli", command) ?? "";
+    assert.doesNotMatch(cli, /request_secret/);
+    assert.ok(cli.includes(`${command} secret "`), cli);
+    assert.equal(secretHint(null, command), null);
   });
 
   test("what it can do is the rules, not a second list to keep in step", () => {

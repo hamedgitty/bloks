@@ -233,8 +233,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       /** The turn ended without the process letting go; ignore it from here. */
       let abandoned = false;
 
-      // Nothing asks when the engine is set to bypass, or when this agent is
-      // in full access; a shared room is never either.
+      // No permission is asked when the engine is set to bypass, or when
+      // this agent is in full access; a shared room is never either.
       const bypass = !turn.shared && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
       const argv = [
         "-p",
@@ -366,48 +366,51 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         allowed.push("mcp__browser");
       }
 
-      // bypassPermissions means nothing would ever ask, so there is nothing
-      // to broker. Every other mode gets the bridge.
-      let broker: AskBroker | undefined;
-      if (!bypass) {
-        const socketPath = brokerSocket(threadId, turnId);
-        broker = createAskBroker({
-          socketPath,
-          onAsk: (ask) => {
-            asking++;
-            lastSign = Date.now();
-            emit({
-              ...envelope(threadId, turnId),
-              type: "request.opened",
-              requestId: ask.id,
-              requestType: ask.kind,
-              tool: ask.tool,
-              input: ask.input,
-              summary: summarise(ask),
-              choices: askChoices(ask.input),
-            });
-          },
-          onResolve: (resolved) => {
-            asking = Math.max(0, asking - 1);
-            // the call only starts running once it has its answer
-            lastSign = Date.now();
-            emit({
-              ...envelope(threadId, turnId),
-              type: "request.resolved",
-              requestId: resolved.id,
-              behavior: resolved.behavior,
-              source: resolved.source,
-            });
-          },
-        });
-        argv.push("--permission-prompt-tool", "mcp__bloks__approve");
-        mcpServers.bloks = {
-          command: process.execPath,
-          args: [PERMISSION_HELPER, socketPath],
-          env: { ...RUN_AS_NODE },
-        };
-        allowed.push("mcp__bloks");
-      }
+      // Every mode gets the bridge. bypassPermissions has no permission
+      // checks for it to answer, but the agent can still ask its owner
+      // something: a question, a key, an app to connect (GitHub 172). So
+      // there it publishes only those, and the CLI is never pointed at
+      // approve.
+      const socketPath = brokerSocket(threadId, turnId);
+      const broker = createAskBroker({
+        socketPath,
+        onAsk: (ask) => {
+          asking++;
+          lastSign = Date.now();
+          emit({
+            ...envelope(threadId, turnId),
+            type: "request.opened",
+            requestId: ask.id,
+            requestType: ask.kind,
+            tool: ask.tool,
+            input: ask.input,
+            summary: summarise(ask),
+            choices: askChoices(ask.input),
+          });
+        },
+        onResolve: (resolved) => {
+          asking = Math.max(0, asking - 1);
+          // the call only starts running once it has its answer
+          lastSign = Date.now();
+          emit({
+            ...envelope(threadId, turnId),
+            type: "request.resolved",
+            requestId: resolved.id,
+            behavior: resolved.behavior,
+            source: resolved.source,
+          });
+        },
+      });
+      if (!bypass) argv.push("--permission-prompt-tool", "mcp__bloks__approve");
+      // request_connection only where there is something to connect
+      // with, the same test the prompt uses before mentioning it
+      const askingTools = ["ask_user", "request_secret", ...(turn.integrations?.composio?.key ? ["request_connection"] : [])];
+      mcpServers.bloks = {
+        command: process.execPath,
+        args: [PERMISSION_HELPER, socketPath],
+        env: { ...RUN_AS_NODE, ...(bypass ? { BLOKS_PUBLISH: askingTools.join(",") } : {}) },
+      };
+      allowed.push("mcp__bloks");
 
       if (Object.keys(mcpServers).length) {
         argv.push("--mcp-config", JSON.stringify({ mcpServers }));
