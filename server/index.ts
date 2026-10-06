@@ -5694,6 +5694,12 @@ async function telegramRound(): Promise<void> {
       continue;
     }
     if (decision.kind !== "deliver") continue;
+    if (decision.media) {
+      await telegram
+        .send(state.token, decision.chatId, telegram.notDelivered(decision.media, Boolean(decision.text)))
+        .catch(() => {});
+      continue;
+    }
     // A card is waiting on this chat: this message is its answer, not a
     // new request. Free text answers a question; an approval needs one
     // of its options, so anything else asks again rather than guessing.

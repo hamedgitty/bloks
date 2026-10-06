@@ -7,6 +7,7 @@ import {
   describeCard,
   interpretAnswer,
   nextOffset,
+  notDelivered,
   pairingWord,
   parseUpdates,
   type TelegramState,
@@ -39,11 +40,65 @@ describe("parseUpdates", () => {
     assert.equal(out[0].text, "fixed");
   });
 
-  test("photos, stickers and joins are skipped rather than half-read", () => {
+  // These used to be skipped, and the offset moved past them, so a
+  // photo or a voice message vanished with nothing said to anybody.
+  test("voice, photos, files and stickers are kept, each with what it is", () => {
     const out = parseUpdates({
       result: [
-        { update_id: 9, message: { chat: { id: 1 }, photo: [{}] } },
+        { update_id: 1, message: { chat: { id: 1 }, voice: { file_id: "v", file_size: 900 } } },
+        {
+          update_id: 2,
+          message: {
+            chat: { id: 1 },
+            caption: " look ",
+            photo: [
+              { file_id: "big", width: 1280, height: 960, file_size: 90_000 },
+              { file_id: "small", width: 90, height: 67 },
+            ],
+          },
+        },
+        { update_id: 3, message: { chat: { id: 1 }, document: { file_id: "d", mime_type: "image/png" } } },
+        { update_id: 4, message: { chat: { id: 1 }, document: { file_id: "p", mime_type: "application/pdf" } } },
+        { update_id: 5, message: { chat: { id: 1 }, sticker: { file_id: "s" } } },
+        { update_id: 6, message: { chat: { id: 1 }, video: { file_id: "m" } } },
+        { update_id: 7, message: { chat: { id: 1 }, video_note: { file_id: "n" } } },
+        // a GIF carries a document too, and is not a file to the person who sent it
+        { update_id: 8, message: { chat: { id: 1 }, animation: { file_id: "g" }, document: { file_id: "g" } } },
+        { update_id: 9, message: { chat: { id: 1 }, document: { file_id: "h", mime_type: "image/heic" } } },
+      ],
+    });
+    assert.deepEqual(
+      out.map((m) => m.media),
+      [
+        { kind: "voice", fileId: "v", bytes: 900 },
+        { kind: "image", fileId: "big", bytes: 90_000, mime: "image/jpeg" },
+        { kind: "image", fileId: "d", bytes: 0, mime: "image/png" },
+        { kind: "other", what: "files" },
+        { kind: "other", what: "stickers" },
+        { kind: "other", what: "videos" },
+        { kind: "other", what: "video messages" },
+        { kind: "other", what: "GIFs" },
+        { kind: "other", what: "HEIC images" },
+      ],
+    );
+    assert.equal(out[1].text, "look", "a caption is the photo's text");
+  });
+
+  test("photos sent as one album share its id", () => {
+    const out = parseUpdates({
+      result: [
+        { update_id: 1, message: { chat: { id: 1 }, media_group_id: "g1", photo: [{ file_id: "a" }] } },
+        { update_id: 2, message: { chat: { id: 1 }, media_group_id: "g1", photo: [{ file_id: "b" }] } },
+      ],
+    });
+    assert.deepEqual(out.map((m) => m.album), ["g1", "g1"]);
+  });
+
+  test("joins and other service messages are still skipped", () => {
+    const out = parseUpdates({
+      result: [
         { update_id: 10, message: { chat: { id: 1 }, new_chat_members: [{}] } },
+        { update_id: 11, message: { chat: { id: 1 }, pinned_message: {} } },
       ],
     });
     assert.deepEqual(out, []);
@@ -88,6 +143,18 @@ describe("decide", () => {
     for (const guess of ["abc123x", "abc123xy!", "ABC123XY", "abc 123xy"]) {
       assert.equal(decide(state, message({ text: guess })).kind, "refuse", `"${guess}" got through`);
     }
+  });
+
+  test("a photo captioned with the pairing word does not pair", () => {
+    const state: TelegramState = { pairing: "abc123xy", chatIds: [] };
+    const media = { kind: "image" as const, fileId: "f", bytes: 1, mime: "image/jpeg" };
+    assert.equal(decide(state, { ...message({ text: "abc123xy" }), media }).kind, "refuse");
+  });
+
+  test("a known chat's photo is delivered with what it carries", () => {
+    const media = { kind: "image" as const, fileId: "f", bytes: 1, mime: "image/jpeg" };
+    const decision = decide({ chatIds: [42] }, { ...message(), media, album: "g" });
+    assert.deepEqual(decision, { kind: "deliver", chatId: 42, text: "hello", media, album: "g" });
   });
 
   test("an allowed chat does not need the word once paired", () => {
@@ -146,5 +213,23 @@ describe("answering a card from a phone", () => {
     const text = describeCard({ title: "Approval needed", subtitle: "rm -rf build", options });
     assert.match(text, /^Approval needed\nrm -rf build\n\n1\. Allow\n2\. Deny/);
     assert.match(text, /yes \/ no/);
+  });
+});
+
+describe("what the bot cannot pass on", () => {
+  test("every reply says the message did not arrive", () => {
+    for (const media of [
+      { kind: "voice" as const, fileId: "v", bytes: 1 },
+      { kind: "image" as const, fileId: "i", bytes: 1, mime: "image/png" },
+      { kind: "other" as const, what: "stickers" },
+    ]) {
+      assert.match(notDelivered(media), /did not reach your agent/);
+    }
+    assert.match(notDelivered({ kind: "other", what: "videos" }), /can't take videos/);
+  });
+
+  test("a captioned file says its caption was not sent alone", () => {
+    assert.match(notDelivered({ kind: "other", what: "files" }, true), /caption was not sent/);
+    assert.doesNotMatch(notDelivered({ kind: "other", what: "files" }), /caption/);
   });
 });
