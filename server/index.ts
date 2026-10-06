@@ -9267,16 +9267,35 @@ const server = createServer(async (req, res) => {
       if (!text) {
         return json(res, 400, { error: "text required" });
       }
+      // An agent's `bloks say` into a room comes through here too. It is
+      // that agent speaking, not the person, so it goes in as its line
+      // and is passed on the way its replies in the room are: only to
+      // someone it named, never back to itself, and counted against the
+      // chain it is part of rather than starting a fresh one.
+      if (asAgent) {
+        const replyTo = replyRef(roomBody.replyTo);
+        const message = store.appendMessage(blok.id, {
+          role: "bot",
+          from: asAgent.botId,
+          kind: "text",
+          text,
+          ...(replyTo ? { replyTo } : {}),
+        });
+        broadcast({ kind: "message", threadId: blok.id, message });
+        // whoever started the turn it said this from is still the one who
+        // asked, so a member's chain does not become the owner's
+        void relayMentions(blok.id, asAgent.botId, text, laneRequester.get(asAgent.taskId)).catch(() => {});
+        triggersFired({ kind: "message", targetId: blok.id, text, fromUser: false });
+        return json(res, 201, { message });
+      }
       // a human message starts a fresh chain, so hop counters reset
       for (const id of blok.memberIds) agentHops.delete(id);
       const { message } = enqueueRoomPost(blok, text, {
         hops: 0,
         replyTo: replyRef(roomBody.replyTo),
-        byYou: !asAgent,
+        byYou: true,
       });
-      // an agent's `bloks say` into a room comes through here too, and is
-      // not the person being in the room
-      if (!asAgent) withYou({ room: blok }, message.at);
+      withYou({ room: blok }, message.at);
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });
       return json(res, message.queued ? 202 : 201, { message });
     }
