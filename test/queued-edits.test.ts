@@ -41,7 +41,7 @@ async function setup(t: TestContext, env: Record<string, string> = {}) {
     rmSync(home, { recursive: true, force: true });
   });
   writeFileSync(cli, `#!${process.execPath}
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("2.1.289 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -53,7 +53,7 @@ process.stdin.on("end", () => {
   const text = JSON.parse(input.trim()).message.content;
   const calls = existsSync(${JSON.stringify(callsFile)}) ? JSON.parse(readFileSync(${JSON.stringify(callsFile)}, "utf8")) : [];
   calls.push(text);
-  writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify(calls));
+  writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
   const n = calls.length;
   const out = (frame) => console.log(JSON.stringify(frame));
   out({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet-5" });

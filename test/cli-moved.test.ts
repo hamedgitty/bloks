@@ -32,7 +32,7 @@ test("agents run the CLI through BLOKS_CLI, and a session told otherwise hears i
   const cli = join(home, "fake-claude.mjs");
   const callsFile = join(home, "calls.json");
   writeFileSync(cli, `#!${process.execPath}
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("2.1.289 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -50,7 +50,9 @@ process.stdin.on("end", () => {
     text: JSON.parse(input.trim()).message.content,
     cli: process.env.BLOKS_CLI ?? null,
   });
-  writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify(calls));
+  // written aside and renamed in, so the test polling it never reads half a file
+  writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls));
+  renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
   const out = (frame) => console.log(JSON.stringify(frame));
   out({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet-5" });
   out({ type: "assistant", message: { content: [{ type: "text", text: "Answered " + calls.length }] } });

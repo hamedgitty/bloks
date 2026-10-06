@@ -18,7 +18,7 @@ test("an agent can hire into a section and file a teammate, and change nothing e
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -37,7 +37,7 @@ process.stdin.on("end", async () => {
       });
       answers.push({ status: res.status, body: await res.json().catch(() => null) });
     }
-    writeFileSync(${JSON.stringify(out)}, JSON.stringify(answers));
+    writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify(answers)); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });
@@ -105,7 +105,7 @@ test("an agent can pin and place teammates and its rooms, read the arrangement f
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
@@ -131,7 +131,7 @@ process.stdin.on("end", async () => {
       try { body = JSON.parse(run.stdout); } catch { body = run.stdout + run.stderr; }
       answers.push({ status: run.status, body });
     }
-    writeFileSync(${JSON.stringify(out)}, JSON.stringify(answers));
+    writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify(answers)); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });

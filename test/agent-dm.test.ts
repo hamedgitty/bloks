@@ -18,7 +18,7 @@ test("an agent's message goes to the recipient's General, whatever the person ha
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -32,7 +32,7 @@ process.stdin.on("end", async () => {
       headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" },
       body: JSON.stringify({ text: "hello from the other agent" }),
     });
-    writeFileSync(${JSON.stringify(out)}, JSON.stringify({ status: res.status, body: await res.json() }));
+    writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ status: res.status, body: await res.json() })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });

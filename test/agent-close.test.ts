@@ -17,7 +17,7 @@ test("an agent can close its own conversation, and it closes when the turn ends"
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -29,7 +29,7 @@ process.stdin.on("end", async () => {
     const auth = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
     const me = await (await fetch(process.env.BLOKS_URL + "/api/agent/whoami", { headers: auth })).json();
     const res = await fetch(process.env.BLOKS_URL + "/api/bots/" + me.botId + "/tasks/" + (asked[1] ? asked[1].slice(5) : me.taskId), { method: "DELETE", headers: auth });
-    writeFileSync(${JSON.stringify(out)}, JSON.stringify({ status: res.status, body: await res.json(), taskId: me.taskId }));
+    writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ status: res.status, body: await res.json(), taskId: me.taskId })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });
