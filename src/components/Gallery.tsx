@@ -16,6 +16,7 @@ import CircleDot from "lucide-react/dist/esm/icons/circle-dot.mjs";
 import Quote from "lucide-react/dist/esm/icons/quote.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
+import { InlineMarkdown } from "./Markdown";
 import { useRef, useState } from "react";
 import { api, useStore, type Message } from "@/state/store";
 
@@ -42,10 +43,22 @@ export type Component =
   | { kind: "quote"; text: string; from?: string; where?: string }
   | { kind: "refused"; what: string; because?: string };
 
-/** One frame, so every component sits in the conversation the same way. */
-function Frame({ title, note, children }: { title?: string; note?: string; children: React.ReactNode }) {
+/** One frame, so every component sits in the conversation the same way.
+ * A wide one takes the whole column, as the composer does: a table has
+ * more to show across than a chart or a list of steps. */
+function Frame({ title, note, wide, children }: {
+  title?: string;
+  note?: string;
+  wide?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="w-full max-w-[560px] animate-rise-in rounded-2xl border bg-card p-3.5 shadow-[0_1px_3px_var(--shadow-color)]">
+    <div
+      className={cn(
+        "w-full animate-rise-in rounded-2xl border bg-card p-3.5 shadow-[0_1px_3px_var(--shadow-color)]",
+        !wide && "max-w-[560px]",
+      )}
+    >
       {title && <div className="text-[13.5px] font-semibold text-foreground">{title}</div>}
       <div className={cn(title && "mt-2.5")}>{children}</div>
       {note && <div className="mt-2.5 text-[12px] leading-relaxed text-muted-foreground">{note}</div>}
@@ -77,7 +90,8 @@ export function MessageComponent({ message, threadId }: { message: Message; thre
   };
   if (!message.component) return null;
   return (
-    <div className="min-w-0">
+    // a table takes the whole column, so it cannot size to its content
+    <div className={cn("min-w-0", (message.component as Component).kind === "table" && "w-full")}>
       <GalleryComponent
         component={message.component as Component}
         onChoose={choose}
@@ -149,18 +163,24 @@ function Chart({ component }: { component: Extract<Component, { kind: "chart" }>
 
 function Table({ component }: { component: Extract<Component, { kind: "table" }> }) {
   return (
-    <Frame title={component.title} note={component.note}>
+    <Frame title={component.title} note={component.note} wide>
       {/* A wide table scrolls inside its own card rather than pushing the
           conversation sideways. No negative margin: it makes the scroller
-          wider than the box it sits in, which is its own small overflow. */}
+          wider than the box it sits in, which is its own small overflow.
+          Every column keeps a readable width, set on the table as well as
+          on the cells, so too many columns scroll instead of squeezing to
+          a letter a line. */}
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-[12.5px]">
+        <table
+          className="w-full border-collapse text-[12.5px]"
+          style={{ minWidth: component.columns.length * 110 }}
+        >
           <thead>
             <tr>
               {component.columns.map((column, i) => (
                 <th
                   key={`${column}-${i}`}
-                  className="border-b px-2 py-1.5 text-left font-medium text-muted-foreground"
+                  className="min-w-[110px] border-b px-2 py-1.5 text-left font-medium text-muted-foreground"
                 >
                   {column}
                 </th>
@@ -171,8 +191,8 @@ function Table({ component }: { component: Extract<Component, { kind: "table" }>
             {component.rows.map((row, r) => (
               <tr key={r} className="border-b last:border-b-0">
                 {row.map((cell, c) => (
-                  <td key={c} className="px-2 py-1.5 align-top text-foreground">
-                    {cell}
+                  <td key={c} className="min-w-[110px] px-2 py-1.5 align-top text-foreground [overflow-wrap:anywhere]">
+                    <InlineMarkdown text={cell} />
                   </td>
                 ))}
               </tr>
