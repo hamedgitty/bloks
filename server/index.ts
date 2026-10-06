@@ -5662,6 +5662,74 @@ const telegramAsks = new Map<
   { requestId: string; botId: string; options: string[]; permission: boolean }
 >();
 
+/** Turns started from each chat, one after another. Kept off the polling
+ * loop so a turn that is running does not stop the next message being
+ * read: that next message may be the answer to a card the turn raised,
+ * or the rest of an album. */
+const telegramTurns = new Map<number, Promise<void>>();
+
+/** A reply to a chat. A failed send is not worth a crash. */
+async function telegramSay(chatId: number, text: string): Promise<void> {
+  const token = cfg.telegram?.token;
+  if (token) await telegram.send(token, chatId, text).catch(() => {});
+}
+
+const telegramInbox = new telegram.Inbox({
+  state: () => cfg.telegram ?? {},
+  send: telegramSay,
+  async pair(chatId) {
+    const paired = [...(cfg.telegram?.chatIds ?? []), chatId];
+    cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
+    saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+    broadcast({ kind: "config", ...(await configStatus()) });
+    await telegramSay(chatId, "Paired. Message me and your agent will answer.");
+  },
+  async refuse(chatId) {
+    if (telegramRefused.has(chatId)) return;
+    telegramRefused.add(chatId);
+    await telegramSay(chatId, "This bot is not paired with you.");
+  },
+  download: (fileId, maxBytes) => telegram.download(cfg.telegram?.token ?? "", fileId, maxBytes),
+  transcriber: () =>
+    speech.transcriptionVendor(cfg) ? (audio) => speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg") : null,
+  saveImage: (bytes) => attachments.saveImage(bytes),
+  saveVoice: (bytes) => attachments.saveBytes(bytes, "ogg"),
+  waiting: (chatId) => telegramAsks.get(chatId),
+  async answer(chatId, read) {
+    const waiting = telegramAsks.get(chatId);
+    if (!waiting) return;
+    telegramAsks.delete(chatId);
+    const asked = store.bot(waiting.botId);
+    const askThread = askThreadByRequest.get(waiting.requestId) ?? asked?.threadId ?? "";
+    const instance = asked ? laneInstance(asked, askThread) : null;
+    const behavior = waiting.permission
+      ? read.option === waiting.options[0] ? "allow" : "deny"
+      : "answer";
+    await instance?.adapter
+      .respondToRequest(askThread, waiting.requestId, {
+        behavior,
+        message: waiting.permission ? undefined : (read.option ?? read.free),
+      })
+      .catch(() => {});
+  },
+  deliver(chatId, text) {
+    const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
+      const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
+      if (!bot) return telegramSay(chatId, "There is no agent here to answer yet, so that did not reach anyone.");
+      // The reply goes back to the chat that asked, and the exchange lands
+      // in the agent's own thread like any other conversation.
+      const answer = await answerOverTelegram(bot.id, text, chatId).catch(
+        (error: unknown) => `Could not answer: ${(error as Error).message}`,
+      );
+      await telegramSay(chatId, answer);
+    });
+    telegramTurns.set(chatId, turn);
+    void turn.finally(() => {
+      if (telegramTurns.get(chatId) === turn) telegramTurns.delete(chatId);
+    });
+  },
+});
+
 async function telegramRound(): Promise<void> {
   const state = cfg.telegram;
   if (!state?.enabled || !state.token) return;
@@ -5673,64 +5741,9 @@ async function telegramRound(): Promise<void> {
     cfg.telegram = { ...state, offset };
     saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
   }
-  for (const message of messages) {
-    const decision = telegram.decide(cfg.telegram ?? {}, message);
-    if (decision.kind === "pair") {
-      const paired = [...(cfg.telegram?.chatIds ?? []), decision.chatId];
-      cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
-      saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
-      broadcast({ kind: "config", ...(await configStatus()) });
-      await telegram
-        .send(state.token, decision.chatId, "Paired. Message me and your agent will answer.")
-        .catch(() => {});
-      continue;
-    }
-    if (decision.kind === "refuse") {
-      if (telegramRefused.has(decision.chatId)) continue;
-      telegramRefused.add(decision.chatId);
-      await telegram
-        .send(state.token, decision.chatId, "This bot is not paired with you.")
-        .catch(() => {});
-      continue;
-    }
-    if (decision.kind !== "deliver") continue;
-    // A card is waiting on this chat: this message is its answer, not a
-    // new request. Free text answers a question; an approval needs one
-    // of its options, so anything else asks again rather than guessing.
-    const waiting = telegramAsks.get(decision.chatId);
-    if (waiting) {
-      const read = telegram.interpretAnswer(decision.text, waiting.options);
-      if (waiting.permission && !read.option) {
-        await telegram
-          .send(state.token, decision.chatId, "Reply 1 or 2, or yes / no.")
-          .catch(() => {});
-        continue;
-      }
-      telegramAsks.delete(decision.chatId);
-      const asked = store.bot(waiting.botId);
-      const askThread = askThreadByRequest.get(waiting.requestId) ?? asked?.threadId ?? "";
-      const instance = asked ? laneInstance(asked, askThread) : null;
-      const behavior = waiting.permission
-        ? read.option === waiting.options[0] ? "allow" : "deny"
-        : "answer";
-      await instance?.adapter
-        .respondToRequest(askThread, waiting.requestId, {
-          behavior,
-          message: waiting.permission ? undefined : (read.option ?? read.free),
-        })
-        .catch(() => {});
-      await telegram.send(state.token, decision.chatId, "Sent.").catch(() => {});
-      continue;
-    }
-    const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
-    if (!bot) continue;
-    // The reply goes back to the chat that asked, and the exchange lands
-    // in the agent's own thread like any other conversation.
-    const answer = await answerOverTelegram(bot.id, decision.text, decision.chatId).catch(
-      (error: unknown) => `Could not answer: ${(error as Error).message}`,
-    );
-    await telegram.send(state.token, decision.chatId, answer).catch(() => {});
-  }
+  // The rules (who is paired, what answers a card, what happens to a
+  // voice message or a photo) are in server/telegram.ts.
+  for (const message of messages) await telegramInbox.take(message);
 }
 
 /**
@@ -11564,6 +11577,8 @@ const server = createServer(async (req, res) => {
         paired: (state.chatIds ?? []).length,
         pairing: state.pairing ?? null,
         botId: state.botId ?? null,
+        // where a voice message would go to be heard, said on the screen
+        voiceVendor: speech.transcriptionVendor(cfg),
       });
     }
     if (method === "POST" && path === "/api/telegram") {
@@ -11600,6 +11615,7 @@ const server = createServer(async (req, res) => {
         paired: (next.chatIds ?? []).length,
         pairing: next.pairing ?? null,
         botId: next.botId ?? null,
+        voiceVendor: speech.transcriptionVendor(cfg),
       });
     }
 

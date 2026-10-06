@@ -241,6 +241,58 @@ export async function speak(
   return { stream: res.body, mime: "audio/mpeg" };
 }
 
+// ── hearing, as well as speaking ──────────────────────────────────────
+// The same keys turn speech into text, which is how a voice message sent
+// from a phone becomes something an agent can read. Either vendor will
+// do; ElevenLabs first, the same order as everything else here.
+
+/** OpenAI's newer transcription model, which hears names and noisy
+ * rooms better than whisper-1 does. */
+export const OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
+export const ELEVENLABS_TRANSCRIBE_MODEL = "scribe_v2";
+
+/** Who a voice message would be sent to, or null with no key at all. */
+export function transcriptionVendor(cfg: AppConfig): "elevenlabs" | "openai" | null {
+  if (cfg.speech?.elevenlabsKey) return "elevenlabs";
+  if (openaiKey(cfg)) return "openai";
+  return null;
+}
+
+/**
+ * Audio to text. `name` matters more than it looks: the vendors read
+ * the format from the filename, and refuse a Telegram voice note named
+ * `.oga` though it is the same Ogg Opus they take as `.ogg`.
+ */
+export async function transcribe(cfg: AppConfig, audio: Uint8Array, name: string, mime: string): Promise<string> {
+  const vendor = transcriptionVendor(cfg);
+  if (!vendor) throw new Error("no speech key is set");
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(audio)], { type: mime }), name);
+  let res: Response;
+  if (vendor === "elevenlabs") {
+    form.append("model_id", ELEVENLABS_TRANSCRIBE_MODEL);
+    res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+      method: "POST",
+      headers: { "xi-api-key": cfg.speech!.elevenlabsKey! },
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+  } else {
+    form.append("model", OPENAI_TRANSCRIBE_MODEL);
+    res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${openaiKey(cfg)}` },
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+  }
+  // Only the status: this ends up in a reply on somebody's phone, and a
+  // vendor's error body can echo more than belongs there.
+  if (!res.ok) throw new Error(`${vendor === "elevenlabs" ? "ElevenLabs" : "OpenAI"} answered ${res.status}`);
+  const body: any = await res.json().catch(() => null);
+  return typeof body?.text === "string" ? body.text.trim() : "";
+}
+
 /** A client-supplied voice, shape-checked. */
 export function parseBotVoice(raw: unknown): BotVoice | null | undefined {
   if (raw === null) return null;

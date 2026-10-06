@@ -195,15 +195,25 @@ const unescapeAttr = (raw: string) =>
 
 /** Transcript rendering: the display text with the attachment machinery
  * lifted out, so the bubble shows a thumbnail or a filename chip where
- * the tags would have been. Pasted text stays put; it is real content. */
+ * the tags would have been. Pasted text stays put; it is real content.
+ *
+ * A voice message (from Telegram, written by the server) comes back as
+ * the path of its audio, and what remains is what it was heard as. */
 export function splitAttachments(text: string): {
   display: string;
   images: string[];
   files: string[];
+  voice: string[];
 } {
   const images: string[] = [];
   const files: string[] = [];
+  const voice: string[] = [];
   const display = text
+    .replace(/<voice-message\s+path="([^"]*)"(?:\s+note="[^"]*")?\s*\/>\s*/g, (_whole, raw: string) => {
+      const path = unescapeAttr(raw);
+      if (path) voice.push(path);
+      return "";
+    })
     .replace(/<attached-image\s+path="([^"]*)"\s*\/>(?:\s*\n)?/g, (_whole, raw: string) => {
       const path = unescapeAttr(raw);
       if (path) images.push(path);
@@ -214,7 +224,7 @@ export function splitAttachments(text: string): {
       if (path) files.push(path);
       return "";
     });
-  return { display: display.trim(), images, files };
+  return { display: display.trim(), images, files, voice };
 }
 
 /** The bare filename a saved path ends in, which is what the serving

@@ -6,6 +6,9 @@
 // would for a file that already lived on disk. The transcript asks for
 // the same file back by name when it draws the thumbnail.
 //
+// Voice messages from Telegram land here too, so the transcript of one
+// can be played back next to what it was heard as.
+//
 // Names are minted here and only here: a uuid plus an extension derived
 // from the mime type. Nothing the client sends becomes part of the name,
 // which is what makes the serving route safe to expose.
@@ -20,6 +23,10 @@ const ATTACHMENTS_DIR = join(DATA_DIR, "attachments");
 
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
+/** Telegram will not hand a bot anything bigger, which is about half an
+ * hour of voice. */
+export const VOICE_MAX_BYTES = 20 * 1024 * 1024;
+
 const EXTENSION_FOR: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -27,15 +34,46 @@ const EXTENSION_FOR: Record<string, string> = {
   "image/webp": "webp",
 };
 
-const MIME_FOR: Record<string, string> = Object.fromEntries(
-  Object.entries(EXTENSION_FOR).map(([mime, ext]) => [ext, mime]),
-);
+const MIME_FOR: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(EXTENSION_FOR).map(([mime, ext]) => [ext, mime])),
+  // never uploaded from the app, only kept from a voice message
+  ogg: "audio/ogg",
+};
 
 /** A minted name and nothing else: uuid.ext, no separators, no input. */
-const SAFE_NAME = /^[0-9a-f-]{36}\.(png|jpg|gif|webp)$/;
+const SAFE_NAME = /^[0-9a-f-]{36}\.(png|jpg|gif|webp|ogg)$/;
 
 export function extensionFor(contentType: string | undefined): string | null {
   return EXTENSION_FOR[(contentType ?? "").split(";")[0]!.trim().toLowerCase()] ?? null;
+}
+
+/** What an image really is, from its first bytes. A file that arrives
+ * from somewhere else carries a type somebody else wrote, and the name
+ * this module mints should not depend on it. */
+export function sniffImage(bytes: Uint8Array): string | null {
+  const starts = (...head: number[]) => head.every((b, i) => bytes[i] === b);
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (starts(0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (starts(0x52, 0x49, 0x46, 0x46) && String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP") return "image/webp";
+  return null;
+}
+
+/** Writes bytes under a fresh name and answers with the path. */
+export function saveBytes(bytes: Uint8Array, extension: string): string {
+  mkdirSync(ATTACHMENTS_DIR, { recursive: true });
+  const path = join(ATTACHMENTS_DIR, `${randomUUID()}.${extension}`);
+  writeFileSync(path, bytes);
+  return path;
+}
+
+/** An image that came from somewhere other than the app, kept the way a
+ * pasted one is: the same formats and the same 10 MB. */
+export function saveImage(bytes: Uint8Array): string {
+  if (bytes.length > IMAGE_MAX_BYTES) throw new Error("images top out at 10 MB");
+  const extension = extensionFor(sniffImage(bytes) ?? undefined);
+  if (!extension) throw new Error("only png, jpeg, gif and webp images are taken");
+  return saveBytes(bytes, extension);
 }
 
 /** Reads the raw image body and writes it down. Answers with the path
@@ -67,10 +105,7 @@ export function saveAttachment(req: IncomingMessage, res: ServerResponse): void 
       res.end(JSON.stringify({ error: "empty upload" }));
       return;
     }
-    mkdirSync(ATTACHMENTS_DIR, { recursive: true });
-    const name = `${randomUUID()}.${extension}`;
-    const path = join(ATTACHMENTS_DIR, name);
-    writeFileSync(path, Buffer.concat(chunks));
+    const path = saveBytes(Buffer.concat(chunks), extension);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ path, mime: MIME_FOR[extension], bytes: size }));
   });
