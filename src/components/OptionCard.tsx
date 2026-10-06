@@ -68,6 +68,11 @@ export function OptionCard({
           {card.answeredBy && (
             <div className="mt-1 text-[12px] text-muted-foreground">Answered by {card.answeredBy}</div>
           )}
+          {card.cutOff && (
+            <div className="mt-1 text-[12px] text-muted-foreground">
+              Cut off when Bloks stopped. Nothing waits on this any more, and an answer here would not be used.
+            </div>
+          )}
         </div>
         <button
           onClick={() => dispatch({ type: "dismissCard", botId, roomId, messageId: message.id })}

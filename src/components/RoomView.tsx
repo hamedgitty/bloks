@@ -18,6 +18,7 @@ import UserPlus from "lucide-react/dist/esm/icons/user-plus.mjs";
 import type { RoomPerson } from "@/state/reducer";
 import { SharePanel } from "./SharePanel";
 import { api, useStore, type Blok, type Bot, type Message } from "@/state/store";
+import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { GroupCallButton } from "./Voice";
@@ -199,6 +200,7 @@ function RoomMessage({
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
           <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
             {message.text}
+            <CarryOn message={message} />
           </div>
         </div>
       </div>

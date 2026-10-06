@@ -34,6 +34,13 @@ export const MAX_WEBHOOK_QUEUE_BYTES = 100_000;
  * sent and left for the person to send again, never run on its own. */
 export const MAX_QUEUED_RECOVERY_MS = 12 * 60 * 60_000;
 
+/** Turns remembered as running, on disk until each one ends (server/cut-off.ts).
+ * One per lane in practice; the cap is for a file nobody should trust to
+ * stay small on its own. A session reference is an engine's id for its
+ * session, which is short; anything longer is not one. */
+export const MAX_TURNS_IN_FLIGHT = 200;
+export const MAX_SESSION_REF_CHARS = 200;
+
 /** Simultaneous event-stream listeners. One app needs one. */
 export const MAX_SSE_CLIENTS = 32;
 

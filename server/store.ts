@@ -68,6 +68,9 @@ export interface OptionCardData {
   askedFor?: string;
   /** Who answered, when it was not the owner. */
   answeredBy?: string;
+  /** The turn that asked was cut off when Bloks stopped. Nothing is
+   * waiting on an answer any more, and none is ever taken as one. */
+  cutOff?: boolean;
   /** Present when a lead has proposed hiring a team (server/teams.ts). */
   team?: {
     room: string;
@@ -164,6 +167,10 @@ export interface Message {
    * and was too old, or too old a format, to run unattended. Kept in the
    * transcript for the person to send again if it still matters. */
   unsent?: boolean;
+  /** A notice about a turn cut off too long ago to pick up on its own:
+   * the lane it belongs to, for the Continue button, and `done` once it
+   * has been pressed or the conversation has moved on. */
+  carryOn?: { laneId: string; done?: boolean };
   /** When this message was last edited. Absent means never. */
   editedAt?: number;
   /** Taken back. The row stays so replies pointing at it still make
@@ -821,6 +828,24 @@ export class Store {
       if (message.kind !== "activity" || !message.tool || message.tool.ok !== undefined || message.tool.stopped) continue;
       if (from !== undefined && message.from !== from) continue;
       const patched = this.patchMessage(threadId, message.id, { tool: { ...message.tool, stopped: true } });
+      if (patched) changed.push(patched);
+    }
+    return changed;
+  }
+
+  /** Questions and approvals in a thread that a stopped engine was
+   * waiting on, settled as cut off. The engine process that held each
+   * request is gone, and a new one may number its own requests the same
+   * way, so an answer to an old card must never reach it as permission.
+   * A workflow's card waits on disk rather than on an engine, and stays. */
+  settleOpenAsks(threadId: string): Message[] {
+    const changed: Message[] = [];
+    for (const message of this.messagesFor(threadId)) {
+      const card = message.card;
+      if (message.kind !== "options" || !card?.requestId || card.runId || card.answered || card.dismissed) continue;
+      const patched = this.patchMessage(threadId, message.id, {
+        card: { ...card, answered: "Cut off when Bloks stopped", cutOff: true },
+      });
       if (patched) changed.push(patched);
     }
     return changed;

@@ -17,6 +17,9 @@ export interface OptionCardData {
   answered?: string;
   /** In a shared room, the collaborator who answered, when it was not you. */
   answeredBy?: string;
+  /** Asked by a turn that was cut off when Bloks stopped; it can no
+   * longer be answered. */
+  cutOff?: boolean;
   dismissed?: boolean;
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means a setup question, which is safe to ignore. */
@@ -64,6 +67,9 @@ export interface Message {
   /** Queued, but still waiting when Bloks restarted and too old to send
    * on its own (server/index.ts, recoverQueued). */
   unsent?: boolean;
+  /** A turn cut off too long ago to pick up on its own, which Continue
+   * picks up (server/index.ts, recoverCutOff). */
+  carryOn?: { laneId: string; done?: boolean };
   /** Emoji to whoever pressed it: "user", or an agent's id. */
   reactions?: Record<string, string[]>;
   /** When this message was last edited. Absent means never. */

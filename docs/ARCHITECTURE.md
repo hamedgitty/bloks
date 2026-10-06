@@ -92,6 +92,7 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `bots.json` | Agent records, model selection, resume cursors |
 | `bloks.json` | Rooms and members |
 | `sidebar.json` | The order of the sidebar's section headings |
+| `turns-in-flight.json` | Every turn while it runs, so one cut off by a stop is picked up |
 | `messages-<id>.json` | One transcript per agent or room, same key space |
 | `config.json` | Connected providers and keys, `0600` |
 | `skills/*.md` | Installed skills |
@@ -199,6 +200,27 @@ again (`idleCompactionDue` in `server/context.ts`). It runs as the lane's
 turn, so anything said meanwhile queues, but nothing else a turn does
 happens: no message in the person's name, no unread, no other agent or
 room. Two run at a time, and a lane whose window has passed is skipped.
+
+## Turns cut off
+
+A turn the Mac slept through, or one running when Bloks stopped, is
+picked up rather than left dead, and both are picked up the same way
+(`server/cut-off.ts`): a notice the person reads, and a separate note
+telling the agent to carry on and to check what already happened before
+repeating anything, naming the tool call that was running. Neither is a
+message from the person, and the original request is not sent again.
+
+Sleep is noticed while Bloks runs. A stop is not, so every turn is
+written to `turns-in-flight.json` when it starts and taken out when it
+ends, which makes a crash count as much as a quit. At startup each one
+left is taken off the list and then picked up once, in the same lane,
+room and engine session, for whoever asked for it; queued messages for
+that lane go in the same turn. One somebody stopped, a workflow step, or
+one whose agent was archived is dropped. One left longer than the queued
+message window (twelve hours), or a pickup cut off in its turn, gets a
+notice with Continue instead. Questions and approvals the old engine was
+waiting on are marked cut off, and `/respond` delivers nothing for an ask
+this run did not raise.
 
 ## Chat platforms
 
