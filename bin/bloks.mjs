@@ -99,21 +99,29 @@ const COMMANDS = {
       "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
       "Unless you may run commands without asking, the person approves the command before it runs. " +
       "--thread sends its turns to that conversation (made if missing), so work you started in the background is picked up where its context is",
-    run: (args) => {
+    run: async (args) => {
       const flags = parseFlags(args);
       const kind = flags.folder ? "folder" : flags.page ? "page" : flags.feed ? "feed" : flags.check ? "check" : null;
       if (!kind) throw new Error("watch needs --folder, --page, --feed or --check");
       if (!flags.do) throw new Error('watch needs --do "what to do when it changes"');
-      return request("POST", "/api/watchers", {
+      const asked = flags.every ? Number(flags.every) : undefined;
+      const filed = await request("POST", "/api/watchers", {
         kind,
         target: flags[kind],
         instruction: flags.do,
         name: flags.name,
-        every: flags.every ? Number(flags.every) : undefined,
+        every: asked,
         mentions: flags.mentions,
         ...(flags.thread ? { thread: flags.thread } : {}),
         mode: flags.rehearse ? "rehearse" : "act",
       });
+      // The workspace keeps --every within its bounds without saying so,
+      // and an agent that asked for 2 would otherwise plan on 2 (GitHub
+      // 166). A folder is watched as it changes, so its --every is moot.
+      const every = filed.watcher?.every;
+      if (kind === "folder" || !Number.isFinite(asked) || typeof every !== "number" || Math.round(asked) === every) return filed;
+      const clamped = `Checks every ${every} minutes (the ${every > asked ? "minimum" : "maximum"}; you asked for ${asked}).`;
+      return { ...filed, note: filed.note ? `${filed.note} ${clamped}` : clamped };
     },
   },
   watchers: {
