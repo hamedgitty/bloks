@@ -17,12 +17,12 @@ test("a model id typed in reaches Claude Code exactly, and a malformed one is re
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const argv = process.argv.slice(2);
 if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 if (argv.includes("text")) { console.log("ok"); process.exit(0); }
-writeFileSync(${JSON.stringify(seen)}, JSON.stringify(argv));
+writeFileSync(${JSON.stringify(seen)} + ".tmp", JSON.stringify(argv)); renameSync(${JSON.stringify(seen)} + ".tmp", ${JSON.stringify(seen)});
 process.stdin.resume();
 process.stdin.on("end", () => console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" })));
 `,

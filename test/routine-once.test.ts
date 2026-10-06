@@ -177,7 +177,7 @@ test("an agent changes and drops its own routines, and nobody else's", async (t)
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -196,7 +196,7 @@ process.stdin.on("end", async () => {
       });
       answers.push({ status: res.status, body: await res.json().catch(() => null) });
     }
-    writeFileSync(${JSON.stringify(out)}, JSON.stringify(answers));
+    writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify(answers)); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });

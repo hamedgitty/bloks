@@ -1583,7 +1583,7 @@ process.stdin.on("end", () => console.log(JSON.stringify({ type: "result", subty
     writeFileSync(
       cli,
       `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -1596,7 +1596,7 @@ process.stdin.on("end", async () => {
   const raise = (await call("PATCH", "/api/bots/" + me, { approvals: "auto" })).status;
   const hired = (await (await call("POST", "/api/bots", { name: "Hired" })).json()).bot.id;
   const lower = (await call("PATCH", "/api/bots/" + me, { approvals: "ask" })).status;
-  writeFileSync(${JSON.stringify(out)}, JSON.stringify({ me, raise, hired, lower }));
+  writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ me, raise, hired, lower })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });
 `,
@@ -4945,7 +4945,7 @@ describe("the command line an agent drives", () => {
       fake,
       `#!${process.execPath}
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -4956,7 +4956,7 @@ process.stdin.on("end", async () => {
   const call = (method, path, body) => fetch(process.env.BLOKS_URL + path, { method, headers, body: body && JSON.stringify(body) });
   const other = (await (await call("GET", "/api/bots")).json()).bots.find((b) => b.name === "Other");
   const theirs = (await call("PATCH", "/api/bots/" + other.id + "/tasks/" + other.tasks[0].id, { title: "Mine now" })).status;
-  writeFileSync(${JSON.stringify(out)}, JSON.stringify({ renamed, theirs }));
+  writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ renamed, theirs })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });
 `,
@@ -5832,7 +5832,7 @@ async function heldTurn(t: { after: (fn: () => unknown) => void }) {
   writeFileSync(
     fake,
     `#!${process.execPath}
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }

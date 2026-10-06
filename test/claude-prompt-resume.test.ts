@@ -39,7 +39,7 @@ async function setup(t: TestContext, version: CliVersion) {
   const setVersion = (next: CliVersion) => writeFileSync(versionFile, JSON.stringify(next));
   setVersion(version);
   writeFileSync(cli, `#!${process.execPath}
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, renameSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const version = JSON.parse(readFileSync(${JSON.stringify(versionFile)}, "utf8"));
 if (args[0] === "--version") {
@@ -66,15 +66,15 @@ process.stdin.on("end", () => {
   if (args.includes("--system-prompt-snapshot") && !version.supportsFlag) {
     call.error = "unknown option --system-prompt-snapshot";
     calls.push(call);
-    writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify(calls));
+    writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
     console.error(call.error);
     process.exit(1);
   }
   history.push(JSON.parse(input.trim()).message.content);
   sessions[sessionId] = { persona, history };
-  writeFileSync(${JSON.stringify(sessionsFile)}, JSON.stringify(sessions));
+  writeFileSync(${JSON.stringify(sessionsFile)} + ".tmp", JSON.stringify(sessions)); renameSync(${JSON.stringify(sessionsFile)} + ".tmp", ${JSON.stringify(sessionsFile)});
   calls.push(call);
-  writeFileSync(${JSON.stringify(callsFile)}, JSON.stringify(calls));
+  writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
   const out = (frame) => console.log(JSON.stringify(frame));
   out({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet-5" });
   out({ type: "assistant", message: { content: [{ type: "text", text: "Answered " + calls.length }] } });

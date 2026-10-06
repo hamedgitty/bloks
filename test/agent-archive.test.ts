@@ -32,7 +32,7 @@ test("a manager archives only an agent it hired, only when its work is done, and
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -53,7 +53,7 @@ process.stdin.on("end", async () => {
       });
       out.push({ status: res.status, body: await res.json().catch(() => null) });
     }
-    writeFileSync(${JSON.stringify(answers)}, JSON.stringify(out));
+    writeFileSync(${JSON.stringify(answers)} + ".tmp", JSON.stringify(out)); renameSync(${JSON.stringify(answers)} + ".tmp", ${JSON.stringify(answers)});
   }
   console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Done." }] } }));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, result: "Done." }));
