@@ -263,13 +263,16 @@ import {
   folderChanges,
   folderSnapshot,
   hashOf,
+  laneLimitError,
   mayFire,
   newLines,
+  orphanWatcherLanes,
   pageText,
   parseFeed,
   runCheck,
   SETTLE_MS,
   watcherTurn,
+  WATCHING,
   type Watcher,
 } from "./watchers.ts";
 import { MemoryJournal } from "./memory-journal.ts";
@@ -3433,12 +3436,18 @@ function watcherLane(w: Watcher, bot: BotRecord) {
   const known = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
   if (known) return known;
   const active = bot.activeTaskId;
-  const made = store.createTask(bot.id, `Watching: ${w.name}`.slice(0, 40));
-  if (!made) throw new Error(`${bot.name} has too many tasks open for a watcher lane. Close one.`);
+  const made = store.createTask(bot.id, `${WATCHING}${w.name}`.slice(0, 40));
+  if (!made) throw new Error(laneLimitError(bot.name, bot.tasks.map((t) => t.title)));
   store.setActiveTask(bot.id, active);
   w.laneId = made.id;
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
   return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
+}
+
+/** Whether anyone but a watcher said something in a lane. Such a lane
+ * is somebody's conversation now, and outlives the watcher that made it. */
+function personSpokeIn(laneId: string) {
+  return store.messagesFor(laneId).some((m) => m.role === "user" && m.via !== "watcher");
 }
 
 /** The conversation titled `title`, made if there is none, without
@@ -3573,6 +3582,12 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
 }
 
 for (const w of watchers) armWatcher(w);
+// Lanes of watchers removed before removing one closed its lane, which
+// can fill an agent's limit with nothing it may close (GitHub 166).
+// Nothing runs yet, so closing is just the store's.
+for (const bot of store.bots) {
+  for (const id of orphanWatcherLanes(bot.tasks, watchers, personSpokeIn)) store.deleteTask(bot.id, id);
+}
 // Pages and feeds on their own schedules; folders as a fallback.
 setInterval(() => {
   const now = Date.now();
@@ -9864,6 +9879,17 @@ const server = createServer(async (req, res) => {
         disarmWatcher(w.id);
         watchers = watchers.filter((x) => x.id !== w.id);
         saveWatchers();
+        // Its own lane goes with it, or old ones fill the agent's limit
+        // (GitHub 166). Through the close an agent asks for, so a lane
+        // still working, or with a message waiting, closes once that is
+        // done: the usual way a watcher is dropped is by its agent, from
+        // a turn in that very lane. A conversation named with --thread is
+        // never its laneId, and one the person talked in is theirs, so
+        // both stay.
+        if (w.laneId && !watchers.some((x) => x.laneId === w.laneId) && !personSpokeIn(w.laneId)) {
+          closeAfterTurn.add(w.laneId);
+          closeIfAsked(w.laneId);
+        }
         broadcast({ kind: "watchers" });
         return json(res, 200, { ok: true });
       }

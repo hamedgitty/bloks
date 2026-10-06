@@ -298,6 +298,47 @@ export function checkAllowed(w: Pick<Watcher, "kind" | "approvedBy">, approvals:
   return w.approvedBy === "mode" && (approvals === "auto" || approvals === "full");
 }
 
+// ── lanes ──────────────────────────────────────────────────────────────
+
+/** How a watcher's own lane is titled. A lane keeps no note of what made
+ * it, so this is the only mark, and it counts only alongside nothing
+ * else claiming the lane (orphanWatcherLanes). */
+export const WATCHING = "Watching: ";
+
+/** Why a watcher has nowhere to speak: its agent has every conversation
+ * it may have. Names them, short enough to fit a watcher's last error,
+ * and the way out that needs nothing closed (GitHub 166). */
+export function laneLimitError(name: string, titles: string[], room = 200): string {
+  const head = `${name} has ${titles.length} conversations open, the most it can`;
+  const tail = ". Close one, or give this watcher one of them with --thread.";
+  for (let shown = Math.min(titles.length, 6); shown > 0; shown--) {
+    const more = titles.length - shown;
+    const said = `${head} (${titles.slice(0, shown).join(", ")}${more ? `, and ${more} more` : ""})${tail}`;
+    if (said.length <= room) return said;
+  }
+  return `${head}${tail}`;
+}
+
+/**
+ * Lanes left behind by watchers that are gone, from before removing a
+ * watcher closed its lane. Each one counts against the agent's limit, and
+ * an agent cannot close a lane it is not in. Only a lane that looks like
+ * a watcher's own, that no watcher still uses, that is idle, and where
+ * nobody but a watcher ever spoke: one the person talked in is theirs.
+ */
+export function orphanWatcherLanes(
+  tasks: Array<{ id: string; title: string; busy?: boolean }>,
+  watchers: Array<Pick<Watcher, "laneId" | "thread">>,
+  spokenIn: (laneId: string) => boolean,
+): string[] {
+  const used = new Set(watchers.map((w) => w.laneId));
+  const named = new Set(watchers.map((w) => w.thread));
+  return tasks
+    .slice(1)
+    .filter((t) => t.title.startsWith(WATCHING) && !used.has(t.id) && !named.has(t.title) && !t.busy && !spokenIn(t.id))
+    .map((t) => t.id);
+}
+
 // ── firing ─────────────────────────────────────────────────────────────
 
 /** Whether the watcher may start another turn now. */
