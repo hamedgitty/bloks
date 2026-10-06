@@ -121,6 +121,10 @@ export const RULES: Rule[] = [
   { method: "POST", path: "/api/bots/:id/interrupt", why: "stop the current turn of an agent it hired or leads in a room" },
   { method: "POST", path: "/api/bots/:id/archive", why: "archive an agent it hired, once that agent has nothing left to do" },
   { method: "POST", path: "/api/bots/:me/notes", why: "suggest a short note about the person, for them to keep or not" },
+  // The same secure field the request_secret tool plants, for an engine
+  // that has no such tool. Asking is not a permission: the person still
+  // types the value, and the agent never sees it in the chat.
+  { method: "POST", path: "/api/bots/:me/secrets", why: "ask the person for an API key or other secret, through a secure field in the chat" },
   { method: "PUT", path: "/api/bots/:me/memory", why: "write its own memory" },
   { method: "GET", path: "/api/bots/:me/artifacts", why: "list what it has produced" },
 
@@ -359,6 +363,23 @@ export function cliMovedNote(command: string, before?: string): string {
   return before
     ? `(Bloks has moved since your earlier turns. Run its command as \`${command}\` from now on. Earlier commands in this conversation that run \`${before}\` reach the copy that used to be there, so do not reuse them.)`
     : `(Run the bloks command as \`${command}\` from now on. Earlier commands in this conversation that run bloks.mjs from a written-out path may reach an older copy of Bloks that has since moved, so do not reuse them.)`;
+}
+
+/**
+ * How an agent asks for a key, said in terms of what it actually has
+ * (GitHub 172). Claude Code and the API engines with tools have the
+ * request_secret tool, the other engines with a credential have `secret`
+ * on the command line, and an engine with neither is told nothing, since
+ * pointing it at a tool it cannot call only makes it pretend to.
+ */
+export function secretHint(route: "tool" | "cli" | null, command: string): string | null {
+  if (route === "tool") {
+    return "When a task needs an API key or other secret from the user, call the request_secret tool and they get a secure field in the chat; never ask for keys in plain conversation.";
+  }
+  if (route === "cli") {
+    return `When a task needs an API key or other secret from the user, run \`${command} secret "<what it is>" --hint "<where to find it>"\` and they get a secure field in the chat; never ask for keys in plain conversation.`;
+  }
+  return null;
 }
 
 export function cliBriefing(command: string): string {

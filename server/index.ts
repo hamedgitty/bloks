@@ -4,7 +4,7 @@
 // React app dispatches typed commands over HTTP and folds one SSE event
 // stream, and every provider process runs here.
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -120,7 +120,7 @@ import {
   updateCount,
   type RegistryEntry,
 } from "./skill-registry.ts";
-import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess } from "./agent-cli.ts";
+import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint } from "./agent-cli.ts";
 import {
   COMPACT_AT,
   compactionNotice,
@@ -2760,17 +2760,22 @@ async function startTurn(
   // told us about themselves in settings. Two kinds compose here: the
   // agent's own one-line skills, and full library skills it has attached.
   const attached = getSkills(bot.skillIds ?? []);
-  const connectorHint = [
-    cfg.composio?.key && bot.composio !== false
-      ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
-      : null,
-    "When a task needs an API key or other secret from the user, call the request_secret tool and they get a secure field in the chat; never ask for keys in plain conversation.",
-  ]
-    .filter(Boolean)
-    .join(" ");
   // Only a turn that gets a credential gets BLOKS_CLI in its environment
   // (see below), so anything else is told the path itself.
   const cliCommand = !sharing && runsAProcess(instance.driverKind) ? CLI_COMMAND : `node "${AGENT_CLI}"`;
+  // The asking tools (request_secret, request_connection) live in Claude
+  // Code's bridge and in the API tool loop, nowhere else. Every other
+  // engine with a credential asks for a key on the command line instead,
+  // and the rest are not told about either (GitHub 172).
+  const asksByTool = instance.driverKind === "claudeAgent" || specFor(instance.driverKind)?.tools === true;
+  const connectorHint = [
+    asksByTool && cfg.composio?.key && bot.composio !== false
+      ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
+      : null,
+    secretHint(asksByTool ? "tool" : !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
+  ]
+    .filter(Boolean)
+    .join(" ");
   const persona = [
     `You are ${bot.name}, a personal agent in Bloks.`,
     connectorHint,
@@ -10033,6 +10038,18 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such agent" });
       const body = await readBody(req);
       return json(res, 200, { result: suggestNote(bot, body.text, asAgent?.taskId) });
+    }
+    // `bloks secret`: the request_secret tool for an engine that does not
+    // have it. The same card in the same place, and the same answer the
+    // tool gives, so the agent ends its turn and is resumed on save.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/secrets$/);
+    if (m && method === "POST") {
+      if (!asAgent) return json(res, 403, { error: "this route is for an agent asking from inside its turn" });
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      const body = await readBody(req);
+      const roomId = activeRoom.get(asAgent.taskId) ?? asAgent.taskId;
+      return json(res, 200, { result: plantSecretCard(bot, roomId, randomUUID(), { name: body.name, hint: body.hint }) });
     }
 
     // An agent's own past, for the command line (server/recall.ts). The

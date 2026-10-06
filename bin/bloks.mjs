@@ -185,6 +185,28 @@ const COMMANDS = {
       return request("POST", `/api/bots/${me.botId ?? me.id}/notes`, { text });
     },
   },
+  secret: {
+    use: 'secret "<what it is>" [--hint "<where to find it>"]',
+    about:
+      "ask the person for an API key or other secret: a secure field appears in the chat, and the value is never shown to you there. " +
+      "Once they save it, it is in your environment on your next turn, under the name this answers with. End your turn after asking",
+    run: async (args) => {
+      const flags = parseFlags(args);
+      // the words that are not a flag or a flag's value are the label
+      const words = [];
+      for (let i = 0; i < args.length; i++) {
+        if (!args[i].startsWith("--")) words.push(args[i]);
+        else if (!args[i].includes("=") && args[i + 1] && !args[i + 1].startsWith("--")) i++;
+      }
+      const name = words.join(" ").trim();
+      if (!name) throw new Error('secret needs to say what it is, like "Transistor API key"');
+      const me = await request("GET", "/api/agent/whoami");
+      return request("POST", `/api/bots/${me.botId}/secrets`, {
+        name,
+        ...(flags.hint && flags.hint !== "true" ? { hint: flags.hint } : {}),
+      });
+    },
+  },
   hire: {
     use: 'hire --name <name> --title <role> [--about <description>] [--skills "a,b,c"] [--section <name>] [--pin] [--at <position>]',
     about:
