@@ -32,6 +32,7 @@ import { ChangesCard } from "./ChangesCard";
 import { ToolRun } from "./ToolRun";
 import { MeetingPanel } from "./MeetingPanel";
 import AudioLines from "lucide-react/dist/esm/icons/audio-lines.mjs";
+import Mic from "lucide-react/dist/esm/icons/mic.mjs";
 import {
   ForwardDialog,
   MessageActionBar,
@@ -51,9 +52,20 @@ import { cn } from "@/lib/cn";
  * the sentence the user actually typed.
  */
 function UserText({ text, highlight }: { text: string; highlight?: string }) {
-  const { display, images, files } = splitAttachments(text);
+  const { display, images, files, voice } = splitAttachments(text);
   return (
     <>
+      {/* a voice message: what it was heard as is the text below, and the
+          recording stays playable, because a transcript can be wrong */}
+      {voice.map((path, i) => (
+        <div key={i} className="mb-1 flex flex-col gap-1">
+          <span className="flex items-center gap-1 text-[11.5px] opacity-80">
+            <Mic size={12} />
+            Voice message, transcribed
+          </span>
+          <audio controls preload="none" src={`/api/attachments/${attachmentBasename(path)}`} className="h-8 max-w-full" />
+        </div>
+      ))}
       {images.length > 0 && (
         <div className="mb-1 flex flex-wrap gap-1.5">
           {images.map((path, i) => (

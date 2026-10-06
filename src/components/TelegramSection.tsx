@@ -20,6 +20,8 @@ interface Status {
   paired: number;
   pairing: string | null;
   botId: string | null;
+  /** Who hears a voice message sent to the bot. Null with no speech key. */
+  voiceVendor?: "elevenlabs" | "openai" | null;
 }
 
 export function TelegramSection() {
@@ -135,6 +137,12 @@ export function TelegramSection() {
               </option>
             ))}
           </select>
+          {/* voice leaves the machine to be heard, and that should be said where it is switched on */}
+          <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+            {status.voiceVendor
+              ? `Voice messages are sent to ${status.voiceVendor === "openai" ? "OpenAI" : "ElevenLabs"} to be transcribed, using your speech key.`
+              : "Voice messages need a speech key (OpenAI or ElevenLabs) to be transcribed. Without one the bot asks for text instead."}
+          </div>
           <div className="mt-2 flex items-center justify-between">
             <span className="text-[11.5px] text-muted-foreground">
               {status.paired} chat{status.paired === 1 ? "" : "s"} paired.
