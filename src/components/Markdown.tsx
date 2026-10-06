@@ -79,7 +79,9 @@ function inlineMd(text: string, keyBase: string, highlight: string, mentions?: R
               target="_blank"
               rel="noreferrer"
               title={token.href}
-              className="break-words underline underline-offset-2 hover:opacity-80"
+              // anywhere, not break-word: only anywhere lets a long URL
+              // stop setting the width of a table cell it sits in
+              className="underline underline-offset-2 [overflow-wrap:anywhere] hover:opacity-80"
             >
               {render(token.children, k)}
             </a>,
