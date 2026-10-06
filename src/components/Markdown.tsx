@@ -89,6 +89,12 @@ function inlineMd(text: string, keyBase: string, highlight: string, mentions?: R
   return render(parseInline(text), keyBase);
 }
 
+/** One line of inline markdown on its own, for places that are not a
+ * reply but should draw links the way a reply does: a table card's cells. */
+export function InlineMarkdown({ text }: { text: string }) {
+  return <>{inlineMd(text, "i", "")}</>;
+}
+
 /**
  * A table a model wrote, drawn as one.
  *

@@ -42,8 +42,8 @@ export const CATALOG: Array<{ kind: ComponentKind; takes: string; when: string }
   },
   {
     kind: "table",
-    takes: `{"title": "…", "columns": ["…"], "rows": [["…"]], "note": "…"}`,
-    when: "rows and columns, instead of pipes and dashes",
+    takes: `{"title": "…", "columns": ["…"], "rows": [["…", "[Bright loft](https://…)"]], "note": "…"}`,
+    when: "rows and columns, instead of pipes and dashes. A cell can hold a link",
   },
   {
     kind: "decision",
@@ -73,6 +73,11 @@ export const MAX_BARS = 24;
 export const MAX_STEPS = 24;
 export const MAX_TEXT = 2_000;
 export const MAX_LABEL = 120;
+/** A table cell, counted as the reader sees it: a link's label counts and
+ * its address does not, so a long URL does not eat the cell. The raw cap
+ * still bounds what reaches disk. */
+export const MAX_CELL = 300;
+export const MAX_CELL_RAW = 2_000;
 
 export interface Bar {
   label: string;
@@ -103,6 +108,31 @@ const text = (value: unknown, max = MAX_LABEL): string =>
   typeof value === "string" ? value.trim().slice(0, max) : "";
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/** `[label](http...)`, the shape the chat draws as a link, with one level
+ * of brackets allowed in the address, for the Wikipedia kind. Anything
+ * else shows on screen as typed, so it counts as typed. */
+const LINK = /\[([^[\]\n]+)\]\((https?:\/\/[^\s()[\]]*(?:\([^\s()[\]]*\)[^\s()[\]]*)*)\)/gi;
+
+/** A table cell cut to MAX_CELL visible characters. A link whose label
+ * would run past the cut keeps the part of its label that fits, as text. */
+function cell(value: unknown): string {
+  const raw = text(value, MAX_CELL_RAW);
+  let out = "";
+  let shown = 0;
+  let at = 0;
+  for (const m of raw.matchAll(LINK)) {
+    const before = raw.slice(at, m.index);
+    if (shown + before.length >= MAX_CELL) return out + before.slice(0, MAX_CELL - shown);
+    out += before;
+    shown += before.length;
+    if (shown + m[1].length > MAX_CELL) return out + m[1].slice(0, MAX_CELL - shown);
+    out += m[0];
+    shown += m[1].length;
+    at = m.index + m[0].length;
+  }
+  return out + raw.slice(at, at + MAX_CELL - shown);
+}
 
 /**
  * One component, checked into shape, or why it is not one.
@@ -142,7 +172,7 @@ export function parseComponent(kind: string, data: unknown): Parsed {
         .map((row) =>
           list(row)
             .slice(0, columns.length)
-            .map((cell) => text(cell, 300)),
+            .map(cell),
         )
         .filter((row) => row.length)
         // short rows are padded rather than refused: a missing cell is a

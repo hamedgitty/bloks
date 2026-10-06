@@ -5,6 +5,8 @@ import { describe, test } from "node:test";
 import {
   KINDS,
   MAX_BARS,
+  MAX_CELL,
+  MAX_CELL_RAW,
   MAX_COLUMNS,
   MAX_ROWS,
   galleryPrompt,
@@ -110,6 +112,46 @@ describe("a table", () => {
   test("a cell that is not text becomes nothing rather than [object Object]", () => {
     const parsed = ok(parseComponent("table", { columns: ["A"], rows: [[{ nested: true }]] }));
     assert.deepEqual(parsed.component.kind === "table" && parsed.component.rows[0], [""]);
+  });
+});
+
+describe("a table cell", () => {
+  const cellOf = (value: unknown) => {
+    const parsed = ok(parseComponent("table", { columns: ["A"], rows: [[value]] }));
+    return parsed.component.kind === "table" ? parsed.component.rows[0][0] : "";
+  };
+
+  test("a link is kept whole", () => {
+    assert.equal(cellOf("[Bright loft](https://example.com/loft)"), "[Bright loft](https://example.com/loft)");
+  });
+
+  test("a long address does not count against the cell", () => {
+    // the reader sees the label, so the label is what is limited
+    const href = `https://example.com/${"p".repeat(1_000)}`;
+    const value = `${"a".repeat(MAX_CELL - 10)} [listing](${href})`;
+    assert.equal(cellOf(value), value);
+  });
+
+  test("text past the limit is cut, links or not", () => {
+    const value = `[a](https://example.com) ${"x".repeat(MAX_CELL * 2)}`;
+    const kept = cellOf(value);
+    assert.ok(kept.startsWith("[a](https://example.com) "));
+    assert.equal(kept.length - "[](https://example.com)".length, MAX_CELL);
+  });
+
+  test("a label that runs past the limit keeps what fits, as text", () => {
+    const kept = cellOf(`${"a".repeat(MAX_CELL - 3)}[longer label](https://example.com)`);
+    assert.equal(kept, `${"a".repeat(MAX_CELL - 3)}lon`);
+  });
+
+  test("an address that is not http counts as the text it shows", () => {
+    const value = `[x](javascript:${"y".repeat(MAX_CELL)})`;
+    assert.equal(cellOf(value).length, MAX_CELL);
+  });
+
+  test("however many links, the raw cell is still bounded", () => {
+    const value = `[a](https://example.com/${"z".repeat(500)}) `.repeat(20);
+    assert.ok(cellOf(value).length <= MAX_CELL_RAW);
   });
 });
 
