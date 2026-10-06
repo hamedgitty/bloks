@@ -178,7 +178,7 @@ describe("reading a file someone sent", () => {
       over({ memory: { text: "", topics: [{ name: "a.md", text: "x".repeat(LIMITS.topicBytes + 1) }] } }).ok,
       false,
     );
-    assert.equal(over({ skills: [{ id: "a", name: "A", body: "x".repeat(LIMITS.skillBytes + 1) }] }).ok, false);
+    assert.equal(over({ skills: [{ id: "a", name: "A", body: "x".repeat(LIMITS.skillChars + 1) }] }).ok, false);
     assert.equal(
       over({ skills: Array.from({ length: LIMITS.skills + 1 }, (_, i) => ({ id: `s${i}`, body: "x" })) }).ok,
       false,

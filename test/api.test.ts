@@ -488,6 +488,36 @@ describe("skills", () => {
     });
     assert.ok(res.status >= 400, `expected a refusal, got ${res.status}`);
   });
+
+  test("the limit counts characters, not bytes (#165)", async () => {
+    // 16,000 Cyrillic characters is 32,000 bytes, which used to be refused
+    const fits = await h.fetch("/api/skills", {
+      method: "POST",
+      body: JSON.stringify({ name: "Russian", body: "я".repeat(16_000) }),
+    });
+    assert.equal(fits.status, 201);
+
+    const over = await h.fetch("/api/skills", {
+      method: "POST",
+      body: JSON.stringify({ name: "Russian too", body: "я".repeat(16_001) }),
+    });
+    assert.equal(over.status, 413);
+    assert.match((await over.json()).error, /16,001 characters/);
+  });
+
+  test("a skill file edited past the limit is cut at it, not skipped", async () => {
+    // 20,000 CJK characters is 60,000 bytes, more than the old guard of
+    // twice the limit in bytes, so the file used to vanish from the list
+    mkdirSync(join(h.home, ".bloks", "skills"), { recursive: true });
+    writeFileSync(
+      join(h.home, ".bloks", "skills", "long-hand.md"),
+      `---\nname: Long hand\ndescription: edited by hand\n---\n\n${"漢".repeat(20_000)}\n`,
+    );
+    const { skills } = await h.json("/api/skills");
+    const mine = skills.find((s: any) => s.id === "long-hand");
+    assert.ok(mine, "the file should still be listed");
+    assert.equal([...mine.body].length, 16_000);
+  });
 });
 
 describe("agents", () => {

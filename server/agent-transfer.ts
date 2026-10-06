@@ -36,7 +36,9 @@ export const LIMITS = {
   topics: 50,
   topicBytes: 256 * 1024,
   skills: 40,
-  skillBytes: 16_000,
+  /** Characters, not bytes, because this is the skill library's own limit
+   * and a skill that installs here has to fit in a file going out. */
+  skillChars: 16_000,
   avatar: 2 * 1024 * 1024,
 } as const;
 
@@ -241,7 +243,7 @@ export function packAgent(input: PackInput): AgentFile {
       id: slug(s.id || s.name),
       name: trim(s.name, LIMITS.name) || slug(s.id || s.name),
       description: trim(s.description, 200),
-      body: clampBytes(s.body.trim(), LIMITS.skillBytes),
+      body: [...s.body.trim()].slice(0, LIMITS.skillChars).join(""),
     }));
   if (skills.length) file.skills = skills;
 
@@ -400,7 +402,7 @@ export function parseAgentFile(value: unknown): ParseResult {
       if (!isRecord(entry)) return { ok: false, error: "that agent file's skills are malformed" };
       const body = typeof entry.body === "string" ? entry.body.trim() : "";
       if (!body) continue;
-      if (bytes(body) > LIMITS.skillBytes) {
+      if ([...body].length > LIMITS.skillChars) {
         return { ok: false, error: "one of that agent's skills is too large" };
       }
       const id = slug(typeof entry.id === "string" && entry.id ? entry.id : String(entry.name ?? ""));

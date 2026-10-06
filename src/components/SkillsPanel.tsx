@@ -23,8 +23,21 @@ import { SkillCatalog } from "./SkillCatalog";
 import { cn } from "@/lib/cn";
 import { DiffLines, type DiffLine } from "./DiffLines";
 import { useEscape } from "@/lib/useEscape";
+import { MAX_SKILL_CHARS, skillLength } from "@/lib/skillLength";
 
-const MAX_SKILL_BYTES = 16_000;
+/** How long the instructions are against the limit, red once over it. */
+function LengthCount({ length }: { length: number }) {
+  return (
+    <span
+      className={cn(
+        "text-[11.5px] tabular-nums",
+        length > MAX_SKILL_CHARS ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
+      {length.toLocaleString()} / {MAX_SKILL_CHARS.toLocaleString()}
+    </span>
+  );
+}
 
 /** Best name for a pasted or dropped document: the frontmatter's own
  * name wins, then a leading heading, then the filename. */
@@ -53,7 +66,8 @@ function ReviewImport({
   const [name, setName] = useState(draft.name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const tooLong = new Blob([draft.markdown]).size > MAX_SKILL_BYTES;
+  const length = skillLength(draft.markdown);
+  const tooLong = length > MAX_SKILL_CHARS;
 
   const install = () => {
     setSaving(true);
@@ -95,7 +109,8 @@ function ReviewImport({
 
       {tooLong && (
         <div className="mt-2 text-[12px] text-destructive">
-          Too long. Skills are capped at {MAX_SKILL_BYTES.toLocaleString()} characters.
+          Too long. This skill is {length.toLocaleString()} characters, and skills are capped at{" "}
+          {MAX_SKILL_CHARS.toLocaleString()}.
         </div>
       )}
       {error && <div className="mt-2 text-[12px] text-destructive">{error}</div>}
@@ -176,6 +191,9 @@ function AddSkill({
         placeholder={`Use this when…\n\n1. First step\n2. Second step\n\nNot for: when to leave this alone.\nReturn: what to hand back.\nApproval: what needs a human first.`}
         className="min-h-[180px] flex-1 resize-none font-mono text-[12px] leading-relaxed"
       />
+      <div className="mt-1.5 text-right">
+        <LengthCount length={skillLength(markdown)} />
+      </div>
 
       <div className="mt-3 flex gap-2">
         <Button variant="secondary" onClick={onBack} className="flex-1">
