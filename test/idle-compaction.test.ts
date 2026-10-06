@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { compactedNotice, idleCompactionDue, shortTokens, type IdleLane } from "../server/context.ts";
 import { cacheTtlOf, promptSize, readCompactBoundary } from "../server/drivers/claude.ts";
-import { startHarness } from "./helpers/server.ts";
+import { startHarness, type Harness } from "./helpers/server.ts";
 
 const HOUR = 60 * 60_000;
 const MIN = 60_000;
@@ -98,7 +98,9 @@ const waitFor = async <T,>(check: () => Promise<T | null | undefined> | T | null
   return null;
 };
 
-test("a quiet Claude Code lane is compacted without a word in the person's name, and what is said meanwhile waits", async (t) => {
+/** A home with idle compaction on and the fake Claude Code below, whose
+ * /compact takes `compactMs`. */
+function fakeClaudeHome(compactMs = 1500): string {
   const home = mkdtempSync(join(tmpdir(), "bloks-idle-compact-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
   writeFileSync(
@@ -129,7 +131,7 @@ process.stdin.on("end", async () => {
   appendFileSync(${JSON.stringify(join(home, "runs.jsonl"))}, JSON.stringify({ said, args }) + "\\n");
   out({ type: "system", subtype: "init", session_id: "sess-162", model: "claude-sonnet-5" });
   if (said === "/compact") {
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, ${compactMs}));
     out({ type: "system", subtype: "compact_boundary", session_id: "sess-162", compact_metadata: { trigger: "manual", pre_tokens: 176000, post_tokens: 50000 } });
     out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 1400, total_cost_usd: total, session_id: "sess-162", result: "", usage: { input_tokens: 3, cache_read_input_tokens: 176000, output_tokens: 9000 } });
     return;
@@ -142,6 +144,11 @@ process.stdin.on("end", async () => {
 `,
     { mode: 0o755 },
   );
+  return home;
+}
+
+test("a quiet Claude Code lane is compacted without a word in the person's name, and what is said meanwhile waits", async (t) => {
+  const home = fakeClaudeHome();
   // an hour is eight seconds here: the window is about 7.3s to 7.7s
   const h = await startHarness({ HOME: home, BLOKS_IDLE_CACHE_MS: "8000" });
   t.after(async () => {
@@ -194,4 +201,44 @@ process.stdin.on("end", async () => {
     "the waiting message never went",
   );
   assert.equal(runs().filter((r) => r.said === "/compact").length, 2);
+});
+
+test("an idle compaction cut off by a restart is dropped, not picked up", async (t) => {
+  // long enough to still be running when the server goes
+  const home = fakeClaudeHome(20_000);
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const runs = () =>
+    existsSync(join(home, "runs.jsonl"))
+      ? readFileSync(join(home, "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+      : [];
+  const inFlight = () => {
+    try {
+      return JSON.parse(readFileSync(join(home, ".bloks", "turns-in-flight.json"), "utf8")) as any[];
+    } catch {
+      return [];
+    }
+  };
+  const messages = async (h: Harness, id: string) => (await h.json(`/api/bots/${id}/messages?limit=100`)).messages as any[];
+
+  const first = await startHarness({ HOME: home, BLOKS_IDLE_CACHE_MS: "8000" });
+  const { bot } = await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Keeper" }) });
+  await first.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+  await first.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "start" }) });
+  assert.ok(await waitFor(async () => (await messages(first, bot.id)).some((m) => m.text === "Reply 1")), "the first turn never answered");
+  assert.ok(await waitFor(() => (runs().at(-1)?.said === "/compact" ? true : null)), "the quiet lane was never compacted");
+  // Nobody asked for it, so it is not a turn that can be cut off: picking
+  // it up would tell the person their agent was interrupted, and tell the
+  // agent to carry on with work it never chose to do.
+  assert.deepEqual(inFlight(), [], "the compaction was written down as a turn in flight");
+  await first.crash();
+
+  const second = await startHarness({ HOME: home, BLOKS_IDLE_CACHE_MS: "8000" });
+  t.after(() => second.stop());
+  const ran = runs().length;
+  await new Promise((r) => setTimeout(r, 2_000));
+  assert.equal(runs().length, ran, "something ran in the lane after the restart");
+  const after = await messages(second, bot.id);
+  assert.equal(after.filter((m) => m.kind === "notice" && /cut off/.test(m.text ?? "")).length, 0, "the person was told of a cut-off");
+  const agent = (await second.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id);
+  assert.equal(agent.busy, false, "the lane came back busy");
 });
