@@ -86,6 +86,33 @@ function ThisBrowser() {
   );
 }
 
+function PairLinkRow({
+  label,
+  link,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  link: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="mt-2.5">
+      <div className="text-[12px] text-foreground">{label}</div>
+      <div className="mt-1 flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded-md bg-background px-2 py-1.5 font-mono text-[11.5px] text-muted-foreground">
+          {link}
+        </code>
+        <Button size="sm" variant="secondary" onClick={onCopy}>
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function PairingControls() {
   const [status, setStatus] = useState<PairStatus | null>(null);
   const [window_, setWindow] = useState<{
@@ -95,8 +122,8 @@ function PairingControls() {
     /** Where the phone should dial, for somebody typing the code by hand. */
     address: string | null;
   } | null>(null);
-  const [browserLink, setBrowserLink] = useState<{ link: string; expiresAt: number } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [browserLink, setBrowserLink] = useState<{ web: string; pair: string; expiresAt: number } | null>(null);
+  const [copied, setCopied] = useState<"web" | "pair" | null>(null);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const inflight = useRef(false);
@@ -165,11 +192,14 @@ function PairingControls() {
 
   // A link for Bloks in a browser: one use, fifteen minutes, through
   // Bloks Cloud. Shown here only, because the link is the whole key.
+  // The server hands back the same pairing twice, once for a browser and
+  // once for the Bloks app or another computer. Both are shown: keeping
+  // only the browser one left people building the other by hand.
   const makeBrowserLink = () => {
     setError(null);
-    setCopied(false);
+    setCopied(null);
     api("/api/pair/link", { method: "POST" })
-      .then((made) => setBrowserLink({ link: made.webLink ?? made.link, expiresAt: made.expiresAt }))
+      .then((made) => setBrowserLink({ web: made.webLink ?? made.link, pair: made.link, expiresAt: made.expiresAt }))
       .catch((e: Error) => setError(e.message));
   };
   const browserSecondsLeft = browserLink ? Math.max(0, Math.round((browserLink.expiresAt - now) / 1000)) : 0;
@@ -264,6 +294,16 @@ function PairingControls() {
                 <Button variant="ghost" size="sm" className="mt-2 text-muted-foreground" onClick={cancel}>
                   Cancel
                 </Button>
+                {/* a camera that will not focus, or a phone on another
+                    network, is a dead end without a way round the QR */}
+                {!browserLink && (
+                  <div className="mt-1 text-[11.5px] text-muted-foreground">
+                    QR will not scan?{" "}
+                    <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={makeBrowserLink}>
+                      Use a link instead
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
@@ -281,25 +321,25 @@ function PairingControls() {
 
           {browserLink && browserSecondsLeft > 0 && (
             <div className="mt-3 rounded-xl border bg-muted/40 p-3" data-browser-link>
-              <div className="text-[13px] font-medium text-foreground">Open this in the browser you want to use</div>
+              <div className="text-[13px] font-medium text-foreground">Pair with a link</div>
               <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
-                It works once, for {Math.ceil(browserSecondsLeft / 60)} more minute{browserSecondsLeft > 60 ? "s" : ""}, through
-                Bloks Cloud. Whoever opens it becomes one of your devices, so keep it to yourself.
+                Both links are the same pairing and work once, for {Math.ceil(browserSecondsLeft / 60)} more
+                minute{browserSecondsLeft > 60 ? "s" : ""}, through Bloks Cloud. Whoever opens one becomes one of
+                your devices, so keep them to yourself.
               </div>
-              <div className="mt-2 flex items-center gap-2">
-                <code className="min-w-0 flex-1 truncate rounded-md bg-background px-2 py-1.5 font-mono text-[11.5px] text-muted-foreground">
-                  {browserLink.link}
-                </code>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() =>
-                    void navigator.clipboard.writeText(browserLink.link).then(() => setCopied(true))
-                  }
-                >
-                  {copied ? <Check size={13} /> : <Copy size={13} />}
-                  {copied ? "Copied" : "Copy"}
-                </Button>
+              <PairLinkRow
+                label="Open in a browser"
+                link={browserLink.web}
+                copied={copied === "web"}
+                onCopy={() => void navigator.clipboard.writeText(browserLink.web).then(() => setCopied("web"))}
+              />
+              <PairLinkRow
+                label="Paste into the Bloks app or Bloks on another computer"
+                link={browserLink.pair}
+                copied={copied === "pair"}
+                onCopy={() => void navigator.clipboard.writeText(browserLink.pair).then(() => setCopied("pair"))}
+              />
+              <div className="mt-2 flex justify-end">
                 <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setBrowserLink(null)}>
                   Done
                 </Button>
