@@ -46,7 +46,7 @@ import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { ModelSelection, RuntimeEvent } from "./contracts.ts";
+import type { ModelSelection, RuntimeEvent, SendTurnInput } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -54,7 +54,7 @@ import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.t
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile } from "./store.ts";
+import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile, type TaskRecord } from "./store.ts";
 import { addressees, BlokStore, currentSpend, MAX_MEMBERS, type BlokRecord, type RoomSharing } from "./bloks.ts";
 import { cleanSectionOrder, placeAt, SidebarStore, sidebarView, upgradePlaces, type Placed } from "./sidebar.ts";
 import { extractTeamPlan, MAX_HIRES, normalizePlan, TEAM_PROTOCOL, type TeamPlan } from "./teams.ts";
@@ -122,9 +122,12 @@ import {
 } from "./skill-registry.ts";
 import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint } from "./agent-cli.ts";
 import {
+  CACHE_LIFETIME_MS,
   COMPACT_AT,
+  compactedNotice,
   compactionNotice,
   contextLimitFor,
+  idleCompactionDue,
   isContextError,
   planCompaction,
   pressure,
@@ -1032,13 +1035,16 @@ function clientBot(bot: BotRecord | null) {
       const limit = contextLimitFor(bot.modelSelection?.model);
       const fill = pressure(task.lastInput ?? 0, limit);
       const said = store.messagesFor(task.id);
+      // a compaction marker is not something happening in the lane
+      let last = said.length - 1;
+      while (last >= 0 && said[last].compaction) last--;
       return {
         id: task.id,
         title: task.title,
         state,
         unread: Boolean(task.unread),
         // when this lane last had anything in it, for the sidebar's times
-        lastAt: said[said.length - 1]?.at ?? task.createdAt,
+        lastAt: said[last]?.at ?? task.createdAt,
         createdAt: task.createdAt,
         usage: task.usage,
         context: {
@@ -1482,6 +1488,8 @@ function recoverPlan(messageId: string, botId: string) {
 }
 
 bus.subscribe((event: RuntimeEvent) => {
+  // a compaction Bloks started on a quiet lane is not a turn anyone took
+  if (idleCompacting.has(event.threadId)) return onIdleCompaction(event);
   broadcast({ kind: "runtime", event });
   const bot = store.botByThread(event.threadId);
   if (!bot) return;
@@ -1863,6 +1871,17 @@ bus.subscribe((event: RuntimeEvent) => {
       high.input = Math.max(high.input, event.input);
       high.output = Math.max(high.output, event.output);
       turnTokens.set(event.threadId, high);
+      noteRequest(event);
+      break;
+    }
+    case "context.compacted": {
+      lastRequest.delete(event.threadId);
+      pushMessage({
+        role: "bot",
+        kind: "notice",
+        text: compactedNotice(event),
+        compaction: { before: event.before, after: event.after },
+      });
       break;
     }
     case "runtime.error": {
@@ -3098,7 +3117,7 @@ async function startTurn(
         }
       }
 
-      await instance.adapter.sendTurn({
+      const sending: SendTurnInput = {
         threadId: task.id,
         cwd: turnCwd,
         ...(credential
@@ -3144,7 +3163,19 @@ async function startTurn(
           (credential ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
           (project ? `\n\n${briefFor(project)}` : ""),
         integrations,
-      });
+      };
+      // What an idle compaction sends again later, so its request starts
+      // with the same tools and system prompt as this one and reads the
+      // cache this turn leaves. Not the words, the transcript, or the
+      // turn's credential and secrets. Not a shared room's lane, a
+      // rehearsal, or a turn on the Local VM, which has to be claimed.
+      if (instance.driverKind === "claudeAgent" && !sharing && !opts.rehearsal && !vmTurn) {
+        const { text: _text, transcript: _transcript, env: _env, resumeCursor: _cursor, ...kept } = sending;
+        lastSent.set(task.id, { instanceId, input: kept });
+      } else {
+        lastSent.delete(task.id);
+      }
+      await instance.adapter.sendTurn(sending);
       if (integrations.computer) startScreenPoller(bot.id);
       store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
@@ -4475,6 +4506,190 @@ function settleJob(threadId: string, ok: boolean, said: string) {
   jobs.passed(jobId, claim.because, now);
   broadcast({ kind: "jobs" });
   void offerJob(jobId);
+}
+
+// ── compacting a quiet conversation before its cache expires ─────────
+// See server/context.ts for why and when (GitHub 162). A minute timer
+// looks over the lanes; one that is due gets `/compact` sent into its
+// resumed Claude Code session as a turn of its own. It runs as the lane's
+// turn so everything that waits for a busy lane waits for it too: a
+// message said meanwhile is queued, a room mention is held, and both go
+// when it ends. Nothing else about a turn happens. It writes nothing in
+// the person's name, marks nothing unread, reaches no other agent or
+// room, and only the marker the engine's compact_boundary leaves is
+// posted. What it spends is counted in Usage like any turn.
+
+/** Each lane's last model request, as Claude Code reported it. In memory
+ * only: after a restart nobody knows when a cache was last touched, and a
+ * lane that is not compacted costs what it always did. */
+const lastRequest = new Map<string, { at: number; context: number; cacheTtl?: "5m" | "1h" }>();
+
+/** What each lane's last Claude Code turn was sent, less its words. */
+const lastSent = new Map<string, { instanceId: string; input: Omit<SendTurnInput, "threadId" | "text"> }>();
+
+/** Lanes compacting now, to the agent they belong to, and what the
+ * engine said the session came down to. */
+const idleCompacting = new Map<string, { botId: string; after?: number | null }>();
+
+/** A compaction takes about a minute, and many agents can go quiet at
+ * the same moment. Two at a time; a lane whose window passes while it
+ * waits is skipped (idleCompactionDue). */
+const IDLE_COMPACTIONS_AT_ONCE = 2;
+
+/** How long one may run before it is stopped. They took about a
+ * minute in the reports that asked for this. */
+const IDLE_COMPACTION_LIMIT_MS = 5 * 60_000;
+
+/** The cache lifetime the timing is cut from. Tests shorten it. */
+const IDLE_CACHE_MS = Number(process.env.BLOKS_IDLE_CACHE_MS) || CACHE_LIFETIME_MS;
+
+function noteRequest(event: Extract<RuntimeEvent, { type: "thread.token-usage.updated" }>) {
+  // only an engine that reports the whole prompt can be judged by it
+  if (typeof event.context !== "number") return;
+  const seen = lastRequest.get(event.threadId);
+  lastRequest.set(event.threadId, {
+    at: Date.now(),
+    context: event.context,
+    // a request that hit the cache entirely wrote nothing, and says nothing
+    cacheTtl: event.cacheTtl ?? seen?.cacheTtl,
+  });
+}
+
+function sweepIdleLanes(now = Date.now()) {
+  if (!cfg.compaction?.idle || idleCompacting.size >= IDLE_COMPACTIONS_AT_ONCE) return;
+  const due: Array<{ bot: BotRecord; task: TaskRecord; at: number }> = [];
+  for (const bot of store.bots) {
+    for (const task of bot.tasks) {
+      const seen = lastRequest.get(task.id);
+      const sent = lastSent.get(task.id);
+      if (!seen || !sent) continue;
+      // the session it would compact is the one the next message resumes
+      const engine = selectEngine(bot).instanceId;
+      if (sent.instanceId !== engine || task.lastInstanceId !== engine || typeof task.resumeCursors[engine] !== "string") continue;
+      const ready = idleCompactionDue({
+        enabled: true,
+        now,
+        lastRequestAt: seen.at,
+        context: seen.context,
+        cacheTtl: seen.cacheTtl,
+        // activeRoom and webhookLanes are set before a turn marks its lane busy
+        busy: Boolean(task.busy) || turnStarted.has(task.id) || activeRoom.has(task.id) || webhookLanes.has(task.id),
+        queued: steerQueues.has(task.id) || beingEdited.has(task.id),
+        waiting: Boolean(blockedOn(store.messagesFor(task.id), liveCards())),
+        paused:
+          Boolean(bot.archivedAt) ||
+          Boolean(wheel.heldBy(bot.id)) ||
+          Boolean(cooldowns.of(engine)) ||
+          isSharedLane(task.id) ||
+          Boolean(rehearsals.forTask(task.id)),
+        lifetime: IDLE_CACHE_MS,
+      });
+      if (ready) due.push({ bot, task, at: seen.at });
+    }
+  }
+  // the one closest to losing its cache first
+  due.sort((a, b) => a.at - b.at);
+  for (const { bot, task } of due.slice(0, IDLE_COMPACTIONS_AT_ONCE - idleCompacting.size)) compactWhileIdle(bot, task);
+}
+setInterval(() => sweepIdleLanes(), Math.min(60_000, IDLE_CACHE_MS / 60)).unref?.();
+
+function compactWhileIdle(bot: BotRecord, task: TaskRecord) {
+  const sent = lastSent.get(task.id);
+  const instance = sent ? registry.get(sent.instanceId) : undefined;
+  const cursor = sent ? task.resumeCursors[sent.instanceId] : undefined;
+  if (!sent || !instance || typeof cursor !== "string") return;
+  const run = { botId: bot.id };
+  idleCompacting.set(task.id, run);
+  // whatever happens next, this quiet stretch has had its chance
+  lastRequest.delete(task.id);
+  store.setTaskBusy(task.id, true);
+  turnStarted.set(task.id, Date.now());
+  turnTokens.delete(task.id);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  instance.adapter
+    .sendTurn({ ...sent.input, threadId: task.id, text: "/compact", resumeCursor: cursor })
+    .catch(() => idleCompactionEnded(task.id));
+  // Nobody asked for this turn, so it must not hold the lane, and the
+  // messages queued behind it, for long. Stopped after a few minutes,
+  // and let go of if the engine does not say it stopped.
+  const stop = setTimeout(() => {
+    if (idleCompacting.get(task.id) !== run) return;
+    void instance.adapter.interruptTurn(task.id).catch(() => {});
+    const letGo = setTimeout(() => idleCompacting.get(task.id) === run && idleCompactionEnded(task.id), 30_000);
+    letGo.unref?.();
+  }, IDLE_COMPACTION_LIMIT_MS);
+  stop.unref?.();
+}
+
+/** Events from an idle compaction. Only what keeps the books goes
+ * through: the session cursor, the tokens, the marker, and the end. */
+function onIdleCompaction(event: RuntimeEvent) {
+  const running = idleCompacting.get(event.threadId);
+  const bot = running ? store.bot(running.botId) : undefined;
+  if (!running || !bot) return;
+  switch (event.type) {
+    case "turn.started":
+      broadcast({ kind: "runtime", event });
+      break;
+    case "session.started":
+      if (event.sessionId && event.providerInstanceId) {
+        store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
+      }
+      break;
+    case "thread.token-usage.updated": {
+      usage.noteTokens(bot.id, event.providerInstanceId ?? event.provider, event.input, event.output);
+      const high = turnTokens.get(event.threadId) ?? { input: 0, output: 0 };
+      high.input = Math.max(high.input, event.input);
+      high.output = Math.max(high.output, event.output);
+      turnTokens.set(event.threadId, high);
+      break;
+    }
+    case "context.compacted": {
+      running.after = event.after;
+      const marker = store.appendMessage(event.threadId, {
+        role: "bot",
+        kind: "notice",
+        text: compactedNotice({ ...event, idle: true }),
+        compaction: { before: event.before, after: event.after, idle: true },
+      });
+      broadcast({ kind: "message", threadId: event.threadId, message: marker });
+      break;
+    }
+    case "request.opened":
+      // nothing should ask during /compact, and nobody is there to answer
+      if (event.requestId) {
+        void registry
+          .get(event.providerInstanceId ?? "")
+          ?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "deny" })
+          .catch(() => {});
+      }
+      break;
+    case "turn.completed": {
+      broadcast({ kind: "runtime", event });
+      usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null);
+      const spent = turnTokens.get(event.threadId);
+      turnTokens.delete(event.threadId);
+      if (spent) store.addTaskUsage(event.threadId, spent.input, spent.output, running.after ?? undefined);
+      idleCompactionEnded(event.threadId);
+      break;
+    }
+  }
+}
+
+/** The lane is free again, and whatever waited for it goes now. */
+function idleCompactionEnded(laneId: string) {
+  const running = idleCompacting.get(laneId);
+  if (!running) return;
+  idleCompacting.delete(laneId);
+  store.setTaskBusy(laneId, false);
+  turnStarted.delete(laneId);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(running.botId)) });
+  drainRoomTags(running.botId);
+  freshIfAsked(laneId);
+  drainSteer(laneId);
+  closeIfAsked(laneId);
+  // a slot is free, and another lane may be in its window now
+  sweepIdleLanes();
 }
 
 /**
@@ -6045,7 +6260,7 @@ function configStatus() {
     shortcuts: { quickAsk: cfg.shortcuts?.quickAsk ?? null },
     // off unless somebody turned it on; see server/context.ts for what it
     // trades against the fold it defers
-    compaction: { micro: Boolean(cfg.compaction?.micro) },
+    compaction: { micro: Boolean(cfg.compaction?.micro), idle: Boolean(cfg.compaction?.idle) },
     // off unless asked for: reading a session back spends tokens on work
     // nobody requested, and what it finds is staged rather than installed
     skills: { propose: Boolean(cfg.skills?.propose) },
@@ -8918,6 +9133,7 @@ const server = createServer(async (req, res) => {
           speechElevenlabs: Boolean(speechStatus.elevenlabs),
           speechOpenai: Boolean(speechStatus.openai),
           compactionMicro: Boolean(cfg.compaction?.micro),
+          compactionIdle: Boolean(cfg.compaction?.idle),
           skillsPropose: Boolean(cfg.skills?.propose),
         },
         engines: rows.map(
@@ -11540,9 +11756,14 @@ const server = createServer(async (req, res) => {
       // A boolean, not a credential, so it rides outside the string table
       // like the consent flags do.
       if (body.compaction && typeof body.compaction === "object" && !Array.isArray(body.compaction)) {
-        const micro = (body.compaction as Record<string, unknown>).micro;
-        if (typeof micro === "boolean") {
-          saveConfig({ compaction: { micro } });
+        const { micro, idle } = body.compaction as Record<string, unknown>;
+        if (typeof micro === "boolean" || typeof idle === "boolean") {
+          saveConfig({
+            compaction: {
+              ...(typeof micro === "boolean" ? { micro } : {}),
+              ...(typeof idle === "boolean" ? { idle } : {}),
+            },
+          });
           Object.assign(cfg, loadConfig());
           wroteSomething = true;
         }

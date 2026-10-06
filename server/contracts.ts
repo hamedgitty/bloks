@@ -76,7 +76,7 @@ export interface RuntimeEventBase {
 /**
  * Everything that can happen during a turn.
  *
- * Worth knowing about three of these:
+ * Worth knowing about four of these:
  *
  *   `content.delta` is text as it is produced. Some providers stream token
  *   by token and some hand over a whole paragraph at once; both emit this,
@@ -88,6 +88,9 @@ export interface RuntimeEventBase {
  *
  *   `request.opened` means the turn is now blocked on a human. Nothing
  *   proceeds until a matching `request.resolved` arrives.
+ *
+ *   `context.compacted` is the engine summarising its own session, which
+ *   Bloks did not ask for unless it sent the turn that did it.
  */
 export type RuntimeEvent = RuntimeEventBase &
   (
@@ -124,7 +127,25 @@ export type RuntimeEvent = RuntimeEventBase &
         choices?: string[];
       }
     | { type: "request.resolved"; behavior: string; source: string }
-    | { type: "thread.token-usage.updated"; input: number; output: number }
+    | {
+        type: "thread.token-usage.updated";
+        input: number;
+        output: number;
+        /** The whole prompt this request carried, cache writes included,
+         * which `input` leaves out. How full the session is right now. */
+        context?: number;
+        /** How long the provider keeps this prompt cached, when the
+         * request wrote to the cache and said which lifetime it used. */
+        cacheTtl?: "5m" | "1h";
+      }
+    | {
+        /** The engine summarised its own session. Token counts are what
+         * the engine reported, either of which may be missing. */
+        type: "context.compacted";
+        trigger: string | null;
+        before: number | null;
+        after: number | null;
+      }
     | { type: "runtime.error"; message: string }
   );
 

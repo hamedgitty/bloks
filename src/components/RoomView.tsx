@@ -188,7 +188,7 @@ function RoomMessage({
     );
   }
 
-  if (message.kind === "notice" && message.event) {
+  if (message.kind === "notice" && (message.event || message.compaction)) {
     return <div className="py-1 text-center text-[12px] text-muted-foreground">{message.text}</div>;
   }
 

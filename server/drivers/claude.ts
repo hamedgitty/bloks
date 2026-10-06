@@ -160,6 +160,41 @@ function textOf(content: unknown): string {
     .join("");
 }
 
+/** A count the CLI reported, or null for anything that is not one. */
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
+/**
+ * What a `compact_boundary` frame says happened. Claude Code puts the
+ * numbers under `compact_metadata`; older builds put some of them on the
+ * frame itself, so both are read. Null for any other frame.
+ */
+export function readCompactBoundary(frame: any): { trigger: string | null; before: number | null; after: number | null } | null {
+  if (frame?.type !== "system" || frame.subtype !== "compact_boundary") return null;
+  const meta = frame.compact_metadata && typeof frame.compact_metadata === "object" ? frame.compact_metadata : frame;
+  return {
+    trigger: typeof meta.trigger === "string" ? meta.trigger : null,
+    before: count(meta.pre_tokens),
+    after: count(meta.post_tokens),
+  };
+}
+
+/** Everything one request sent: the new part, what was read from the
+ * cache, and what was written to it. */
+export function promptSize(usage: any): number {
+  return (count(usage?.input_tokens) ?? 0) + (count(usage?.cache_read_input_tokens) ?? 0) + (count(usage?.cache_creation_input_tokens) ?? 0);
+}
+
+/** Which cache lifetime a request wrote with, when it wrote at all. The
+ * CLI decides this, not Bloks, so it is read off what it reports. */
+export function cacheTtlOf(usage: any): "5m" | "1h" | undefined {
+  const written = usage?.cache_creation;
+  if ((count(written?.ephemeral_1h_input_tokens) ?? 0) > 0) return "1h";
+  if ((count(written?.ephemeral_5m_input_tokens) ?? 0) > 0) return "5m";
+  return undefined;
+}
+
 export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Claude", supportsMultipleInstances: true },
@@ -455,6 +490,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // A result that did nothing (see `case "result"`), held until the
       // real one arrives or the process ends without one.
       let held: any = null;
+      /** Whether any assistant frame carried usage this turn. */
+      let reportedUsage = false;
       let watch: ReturnType<typeof setInterval> | null = null;
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finished) return;
@@ -482,6 +519,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       /** End the turn on a result frame, charging only this turn's share
        * of the session's running total (GitHub 137). */
       const settle = (frame: any) => {
+        // A turn that never spoke as the assistant, /compact for one, still
+        // made requests, and the result is the only place they are counted.
+        // No context size: what /compact read is not what the session holds
+        // after it.
+        if (!reportedUsage && frame.usage) {
+          emit({
+            ...envelope(threadId, turnId),
+            type: "thread.token-usage.updated",
+            input: (count(frame.usage.input_tokens) ?? 0) + (count(frame.usage.cache_read_input_tokens) ?? 0),
+            output: count(frame.usage.output_tokens) ?? 0,
+          });
+        }
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
         if (stopping) {
@@ -530,6 +579,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 itemType: "reasoning",
                 tokens: frame.estimated_tokens,
               });
+            } else {
+              const compacted = readCompactBoundary(frame);
+              if (compacted) emit({ ...envelope(threadId, turnId), type: "context.compacted", ...compacted });
             }
             break;
 
@@ -587,6 +639,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               });
             }
             if (message.usage) {
+              reportedUsage = true;
+              const ttl = cacheTtlOf(message.usage);
               emit({
                 ...envelope(threadId, turnId),
                 type: "thread.token-usage.updated",
@@ -594,6 +648,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 // even when they cost less
                 input: (message.usage.input_tokens || 0) + (message.usage.cache_read_input_tokens || 0),
                 output: message.usage.output_tokens || 0,
+                context: promptSize(message.usage),
+                ...(ttl ? { cacheTtl: ttl } : {}),
               });
             }
             break;

@@ -101,6 +101,8 @@ export interface Message {
   author?: string;
   /** A room event (someone joined or left), not a warning. */
   event?: boolean;
+  /** Where the engine compacted its session: a line, not a warning. */
+  compaction?: { before: number | null; after: number | null; idle?: boolean };
   kind:
     | "text"
     | "options"
@@ -276,7 +278,7 @@ export interface ConfigStatus {
   /** Shared context for every agent, not a secret, so it round-trips. */
   profile?: { about: string };
   /** How lanes are kept inside the model's window. */
-  compaction?: { micro: boolean };
+  compaction?: { micro: boolean; idle?: boolean };
   /** Whether finished sessions are read back for something worth keeping. */
   skills?: { propose: boolean };
   /** How long a silent tool call may hold a turn, in minutes; 0 is never. */

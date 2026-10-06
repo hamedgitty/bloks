@@ -140,8 +140,10 @@ export interface AppConfig {
    * happens once at a threshold; on means one message is absorbed after
    * each turn instead. See the note in server/context.ts for what that
    * trades: absorbing every turn rewrites history every turn, which
-   * breaks the provider's prompt cache prefix every turn. */
-  compaction?: { micro?: boolean };
+   * breaks the provider's prompt cache prefix every turn. `idle` asks a
+   * quiet Claude Code conversation to compact before its cache expires;
+   * see the note in server/context.ts. */
+  compaction?: { micro?: boolean; idle?: boolean };
   /** Whether a finished session is read back for something worth keeping.
    * Off unless asked for: it spends the person's own tokens on work they
    * did not request. What it finds is always staged, never installed. */
