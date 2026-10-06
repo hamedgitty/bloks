@@ -42,9 +42,22 @@ export interface Skill {
 }
 
 /** Hard caps: a skill lands in every prompt, so a runaway file would
- * quietly eat the context window (and the user's tokens). */
-export const MAX_SKILL_BYTES = 16_000;
+ * quietly eat the context window (and the user's tokens). The length is
+ * in characters, not bytes, so a skill written in Russian or Chinese gets
+ * the same room as one written in English. */
+export const MAX_SKILL_CHARS = 16_000;
 export const MAX_USER_SKILLS = 200;
+
+/** A file on disk can be this many bytes before it is not read at all.
+ * Four bytes is the most one character takes in UTF-8, and the rest is
+ * room for the frontmatter, so a skill at the limit in any script fits. */
+const MAX_SKILL_FILE_BYTES = MAX_SKILL_CHARS * 4 + 4_000;
+
+/** Characters as a person counts them. Code points rather than
+ * `.length`, which would count an emoji or a rare CJK character twice. */
+export function countChars(text: string): number {
+  return [...text].length;
+}
 
 // ── what actually reaches the prompt ───────────────────────────────────
 //
@@ -147,7 +160,7 @@ export function slugify(input: string): string {
 }
 
 /** Frontmatter parse: `---\nname: X\ndescription: Y\n---\n<body>`. */
-function parseMarkdown(markdown: string): {
+export function parseMarkdown(markdown: string): {
   name?: string;
   description?: string;
   body: string;
@@ -327,6 +340,10 @@ Approval: required before categorizing anything as personal or writing to an acc
 
 // ── reading ───────────────────────────────────────────────────────────
 
+// Files already warned about, so a long skill is reported once rather
+// than on every turn that lists the library.
+const warnedLong = new Set<string>();
+
 function readUserSkills(): Skill[] {
   let entries: string[];
   try {
@@ -339,16 +356,35 @@ function readUserSkills(): Skill[] {
     if (!entry.endsWith(".md")) continue;
     const file = join(SKILLS_DIR, entry);
     try {
-      if (statSync(file).size > MAX_SKILL_BYTES * 2) continue;
+      if (statSync(file).size > MAX_SKILL_FILE_BYTES) {
+        if (!warnedLong.has(file)) {
+          warnedLong.add(file);
+          console.warn(`[bloks] skipped skill ${entry}: the file is too large to read`);
+        }
+        continue;
+      }
       const raw = readFileSync(file, "utf8");
       const parsed = parseMarkdown(raw);
       if (!parsed.body.trim()) continue;
+      // Edited by hand past the limit. Still loaded, cut at the limit, but
+      // said out loud so the missing tail is not a mystery.
+      const length = countChars(parsed.body);
+      let body = parsed.body;
+      if (length > MAX_SKILL_CHARS) {
+        body = [...body].slice(0, MAX_SKILL_CHARS).join("");
+        if (!warnedLong.has(file)) {
+          warnedLong.add(file);
+          console.warn(
+            `[bloks] skill ${entry} is ${length.toLocaleString("en-US")} characters; using the first ${MAX_SKILL_CHARS.toLocaleString("en-US")}`,
+          );
+        }
+      }
       const id = slugify(entry.replace(/\.md$/, ""));
       skills.push({
         id,
         name: parsed.name?.trim() || nameFrom(parsed.body, id.replace(/-/g, " ")),
         description: parsed.description?.trim() || "",
-        body: parsed.body.slice(0, MAX_SKILL_BYTES),
+        body,
         source: "user",
         ...(parsed.registry ? { registry: parsed.registry } : {}),
         ...(parsed.version ? { version: parsed.version } : {}),
@@ -399,10 +435,14 @@ export function installSkill(input: InstallInput): Skill {
   const fromDoc = input.markdown ? parseMarkdown(input.markdown) : null;
   const body = (input.body ?? fromDoc?.body ?? "").trim();
   if (!body) throw Object.assign(new Error("a skill needs instructions"), { status: 400 });
-  if (Buffer.byteLength(body, "utf8") > MAX_SKILL_BYTES) {
-    throw Object.assign(new Error(`skills are limited to ${MAX_SKILL_BYTES} characters`), {
-      status: 413,
-    });
+  const length = countChars(body);
+  if (length > MAX_SKILL_CHARS) {
+    throw Object.assign(
+      new Error(
+        `this skill is ${length.toLocaleString("en-US")} characters; skills are limited to ${MAX_SKILL_CHARS.toLocaleString("en-US")}`,
+      ),
+      { status: 413 },
+    );
   }
 
   const name = (input.name ?? fromDoc?.name ?? nameFrom(body, input.id ?? "skill")).trim();

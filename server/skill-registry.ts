@@ -28,6 +28,7 @@ export const REGISTRY_URL = "https://bloks.dev/skills/index.json";
 export const CATALOG_TTL_MS = 30 * 60 * 1000;
 
 export const MAX_CATALOG_BYTES = 512 * 1024;
+/** Characters, counted the way the skill library counts them. */
 export const MAX_ENTRY_BODY = 16_000;
 
 /** One skill as the catalog describes it. */
@@ -69,7 +70,7 @@ export function parseCatalog(value: unknown): RegistryEntry[] {
     const id = typeof entry.id === "string" ? entry.id.trim().toLowerCase() : "";
     const body = typeof entry.body === "string" ? entry.body.trim() : "";
     if (!SLUG.test(id) || seen.has(id) || !body) continue;
-    if (Buffer.byteLength(body, "utf8") > MAX_ENTRY_BODY) continue;
+    if ([...body].length > MAX_ENTRY_BODY) continue;
     seen.add(id);
     out.push({
       id,
