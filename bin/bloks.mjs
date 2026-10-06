@@ -281,15 +281,20 @@ const COMMANDS = {
   },
   routine: {
     use: 'routine --prompt <text> --time HH:MM [--date YYYY-MM-DD | --days "1,2,3"] [--name <name>] [--thread <conversation>]',
-    about: "file a routine for yourself: weekly, or once on --date to come back to something later",
+    about:
+      "file a routine for yourself: weekly on --days (0 is Sunday, 6 is Saturday), or once on --date to come back to something later. " +
+      "Leave out --days and it runs every day",
     run: async (args) => {
       const flags = parseFlags(args);
       if (!flags.prompt) throw new Error("a routine needs a --prompt");
       if (!/^\d{1,2}:\d{2}$/.test(flags.time ?? "")) throw new Error("a routine needs a --time like 09:00");
       let once = null;
+      let days = [];
       if (flags.date !== undefined) {
         if (flags.days !== undefined) throw new Error("a routine runs once on a --date or weekly on --days, not both");
         once = onceAt(flags.date, flags.time);
+      } else if (flags.days !== undefined) {
+        days = weekdays(flags.days);
       }
       const me = await request("GET", "/api/agent/whoami");
       return request("POST", "/api/routines", {
@@ -302,7 +307,7 @@ const COMMANDS = {
         ...(flags.thread ? { thread: flags.thread } : {}),
         ...(once
           ? { repeat: "once", date: once, days: [] }
-          : { days: (flags.days ?? "").split(",").map((d) => Number(d.trim())).filter((d) => Number.isInteger(d)) }),
+          : { days }),
       });
     },
   },
@@ -450,6 +455,20 @@ function onceAt(date, time) {
   return date;
 }
 
+/** The days a weekly routine runs on, checked here so a typo is an error
+ * now and not a routine on the wrong days. Nothing at all means every day;
+ * anything else has to be days 0 to 6, every one of them. */
+function weekdays(raw) {
+  if (raw === "true") throw new Error('--days needs the days, like --days "1,2,3"; leave it out for every day');
+  if (!raw.trim()) return [];
+  return raw.split(",").map((day) => {
+    if (!/^[0-6]$/.test(day.trim())) {
+      throw new Error(`--days is days of the week as numbers, 0 (Sunday) to 6 (Saturday), like "1,2,3", and "${day.trim()}" is not one`);
+    }
+    return Number(day.trim());
+  });
+}
+
 /** A moment in this Mac's own time, the way routines are written. */
 function localStamp(at) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -468,7 +487,8 @@ function parseFlags(args) {
       continue;
     }
     const next = args[i + 1];
-    flags[arg.slice(2)] = next && !next.startsWith("--") ? (i++, next) : "true";
+    // an empty argument is a value, as `--flag=` is, not a bare flag
+    flags[arg.slice(2)] = next !== undefined && !next.startsWith("--") ? (i++, next) : "true";
   }
   return flags;
 }

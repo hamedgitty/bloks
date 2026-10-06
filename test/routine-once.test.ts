@@ -79,6 +79,57 @@ test("without --date a routine stays weekly", async (t) => {
   assert.deepEqual(filed.body.days, [1, 2, 3, 4, 5]);
 });
 
+// GitHub 171: with --days left out, the empty list read as day 0 and the
+// routine ran on Sundays only. Days the CLI could not read were dropped
+// or guessed at, so "mon" filed a daily routine and "7" went through as is.
+test("without --days, or with it empty, a routine runs every day", async (t) => {
+  const w = await workspace();
+  t.after(w.close);
+  for (const days of [[], ["--days="], ["--days", ""], ["--days", "  "]]) {
+    const { code, out } = await w.run("routine", "--prompt", "Morning brief", "--time", "09:00", ...days);
+    assert.equal(code, 0, JSON.stringify({ days, out }));
+    const filed = w.seen.filter((r) => r.method === "POST" && r.path === "/api/routines").at(-1)!;
+    assert.deepEqual(filed.body.days, [], JSON.stringify(days));
+  }
+});
+
+test("--days files the days given, and nothing it cannot read", async (t) => {
+  const w = await workspace();
+  t.after(w.close);
+  for (const [days, filed] of [
+    ["0", [0]],
+    ["1,2,3", [1, 2, 3]],
+    [" 1, 6 ", [1, 6]],
+  ] as const) {
+    const { code, out } = await w.run("routine", "--prompt", "x", "--time", "09:00", "--days", days);
+    assert.equal(code, 0, JSON.stringify({ days, out }));
+    assert.deepEqual(w.seen.filter((r) => r.method === "POST").at(-1)!.body.days, filed);
+  }
+  const before = w.seen.length;
+  for (const days of [["--days", "mon"], ["--days", "1.5"], ["--days", "7"], ["--days", "-1"], ["--days", "1,,x"], ["--days", "1,"], ["--days"]]) {
+    const { code, out } = await w.run("routine", "--prompt", "x", "--time", "09:00", ...days);
+    assert.equal(code, 1, JSON.stringify(days));
+    assert.match(out.error, /--days/);
+  }
+  // refused before even asking who it is, never mind filing anything
+  assert.equal(w.seen.length, before);
+});
+
+test("--date alone runs once, and with --days, even empty ones, is refused", async (t) => {
+  const w = await workspace();
+  t.after(w.close);
+  const later = ymd(new Date(Date.now() + 3 * 24 * 60 * 60_000));
+  const { code } = await w.run("routine", "--prompt", "x", "--date", later, "--time", "09:00");
+  assert.equal(code, 0);
+  assert.deepEqual(w.seen.find((r) => r.method === "POST")!.body.days, []);
+  for (const days of [["--days", "1"], ["--days="], ["--days", ""]]) {
+    const { code, out } = await w.run("routine", "--prompt", "x", "--date", later, "--time", "09:00", ...days);
+    assert.equal(code, 1, JSON.stringify(days));
+    assert.match(out.error, /not both/);
+  }
+  assert.equal(w.seen.filter((r) => r.method === "POST").length, 1);
+});
+
 test("a date that has passed, does not exist, or comes with --days is refused before anything is filed", async (t) => {
   const w = await workspace();
   t.after(w.close);
