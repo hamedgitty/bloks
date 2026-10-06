@@ -216,9 +216,13 @@ function Bubble({
         fresh && (user ? "animate-send-in" : "animate-receive-in"),
       )}
     >
-      <div className={cn("group flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      {/* On a phone the bar floats over the bubble, as it does in rooms:
+          beside it, an invisible bar held 200px of every row and squeezed
+          a message to a few words a line. */}
+      <div className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
           <MessageActionBar
+            className="max-sm:absolute max-sm:-top-8 max-sm:right-0 max-sm:z-10"
             message={message}
             author={author}
             onReply={onReply}
@@ -292,6 +296,7 @@ function Bubble({
         </div>
         {!user && (
           <MessageActionBar
+            className="max-sm:absolute max-sm:-top-8 max-sm:left-0 max-sm:z-10"
             message={message}
             author={author}
             onReply={onReply}
