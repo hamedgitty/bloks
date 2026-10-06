@@ -82,6 +82,55 @@ export function catalogFromModelList(pages: any[]): ModelCatalog | null {
   return { default: defaultId || options[0].id, options };
 }
 
+// ── a turn's own tokens ────────────────────────────────────────────────
+//
+// `thread/tokenUsage/updated` carries `total`, the count for the whole
+// thread so far, which carries on across turns and across resume. Passed
+// on as it was, every turn was charged for every turn before it (GitHub
+// 173). A turn's own tokens are the thread's total now less the total
+// before the turn started.
+
+export interface TokenCount {
+  input: number;
+  output: number;
+}
+
+/** Threads remembered, most recent last. Enough for every lane in use. */
+const MAX_THREADS = 2_000;
+
+/** Each Codex thread's total as last reported here, by Codex's thread id. */
+const threadTotals = new Map<string, TokenCount>();
+
+export function tokenCount(raw: any): TokenCount | null {
+  if (!raw || typeof raw !== "object") return null;
+  return { input: Number(raw.inputTokens) || 0, output: Number(raw.outputTokens) || 0 };
+}
+
+/**
+ * The thread's total before this turn, from its first update.
+ *
+ * The total last seen for the thread is exact, and it also counts work
+ * Codex did at the start of the turn before the first model call. When
+ * there is none (the first turn after a restart, or a thread resumed from
+ * somewhere else) the total less `last`, the call just reported, is the
+ * total before it. Without `last` the turn starts counting from here,
+ * which leaves out one call rather than charging the whole thread again.
+ */
+export function turnBaseline(known: TokenCount | undefined, total: TokenCount, last: TokenCount | null): TokenCount {
+  // a total below the one remembered is a thread that started its count again
+  if (known && known.input <= total.input && known.output <= total.output) return known;
+  return {
+    input: Math.max(0, total.input - (last?.input ?? 0)),
+    output: Math.max(0, total.output - (last?.output ?? 0)),
+  };
+}
+
+function rememberTotal(thread: string, total: TokenCount) {
+  threadTotals.delete(thread);
+  threadTotals.set(thread, total);
+  while (threadTotals.size > MAX_THREADS) threadTotals.delete(threadTotals.keys().next().value!);
+}
+
 /** Asks the installed CLI what it can run. No thread is started and
  * nothing is spent; the process is killed as soon as the list lands. */
 async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
@@ -290,6 +339,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
       let finished = false;
+      // the thread's token total before this turn, set by its first update
+      let tokenBase: TokenCount | null = null;
+      // set once turn/start goes out; usage reported before it is history
+      let turnSent = false;
 
       const abort = () => {
         try {
@@ -500,13 +553,28 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "thread/tokenUsage/updated": {
-            const total = params.tokenUsage?.total;
+            const total = tokenCount(params.tokenUsage?.total);
             if (!total) break;
+            const thread = typeof params.threadId === "string" ? params.threadId : null;
+            if (!turnSent) {
+              // what a resumed thread had already spent, not this turn's
+              tokenBase = total;
+              if (thread) rememberTotal(thread, total);
+              break;
+            }
+            tokenBase ??= turnBaseline(
+              thread ? threadTotals.get(thread) : undefined,
+              total,
+              tokenCount(params.tokenUsage?.last),
+            );
+            if (thread) rememberTotal(thread, total);
+            // Each update restates the total, so a repeated one changes
+            // nothing here, where summing `last` would count it twice.
             emit({
               ...envelope(threadId, turnId),
               type: "thread.token-usage.updated",
-              input: total.inputTokens ?? 0,
-              output: total.outputTokens ?? 0,
+              input: Math.max(0, total.input - tokenBase.input),
+              output: Math.max(0, total.output - tokenBase.output),
             });
             break;
           }
@@ -635,6 +703,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             model: reportedModel ?? turn.model ?? null,
           });
 
+          turnSent = true;
           await within(rpc.request("turn/start", {
             threadId: codexThread,
             input: [

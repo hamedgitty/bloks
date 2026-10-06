@@ -111,9 +111,9 @@ test("buckets outside the window are left out of the totals", () => {
 });
 
 test("a cumulative reporter is banked once, not once per update", () => {
-  // The bug this exists to stop: codex reports a running total for the
-  // turn, so adding every update turned a one line prompt into 781,768
-  // input tokens. The high-water mark is what actually gets banked.
+  // The bug this exists to stop: codex reports a running total, so adding
+  // every update turned a one line prompt into 781,768 input tokens. The
+  // high-water mark is what actually gets banked.
   const store = freshStore();
   store.noteTokens("bot1", "codex", 1_200, 40);
   store.noteTokens("bot1", "codex", 2_400, 90);
