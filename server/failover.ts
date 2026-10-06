@@ -45,6 +45,7 @@ export function outReason(text: string | null | undefined): OutReason | null {
   return null;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
@@ -63,8 +64,8 @@ const MAX_REST = 12 * HOUR;
  * When the engine said it would be usable again, as a time, or null.
  * Reads the shapes providers actually use: an epoch after a pipe (Claude
  * Code's "usage limit reached|1759000000"), "try again in 20m" or "in 1
- * hour 5 minutes", "retry after 30 seconds", and a clock time like
- * "resets 3pm" or "resets at 15:30".
+ * hour 5 minutes", "retry after 30 seconds", a clock time like "resets
+ * 3pm" or "resets at 15:30", and a date and time like "resets Oct 9, 3pm".
  */
 export function resetAt(text: string, now = Date.now()): number | null {
   const said = text ?? "";
@@ -86,15 +87,26 @@ export function resetAt(text: string, now = Date.now()): number | null {
     if (ms > 0) return now + ms;
   }
 
-  const clock = said.match(/resets?(?: at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-  if (clock) {
-    let hour = Number(clock[1]);
-    const minute = Number(clock[2] ?? 0);
-    const half = clock[3]?.toLowerCase();
+  // a weekly limit names the day too: "resets Oct 9, 3pm"
+  const dated = said.match(/resets?(?: on)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,|\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  const clock = dated ? null : said.match(/resets?(?: at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  const time = dated ? dated.slice(3) : clock?.slice(1);
+  if (time) {
+    let hour = Number(time[0]);
+    const minute = Number(time[1] ?? 0);
+    const half = time[2]?.toLowerCase();
     if (half === "pm" && hour < 12) hour += 12;
     if (half === "am" && hour === 12) hour = 0;
-    if (hour < 24 && minute < 60 && (half || clock[2])) {
+    if (hour < 24 && minute < 60 && (half || time[1])) {
       const at = new Date(now);
+      if (dated) {
+        const month = MONTHS.indexOf(dated[1].toLowerCase());
+        at.setMonth(month, Number(dated[2]));
+        at.setHours(hour, minute, 0, 0);
+        // a date already past this year means next year's
+        if (at.getTime() <= now) at.setFullYear(at.getFullYear() + 1);
+        return at.getTime();
+      }
       at.setHours(hour, minute, 0, 0);
       // a reset time already past today means tomorrow's
       if (at.getTime() <= now) at.setDate(at.getDate() + 1);

@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
+import { outReason } from "../failover.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
 
@@ -193,6 +194,24 @@ export function cacheTtlOf(usage: any): "5m" | "1h" | undefined {
   if ((count(written?.ephemeral_1h_input_tokens) ?? 0) > 0) return "1h";
   if ((count(written?.ephemeral_5m_input_tokens) ?? 0) > 0) return "5m";
   return undefined;
+}
+
+/**
+ * Claude Code's own words when a subscription runs out, as the whole of a
+ * message: "Claude AI usage limit reached|1759000000", "You've hit your
+ * limit · resets 3pm (Europe/Berlin)", "5-hour limit reached ∙ resets 3pm",
+ * "Weekly limit reached ∙ resets Oct 9, 3pm". The CLI can send that as an
+ * ordinary reply and end the turn as a success, so the shape is what tells
+ * it apart from an agent talking about limits: short, one line, and
+ * starting with the notice itself.
+ */
+export function isLimitNotice(text: unknown): text is string {
+  if (typeof text !== "string") return false;
+  const said = text.trim();
+  if (!said || said.length > 300 || said.includes("\n")) return false;
+  return /^(?:claude(?: ai)? usage limit reached|you['’]?ve (?:hit|reached) your (?:[\w-]+ )?limit|(?:5-hour|five-hour|session|daily|weekly|opus(?: weekly)?|sonnet(?: weekly)?|usage) limit reached)\b/i.test(
+    said,
+  );
 }
 
 export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
@@ -492,6 +511,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let held: any = null;
       /** Whether any assistant frame carried usage this turn. */
       let reportedUsage = false;
+      // The CLI saying this turn's engine is out (a limit, signed out), and
+      // when its rate limit said it resets, in epoch seconds. A turn that
+      // ends on that notice failed, whatever its result frame says, or no
+      // backup takes it and the engine is never rested.
+      let outNotice: string | null = null;
+      let resetsAt: number | null = null;
       let watch: ReturnType<typeof setInterval> | null = null;
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finished) return;
@@ -537,16 +562,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null);
           return;
         }
+        // A limit can also arrive as a successful result whose text is
+        // only the notice, with nothing before it that we recognised.
+        if (!outNotice && isLimitNotice(frame.result)) {
+          const said: string = frame.result.trim();
+          outNotice = said;
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: said });
+        }
+        // a failed turn's own words say why ("usage limit reached"),
+        // which is what a backup engine and a routine's log need
+        let why: string | null =
+          outNotice ?? (frame.is_error === true && typeof frame.result === "string" && frame.result.trim() ? frame.result.trim() : null);
+        // the reset the rate limit gave, in the shape failover.ts reads
+        // first: "resets 3pm" alone leaves the day and the zone to guess
+        if (why && resetsAt && outReason(why)) why = `${why.slice(0, 380)}|${resetsAt}`;
         finish(
-          frame.is_error !== true,
-          // a failed turn's own words say why ("usage limit reached"),
-          // which is what a backup engine and a routine's log need
-          (frame.is_error === true && typeof frame.result === "string" && frame.result.trim()
-            ? frame.result.trim().slice(0, 400)
-            : null) ??
-            frame.stop_reason ??
-            frame.terminal_reason ??
-            null,
+          frame.is_error !== true && !outNotice,
+          why?.slice(0, 400) ?? frame.stop_reason ?? frame.terminal_reason ?? null,
           total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null,
         );
       };
@@ -595,14 +627,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // becomes an error that says what to do. The wording keeps
             // "not signed in", which is what a backup engine listens for.
             if (typeof frame.error === "string" && frame.error) {
-              emit({
-                ...envelope(threadId, turnId),
-                type: "runtime.error",
-                message:
-                  frame.error === "authentication_failed"
-                    ? "Claude Code is not signed in on this computer. Open Terminal, run claude and sign in, then send this again. Or pick another engine for this agent."
-                    : text.trim() || `Claude Code could not run this turn (${frame.error}).`,
-              });
+              const said =
+                frame.error === "authentication_failed"
+                  ? "Claude Code is not signed in on this computer. Open Terminal, run claude and sign in, then send this again. Or pick another engine for this agent."
+                  : text.trim() || `Claude Code could not run this turn (${frame.error}).`;
+              if (outReason(said)) outNotice = said;
+              emit({ ...envelope(threadId, turnId), type: "runtime.error", message: said });
+              break;
+            }
+            // Versions that mark nothing still speak as "<synthetic>", or
+            // say nothing but the limit notice. Either is the engine being
+            // out, not the agent's reply.
+            const calls = Array.isArray(message.content) && message.content.some((block: any) => block?.type === "tool_use");
+            if (!calls && ((message.model === "<synthetic>" && outReason(text)) || isLimitNotice(text))) {
+              outNotice = text.trim().slice(0, 600);
+              emit({ ...envelope(threadId, turnId), type: "runtime.error", message: outNotice });
               break;
             }
             // The CLI delivers whole blocks, not tokens, so the same text
@@ -651,6 +690,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 context: promptSize(message.usage),
                 ...(ttl ? { cacheTtl: ttl } : {}),
               });
+            }
+            break;
+          }
+
+          case "rate_limit_event": {
+            // Newer versions report the subscription's limit on the side.
+            // "rejected" is the one that stops the turn, and its resetsAt is
+            // the most exact reset there is.
+            const info = frame.rate_limit_info ?? {};
+            const at = Number(info.resetsAt);
+            if (info.status === "rejected" && Number.isFinite(at) && at > 0) {
+              resetsAt = Math.floor(at > 1e12 ? at / 1000 : at);
             }
             break;
           }
