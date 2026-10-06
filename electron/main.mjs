@@ -897,8 +897,37 @@ ipcMain.handle("update:check", async () => {
   }
   return updaterState;
 });
-ipcMain.handle("update:install", () => {
+/** Before an update restarts Bloks, the harness finishes what is running
+ * and starts nothing new, and this waits until it has or until its
+ * deadline passes (server/drain.ts). Anything still running then is
+ * picked up after the restart, and anything that arrived meanwhile waits
+ * on disk. A harness that does not answer has nothing to wait for. */
+async function drainBeforeRestart() {
+  // agents on another computer are that computer's to finish
+  if (remoteProfile || !serverStarted) return;
+  const ask = async (method) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${serverPort}/api/maintenance/drain`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: method === "POST" ? "{}" : undefined,
+        signal: AbortSignal.timeout(2000),
+      });
+      return response.ok ? await response.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  let state = await ask("POST");
+  while (state?.draining && !state.done) {
+    await new Promise((r) => setTimeout(r, 2000));
+    state = await ask("GET");
+  }
+}
+
+ipcMain.handle("update:install", async () => {
   if (!app.isPackaged) return;
+  await drainBeforeRestart();
   // same teardown as a normal quit, then the installer takes over
   electronUpdater.autoUpdater.quitAndInstall();
 });

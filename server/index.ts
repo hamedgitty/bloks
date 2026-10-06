@@ -292,6 +292,7 @@ import {
 import { MemoryJournal } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
+import { Drain, DRAINING_TEXT, drainWindow } from "./drain.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -455,6 +456,9 @@ const turnLog = new TurnLogStore(join(DATA_DIR, "engine-turns.json"));
 // when it starts again (server/cut-off.ts).
 const cutOff = new TurnsInFlight(join(DATA_DIR, "turns-in-flight.json"));
 setInterval(() => cutOff.touch(), 5 * 60_000).unref?.();
+// Before a planned restart: nothing new starts, what is running finishes
+// (server/drain.ts). In memory; a restart ends it.
+const drain = new Drain();
 // Notes about the person, suggested by agents and kept by them
 // (server/profile-notes.ts), and how many each running turn has offered.
 const profileNotes = new ProfileNotes(join(DATA_DIR, "profile-notes.json"));
@@ -1929,7 +1933,7 @@ bus.subscribe((event: RuntimeEvent) => {
         void (async () => {
           const folded = await foldContext(bot.id, event.threadId, true).catch(() => false);
           if (folded && said?.text) {
-            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, byYou: turnsForYou.has(event.threadId) }).catch(
+            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId) }).catch(
               () => {},
             );
           } else {
@@ -2448,6 +2452,39 @@ function recoverCutOff(now = Date.now()) {
   }
   recoverQueued(now, new Set(picked.map((turn) => turn.laneId)));
   for (const turn of picked) carryOn(turn, "restart");
+  // room lines that were waiting, for an agent mid-turn or for a drain,
+  // go once the agent is free (after its pickup, when it has one)
+  for (const botId of roomTags.agents()) drainRoomTags(botId);
+}
+
+/** Where a drain stands (server/drain.ts): the turns still running, as
+ * the list of turns in flight has them, and whether any lane is busy
+ * with something that is not on it, like an idle compaction. */
+function drainStatus() {
+  const running = cutOff.running().map(({ laneId, botId, roomId, startedAt, tool }) => ({
+    laneId,
+    botId,
+    ...(roomId ? { roomId } : {}),
+    startedAt,
+    ...(tool ? { tool } : {}),
+  }));
+  const busy = idleCompacting.size > 0 || store.bots.some((b) => b.tasks.some((t) => t.busy));
+  return drain.status(running, busy);
+}
+
+/** A drain called off: what it held goes now, as it would have when
+ * its lane came free. A drain that ends in a restart needs none of
+ * this; Bloks starting does the same from what is on disk. */
+function endDrain() {
+  if (!drain.stop()) return;
+  for (const laneId of [...steerQueues.keys()]) drainSteer(laneId);
+  for (const botId of roomTags.agents()) drainRoomTags(botId);
+  for (const jobId of [...jobsHeld]) {
+    jobsHeld.delete(jobId);
+    void offerJob(jobId);
+  }
+  void drainMail();
+  void runDueRoutines().catch(() => {});
 }
 /** Tokens of the turn in flight, per lane. Providers report a running
  * total for the turn, so this holds a high-water mark, popped when the
@@ -2710,6 +2747,9 @@ async function startTurn(
     byYou?: boolean;
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
+    /** This turn asks again what the lane's last turn was asked, after
+     * the conversation was folded to fit. */
+    retry?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -2769,6 +2809,30 @@ async function startTurn(
       status: 409,
       busy: true,
     });
+  }
+
+  // Bloks is finishing what is running before it restarts
+  // (server/drain.ts). Nothing new starts here, and nothing is turned
+  // away either: words for one of the agent's lanes wait in that lane's
+  // queue, which is on disk, as they would behind a busy turn. A room
+  // line is refused the way a busy agent refuses it, and its caller
+  // holds it the same way. Only the turn that was already running may
+  // go on: picked up after sleep, handed to a backup, or asked again
+  // after a fold.
+  if (drain.on && !opts.carriedOn && !opts.fallback && !opts.retry) {
+    if ((opts.roomId && opts.roomId !== task.id) || opts.rehearsal) {
+      throw Object.assign(new Error(DRAINING_TEXT), { status: 503, draining: true });
+    }
+    if (opts.presetMessage) {
+      // already in the conversation, or a note from Bloks itself, so it
+      // waits as a note: in memory, like every note in the queue
+      const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
+      entry.items.push({ text });
+      steerQueues.set(task.id, entry);
+    } else {
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from });
+    }
+    return;
   }
 
   // A rehearsal lane keeps rehearsing: a follow-up works on the same copy,
@@ -3660,6 +3724,9 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
       broadcast({ kind: "message", threadId: lane.id, message: said });
       await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true });
     }
+  } else if (drain.on) {
+    // Bloks is finishing up to restart: it waits in the watcher's lane
+    queueOnLane(bot.id, watcherLane(w, bot).id, text, { via: "watcher" });
   } else {
     const lane = watcherLane(w, bot);
     const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
@@ -3784,6 +3851,13 @@ setInterval(() => {
  * start. Used by the Rehearse button and by watchers set to rehearse.
  */
 async function openRehearsals(bots: BotRecord[], text: string, opts: { quiet?: boolean; via?: Message["via"] } = {}) {
+  // Refused before any copy is made. A watcher set to rehearse keeps what
+  // it saw unseen, so it fires again at its first look once Bloks is back.
+  if (drain.on) {
+    throw Object.assign(new Error("Bloks is finishing what is running before it restarts. Rehearse this once it is back."), {
+      status: 503,
+    });
+  }
   const dir = rehearsalDir(bots[0]);
   if (!dir || !trackable(dir)) {
     throw Object.assign(new Error(`${bots[0].name}'s folder cannot be rehearsed: it is missing, or it is a whole home folder.`), { status: 400 });
@@ -4268,8 +4342,9 @@ function closeIfAsked(laneId: string) {
   if (outcome === "ok") broadcast({ kind: "bot", bot: clientBot(store.bot(owner.id)!) });
 }
 
-/** Room lines for agents that were mid-turn (server/room-tags.ts). */
-const roomTags = new RoomTagQueues();
+/** Room lines for agents that were mid-turn, or held by a drain
+ * (server/room-tags.ts). On disk, so a restart does not lose them. */
+const roomTags = new RoomTagQueues(join(DATA_DIR, "room-lines.json"));
 
 function queueRoomTag(botId: string, roomId: string, text: string, requester?: string) {
   // where the chain stood when this agent was named, so a delivery later
@@ -4277,11 +4352,18 @@ function queueRoomTag(botId: string, roomId: string, text: string, requester?: s
   roomTags.add(botId, roomId, text, requester, agentHops.get(botId) ?? 0);
 }
 
+/** A refusal that means "not now" rather than "no": the agent is busy,
+ * or Bloks is finishing up to restart. The line waits for it. */
+function waitsForTurn(e: unknown): boolean {
+  const refused = e as { busy?: boolean; draining?: boolean } | null;
+  return Boolean(refused?.busy || refused?.draining);
+}
+
 /** Deliver an agent's waiting room lines once it is free. Called whenever
  * one of its turns settles. */
 function drainRoomTags(botId: string) {
   const waiting = roomTags.of(botId);
-  if (!waiting.length) return;
+  if (!waiting.length || drain.on) return;
   const bot = store.bot(botId);
   // a message queued in one of its own lanes was there first, and its
   // turn is about to start; the room waits for the settle after it
@@ -4341,7 +4423,7 @@ async function speakInTurn(
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
     await startTurn(member.id, text, { roomId, hops, requester, byYou }).catch((e) =>
-      (e as { busy?: boolean })?.busy ? queueRoomTag(member.id, roomId, text, requester) : sayTurnedAway(roomId, e),
+      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester) : sayTurnedAway(roomId, e),
     );
     if (shared) await waitForLaneIdle(member.id, roomId);
     else await waitForIdle(member.id);
@@ -4485,7 +4567,7 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
       continue;
     }
     await startTurn(target.id, text, { roomId, hops, requester }).catch((e) =>
-      (e as { busy?: boolean })?.busy ? queueRoomTag(target.id, roomId, text, requester) : sayTurnedAway(roomId, e),
+      waitsForTurn(e) ? queueRoomTag(target.id, roomId, text, requester) : sayTurnedAway(roomId, e),
     );
   }
 }
@@ -4596,6 +4678,9 @@ function candidates(): Candidate[] {
   }));
 }
 
+/** Jobs posted or passed on during a drain, to offer when it ends. */
+const jobsHeld = new Set<string>();
+
 /**
  * Put a job to whoever looks most suited, and start them on it.
  *
@@ -4605,6 +4690,13 @@ function candidates(): Candidate[] {
 async function offerJob(jobId: string): Promise<Job | null> {
   const job = jobs.get(jobId);
   if (!job || (job.state !== "open" && job.state !== "claimed")) return job;
+  // Left open on the board while Bloks finishes up to restart, and
+  // offered when the drain is called off (endDrain). After a restart it
+  // waits on the board for Offer, as one nobody was free for does.
+  if (drain.on) {
+    jobsHeld.add(job.id);
+    return job;
+  }
   const agent = nextFor(job, candidates());
   if (!agent) {
     broadcast({ kind: "jobs" });
@@ -4706,7 +4798,8 @@ function noteRequest(event: Extract<RuntimeEvent, { type: "thread.token-usage.up
 }
 
 function sweepIdleLanes(now = Date.now()) {
-  if (!cfg.compaction?.idle || idleCompacting.size >= IDLE_COMPACTIONS_AT_ONCE) return;
+  // nothing new while Bloks finishes up to restart (server/drain.ts)
+  if (!cfg.compaction?.idle || idleCompacting.size >= IDLE_COMPACTIONS_AT_ONCE || drain.on) return;
   const due: Array<{ bot: BotRecord; task: TaskRecord; at: number }> = [];
   for (const bot of store.bots) {
     for (const task of bot.tasks) {
@@ -5230,10 +5323,12 @@ async function walkRun(runId: string): Promise<void> {
         const bot = step.targetId ? store.bot(step.targetId) : null;
         if (!bot) throw new Error("that agent is not here any more");
         if (!text) throw new Error("there was nothing left to ask once the values were filled in");
-        const laneId = backgroundTaskId(bot.id, "Workflows");
         // A busy lane is a wait, not a failure. The step row is taken
         // back off so the history does not fill with attempts, the run
         // stays running, and the tick finds it again in half a minute.
+        // Bloks finishing up to restart is the same wait, and the run is
+        // found again the same way once it is back.
+        const laneId = drain.on ? undefined : backgroundTaskId(bot.id, "Workflows");
         if (!laneId) {
           workflows.update(runId, (r) => {
             const at = r.steps.findIndex((sp) => sp.stepId === step.id && !sp.endedAt);
@@ -5480,6 +5575,10 @@ setTimeout(() => {
 }, 2_000).unref?.();
 
 async function runDueRoutines() {
+  // A routine has no queue to wait in. It stays due instead, unmarked,
+  // and fires once Bloks is back, inside the grace window a late routine
+  // has anyway (server/drain.ts keeps a drain shorter than that).
+  if (drain.on) return;
   const now = new Date();
   for (const routine of routines.due(now)) {
     if (routine.targetKind === "room") {
@@ -5652,6 +5751,13 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   telegramLive.set(botId, chatId);
   // only chats the person allowed get this far: this is them, on a phone
   withYou({ bot });
+  // Bloks is finishing up to restart. The words wait in the lane like any
+  // queued message, and the answer lands there, not on the phone.
+  if (drain.on) {
+    telegramLive.delete(botId);
+    queueOnLane(botId, laneId, text);
+    return "Bloks is restarting in a moment. Your message is saved, and the answer will be in the app once it is back.";
+  }
   try {
     await startTurn(botId, text, { byYou: true });
     // Longer than an ordinary wait, because a card forwarded to the
@@ -5847,6 +5953,9 @@ async function onEmailHook(hook: { platform: string; body: string }): Promise<nu
 
 /** Starts a turn for each waiting mail whose agent's Email lane is free. */
 async function drainMail() {
+  // waits in the line, as it does for a busy Email lane, until Bloks is
+  // back or the drain is called off
+  if (drain.on) return;
   for (const item of [...mailQueue]) {
     const laneId = backgroundTaskId(item.botId, "Email");
     if (!laneId) continue;
@@ -6213,9 +6322,10 @@ function editClosed(laneId: string, messageId: string) {
 
 /** Whether words said to a lane now wait in its queue rather than start
  * a turn: it is mid-turn, or a burst is held ahead of them for an open
- * editor, and going first would put them before things said earlier. */
+ * editor, and going first would put them before things said earlier; or
+ * Bloks is finishing up to restart (server/drain.ts). */
 function laneWaits(lane: { id: string; busy?: boolean }) {
-  return Boolean(lane.busy) || beingEdited.has(lane.id);
+  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on;
 }
 
 /** Saves a message for a lane that is mid-turn, to go in the turn after.
@@ -6316,7 +6426,9 @@ async function sendUserMessage(
     // carry on as if the other had stopped (GitHub 141).
     const waits = lane.busy
       ? `${bot.name} is in the middle of a turn; this waits until that turn ends.`
-      : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
+      : drain.on
+        ? DRAINING_TEXT
+        : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
     const stop =
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
@@ -6341,6 +6453,8 @@ function drainSteer(threadId: string) {
     return;
   }
   if (lane.busy) return;
+  // held, on disk, until Bloks is back or the drain is called off
+  if (drain.on) return;
   // Somebody is rewording one of these. The whole burst waits rather than
   // the rest going ahead, so the edited one does not arrive after words
   // that were said after it; closing the editor drains it (editClosed).
@@ -6931,14 +7045,17 @@ const server = createServer(async (req, res) => {
       if (refusal.retryAfter) res.setHeader("retry-after", refusal.retryAfter);
       return json(res, refusal.status, { error: refusal.error });
     }
-    const laneId = agentId ? claimWebhookLane(agentId) : undefined;
-    // The Webhooks lane is mid-turn, or another event has just claimed it:
-    // this one waits behind it and goes in the next turn, as a message to
-    // a busy chat does. The wait is bounded, and past it the sender is told
-    // to retry; a 202 always means the event is saved and will be handled.
+    const laneId = agentId && !drain.on ? claimWebhookLane(agentId) : undefined;
+    // The Webhooks lane is mid-turn, or another event has just claimed it,
+    // or Bloks is finishing up to restart: this one waits in that lane and
+    // goes in the next turn, as a message to a busy chat does. The wait is
+    // bounded, and past it the sender is told to retry; a 202 always means
+    // the event is saved and will be handled.
     let waitIn: string | undefined;
     if (agentId && !laneId) {
-      waitIn = store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id;
+      waitIn =
+        store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id ??
+        (drain.on ? backgroundTaskId(agentId, "Webhooks") : undefined);
       const framed = webhookMessage(hook.name, raw);
       const queued = waitIn ? (steerQueues.get(waitIn)?.items.filter((item) => item.source === "webhook") ?? []) : [];
       const bytes = queued.reduce(
@@ -8302,6 +8419,8 @@ const server = createServer(async (req, res) => {
       if (agent?.tasks.find((t) => t.id === turn.laneId)?.busy) {
         return json(res, 409, { error: `${agent.name} is working. Try again when it is done.` });
       }
+      // left offered: after the restart it is still here to press
+      if (drain.on) return json(res, 503, { error: "Bloks is finishing what is running before it restarts. Continue this once it is back." });
       cutOff.take(turn.laneId);
       retireCarryOn(turn);
       // the person pressed it, so what it says is a reply to them; it
@@ -11324,6 +11443,21 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { working });
     }
 
+    // ── finishing up before a planned restart (server/drain.ts) ──
+    // From this computer only, like the power route above: the updater
+    // and `bloks-server drain` call it before they restart Bloks. POST
+    // starts it (or moves its deadline), GET says where it stands, DELETE
+    // calls it off. Nothing here answers, cancels or changes an approval.
+    if (path === "/api/maintenance/drain" && (method === "GET" || method === "POST" || method === "DELETE")) {
+      if (!local || asAgent) return json(res, 403, { error: "not from here" });
+      if (method === "POST") {
+        const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+        drain.start(drainWindow(body.seconds));
+      }
+      if (method === "DELETE") endDrain();
+      return json(res, 200, drainStatus());
+    }
+
     // ── Slack and Discord, for shared rooms ──
     if (method === "GET" && path === "/api/chat") return json(res, 200, chatSettings());
     if (method === "POST" && path === "/api/chat") {
@@ -11759,6 +11893,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const routine = routines.get(m[1]);
       if (!routine) return json(res, 404, { error: "no such routine" });
+      if (drain.on) return json(res, 503, { error: "Bloks is finishing what is running before it restarts. Run this again once it is back." });
       // A hand-run is still a run. It is how anybody checks that a
       // routine does what they meant, so it belongs in the history at
       // least as much as the scheduled ones do.

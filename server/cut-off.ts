@@ -215,8 +215,8 @@ export class TurnsInFlight {
     return [...this.turns.values()];
   }
 
-  /** Turns running now, as far as this run of Bloks knows. What a later
-   * "finish what is running before restarting" would wait on. */
+  /** Turns running now, as far as this run of Bloks knows. What a drain
+   * before a restart waits on (server/drain.ts). */
   running(): TurnInFlight[] {
     return this.all().filter((turn) => !turn.waiting);
   }
