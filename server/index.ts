@@ -257,6 +257,17 @@ import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
 import { localDate } from "./usage.ts";
 import { engineReport, TurnLogStore, type Outcome, type TurnLog } from "./engine-report.ts";
+import {
+  carryOnTarget,
+  carryOnText,
+  cutOffNotice,
+  cutOffWaitingNotice,
+  recoveryFor,
+  sessionRef,
+  TurnsInFlight,
+  type CutOffBy,
+  type TurnInFlight,
+} from "./cut-off.ts";
 import { actionItems, cleanSegment, MAX_SEGMENTS, notesPrompt, transcriptOf, type Meeting } from "./meetings.ts";
 import {
   checkAllowed,
@@ -440,6 +451,10 @@ const workflows = new WorkflowStore();
 const proposals = new ProposalStore();
 // Every finished turn, with the engine that ran it (server/engine-report.ts).
 const turnLog = new TurnLogStore(join(DATA_DIR, "engine-turns.json"));
+// Every turn while it runs, so one cut off by Bloks stopping is picked up
+// when it starts again (server/cut-off.ts).
+const cutOff = new TurnsInFlight(join(DATA_DIR, "turns-in-flight.json"));
+setInterval(() => cutOff.touch(), 5 * 60_000).unref?.();
 // Notes about the person, suggested by agents and kept by them
 // (server/profile-notes.ts), and how many each running turn has offered.
 const profileNotes = new ProfileNotes(join(DATA_DIR, "profile-notes.json"));
@@ -1464,10 +1479,18 @@ const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
 // Nothing is running when the server starts, so a call still marked as
 // running was cut off by the last quit or crash. Settled once, here,
 // rather than left spinning in every transcript it happened in.
+// The same goes for a question or an approval: the engine waiting on it
+// went with the last run.
 for (const bot of store.bots) {
-  for (const task of bot.tasks) store.settleOpenTools(task.id);
+  for (const task of bot.tasks) {
+    store.settleOpenTools(task.id);
+    store.settleOpenAsks(task.id);
+  }
 }
-for (const room of bloks.bloks) store.settleOpenTools(room.id);
+for (const room of bloks.bloks) {
+  store.settleOpenTools(room.id);
+  store.settleOpenAsks(room.id);
+}
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
 /** A collaborator who answered an approval, by request, so the record and
  * the card say who decided rather than "you". */
@@ -1509,6 +1532,7 @@ bus.subscribe((event: RuntimeEvent) => {
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
         store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
+        cutOff.session(event.threadId, event.providerInstanceId, event.sessionId);
       }
       break;
     case "item.completed":
@@ -1560,6 +1584,7 @@ bus.subscribe((event: RuntimeEvent) => {
           if (patched) broadcast({ kind: "message.patch", threadId: roomId, message: patched });
           toolMessageByItem.delete(event.itemId);
         }
+        cutOff.tool(event.threadId, null);
         // the bot just finished acting, refresh its screen preview now
         pokeScreenPoller(bot.id);
       }
@@ -1570,6 +1595,8 @@ bus.subscribe((event: RuntimeEvent) => {
         if (event.paths?.length) checkpoints.noteEdits(event.threadId, event.paths);
         const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
+        // named on disk, so a turn cut off mid-call can say which call
+        cutOff.tool(event.threadId, event.title ?? "tool");
         // The browser is watched from its first use in a turn, not from the
         // turn's start: a turn that never touches it should not end with
         // a picture of whatever page an earlier one left open. Cheap to
@@ -1958,7 +1985,17 @@ bus.subscribe((event: RuntimeEvent) => {
       if (slept) {
         sleptLanes.delete(event.threadId);
         if (event.ok === false && slept.woke && Date.now() - slept.woke < 30 * 60_000) {
-          carryOnAfterSleep(bot.id, event.threadId, slept);
+          carryOn(
+            {
+              ...slept,
+              laneId: event.threadId,
+              byYou: turnsForYou.has(event.threadId),
+              tool: cutOff.get(event.threadId)?.tool,
+            },
+            "sleep",
+            // after the failed turn has settled, so the lane is free again
+            1_500,
+          );
         }
       }
       // the final frame stops being a live preview and becomes part of
@@ -2006,6 +2043,7 @@ bus.subscribe((event: RuntimeEvent) => {
         .catch(() => {});
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
+      cutOff.end(event.threadId);
       // a call the turn never heard back from will not report now
       for (const settled of store.settleOpenTools(roomId, inRoom ? bot.id : undefined)) {
         broadcast({ kind: "message.patch", threadId: roomId, message: settled });
@@ -2294,29 +2332,122 @@ function noteWake() {
   for (const [lane, slept] of sleptLanes) if (now - slept.at > 24 * 60 * 60_000) sleptLanes.delete(lane);
 }
 
-const SLEPT_TEXT =
-  "This computer went to sleep in the middle of your last step, which cut it off. Carry on from where you were; check what already happened before repeating anything.";
-
-function carryOnAfterSleep(botId: string, laneId: string, slept: { roomId?: string; requester?: string }) {
-  // after the failed turn has settled, so the lane is free again
-  setTimeout(() => {
-    const threadId = slept.roomId ?? laneId;
+/**
+ * Picks up a turn that was cut off: by the Mac sleeping, or by Bloks
+ * stopping (server/cut-off.ts). The person reads a notice; the agent is
+ * told, separately, to carry on, in the same lane, room and session, for
+ * whoever asked for the turn it continues. Anything said to the lane
+ * since goes in the same turn rather than one of its own, because the
+ * agent has to read it before acting on a plan made without it.
+ */
+function carryOn(
+  turn: Pick<TurnInFlight, "botId" | "laneId" | "roomId" | "requester" | "byYou" | "tool">,
+  by: CutOffBy,
+  delay = 0,
+) {
+  const threadId = turn.roomId ?? turn.laneId;
+  // claimed now, before a settle can drain it into a turn of its own
+  const waiting = steerQueues.get(turn.laneId);
+  steerQueues.delete(turn.laneId);
+  const start = () => {
     const notice = store.appendMessage(threadId, {
       role: "bot",
       kind: "notice",
-      ...(slept.roomId ? { from: botId } : {}),
-      text: `${store.bot(botId)?.name ?? "The agent"} was cut off when this computer slept, and is picking up where it left off.`,
+      ...(turn.roomId ? { from: turn.botId } : {}),
+      text: cutOffNotice(store.bot(turn.botId)?.name ?? "The agent", by),
     });
     broadcast({ kind: "message", threadId, message: notice });
+    const alive = (waiting?.items ?? []).flatMap((item) => {
+      const words = steerWords(turn.laneId, item);
+      return words === null ? [] : [{ item, words }];
+    });
+    const yours = alive.some(({ item }) => {
+      const m = item.messageId ? store.messagesFor(turn.laneId).find((msg) => msg.id === item.messageId) : undefined;
+      return Boolean(m && !m.agent && !m.via);
+    });
     // told to the agent, not written into the chat as if the person had
     // typed it: the notice above is what the person reads
-    void startTurn(botId, SLEPT_TEXT, {
+    const text = carryOnText(by, { tool: turn.tool, said: alive.map((said) => said.words).join("\n") });
+    void startTurn(turn.botId, text, {
       presetMessage: true,
-      ...(slept.roomId ? { roomId: slept.roomId } : { taskId: laneId }),
-      ...(slept.requester ? { requester: slept.requester } : {}),
-      byYou: turnsForYou.has(laneId),
-    }).catch((e) => sayTurnedAway(threadId, e));
-  }, 1_500);
+      carriedOn: true,
+      ...carryOnTarget(turn),
+      byYou: Boolean(turn.byYou) || yours,
+    })
+      .then(() => {
+        const deliveredAt = Date.now();
+        for (const { item } of alive) {
+          if (!item.messageId) continue;
+          const patched = store.patchMessage(turn.laneId, item.messageId, { queued: false, deliveredAt });
+          if (patched) broadcast({ kind: "message.patch", threadId: turn.laneId, message: patched });
+        }
+      })
+      .catch((e) => {
+        // what waited is still waiting, ahead of anything said since
+        if (waiting) {
+          const since = steerQueues.get(turn.laneId)?.items ?? [];
+          steerQueues.set(turn.laneId, { botId: turn.botId, items: [...waiting.items, ...since] });
+          drainSteer(turn.laneId);
+        }
+        sayTurnedAway(threadId, e);
+      });
+  };
+  if (delay) setTimeout(start, delay);
+  else start();
+}
+
+/** A Continue offered for a turn that will not be picked up after all:
+ * pressed, or the conversation went on without it. */
+function retireCarryOn(turn: TurnInFlight) {
+  if (!turn.waiting) return;
+  const { threadId, noticeId } = turn.waiting;
+  const patched = store.patchMessage(threadId, noticeId, { carryOn: { laneId: turn.laneId, done: true } });
+  if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
+}
+
+/**
+ * At startup, every turn still on the list was cut off by the last run
+ * ending. Each is picked up once, in the same conversation and session,
+ * for the same person; or, cut off too long ago, offered to the person
+ * with a Continue. Never one somebody stopped, or one whose agent was
+ * put away. Runs before queued messages are recovered, so what waited
+ * behind a cut-off turn joins its pickup instead of racing it.
+ */
+function recoverCutOff(now = Date.now()) {
+  const picked: TurnInFlight[] = [];
+  for (const turn of cutOff.all()) {
+    if (turn.waiting) continue;
+    const agent = store.bot(turn.botId);
+    // a rehearsal's copy is the run's to settle, not a turn to resume
+    const lane =
+      Boolean(agent?.tasks.some((t) => t.id === turn.laneId)) &&
+      !rehearsals.forTask(turn.laneId) &&
+      (!turn.roomId || Boolean(bloks.get(turn.roomId)));
+    const next = recoveryFor(turn, now, { agent, lane });
+    if (next === "drop") {
+      cutOff.take(turn.laneId);
+    } else if (next === "ask") {
+      const threadId = turn.roomId ?? turn.laneId;
+      const name = agent?.name ?? "The agent";
+      const notice = store.appendMessage(threadId, {
+        role: "bot",
+        kind: "notice",
+        ...(turn.roomId ? { from: turn.botId } : {}),
+        text: turn.carriedOn && now - turn.seenAt <= MAX_QUEUED_RECOVERY_MS
+          ? `${name} was cut off again when Bloks stopped, while picking up from the last time, so it has not picked up on its own.`
+          : cutOffWaitingNotice(name),
+        carryOn: { laneId: turn.laneId },
+      });
+      cutOff.wait(turn.laneId, { noticeId: notice.id, threadId }, now);
+    } else {
+      // off the list before anything starts: whatever becomes of this
+      // pickup, no later start makes it again
+      cutOff.take(turn.laneId);
+      picked.push(turn);
+    }
+  }
+  recoverQueued(now, new Set(picked.map((turn) => turn.laneId)));
+  for (const turn of picked) carryOn(turn, "restart");
 }
 /** Tokens of the turn in flight, per lane. Providers report a running
  * total for the turn, so this holds a high-water mark, popped when the
@@ -2577,6 +2708,8 @@ async function startTurn(
      * them and moves the conversation up the sidebar. Unset for anything
      * else: another agent, a routine, a watcher, a job, a webhook. */
     byYou?: boolean;
+    /** This turn picks up one that was cut off (server/cut-off.ts). */
+    carriedOn?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -2875,6 +3008,21 @@ async function startTurn(
   // HTTP request must never be the thing holding that open.
   store.setTaskBusy(task.id, true);
   turnStarted.set(task.id, Date.now());
+  // on disk before the engine hears a word, so from here on a crash
+  // leaves this turn to be picked up when Bloks starts again
+  const replaced = cutOff.begin({
+    laneId: task.id,
+    botId: bot.id,
+    ...(roomId !== task.id ? { roomId } : {}),
+    requester: opts.requester ?? "owner",
+    ...(opts.byYou ? { byYou: true } : {}),
+    instanceId: selection.instanceId,
+    session: sessionRef(task.resumeCursors[selection.instanceId]),
+    startedAt: Date.now(),
+    ...(workflowTurns.has(task.id) ? { workflow: true } : {}),
+    ...(opts.carriedOn ? { carriedOn: true } : {}),
+  });
+  if (replaced?.waiting) retireCarryOn(replaced);
   notesThisTurn.delete(task.id);
   store.markLane(bot.id, task.id, false);
   artifactBaseline.set(task.id, artifacts.snapshot(bot.id));
@@ -3017,6 +3165,7 @@ async function startTurn(
           broadcast({ kind: "message", threadId: roomId, message: notice });
           store.setTaskBusy(task.id, false);
           turnStarted.delete(task.id);
+          cutOff.end(task.id);
           broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
           return;
         }
@@ -3197,6 +3346,7 @@ async function startTurn(
       if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
       store.setTaskBusy(task.id, false);
       turnStarted.delete(task.id);
+      cutOff.end(task.id);
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
       drainRoomTags(bot.id);
       freshIfAsked(task.id);
@@ -6094,7 +6244,9 @@ function queueOnLane(
 
 /**
  * After a restart, a message still flagged queued is waiting again and
- * runs once its lane is free, as it would have before the restart. Only
+ * runs once its lane is free, as it would have before the restart. A lane
+ * in `joining` is picking up a turn the restart cut off, and that turn
+ * takes what waited (carryOn) instead of it running on its own. Only
  * a recent one: being queued is not standing permission to act. A queued
  * message older than MAX_QUEUED_RECOVERY_MS, or written before queued
  * messages carried the time they were queued (so its age is unknown,
@@ -6102,7 +6254,7 @@ function queueOnLane(
  * not sent instead. That clears the flag, so a later restart does not
  * consider it again either.
  */
-function recoverQueued(now = Date.now()) {
+function recoverQueued(now = Date.now(), joining = new Set<string>()) {
   for (const bot of store.bots) {
     for (const lane of bot.tasks) {
       const flagged = store.messagesFor(lane.id).filter((m) => m.queued && m.role === "user" && !m.deleted && m.text);
@@ -6120,7 +6272,8 @@ function recoverQueued(now = Date.now()) {
           ...(m.via === "webhook" ? { source: "webhook" as const } : {}),
         })),
       });
-      drainSteer(lane.id);
+      // a lane picking up a cut-off turn takes these in that turn
+      if (!joining.has(lane.id)) drainSteer(lane.id);
     }
   }
 }
@@ -7440,6 +7593,7 @@ const server = createServer(async (req, res) => {
 
       // Whatever happens next, it stops working now.
       for (const lane of bot.tasks.filter((t) => t.busy)) {
+        cutOff.stop(lane.id);
         await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id).catch(() => {});
       }
       stopScreenPoller(bot.id);
@@ -8133,6 +8287,27 @@ const server = createServer(async (req, res) => {
       } finally {
         choosingDecisions.delete(key);
       }
+    }
+
+    // ── picking up a turn cut off long ago ──
+    // Offered with a Continue rather than done on its own when Bloks was
+    // gone too long (recoverCutOff). Pressing it is the same pickup a
+    // restart makes, once: the record goes before the turn starts.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/carry-on$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "picking up a cut-off turn is for the person, not an agent" });
+      const turn = cutOff.get(m[1]);
+      if (!turn?.waiting) return json(res, 409, { error: "There is nothing left to pick up here." });
+      const agent = store.bot(turn.botId);
+      if (agent?.tasks.find((t) => t.id === turn.laneId)?.busy) {
+        return json(res, 409, { error: `${agent.name} is working. Try again when it is done.` });
+      }
+      cutOff.take(turn.laneId);
+      retireCarryOn(turn);
+      // the person pressed it, so what it says is a reply to them; it
+      // still runs for whoever asked for the turn it continues
+      carryOn({ ...turn, byYou: true }, "restart");
+      return json(res, 200, { ok: true });
     }
 
     // ── rewinding ──
@@ -8964,10 +9139,16 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such agent" });
       const body = await readBody(req);
       const requestId = String(body.requestId);
+      // An ask this run of Bloks never raised is not one anything is
+      // waiting on: a card from before a restart, say. A new engine
+      // process may number its own requests the same way, so an answer
+      // meant for the old card must not reach it as permission.
+      const live = askThreadByRequest.has(requestId);
       const askThread = askThreadByRequest.get(requestId) ?? bot.threadId;
       const instance = laneInstance(bot, askThread);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
       try {
+        if (!live) throw new Error("not a live ask");
         await instance.adapter.respondToRequest(askThread, requestId, {
           behavior: body.behavior,
           message: body.message,
@@ -9019,6 +9200,7 @@ const server = createServer(async (req, res) => {
         }
         const lane = mainLaneOf(bot);
         if (!lane.busy) return json(res, 200, { ok: true, stopped: false, note: `${bot.name} was not working; nothing to stop.` });
+        cutOff.stop(lane.id);
         await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id);
         const notice = store.appendMessage(lane.id, { role: "bot", kind: "notice", text: `${caller.name} stopped this turn.` });
         broadcast({ kind: "message", threadId: lane.id, message: notice });
@@ -9031,6 +9213,7 @@ const server = createServer(async (req, res) => {
         typeof body.taskId === "string" && bot.tasks.some((t) => t.id === body.taskId)
           ? body.taskId
           : bot.threadId;
+      cutOff.stop(laneId);
       await laneInstance(bot, laneId)?.adapter.interruptTurn(laneId);
       return json(res, 200, { ok: true });
     }
@@ -11373,6 +11556,7 @@ const server = createServer(async (req, res) => {
         // transcript keeps what it did, and asking again after the hand
         // back is the person's decision.
         for (const lane of bot.tasks.filter((t) => t.busy)) {
+          cutOff.stop(lane.id);
           await registry
             .get(bot.modelSelection.instanceId)
             ?.adapter.interruptTurn(lane.id)
@@ -12145,8 +12329,9 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 settleSidebar();
 server.listen(PORT, BIND, () => {
   console.log(`bloks server on http://127.0.0.1:${PORT}`);
-  // messages that were waiting on a turn when Bloks last stopped
-  recoverQueued();
+  // turns cut off when Bloks last stopped, and messages that were
+  // waiting on a turn (the second inside the first)
+  recoverCutOff();
   // Copies written before the native log stopped repeating Codex's thread
   // history (server/drivers/native.ts), slimmed once, after startup has
   // had its moment. Then any still too big are moved aside and gzipped,
@@ -12188,6 +12373,9 @@ process.on("uncaughtException", (error) => {
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    // What is running stays on the list as it is: the engines shut down
+    // below end their turns, and that is this stop, not them finishing.
+    cutOff.close();
     // shells first: they are children of this process and would otherwise
     // outlive it, still holding the folder open
     terminals.closeAll();

@@ -151,9 +151,13 @@ export function memberMessage(message: Message, view: MemberView): Message | nul
   if (!visibleTo(message, view)) return null;
   switch (message.kind) {
     case "text":
-    case "notice":
     case "component":
       return message;
+    case "notice": {
+      // picking up a cut-off turn is the owner's to press
+      const { carryOn: _carryOn, ...notice } = message;
+      return notice;
+    }
     case "activity": {
       if (!message.tool) return null;
       if (view.activityDetail) return message;

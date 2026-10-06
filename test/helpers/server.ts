@@ -31,6 +31,9 @@ export interface Harness {
    * credential leaked has to look where a leak would actually land. */
   logs(): string;
   stop(): Promise<void>;
+  /** Gone with no chance to tidy up, the way a crash or a force quit
+   * ends it. Whatever the server had on disk stays as it was. */
+  crash(): Promise<void>;
 }
 
 /** `extraEnv` lets one test point the harness somewhere of its own, e.g.
@@ -156,6 +159,13 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
           await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
         }
       }
+    },
+    async crash() {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const gone = new Promise((r) => child.once("exit", r));
+      child.kill("SIGKILL");
+      await gone;
+      rmSync(home, { recursive: true, force: true });
     },
     fetchRemote(path, init = {}) {
       return new Promise((resolve, reject) => {

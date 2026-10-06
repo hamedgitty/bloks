@@ -10,6 +10,7 @@ import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
 import Square from "lucide-react/dist/esm/icons/square.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, openLaneWorking, type Bot, type Message } from "@/state/store";
+import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
@@ -524,6 +525,7 @@ function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
         <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
         <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-foreground">
           {message.text}
+          <CarryOn message={message} />
         </div>
       </div>
     </div>
