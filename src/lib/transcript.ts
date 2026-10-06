@@ -56,13 +56,31 @@ export function shouldLoadEarlier(o: { top: number; lastTop: number; more: boole
  * none left, so the one before it is the last thing you said. What came
  * in another way (a watcher, an email, a chat app) and what passed
  * between agents is not yours to rewrite from this box, and is passed
- * over the same way.
+ * over the same way, as is one never sent, which is sent again instead.
  */
 export function lastEditable(messages: readonly Message[]): Message | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role !== "user" || m.deleted || m.via || m.agent) continue;
+    if (m.role !== "user" || m.deleted || m.unsent || m.via || m.agent) continue;
     if (m.kind === "text" && m.text) return m;
   }
   return null;
+}
+
+/**
+ * A conversation and what is waiting to join it. A message queued behind
+ * a turn, or one not sent after a restart, is not part of the
+ * conversation yet: it waits above the composer, in the order it was
+ * sent, and enters the conversation when it goes, after everything the
+ * agent said meanwhile (GitHub 170). One taken back while it waited
+ * never entered at all, so it shows in neither.
+ */
+export function splitWaiting(messages: readonly Message[]): { said: Message[]; waiting: Message[] } {
+  const said: Message[] = [];
+  const waiting: Message[] = [];
+  for (const m of messages) {
+    if (!m.queued && !m.unsent) said.push(m);
+    else if (!m.deleted) waiting.push(m);
+  }
+  return { said, waiting };
 }

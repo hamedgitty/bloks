@@ -139,6 +139,21 @@ test("a queued message goes with the words it has when it goes, and not at all o
   assert.equal(went.text, "QA_QUEUE_EDIT_NEW");
   assert.equal(typeof went.deliveredAt, "number");
   assert.equal((await s.byId(kept.id)).deliveredAt, went.deliveredAt, "one burst, one moment");
+  // It entered the conversation then, not when it was written: after
+  // what the agent said while it waited, the burst together and in the
+  // order it was written, under the ids the edit and the deletion found
+  // it by (GitHub 170). The one taken back never entered at all.
+  const all = (await s.messages()).filter((m) => m.kind === "text");
+  // from the turn it waited behind, past the agent's greeting
+  const said = all.slice(all.findIndex((m) => m.text === "HOLD this turn open"));
+  const entered = said.filter((m) => !m.deleted);
+  assert.deepEqual(
+    entered.slice(0, 4).map((m) => m.text),
+    ["HOLD this turn open", "Answered 1", "QA_QUEUE_EDIT_NEW", "QA_QUEUE_KEEP"],
+  );
+  assert.equal(entered[2].id, edited.id);
+  assert.equal(entered[3].id, kept.id);
+  assert.ok(said.findIndex((m) => m.id === dropped.id) < said.findIndex((m) => m.text === "Answered 1"), "a message taken back was moved as if it went");
   const gone = await s.byId(dropped.id);
   assert.equal(gone.text, "");
   assert.equal(gone.deliveredAt, undefined, "a message taken back never went anywhere");
@@ -192,6 +207,19 @@ test("an open editor holds the queued burst whole until it saves, and the save i
   assert.equal((await s.edit(second.id, "SECOND_WAITING_NEW")).status, 200);
   await waitFor(() => s.calls().length >= 2);
   assert.equal(s.calls()[1], "FIRST_WAITING\nSECOND_WAITING_NEW\nTHIRD_WAITING\nSAID_WHILE_EDITING");
+  // and the chat reads the same way: the turn's answer, then all four
+  const texts = await waitFor(async () => {
+    const list = await s.messages();
+    return list.some((m) => m.queued) ? null : list.filter((m) => m.kind === "text").map((m) => m.text);
+  });
+  assert.deepEqual(texts.slice(texts.indexOf("HOLD this turn open")).slice(0, 6), [
+    "HOLD this turn open",
+    "Answered 1",
+    "FIRST_WAITING",
+    "SECOND_WAITING_NEW",
+    "THIRD_WAITING",
+    "SAID_WHILE_EDITING",
+  ]);
 });
 
 test("a held burst goes as it was when the editor is cancelled", async (t) => {

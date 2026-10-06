@@ -671,7 +671,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "message.patch":
-          rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message });
+          rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message, moved: frame.moved === true });
           break;
         case "rehearsals":
           rawDispatch({ type: "rehearsalsChanged" });

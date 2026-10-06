@@ -1,6 +1,6 @@
 // A room: several agents and you, in one transcript. Unlike a solo chat,
 // every line is attributed, because who said it is half the meaning.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import BookmarkPlus from "lucide-react/dist/esm/icons/bookmark-plus.mjs";
@@ -22,7 +22,7 @@ import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { GroupCallButton } from "./Voice";
-import { shouldLoadEarlier, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { shouldLoadEarlier, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { ArtifactCard } from "./Artifacts";
 import {
@@ -40,6 +40,7 @@ import { ToolRun } from "./ToolRun";
 import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
+import { WaitingStrip } from "./WaitingStrip";
 import { MessageComponent } from "./Gallery";
 import MoreHorizontal from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 import {
@@ -65,6 +66,13 @@ function reactTo(roomId: string, messageId: string, emoji: string) {
     body: JSON.stringify({ emoji }),
   }).catch(() => {});
 }
+
+/** Where a room message said in a linked chat came from, for the strip. */
+const CHANNEL_NAMES: Partial<Record<NonNullable<Message["via"]>, string>> = {
+  slack: "Slack",
+  discord: "Discord",
+  whatsapp: "WhatsApp",
+};
 
 function seniorityOf(bot: Bot) {
   return bot.seniority ?? 1;
@@ -167,12 +175,6 @@ function RoomMessage({
           <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[14.5px] leading-relaxed text-primary-foreground">
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark />}
             {message.text}
-            {message.queued && (
-              <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70" role="status">
-                <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
-                Queued, sends when this turn finishes
-              </div>
-            )}
           </div>
           <Reactions
             reactions={message.reactions}
@@ -369,10 +371,13 @@ export function RoomView({ blok }: { blok: Blok }) {
     lastRoomKey.current = blok.id;
     setBoundary(null);
   }
-  const start = windowStart(blok.messages.length, boundary);
+  // The room's conversation, and what waits behind the round it is in,
+  // above the composer until it goes (GitHub 170).
+  const { said, waiting } = useMemo(() => splitWaiting(blok.messages), [blok.messages]);
+  const start = windowStart(said.length, boundary);
   // which messages have answers hanging off them, for the stream's hint
-  const counts = replyCounts(blok.messages);
-  const visibleMessages = blok.messages.slice(start);
+  const counts = replyCounts(said);
+  const visibleMessages = said.slice(start);
 
   const pinned = useRef(true);
   const scrolledTo = useRef(0);
@@ -393,7 +398,7 @@ export function RoomView({ blok }: { blok: Blok }) {
       preExpand.current = null;
     }
     // a page from the server lands above with start still at 0
-  }, [start, blok.messages.length]);
+  }, [start, said.length]);
 
   const earlier = useEarlier("room", { ...blok, threadId: blok.id });
   const showEarlier = () => {
@@ -408,7 +413,7 @@ export function RoomView({ blok }: { blok: Blok }) {
   useEffect(() => {
     if (!pinned.current) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [blok.id, blok.messages.length, working.length]);
+  }, [blok.id, said.length, waiting.length, working.length]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -609,7 +614,7 @@ export function RoomView({ blok }: { blok: Blok }) {
       >
         {lens === "forum" ? (
           <ForumLens
-            messages={blok.messages}
+            messages={said}
             members={members}
             onOpenInStream={(messageId) => {
               setLensAnd("stream");
@@ -697,6 +702,20 @@ export function RoomView({ blok }: { blok: Blok }) {
         )}
       </div>
 
+      <WaitingStrip
+        messages={waiting}
+        threadId={blok.id}
+        senderOf={(m) =>
+          m.role === "bot"
+            ? (members.find((b) => b.id === m.from)?.name ?? "An agent")
+            : m.author
+              ? (roomPeople.find((p) => p.id === m.author)?.name ?? "A former member")
+              : m.via
+                ? (CHANNEL_NAMES[m.via] ?? "the linked chat")
+                : null
+        }
+        working={working.length > 0}
+      />
       <div className="relative px-4 pb-4 pt-1 md:px-6 md:pb-5">
         {replyTo && (
           <div className="mx-auto mb-2 max-w-[760px]">

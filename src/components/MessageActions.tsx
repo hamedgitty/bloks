@@ -7,7 +7,6 @@
 // bubble; forward re-posts the message into another conversation with
 // its origin named.
 import { useState } from "react";
-import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import CornerUpLeft from "lucide-react/dist/esm/icons/corner-up-left.mjs";
 import Copy from "lucide-react/dist/esm/icons/copy.mjs";
@@ -81,7 +80,6 @@ export function MessageActionBar({
   onForward,
   onReact,
   onEdit,
-  onSendNow,
   onDelete,
   onRewind,
   className,
@@ -93,9 +91,6 @@ export function MessageActionBar({
   onReact?: (emoji: string) => void;
   /** Only your own words; an agent's message is a record, not a draft. */
   onEdit?: () => void;
-  /** Your own message, still queued behind a running turn: stop that
-   * turn and let what waited go now, as Cmd+Enter would have. */
-  onSendNow?: () => void;
   onDelete?: () => void;
   /** Your own message, in a conversation with one agent. */
   onRewind?: () => void;
@@ -120,11 +115,6 @@ export function MessageActionBar({
     ["Forward", <Send key="f" size={13} strokeWidth={1.8} />, () => onForward(message, author)],
     ...(onEdit
       ? ([["Edit", <Pencil key="e" size={13} strokeWidth={1.8} />, onEdit]] as Array<
-          [string, React.ReactNode, () => void]
-        >)
-      : []),
-    ...(onSendNow
-      ? ([["Send now", <ArrowUp key="n" size={14} strokeWidth={1.8} />, onSendNow]] as Array<
           [string, React.ReactNode, () => void]
         >)
       : []),

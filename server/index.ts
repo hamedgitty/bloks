@@ -2378,14 +2378,8 @@ function carryOn(
       ...carryOnTarget(turn),
       byYou: Boolean(turn.byYou) || yours,
     })
-      .then(() => {
-        const deliveredAt = Date.now();
-        for (const { item } of alive) {
-          if (!item.messageId) continue;
-          const patched = store.patchMessage(turn.laneId, item.messageId, { queued: false, deliveredAt });
-          if (patched) broadcast({ kind: "message.patch", threadId: turn.laneId, message: patched });
-        }
-      })
+      // under the notice, where the pickup took them
+      .then(() => deliverQueued(turn.laneId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : []))))
       .catch((e) => {
         // what waited is still waiting, ahead of anything said since
         if (waiting) {
@@ -2953,10 +2947,11 @@ async function startTurn(
   const transcriptBudget = Math.max(2_000, Math.floor(contextLimit * COMPACT_AT) - 4_000);
   const buildTranscript = (): { turns: Turn[]; dropped: number } => {
     if (blok) return { turns: [], dropped: 0 };
-    // a message marked not sent was never said, so no engine hears it
+    // a message marked not sent was never said, and one still queued has
+    // not been yet (it joins at the end when it goes), so no engine hears either
     const settled = store
       .messagesFor(roomId)
-      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent)
+      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         text: m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text!) : m.text!,
@@ -4164,7 +4159,7 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     ...(author.via ? { via: author.via } : {}),
     kind: "text",
     text,
-    queued: Boolean(previous),
+    ...(previous ? { queued: true, queuedAt: Date.now() } : {}),
     ...(author.replyTo ? { replyTo: author.replyTo } : {}),
   });
   broadcast({ kind: "message", threadId: blok.id, message });
@@ -4172,11 +4167,10 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     const current = store.messagesFor(blok.id).find((m) => m.id === message.id);
     const room = bloks.get(blok.id);
     if (!room || !current || current.deleted) return message;
-    if (current.queued) {
-      const patched = store.patchMessage(blok.id, message.id, { queued: false, deliveredAt: Date.now() });
-      broadcast({ kind: "message.patch", threadId: blok.id, message: patched! });
-    }
-    return postToRoomNow(room, current.text ?? text, author, current);
+    // into the room's history after what the room said while it waited
+    if (current.queued) deliverQueued(blok.id, [message.id]);
+    const delivered = store.messagesFor(blok.id).find((m) => m.id === message.id) ?? current;
+    return postToRoomNow(room, delivered.text ?? text, author, delivered);
   });
   roomPosting.set(blok.id, run);
   const cleanup = () => {
@@ -4953,7 +4947,7 @@ async function foldContext(botId: string, threadId: string, force = false): Prom
 
   const settled = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent);
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent);
   const already = task.context?.through ?? 0;
   const carried = settled.slice(already);
   const asTurns: Turn[] = carried.map((m) => ({
@@ -5015,7 +5009,7 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
 
   const settled = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent);
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent);
   const asTurns: Turn[] = settled.map((m) => ({
     role: m.role === "user" ? ("user" as const) : ("assistant" as const),
     text: m.text!,
@@ -5079,7 +5073,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
 
   const turns: Turn[] = store
     .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.unsent)
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
     .map((m) => ({
       role: m.role === "user" ? ("user" as const) : ("assistant" as const),
       text: m.text!,
@@ -6267,10 +6261,11 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 
 // ── steering a busy agent ─────────────────────────────────────────────
 // Words said to a busy lane are not an error; they are the next thing to
-// say. They land in the transcript immediately (flagged queued), wait in
-// memory, and drain into one follow-up turn when the lane settles. A
-// restart rebuilds the waiting from the transcript (recoverQueued), so
-// nothing flagged queued is left behind waiting forever.
+// say. They are written down immediately (flagged queued), wait in
+// memory, and drain into one follow-up turn when the lane settles; only
+// then do they join the conversation (deliverQueued). A restart rebuilds
+// the waiting from the transcript (recoverQueued), so nothing flagged
+// queued is left behind waiting forever.
 // An item with a messageId carries no words of its own. They are read
 // from the transcript when the burst goes, because the person can still
 // edit a waiting message or take it back, and what the agent hears has
@@ -6292,6 +6287,24 @@ function steerWords(laneId: string, item: { messageId?: string; text?: string })
   const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
   if (!m || m.deleted || !m.text) return null;
   return m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text) : m.text;
+}
+
+/** Waiting messages go. Until now they sat above the composer, outside
+ * the conversation; they enter it here, after everything said while
+ * they waited, because that is where the agent hears them. Moved on
+ * disk and not only on screen, so a room's history, a replayed
+ * transcript and an export all read in the order things happened
+ * (GitHub 170). One moment for a burst, because one turn takes all of
+ * it. The patch says it moved, so a screen moves it too. */
+function deliverQueued(threadId: string, messageIds: readonly string[]) {
+  const deliveredAt = Date.now();
+  const moved = store.moveToEnd(threadId, messageIds, (m) => ({
+    queued: false,
+    deliveredAt,
+    at: deliveredAt,
+    queuedAt: m.queuedAt ?? m.at,
+  }));
+  for (const message of moved) broadcast({ kind: "message.patch", threadId, message, moved: true });
 }
 
 // ── rewording a queued message ──
@@ -6488,13 +6501,8 @@ function drainSteer(threadId: string) {
     closeIfAsked(threadId);
     return;
   }
-  // one moment for the whole burst, because one turn takes all of it
-  const deliveredAt = Date.now();
-  for (const { item } of alive) {
-    if (!item.messageId) continue;
-    const patched = store.patchMessage(threadId, item.messageId, { queued: false, deliveredAt });
-    if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
-  }
+  // into the conversation before the turn that answers them
+  deliverQueued(threadId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : [])));
   // one turn answers the whole burst
   const joined = alive.map((said) => said.words).join("\n");
   // a burst that is all one agent's messages is that exchange's to answer

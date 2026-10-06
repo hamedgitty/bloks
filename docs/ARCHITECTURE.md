@@ -251,6 +251,20 @@ which is in memory, as it does for a busy Email lane. Questions, approvals and
 workflow gates are left exactly as they are. A drain lives in memory,
 so a restart ends it, and calling it off lets everything held go at once.
 
+## Queued messages
+
+Words said to a lane in the middle of a turn are written down at once,
+flagged `queued`, and wait in memory (`steerQueues` in `server/index.ts`)
+until the lane settles; everything waiting goes in one turn. They are
+not part of the conversation until then. The app shows them in a strip
+above the composer, where your own can be reworded, sent now or taken
+back, and when they go `deliverQueued` moves them to the end of the
+transcript (`Store.moveToEnd`, ids unchanged) with a `message.patch`
+frame marked `moved`. So the stored order is the order the agent heard
+things in, and everything that reads it (a room's history, a replayed
+transcript, an export) agrees. A room's own queue behind its current
+round, and a pickup after a restart, deliver the same way.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group

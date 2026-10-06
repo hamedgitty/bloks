@@ -59,6 +59,24 @@ test("the same message arriving twice is only stored once", () => {
   assert.equal(twice.bots[0].messages.length, 1);
 });
 
+test("a queued message that went moves to the end of the conversation, in an agent's thread or a room", () => {
+  // The server moves it on disk when it goes (GitHub 170); a screen that
+  // only patched it in place would show it above everything said while
+  // it waited, until the next reload put it right.
+  const waiting = msg("q1", { role: "user", text: "later", queued: true });
+  const went = { ...waiting, queued: false, deliveredAt: 5, at: 5 };
+  const room = { id: "room-1", name: "Launch", memberIds: ["a"], createdAt: 0, messages: [msg("r0"), waiting, msg("r1")] };
+  const state = withState({ bots: [bot("a", { messages: [msg("m0"), waiting, msg("m1")] })], bloks: [room] });
+  const moved = reducer(state, { type: "messagePatched", threadId: "t-a", message: went, moved: true });
+  assert.deepEqual(moved.bots[0].messages.map((m) => m.id), ["m0", "m1", "q1"]);
+  assert.equal(moved.bots[0].messages[2].queued, false);
+  const inRoom = reducer(state, { type: "messagePatched", threadId: "room-1", message: went, moved: true });
+  assert.deepEqual(inRoom.bloks[0].messages.map((m) => m.id), ["r0", "r1", "q1"]);
+  // an ordinary patch, a reaction or an edit, stays where it is
+  const edited = reducer(state, { type: "messagePatched", threadId: "t-a", message: { ...waiting, text: "sooner" } });
+  assert.deepEqual(edited.bots[0].messages.map((m) => m.id), ["m0", "q1", "m1"]);
+});
+
 test("an agent nobody has seen is added, not dropped", () => {
   // this is how a team hire shows up: the server broadcasts the whole
   // record on a channel that otherwise carries patches
