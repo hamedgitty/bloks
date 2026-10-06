@@ -16,13 +16,14 @@ import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
-import { lastEditable, shouldLoadEarlier, showTypingDots, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { lastEditable, shouldLoadEarlier, showTypingDots, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
 import { dayLine, queuedLine, stamp, timeSaidBelow } from "@/lib/when";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
+import { WaitingStrip } from "./WaitingStrip";
 import { AfterAgentLink, AgentExchangeDialog, AgentExchangeRow } from "./AgentExchange";
 import { CallButton } from "./Voice";
 import { ArtifactCard } from "./Artifacts";
@@ -158,11 +159,8 @@ function Bubble({
   onForward,
   onReact,
   onEdit,
-  onEditQueued,
-  onSendNow,
   onDelete,
   onRewind,
-  onResend,
   nameOf,
   highlight = "",
   isHit,
@@ -180,15 +178,8 @@ function Bubble({
   onForward: (message: Message, author: string) => void;
   onReact?: (messageId: string, emoji: string) => void;
   onEdit?: (messageId: string, text: string) => void;
-  /** Opens the editor on a queued message, holding back the turn it
-   * waits for, and hands back how to close it: with words to save, or
-   * without them to cancel. */
-  onEditQueued?: (messageId: string) => (text?: string) => void;
-  /** Stops the running turn, so what is queued behind it goes now. */
-  onSendNow?: () => void;
   onDelete?: (messageId: string) => void;
   onRewind?: (messageId: string) => void;
-  onResend?: (text: string) => void;
   nameOf?: (id: string) => string;
   highlight?: string;
   isHit?: boolean;
@@ -197,18 +188,12 @@ function Bubble({
   // Editing happens where the message already is. Sending it back to
   // the composer would lose your place and pretend it is a new message.
   const [editing, setEditing] = useState<string | null>(null);
-  // A queued message open in the editor holds back the turn it waits
-  // for, so the old words never go out from under it. When the editor
-  // was opened on one, this is how it closes again: with words to save,
-  // or without them to cancel.
-  const closeQueued = useRef<((text?: string) => void) | null>(null);
   // Opened from the keyboard, it hands the keyboard back when it closes,
   // so the next thing typed lands in the composer again.
   const returnTo = useRef<HTMLElement | null>(null);
   const startEditing = () => {
     if (editing !== null) return;
     setEditing(message.text ?? "");
-    if (message.queued && onEditQueued) closeQueued.current = onEditQueued(message.id);
   };
   useEffect(() => {
     if (!editNow) return;
@@ -216,21 +201,11 @@ function Bubble({
     startEditing();
   }, [editNow]); // eslint-disable-line react-hooks/exhaustive-deps
   const stopEditing = (text?: string) => {
-    const close = closeQueued.current;
-    closeQueued.current = null;
-    if (close) close(text);
-    else if (text) onEdit?.(message.id, text);
+    if (text) onEdit?.(message.id, text);
     setEditing(null);
     returnTo.current?.focus();
     returnTo.current = null;
   };
-  // a bubble that goes mid-edit, to another conversation or because the
-  // message was taken back, lets go of what it held
-  useEffect(() => () => closeQueued.current?.(), []);
-  // A queued message is still a draft in all but name, so a double-click
-  // opens it as Edit does. One already sent keeps the browser's own
-  // double-click, which selects a word.
-  const draft = user && Boolean(message.queued) && Boolean(onEdit) && editing === null;
 
   return (
     <div
@@ -250,7 +225,6 @@ function Bubble({
             onForward={onForward}
             onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
             onEdit={user && onEdit ? startEditing : undefined}
-            onSendNow={message.queued ? onSendNow : undefined}
             onDelete={onDelete ? () => onDelete(message.id) : undefined}
             onRewind={onRewind ? () => onRewind(message.id) : undefined}
           />
@@ -272,16 +246,6 @@ function Bubble({
               // the hit you are standing on, so n and N feel like movement
               isHit && "ring-2 ring-warning/70",
             )}
-            // the second press of a double-click would select a word
-            // just before the editor takes its place
-            onMouseDown={
-              draft
-                ? (e) => {
-                    if (e.detail > 1) e.preventDefault();
-                  }
-                : undefined
-            }
-            onDoubleClick={draft ? startEditing : undefined}
           >
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark={user} />}
             {editing !== null ? (
@@ -319,24 +283,6 @@ function Bubble({
             {message.editedAt && editing === null && (
               <span className="ml-1.5 align-baseline text-[10.5px] opacity-60">edited</span>
             )}
-            {user && message.queued && (
-              <div className="mt-1 flex items-center gap-1 text-[10.5px] font-medium opacity-70">
-                <span className="inline-block size-1.5 animate-pulse rounded-full bg-current" />
-                {editing !== null && onEditQueued
-                  ? "Queued, waits until you save or cancel"
-                  : "Queued, sends when this turn finishes"}
-              </div>
-            )}
-            {user && message.unsent && (
-              <div className="mt-1 text-[10.5px] font-medium opacity-80">
-                Not sent: it was still waiting when Bloks restarted, too long ago to send on its own.
-                {onResend && message.text ? (
-                  <button className="ml-1.5 underline underline-offset-2" onClick={() => onResend(message.text ?? "")}>
-                    Send again
-                  </button>
-                ) : null}
-              </div>
-            )}
           </div>
           <Reactions
             reactions={message.reactions}
@@ -356,7 +302,8 @@ function Bubble({
         )}
       </div>
       {/* Under the row rather than in it, so the action bar stays centred
-          on the words. One that waited for a turn says both times. */}
+          on the words. One that waited for a turn says both times; it
+          joined the conversation when it went, which is why it is here. */}
       {message.at && !hideTime ? (
         <time
           dateTime={new Date(message.at).toISOString()}
@@ -639,22 +586,24 @@ function TypingIndicator() {
  * watching, never the backlog when you open a thread. Opening a chat and
  * seeing forty bubbles fly in would be noise, not feedback.
  */
-function useArrivals(bot: Bot): Set<string> {
+function useArrivals(botId: string, messages: Message[]): Set<string> {
   const seen = useRef<Set<string>>(new Set());
   const [arrivals, setArrivals] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     // switching threads: adopt the whole transcript silently
-    seen.current = new Set(bot.messages.map((m) => m.id));
+    seen.current = new Set(messages.map((m) => m.id));
     setArrivals(new Set());
-  }, [bot.id]);
+  }, [botId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // a message that waited arrives here when it goes, so it rises into
+  // the conversation like anything else said now
   useEffect(() => {
-    const fresh = bot.messages.filter((m) => !seen.current.has(m.id)).map((m) => m.id);
+    const fresh = messages.filter((m) => !seen.current.has(m.id)).map((m) => m.id);
     if (!fresh.length) return;
     fresh.forEach((id) => seen.current.add(id));
     setArrivals(new Set(fresh));
-  }, [bot.messages]);
+  }, [messages]);
 
   return arrivals;
 }
@@ -667,28 +616,6 @@ function editMessage(threadId: string, messageId: string, text: string) {
     method: "PATCH",
     body: JSON.stringify({ text }),
   }).catch(() => {});
-}
-
-/** Opens the editor on a queued message: the server holds back the turn
- * it waits for until the editor closes (GitHub 155). What comes back
- * closes it, saving the words given or cancelling without any. Either
- * one waits for the opening to land first, so a quick Escape never
- * arrives ahead of the hold it is meant to end. A save lets go on the
- * server's side, once the new words are in; one the server refuses lets
- * go here instead, rather than leaving the burst to its timeout. */
-function editQueued(threadId: string, messageId: string) {
-  const path = `/api/threads/${threadId}/messages/${messageId}`;
-  const editing = (on: boolean) => api(`${path}/editing`, { method: "POST", body: JSON.stringify({ editing: on }) });
-  const opened = editing(true).catch(() => {});
-  return (text?: string) => {
-    void opened
-      .then(() =>
-        text
-          ? api(path, { method: "PATCH", body: JSON.stringify({ text }) }).catch(() => editing(false))
-          : editing(false),
-      )
-      .catch(() => {});
-  };
 }
 
 function deleteMessage(threadId: string, messageId: string) {
@@ -712,7 +639,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   const liveBrowser =
     bot.busy && frame?.source === "browser" && frame !== frameAtTurnStart ? frame : null;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const arrivals = useArrivals(bot);
+  // The conversation, and what waits to join it above the composer.
+  const { said, waiting } = useMemo(() => splitWaiting(bot.messages), [bot.messages]);
+  const arrivals = useArrivals(bot.id, said);
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
   const [forwarding, setForwarding] = useState<{ message: Message; author: string } | null>(null);
   // A rewind hands your message back to the composer, to send again or
@@ -734,6 +663,21 @@ export function ChatView({ bot }: { bot: Bot }) {
   useEffect(() => {
     if (editAsk) setEditAsk(null);
   }, [editAsk]);
+  // Sent again as what it says now, at the end of the conversation like
+  // anything said now, and the one that never went is cleared from the
+  // strip once the new one is in.
+  const sendAgain = (message: Message) => {
+    const threadId = bot.threadId;
+    api(`/api/bots/${bot.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ text: message.text, taskId: threadId }),
+    })
+      .then(() => api(`/api/threads/${threadId}/messages/${message.id}`, { method: "DELETE" }))
+      .catch((e) => {
+        dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+        setTimeout(() => dispatch({ type: "error", message: null }), 6000);
+      });
+  };
   const rewindTo = (threadId: string, messageId: string) => {
     api(`/api/threads/${threadId}/rewind`, { method: "POST", body: JSON.stringify({ messageId }) })
       .then((r) => setPrefill({ text: r.text ?? "", nonce: Date.now() }))
@@ -771,7 +715,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [finding, setFinding] = useState(false);
   const [query, setQuery] = useState("");
   const [hitAt, setHitAt] = useState(0);
-  const hits = useMemo(() => findHits(bot.messages, query), [bot.messages, query]);
+  const hits = useMemo(() => findHits(said, query), [said, query]);
 
   // Approvals stacked up while the user was away. One or two are a
   // conversation; several are a queue, and a queue deserves queue
@@ -797,11 +741,11 @@ export function ChatView({ bot }: { bot: Bot }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const start = windowStart(bot.messages.length, boundary);
+  const start = windowStart(said.length, boundary);
   // A hit above the rendered slice would be invisible and unscrollable,
   // so finding one opens the window far enough back to show it.
   const visibleStart = currentHit >= 0 && currentHit < start ? Math.max(0, currentHit - 4) : start;
-  const visibleMessages = bot.messages.slice(visibleStart);
+  const visibleMessages = said.slice(visibleStart);
 
   // follow the tail only while the reader is actually at the tail
   const pinned = useRef(true);
@@ -820,7 +764,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (pinned.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
-  }, [bot.id, bot.messages.length, streaming, bot.busy]);
+  }, [bot.id, said.length, waiting.length, streaming, bot.busy]);
 
   // expanding restores the reader's place: the same row stays under the
   // cursor while the earlier window mounts above it
@@ -831,7 +775,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       preExpand.current = null;
     }
     // a page from the server lands above with start still at 0
-  }, [start, bot.messages.length]);
+  }, [start, said.length]);
 
   // Walk to a hit: render it, then bring it to the middle of the view.
   useEffect(() => {
@@ -853,7 +797,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     void earlier.load();
   };
 
-  const first = bot.messages[0];
+  const first = said[0];
   // this conversation, not the agent: another one may be the one working
   const working = openLaneWorking(bot);
 
@@ -1127,14 +1071,8 @@ export function ChatView({ bot }: { bot: Bot }) {
                     onForward={(message, author) => setForwarding({ message, author })}
                     onReact={(messageId, emoji) => reactTo(bot.threadId, messageId, emoji)}
                     onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
-                    onEditQueued={(messageId) => editQueued(bot.threadId, messageId)}
-                    // the same stop Cmd+Enter makes before it sends: the
-                    // turn ends, and what waited behind it goes together
-                    // in the next one, as when a turn ends on its own
-                    onSendNow={working ? () => dispatch({ type: "interrupt", botId: bot.id }) : undefined}
                     onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
                     onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
-                    onResend={(text) => dispatch({ type: "send", botId: bot.id, text })}
                     highlight={finding ? query : ""}
                     isHit={absolute === currentHit}
                     editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
@@ -1157,7 +1095,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           {streaming ? (
             <StreamingBubble text={streaming} />
           ) : (
-            showTypingDots(working, streaming, bot.messages[bot.messages.length - 1]) && (
+            showTypingDots(working, streaming, said[said.length - 1]) && (
               <TypingIndicator />
             )
           )}
@@ -1227,6 +1165,28 @@ export function ChatView({ bot }: { bot: Bot }) {
       )}
       <OtherLaneWaiting bot={bot} />
       <EngineBanner bot={bot} />
+      <WaitingStrip
+        messages={waiting}
+        threadId={bot.threadId}
+        senderOf={(m) =>
+          m.agent?.dir === "in"
+            ? m.agent.peerName
+            : m.via === "watcher"
+              ? "your watcher"
+              : m.via === "webhook"
+                ? "a webhook"
+                : m.via === "email"
+                  ? "email"
+                  : null
+        }
+        working={working}
+        // the same stop Cmd+Enter makes before it sends: the turn ends,
+        // and what waited behind it goes together in the next one, as
+        // when a turn ends on its own
+        onSendNow={working ? () => dispatch({ type: "interrupt", botId: bot.id }) : undefined}
+        onSendAgain={sendAgain}
+        editAsk={editAsk}
+      />
       <Composer
         bot={bot}
         replyTo={replyTo}

@@ -151,7 +151,9 @@ test("a queued message keeps when it went to the agent, through a restart", asyn
   // the moment it stopped waiting, not the moment it was queued
   assert.ok(went.deliveredAt >= released, "the time it went is the time it was queued");
   assert.equal(went.queuedAt, waiting.queuedAt);
-  assert.equal(went.at, waiting.at);
+  // it joined the conversation when it went, so that is its place in it
+  // (GitHub 170); when it was written is still there in queuedAt
+  assert.equal(went.at, went.deliveredAt);
   assert.equal((await read(first))("STRAIGHT-IN").deliveredAt, undefined, "a message that never waited has no time for it");
   await first.stop();
 

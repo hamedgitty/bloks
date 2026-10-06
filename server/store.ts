@@ -153,13 +153,16 @@ export interface Message {
   replyTo?: { id?: string; author: string; excerpt: string };
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
-  /** sent while the lane was busy; drains into the next turn */
+  /** Sent while the lane was busy; drains into the next turn. Not part
+   * of the conversation until then: it is moved to the end of the
+   * transcript when it goes (Store.moveToEnd). */
   queued?: boolean;
   /** When it was queued. Written since 2.5.19; a queued message without
    * it predates recovery after a restart and is never run by it. */
   queuedAt?: number;
   /** When a queued message stopped waiting and went to the turn that
-   * answers it. With `queuedAt` it says how long it waited. Absent on a
+   * answers it, which is also its `at` from then on, since that is when
+   * it entered the conversation. With `queuedAt` it says how long it waited. Absent on a
    * message that never waited, one still waiting, one never sent, and
    * one that went before this was recorded. */
   deliveredAt?: number;
@@ -542,6 +545,29 @@ export class Store {
     list[idx] = { ...list[idx], ...patch, card };
     writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
     return list[idx];
+  }
+
+  /**
+   * Takes messages out of where they are and puts them at the end of the
+   * transcript, in the order given, each changed by `patch` on the way.
+   * A queued message waits outside the conversation and enters it when
+   * it goes, after everything said while it waited, so the order on disk
+   * is the order the agent heard things in (GitHub 170). Ids stay as
+   * they are, so a reply, an edit or a deletion still finds the message.
+   */
+  moveToEnd(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>): Message[] {
+    const list = this.messagesFor(threadId);
+    const moved: Message[] = [];
+    for (const id of messageIds) {
+      const idx = list.findIndex((m) => m.id === id);
+      if (idx === -1) continue;
+      const [message] = list.splice(idx, 1);
+      moved.push({ ...message, ...patch(message) });
+    }
+    if (!moved.length) return [];
+    list.push(...moved);
+    writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
+    return moved;
   }
 
   bot(id: string) {

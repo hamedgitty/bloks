@@ -58,7 +58,9 @@ export interface Message {
   afterAgent?: { peerId: string; peerName: string };
   /** The user's selection on a decision component. */
   decisionChoice?: number;
-  /** Sent while the lane was busy; drains into the next turn. */
+  /** Sent while the lane was busy; drains into the next turn. It waits
+   * above the composer, not in the conversation, and joins the end of
+   * it when it goes (a patch marked `moved`). */
   queued?: boolean;
   /** When it was queued, and when it stopped waiting and went to the
    * agent. Together they are how long it waited. */
@@ -609,7 +611,9 @@ export type Action =
   | { type: "markLaneUnread"; botId: string; taskId: string }
   | { type: "botPatched"; bot: Partial<Bot> & { id: string } }
   | { type: "messageAdded"; threadId: string; message: Message }
-  | { type: "messagePatched"; threadId: string; message: Message }
+  /** `moved`: a queued message that went, so it leaves its place and
+   * joins the end of the conversation, as it did on disk. */
+  | { type: "messagePatched"; threadId: string; message: Message; moved?: boolean }
   | { type: "streamDelta"; threadId: string; delta: string }
   | { type: "streamClear"; threadId: string; onlyIfSettled?: boolean }
   | { type: "turnStarted"; threadId: string }
@@ -973,23 +977,20 @@ export function reducer(state: AppState, action: Action): AppState {
       return next;
     }
     case "messagePatched": {
+      const patched = (messages: Message[]) =>
+        action.moved
+          ? [...messages.filter((m) => m.id !== action.message.id), action.message]
+          : messages.map((m) => (m.id === action.message.id ? action.message : m));
       const room = state.bloks.find((b) => b.id === action.threadId);
       if (room) {
         return {
           ...state,
-          bloks: state.bloks.map((b) =>
-            b.id === room.id
-              ? { ...b, messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)) }
-              : b,
-          ),
+          bloks: state.bloks.map((b) => (b.id === room.id ? { ...b, messages: patched(b.messages) } : b)),
         };
       }
       const bot = state.bots.find((b) => b.threadId === action.threadId);
       if (!bot) return state;
-      return updateBot(state, bot.id, (b) => ({
-        ...b,
-        messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
-      }));
+      return updateBot(state, bot.id, (b) => ({ ...b, messages: patched(b.messages) }));
     }
     case "streamDelta":
       if (state.settledTurns[action.threadId]) return state;

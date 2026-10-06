@@ -155,6 +155,14 @@ describe("↑ in an empty composer", () => {
     assert.equal(lastEditable(messages), typed);
   });
 
+  test("a message still waiting is yours to reword, and one never sent is sent again instead", () => {
+    // the waiting one sits in the strip above the composer, and opens there
+    const waiting = said("user", "on second thought", { queued: true });
+    assert.equal(lastEditable([said("user", "first"), said("bot", "working"), waiting]), waiting);
+    const typed = said("user", "typed here");
+    assert.equal(lastEditable([typed, said("user", "never went", { unsent: true })]), typed);
+  });
+
   test("nothing of yours means nothing to edit, and the key stays a caret", () => {
     assert.equal(lastEditable([]), null);
     assert.equal(lastEditable([said("bot", "hello")]), null);

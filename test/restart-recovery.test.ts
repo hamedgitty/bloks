@@ -59,6 +59,13 @@ test("a turn cut off by a crash is picked up once, in its own lane, with what wa
   const newer = messages.find((m) => m.text === "NEWER-WORDS");
   assert.equal(newer.queued, false);
   assert.equal(typeof newer.deliveredAt, "number");
+  // It joins the conversation where the pickup took it: under the notice
+  // and above the answer, not back where it was written, above the
+  // notice it never saw (GitHub 170).
+  const at = (m: any) => messages.indexOf(m);
+  const answer = messages.find((m) => m.role === "bot" && m.text === "Done.");
+  assert.ok(at(notices[0]) < at(newer) && at(newer) < at(answer), "the queued words did not join the pickup in its place");
+  assert.equal(newer.at, newer.deliveredAt);
   assert.deepEqual(inFlight(home), [], "the pickup ended and left nothing behind");
   await second.stop();
 

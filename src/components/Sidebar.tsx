@@ -76,7 +76,14 @@ function preview(bot: Bot): string {
   // an empty lane on an agent that has others is a fresh conversation,
   // not a fresh agent, which is what the shared wording would say
   if (!bot.messages.length && (bot.tasks?.length ?? 0) > 1) return "New conversation";
-  return previewLine(bot.messages[bot.messages.length - 1]);
+  return previewLine(lastSaid(bot.messages));
+}
+
+/** The newest message that is in the conversation. One still waiting to
+ * reach the agent, or one that never went, is not what was last said. */
+function lastSaid<M extends { queued?: boolean; unsent?: boolean }>(messages: readonly M[]): M | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].queued && !messages[i].unsent) return messages[i];
+  return undefined;
 }
 
 interface MenuState {
@@ -390,7 +397,7 @@ function BotListItem({
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
-  const last = bot.messages[bot.messages.length - 1];
+  const last = lastSaid(bot.messages);
   const drag = rowDrag(filingOf("agent", bot), onDrag);
   if (rail) {
     // the collapsed sidebar: just the face, with the unread dot riding
@@ -544,7 +551,7 @@ function RoomListItem({
   const members = blok.memberIds
     .map((id) => state.bots.find((b) => b.id === id))
     .filter(Boolean) as Bot[];
-  const last = blok.messages[blok.messages.length - 1];
+  const last = lastSaid(blok.messages);
   const working = members.filter((m) => m.busy);
 
   if (rail) {
