@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Drain, DRAIN_DEFAULT_MS, DRAIN_MAX_MS, drainWindow } from "../server/drain.ts";
+import { drainWait } from "../electron/drain-wait.mjs";
 import { RoomTagQueues } from "../server/room-tags.ts";
 import { startHarness } from "./helpers/server.ts";
 import { agentOn, fakeProvider, idle, inFlight, messagesOf, PICKUP, waitFor } from "./helpers/turns.ts";
@@ -45,6 +46,55 @@ test("a drain is done when nothing runs, or when its time is up", () => {
   assert.equal(d.stop(), true);
   assert.equal(d.on, false);
   assert.equal(d.stop(), false);
+});
+
+/** A harness for the updater's wait: answers from a script of statuses,
+ * the last one repeated, and writes down what it was asked. */
+function scripted(...statuses: Array<{ running: number; done: boolean }>) {
+  const asked: string[] = [];
+  const ask = async (method: "POST" | "GET" | "DELETE") => {
+    asked.push(method);
+    if (method === "DELETE") return { draining: false, running: [], done: false };
+    const next = statuses.length > 1 ? statuses.shift()! : statuses[0];
+    return { draining: true, deadline: 1_000, running: Array(next.running).fill({}), done: next.done };
+  };
+  return { asked, ask };
+}
+
+test("the updater goes straight on when nothing is running, and says nothing about waiting", async () => {
+  const { asked, ask } = scripted({ running: 0, done: true });
+  const seen: number[] = [];
+  const wait = drainWait(ask, { every: 1, onProgress: (s) => seen.push(s.running.length) });
+  assert.equal(await wait.finished, "done");
+  assert.deepEqual(asked, ["POST"]);
+  assert.deepEqual(seen, [], "no progress, so the card goes straight to relaunching");
+});
+
+test("while the updater waits it passes on what is running, until the drain is done", async () => {
+  const { asked, ask } = scripted({ running: 2, done: false }, { running: 1, done: false }, { running: 0, done: true });
+  const seen: number[] = [];
+  const wait = drainWait(ask, { every: 1, onProgress: (s) => seen.push(s.running.length) });
+  assert.equal(await wait.finished, "done");
+  assert.deepEqual(asked, ["POST", "GET", "GET"]);
+  assert.deepEqual(seen, [2, 1]);
+});
+
+test("restart now stops the wait without calling the drain off, and cancel calls it off", async () => {
+  const now = scripted({ running: 1, done: false });
+  const waitNow = drainWait(now.ask, { every: 60_000 });
+  setTimeout(() => waitNow.stop("now"), 10);
+  assert.equal(await waitNow.finished, "now", "and without sitting out the poll");
+  assert.deepEqual(now.asked, ["POST"], "the restart ends the drain, and what runs is picked up after");
+
+  const later = scripted({ running: 1, done: false });
+  const waitLater = drainWait(later.ask, { every: 60_000, onProgress: () => waitLater.stop("cancel") });
+  assert.equal(await waitLater.finished, "cancel");
+  assert.deepEqual(later.asked, ["POST", "DELETE"], "called off, so what waited goes at once");
+});
+
+test("a harness that does not answer has nothing to wait for", async () => {
+  const wait = drainWait(async () => null, { every: 1 });
+  assert.equal(await wait.finished, "done");
 });
 
 test("room lines waiting for an agent are kept on disk, and stale ones are not read back", () => {

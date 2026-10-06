@@ -14,6 +14,8 @@ export interface UpdateState {
   percent?: number;
   /** For an error: the network, GitHub's side, or the install itself. */
   reason?: "offline" | "server" | "install";
+  /** Set while an install waits for running turns to finish first. */
+  draining?: { running: number; deadline?: number };
 }
 
 export interface CuaPermissions {
@@ -97,6 +99,10 @@ declare global {
       updateCheck(): Promise<UpdateState>;
       /** Quits and hands over to the installer; only sane on "ready". */
       updateInstall(): Promise<void>;
+      /** While an install waits for running turns: stop waiting and
+       * install, or call the wait off and update later. */
+      updateRestartNow?(): Promise<void>;
+      updateLater?(): Promise<void>;
       onUpdateState(handler: (state: UpdateState) => void): () => void;
       /** Registers the system-wide hotkey, or clears it with null.
        * Answers with what actually took: another app may own the keys. */

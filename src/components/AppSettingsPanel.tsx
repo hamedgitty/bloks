@@ -15,6 +15,7 @@ import Sun from "lucide-react/dist/esm/icons/sun.mjs";
 import { api, useStore } from "@/state/store";
 import { useTheme, type Theme } from "@/lib/theme";
 import type { UpdateState } from "@/types/bridge";
+import { drainingLine } from "./UpdateCard";
 import { RecordPanel } from "./RecordPanel";
 import { RulesPanel } from "./RulesPanel";
 import { ApiKeyRow } from "./ApiKeys";
@@ -224,7 +225,9 @@ function AboutCard() {
         : update.state === "current"
           ? "You are on the latest version."
           : update.state === "ready"
-            ? `${update.version ?? "An update"} is downloaded and ready.`
+            ? update.draining
+              ? drainingLine(update.draining)
+              : `${update.version ?? "An update"} is downloaded and ready.`
             : update.state === "error"
               ? update.reason === "install"
                 ? "The update downloaded but didn't install. Quit and reopen Bloks to try again."
@@ -242,7 +245,7 @@ function AboutCard() {
         description={line ?? "Updates download on their own and install when you restart."}
         control={
           update.state === "ready" ? (
-            <Button size="sm" onClick={() => void window.bloks?.updateInstall?.()}>
+            <Button size="sm" disabled={Boolean(update.draining)} onClick={() => void window.bloks?.updateInstall?.()}>
               Restart to update
             </Button>
           ) : (

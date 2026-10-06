@@ -232,7 +232,11 @@ an hour at most). The updater asks for it before it installs, and
 `bloks-server drain` does the same for a server you restart yourself;
 both go through `/api/maintenance/drain`, which answers only this
 computer. A turn still running at the deadline is cut off and picked up
-like any other, from the record it already has.
+like any other, from the record it already has. While the updater
+waits, the update card says how many turns it is waiting for and how
+long is left, and offers to restart now (what is running is picked up
+after) or to call the drain off and update later
+(`electron/drain-wait.mjs`).
 
 Nothing that arrives meanwhile is turned away. `startTurn` is where every
 turn starts, so it is where a drain holds them: words for one of an

@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 
 import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
 import { appMenuTemplate } from "./app-menu.mjs";
+import { drainWait } from "./drain-wait.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
 import os from "node:os";
 
@@ -885,6 +886,15 @@ const RECHECK_UPDATES_MS = 4 * 60 * 60 * 1000;
 
 /** The last thing the updater said, replayed to windows that ask. */
 let updaterState = { state: "idle" };
+/** The wait for a drain before an update installs, while there is one. */
+let drainWaiting = null;
+
+function showUpdate(next) {
+  updaterState = next;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("update:state", updaterState);
+  }
+}
 
 ipcMain.handle("app:version", () => app.getVersion());
 ipcMain.handle("update:state", () => updaterState);
@@ -901,10 +911,12 @@ ipcMain.handle("update:check", async () => {
  * and starts nothing new, and this waits until it has or until its
  * deadline passes (server/drain.ts). Anything still running then is
  * picked up after the restart, and anything that arrived meanwhile waits
- * on disk. A harness that does not answer has nothing to wait for. */
+ * on disk. A harness that does not answer has nothing to wait for.
+ * While it waits, the update card says what for, and can restart now or
+ * call it off (electron/drain-wait.mjs). Answers how the wait ended. */
 async function drainBeforeRestart() {
   // agents on another computer are that computer's to finish
-  if (remoteProfile || !serverStarted) return;
+  if (remoteProfile || !serverStarted) return "done";
   const ask = async (method) => {
     try {
       const response = await fetch(`http://127.0.0.1:${serverPort}/api/maintenance/drain`, {
@@ -918,19 +930,25 @@ async function drainBeforeRestart() {
       return null;
     }
   };
-  let state = await ask("POST");
-  while (state?.draining && !state.done) {
-    await new Promise((r) => setTimeout(r, 2000));
-    state = await ask("GET");
-  }
+  drainWaiting = drainWait(ask, {
+    onProgress: (state) =>
+      showUpdate({ ...updaterState, draining: { running: state.running.length, deadline: state.deadline } }),
+  });
+  const outcome = await drainWaiting.finished;
+  drainWaiting = null;
+  const { draining: _, ...rest } = updaterState;
+  showUpdate(rest);
+  return outcome;
 }
 
 ipcMain.handle("update:install", async () => {
-  if (!app.isPackaged) return;
-  await drainBeforeRestart();
+  if (!app.isPackaged || drainWaiting) return;
+  if ((await drainBeforeRestart()) === "cancel") return;
   // same teardown as a normal quit, then the installer takes over
   electronUpdater.autoUpdater.quitAndInstall();
 });
+ipcMain.handle("update:restart-now", () => drainWaiting?.stop("now"));
+ipcMain.handle("update:later", () => drainWaiting?.stop("cancel"));
 
 // Some settings only take effect at start, pairing above all: widening
 // what the server listens on is deliberately not a live change. This is
@@ -1087,12 +1105,7 @@ app.whenReady().then(async () => {
     // Every updater event folds into one state frame the renderer can
     // draw: the About card shows checking, downloading, ready or quiet,
     // and never has to know the updater's own event vocabulary.
-    const tellWindows = (state, detail = {}) => {
-      updaterState = { state, ...detail };
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send("update:state", updaterState);
-      }
-    };
+    const tellWindows = (state, detail = {}) => showUpdate({ state, ...detail });
     autoUpdater.on("checking-for-update", () => tellWindows("checking"));
     autoUpdater.on("update-available", (info) => tellWindows("downloading", { version: info?.version }));
     autoUpdater.on("update-not-available", () => tellWindows("current"));
