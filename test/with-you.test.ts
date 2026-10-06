@@ -35,7 +35,7 @@ process.stdin.on("end", async () => {
   const tell = input.match(/TELL ([\\w-]+) (\\w+)/);
   const roomSay = input.match(/ROOMSAY ([\\w-]+)/);
   if (tell) await call("POST", "/api/bots/" + tell[1] + "/messages", { text: tell[2] });
-  else if (roomSay) await call("POST", "/api/bloks/" + roomSay[1] + "/messages", { text: "notes for the room" });
+  else if (roomSay) await call("POST", "/api/bloks/" + roomSay[1] + "/messages", { text: "@Teammate notes for the room" });
   else if (input.includes("ASKME")) {
     const me = await (await call("GET", "/api/agent/whoami")).json();
     await call("POST", "/api/bots/" + me.botId + "/show", {
@@ -133,7 +133,8 @@ process.stdin.on("end", async () => {
   assert.equal((await agent(teammate.id)).activeWithYouAt, decision.at, "a question to the person did not move the row");
 
   // A room: the person's message and the members' answers to it move the
-  // room; an agent speaking in it, and the answers to that, do not.
+  // room; an agent speaking in it, and the answers to that, do not. An
+  // agent's line wakes only who it names, so it names the teammate.
   const { blok } = await h.json("/api/bloks", {
     method: "POST",
     body: JSON.stringify({ name: "Crew", memberIds: [manager.id, teammate.id] }),
@@ -153,7 +154,7 @@ process.stdin.on("end", async () => {
   await h.fetch(`/api/bots/${manager.id}/messages`, { method: "POST", body: JSON.stringify({ text: `ROOMSAY ${blok.id}` }) });
   await until(async () => {
     const list = await roomSaid();
-    const at = list.findIndex((m) => m.text === "notes for the room");
+    const at = list.findIndex((m) => m.text === "@Teammate notes for the room");
     return at >= 0 && list.slice(at).some((m) => m.from === teammate.id && m.text === "Done.");
   }, "the room answers an agent");
   await idle(manager.id, teammate.id);
