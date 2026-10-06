@@ -514,6 +514,10 @@ function EngineBanner({ bot }: { bot: Bot }) {
  * truncated line of monospace.
  */
 function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
+  // a compaction is a fact about the conversation, marked like a date line
+  if (message.compaction) {
+    return <div className="py-1 text-center text-[12px] text-muted-foreground">{message.text}</div>;
+  }
   return (
     <div className={cn("flex justify-start", fresh && "animate-receive-in")}>
       <div className="flex max-w-[560px] gap-2.5 rounded-2xl border border-warning/30 bg-warning/5 px-3.5 py-2.5">

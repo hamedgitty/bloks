@@ -185,6 +185,21 @@ engine switch replays the transcript as any switch does. The raw error
 is held back while a backup takes over and shown if none does. Room
 turns do not retry, but the rest applies to their next turn.
 
+## Compactions
+
+Claude Code compacts its own session when it fills, and says so with a
+`compact_boundary` frame; the driver turns that into `context.compacted`,
+which leaves a one-line marker in the conversation with the tokens before
+and after. With idle compaction on (Settings, off by default), a minute
+timer in `server/index.ts` finds Claude Code lanes over 100k tokens whose
+last request was 55 minutes ago, inside an hour's cache, and sends
+`/compact` into the resumed session with the same tools and system prompt
+as the lane's last turn, so it reads the cache rather than writing it
+again (`idleCompactionDue` in `server/context.ts`). It runs as the lane's
+turn, so anything said meanwhile queues, but nothing else a turn does
+happens: no message in the person's name, no unread, no other agent or
+room. Two run at a time, and a lane whose window has passed is skipped.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group

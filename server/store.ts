@@ -111,6 +111,10 @@ export interface Message {
   /** A notice that is something happening in the room (someone joined,
    * someone left) rather than something going wrong. */
   event?: boolean;
+  /** A notice marking where the engine compacted its own session, and by
+   * how much. A line in the conversation, not a warning, and never news:
+   * it marks nothing unread and is not carried into a linked channel. */
+  compaction?: { before: number | null; after: number | null; idle?: boolean };
   /** Which person wrote a user message in a shared room: a person id from
    * server/people.ts. Absent means the owner, which is every message
    * written before rooms could be shared. */
@@ -791,7 +795,7 @@ export class Store {
   }
 
   /** A settled turn's tokens fold into its lane's lifetime tally. */
-  addTaskUsage(threadId: string, input: number, output: number) {
+  addTaskUsage(threadId: string, input: number, output: number, fill?: number) {
     const found = this.taskByThread(threadId);
     if (!found) return;
     const safe = (n: number) => Math.max(0, Math.trunc(Number.isFinite(n) ? n : 0));
@@ -801,8 +805,9 @@ export class Store {
     usage.turns += 1;
     found.task.usage = usage;
     // The last turn's input is how full this lane was, which is what the
-    // ring shows. A running total is a different question.
-    found.task.lastInput = safe(input);
+    // ring shows. A running total is a different question. A turn that
+    // compacted the session says how full it is now instead (`fill`).
+    found.task.lastInput = safe(fill ?? input);
     this.saveBots();
   }
 

@@ -91,6 +91,34 @@ function Compaction() {
   );
 }
 
+/**
+ * Whether a quiet Claude Code conversation is compacted before its cache
+ * expires (GitHub 162). Off by default: it saves on the first message
+ * after a long pause, and pays for that with detail the summary drops.
+ */
+function IdleCompaction() {
+  const { state, dispatch } = useStore();
+  const on = state.config?.compaction?.idle ?? false;
+  const [saving, setSaving] = useState(false);
+
+  const set = (idle: boolean) => {
+    setSaving(true);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ compaction: { idle } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingRow
+      label="Compact while idle"
+      info="Claude Code keeps a conversation cached for an hour after its last request. The first message after that writes the whole conversation to the cache again, which for a long one is the most expensive message of the day. With this on, a Claude Code conversation over 100k tokens that has been quiet for 55 minutes is compacted first, while it is still cached, so the next message starts from about a third of the size. A compaction drops some detail, and a line in the chat says where it happened."
+      description="Compact a long Claude Code conversation shortly before its cache expires."
+      control={<Switch aria-label="Compact while idle" checked={on} disabled={saving} onCheckedChange={set} />}
+    />
+  );
+}
+
 const SILENT_CALL_LIMITS = [
   { value: "5", label: "5 min" },
   { value: "15", label: "15 min" },
@@ -529,7 +557,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction skills suggest",
+        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache skills suggest",
       },
       {
         id: "about-you",
@@ -669,6 +697,7 @@ function GeneralPage() {
         <QuickAskShortcut />
         <ProposeSkills />
         <Compaction />
+        <IdleCompaction />
         <SilentCallLimit />
       </SettingsGroup>
     </>

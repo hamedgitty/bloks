@@ -183,6 +183,94 @@ export function compactionNotice(folded: number): string {
     : `This conversation reached the model's limit, so the earliest ${folded} messages were summarised. Everything since is intact, and the summary carries forward what mattered.`;
 }
 
+/** A token count the way the marker shows it: 320k, 1.2M. */
+export function shortTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(Math.max(0, Math.round(n)));
+}
+
+/**
+ * The marker for an engine compacting its own session, in the place it
+ * happened. Short on purpose: it is a fact about the conversation, like
+ * a date line, not something to read. Whatever the engine did not report
+ * is left out rather than guessed.
+ */
+export function compactedNotice(c: { before: number | null; after: number | null; idle?: boolean }): string {
+  const what = c.idle ? "Compacted while idle" : "Compacted";
+  if (c.before !== null && c.after !== null) return `${what} · ${shortTokens(c.before)} → ${shortTokens(c.after)}`;
+  if (c.before !== null) return `${what} · from ${shortTokens(c.before)}`;
+  if (c.after !== null) return `${what} · now ${shortTokens(c.after)}`;
+  return what;
+}
+
+// ── compacting before the cache goes cold ──────────────────────────────
+//
+// A Claude Code session is cached by the provider for an hour after its
+// last request. A conversation that goes quiet for longer pays to write
+// its whole context to the cache again on the next message, which for a
+// long-lived agent is about 170k tokens at twice the input price. Asking
+// the session to compact a few minutes before the hour is up reads that
+// context while it is still cached, and the next message writes a third
+// of it instead (GitHub 162).
+//
+// The hour is Claude Code's choice, not ours: Bloks sets no cache
+// lifetime and signs the CLI in with the person's own account, which
+// caches for an hour. With an API key it caches for five minutes, and
+// compacting a conversation every time someone pauses for four would
+// cost detail for nothing, so a lane is only compacted when its last
+// cache write says it was an hour (`cacheTtl` on the usage event).
+
+/** How long the provider keeps the prompt cached after a request. */
+export const CACHE_LIFETIME_MS = 60 * 60_000;
+
+/** Below this a conversation is cheap to write again anyway. Replaying a
+ * month of agents showed the saving flat from 60k to 150k. */
+export const IDLE_COMPACT_MIN_TOKENS = 100_000;
+
+export interface IdleLane {
+  /** The idle compaction setting. */
+  enabled: boolean;
+  now: number;
+  /** When the lane's session last made a request, if known. */
+  lastRequestAt: number | null;
+  /** How big that request's prompt was. */
+  context: number;
+  /** The cache lifetime that request wrote with, if it said. */
+  cacheTtl?: "5m" | "1h";
+  /** A turn running, or starting. */
+  busy: boolean;
+  /** Messages waiting for the lane, or an editor holding them. */
+  queued: boolean;
+  /** A question or approval card still open. */
+  waiting: boolean;
+  /** Archived, held, or otherwise not to be woken. */
+  paused: boolean;
+  /** The cache lifetime; tests shorten it. */
+  lifetime?: number;
+}
+
+/**
+ * Whether to compact a quiet lane now.
+ *
+ * The window opens five minutes before the cache expires and closes two
+ * and a half minutes before. A compaction takes about a minute, and the
+ * request that reads the context has to reach the provider before the
+ * hour is up; one that starts late pays the full rewrite and the summary
+ * both, which is worse than leaving it alone. So a lane whose window has
+ * passed (the computer slept, too many lanes went quiet at once) is
+ * skipped, not caught up.
+ */
+export function idleCompactionDue(lane: IdleLane): boolean {
+  if (!lane.enabled || lane.lastRequestAt === null) return false;
+  if (lane.cacheTtl !== "1h") return false;
+  if (lane.context < IDLE_COMPACT_MIN_TOKENS) return false;
+  if (lane.busy || lane.queued || lane.waiting || lane.paused) return false;
+  const lifetime = lane.lifetime ?? CACHE_LIFETIME_MS;
+  const idle = lane.now - lane.lastRequestAt;
+  return idle >= lifetime * (55 / 60) && idle < lifetime * (57.5 / 60);
+}
+
 // ── paying the same bill in instalments ────────────────────────────────
 //
 // The fold above is one large call: when a lane crosses the threshold it
