@@ -1,9 +1,13 @@
 // Backup engines: which failures mean "out", when it is usable again,
 // and the whole round trip through a real server.
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
+import { isLimitNotice } from "../server/drivers/claude.ts";
 import { Cooldowns, describeRest, outReason, resetAt, restUntil } from "../server/failover.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
@@ -20,6 +24,26 @@ describe("what counts as out", () => {
     assert.equal(outReason("Your credit balance is too low to access the Anthropic API."), "credit");
     assert.equal(outReason("Invalid API key · Please run /login"), "signedOut");
     assert.equal(outReason("OAuth token has expired. Please obtain a new token."), "signedOut");
+  });
+
+  test("Claude Code's limit notice is told apart from an agent talking about limits", () => {
+    for (const notice of [
+      "Claude AI usage limit reached|1790400000",
+      "You've hit your limit · resets 3pm (Europe/Berlin)",
+      "You’ve hit your usage limit · resets 11pm",
+      "5-hour limit reached ∙ resets 3pm",
+      "Weekly limit reached ∙ resets Oct 9, 3pm",
+      "Opus weekly limit reached ∙ resets Oct 9, 3pm",
+    ]) {
+      assert.ok(isLimitNotice(notice), notice);
+      assert.equal(outReason(notice), "limit", notice);
+    }
+    // a reply that mentions limits is the agent's reply, not the CLI
+    assert.ok(!isLimitNotice("Rate limit reached on the GitHub API, so I paused the sync."));
+    assert.ok(!isLimitNotice("The deploy failed: weekly limit reached on the build minutes."));
+    assert.ok(!isLimitNotice(`Here is the summary.\nYou've hit your limit · resets 3pm`));
+    assert.ok(!isLimitNotice(`You've hit your limit · resets 3pm ${"and more ".repeat(40)}`));
+    assert.ok(!isLimitNotice(null));
   });
 
   test("a failure about the work is not the engine running out", () => {
@@ -49,6 +73,15 @@ describe("when it is usable again", () => {
     assert.equal(resetAt("resets 3pm", now), new Date(2026, 8, 26, 15, 0).getTime());
     assert.equal(resetAt("resets at 9:30am", now), new Date(2026, 8, 27, 9, 30).getTime());
     assert.equal(resetAt("usage limit reached", now), null);
+  });
+
+  test("Claude Code's own reset wording, with a zone or a date", () => {
+    assert.equal(resetAt("You've hit your limit · resets 3pm (Europe/Berlin)", now), new Date(2026, 8, 26, 15, 0).getTime());
+    assert.equal(resetAt("5-hour limit reached ∙ resets 3pm", now), new Date(2026, 8, 26, 15, 0).getTime());
+    assert.equal(resetAt("Weekly limit reached ∙ resets Oct 9, 3pm", now), new Date(2026, 9, 9, 15, 0).getTime());
+    assert.equal(resetAt("Weekly limit reached ∙ resets Sep 1 at 9am", now), new Date(2027, 8, 1, 9, 0).getTime());
+    // the rate limit's own reset, appended by the driver, wins over the clock
+    assert.equal(resetAt("You've hit your limit · resets 3pm|1790600000", now), 1790600000_000);
   });
 
   test("a sensible rest when nothing is said, and never absurdly long", () => {
@@ -196,5 +229,133 @@ describe("a turn that runs out moves to the backup", () => {
     assert.equal(res.status, 400);
     const cleared = await h.fetch(`/api/bots/${bots[0].id}`, { method: "PATCH", body: JSON.stringify({ backupSelection: null }) });
     assert.equal(cleared.status, 200);
+  });
+});
+
+// A Claude Code subscription limit, as the CLI actually reports it in
+// stream-json. Seen in the wild: the notice arrives as an assistant
+// message (spoken as "<synthetic>", sometimes marked error: "rate_limit")
+// and the result frame says success with is_error false. Read as a
+// normal reply, that ended the turn well: the notice was posted as the
+// agent's answer, no backup was asked, and the engine was not rested, so
+// the next message hit the same limit again.
+const CLAUDE_SHAPES = `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+const out = (frame) => console.log(JSON.stringify(frame));
+let input = "";
+process.stdin.on("data", (c) => (input += c));
+process.stdin.on("end", () => {
+  const shape = input.match(/SHAPE (\\w+)/)?.[1] ?? "none";
+  const tally = "__HOME__/asked-" + shape;
+  writeFileSync(tally, String((existsSync(tally) ? Number(readFileSync(tally, "utf8")) : 0) + 1));
+  const session = "sess-" + shape;
+  out({ type: "system", subtype: "init", session_id: session, model: "claude-sonnet-5" });
+  const reply = (text, extra = {}, model = "<synthetic>") =>
+    out({ type: "assistant", ...extra, session_id: session, message: { id: "msg-" + shape, model, role: "assistant", content: [{ type: "text", text }], usage: { input_tokens: 0, output_tokens: 0 } } });
+  const result = (text) =>
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 120, total_cost_usd: 0, session_id: session, result: text });
+  if (shape === "synthetic") {
+    const resetsAt = Math.floor(Date.now() / 1000) + 40 * 60;
+    out({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" }, session_id: session });
+    reply("You've hit your limit · resets 3pm (Europe/Berlin)");
+    result("You've hit your limit · resets 3pm (Europe/Berlin)");
+  } else if (shape === "flagged") {
+    reply("5-hour limit reached ∙ resets 3pm", { error: "rate_limit" });
+    result("5-hour limit reached ∙ resets 3pm");
+  } else if (shape === "bare") {
+    const at = Math.floor(Date.now() / 1000) + 3 * 3600;
+    reply("Claude AI usage limit reached|" + at, {}, "claude-sonnet-5");
+    result("Claude AI usage limit reached|" + at);
+  } else {
+    reply("Rate limit reached on the GitHub API, so I paused the sync.", {}, "claude-sonnet-5");
+    result("Rate limit reached on the GitHub API, so I paused the sync.");
+  }
+});
+`;
+
+describe("a Claude Code subscription limit moves to the backup", () => {
+  let h: Harness;
+  let home: string;
+  let spare: Awaited<ReturnType<typeof fakeEngine>>;
+  const shapes = ["synthetic", "flagged", "bare", "talk"];
+  before(async () => {
+    home = mkdtempSync(join(tmpdir(), "bloks-claude-limit-"));
+    mkdirSync(join(home, ".bloks"), { recursive: true });
+    const cli = join(home, "fake-claude.mjs");
+    writeFileSync(cli, CLAUDE_SHAPES.replaceAll("__HOME__", home), { mode: 0o755 });
+    // one Claude engine per shape: a limit rests the whole engine
+    const instances = Object.fromEntries(shapes.map((s) => [`claude-${s}`, { driver: "claudeAgent", config: { cli } }]));
+    writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances }));
+    spare = await fakeEngine(() => ({
+      status: 200,
+      body: { choices: [{ message: { role: "assistant", content: "Done, from the spare." } }] },
+    }));
+    h = await startHarness({ HOME: home });
+    await h.fetch("/api/providers/kimi/connect", { method: "POST", body: JSON.stringify({ key: "sk-test-2222222222", url: spare.url }) });
+  });
+  after(async () => {
+    await h.stop();
+    spare.server.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const asked = (shape: string) => {
+    const file = join(home, `asked-${shape}`);
+    return existsSync(file) ? Number(readFileSync(file, "utf8")) : 0;
+  };
+  const agentOn = async (shape: string) => {
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: `Limit ${shape}` }) });
+    const patched = await h.fetch(`/api/bots/${bot.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        modelSelection: { instanceId: `claude-${shape}`, model: "claude-sonnet-5" },
+        backupSelection: { instanceId: "kimi", model: "m-1" },
+      }),
+    });
+    assert.equal(patched.status, 200);
+    return bot.id as string;
+  };
+  const settled = (botId: string, ready: (messages: any[]) => boolean) =>
+    waitFor(async () => {
+      const me = (await h.json("/api/bots")).bots.find((b: any) => b.id === botId);
+      return !me.busy && ready(me.messages) ? me.messages : null;
+    });
+
+  for (const shape of ["synthetic", "flagged", "bare"]) {
+    test(`${shape}: the notice is not the agent's reply, the backup answers, and Claude rests`, async () => {
+      const botId = await agentOn(shape);
+      await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} summarise the week` }) });
+      const first = await settled(botId, (m) => m.some((x) => x.text === "Done, from the spare."));
+      assert.ok(first, "the backup never answered");
+      assert.equal(asked(shape), 1, "Claude is tried first, once");
+      assert.ok(
+        !first.some((m: any) => m.role === "bot" && m.kind === "text" && /limit/i.test(m.text ?? "")),
+        "the CLI's limit notice was posted as the agent's reply",
+      );
+      const notice = first.find((m: any) => m.kind === "notice" && /is picking this up/.test(m.text));
+      assert.ok(notice, "the chat says the backup took over");
+      assert.match(notice.text, /is out of usage/);
+      // the rate limit's own reset is used when it gave one
+      if (shape === "synthetic") assert.match(notice.text, /for about (39|40) minutes/);
+      if (shape === "bare") assert.match(notice.text, /until /);
+
+      // the next message goes straight to the backup: Claude is resting
+      await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} and next week?` }) });
+      const second = await settled(botId, (m) => m.filter((x) => x.text === "Done, from the spare.").length === 2);
+      assert.ok(second, "the second turn never landed");
+      assert.equal(asked(shape), 1, "a resting Claude was asked again");
+    });
+  }
+
+  test("an agent that only talks about a limit is answering, not out", async () => {
+    const botId = await agentOn("talk");
+    await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: "SHAPE talk sync the repo" }) });
+    const messages = await settled(botId, (m) => m.some((x) => x.role === "bot" && x.kind === "text"));
+    assert.ok(messages, "the turn never ended");
+    assert.ok(messages.some((m: any) => m.role === "bot" && m.kind === "text" && /GitHub API/.test(m.text)), "the reply was not shown");
+    assert.ok(!messages.some((m: any) => /picking this up/.test(m.text ?? "")), "a reply about limits handed the turn over");
   });
 });

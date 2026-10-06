@@ -1167,10 +1167,10 @@ function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boole
   laneEngine.delete(laneId);
   turnErrors.delete(laneId);
   heldErrors.delete(laneId);
-  if (ok || !used || stopReason === "interrupted") return false;
   // a call that went silent is about the work, not the engine running
   // out, whatever words the stuck command happened to contain
-  if (stopReason !== "tool_stalled" && handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
+  const tryBackup = !ok && used && stopReason !== "interrupted" && stopReason !== "tool_stalled";
+  if (tryBackup && handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
   // an error kept back for a backup that then did not take over is shown
   // after all, exactly as it would have been
   if (held) {
