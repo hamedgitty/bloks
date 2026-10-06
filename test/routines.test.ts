@@ -13,8 +13,10 @@ import {
   isDue,
   lastScheduledBefore,
   nextScheduledAfter,
+  MAX_ROUTINE_PROMPT,
   normalize,
   parseTime,
+  promptTooLong,
   type Routine,
 } from "../server/routines.ts";
 
@@ -137,12 +139,16 @@ test("normalize refuses what it cannot store and clamps the rest", () => {
   assert.equal(clean.enabled, false);
 });
 
-test("an over-long prompt is cut rather than rejected", () => {
-  // A long prompt is a user being thorough, not an attack. The cap exists
-  // because this text reaches a system prompt on every run.
-  const clean = normalize({ targetId: "b", prompt: "x".repeat(9_000), time: "09:00" });
-  assert.ok(clean);
-  assert.equal(clean.prompt.length, 2_000);
+test("an over-long prompt is refused, not cut (GitHub 163)", () => {
+  // The cap exists because this text reaches a system prompt on every run.
+  // Cutting it silently meant a routine ran half its instructions.
+  assert.equal(MAX_ROUTINE_PROMPT, 4_000);
+  const fits = normalize({ targetId: "b", prompt: "x".repeat(4_000), time: "09:00" });
+  assert.equal(fits?.prompt.length, 4_000);
+  assert.equal(normalize({ targetId: "b", prompt: "x".repeat(4_001), time: "09:00" }), null);
+  // measured after trimming, as it is stored
+  assert.equal(promptTooLong(`  ${"x".repeat(4_000)}\n`), null);
+  assert.equal(promptTooLong("x".repeat(4_019)), "routine prompt is too long: maximum 4000, received 4019");
 });
 
 test("the schedule reads like something a person would say", () => {

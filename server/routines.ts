@@ -90,7 +90,7 @@ export const MAX_RUNS = 20;
 
 /** A routine spends the user's tokens unattended, so the caps are tight. */
 export const MAX_ROUTINES = 50;
-export const MAX_ROUTINE_PROMPT = 2_000;
+export const MAX_ROUTINE_PROMPT = 4_000;
 
 /** How late a missed run may still fire. See the header. */
 export const GRACE_MS = 2 * 60 * 60_000;
@@ -188,6 +188,20 @@ export function isDue(routine: Routine, now: Date, graceMs: number = GRACE_MS): 
   return true;
 }
 
+/**
+ * Why a prompt is too long to file, or null when it fits. Refused rather
+ * than cut: a routine that quietly loses the end of its instructions runs
+ * them wrong every time, and nobody sees why. The prompt itself is left
+ * out of the message, since it can be long and is not ours to repeat.
+ */
+export function promptTooLong(prompt: unknown): string | null {
+  if (typeof prompt !== "string") return null;
+  const length = prompt.trim().length;
+  return length > MAX_ROUTINE_PROMPT
+    ? `routine prompt is too long: maximum ${MAX_ROUTINE_PROMPT}, received ${length}`
+    : null;
+}
+
 /** Clamps whatever a client sent into something we are willing to store. */
 export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | null {
   if (!raw || typeof raw !== "object") return null;
@@ -197,8 +211,8 @@ export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | nul
   if (!targetId) return null;
   const targetKind = o.targetKind === "room" ? "room" : "agent";
 
-  const prompt = typeof o.prompt === "string" ? o.prompt.trim().slice(0, MAX_ROUTINE_PROMPT) : "";
-  if (!prompt) return null;
+  const prompt = typeof o.prompt === "string" ? o.prompt.trim() : "";
+  if (!prompt || promptTooLong(prompt)) return null;
 
   const minutes = parseTime(o.time);
   if (minutes === null) return null;

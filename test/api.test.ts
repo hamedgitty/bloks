@@ -887,6 +887,33 @@ describe("routine shapes", () => {
     assert.equal(moved.routine.time, "16:30");
     await h.fetch(`/api/routines/${made.routine.id}`, { method: "DELETE" });
   });
+
+  test("an over-long prompt is refused on create and on edit, and nothing changes (GitHub 163)", async () => {
+    const { bots } = await h.json("/api/bots");
+    const routine = (prompt: string) => ({ targetId: bots[0].id, targetKind: "agent", prompt, time: "07:00", days: [2] });
+    const before = (await h.json("/api/routines")).routines.length;
+
+    const refused = await h.fetch("/api/routines", { method: "POST", body: JSON.stringify(routine(`Too long ${"x".repeat(4_000)}`)) });
+    assert.equal(refused.status, 400);
+    const { error } = await refused.json();
+    assert.equal(error, "routine prompt is too long: maximum 4000, received 4009");
+    assert.equal((await h.json("/api/routines")).routines.length, before, "a refused routine was filed anyway");
+
+    const made = await h.json("/api/routines", { method: "POST", body: JSON.stringify(routine("y".repeat(4_000))) });
+    assert.equal(made.routine.prompt.length, 4_000, "a prompt right at the limit is kept whole");
+
+    const edit = await h.fetch(`/api/routines/${made.routine.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ prompt: "z".repeat(4_001), time: "08:00" }),
+    });
+    assert.equal(edit.status, 400);
+    assert.match((await edit.json()).error, /maximum 4000, received 4001/);
+    const kept = (await h.json("/api/routines")).routines.find((r: any) => r.id === made.routine.id);
+    assert.equal(kept.prompt, "y".repeat(4_000));
+    assert.equal(kept.time, "07:00", "the rest of a refused edit landed anyway");
+
+    await h.fetch(`/api/routines/${made.routine.id}`, { method: "DELETE" });
+  });
 });
 
 describe("artifacts", () => {

@@ -283,7 +283,7 @@ const COMMANDS = {
     use: 'routine --prompt <text> --time HH:MM [--date YYYY-MM-DD | --days "1,2,3"] [--name <name>] [--thread <conversation>]',
     about:
       "file a routine for yourself: weekly on --days (0 is Sunday, 6 is Saturday), or once on --date to come back to something later. " +
-      "Leave out --days and it runs every day",
+      "Leave out --days and it runs every day. The prompt can be up to 4,000 characters",
     run: async (args) => {
       const flags = parseFlags(args);
       if (!flags.prompt) throw new Error("a routine needs a --prompt");
