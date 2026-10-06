@@ -222,6 +222,37 @@ describe("the relay link", () => {
     assert.equal(device?.client, "iOS 2.1.6 (15)");
   });
 
+  test("a phone that only ever comes through the relay still has a last seen time", async () => {
+    // a second phone, so nothing earlier in this file has spoken for it
+    const started = await h.json("/api/pair/start", { method: "POST" });
+    const claimed = await h.json("/api/pair/claim", {
+      method: "POST",
+      body: JSON.stringify({ code: started.code, device: "A relayed phone" }),
+    });
+    const id = claimed.device.id as string;
+    const digest = createHash("sha256").update(claimed.token as string).digest("hex");
+    const key = deviceKey(digest, "phone-to-mac");
+    const lastSeen = async () =>
+      (await h.json("/api/pair")).devices.find((d: { id: string }) => d.id === id)?.lastSeen as number | undefined;
+    assert.equal(await lastSeen(), undefined);
+
+    // what does not open, or does not pass the checks, is not the phone
+    const wrongKey = deviceKey("11".repeat(32), "phone-to-mac");
+    relay.ask("seen-forged", seal(wrongKey, id, { method: "GET", path: "/api/bots" }));
+    relay.ask("seen-stale", seal(key, id, { method: "POST", path: "/api/bloks", ts: Date.now() - 10 * 60_000, nonce: "n-seen" }));
+    relay.ask("seen-stranger", seal(wrongKey, "not-a-device", { method: "GET", path: "/api/bots" }));
+    for (const ask of ["seen-forged", "seen-stale", "seen-stranger"]) await waitUntil(() => relay.results.get(ask));
+    assert.equal(await lastSeen(), undefined, "a request that never opened counted as the phone being here");
+    const status = await h.json("/api/pair");
+    assert.ok(!status.devices.some((d: { id: string }) => d.id === "not-a-device"));
+
+    const before = Date.now();
+    relay.ask("seen-ok", seal(key, id, { method: "GET", path: "/api/bots" }));
+    await waitUntil(() => relay.results.get("seen-ok"));
+    const seen = await lastSeen();
+    assert.ok(seen && seen >= before, "a relayed request did not mark the phone seen");
+  });
+
   test("an answer lost on the way is sent again until it lands", async () => {
     // a relay that errors once and then loses the socket: the phone still
     // gets its answer, on the third try

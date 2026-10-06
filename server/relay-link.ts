@@ -27,7 +27,7 @@ import { gzipSync } from "node:zlib";
 import type { IncomingMessage } from "node:http";
 
 import { deviceKey, inviteKey, open, peek, seal, type Envelope, type RelayRequest } from "./relay-crypto.ts";
-import { pairedDevices } from "./pairing.ts";
+import { markSeen, pairedDevices } from "./pairing.ts";
 
 /** What to call the machine this harness runs on. Bloks ships on
  * Windows and Linux too, where "the Mac" reads as a copy-paste slip
@@ -637,6 +637,10 @@ export class RelayLink {
     if (!request.path.startsWith("/api/") || request.path.includes("..")) {
       return void this.answer(id, 404, { error: "no such route" }, replyKey, device.id);
     }
+    // Only a request that opened with this device's key and cleared the
+    // checks above counts as the device being here. Without this, a phone
+    // that only ever came through Bloks Cloud never had a last seen time.
+    markSeen(device.id);
 
     if (request.raw) return void this.serveRaw(id, request, replyKey, device.id);
     try {

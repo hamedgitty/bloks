@@ -266,11 +266,18 @@ export function deviceForToken(token: string | null): PairedDevice | null {
   const digest = sha256(token);
   for (const device of pairedDevices()) {
     if (typeof device?.hash === "string" && sameSecret(digest, device.hash)) {
-      seen.set(device.id, Date.now());
+      markSeen(device.id);
       return device;
     }
   }
   return null;
+}
+
+/** Note that a paired device was just heard from. A token on the network
+ * says so in deviceForToken; a sealed request through Bloks Cloud never
+ * shows a token, so the relay says so itself once the request opens. */
+export function markSeen(deviceId: string): void {
+  seen.set(deviceId, Date.now());
 }
 
 /** Remember which build of the app a paired device runs, from the
