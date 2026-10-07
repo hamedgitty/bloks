@@ -2675,6 +2675,18 @@ describe("task lanes", () => {
       body: JSON.stringify({ text: "go too" }),
     });
     assert.equal(second.status, 202, "a parallel lane is not gated by the first");
+    // Stopped before the next test. Whatever engine this agent is left on
+    // from earlier tests may well answer, and a turn that outlives this
+    // test can still be running, or waiting on a card, when a later one
+    // looks at the workspace: a settings change no longer ends it.
+    for (const lane of lanes) {
+      const settled = await waitFor(async () => {
+        await h.fetch(`/api/bots/${botId}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: lane.id }) });
+        const { bots } = await h.json("/api/bots");
+        return !bots.find((b: any) => b.id === botId)?.tasks.find((t: any) => t.id === lane.id)?.busy;
+      });
+      assert.ok(settled, "a lane stayed busy after it was stopped");
+    }
   });
 });
 

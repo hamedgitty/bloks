@@ -2,7 +2,7 @@
 // thread to instance binding and per-instance resume cursors: persist
 // that binding from day one, because retrofitting it is painful).
 // messages-<threadId>.json holds the folded transcript.
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ChangesSummary } from "./checkpoints.ts";
@@ -391,6 +391,16 @@ export interface BotRecord {
 }
 
 const BOTS_FILE = join(DATA_DIR, "bots.json");
+
+/** Writes a file so that it is either the old one or the new one, never
+ * half of each: written aside, then renamed over. A crash mid-save used to
+ * leave bots.json cut short, and a bots.json that does not parse loads as
+ * no agents at all. */
+function writeWhole(file: string, text: string) {
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  renameSync(temp, file);
+}
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 
 const COLORS: BlokColor[] = [
@@ -476,7 +486,7 @@ export class Store {
   }
 
   private saveBots() {
-    writeFileSync(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+    writeWhole(BOTS_FILE, JSON.stringify(this.bots, null, 2));
   }
 
   messagesFor(threadId: string): Message[] {
@@ -496,7 +506,7 @@ export class Store {
     const full: Message = { id: newId(), at: Date.now(), ...message };
     const list = this.messagesFor(threadId);
     list.push(full);
-    writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
+    writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
     this.onAppend?.(threadId, full);
     return full;
   }
@@ -543,7 +553,7 @@ export class Store {
     // two apart, so it kept the card on every deletion.
     const card = "card" in patch ? patch.card : list[idx].card;
     list[idx] = { ...list[idx], ...patch, card };
-    writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
+    writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
     return list[idx];
   }
 
@@ -566,7 +576,7 @@ export class Store {
     }
     if (!moved.length) return [];
     list.push(...moved);
-    writeFileSync(messagesFile(threadId), JSON.stringify(list, null, 2));
+    writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
     return moved;
   }
 

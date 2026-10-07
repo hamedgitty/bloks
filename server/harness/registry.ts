@@ -44,6 +44,9 @@ interface InstanceReport {
 
 export class ProviderRegistry {
   private entries_ = new Map<InstanceId, RegistryEntry>();
+  /** What each instance was built from, to tell which ones a new config
+   * actually changes. */
+  private built = new Map<InstanceId, string>();
   private drivers: Map<string, AnyProviderDriver>;
 
   constructor(drivers: readonly AnyProviderDriver[]) {
@@ -52,6 +55,7 @@ export class ProviderRegistry {
 
   async load(configs: InstanceConfigMap) {
     for (const [instanceId, entry] of Object.entries(configs)) {
+      this.built.set(instanceId, JSON.stringify(entry));
       const driver = this.drivers.get(entry.driver);
 
       if (!driver) {
@@ -85,6 +89,35 @@ export class ProviderRegistry {
     }
   }
 
+  /** The instances a move to `configs` has to rebuild: new, gone, or
+   * built from something else, plus any in `also` (an engine whose CLI
+   * was updated is built from the same config, and still has to be
+   * built again to see its new models). */
+  stale(configs: InstanceConfigMap, also: readonly InstanceId[] = []): InstanceId[] {
+    const ids = new Set([...this.entries_.keys(), ...Object.keys(configs)]);
+    return [...ids].filter(
+      (id) => also.includes(id) || !configs[id] || !this.entries_.has(id) || this.built.get(id) !== JSON.stringify(configs[id]),
+    );
+  }
+
+  /** Rebuild only these from `configs`, leaving every other instance, and
+   * the turns running on it, alone. One that `configs` no longer names is
+   * gone afterwards. */
+  async reload(configs: InstanceConfigMap, instanceIds: readonly InstanceId[]) {
+    const going = instanceIds.flatMap((id) => {
+      const live = this.entries_.get(id)?.live;
+      this.entries_.delete(id);
+      this.built.delete(id);
+      return live ? [live] : [];
+    });
+    await Promise.allSettled(going.map((instance) => instance.dispose()));
+    await this.load(Object.fromEntries(instanceIds.flatMap((id) => (configs[id] ? [[id, configs[id]]] : []))));
+    // in the order the config gives, as a fresh load would have them, so
+    // the picker does not reshuffle after a reload
+    const order = Object.keys(configs);
+    this.entries_ = new Map([...this.entries_].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)));
+  }
+
   get(instanceId: InstanceId): ProviderInstance | null {
     return this.entries_.get(instanceId)?.live ?? null;
   }
@@ -109,6 +142,7 @@ export class ProviderRegistry {
   async disposeAll() {
     await Promise.allSettled(this.instances().map((instance) => instance.dispose()));
     this.entries_.clear();
+    this.built.clear();
   }
 
   private shadow(

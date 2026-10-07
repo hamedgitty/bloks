@@ -263,6 +263,7 @@ import {
   carryOnText,
   cutOffNotice,
   cutOffWaitingNotice,
+  engineGoneNotice,
   recoveryFor,
   sessionRef,
   TurnsInFlight,
@@ -1984,6 +1985,8 @@ bus.subscribe((event: RuntimeEvent) => {
       if (spoke && spoke !== event.threadId && bloks.get(spoke)?.sharing) {
         chargeRoom(spoke, laneRequester.get(event.threadId) ?? "owner", turnCost(event.cost, spent));
       }
+      // A turn an engine rebuild cut off is picked up on the new engine.
+      const rebuilt = event.stopReason === ENGINE_RELOADED && settleRebuiltLane(event.threadId);
       // A turn the Mac slept through, which failed because of it, is
       // picked up once when it wakes rather than left dead.
       const slept = sleptLanes.get(event.threadId);
@@ -2064,7 +2067,7 @@ bus.subscribe((event: RuntimeEvent) => {
         if (said) stalledSince.set(event.threadId, said);
       }
       const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
-      if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted") {
+      if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
       }
       replyByMail(event.threadId, event.ok !== false);
@@ -3437,7 +3440,13 @@ async function startTurn(
       } else {
         lastSent.delete(task.id);
       }
-      await instance.adapter.sendTurn(sending);
+      // The engine as it is now. One rebuilt while this turn was getting
+      // ready (reloadProviders) is the one it goes to: the old one is
+      // gone, and nothing would hear the turn end on it.
+      await reloading;
+      const engine = registry.get(instanceId);
+      if (!engine) throw new Error(unavailableEngineMessage(instanceId));
+      await engine.adapter.sendTurn(sending);
       if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
       store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
@@ -6640,15 +6649,116 @@ function configStatus() {
   };
 }
 
-/** Rebuild every engine from the current config. A pasted key should
- * work in the next message, not after a restart. The cost is that turns
- * running right now die with the old fleet, which is the right trade for
- * something a person only does deliberately. */
-async function reloadProviders() {
-  bus.detachAll();
-  await registry.disposeAll();
-  await registry.load(instanceConfigs(cfg));
-  bus.attach(registry.instances());
+/** Lanes whose turn an engine rebuild cut off, with what picking it up
+ * needs, until that turn's end has been dealt with (GitHub 198). */
+const rebuiltLanes = new Map<string, { turn: TurnInFlight | null; instanceId: string }>();
+let reloading: Promise<unknown> = Promise.resolve();
+
+/** Rebuild the engines the current config changes, so a pasted key works
+ * in the next message, not after a restart. Only those: an engine whose
+ * settings are as they were keeps running, and so do its turns. A turn
+ * running on one that is rebuilt is cut off, and the old engine's own
+ * end of it never reaches anyone, so it is ended here: the lane is free
+ * again, and the turn is picked up on the new engine the way a turn cut
+ * off by a restart is (GitHub 198). One at a time, so two reloads never
+ * build the same engine twice. */
+function reloadProviders(): Promise<void> {
+  const run = reloading.then(() => rebuildEngines());
+  reloading = run.catch(() => {});
+  return run;
+}
+
+async function rebuildEngines() {
+  const configs = instanceConfigs(cfg);
+  const stale = registry.stale(configs);
+  if (!stale.length) return;
+  // read before anything changes: which lanes the old engines are in the
+  // middle of a turn for
+  const cut: Array<{ laneId: string; instanceId: string; driverKind: string }> = [];
+  for (const id of stale) {
+    const live = registry.get(id);
+    if (!live) continue;
+    for (const bot of store.bots) {
+      for (const task of bot.tasks) {
+        if (task.busy && live.adapter.hasSession(task.id)) cut.push({ laneId: task.id, instanceId: id, driverKind: live.driverKind });
+      }
+    }
+  }
+  bus.detach(stale);
+  await registry.reload(configs, stale);
+  const rebuilt = registry.instances().filter((instance) => stale.includes(instance.instanceId));
+  bus.attach(rebuilt);
+  for (const instance of rebuilt) {
+    void instance.catalogReady?.then(async () => {
+      broadcast({ kind: "instances", instances: await registry.describe() });
+    });
+  }
+  for (const { laneId, instanceId, driverKind } of cut) {
+    // an idle compaction just ends; nobody asked for it to be picked up
+    if (!idleCompacting.has(laneId)) rebuiltLanes.set(laneId, { turn: cutOff.get(laneId), instanceId });
+    settleRebuiltAsks(laneId);
+    bus.publish({
+      type: "turn.completed",
+      eventId: newId(),
+      provider: driverKind,
+      providerInstanceId: instanceId,
+      threadId: laneId,
+      createdAt: new Date().toISOString(),
+      ok: false,
+      stopReason: ENGINE_RELOADED,
+    });
+  }
+}
+
+/** Questions and approvals the old engine was waiting on in this lane,
+ * settled as cut off and forgotten: the new engine may number its own
+ * requests the same way, and an answer to an old card must never reach
+ * it as permission, as after a restart. */
+function settleRebuiltAsks(laneId: string) {
+  const threadId = activeRoom.get(laneId) ?? laneId;
+  for (const [requestId, lane] of askThreadByRequest) {
+    if (lane !== laneId) continue;
+    askThreadByRequest.delete(requestId);
+    const messageId = askMessageByRequest.get(requestId);
+    askMessageByRequest.delete(requestId);
+    const card = store.messagesFor(threadId).find((m) => m.id === messageId)?.card;
+    if (!messageId || !card || card.answered || card.dismissed) continue;
+    const patched = store.patchMessage(threadId, messageId, {
+      card: { ...card, answered: "Cut off when its engine restarted", cutOff: true },
+    });
+    if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
+  }
+}
+
+/** The end a rebuild gives a turn it cut off. */
+const ENGINE_RELOADED = "engine_reloaded";
+
+/** A turn's end, for a turn an engine rebuild cut off: picked up on the
+ * engine that replaced the old one, or, when the engine is gone, said
+ * so. Never a workflow step or one somebody stopped, as after a restart.
+ * True when it was one. */
+function settleRebuiltLane(laneId: string): boolean {
+  const rebuilt = rebuiltLanes.get(laneId);
+  if (!rebuilt) return false;
+  rebuiltLanes.delete(laneId);
+  // and not picked up a second time when the Mac wakes
+  sleptLanes.delete(laneId);
+  const { turn } = rebuilt;
+  if (!turn || turn.stopped || turn.workflow || turn.waiting) return true;
+  if (!registry.get(rebuilt.instanceId)) {
+    const threadId = turn.roomId ?? turn.laneId;
+    const notice = store.appendMessage(threadId, {
+      role: "bot",
+      kind: "notice",
+      ...(turn.roomId ? { from: turn.botId } : {}),
+      text: engineGoneNotice(store.bot(turn.botId)?.name ?? "The agent"),
+    });
+    broadcast({ kind: "message", threadId, message: notice });
+    return true;
+  }
+  // after the ended turn has settled, so the lane is free again
+  carryOn(turn, "reload", 1_500);
+  return true;
 }
 
 // ── provider catalog ───────────────────────────────────────────────────
@@ -12292,7 +12402,8 @@ const server = createServer(async (req, res) => {
       saveConfig(patch);
       Object.assign(cfg, loadConfig());
       // Only a section instanceConfigs builds engines from is worth the
-      // reload, because a reload ends every turn in flight on every agent.
+      // reload, because a reload cuts off the turns of every engine it
+      // rebuilds, and these two reach the environment of all of them.
       // The rest (profile, speech, Composio, and the sections saved above)
       // are read fresh when they are used.
       if (patch.xai || patch.box) await reloadProviders();

@@ -232,6 +232,12 @@ notice with Continue instead. Questions and approvals the old engine was
 waiting on are marked cut off, and `/respond` delivers nothing for an ask
 this run did not raise.
 
+A settings change rebuilds only the engines it changes (a custom
+endpoint, a key, a provider connected), and the rest keep running. A
+turn on a rebuilt engine is ended where it stands, which frees the lane,
+and picked up on the new engine the same way; one whose engine was
+removed says so instead.
+
 ## Restarting for an update
 
 Before a planned restart Bloks drains (`server/drain.ts`): nothing new
