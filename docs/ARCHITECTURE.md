@@ -202,6 +202,15 @@ turn, so anything said meanwhile queues, but nothing else a turn does
 happens: no message in the person's name, no unread, no other agent or
 room. Two run at a time, and a lane whose window has passed is skipped.
 
+The same cache is why a resumed Claude Code session keeps its system
+prompt byte for byte (`server/standing-prompt.ts`). The agent's
+MEMORY.md and the notes about the person stay as they were when the
+session started; a change since the agent last heard is said ahead of
+the turn's message, after the cached history. In a room, the room's
+recent conversation goes there too, only the lines this session has not
+been shown. A fresh session gets everything current in its system
+prompt, and other engines get the whole persona each turn as before.
+
 ## Turns cut off
 
 A turn the Mac slept through, or one running when Bloks stopped, is
