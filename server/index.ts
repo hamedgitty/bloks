@@ -250,6 +250,7 @@ import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
 import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, RoutineStore } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
+import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { recall, recallText, type RecallSource, type Speaker } from "./recall.ts";
@@ -2587,8 +2588,9 @@ function roomBriefing(blok: BlokRecord, speaker: BotRecord, members: BotRecord[]
     .join("\n\n");
 }
 
-/** The room's recent history, labelled so an agent can tell who said what. */
-function roomTranscript(blokId: string, speakerId: string): string {
+/** The room's recent history, labelled so an agent can tell who said what.
+ * With `after`, only what came after that message; the cap is the same. */
+function roomTranscript(blokId: string, speakerId: string, after?: string): { text: string; lastId?: string } {
   const shared = Boolean(bloks.get(blokId)?.sharing);
   const named = (m: Message) => {
     if (m.role === "user") {
@@ -2603,16 +2605,22 @@ function roomTranscript(blokId: string, speakerId: string): string {
     const from = m.from ? store.bot(m.from) : null;
     return from ? (from.id === speakerId ? `${from.name} (you)` : from.name) : "Agent";
   };
-  return store
+  const said = store
     .messagesFor(blokId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
-    .slice(-30)
-    .map((m) =>
-      m.replyTo
-        ? `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
-        : `${named(m)}: ${m.text}`,
-    )
-    .join("\n");
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent);
+  // a message no longer on the record (deleted, rewound) shows the lot
+  const seen = after ? said.findIndex((m) => m.id === after) : -1;
+  return {
+    text: (seen >= 0 ? said.slice(seen + 1) : said)
+      .slice(-30)
+      .map((m) =>
+        m.replyTo
+          ? `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
+          : `${named(m)}: ${m.text}`,
+      )
+      .join("\n"),
+    lastId: said.at(-1)?.id,
+  };
 }
 
 // ── turn dispatch ──────────────────────────────────────────────────────
@@ -2706,6 +2714,12 @@ function claimWebhookLane(botId: string): string | undefined {
   webhookLanes.add(laneId);
   return laneId;
 }
+
+/** What each lane's Claude Code session was given of the parts of a
+ * persona that move (server/standing-prompt.ts). In memory only: after a
+ * restart the next turn starts the record again, and pays the one cache
+ * write any restart would. */
+const standing = new Map<string, StandingRecord>();
 
 async function startTurn(
   botId: string,
@@ -2990,7 +3004,18 @@ async function startTurn(
   ]
     .filter(Boolean)
     .join(" ");
-  const persona = [
+  // The parts of the persona that move between turns, which a resumed
+  // Claude Code session keeps as they were when it started (see
+  // server/standing-prompt.ts). The room's history is told in the turn's
+  // message on that engine, and in the system prompt on the rest.
+  const standingNow: Standing = {
+    // what every agent has learned about them and they confirmed, and how
+    // to add to it; never in a room other people are reading
+    notes: (!sharing && profileNotes.prompt()) || null,
+    memory: (!sharing || sharing.memoryFor?.includes(bot.id)) ? workspace.memoryPrompt(bot.id) : null,
+  };
+  const roomInMessage = Boolean(blok) && instance.driverKind === "claudeAgent";
+  const personaWith = (moving: Standing) => [
     `You are ${bot.name}, a personal agent in Bloks.`,
     connectorHint,
     bot.title && `Role: ${bot.title}.`,
@@ -3027,19 +3052,17 @@ async function startTurn(
     (!sharing || sharing.memoryFor?.includes(bot.id)) &&
       cfg.profile?.about?.trim() &&
       `About the person you work for: ${cfg.profile.about.trim()}`,
-    // what every agent has learned about them and they confirmed, and how
-    // to add to it; never in a room other people are reading
-    !sharing && profileNotes.prompt(),
+    moving.notes,
     !sharing && noteBriefing(runsAProcess(instance.driverKind) ? cliCommand : null),
-    (!sharing || sharing.memoryFor?.includes(bot.id)) && workspace.memoryPrompt(bot.id),
+    moving.memory,
     sharing && sharedBriefing(sharedRoom!, sharing, roomTools),
     `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,
     HOUSE_STYLE,
     // In a room, who else is here and who decides. Solo chats stay silent
     // about all of it.
     blok && roomBriefing(blok, bot, members),
-    blok && `Recent conversation in this room:\n${roomTranscript(roomId, bot.id)}`,
-    // only senior agents can ask for a team, and only outside a room, 
+    blok && !roomInMessage && `Recent conversation in this room:\n${roomTranscript(roomId, bot.id).text}`,
+    // only senior agents can ask for a team, and only outside a room,
     // inside one they already have colleagues to delegate to
     !blok && (bot.seniority ?? 1) >= 3 && TEAM_PROTOCOL,
   ]
@@ -3288,6 +3311,37 @@ async function startTurn(
         turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
       }
 
+      // Claude Code keeps its system prompt byte for byte while a session
+      // resumes, so the prompt cache in front of the conversation holds
+      // (GitHub 193). What moved since is said ahead of the message, and
+      // so is what the room said since this session last heard it.
+      // Every other engine is told the whole persona each turn as before.
+      let standingNext: StandingRecord | null = null;
+      let persona = personaWith(standingNow);
+      if (instance.driverKind === "claudeAgent") {
+        const kept = standingFor(standing.get(task.id), standingNow, {
+          instanceId,
+          resuming: typeof resumeCursor === "string",
+        });
+        standingNext = kept.next;
+        persona = personaWith(kept.system);
+        const ahead: string[] = [];
+        if (kept.preamble) ahead.push(kept.preamble);
+        if (blok) {
+          const seen = kept.next.roomSeen[blok.id];
+          const room = roomTranscript(roomId, bot.id, seen);
+          if (room.text) {
+            ahead.push(
+              seen
+                ? `(In this room since your last turn here:\n${room.text})`
+                : `(Recent conversation in this room:\n${room.text})`,
+            );
+          }
+          if (room.lastId) standingNext = { ...kept.next, roomSeen: { ...kept.next.roomSeen, [blok.id]: room.lastId } };
+        }
+        if (ahead.length) turnText = `${ahead.join("\n\n")}\n\n${turnText}`;
+      }
+
       // photographed before the agent can touch it, so the turn's card
       // can show what changed and put it back
       // an agent working in its own workspace writes its memory there;
@@ -3384,6 +3438,7 @@ async function startTurn(
         lastSent.delete(task.id);
       }
       await instance.adapter.sendTurn(sending);
+      if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
       store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
