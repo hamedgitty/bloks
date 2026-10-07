@@ -155,4 +155,7 @@ test("the person reads a notice; the agent is told to check before repeating", (
   // and newer words, to read before going on with the older plan
   assert.match(told, /Actually, do not publish\./);
   assert.equal(carryOnText("sleep"), SLEPT_TEXT, "sleep says what it always said");
+  // an engine rebuilt under the turn is picked up the same way
+  assert.equal(cutOffNotice("Ivy", "reload"), "Ivy was cut off when its engine restarted, and is picking up where it left off.");
+  assert.match(carryOnText("reload"), /not a new request/);
 });

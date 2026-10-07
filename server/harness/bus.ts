@@ -18,12 +18,14 @@ import type { ProviderInstance, RuntimeEvent, RuntimeEventListener } from "../co
 
 export class EventBus {
   private subscribers = new Set<RuntimeEventListener>();
-  private detachers: Array<() => void> = [];
+  private detachers = new Map<string, () => void>();
 
   /** Start relaying from these instances. Safe to call again after a
-   * `detachAll`, which is what a config reload does. */
+   * `detach`, which is what a config reload does for the engines it
+   * rebuilds. An instance already attached is attached once. */
   attach(instances: ProviderInstance[]) {
     for (const instance of instances) {
+      this.detachers.get(instance.instanceId)?.();
       const detach = instance.adapter.onEvent((event) => {
         // An adapter speaking for a driver other than its own means two
         // instances have got tangled, and the resulting transcript would
@@ -34,7 +36,7 @@ export class EventBus {
         }
         this.publish({ ...event, providerInstanceId: instance.instanceId });
       });
-      this.detachers.push(detach);
+      this.detachers.set(instance.instanceId, detach);
     }
   }
 
@@ -60,7 +62,16 @@ export class EventBus {
   /** Stop relaying, without disturbing subscribers: they stay attached and
    * pick up again when new instances are attached. */
   detachAll() {
-    for (const detach of this.detachers.splice(0)) detach();
+    this.detach([...this.detachers.keys()]);
+  }
+
+  /** The same for some instances only: what the others say still comes
+   * through. */
+  detach(instanceIds: readonly string[]) {
+    for (const id of instanceIds) {
+      this.detachers.get(id)?.();
+      this.detachers.delete(id);
+    }
   }
 
   /** One line per event, per thread. Failures are swallowed on purpose.

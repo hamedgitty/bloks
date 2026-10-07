@@ -268,7 +268,9 @@ export function carryOnTarget(turn: Pick<TurnInFlight, "laneId" | "roomId" | "re
   };
 }
 
-export type CutOffBy = "sleep" | "restart";
+/** "reload" is an engine rebuilt under a running turn: its settings
+ * changed, or its CLI was updated (server/index.ts, reloadProviders). */
+export type CutOffBy = "sleep" | "restart" | "reload";
 
 export const SLEPT_TEXT =
   "This computer went to sleep in the middle of your last step, which cut it off. Carry on from where you were; check what already happened before repeating anything.";
@@ -276,11 +278,20 @@ export const SLEPT_TEXT =
 export const RESTART_TEXT =
   "Bloks stopped in the middle of your last step, which cut it off. Carry on from where you were; check what already happened before repeating anything. This note is not a new request, so on its own it is no reason to send, buy or redo anything.";
 
+export const RELOAD_TEXT =
+  "The engine you run on was restarted in the middle of your last step, because its settings changed, which cut it off. Carry on from where you were; check what already happened before repeating anything. This note is not a new request, so on its own it is no reason to send, buy or redo anything.";
+
 /** What the person reads. Never written as if they had said something. */
 export function cutOffNotice(name: string, by: CutOffBy): string {
-  return by === "sleep"
-    ? `${name} was cut off when this computer slept, and is picking up where it left off.`
-    : `${name} was cut off when Bloks stopped, and is picking up where it left off.`;
+  if (by === "sleep") return `${name} was cut off when this computer slept, and is picking up where it left off.`;
+  if (by === "reload") return `${name} was cut off when its engine restarted, and is picking up where it left off.`;
+  return `${name} was cut off when Bloks stopped, and is picking up where it left off.`;
+}
+
+/** The same, for a turn whose engine was taken away rather than rebuilt:
+ * there is nothing for it to pick up on. */
+export function engineGoneNotice(name: string): string {
+  return `${name} was cut off because the engine it was running on was removed. Pick another engine for it to carry on.`;
 }
 
 /** The same, for one that waits for the person instead. */
@@ -293,7 +304,7 @@ export function cutOffWaitingNotice(name: string): string {
  * before acting on a plan made without it. */
 export function carryOnText(by: CutOffBy, extra: { tool?: string; said?: string } = {}): string {
   return [
-    by === "sleep" ? SLEPT_TEXT : RESTART_TEXT,
+    by === "sleep" ? SLEPT_TEXT : by === "reload" ? RELOAD_TEXT : RESTART_TEXT,
     extra.tool &&
       `The step running when it stopped was: ${extra.tool}. Whether it finished is not known, so check before running it again.`,
     extra.said && `Said to you since, and to read before going on with your earlier plan:\n\n${extra.said}`,
