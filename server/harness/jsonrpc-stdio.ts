@@ -86,7 +86,11 @@ export function attachRpc(options: RpcOptions): RpcLink {
         if (!waiting) continue;
         pending.delete(frame.id);
         if (frame.error) {
-          waiting.reject(new Error(frame.error.message ?? JSON.stringify(frame.error)));
+          // the error's data rides along: an ACP agent's SDK turns any
+          // thrown error into a bare "Internal error" and puts what went
+          // wrong in data.details
+          const error = new Error(frame.error.message ?? JSON.stringify(frame.error));
+          waiting.reject(frame.error.data === undefined ? error : Object.assign(error, { data: frame.error.data }));
         } else {
           waiting.resolve(frame.result);
         }

@@ -28,11 +28,13 @@ export type OutReason = "limit" | "overloaded" | "credit" | "signedOut";
 
 const PATTERNS: Array<[OutReason, RegExp]> = [
   // subscription and plan limits, and API rate limits
-  ["limit", /usage limit|hit your (?:usage )?limit|you'?ve hit your limit|limit (?:reached|exceeded)|rate[ _-]?limit|too many requests|\b429\b|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|resource[_ ]exhausted|out of (?:usage|messages)|weekly limit|daily limit/i],
+  // (Moonshot, Kimi's API, says "exceeded your current token quota" and
+  // "exceeded_current_quota_error")
+  ["limit", /usage limit|hit your (?:usage )?limit|you'?ve hit your limit|limit (?:reached|exceeded)|rate[ _-]?limit|too many requests|\b429\b|quota (?:exceeded|exhausted)|exceeded (?:your |the )?(?:current )?(?:[\w-]+ )?quota|exceeded_current_quota|resource[_ ]exhausted|out of (?:usage|messages)|weekly limit|daily limit/i],
   // the provider, not the account
   ["overloaded", /overloaded|\b529\b|\b503\b|service unavailable|temporarily unavailable|capacity (?:constraints|limits)|server is busy/i],
-  // money
-  ["credit", /credit balance is too low|insufficient[_ ](?:quota|credits|funds|balance)|billing (?:hard )?limit|payment required|\b402\b|out of credits/i],
+  // money ("余额不足" is "insufficient balance", from providers in China)
+  ["credit", /credit balance is too low|insufficient[_ ](?:quota|credits|funds|(?:account )?balance)|billing (?:hard )?limit|payment required|\b402\b|out of credits|check your plan and billing|余额不足/i],
   // the engine cannot act for this person at all right now
   ["signedOut", /not (?:logged|signed) in|please (?:run \/login|log ?in|sign in)|invalid api key|incorrect api key|invalid x-api-key|authentication (?:failed|error)|unauthori[sz]ed|\b401\b|oauth token (?:has )?expired/i],
 ];

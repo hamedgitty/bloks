@@ -21,7 +21,7 @@
 // A turn spawns a process and kills it on settle, the same as the codex
 // driver. Continuity comes from session/load with the stored id.
 import { spawn, execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { outReason } from "../failover.ts";
 import { attachRpc } from "../harness/jsonrpc-stdio.ts";
 import { killTree, launchSpec, onPath, widenPath } from "../path.ts";
 import { appendNative } from "./native.ts";
@@ -81,6 +82,14 @@ export interface AcpSpec {
    * turn otherwise. Set to probe a throwaway session for the real
    * catalog, so the picker lists actual models from the start. */
   probeModels?: boolean;
+  /** A message chunk that is the agent's own status line rather than its
+   * reply (pi-acp's "Retrying (attempt 1/3, waiting 2s)..."), matched
+   * against the whole chunk. Kept out of the answer. */
+  statusText?: RegExp;
+  /** Why the turn failed, for an agent that ends a failed turn as an
+   * ordinary end_turn and keeps the reason to itself. Read after the
+   * turn; `since` is when it started, so an old failure is not blamed. */
+  turnError?: (sessionId: string, since: number) => string | null;
 }
 
 export interface AcpConfig {
@@ -167,6 +176,89 @@ function catalogFromSession(session: any): ModelCatalog | null {
     default: String(session.models.currentModelId ?? available[0].modelId),
     options: available.map((m) => ({ id: String(m.modelId), label: String(m.name || m.modelId) })),
   };
+}
+
+/**
+ * A provider's error, readable. Providers send "429 {json}" with the
+ * sentence that matters buried in error.message; the status stays in
+ * front, since it is part of what says the engine is out.
+ */
+export function providerWords(raw: string): string {
+  const said = raw.trim();
+  const brace = said.indexOf("{");
+  if (brace === -1) return said.slice(0, 600);
+  try {
+    const body = JSON.parse(said.slice(brace));
+    const inner = body?.error?.message ?? body?.message;
+    if (typeof inner === "string" && inner.trim()) {
+      const status = said.slice(0, brace).trim().replace(/[:\s]+$/, "");
+      return (status ? `${status}: ${inner.trim()}` : inner.trim()).slice(0, 600);
+    }
+  } catch {
+    /* not JSON after all; the raw text is the best there is */
+  }
+  return said.slice(0, 600);
+}
+
+/**
+ * A reply that is nothing but a provider error passed through as text:
+ * one short line that opens like an error ("Error: 429 ...", "429 {...",
+ * "API error ...") and names an engine running out. An agent talking
+ * about a limit it met in its work writes a sentence, not that.
+ */
+export function isErrorReply(text: string): boolean {
+  const said = text.trim();
+  if (!said || said.length > 600 || said.includes("\n")) return false;
+  if (!/^(?:(?:api |provider |pi )?error\s*:|\d{3}\b|\{\s*"(?:type|error)")/i.test(said)) return false;
+  return outReason(said) !== null;
+}
+
+/**
+ * Why pi's last turn failed, from pi's own session file. pi-acp keeps a
+ * provider error to itself: pi records the assistant message with
+ * stopReason "error" and the provider's words, and pi-acp answers the
+ * prompt with end_turn and no content. The file is the one place the
+ * reason survives. pi-acp maps its session ids to pi's files in
+ * ~/.pi/pi-acp/session-map.json.
+ */
+export function piTurnError(sessionId: string, since: number, home = homedir()): string | null {
+  try {
+    const map = JSON.parse(readFileSync(join(home, ".pi", "pi-acp", "session-map.json"), "utf8"));
+    const file = map?.sessions?.[sessionId]?.sessionFile;
+    if (typeof file !== "string" || !file) return null;
+    // only the end matters, and a long session file is large
+    const fd = openSync(file, "r");
+    let tail = "";
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, 256 * 1024);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      tail = buffer.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+    const lines = tail.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry: any;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (entry?.type !== "message") continue;
+      // the last thing said decides it: a reply or a tool result after
+      // an error means the turn went on and the error is history
+      const message = entry.message;
+      if (message?.role !== "assistant" || message.stopReason !== "error") return null;
+      const at = Date.parse(entry.timestamp);
+      if (!(at >= since - 5_000)) return null;
+      return typeof message.errorMessage === "string" && message.errorMessage.trim() ? message.errorMessage.trim() : null;
+    }
+  } catch {
+    /* no map, no file: nothing more to say than an empty turn */
+  }
+  return null;
 }
 
 /** The catalog an ACP agent serves, from one throwaway session, or null
@@ -322,7 +414,10 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
         // `banner` is pi-acp's startup listing, which it also sends as an
         // ordinary agent message (see handleUpdate).
-        const state = { settled: false, text: "", live: false, banner: null as string | null };
+        // `tools` counts the calls the turn made: a turn that only worked
+        // and said nothing still did something.
+        const state = { settled: false, text: "", live: false, banner: null as string | null, tools: 0 };
+        const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string) => void>();
 
         const stop = () => {
@@ -456,6 +551,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             case "agent_message_chunk": {
               const text = update.content?.type === "text" ? String(update.content.text ?? "") : "";
               if (!text) break;
+              if (spec.statusText?.test(text.trim())) break;
               state.text += text;
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: text });
               break;
@@ -464,6 +560,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               emit({ ...base(threadId, turnId), type: "item.updated", itemType: "reasoning", tokens: null });
               break;
             case "tool_call": {
+              state.tools++;
               const paths = writesOf(update);
               emit({
                 ...base(threadId, turnId),
@@ -634,10 +731,56 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               });
             }
             const reason = String(result?.stopReason ?? "end_turn");
-            settle(reason === "end_turn" || reason === "max_tokens", reason === "end_turn" ? null : reason);
+            const ended = reason === "end_turn" || reason === "max_tokens";
+            // A turn can end "well" having failed: pi-acp answers end_turn
+            // after the provider refused (a daily limit, an empty balance)
+            // and keeps the reason. Taken at its word, that was a turn
+            // with no reply, no error, and no backup asked.
+            const failed = ended && sessionId ? spec.turnError?.(sessionId, startedAt) : null;
+            if (failed) {
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: `${spec.name} could not answer: ${providerWords(failed)}` });
+              settle(false, failed.slice(0, 400));
+              return;
+            }
+            // Or the provider's error came through as the whole reply.
+            if (ended && !state.tools && isErrorReply(state.text)) {
+              const said = state.text.trim();
+              state.text = "";
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: `${spec.name} could not answer: ${providerWords(said)}` });
+              settle(false, said.slice(0, 400));
+              return;
+            }
+            // A turn that said nothing and did nothing is never an answer.
+            // Silence reads as the message being ignored, so say so, with
+            // whatever the agent's stderr gave as the reason.
+            if (ended && !state.tools && !state.text.trim()) {
+              const why = stderr
+                .split("\n")
+                .map((line) => line.trim())
+                .filter((line) => line && outReason(line))
+                .at(-1);
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: why
+                  ? `${spec.name} could not answer: ${providerWords(why)}`
+                  : `${spec.name} ended the turn without a reply. Its model may have failed without saying why: check the provider ${spec.name} is set up with, then send this again.`,
+              });
+              settle(false, why ? why.slice(0, 400) : "empty_turn");
+              return;
+            }
+            settle(ended, reason === "end_turn" ? null : reason);
           } catch (e) {
             if (state.settled) return;
-            emit({ ...base(threadId, turnId), type: "runtime.error", message: (e as Error).message });
+            // what went wrong is often in the error's data, not its message
+            const data = (e as any)?.data;
+            const detail = [data?.details, data?.message].find((d): d is string => typeof d === "string" && d.trim().length > 0);
+            const message = (e as Error).message;
+            emit({
+              ...base(threadId, turnId),
+              type: "runtime.error",
+              message: detail && !message.includes(detail.trim()) ? `${message}: ${providerWords(detail)}` : message,
+            });
             settle(false, "rpc_error");
           }
         })();
@@ -797,6 +940,10 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     signIn: "run `pi` (or `pi-acp --terminal-login`) and configure providers/login",
     // credentials live in Pi; nothing of ours to pass
     authFiles: [".pi/agent/auth.json"],
+    // pi-acp's word that pi is retrying a failed request, and that it
+    // stopped; neither is the reply
+    statusText: /^(?:Retrying(?: \(attempt \d+\/\d+, waiting \d+s\))?\.\.\.|Retry finished, resuming\.)$/,
+    turnError: (sessionId, since) => piTurnError(sessionId, since),
     models: {
       default: "auto",
       options: [{ id: "auto", label: "Auto" }],
