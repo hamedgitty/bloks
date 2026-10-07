@@ -6653,6 +6653,10 @@ function configStatus() {
  * needs, until that turn's end has been dealt with (GitHub 198). */
 const rebuiltLanes = new Map<string, { turn: TurnInFlight | null; instanceId: string }>();
 let reloading: Promise<unknown> = Promise.resolve();
+/** Engines whose CLI was updated, by driver kind, and which still have
+ * to be built again to read the new CLI's models. Each is rebuilt at the
+ * first reload that finds nothing running on it (GitHub 199). */
+const enginesUpdated = new Set<string>();
 
 /** Rebuild the engines the current config changes, so a pasted key works
  * in the next message, not after a restart. Only those: an engine whose
@@ -6662,16 +6666,50 @@ let reloading: Promise<unknown> = Promise.resolve();
  * again, and the turn is picked up on the new engine the way a turn cut
  * off by a restart is (GitHub 198). One at a time, so two reloads never
  * build the same engine twice. */
-function reloadProviders(): Promise<void> {
+function reloadProviders(): Promise<boolean> {
   const run = reloading.then(() => rebuildEngines());
   reloading = run.catch(() => {});
   return run;
 }
 
-async function rebuildEngines() {
+/** Nothing running on this engine, and nothing on its way to it. */
+function engineQuiet(instanceId: string): boolean {
+  const live = registry.get(instanceId);
+  return !store.bots.some((bot) =>
+    bot.tasks.some(
+      (task) =>
+        task.busy &&
+        (Boolean(live?.adapter.hasSession(task.id)) ||
+          cutOff.get(task.id)?.instanceId === instanceId ||
+          laneEngine.get(task.id)?.instanceId === instanceId),
+    ),
+  );
+}
+
+/** The instances of updated engines that can be rebuilt now. */
+function updatedAndQuiet(): string[] {
+  const ready: string[] = [];
+  for (const kind of enginesUpdated) {
+    const mine = registry
+      .entries()
+      .filter((entry) => (entry.live?.driverKind ?? entry.shadow?.driverKind) === kind)
+      .map((entry) => entry.instanceId);
+    if (mine.every(engineQuiet)) ready.push(...mine);
+  }
+  return ready;
+}
+
+/** True when it rebuilt anything. */
+async function rebuildEngines(): Promise<boolean> {
   const configs = instanceConfigs(cfg);
-  const stale = registry.stale(configs);
-  if (!stale.length) return;
+  const stale = registry.stale(configs, updatedAndQuiet());
+  // an updated engine rebuilt for any reason has read its new CLI
+  for (const kind of enginesUpdated) {
+    if (registry.entries().every((entry) => (entry.live?.driverKind ?? entry.shadow?.driverKind) !== kind || stale.includes(entry.instanceId))) {
+      enginesUpdated.delete(kind);
+    }
+  }
+  if (!stale.length) return false;
   // read before anything changes: which lanes the old engines are in the
   // middle of a turn for
   const cut: Array<{ laneId: string; instanceId: string; driverKind: string }> = [];
@@ -6708,7 +6746,26 @@ async function rebuildEngines() {
       stopReason: ENGINE_RELOADED,
     });
   }
+  return true;
 }
+
+/** An updated engine waiting for its turns to finish is rebuilt once
+ * they have, and the window told, which is what the update said would
+ * happen. */
+function rebuildUpdatedWhenQuiet() {
+  if (!enginesUpdated.size) return;
+  // after the turn's end has settled, so its lane reads as free
+  setTimeout(() => {
+    void reloadProviders()
+      .then(async (rebuilt) => {
+        if (rebuilt) broadcast({ kind: "providers", ...(await providerCatalog()) });
+      })
+      .catch(() => {});
+  }, 0);
+}
+bus.subscribe((event: RuntimeEvent) => {
+  if (event.type === "turn.completed") rebuildUpdatedWhenQuiet();
+});
 
 /** Questions and approvals the old engine was waiting on in this lane,
  * settled as cut off and forgotten: the new engine may number its own
@@ -9574,13 +9631,16 @@ const server = createServer(async (req, res) => {
       const result = await runSetupScript(known.update);
       record({ at: Date.now(), kind: "engine.installed", actor: "you", summary: `${m[1]}: ${result.ok ? "updated" : "update failed"}` });
       // A new CLI brings new models, but the engines read their model
-      // lists when they are built. Rebuilding ends turns in flight, so it
-      // waits for a moment when nothing is running.
+      // lists when they are built. Rebuilding cuts off the turns running
+      // on that engine, so it is rebuilt now when none are, and otherwise
+      // once the last of them ends (rebuildUpdatedWhenQuiet). Other
+      // engines, and their turns, are left alone.
       let reloaded = false;
-      if (result.ok && !store.bots.some((b) => b.busy || b.tasks.some((t) => t.busy))) {
+      if (result.ok) {
+        enginesUpdated.add(m[1]);
         await reloadProviders();
-        broadcast({ kind: "providers", ...(await providerCatalog()) });
-        reloaded = true;
+        reloaded = !enginesUpdated.has(m[1]);
+        if (reloaded) broadcast({ kind: "providers", ...(await providerCatalog()) });
       }
       return json(res, 200, { ...result, reloaded });
     }
