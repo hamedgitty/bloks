@@ -236,7 +236,10 @@ A settings change rebuilds only the engines it changes (a custom
 endpoint, a key, a provider connected), and the rest keep running. A
 turn on a rebuilt engine is ended where it stands, which frees the lane,
 and picked up on the new engine the same way; one whose engine was
-removed says so instead.
+removed says so instead. An engine updated from the app is rebuilt too,
+because engines read their models when they are built, but only once
+nothing is running on it: right away when it is quiet, otherwise when
+its last turn ends.
 
 ## Restarting for an update
 

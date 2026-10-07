@@ -235,7 +235,7 @@ export function EngineUpdateNote({ kind, name, className }: { kind: string; name
       if (!result.ok) {
         setNote(result.problem ?? `${name} did not update.`);
       } else if (!result.reloaded) {
-        setNote(`Updated. The new models appear once the agents working now have finished.`);
+        setNote(`Updated. The new models appear once the agents working with ${name} now have finished.`);
       }
       const [{ updates }, { instances }] = await Promise.all([api("/api/engines/updates"), api("/api/instances")]);
       if (updates) dispatch({ type: "engineUpdates", updates });
