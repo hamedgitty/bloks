@@ -8464,7 +8464,7 @@ const server = createServer(async (req, res) => {
 
     if (method === "GET" && path === "/api/relay/status") {
       if (!local) return json(res, 403, { error: "not from here" });
-      // Four facts, and they are not one fact. `enabled` is the switch
+      // Four facts, and they are not one fact, plus the switch above them. `enabled` is the switch
       // in the config, `connected` is whether the line is up this second,
       // `delivering` is whether what we send back is landing, and
       // `spaceId` only exists once the relay has said hello. A screen
@@ -8476,6 +8476,10 @@ const server = createServer(async (req, res) => {
         delivering: relayLink.state.delivering,
         spaceId: relayLink.state.spaceId,
         problem: relayLink.state.problem,
+        // Pairing is the master switch for every remote path, the relay
+        // included (syncRelay), so a key can be accepted and the line
+        // still never dial. Said outright, or the screen waits forever.
+        pairing: remoteEnabled(),
       });
     }
 

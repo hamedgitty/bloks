@@ -36,6 +36,24 @@ function thisMachine(): string {
   return process.platform === "darwin" ? "this Mac" : process.platform === "win32" ? "this PC" : "this computer";
 }
 
+/** Why the line went down, in words a settings screen can show. Node's
+ * fetch says only "fetch failed" and keeps the reason in its cause, and
+ * an abort here is the watchdog, which means nothing arrived in time.
+ * Never the request itself: that carries the token. */
+function lineProblem(e: unknown): string {
+  if (!(e instanceof Error)) return "the line failed";
+  if (e.name === "AbortError") return "nothing came back for a minute. A proxy or an antivirus that inspects secure connections can hold it back.";
+  const cause = (e as { cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const code = (cause as { code?: unknown }).code;
+    if (typeof code === "string" && /CERT|SELF_SIGNED|ISSUER/.test(code)) {
+      return "the secure connection was not trusted. A proxy or an antivirus that inspects secure connections is the usual cause.";
+    }
+    return typeof code === "string" ? `${cause.message} (${code})` : cause.message;
+  }
+  return e.message;
+}
+
 /** Proof that a replayed request came from this process, so the HTTP
  * layer can trust the device attribution without a bearer token it does
  * not have. Regenerated every boot and never written down. */
@@ -503,6 +521,19 @@ export class RelayLink {
       keepalive = watchdog = null;
     };
     const alive = () => !this.stopped && gen === this.generation;
+    // A live relay sends its own keepalive comments every 25s. Nothing
+    // at all for this long is a dead socket the OS has not surfaced yet;
+    // abort and redial rather than hang on undici's minutes-long default.
+    // Armed before the request too: a proxy or a scanning antivirus that
+    // holds the answer back would otherwise leave the dial waiting for
+    // headers forever, with nothing on the screen to say why.
+    let heard = false;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => controller.abort(), WATCHDOG_MS);
+      watchdog.unref?.();
+    };
+    armWatchdog();
     try {
       const res = await fetch(`${this.config.url}/space/agent/stream`, {
         headers: { authorization: `Bearer ${this.config.agentToken}` },
@@ -537,15 +568,8 @@ export class RelayLink {
       keepalive = setInterval(() => this.publish({ kind: "ping" }), KEEPALIVE_MS);
       keepalive.unref?.();
 
+      heard = true;
       const reader = res.body.getReader();
-      // A live relay sends its own keepalive comments every 25s. Nothing
-      // at all for this long is a dead socket the OS has not surfaced yet;
-      // abort and redial rather than hang on undici's minutes-long default.
-      const armWatchdog = () => {
-        if (watchdog) clearTimeout(watchdog);
-        watchdog = setTimeout(() => controller.abort(), WATCHDOG_MS);
-        watchdog.unref?.();
-      };
       armWatchdog();
 
       const decoder = new TextDecoder();
@@ -585,7 +609,7 @@ export class RelayLink {
       throw new Error("the relay closed the line");
     } catch (e) {
       if (!alive()) return;
-      const problem = e instanceof Error ? e.message : "relay link failed";
+      const problem = heard ? lineProblem(e) : `Bloks Cloud could not be reached from ${thisMachine()}: ${lineProblem(e)}`;
       this.setState({ connected: false, delivering: false, spaceId: null, since: null, problem });
       this.schedule();
     } finally {

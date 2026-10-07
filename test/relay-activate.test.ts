@@ -193,6 +193,23 @@ describe("activating Cloud", () => {
     assert.equal(up.enabled, true);
   });
 
+  test("with phone access off, the status says so instead of waiting for the relay", async () => {
+    await h.fetch("/api/pair", { method: "PUT", body: JSON.stringify({ enabled: false }) });
+    const paused = await h.json("/api/relay/status");
+    // still activated, but nothing dials, and the screen has to know why
+    assert.equal(paused.enabled, true);
+    assert.equal(paused.connected, false);
+    assert.equal(paused.pairing, false);
+
+    await h.fetch("/api/pair", { method: "PUT", body: JSON.stringify({ enabled: true }) });
+    const back = await waitFor(async () => {
+      const state = await h.json("/api/relay/status");
+      return state.connected ? state : null;
+    });
+    assert.ok(back, "the line did not come back when phone access was turned on");
+    assert.equal(back.pairing, true);
+  });
+
   test("the key never appears in a log line", async () => {
     const logs = h.logs();
     assert.ok(!logs.includes(KEY), "the licence key was printed");
