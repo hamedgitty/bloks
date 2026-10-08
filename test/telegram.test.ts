@@ -5,6 +5,7 @@ import { describe, test } from "node:test";
 import { sniffImage } from "../server/attachments.ts";
 import { transcribe } from "../server/speech.ts";
 import {
+  chatAction,
   decide,
   describeCard,
   download,
@@ -12,6 +13,7 @@ import {
   type InboxHooks,
   type Incoming,
   interpretAnswer,
+  keepTyping,
   nextOffset,
   notDelivered,
   pairingWord,
@@ -661,5 +663,84 @@ describe("files and speech over the wire", () => {
       assert.equal(error.message, "OpenAI answered 401");
       return true;
     });
+  });
+});
+
+describe("typing while the agent works", () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("says typing at once, then again and again until the turn ends", async () => {
+    let said = 0;
+    const typing = keepTyping(async () => void said++, () => false, 10);
+    await wait(0);
+    assert.equal(said, 1, "at once, not one interval in");
+    await wait(45);
+    assert.ok(said >= 3);
+    await typing.stop();
+    const stopped = said;
+    await wait(40);
+    assert.equal(said, stopped, "nothing after the turn ends");
+  });
+
+  test("goes quiet while a card waits for the person, and picks up when it is answered", async () => {
+    let said = 0;
+    let waiting = false;
+    const typing = keepTyping(async () => void said++, () => waiting, 10);
+    await wait(0);
+    waiting = true;
+    const before = said;
+    await wait(40);
+    assert.equal(said, before, "typing would say the agent is working when it is waiting on them");
+    waiting = false;
+    await wait(40);
+    assert.ok(said > before, "and it comes back once the card is answered");
+    await typing.stop();
+  });
+
+  test("an answered card brings typing back at once, not a tick later", async () => {
+    let said = 0;
+    const typing = keepTyping(async () => void said++, () => false, 60_000);
+    await wait(0);
+    typing.now();
+    await wait(0);
+    assert.equal(said, 2);
+    await typing.stop();
+  });
+
+  test("a chat action that fails is ignored", async () => {
+    const typing = keepTyping(
+      async () => {
+        throw new Error("Telegram answered HTTP 403");
+      },
+      () => false,
+      10,
+    );
+    await wait(25);
+    await typing.stop();
+  });
+
+  test("stopping waits for one already on its way, so it cannot land after the answer", async () => {
+    let landed = false;
+    const typing = keepTyping(
+      async () => {
+        await wait(20);
+        landed = true;
+      },
+      () => false,
+      1_000,
+    );
+    await typing.stop();
+    assert.equal(landed, true);
+  });
+
+  test("the action is typing, to the chat that asked", async (t) => {
+    const bodies: unknown[] = [];
+    t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      assert.match(url, /\/sendChatAction$/);
+      bodies.push(JSON.parse(String(init.body)));
+      return Response.json({ ok: true, result: true });
+    });
+    await chatAction("T", 42);
+    assert.deepEqual(bodies, [{ chat_id: 42, action: "typing" }]);
   });
 });

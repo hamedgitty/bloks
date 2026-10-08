@@ -5731,6 +5731,8 @@ const telegramAsks = new Map<
   number,
   { requestId: string; botId: string; options: string[]; permission: boolean }
 >();
+/** "typing" in each chat whose message an agent is working on. */
+const telegramTyping = new Map<number, { now(): void; stop(): Promise<void> }>();
 
 /** Turns started from each chat, one after another. Kept off the polling
  * loop so a turn that is running does not stop the next message being
@@ -5783,6 +5785,9 @@ const telegramInbox = new telegram.Inbox({
         message: waiting.permission ? undefined : (read.option ?? read.free),
       })
       .catch(() => {});
+    // The turn goes on, so the chat says so again without waiting for
+    // the next tick.
+    telegramTyping.get(chatId)?.now();
   },
   deliver(chatId, text) {
     const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
@@ -5843,6 +5848,14 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     queueOnLane(botId, laneId, text);
     return "Bloks is restarting in a moment. Your message is saved, and the answer will be in the app once it is back.";
   }
+  // The phone shows "typing" for as long as the turn runs, the way the
+  // app shows "working…", except while a card forwarded to this chat
+  // waits: then the agent is waiting on the person, not working.
+  const typing = telegram.keepTyping(
+    () => (cfg.telegram?.token ? telegram.chatAction(cfg.telegram.token, chatId) : Promise.resolve()),
+    () => telegramAsks.has(chatId),
+  );
+  telegramTyping.set(chatId, typing);
   try {
     await startTurn(botId, text, { byYou: true });
     // Longer than an ordinary wait, because a card forwarded to the
@@ -5851,6 +5864,9 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   } finally {
     telegramLive.delete(botId);
     telegramAsks.delete(chatId);
+    // However the turn ended, nothing is working on this chat now.
+    if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
+    await typing.stop();
   }
   const said = store
     .messagesFor(laneId)

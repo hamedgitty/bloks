@@ -306,6 +306,53 @@ export async function send(token: string, chatId: number, text: string, markdown
   }
 }
 
+/** "typing" under the bot's name. Telegram shows it for five seconds
+ * at most, and clears it the moment the bot sends a message. */
+export async function chatAction(token: string, chatId: number): Promise<void> {
+  await call(token, "sendChatAction", { chat_id: chatId, action: "typing" }, 5_000);
+}
+
+/** A little under the five seconds Telegram shows it for, so it reads
+ * as one unbroken "typing" until the answer comes. */
+export const TYPING_EVERY_MS = 4_000;
+
+/**
+ * Keep saying "typing" until told to stop.
+ *
+ * `paused` is asked before each one, and is true while the agent waits
+ * on the person: "typing" then would say the opposite of what is
+ * happening. `now` says it at once, for when a pause has just ended.
+ * `stop` waits for one already on its way, so it cannot land after the
+ * answer and leave "typing" showing under a finished reply. A failure
+ * is ignored, like a failed send.
+ */
+export function keepTyping(
+  say: () => Promise<void>,
+  paused: () => boolean,
+  everyMs = TYPING_EVERY_MS,
+): { now(): void; stop(): Promise<void> } {
+  let stopped = false;
+  let sending: Promise<void> = Promise.resolve();
+  const now = () => {
+    if (stopped || paused()) return;
+    sending = Promise.resolve()
+      .then(say)
+      .catch(() => {});
+  };
+  const timer = setInterval(now, everyMs);
+  // Nothing should keep the process alive just to say "typing".
+  timer.unref?.();
+  now();
+  return {
+    now,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await sending;
+    },
+  };
+}
+
 /**
  * The bytes of a file somebody sent the bot.
  *
