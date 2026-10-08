@@ -248,7 +248,7 @@ export async function speak(
 
 /** OpenAI's newer transcription model, which hears names and noisy
  * rooms better than whisper-1 does. */
-export const OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
+export const OPENAI_TRANSCRIBE_MODEL = "gpt-transcribe";
 export const ELEVENLABS_TRANSCRIBE_MODEL = "scribe_v2";
 
 /** Who a voice message would be sent to, or null with no key at all. */

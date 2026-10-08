@@ -644,13 +644,17 @@ describe("files and speech over the wire", () => {
     const sent: { url: string; form: FormData; headers: Record<string, string> }[] = [];
     t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
       sent.push({ url, form: init.body as FormData, headers: init.headers as Record<string, string> });
-      return Response.json({ text: " hello there " });
+      return Response.json({ text: " hello there ", languages: [{ code: "en" }] });
     });
     assert.equal(await transcribe({ speech: { openaiKey: "sk-test" } }, OGG, "voice.ogg", "audio/ogg"), "hello there");
     assert.equal(await transcribe({ speech: { elevenlabsKey: "el-test" } }, OGG, "voice.ogg", "audio/ogg"), "hello there");
     assert.equal(sent[0].url, "https://api.openai.com/v1/audio/transcriptions");
-    assert.equal(sent[0].form.get("model"), "gpt-4o-transcribe");
-    assert.equal((sent[0].form.get("file") as File).name, "voice.ogg");
+    assert.equal(sent[0].form.get("model"), "gpt-transcribe");
+    assert.deepEqual([...sent[0].form.keys()].sort(), ["file", "model"]);
+    const file = sent[0].form.get("file") as File;
+    assert.equal(file.name, "voice.ogg");
+    assert.equal(file.type, "audio/ogg");
+    assert.deepEqual(new Uint8Array(await file.arrayBuffer()), OGG);
     assert.equal(sent[0].headers.authorization, "Bearer sk-test");
     assert.equal(sent[1].url, "https://api.elevenlabs.io/v1/speech-to-text");
     assert.equal(sent[1].form.get("model_id"), "scribe_v2");
