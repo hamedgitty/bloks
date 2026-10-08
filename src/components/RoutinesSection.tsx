@@ -49,6 +49,15 @@ export interface Routine {
   summary?: string;
   nextRunAt?: number | null;
   runs?: RoutineRun[];
+  /** On, but its agent is archived, so it does not run until restored. */
+  suspended?: "archived";
+}
+
+/** The line under a routine saying when it next runs, or why it will not. */
+export function routineStatus(routine: Routine, whenNext: (at?: number | null) => string): string {
+  if (!routine.enabled) return "Paused";
+  if (routine.suspended === "archived") return "Paused while its agent is archived";
+  return whenNext(routine.nextRunAt);
 }
 
 async function api(path: string, init?: RequestInit): Promise<any> {
@@ -131,7 +140,7 @@ export function RoutinesSection({
                   {routine.prompt}
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted-foreground/70">
-                  {routine.enabled ? whenNext(routine.nextRunAt) : "Paused"}
+                  {routineStatus(routine, whenNext)}
                 </div>
               </div>
               <Switch

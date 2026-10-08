@@ -326,8 +326,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       const { instanceId, config } = input;
       const listeners = new Set<RuntimeEventListener>();
       interface Turn {
-        /** Ask the agent to stop, then kill it if it will not. */
-        interrupt: () => void;
+        /** Ask the agent to stop, then kill it if it will not. Settles
+         * once its process is gone, or a little after the kill. */
+        interrupt: () => Promise<void>;
         stop: () => void;
         turnId: string;
         asks: Map<string, (behavior: string, message?: string) => void>;
@@ -416,7 +417,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // ordinary agent message (see handleUpdate).
         // `tools` counts the calls the turn made: a turn that only worked
         // and said nothing still did something.
-        const state = { settled: false, text: "", live: false, banner: null as string | null, tools: 0 };
+        // `stopping` is set by an interrupt: from then on nothing the agent
+        // asks for is allowed, and a prompt not yet sent is not sent.
+        const state = { settled: false, text: "", live: false, banner: null as string | null, tools: 0, stopping: false };
         const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string) => void>();
 
@@ -451,10 +454,23 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
         // An interrupt goes through the protocol first, so the agent can
         // put its tools down properly. The kill is the backstop.
+        //
+        // Whoever stopped it is told so once the process has gone, not
+        // when the cancel was sent. An agent that acts without asking
+        // could otherwise start another tool in the two seconds before
+        // the kill, after the person had been told it was stopped (GitHub
+        // 220). Anything it was waiting to be allowed is refused now.
         let sessionId: string | null = null;
-        const interrupt = () => {
+        let exited = false;
+        const gone = new Promise<void>((resolve) => child.once("close", () => resolve()));
+        void gone.then(() => (exited = true));
+        const interrupt = async () => {
+          state.stopping = true;
+          for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn was stopped");
+          if (exited) return;
           if (sessionId) rpc.notify("session/cancel", { sessionId });
           setTimeout(stop, 2_000).unref?.();
+          await Promise.race([gone, new Promise<void>((resolve) => setTimeout(resolve, 3_000).unref?.())]);
         };
 
         const settle = (ok: boolean, stopReason: string | null) => {
@@ -478,6 +494,11 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           const allowId = pick(["allow_once", "allow_always"]) ?? options[0]?.optionId;
           const denyId = pick(["reject_once", "reject_always"]) ?? options[options.length - 1]?.optionId;
 
+          // After a stop, the answer the protocol gives for a cancelled turn,
+          // whatever the agent's mode would have said.
+          if (state.stopping) {
+            return rpc.reply(msg.id, { outcome: { outcome: "cancelled" } });
+          }
           if (config.fullAuto && allowId) {
             return rpc.reply(msg.id, { outcome: { outcome: "selected", optionId: allowId } });
           }
@@ -716,6 +737,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               model: turn.model ?? models.default,
             });
 
+            // Stopped while the session was opening, before the agent had
+            // been told anything: there is nothing to cancel yet, so not
+            // sending is the only way it does not start.
+            if (state.stopping) {
+              settle(false, "interrupted");
+              return;
+            }
             state.live = true;
             const result = await rpc.request("session/prompt", {
               sessionId,

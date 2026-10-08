@@ -17,7 +17,7 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
-import { type Routine } from "./RoutinesSection";
+import { type Routine, routineStatus } from "./RoutinesSection";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -191,7 +191,7 @@ export function RoutinesDialog({
                             {routine.prompt}
                           </div>
                           <div className="mt-0.5 text-[11px] text-muted-foreground/70">
-                            {routine.enabled ? whenNext(routine.nextRunAt) : "Paused"}
+                            {routineStatus(routine, whenNext)}
                           </div>
                         </div>
                         <Switch

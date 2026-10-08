@@ -1618,6 +1618,20 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "request.opened": {
+      // An archived agent does nothing more, whatever its rules and mode
+      // would have allowed. Its turn is being stopped; an engine that asks
+      // in the moment before it goes is refused rather than waved
+      // through, so no tool starts after the archive (GitHub 220).
+      if (event.requestId && bot.archivedAt) {
+        void laneInstance(bot, event.threadId)
+          ?.adapter.respondToRequest(event.threadId, event.requestId, {
+            behavior: "deny",
+            message: `${bot.name} has been archived, so this was not done.`,
+          })
+          .catch(() => {});
+        pushMessage({ role: "bot", kind: "activity", tool: { name: "refused: the agent was archived", ok: false } });
+        break;
+      }
       // the agent asking for an app: plant sign-in cards and answer the
       // tool right away so the model can wrap up instead of blocking
       // a note about the person, suggested for them to keep or not
@@ -2822,12 +2836,7 @@ async function startTurn(
   // step naming it. Every one of those arrives here, and every one of
   // them fails loudly rather than quietly waking somebody who was put
   // away on purpose.
-  if (bot.archivedAt) {
-    throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), {
-      status: 409,
-      archived: true,
-    });
-  }
+  if (bot.archivedAt) throw archivedRefusal(bot);
 
   // the gate is the lane: other lanes keep their own turns running.
   //
@@ -3109,6 +3118,8 @@ async function startTurn(
     broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
     throw Object.assign(new Error(heldRefusal(stillHeld, bot.name)), { status: 409, held: true });
   }
+  // and the same for an archive that landed during the fold
+  if (store.bot(bot.id)?.archivedAt) throw archivedRefusal(bot);
 
   laneRequester.set(task.id, opts.requester ?? "owner");
   if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: true });
@@ -3155,6 +3166,25 @@ async function startTurn(
     short = (short || words[0].slice(0, 24)).replace(/[.,!?;:]+$/, "");
     if (short) store.patchTaskTitle(bot.id, task.id, short);
   }
+
+  // The lane goes back to idle, whichever way this turn ends without
+  // reaching its engine. Nothing is listening for a turn.completed that
+  // was never going to come.
+  const settleUnsent = (failure?: string) => {
+    activeRoom.delete(task.id);
+    laneRequester.delete(task.id);
+    if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
+    store.setTaskBusy(task.id, false);
+    // a Telegram request this turn took is answered with why it did not run
+    telegramReturns.finish(task.id, failure);
+    turnStarted.delete(task.id);
+    cutOff.end(task.id);
+    broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+    drainRoomTags(bot.id);
+    freshIfAsked(task.id);
+    drainSteer(task.id);
+    closeIfAsked(task.id);
+  };
 
   void (async () => {
     try {
@@ -3474,6 +3504,32 @@ async function startTurn(
       await reloading;
       const engine = registry.get(instanceId);
       if (!engine) throw new Error(unavailableEngineMessage(instanceId));
+      // Asked one last time, with nothing awaited between here and the
+      // engine. Getting ready can take a minute (a box waking, a
+      // checkpoint of a big folder), and an archive or a hold in that
+      // minute found the lane busy but no engine turn to interrupt. The
+      // turn then went out anyway, to an agent that had been put away,
+      // and its tools ran (GitHub 220). It is dropped instead, said so,
+      // and the lane is left as if it had never been asked.
+      const withdrawn = unsendable(bot.id);
+      if (withdrawn) {
+        checkpoints.cancel(task.id);
+        releaseVm(task.id);
+        agentTokens.revokeTask(task.id);
+        closeRun(task.id, { ok: false, error: withdrawn });
+        // a deleted agent's conversations are gone, and stay gone
+        if (store.bot(bot.id)) {
+          const notice = store.appendMessage(roomId, {
+            role: "bot",
+            ...(blok ? { from: bot.id } : {}),
+            kind: "notice",
+            text: withdrawn,
+          });
+          broadcast({ kind: "message", threadId: roomId, message: notice });
+        }
+        settleUnsent(withdrawn);
+        return;
+      }
       await engine.adapter.sendTurn(sending);
       if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
@@ -3492,20 +3548,33 @@ async function startTurn(
         broadcast({ kind: "message", threadId: roomId, message });
         return message;
       });
-      activeRoom.delete(task.id);
-      laneRequester.delete(task.id);
-      if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
-      store.setTaskBusy(task.id, false);
-      telegramReturns.finish(task.id, `Could not answer: ${message}`);
-      turnStarted.delete(task.id);
-      cutOff.end(task.id);
-      broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
-      drainRoomTags(bot.id);
-      freshIfAsked(task.id);
-      drainSteer(task.id);
-      closeIfAsked(task.id);
+      settleUnsent(`Could not answer: ${message}`);
     }
   })();
+}
+
+/** The refusal an archived agent gives anything that would wake it. */
+function archivedRefusal(bot: { name: string }) {
+  return Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), {
+    status: 409,
+    archived: true,
+  });
+}
+
+/** Why a turn already admitted must not reach its engine after all, in
+ * words for the lane, or null when it may go. */
+function unsendable(botId: string): string | null {
+  const now = store.bot(botId);
+  if (!now) return "The agent was deleted before this reached its engine, so it did not run.";
+  if (now.archivedAt) {
+    return `${now.name} was archived before this reached its engine, so it did not run. Restore ${now.name} and send it again if it is still wanted.`;
+  }
+  const hold = wheel.heldBy(botId);
+  if (hold) {
+    wheel.noteTurnedAway(botId);
+    return heldRefusal(hold, now.name);
+  }
+  return null;
 }
 
 // ── shared rooms ──────────────────────────────────────────────────────
@@ -3700,8 +3769,24 @@ function saveWatchers() {
     /* kept in memory; written next time */
   }
 }
-/** What a client sees: everything but the last look's contents. */
-const watcherView = ({ seen: _seen, seenItems: _items, ...rest }: Watcher) => rest;
+/** What a client sees: everything but the last look's contents, and
+ * whether it is paused because its agent is archived. */
+const watcherView = ({ seen: _seen, seenItems: _items, ...rest }: Watcher) => ({
+  ...rest,
+  ...(suspendedFor(rest.botId) ? { suspended: "archived" as const } : {}),
+});
+
+/**
+ * Whether an agent's schedules sit out because it is archived (GitHub
+ * 220). Their stored definitions are not touched, `enabled` included:
+ * flipping it would lose which ones the person had switched off
+ * themselves, and Restore has to bring back exactly what was there. So
+ * a routine or watcher of an archived agent is on and suspended, and
+ * everything that would run one asks this first.
+ */
+function suspendedFor(botId: string): boolean {
+  return Boolean(store.bot(botId)?.archivedAt);
+}
 const folderWatches = new Map<string, import("node:fs").FSWatcher>();
 const settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const checking = new Set<string>();
@@ -3717,7 +3802,7 @@ function disarmWatcher(id: string) {
  * the minute tick is only a fallback for events the filesystem drops. */
 function armWatcher(w: Watcher) {
   disarmWatcher(w.id);
-  if (w.kind !== "folder" || !w.enabled) return;
+  if (w.kind !== "folder" || !w.enabled || suspendedFor(w.botId)) return;
   try {
     const fw = watch(w.target, { recursive: true }, () => {
       clearTimeout(settleTimers.get(w.id));
@@ -3833,11 +3918,16 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
 async function checkWatcher(id: string, manual = false): Promise<{ fired: boolean; note: string }> {
   const w = watchers.find((x) => x.id === id);
   if (!w) return { fired: false, note: "no such watcher" };
+  // Not a look that failed: no look at all. Recording one as an error
+  // every few minutes kept an archived agent's watcher busy and red,
+  // and moved its last look on for work nobody was there to do.
+  const owner = store.bot(w.botId);
+  if (owner?.archivedAt) return { fired: false, note: `${owner.name} is archived, so this watcher is paused until it is restored.` };
   if (checking.has(id)) return { fired: false, note: "already looking" };
   checking.add(id);
   try {
     const bot = store.bot(w.botId);
-    if (!bot || bot.archivedAt) throw new Error("its agent is gone or archived");
+    if (!bot) throw new Error("its agent is gone");
     const lane = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
     if (lane?.busy || (w.kind === "folder" && bot.busy)) return { fired: false, note: `${bot.name} is working; it will look again shortly` };
     // A person holding the agent would have its turn refused, so a look
@@ -3928,7 +4018,7 @@ for (const bot of store.bots) {
 setInterval(() => {
   const now = Date.now();
   for (const w of watchers) {
-    if (!w.enabled) continue;
+    if (!w.enabled || suspendedFor(w.botId)) continue;
     if ((w.lastCheck ?? 0) + w.every * 60_000 <= now) void checkWatcher(w.id);
   }
 }, 60_000).unref?.();
@@ -4088,6 +4178,68 @@ function pendingWork(bot: BotRecord): string[] {
   if (runs.length) out.push(`${runs.length === 1 ? "a workflow run involving it is" : `${runs.length} workflow runs involving it are`} not finished`);
   if (wheel.heldBy(bot.id)) out.push("it is on hold");
   return out;
+}
+
+/**
+ * What archiving does to work, whichever way an agent was archived: the
+ * person's menu, hiding it, or the agent that hired it (GitHub 220).
+ * Called once the archive is on record, so a turn that was admitted but
+ * had not reached its engine yet finds it there and is dropped, and
+ * anything a running turn asks for from now on is refused.
+ *
+ * Every running turn is stopped, and waited for: an engine that acts
+ * without asking only stops for certain when its process has gone, and
+ * the archive is not reported done before then.
+ */
+async function windDown(bot: BotRecord) {
+  await Promise.all(
+    bot.tasks
+      .filter((t) => t.busy)
+      .map(async (lane) => {
+        cutOff.stop(lane.id);
+        await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id).catch(() => {});
+      }),
+  );
+  stopScreenPoller(bot.id);
+  terminals.close(bot.id);
+  // A hold naming an agent that cannot act would sit in the activity
+  // panel forever.
+  wheel.release(bot.id);
+  // Per turn credentials, in memory, nothing to keep.
+  agentTokens.revokeBot(bot.id);
+  // Its folder watches stop listening. Its routines and the rest of its
+  // watchers are skipped while it is archived (see suspendedFor); none
+  // of their definitions change.
+  for (const w of watchers) if (w.botId === bot.id) disarmWatcher(w.id);
+  broadcast({ kind: "routines" });
+  broadcast({ kind: "watchers" });
+}
+
+/**
+ * The other half, on Restore: its schedules run again exactly as they
+ * were left, and the person is told which ones in the agent's own
+ * conversation. Routines and watchers waking up again with no word was
+ * the surprise this is here to avoid.
+ */
+function resumeSchedules(bot: BotRecord) {
+  for (const w of watchers) if (w.botId === bot.id) armWatcher(w);
+  broadcast({ kind: "routines" });
+  broadcast({ kind: "watchers" });
+  const now = new Date();
+  const resumed = [
+    ...routines.routines
+      .filter((r) => r.enabled && r.targetKind === "agent" && r.targetId === bot.id && nextScheduledAfter(r, now))
+      .map((r) => `the routine ${r.name ? `"${r.name}" (${describeRoutine(r)})` : describeRoutine(r)}`),
+    ...watchers.filter((w) => w.enabled && w.botId === bot.id).map((w) => `the watcher "${w.name}"`),
+  ];
+  if (!resumed.length) return;
+  const listed = resumed.length === 1 ? resumed[0] : `${resumed.slice(0, -1).join(", ")} and ${resumed.at(-1)}`;
+  const notice = store.appendMessage(bot.threadId, {
+    role: "bot",
+    kind: "notice",
+    text: `${bot.name} is restored, and what it does on its own has resumed: ${listed}. ${resumed.length === 1 ? "It was" : "They were"} paused while ${bot.name} was archived. Switch any of them off in Routines or Watchers if it should stay quiet.`,
+  });
+  broadcast({ kind: "message", threadId: bot.threadId, message: notice });
 }
 
 /** The owner's name as members see it. */
@@ -7968,6 +8120,9 @@ const server = createServer(async (req, res) => {
       // either an agent in the list that refuses work, or one out of the
       // list that still does it, which is the exact split archiveBot
       // exists to make impossible.
+      //
+      // And it does what the menu's archive does to work: hiding used to
+      // put an agent away mid-turn and leave the turn running (GitHub 220).
       if (typeof body.hidden === "boolean") {
         const existing = store.bot(m[1]);
         if (!existing) return json(res, 404, { error: "no such agent" });
@@ -7980,6 +8135,8 @@ const server = createServer(async (req, res) => {
             summary: `${body.hidden ? "Archived" : "Restored"} ${moved.name}`,
             detail: { agent: moved.name, ...(body.hidden ? { key: "kept" } : {}) },
           });
+          if (body.hidden) await windDown(moved);
+          else resumeSchedules(moved);
         }
         delete body.hidden;
       }
@@ -8144,11 +8301,11 @@ const server = createServer(async (req, res) => {
         summary: `${caller.name} archived ${bot.name}`,
         detail: { agent: bot.name, by: caller.name, ...(note ? { note } : {}), key: "kept" },
       });
-      // What the person's archive also does, minus winding work down:
-      // there is none, or it would have been refused above.
-      stopScreenPoller(bot.id);
-      terminals.close(bot.id);
-      agentTokens.revokeBot(bot.id);
+      // What the person's archive also does. There is no work to wind
+      // down, or it would have been refused above, but it goes through
+      // the same door, so a turn admitted since is dropped before it
+      // reaches its engine and its schedules sit out the same way.
+      await windDown(archived);
       void stopSandbox(bot.id).catch(() => {});
       void box.sleepBox(cfg, bot.id).catch(() => {});
       broadcast({ kind: "bot", bot: clientBot(archived) });
@@ -8165,6 +8322,7 @@ const server = createServer(async (req, res) => {
         summary: `Restored ${bot.name}`,
         detail: { agent: bot.name },
       });
+      resumeSchedules(bot);
       broadcast({ kind: "bot", bot: clientBot(bot) });
       return json(res, 200, { bot: clientBot(bot) });
     }
@@ -8181,18 +8339,12 @@ const server = createServer(async (req, res) => {
       // other. One mis-click was the end of all of it.
       const forget = url.searchParams.get("forget") === "1";
 
-      // Whatever happens next, it stops working now.
-      for (const lane of bot.tasks.filter((t) => t.busy)) {
-        cutOff.stop(lane.id);
-        await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id).catch(() => {});
-      }
-      stopScreenPoller(bot.id);
-      terminals.close(bot.id);
-      // A hold naming an agent that cannot act would sit in the activity
-      // panel forever.
-      wheel.release(bot.id);
-      // Per turn credentials, in memory, nothing to keep.
-      agentTokens.revokeBot(bot.id);
+      // Whatever happens next, it stops working now. The archive goes on
+      // record first, so a turn still getting ready finds it and is
+      // dropped rather than slipping out while the others are stopped.
+      const archived = forget ? null : store.archiveBot(bot.id, Date.now());
+      if (!forget && !archived) return json(res, 409, { error: "that agent is already archived" });
+      await windDown(bot);
       // A claimed job waiting on somebody who is not coming goes back on
       // the board rather than sitting there, and says which of the two
       // things happened rather than always claiming a deletion.
@@ -8208,8 +8360,6 @@ const server = createServer(async (req, res) => {
         void stopSandbox(bot.id).catch(() => {});
         // A dormant agent should not be billed for a box it is not using.
         void box.sleepBox(cfg, bot.id).catch(() => {});
-        const archived = store.archiveBot(bot.id, Date.now());
-        if (!archived) return json(res, 409, { error: "that agent is already archived" });
         record({
           at: Date.now(),
           kind: "agent.archived",
@@ -8217,7 +8367,7 @@ const server = createServer(async (req, res) => {
           summary: `Archived ${bot.name}`,
           detail: { agent: bot.name, conversations: bot.tasks.length, key: "kept" },
         });
-        broadcast({ kind: "bot", bot: clientBot(archived) });
+        broadcast({ kind: "bot", bot: clientBot(archived!) });
         return json(res, 200, { ok: true, archived: true });
       }
 
@@ -12309,11 +12459,16 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/routines") {
       const now = new Date();
       return json(res, 200, {
-        routines: routines.routines.map((r) => ({
-          ...r,
-          summary: describeRoutine(r),
-          nextRunAt: r.enabled ? (nextScheduledAfter(r, now)?.getTime() ?? null) : null,
-        })),
+        routines: routines.routines.map((r) => {
+          // on, but its agent is archived: it runs again once restored
+          const suspended = r.targetKind === "agent" && suspendedFor(r.targetId);
+          return {
+            ...r,
+            summary: describeRoutine(r),
+            nextRunAt: r.enabled && !suspended ? (nextScheduledAfter(r, now)?.getTime() ?? null) : null,
+            ...(suspended ? { suspended: "archived" as const } : {}),
+          };
+        }),
       });
     }
     if (method === "POST" && path === "/api/routines") {

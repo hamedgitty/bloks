@@ -824,6 +824,11 @@ function RoutineDetails({
               {target?.name} · {daysLabel} at {routine.time} · {routine.durationMin ?? 30} min
               {runsOnLabel ? ` · ${runsOnLabel}` : ""}
             </div>
+            {routine.enabled && routine.suspended === "archived" && (
+              <div className="mt-0.5 text-[12px] text-warning">
+                Paused while {target?.name ?? "its agent"} is archived. It runs again once restored.
+              </div>
+            )}
           </div>
           <Switch
             aria-label={`${routine.name || "This routine"}: on or off`}

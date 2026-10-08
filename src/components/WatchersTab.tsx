@@ -45,6 +45,8 @@ interface WatcherRow {
   thread?: string;
   fires: Array<{ at: number; summary: string }>;
   approvedBy?: "person" | "mode";
+  /** On, but its agent is archived, so it does not look until restored. */
+  suspended?: "archived";
 }
 
 const KIND: Record<Kind, { icon: typeof Folder; label: string; placeholder: string }> = {
@@ -268,6 +270,11 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
         </label>
         <span>Last look {ago(w.lastCheck)}</span>
       </div>
+      {w.enabled && w.suspended === "archived" && (
+        <div className="rounded-lg bg-muted px-3 py-2 text-[12.5px] text-muted-foreground">
+          Paused while {bot?.name ?? "its agent"} is archived. It looks again once {bot?.name ?? "the agent"} is restored.
+        </div>
+      )}
       {w.lastError && <div className="rounded-lg bg-warning/10 px-3 py-2 text-[12.5px] text-warning">{w.lastError}</div>}
       <div>
         <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Fired</div>
@@ -356,7 +363,7 @@ export function WatchersTab() {
                     <span className="truncate">{w.name}</span>
                   </span>
                   <span className={cn("block truncate text-[11px]", waiting || w.lastError ? "text-warning" : w.enabled ? "text-muted-foreground" : "text-muted-foreground/70")}>
-                    {!w.enabled ? "Paused" : waiting ? "Needs your approval" : w.lastError ? "Needs a look" : w.fires[0] ? `Fired ${ago(w.fires[0].at)}` : `Looked ${ago(w.lastCheck)}`}
+                    {!w.enabled ? "Paused" : w.suspended === "archived" ? "Paused while archived" : waiting ? "Needs your approval" : w.lastError ? "Needs a look" : w.fires[0] ? `Fired ${ago(w.fires[0].at)}` : `Looked ${ago(w.lastCheck)}`}
                   </span>
                 </span>
               </button>
