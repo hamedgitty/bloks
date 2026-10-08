@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import { noticeFor } from "@/lib/notify";
+import { sendRoomPatch } from "@/lib/roomPatch";
 import { placeRow, type Listed } from "@/lib/sections";
 import { maybeAutoSpeak } from "@/components/Voice";
 import {
@@ -330,10 +331,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .catch(showError);
           break;
         case "patchRoom":
-          api(`/api/bloks/${action.blokId}`, {
-            method: "PATCH",
-            body: JSON.stringify(action.patch),
-          }).catch(() => {});
+          void sendRoomPatch(api, action.blokId, action.patch, (bloks) => rawDispatch({ type: "hydrateBloks", bloks }), showError);
           break;
         case "placeRow": {
           // Shown at once, neighbours and all, by the same steps the server
