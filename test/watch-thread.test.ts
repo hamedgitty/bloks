@@ -58,10 +58,11 @@ test("a watcher's turn goes to the named conversation, made if missing, queued i
     held.forEach((f) => f());
     provider.closeAllConnections();
     provider.close();
-    rmSync(home, { recursive: true, force: true });
   });
   const h = await startHarness({ HOME: home });
   t.after(() => h.stop());
+  // only once the server has stopped writing into it
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   await h.json("/api/providers/grok/connect", {
     method: "POST",
     body: JSON.stringify({ key: "test-key", url: `http://127.0.0.1:${(provider.address() as { port: number }).port}` }),

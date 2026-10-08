@@ -173,13 +173,15 @@ test("a queued burst joins the conversation after what the agent said while it w
 
 test("a turn's change card stays under that turn, above a message delivered after it (GitHub 207)", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-queued-card-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const desk = join(home, "desk");
   mkdirSync(desk, { recursive: true });
   writeFileSync(join(desk, "plan.md"), "one\n");
   const fake = await fakeProvider(t);
   const h = await startHarness({ HOME: home });
+  // stopped before its folder goes, or the server writes into a folder
+  // being deleted
   t.after(() => h.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const bot = await agentOn(h, fake.port);
   const set = await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ cwd: desk }) });
   assert.equal(set.status, 200, await set.clone().text());
