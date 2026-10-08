@@ -279,6 +279,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     interface RunningTurn {
       turnId: string;
       abort: () => void;
+      /** More words for this turn; false when Codex would not take them. */
+      steer: (text: string) => Promise<boolean>;
       asks: Map<string, Answer>;
     }
     const running = new Map<string, RunningTurn>();
@@ -343,6 +345,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       let tokenBase: TokenCount | null = null;
       // set once turn/start goes out; usage reported before it is history
       let turnSent = false;
+      // Codex's own names for the conversation and the turn running in it,
+      // which turn/steer has to quote back
+      let codexThread: string | null = null;
+      let codexTurn: string | null = null;
 
       const abort = () => {
         try {
@@ -579,6 +585,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             break;
           }
 
+          case "turn/started": {
+            if (typeof params.turn?.id === "string") codexTurn = params.turn.id;
+            break;
+          }
+
           case "turn/completed": {
             const completed = params.turn ?? {};
             const ok = completed.status === "completed";
@@ -629,7 +640,20 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         finish(false, "exit_before_result");
       });
 
-      running.set(threadId, { turnId, abort, asks });
+      // Codex checks expectedTurnId against the turn it is running and
+      // refuses the call if that turn has ended, so a refusal means the
+      // words were not taken and can go to the next turn instead.
+      const steer = async (text: string) => {
+        if (finished || !codexThread || !codexTurn) return false;
+        try {
+          await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }] });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      running.set(threadId, { turnId, abort, steer, asks });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
       // Handshake and kickoff. Anything that goes wrong in here has to end
@@ -641,7 +665,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           rpc.notify("initialized", {});
 
           const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
-          let codexThread: string | null = null;
           let reportedModel: string | null = null;
           // fullAuto is the engine set that way; fullAccess is this agent.
           // Either takes the sandbox off and stops Codex asking. Stated on
@@ -704,12 +727,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           });
 
           turnSent = true;
-          await within(rpc.request("turn/start", {
+          const begun: any = await within(rpc.request("turn/start", {
             threadId: codexThread,
             input: [
               { type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text },
             ],
           }), "starting the turn", "Codex");
+          if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
           if (finished) return;
           emit({
@@ -760,6 +784,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         provider: DRIVER_KIND,
         capabilities: { sessionModelSwitch: "unsupported" },
         sendTurn,
+
+        steerTurn: async (threadId, text) => (await running.get(threadId)?.steer(text)) ?? false,
 
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 

@@ -26,7 +26,7 @@ if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0)
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const call = (method, path, body) => fetch(process.env.BLOKS_URL + path, {
     method,
     headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" },

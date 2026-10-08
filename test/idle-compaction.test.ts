@@ -123,7 +123,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const out = (frame) => console.log(JSON.stringify(frame));
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const said = JSON.parse(input.split("\\n")[0]).message.content;
   const file = ${JSON.stringify(join(home, "total.txt"))};
   const total = (existsSync(file) ? Number(readFileSync(file, "utf8")) : 0) + 1;

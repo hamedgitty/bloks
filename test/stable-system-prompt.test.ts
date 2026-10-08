@@ -35,7 +35,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const sessionId = value(args.includes("--resume") ? "--resume" : "--session-id");
   const persona = readFileSync(value("--append-system-prompt-file"), "utf8");
   const content = JSON.parse(input.trim()).message.content;

@@ -2,7 +2,10 @@
 //
 // The CLI is run once per turn with JSON on both ends of the pipe: the
 // prompt goes in on stdin as a stream-json message, and a sequence of
-// stream-json events comes back on stdout. Continuity across turns is the
+// stream-json events comes back on stdout. Stdin stays open while the
+// turn runs, so the person can say more and the agent reads it after the
+// step it is on (GitHub 213); closing it is what lets a -p process end,
+// so it is closed at the first result. Continuity across turns is the
 // CLI's own `--resume`, keyed on a session id it hands us in its first
 // event, which we store as the thread's resume cursor.
 //
@@ -100,6 +103,12 @@ const MODELS: ModelCatalog = {
  * Always the smallest one: nobody is reading it, they are reading its
  * two-line output. */
 const ONE_SHOT_MODEL = "claude-haiku-4-5";
+
+/** How long a steered turn's process may say nothing after a result
+ * before that result is taken as the end. Usually the process exits
+ * first; one kept alive by a background task it started would otherwise
+ * hold the lane busy for as long as that task runs. */
+const STEER_QUIET_MS = 30_000;
 
 export interface ClaudeConfig {
   cli: string;
@@ -243,6 +252,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     interface RunningTurn {
       turnId: string;
       abort: () => void;
+      /** More words for this turn, or false when it can no longer take them. */
+      steer: (text: string) => boolean;
       broker?: AskBroker;
     }
     /** At most one turn per thread. A second send while one is live is a
@@ -507,8 +518,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // the session this process reports for, from its init frame
       let sessionId: string | null = resume;
       // A result that did nothing (see `case "result"`), held until the
-      // real one arrives or the process ends without one.
+      // real one arrives or the process ends without one. After a steer,
+      // a real one is held too, since another may follow it.
       let held: any = null;
+      /** Whether stdin still takes words for this turn. */
+      let inputOpen = true;
+      /** Words were written after the prompt, so a result may not be the last. */
+      let steered = false;
       /** Whether any assistant frame carried usage this turn. */
       let reportedUsage = false;
       // The CLI saying this turn's engine is out (a limit, signed out), and
@@ -518,10 +534,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let outNotice: string | null = null;
       let resetsAt: number | null = null;
       let watch: ReturnType<typeof setInterval> | null = null;
+      let quiet: ReturnType<typeof setInterval> | null = null;
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finished) return;
         finished = true;
         if (watch) clearInterval(watch);
+        if (quiet) clearInterval(quiet);
         if (broker && !exited && !abandoned) {
           broker.retire();
           const kept = afterTurn.get(threadId) ?? new Set<AskBroker>();
@@ -722,6 +740,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             break;
 
           case "result":
+            // With stdin open the process waits for more after a result
+            // instead of exiting, so the first result shuts the door. Words
+            // already written before it are still read and answered by the
+            // same process; anything later waits for the next turn.
+            closeInput();
             // On --resume Claude Code can first settle something the last
             // session left running (a background shell it stopped) with a
             // result of its own: no model turns, no API time. The answer to
@@ -731,7 +754,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // it idle, so a second turn could start on the same session
             // (GitHub 134).
             if (frame.is_error !== true && frame.num_turns === 0 && !frame.duration_api_ms) {
+              held ??= frame;
+              break;
+            }
+            // A steer written just as the engine finished can reach it
+            // after this result, and then it answers that with a result of
+            // its own. There is no telling which from here, so the turn
+            // runs until the process ends and the last result is the one
+            // it ends on. Ending here would answer the words in a turn
+            // nobody is watching, or drop them.
+            if (steered) {
               held = frame;
+              quiet ??= setInterval(() => {
+                if (finished || Date.now() - lastSign < STEER_QUIET_MS) return;
+                if (held) settle(held);
+              }, 1_000);
+              quiet.unref?.();
               break;
             }
             settle(frame);
@@ -867,15 +905,32 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         watch.unref?.();
       }
 
-      running.set(threadId, { turnId, abort, broker });
+      // A write to a process that has just gone is not worth a crash; the
+      // exit says what happened.
+      child.stdin.on("error", () => {});
+      function closeInput() {
+        if (!inputOpen) return;
+        inputOpen = false;
+        child.stdin.end();
+      }
+      const say = (text: string) => {
+        // Over stdin, never argv: a pasted document would blow past
+        // ARG_MAX, and argv is readable by every process on the machine.
+        const message = { type: "user", message: { role: "user", content: text } };
+        child.stdin.write(JSON.stringify(message) + "\n");
+        appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: message });
+      };
+      const steer = (text: string) => {
+        if (finished || stopping || exited || !inputOpen) return false;
+        steered = true;
+        say(text);
+        return true;
+      };
+
+      running.set(threadId, { turnId, abort, steer, broker });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
-      // Over stdin, never argv: a pasted document would blow past ARG_MAX,
-      // and argv is readable by every process on the machine.
-      const prompt = { type: "user", message: { role: "user", content: turn.text } };
-      child.stdin.write(JSON.stringify(prompt) + "\n");
-      child.stdin.end();
-      appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: prompt });
+      say(turn.text);
 
       return { turnId };
     };
@@ -926,6 +981,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         provider: DRIVER_KIND,
         capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
+
+        steerTurn: async (threadId, text) => running.get(threadId)?.steer(text) ?? false,
 
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 

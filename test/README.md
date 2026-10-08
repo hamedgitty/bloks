@@ -61,3 +61,8 @@ outlive its own SIGTERM by a moment, and removing the home while it is
 still writing raises ENOTEMPTY, which fails a test that had already
 passed. If a run is killed halfway, stale directories are under your
 system temp as `bloks-test-*`.
+
+A stand-in Claude Code CLI has to answer on the first line it reads, not
+when stdin ends. The driver keeps stdin open for the whole turn, so the
+person can say more while it runs, and only closes it at the first
+`result`; a stand-in that waits for the end waits forever.

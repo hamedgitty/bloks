@@ -5739,6 +5739,9 @@ const telegramTyping = new Map<number, { now(): void; stop(): Promise<void> }>()
  * read: that next message may be the answer to a card the turn raised,
  * or the rest of an album. */
 const telegramTurns = new Map<number, Promise<void>>();
+/** Each chat's messages, taken in the order they came: asking an engine
+ * to take one mid-turn is a round trip, and the next must not pass it. */
+const telegramIntake = new Map<number, Promise<void>>();
 
 /** A reply to a chat. A failed send is not worth a crash. Only what an
  * agent wrote is read as Markdown: the bot's own lines and a card's
@@ -5790,19 +5793,30 @@ const telegramInbox = new telegram.Inbox({
     telegramTyping.get(chatId)?.now();
   },
   deliver(chatId, text) {
-    const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
+    const intake = (telegramIntake.get(chatId) ?? Promise.resolve()).then(async () => {
       const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
-      if (!bot) return telegramSay(chatId, "There is no agent here to answer yet, so that did not reach anyone.");
-      // The reply goes back to the chat that asked, and the exchange lands
-      // in the agent's own thread like any other conversation.
-      const answer = await answerOverTelegram(bot.id, text, chatId).catch(
-        (error: unknown) => `Could not answer: ${(error as Error).message}`,
-      );
-      await telegramSay(chatId, answer, true);
+      // A follow-up while this chat waits on an answer goes into the turn
+      // being answered, and that one reply covers it, rather than waiting
+      // for the answer to come back before it is even read (GitHub 213).
+      const lane = bot?.tasks.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
+      if (bot && lane && telegramTurns.has(chatId) && (await steerLane(bot, lane, text).catch(() => null))) return;
+      const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
+        if (!bot) return telegramSay(chatId, "There is no agent here to answer yet, so that did not reach anyone.");
+        // The reply goes back to the chat that asked, and the exchange lands
+        // in the agent's own thread like any other conversation.
+        const answer = await answerOverTelegram(bot.id, text, chatId).catch(
+          (error: unknown) => `Could not answer: ${(error as Error).message}`,
+        );
+        await telegramSay(chatId, answer, true);
+      });
+      telegramTurns.set(chatId, turn);
+      void turn.finally(() => {
+        if (telegramTurns.get(chatId) === turn) telegramTurns.delete(chatId);
+      });
     });
-    telegramTurns.set(chatId, turn);
-    void turn.finally(() => {
-      if (telegramTurns.get(chatId) === turn) telegramTurns.delete(chatId);
+    telegramIntake.set(chatId, intake);
+    void intake.finally(() => {
+      if (telegramIntake.get(chatId) === intake) telegramIntake.delete(chatId);
     });
   },
 });
@@ -5856,6 +5870,29 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     () => telegramAsks.has(chatId),
   );
   telegramTyping.set(chatId, typing);
+  // Busy with a turn that did not start here: the words go into it if
+  // its engine can take them, and wait in the lane like any queued
+  // message if not. Either way the answer comes back here. Turning them
+  // away lost the message (GitHub 213). A held or archived agent is
+  // refused by startTurn below, as it always was.
+  const lane = bot.tasks.find((t) => t.id === laneId);
+  if (lane && laneWaits(lane) && !wheel.heldBy(botId) && !bot.archivedAt) {
+    try {
+      const steered = await steerLane(bot, lane, text);
+      const sent = steered ?? queueOnLane(botId, laneId, text);
+      // the turn may have ended while its engine was asked
+      if (!steered) drainSteer(laneId);
+      await answeredAfter(botId, laneId, sent.id, 20 * 60_000);
+      const list = store.messagesFor(laneId);
+      const from = list.findIndex((m) => m.id === sent.id);
+      return saidIn(from >= 0 ? list.slice(from + 1) : []);
+    } finally {
+      telegramLive.delete(botId);
+      telegramAsks.delete(chatId);
+      if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
+      await typing.stop();
+    }
+  }
   try {
     await startTurn(botId, text, { byYou: true });
     // Longer than an ordinary wait, because a card forwarded to the
@@ -5868,14 +5905,44 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
     await typing.stop();
   }
-  const said = store
-    .messagesFor(laneId)
-    .slice(before)
+  return saidIn(store.messagesFor(laneId).slice(before));
+}
+
+/** What the agent said in these messages, as one reply for a phone. */
+function saidIn(messages: readonly Message[]): string {
+  const said = messages
     .filter((message) => message.role === "bot" && message.kind === "text" && message.text)
     .map((message) => message.text as string)
     .join("\n\n")
     .trim();
   return said || "(the agent finished without saying anything)";
+}
+
+/** Resolves once the turn that took this message has ended: at once
+ * for words handed to a running turn, and for words that waited, once
+ * they went and the turn they started is over. Watches the lane, since
+ * the turn that takes a queued message is started by the drain and
+ * nobody hands this its result. Gives up when the message is taken
+ * back, and at the deadline. */
+function answeredAfter(botId: string, laneId: string, messageId: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let ran = false;
+    const tick = () => {
+      const lane = store.bot(botId)?.tasks.find((t) => t.id === laneId);
+      const list = store.messagesFor(laneId);
+      const at = list.findIndex((m) => m.id === messageId);
+      const m = list[at];
+      if (!lane || !m || m.deleted || m.unsent || Date.now() - started > timeoutMs) return resolve();
+      if (!m.queued && lane.busy) ran = true;
+      // A turn too quick to be seen busy still leaves its words, or a
+      // notice that it could not start, after the message.
+      const answered = list.slice(at + 1).some((later) => later.role === "bot");
+      if (!m.queued && !lane.busy && (ran || answered)) return resolve();
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
 }
 
 async function telegramLoop(): Promise<void> {
@@ -6354,10 +6421,14 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 }
 
 // ── steering a busy agent ─────────────────────────────────────────────
-// Words said to a busy lane are not an error; they are the next thing to
-// say. They are written down immediately (flagged queued), wait in
-// memory, and drain into one follow-up turn when the lane settles; only
-// then do they join the conversation (deliverQueued). A restart rebuilds
+// Words the person says to a busy lane go into the turn that is running,
+// when its engine can take them (steerLane): the agent reads them after
+// the step it is on, so it can change course before it finishes work
+// that was asked to change (GitHub 213). Everything else said to a busy
+// lane is not an error either; it is the next thing to say. It is
+// written down immediately (flagged queued), waits in memory, and
+// drains into one follow-up turn when the lane settles; only then does
+// it join the conversation (deliverQueued). A restart rebuilds
 // the waiting from the transcript (recoverQueued), so nothing flagged
 // queued is left behind waiting forever.
 // An item with a messageId carries no words of its own. They are read
@@ -6483,6 +6554,51 @@ function queueOnLane(
 }
 
 /**
+ * Hands the person's words to the turn running in a lane, and writes
+ * them into the conversation as it takes them, after what the agent has
+ * said so far, since that is where it hears them. Null when they have to
+ * wait for the next turn instead: the engine cannot take words mid-turn
+ * or refused them, the turn is ending or not yet running, it is a room's
+ * turn, a quiet session being compacted, or one somebody else asked for
+ * (whoever asked sets its approvals and its spend), the person's own
+ * earlier words are still waiting and these would jump ahead of them,
+ * or Bloks is finishing up to restart.
+ * Only for the person: another agent, a webhook, a watcher or a routine
+ * is a request of its own and waits for a turn of its own.
+ */
+async function steerLane(
+  bot: BotRecord,
+  lane: TaskRecord,
+  text: string,
+  options: { replyTo?: ReplyRef } = {},
+): Promise<Message | null> {
+  if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return null;
+  // Bloks compacting a quiet session is not a turn anybody is talking in
+  if (idleCompacting.has(lane.id)) return null;
+  if ((activeRoom.get(lane.id) ?? lane.id) !== lane.id || (laneRequester.get(lane.id) ?? "owner") !== "owner") return null;
+  const waiting = steerQueues.get(lane.id)?.items ?? [];
+  const yoursWaiting = waiting.some((item) => {
+    const m = item.messageId ? store.messagesFor(lane.id).find((msg) => msg.id === item.messageId) : undefined;
+    return m && !m.deleted && !m.agent && !m.via;
+  });
+  if (yoursWaiting) return null;
+  const adapter = laneInstance(bot, lane.id)?.adapter;
+  if (!adapter?.steerTurn) return null;
+  const took = await adapter.steerTurn(lane.id, text).catch(() => false);
+  if (!took) return null;
+  const message = store.appendMessage(lane.id, {
+    role: "user",
+    kind: "text",
+    text,
+    ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+  });
+  broadcast({ kind: "message", threadId: lane.id, message });
+  // what the turn says from here on is an answer to the person too
+  turnsForYou.add(lane.id);
+  return message;
+}
+
+/**
  * After a restart, a message still flagged queued is waiting again and
  * runs once its lane is free, as it would have before the restart. A lane
  * in `joining` is picking up a turn the restart cut off, and that turn
@@ -6531,7 +6647,15 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
 async function sendUserMessage(
   botId: string,
   text: string,
-  options: { taskId?: string; replyTo?: ReplyRef; from?: { botId: string; name: string }; yours?: boolean } = {},
+  options: {
+    taskId?: string;
+    replyTo?: ReplyRef;
+    from?: { botId: string; name: string };
+    yours?: boolean;
+    /** The person wrote this just now, so a running turn may take it
+     * (steerLane). Unset for words relayed on their behalf. */
+    steer?: boolean;
+  } = {},
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
@@ -6551,7 +6675,22 @@ async function sendUserMessage(
   const yours = Boolean(options.yours && !options.from);
   if (yours) withYou({ bot });
   if (laneWaits(lane)) {
+    if (yours && options.steer) {
+      const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo });
+      if (steered) {
+        return {
+          ok: true,
+          steered: true,
+          taskId: lane.id,
+          lane: lane.title,
+          note: `${bot.name} is in the middle of a turn and reads this after the step it is on.`,
+        };
+      }
+    }
     queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
+    // Asking the engine took a moment, and the turn may have ended in it,
+    // with nothing coming along after to take what now waits.
+    if (yours && options.steer) drainSteer(lane.id);
     // Said to the sender too: an agent that thought its "stop" landed would
     // carry on as if the other had stopped (GitHub 141).
     const waits = lane.busy
@@ -8274,7 +8413,7 @@ const server = createServer(async (req, res) => {
       };
       let result;
       try {
-        result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo), from, yours: !asAgent });
+        result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo), from, yours: !asAgent, steer: !asAgent });
       } catch (e) {
         noteSent("failed");
         throw e;
@@ -8691,7 +8830,7 @@ const server = createServer(async (req, res) => {
           enqueueRoomPost(room, text, { hops: 0, replyTo, byYou: true });
           triggersFired({ kind: "message", targetId: room.id, text, fromUser: true });
         } else {
-          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo, yours: true });
+          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo, yours: true, steer: true });
         }
         const message = store.patchMessage(threadId, messageId, { decisionChoice: choice });
         broadcast({ kind: "message.patch", threadId, message: message! });

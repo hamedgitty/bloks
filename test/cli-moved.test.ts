@@ -39,7 +39,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const resumed = args.includes("--resume");
   const sessionId = value(resumed ? "--resume" : "--session-id");
   const calls = existsSync(${JSON.stringify(callsFile)}) ? JSON.parse(readFileSync(${JSON.stringify(callsFile)}, "utf8")) : [];

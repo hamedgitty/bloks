@@ -52,7 +52,7 @@ process.stdin.on("data", (c) => (input += c));
 test("an empty result before the answer does not end the turn or the agent's credential", async (t) => {
   const home = workspace(
     header +
-      `process.stdin.on("end", async () => {
+      `((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const target = input.match(/SAY ([\\w-]+)/)?.[1];
   out({ type: "system", subtype: "init", session_id: "sess-134", model: "claude-sonnet-5" });
   // what the last session left behind, settled first
@@ -111,7 +111,7 @@ test("an empty result before the answer does not end the turn or the agent's cre
 test("a turn that was only the empty result still ends when the process does", async (t) => {
   const home = workspace(
     header +
-      `process.stdin.on("end", () => {
+      `((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   out({ type: "system", subtype: "init", session_id: "sess-quiet", model: "claude-sonnet-5" });
   out({ type: "result", subtype: "success", is_error: false, num_turns: 0, duration_api_ms: 0, total_cost_usd: 0, session_id: "sess-quiet", result: "" });
 });
@@ -137,7 +137,7 @@ test("a turn that was only the empty result still ends when the process does", a
 test("each turn is charged its own cost, not the session's running total, across a restart", async (t) => {
   const home = workspace(
     header +
-      `process.stdin.on("end", () => {
+      `((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const file = "__HOME__/turns.txt";
   const n = (existsSync(file) ? Number(readFileSync(file, "utf8")) : 0) + 1;
   writeFileSync(file, String(n));

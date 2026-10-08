@@ -259,7 +259,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const out = (frame) => console.log(JSON.stringify(frame));
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   // one agent writing to another, the way the CLI does
   const ping = input.match(/PING ([\\w-]+)/);
   if (ping) {

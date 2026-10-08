@@ -29,7 +29,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const text = JSON.parse(input.trim()).message.content;
   const sessionId = value("--resume") ?? value("--session-id");
   const out = (frame) => console.log(JSON.stringify(frame));

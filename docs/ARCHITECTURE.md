@@ -271,10 +271,31 @@ so a restart ends it, and calling it off lets everything held go at once.
 
 ## Queued messages
 
-Words said to a lane in the middle of a turn are written down at once,
-flagged `queued`, and wait in memory (`steerQueues` in `server/index.ts`)
-until the lane settles; everything waiting goes in one turn. They are
-not part of the conversation until then. The app shows them in a strip
+What the person says to a lane in the middle of a turn goes into that
+turn when its engine can take it (`steerLane` in `server/index.ts`),
+from the app, the phone or Telegram alike. Claude Code keeps the stdin
+it was given the prompt on open and reads another stream-json message
+after the step it is on; Codex takes it through `turn/steer`, naming the
+turn it is running. A driver says it can with `steerTurn` in
+`server/contracts.ts`. The message joins the conversation as the turn
+takes it, after what the agent has said so far, and nothing is
+interrupted; Stop is still how to do that. Claude's stdin is closed at
+the first `result`, since that is what lets the process end; words
+written just before it are answered by the same process in the same
+turn, which ends on the last result. When the turn cannot take them (the
+engine refused, its input is closed, the turn is a room's, someone
+else's, or a quiet session being compacted, or Bloks is draining for a
+restart), they wait as below. A Telegram follow-up goes into the turn
+its chat is waiting on, and one answer covers both; a turn that did not
+start from Telegram takes the words too, or they wait, and either way
+the answer goes back to the chat instead of a refusal.
+
+Everything else said to a lane in the middle of a turn (another agent,
+a webhook, a watcher, a routine, or the person on an engine that cannot
+take words mid-turn) is written down at once, flagged `queued`, and
+waits in memory (`steerQueues` in `server/index.ts`) until the lane
+settles; everything waiting goes in one turn. None of it is part of the
+conversation until then. The app shows it in a strip
 above the composer, where your own can be reworded, sent now or taken
 back, and when they go `deliverQueued` moves them to the end of the
 transcript (`Store.moveToEnd`, ids unchanged) with a `message.patch`

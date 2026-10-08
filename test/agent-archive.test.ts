@@ -39,7 +39,7 @@ if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process
 process.on("SIGTERM", () => process.exit(143));
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s-" + Math.random().toString(36).slice(2), model: "claude-sonnet-5" }));
   if (input.includes("WORK-SLOWLY")) await new Promise((r) => setTimeout(r, 60_000));
   const asked = input.match(/CALLS ([A-Za-z0-9+\\/=]+)/);

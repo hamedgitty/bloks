@@ -41,7 +41,7 @@ if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const resume = argv.includes("--resume") ? argv[argv.indexOf("--resume") + 1] : null;
   const session = resume ?? "sess-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ resume, input }) + "\\n");

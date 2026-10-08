@@ -48,7 +48,7 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const sessionId = value(args.includes("--resume") ? "--resume" : "--session-id");
   const text = JSON.parse(input.trim()).message.content;
   const calls = existsSync(${JSON.stringify(callsFile)}) ? JSON.parse(readFileSync(${JSON.stringify(callsFile)}, "utf8")) : [];
@@ -62,8 +62,12 @@ process.stdin.on("end", () => {
     out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 1, session_id: sessionId, result: "Answered " + n });
   };
   // A turn asked to hold stays open until the test opens the gate, the
-  // way a long piece of work keeps a real one busy.
+  // way a long piece of work keeps a real one busy. It first settles what
+  // an earlier session left running, with an empty result, which stops
+  // it taking more words (GitHub 213): what is said meanwhile queues, as
+  // it does for an engine that cannot take words mid-turn.
   if (!text.includes("HOLD")) return answer();
+  out({ type: "result", subtype: "success", is_error: false, num_turns: 0, duration_api_ms: 0, session_id: sessionId, result: "" });
   const wait = setInterval(() => {
     if (!existsSync(${JSON.stringify(gate)})) return;
     clearInterval(wait);

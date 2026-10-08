@@ -1366,7 +1366,7 @@ const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   // what the real CLI prints with nobody signed in
   console.log(JSON.stringify({ type: "assistant", error: "authentication_failed", message: { model: "<synthetic>", content: [{ type: "text", text: "Not logged in · Please run /login" }] } }));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "Not logged in · Please run /login" }));
@@ -1476,7 +1476,7 @@ const note = (line) => appendFileSync(${JSON.stringify(log)}, JSON.stringify(lin
 const cfg = JSON.parse(argv[argv.indexOf("--mcp-config") + 1]);
 const socketPath = cfg.mcpServers.bloks.args.at(-1);
 process.stdin.resume();
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const sock = connect(socketPath);
   let buf = "";
   const waiters = new Map();
@@ -1534,7 +1534,7 @@ if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 appendFileSync(${JSON.stringify(seen)}, JSON.stringify(args) + "\\n");
 process.stdin.resume();
-process.stdin.on("end", () => console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false })));
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false })));
 `,
       { mode: 0o755 },
     );
@@ -1588,7 +1588,7 @@ const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const url = process.env.BLOKS_URL;
   const headers = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
   const call = (method, path, body) => fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
@@ -4962,7 +4962,7 @@ const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   const renamed = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(cli)}, "rename", "Q3", "numbers"], { encoding: "utf8" }));
   const headers = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
   const call = (method, path, body) => fetch(process.env.BLOKS_URL + path, { method, headers, body: body && JSON.stringify(body) });
@@ -5849,7 +5849,7 @@ const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
-process.stdin.on("end", async () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
   writeFileSync(${JSON.stringify(tokenFile)}, process.env.BLOKS_TOKEN ?? "");
   for (let i = 0; i < 1200 && !existsSync(${JSON.stringify(release)}); i++) await new Promise((r) => setTimeout(r, 50));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));

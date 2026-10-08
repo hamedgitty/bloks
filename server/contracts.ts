@@ -257,6 +257,17 @@ export interface ProviderAdapter {
     replaysNatively?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
+  /**
+   * More words from the person for the turn running on this thread, read
+   * by the engine after the step it is on, without interrupting it.
+   * True once the running turn has them; false when it cannot take them
+   * (no turn running, the turn is ending, the engine refused), and the
+   * harness then keeps them for the next turn instead. A driver must
+   * never answer false for words the engine may still act on, or they
+   * would be said twice. Optional: an engine that cannot take input
+   * mid-turn leaves it out and everything waits for the next turn.
+   */
+  steerTurn?(threadId: ThreadId, text: string): Promise<boolean>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
   respondToRequest(
     threadId: ThreadId,

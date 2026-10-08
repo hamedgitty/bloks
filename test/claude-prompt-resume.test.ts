@@ -51,7 +51,7 @@ const read = (file, otherwise) => existsSync(file) ? JSON.parse(readFileSync(fil
 const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
+((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
   const sessions = read(${JSON.stringify(sessionsFile)}, {});
   const sessionId = value(args.includes("--resume") ? "--resume" : "--session-id");
   const personaFile = value("--append-system-prompt-file");
