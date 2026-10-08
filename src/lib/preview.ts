@@ -10,6 +10,22 @@
 // conversation reads the same on both.
 import type { Message } from "@/state/reducer";
 
+/** The newest message that is in the conversation, for the row's line
+ * and time. One still waiting to reach the agent, or one that never
+ * went, is not what was last said. Nor is a compaction marker: it is
+ * housekeeping, never news, and an idle compaction always leaves one as
+ * the newest message, which would hide the reply the row's dot is about.
+ * The server reads a lane's time past it the same way. */
+export function lastSaid<M extends { queued?: boolean; unsent?: boolean; compaction?: unknown }>(
+  messages: readonly M[],
+): M | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m.queued && !m.unsent && !m.compaction) return m;
+  }
+  return undefined;
+}
+
 /** Bubbles render markdown; the preview line is plain text, so strip the
  * markers rather than showing raw ** and ` to the user. */
 export function plainText(text: string): string {

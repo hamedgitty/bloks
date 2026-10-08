@@ -31,7 +31,7 @@ import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/pageVisible";
-import { previewLine } from "@/lib/preview";
+import { lastSaid, previewLine } from "@/lib/preview";
 import {
   acceptsRow,
   landingOver,
@@ -77,13 +77,6 @@ function preview(bot: Bot): string {
   // not a fresh agent, which is what the shared wording would say
   if (!bot.messages.length && (bot.tasks?.length ?? 0) > 1) return "New conversation";
   return previewLine(lastSaid(bot.messages));
-}
-
-/** The newest message that is in the conversation. One still waiting to
- * reach the agent, or one that never went, is not what was last said. */
-function lastSaid<M extends { queued?: boolean; unsent?: boolean }>(messages: readonly M[]): M | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].queued && !messages[i].unsent) return messages[i];
-  return undefined;
 }
 
 interface MenuState {

@@ -7,7 +7,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { describeComponent, plainText, previewLine } from "../src/lib/preview.ts";
+import { describeComponent, lastSaid, plainText, previewLine } from "../src/lib/preview.ts";
 import type { Message } from "../src/state/reducer.ts";
 
 const msg = (over: Partial<Message>): Message =>
@@ -98,4 +98,19 @@ describe("a message taken back", () => {
 
 test("markdown markers are stripped, not the words", () => {
   assert.equal(plainText("# Heading\n- one\n- two"), "Heading one two");
+});
+
+describe("the row's last message (#206)", () => {
+  test("a compaction marker is not what the agent last said", () => {
+    const reply = msg({ id: "r", text: "Booked the 9:40 ferry.", at: 1 });
+    const marker = msg({ id: "c", kind: "notice", text: "Compacted while idle", at: 2, compaction: { before: 222_000, after: 10_000, idle: true } });
+    assert.equal(lastSaid([reply, marker])?.id, "r");
+  });
+
+  test("nor is a message still waiting to reach the agent", () => {
+    const reply = msg({ id: "r", text: "Done.", at: 1 });
+    const waiting = msg({ id: "q", role: "user", text: "and then?", at: 2, queued: true });
+    assert.equal(lastSaid([reply, waiting])?.id, "r");
+    assert.equal(lastSaid([waiting]), undefined);
+  });
 });
