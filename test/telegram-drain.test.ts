@@ -6,7 +6,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
 import { startHarness } from "./helpers/server.ts";
 import { agentOn, idle, messagesOf, PICKUP, waitFor } from "./helpers/turns.ts";
@@ -15,7 +14,9 @@ import type { Message, Store } from "../server/store.ts";
 
 const CHAT = 10101;
 const OTHER_CHAT = 20202;
-const preload = fileURLToPath(new URL("./helpers/telegram-fetch.mjs", import.meta.url));
+// A URL, not a path: NODE_OPTIONS splits on spaces, and a checkout under
+// a folder with a space in its name would hand node half a path.
+const preload = new URL("./helpers/telegram-fetch.mjs", import.meta.url).href;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const saved = (text: string) => text.startsWith("Your message is saved.");
 

@@ -650,7 +650,7 @@ describe("files and speech over the wire", () => {
     assert.equal(await transcribe({ speech: { elevenlabsKey: "el-test" } }, OGG, "voice.ogg", "audio/ogg"), "hello there");
     assert.equal(sent[0].url, "https://api.openai.com/v1/audio/transcriptions");
     assert.equal(sent[0].form.get("model"), "gpt-transcribe");
-    assert.deepEqual([...sent[0].form.keys()].sort(), ["file", "model"]);
+    assert.deepEqual([...(sent[0].form as unknown as Iterable<[string, unknown]>)].map(([key]) => key).sort(), ["file", "model"]);
     const file = sent[0].form.get("file") as File;
     assert.equal(file.name, "voice.ogg");
     assert.equal(file.type, "audio/ogg");
