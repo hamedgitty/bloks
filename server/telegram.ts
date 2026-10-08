@@ -291,10 +291,11 @@ async function sendOne(token: string, body: Record<string, unknown>): Promise<vo
  * one before it, so they arrive in order, and a failure stops the rest
  * rather than leaving a gap nobody can see.
  */
-export async function send(token: string, chatId: number, text: string, markdown = false): Promise<void> {
+export async function send(token: string, chatId: number, text: string, markdown = false, accepted?: () => void): Promise<void> {
   for (const chunk of messages(text, markdown)) {
     if (chunk.html === undefined) {
       await sendOne(token, { chat_id: chatId, text: chunk.plain });
+      accepted?.();
       continue;
     }
     try {
@@ -303,6 +304,7 @@ export async function send(token: string, chatId: number, text: string, markdown
       if (!(error instanceof TelegramError) || error.status !== 400) throw error;
       await sendOne(token, { chat_id: chatId, text: chunk.plain });
     }
+    accepted?.();
   }
 }
 

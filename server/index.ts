@@ -148,6 +148,7 @@ import { draftPrompt, parseDraft } from "./draft.ts";
 import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
+import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
 import { agentCommands } from "./agent-commands.ts";
 import * as discord from "./discord.ts";
@@ -1240,6 +1241,7 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
     // the engine hears who wrote it, and the answer goes back to them.
     const from = asked.agent?.dir === "in" ? { botId: asked.agent.peerId, name: asked.agent.peerName } : undefined;
     void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from }).catch((e) => {
+      telegramReturns.finish(laneId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       const failed = store.appendMessage(laneId, {
         role: "bot",
         kind: "notice",
@@ -1990,12 +1992,14 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       // A turn an engine rebuild cut off is picked up on the new engine.
       const rebuilt = event.stopReason === ENGINE_RELOADED && settleRebuiltLane(event.threadId);
+      let pickingUp = Boolean(rebuilt);
       // A turn the Mac slept through, which failed because of it, is
       // picked up once when it wakes rather than left dead.
       const slept = sleptLanes.get(event.threadId);
       if (slept) {
         sleptLanes.delete(event.threadId);
         if (event.ok === false && slept.woke && Date.now() - slept.woke < 30 * 60_000) {
+          pickingUp = true;
           carryOn(
             {
               ...slept,
@@ -2079,6 +2083,7 @@ bus.subscribe((event: RuntimeEvent) => {
         if (said) stalledSince.set(event.threadId, said);
       }
       const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
+      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
       }
@@ -2391,12 +2396,15 @@ function carryOn(
     void startTurn(turn.botId, text, {
       presetMessage: true,
       carriedOn: true,
+      telegramMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
       ...carryOnTarget(turn),
       byYou: Boolean(turn.byYou) || yours,
     })
       // under the notice, where the pickup took them
       .then(() => deliverQueued(turn.laneId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : []))))
       .catch((e) => {
+        telegramReturns.finish(turn.laneId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`,
+          alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []));
         // what waited is still waiting, ahead of anything said since
         if (waiting) {
           const since = steerQueues.get(turn.laneId)?.items ?? [];
@@ -2460,7 +2468,11 @@ function recoverCutOff(now = Date.now()) {
       picked.push(turn);
     }
   }
-  recoverQueued(now, new Set(picked.map((turn) => turn.laneId)));
+  const pickingUp = new Set(picked.map((turn) => turn.laneId));
+  // Only these turns actually continue. A cut-off record left waiting
+  // for Continue must not lend its Telegram return to a later app turn.
+  telegramReturns.recover((laneId) => pickingUp.has(laneId));
+  recoverQueued(now, pickingUp);
   for (const turn of picked) carryOn(turn, "restart");
   // room lines that were waiting, for an agent mid-turn or for a drain,
   // go once the agent is free (after its pickup, when it has one)
@@ -2478,7 +2490,7 @@ function drainStatus() {
     startedAt,
     ...(tool ? { tool } : {}),
   }));
-  const busy = idleCompacting.size > 0 || store.bots.some((b) => b.tasks.some((t) => t.busy));
+  const busy = telegramReturns.busy || idleCompacting.size > 0 || store.bots.some((b) => b.tasks.some((t) => t.busy));
   return drain.status(running, busy);
 }
 
@@ -2750,6 +2762,8 @@ async function startTurn(
     /** The user message is already in the transcript (a drained queue);
      * do not append it again. */
     presetMessage?: boolean;
+    /** Telegram requests held by a drain, consumed by this turn only. */
+    telegramMessages?: string[];
     /** Who asked, in a shared room: "owner" or a person id. Decides who
      * approvals go to (always the owner for a member's turn). */
     requester?: string;
@@ -3120,6 +3134,7 @@ async function startTurn(
     ...(opts.carriedOn ? { carriedOn: true } : {}),
   });
   if (replaced?.waiting) retireCarryOn(replaced);
+  telegramReturns.bind(task.id, opts.telegramMessages, Boolean(opts.carriedOn || opts.fallback || opts.retry));
   notesThisTurn.delete(task.id);
   store.markLane(bot.id, task.id, false);
   artifactBaseline.set(task.id, artifacts.snapshot(bot.id));
@@ -3260,6 +3275,7 @@ async function startTurn(
             text: missingFolderMessage(project, gone),
           });
           broadcast({ kind: "message", threadId: roomId, message: notice });
+          telegramReturns.finish(task.id);
           store.setTaskBusy(task.id, false);
           turnStarted.delete(task.id);
           cutOff.end(task.id);
@@ -3480,6 +3496,7 @@ async function startTurn(
       laneRequester.delete(task.id);
       if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
       store.setTaskBusy(task.id, false);
+      telegramReturns.finish(task.id, `Could not answer: ${message}`);
       turnStarted.delete(task.id);
       cutOff.end(task.id);
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -5726,6 +5743,15 @@ let telegramRunning = false;
 /** Agents currently answering a phone, so a card they raise can follow
  * the conversation there instead of waiting on a screen nobody is at. */
 const telegramLive = new Map<string, number>();
+const telegramReturns = new TelegramReturns(
+  store,
+  () => cfg.telegram ?? {},
+  (threadId, message) => broadcast({ kind: "message.patch", threadId, message }),
+  (threadId, text) => {
+    const message = store.appendMessage(threadId, { role: "bot", kind: "notice", text });
+    broadcast({ kind: "message", threadId, message });
+  },
+);
 /** Cards forwarded to a chat and not yet answered, by chat. */
 const telegramAsks = new Map<
   number,
@@ -5799,6 +5825,16 @@ const telegramInbox = new telegram.Inbox({
       // being answered, and that one reply covers it, rather than waiting
       // for the answer to come back before it is even read (GitHub 213).
       const lane = bot?.tasks.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
+      // A drain request recovered its own return address. A follow-up
+      // joins that answer when steered, or gets one for its queued turn.
+      // Neither path starts the normal busy wait and sends a second copy.
+      if (bot && lane?.busy && telegramReturns.answering(lane.id, chatId)) {
+        if (!(await steerLane(bot, lane, text).catch(() => null))) {
+          queueOnLane(bot.id, lane.id, text, { telegramReply: queuedTelegramReply(chatId) });
+          drainSteer(lane.id);
+        }
+        return;
+      }
       if (bot && lane && telegramTurns.has(chatId) && (await steerLane(bot, lane, text).catch(() => null))) return;
       const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
         if (!bot) return telegramSay(chatId, "There is no agent here to answer yet, so that did not reach anyone.");
@@ -5856,11 +5892,11 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   // only chats the person allowed get this far: this is them, on a phone
   withYou({ bot });
   // Bloks is finishing up to restart. The words wait in the lane like any
-  // queued message, and the answer lands there, not on the phone.
+  // queued message, with the chat that asked saved as its return address.
   if (drain.on) {
     telegramLive.delete(botId);
-    queueOnLane(botId, laneId, text);
-    return "Bloks is restarting in a moment. Your message is saved, and the answer will be in the app once it is back.";
+    queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId) });
+    return "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.";
   }
   // The phone shows "typing" for as long as the turn runs, the way the
   // app shows "working…", except while a card forwarded to this chat
@@ -6535,13 +6571,14 @@ function queueOnLane(
   botId: string,
   laneId: string,
   text: string,
-  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher" } = {},
+  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; telegramReply?: TelegramReply } = {},
 ) {
   const message = store.appendMessage(laneId, {
     role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
+    ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
   });
   broadcast({ kind: "message", threadId: laneId, message });
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
@@ -6767,7 +6804,9 @@ function drainSteer(threadId: string) {
   // it resumes, so it answers whoever that one did.
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
   const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou }).catch((e) => {
+  const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages }).catch((e) => {
+    telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
       kind: "notice",
@@ -6988,7 +7027,10 @@ function settleRebuiltLane(laneId: string): boolean {
   // and not picked up a second time when the Mac wakes
   sleptLanes.delete(laneId);
   const { turn } = rebuilt;
-  if (!turn || turn.stopped || turn.workflow || turn.waiting) return true;
+  if (!turn || turn.stopped || turn.workflow || turn.waiting) {
+    telegramReturns.finish(laneId);
+    return true;
+  }
   if (!registry.get(rebuilt.instanceId)) {
     const threadId = turn.roomId ?? turn.laneId;
     const notice = store.appendMessage(threadId, {
@@ -6998,6 +7040,7 @@ function settleRebuiltLane(laneId: string): boolean {
       text: engineGoneNotice(store.bot(turn.botId)?.name ?? "The agent"),
     });
     broadcast({ kind: "message", threadId, message: notice });
+    telegramReturns.finish(laneId);
     return true;
   }
   // after the ended turn has settled, so the lane is free again

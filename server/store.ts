@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "
 import { join } from "node:path";
 
 import type { ChangesSummary } from "./checkpoints.ts";
+import type { TelegramReply } from "./telegram-returns.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
@@ -160,6 +161,9 @@ export interface Message {
   /** When it was queued. Written since 2.5.19; a queued message without
    * it predates recovery after a restart and is never run by it. */
   queuedAt?: number;
+  /** Server-only return address for a Telegram request queued during
+   * drain. Preserved on edits, never accepted from a client body. */
+  telegramReply?: TelegramReply;
   /** When a queued message stopped waiting and went to the turn that
    * answers it, which is also its `at` from then on, since that is when
    * it entered the conversation. With `queuedAt` it says how long it waited. Absent on a
@@ -578,6 +582,20 @@ export class Store {
     list.push(...moved);
     writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
     return moved;
+  }
+
+  /** Several request markers change together, without moving their
+   * transcript positions. A crash cannot leave half a burst claimed. */
+  patchMessages(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>): Message[] {
+    const ids = new Set(messageIds);
+    const changed: Message[] = [];
+    const list = this.messagesFor(threadId);
+    for (let i = 0; i < list.length; i++) if (ids.has(list[i].id)) {
+      list[i] = { ...list[i], ...patch(list[i]) };
+      changed.push(list[i]);
+    }
+    if (changed.length) writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+    return changed;
   }
 
   bot(id: string) {
