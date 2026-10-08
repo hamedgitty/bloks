@@ -183,9 +183,10 @@ in 20m", "resets 3pm", or a default per reason, capped at twelve hours).
 The engine rests in a per-instance table in memory, so every agent on it
 skips it until then. An agent with a `backupSelection` has its failed
 solo turn started again on the backup, once, with `fallback: true`; the
-engine switch replays the transcript as any switch does. The raw error
-is held back while a backup takes over and shown if none does. Room
-turns do not retry, but the rest applies to their next turn.
+engine switch hands over the bounded story as any switch does (see
+Compactions). The raw error is held back while a backup takes over and
+shown if none does. Room turns do not retry, but the rest applies to
+their next turn.
 
 ## Compactions
 
@@ -201,6 +202,50 @@ again (`idleCompactionDue` in `server/context.ts`). It runs as the lane's
 turn, so anything said meanwhile queues, but nothing else a turn does
 happens: no message in the person's name, no unread, no other agent or
 room. Two run at a time, and a lane whose window has passed is skipped.
+
+How full a lane is comes from the engine, not from the turn's token
+total: `context.reading` events carry the latest request's size and the
+window, which Claude Code gives per message (`promptSize`) and in its
+result (`modelUsage[model].contextWindow`), Codex in
+`thread/tokenUsage/updated` (`last.inputTokens` against
+`modelContextWindow`), and an ACP agent in `usage_update` (`used`,
+`size`). The lane keeps the latest as `reading`, with the engine and model
+that made it (`store.noteReading`), and `laneFill` uses it only while the
+agent is on that engine and model, with the table in `server/context.ts`
+as the fallback window. The Usage tokens, the turn's own spend, are kept
+apart and counted as before. A turn that answered with no tokens reported
+(Pi does not report any) counts as unmeasured, and Activity says "not
+reported" rather than showing zero.
+
+A native session sends its whole context again on every tool call, so a
+long one turns one tool-heavy message into millions of input tokens
+(GitHub 222, 223). Before a turn resumes a session whose reading is over
+the line (the lower of 60% of the window and a ceiling, 200k by default,
+set in Settings as "Compact before a long turn" or off), the session is
+compacted first (`compactBeforeTurn`). Claude Code is sent `/compact`
+into the resumed session from `server/index.ts` with the turn's own tools
+and system prompt, through the idle compaction's books (`compactThenSend`),
+and the turn goes on once it ends; a person who stops the turn meanwhile
+stops both. Codex is asked in the same process with
+`thread/compact/start`, and an ACP agent with its own `/compact` when it
+lists that command. When the engine cannot (an older app-server, an agent
+without the command, a compaction that fails), the driver opens a new
+session and sends the turn's `handoff` instead; an engine with no way to
+compact at all gets a new session from the start. This applies to direct
+and room lanes alike. A compaction that did not bring a lane under the
+line is not asked for again until it has grown a tenth past where that
+one started. A turn already running is never interrupted to compact; it
+is checked again before the next one.
+
+Whenever a new session starts on an existing conversation (an engine
+switch, a backup taking over, a rewind, a cursor that no longer resumes,
+or a replacement after a compaction it could not do), the story it is
+told is bounded (`boundHandoff`): the running summary, then recent
+messages whole while they fit, each clipped to a quarter of the budget,
+which is 15% of the window and never more than 16k tokens. When that
+leaves messages out and the agent's engine can summarise, the older part
+is folded into the summary first; otherwise the message says how many
+were left out. The thread itself keeps every message.
 
 The same cache is why a resumed Claude Code session keeps its system
 prompt byte for byte (`server/standing-prompt.ts`). The agent's

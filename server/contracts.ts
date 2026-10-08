@@ -139,6 +139,16 @@ export type RuntimeEvent = RuntimeEventBase &
         cacheTtl?: "5m" | "1h";
       }
     | {
+        /** How full the session is, in the engine's own numbers: the
+         * size of the latest request, and the window it is measured
+         * against. Either may be missing, and a missing one leaves the
+         * last known value as it was. Kept apart from the token counts
+         * above, which are what a turn spent, not how full it is. */
+        type: "context.reading";
+        used: number | null;
+        window: number | null;
+      }
+    | {
         /** The engine summarised its own session. Token counts are what
          * the engine reported, either of which may be missing. */
         type: "context.compacted";
@@ -234,6 +244,21 @@ export interface SendTurnInput {
    * ignores it, which is the honest outcome rather than a missing
    * feature. */
   env?: Record<string, string>;
+  /**
+   * The whole message to send instead of `text` when the session behind
+   * `resumeCursor` turns out to be gone and the driver opens a new one:
+   * the bounded story so far, then the words. Without it, a session the
+   * engine has forgotten costs the agent everything said before.
+   */
+  handoff?: string;
+  /**
+   * The resumed session has grown past the lane's line (compactBeforeTurn
+   * in server/context.ts). A driver that says it can (`compactsFirst`)
+   * compacts it by the engine's own means before the words go, and
+   * reports `context.compacted`; if the engine cannot, it opens a new
+   * session and sends `handoff` instead. Never set on a fresh session.
+   */
+  compactFirst?: boolean;
 }
 
 export interface TurnStartResult {
@@ -255,6 +280,8 @@ export interface ProviderAdapter {
      * turn (API engines); false for session-cursor engines, which need
      * the harness to replay history after an engine switch. */
     replaysNatively?: boolean;
+    /** Takes `compactFirst` on a turn (see SendTurnInput). */
+    compactsFirst?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   /**

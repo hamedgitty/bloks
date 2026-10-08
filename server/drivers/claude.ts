@@ -196,6 +196,23 @@ export function promptSize(usage: any): number {
   return (count(usage?.input_tokens) ?? 0) + (count(usage?.cache_read_input_tokens) ?? 0) + (count(usage?.cache_creation_input_tokens) ?? 0);
 }
 
+/**
+ * The window of the model a turn ran on, from a result's `modelUsage`,
+ * which Claude Code keys by model. A turn can use more than one (a
+ * smaller model for side work), so the turn's own is looked for by the
+ * name it was asked for and the name its session reported, and taken
+ * alone only when there is no other. Null when it said nothing usable.
+ */
+export function contextWindowOf(frame: any, ...names: Array<string | null | undefined>): number | null {
+  const usage = frame?.modelUsage;
+  if (!usage || typeof usage !== "object") return null;
+  const entries = Object.entries(usage as Record<string, any>);
+  const named = names.filter((n): n is string => typeof n === "string" && n.length > 0);
+  const own = entries.find(([id]) => named.includes(id)) ?? (entries.length === 1 ? entries[0] : undefined);
+  const window = count(own?.[1]?.contextWindow);
+  return window && window > 0 ? window : null;
+}
+
 /** Which cache lifetime a request wrote with, when it wrote at all. The
  * CLI decides this, not Bloks, so it is read off what it reports. */
 export function cacheTtlOf(usage: any): "5m" | "1h" | undefined {
@@ -517,6 +534,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let exited = false;
       // the session this process reports for, from its init frame
       let sessionId: string | null = resume;
+      // the model the session says it runs, which names its window
+      let sessionModel: string | null = null;
       // A result that did nothing (see `case "result"`), held until the
       // real one arrives or the process ends without one. After a steer,
       // a real one is held too, since another may follow it.
@@ -574,6 +593,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             output: count(frame.usage.output_tokens) ?? 0,
           });
         }
+        // The window is in the result, not in each message: the table's
+        // guess for a model is wrong as soon as the CLI serves it with a
+        // bigger one (GitHub 224).
+        const window = contextWindowOf(frame, turn.model, sessionModel);
+        if (window) emit({ ...envelope(threadId, turnId), type: "context.reading", used: null, window });
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
         if (stopping) {
@@ -616,6 +640,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           case "system":
             if (frame.subtype === "init") {
               if (typeof frame.session_id === "string") sessionId = frame.session_id;
+              if (typeof frame.model === "string") sessionModel = frame.model;
               emit({
                 ...envelope(threadId, turnId),
                 type: "session.started",

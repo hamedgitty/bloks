@@ -120,6 +120,51 @@ function IdleCompaction() {
   );
 }
 
+const BEFORE_TURN_CEILINGS = [
+  { value: "0", label: "Never" },
+  { value: "100000", label: "100k" },
+  { value: "200000", label: "200k" },
+  { value: "400000", label: "400k" },
+] as const;
+
+/**
+ * How big a Claude Code, Codex or Pi conversation may get before its
+ * next message compacts it first (GitHub 222, 223). On by default, unlike
+ * the two above: every tool call of a turn sends the whole conversation
+ * again, so a long one can spend a five-hour limit in minutes, and that
+ * costs far more than the detail a compaction drops.
+ */
+function BeforeTurnCompaction() {
+  const { state, dispatch } = useStore();
+  const ceiling = String(state.config?.compaction?.beforeTurn ?? 200_000);
+  const [saving, setSaving] = useState(false);
+
+  const set = (next: string) => {
+    setSaving(true);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ compaction: { beforeTurn: Number(next) } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingRow
+      label="Compact before a long turn"
+      info="Claude Code, Codex and Pi keep a conversation in a session of their own, and every tool call in a turn sends that whole session to the model again. A turn with twenty tool calls on a long conversation can use millions of tokens. With this set, a session that has grown past this size, or past 60% of what the model will take, is compacted before your next message goes, by the engine's own compaction where it has one, or by starting a new session that is told a summary and the recent messages. A line in the chat says where it happened."
+      description="Compact a long Claude Code, Codex or Pi conversation before the next message, from this size."
+    >
+      <div className="mt-3">
+        <Segmented
+          aria-label="Compact before a long turn"
+          value={BEFORE_TURN_CEILINGS.some((o) => o.value === ceiling) ? ceiling : "200000"}
+          onChange={(next) => !saving && set(next)}
+          options={BEFORE_TURN_CEILINGS.map((o) => ({ value: o.value, label: o.label }))}
+        />
+      </div>
+    </SettingRow>
+  );
+}
+
 const SILENT_CALL_LIMITS = [
   { value: "5", label: "5 min" },
   { value: "15", label: "15 min" },
@@ -560,7 +605,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache skills suggest",
+        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest",
       },
       {
         id: "about-you",
@@ -701,6 +746,7 @@ function GeneralPage() {
         <ProposeSkills />
         <Compaction />
         <IdleCompaction />
+        <BeforeTurnCompaction />
         <SilentCallLimit />
       </SettingsGroup>
     </>

@@ -41,6 +41,9 @@ export interface Spend {
   input: number;
   output: number;
   cost: number;
+  /** Turns whose engine said nothing about tokens, so a zero above is
+   * "not reported" rather than "nothing used". */
+  unmeasured?: number;
 }
 
 const noSpend = (): Spend => ({ turns: 0, input: 0, output: 0, cost: 0 });
@@ -358,7 +361,13 @@ export function assemble(input: AssembleInput): Activity {
         running: 0,
         waiting: 0,
         today: today
-          ? { turns: today.turns, input: today.input, output: today.output, cost: today.cost }
+          ? {
+              turns: today.turns,
+              input: today.input,
+              output: today.output,
+              cost: today.cost,
+              ...(today.unmeasured ? { unmeasured: today.unmeasured } : {}),
+            }
           : noSpend(),
       };
       seen.set(botId, row);
@@ -382,6 +391,7 @@ export function assemble(input: AssembleInput): Activity {
     today.input += s.input;
     today.output += s.output;
     today.cost += s.cost;
+    if (s.unmeasured) today.unmeasured = (today.unmeasured ?? 0) + s.unmeasured;
   }
 
   const agents = [...seen.values()].sort(

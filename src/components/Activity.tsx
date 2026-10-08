@@ -33,6 +33,8 @@ export interface Spend {
   input: number;
   output: number;
   cost: number;
+  /** Turns whose engine reported no tokens. */
+  unmeasured?: number;
 }
 
 interface Running {
@@ -104,6 +106,19 @@ function tokens(n: number): string {
   if (n < 10_000) return n.toLocaleString();
   if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+/**
+ * The tokens a day's spend shows. An engine that reports none (Pi, for
+ * one) would read as "0 tokens", which says nothing was used; this says
+ * the engine did not tell us, and how many turns that covers.
+ */
+function spentTokens(spend: Spend): string {
+  const used = spend.input + spend.output;
+  const unmeasured = spend.unmeasured ?? 0;
+  if (!unmeasured) return `${tokens(used)} tokens`;
+  const turns = `${unmeasured} ${unmeasured === 1 ? "turn" : "turns"}`;
+  return used > 0 ? `${tokens(used)} tokens, not reported for ${turns}` : `tokens not reported for ${turns}`;
 }
 
 function money(n: number): string {
@@ -239,9 +254,13 @@ export function ActivityPanel() {
             <span>
               <span className="text-foreground">{activity.today.turns}</span> turns today
             </span>
-            <span>
-              <span className="text-foreground">{tokens(activity.today.input + activity.today.output)}</span> tokens
-            </span>
+            {activity.today.unmeasured ? (
+              <span>{spentTokens(activity.today)}</span>
+            ) : (
+              <span>
+                <span className="text-foreground">{tokens(activity.today.input + activity.today.output)}</span> tokens
+              </span>
+            )}
             {/* A zero here would read as "this was free" rather than as
                 "nobody told us", which is the difference between a number
                 and a guess. */}
@@ -410,7 +429,7 @@ export function ActivityPanel() {
                       <div className="text-[13px] text-foreground">{row.botName}</div>
                       <div className="mt-0.5 text-[11.5px] text-muted-foreground">
                         {row.today.turns} {row.today.turns === 1 ? "turn" : "turns"} ·{" "}
-                        {tokens(row.today.input + row.today.output)} tokens
+                        {spentTokens(row.today)}
                         {activity.costKnown && row.today.cost > 0 ? ` · ${money(row.today.cost)}` : ""}
                       </div>
                     </div>

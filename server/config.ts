@@ -142,8 +142,11 @@ export interface AppConfig {
    * trades: absorbing every turn rewrites history every turn, which
    * breaks the provider's prompt cache prefix every turn. `idle` asks a
    * quiet Claude Code conversation to compact before its cache expires;
-   * see the note in server/context.ts. */
-  compaction?: { micro?: boolean; idle?: boolean };
+   * see the note in server/context.ts. `beforeTurn` is the most tokens a
+   * native session may carry into a new turn before it is compacted
+   * first, 0 for never and unset for the default; `beforeTurnAt` is the
+   * share of the window that also counts as too full (GitHub 222, 223). */
+  compaction?: { micro?: boolean; idle?: boolean; beforeTurn?: number; beforeTurnAt?: number };
   /** Whether a finished session is read back for something worth keeping.
    * Off unless asked for: it spends the person's own tokens on work they
    * did not request. What it finds is always staged, never installed. */

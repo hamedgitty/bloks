@@ -46,7 +46,7 @@ import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { ModelSelection, RuntimeEvent, SendTurnInput } from "./contracts.ts";
+import type { ModelSelection, ProviderInstance, RuntimeEvent, SendTurnInput } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -130,7 +130,6 @@ import {
   idleCompactionDue,
   isContextError,
   planCompaction,
-  pressure,
   absorbPrompt,
   assembleTranscript,
   defragPrompt,
@@ -138,6 +137,14 @@ import {
   planMicro,
   shouldCompact,
   summaryPrompt,
+  BEFORE_TURN_CEILING,
+  boundHandoff,
+  compactBeforeTurn,
+  handoffBudget,
+  knownLimitFor,
+  laneFill,
+  readingFor,
+  type Reading,
   type Turn,
 } from "./context.ts";
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
@@ -1051,11 +1058,11 @@ function clientBot(bot: BotRecord | null) {
         : task.busy
           ? "working"
           : "idle";
-      // How full this lane is. The last turn's input tokens are the
-      // closest thing a provider tells us, and the limit is what the
-      // model will take: see server/context.ts.
-      const limit = contextLimitFor(bot.modelSelection?.model);
-      const fill = pressure(task.lastInput ?? 0, limit);
+      // How full this lane is: the engine's own reading of its latest
+      // request against the window it reported, where the engine the
+      // agent is on now made one, and the table's limit otherwise. See
+      // server/context.ts.
+      const fill = laneFill(task.reading, task.lastInput, bot.modelSelection);
       const said = store.messagesFor(task.id);
       // a compaction marker is not something happening in the lane
       let last = said.length - 1;
@@ -1073,6 +1080,9 @@ function clientBot(bot: BotRecord | null) {
           used: fill.used,
           limit: fill.limit,
           fraction: fill.fraction,
+          // "engine" when the window is the engine's own word, "table"
+          // when it is the guess by model name
+          window: fill.window,
           summarised: Boolean(task.context),
         },
       };
@@ -1924,15 +1934,26 @@ bus.subscribe((event: RuntimeEvent) => {
       high.output = Math.max(high.output, event.output);
       turnTokens.set(event.threadId, high);
       noteRequest(event);
+      if (typeof event.context === "number") noteLaneReading(event, { used: event.context, window: null });
+      break;
+    }
+    case "context.reading": {
+      noteLaneReading(event, event);
       break;
     }
     case "context.compacted": {
       lastRequest.delete(event.threadId);
+      // An engine compacting on our asking may not say what it started
+      // from; the lane's own reading does, when it is that engine's.
+      const was = store.taskByThread(event.threadId)?.task.reading;
+      const by = readingBy(event.threadId, event.providerInstanceId ?? event.provider);
+      const before = event.before ?? (was ? readingFor(was, by)?.used ?? null : null);
+      noteCompacted(event);
       pushMessage({
         role: "bot",
         kind: "notice",
-        text: compactedNotice(event),
-        compaction: { before: event.before, after: event.after },
+        text: compactedNotice({ ...event, before }),
+        compaction: { before, after: event.after },
       });
       break;
     }
@@ -1990,7 +2011,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "turn.completed": {
-      usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null);
+      usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null, undefined, event.ok !== false);
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
       // only solo lanes tally; a room's spend belongs to no one lane.
@@ -2162,7 +2183,9 @@ bus.subscribe((event: RuntimeEvent) => {
       retriedForContext.delete(event.threadId);
       // If this lane is filling up, fold its older half now rather than
       // on the way into the next turn, so nobody waits on a summary.
-      if (shouldCompact(store.taskByThread(event.threadId)?.task.lastInput ?? 0, contextLimitFor(bot.modelSelection.model))) {
+      const settledLane = store.taskByThread(event.threadId)?.task;
+      const fill = laneFill(settledLane?.reading, settledLane?.lastInput, bot.modelSelection);
+      if (shouldCompact(fill.used, fill.limit)) {
         void foldContext(bot.id, event.threadId).catch(() => {});
       } else {
         // Otherwise absorb one message into the running summary, if this
@@ -3341,7 +3364,54 @@ async function startTurn(
       let turnText = opts.replyTo
         ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
         : text;
-      if (engineFresh && !nativeReplay) turnText = freshTurnText(transcript, turnText);
+
+      // The story a new session is told is bounded, by the window of the
+      // engine about to hear it (its own word when it has measured this
+      // lane, the table's otherwise), never the whole transcript: told
+      // whole, a long conversation was a hundred thousand characters in
+      // one message, sent again with every tool call (GitHub 222). When
+      // the bound leaves messages out and the lane's engine can
+      // summarise, the older part is folded into the running summary
+      // first, so what is left out is carried by the summary instead.
+      const ownReading = readingFor(task.reading, selection);
+      const handoffTokens = handoffBudget(ownReading?.window ?? contextLimitFor(selection.model));
+      const story = async (fold: boolean) => {
+        let bounded = boundHandoff(transcript, handoffTokens);
+        if (fold && bounded.left > 0 && (await foldContext(bot.id, task.id, false, handoffTokens).catch(() => false))) {
+          bounded = boundHandoff(buildTranscript().turns, handoffTokens);
+        }
+        return bounded;
+      };
+
+      // A resumed session that has grown past the line is compacted
+      // before this turn, so its tool calls do not each send the whole of
+      // it again (GitHub 222, 223). Claude Code is sent /compact from
+      // here; an engine that can compact itself is asked to in the turn;
+      // one that can do neither starts a new session told the bounded
+      // story. Only on the engine and model that made the reading, and
+      // never mid-turn: a turn already running is left to finish.
+      const resumable = engineFresh ? undefined : task.resumeCursors[instanceId];
+      const compactNow =
+        !nativeReplay &&
+        typeof resumable === "string" &&
+        ownReading !== null &&
+        compactBeforeTurn({
+          used: ownReading.used,
+          window: readingWindow(ownReading),
+          ...beforeTurnSettings(),
+          lastFrom: compactedFrom.get(task.id),
+        });
+      if (compactNow) compactedFrom.set(task.id, ownReading!.used);
+      const compactHere = compactNow && instance.driverKind === "claudeAgent";
+      const compactInTurn = compactNow && !compactHere && Boolean(instance.adapter.capabilities.compactsFirst);
+      const replaceSession = compactNow && !compactHere && !compactInTurn;
+      if (engineFresh && !nativeReplay) {
+        const told = await story(true);
+        turnText = freshTurnText(told.turns, turnText, { left: told.left });
+      } else if (replaceSession) {
+        const told = await story(true);
+        turnText = freshTurnText(told.turns, turnText, { left: told.left, why: "session" });
+      }
       const undone = undoneSince.get(task.id);
       if (undone) {
         undoneSince.delete(task.id);
@@ -3367,7 +3437,7 @@ async function startTurn(
       // of Bloks that is no longer where it was. Said once, in the turn
       // itself: an engine that keeps the first system prompt of a session
       // never reads a newer one (GitHub 150).
-      const resumeCursor = engineFresh ? undefined : task.resumeCursors[instanceId];
+      const resumeCursor = engineFresh || replaceSession ? undefined : task.resumeCursors[instanceId];
       if (credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
         turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
       }
@@ -3471,6 +3541,16 @@ async function startTurn(
         effort: bot.effort,
         ...(bot.engineHooks === false ? { noHooks: true } : {}),
         resumeCursor,
+        // If the session behind the cursor turns out to be gone, the new
+        // one is told the bounded story rather than nothing. Claude Code
+        // does not open a new session on its own, so it is not given one.
+        ...(typeof resumeCursor === "string" && !nativeReplay && instance.driverKind !== "claudeAgent"
+          ? (() => {
+              const told = boundHandoff(transcript, handoffTokens);
+              return { handoff: freshTurnText(told.turns, turnText, { left: told.left, why: "session" }) };
+            })()
+          : {}),
+        ...(compactInTurn ? { compactFirst: true } : {}),
         transcript,
         system:
           persona +
@@ -3493,7 +3573,15 @@ async function startTurn(
       // turn's credential and secrets. Not a shared room's lane, a
       // rehearsal, or a turn on the Local VM, which has to be claimed.
       if (instance.driverKind === "claudeAgent" && !sharing && !opts.rehearsal && !vmTurn) {
-        const { text: _text, transcript: _transcript, env: _env, resumeCursor: _cursor, ...kept } = sending;
+        const {
+          text: _text,
+          transcript: _transcript,
+          env: _env,
+          resumeCursor: _cursor,
+          handoff: _handoff,
+          compactFirst: _compactFirst,
+          ...kept
+        } = sending;
         lastSent.set(task.id, { instanceId, input: kept });
       } else {
         lastSent.delete(task.id);
@@ -3502,8 +3590,34 @@ async function startTurn(
       // ready (reloadProviders) is the one it goes to: the old one is
       // gone, and nothing would hear the turn end on it.
       await reloading;
-      const engine = registry.get(instanceId);
+      let engine = registry.get(instanceId);
       if (!engine) throw new Error(unavailableEngineMessage(instanceId));
+      if (compactHere) {
+        const go = await compactThenSend(bot, task.id, roomId, engine, sending);
+        if (!go) {
+          // Stopped while the session was being compacted: the turn ends
+          // here, the way any stopped turn does, and the words wait.
+          bus.publish({
+            type: "turn.completed",
+            eventId: newId(),
+            provider: engine.driverKind,
+            providerInstanceId: instanceId,
+            threadId: task.id,
+            createdAt: new Date().toISOString(),
+            ok: false,
+            stopReason: "interrupted",
+          });
+          return;
+        }
+        // the session compacted is the one the words go into
+        const now = store.taskByThread(task.id)?.task.resumeCursors[instanceId];
+        if (typeof now === "string") sending.resumeCursor = now;
+        // and the engine as it is now: one rebuilt during the compaction
+        // ended it, and the old one is gone
+        await reloading;
+        engine = registry.get(instanceId);
+        if (!engine) throw new Error(unavailableEngineMessage(instanceId));
+      }
       // Asked one last time, with nothing awaited between here and the
       // engine. Getting ready can take a minute (a box waking, a
       // checkpoint of a big folder), and an archive or a hold in that
@@ -5009,8 +5123,21 @@ const lastRequest = new Map<string, { at: number; context: number; cacheTtl?: "5
 const lastSent = new Map<string, { instanceId: string; input: Omit<SendTurnInput, "threadId" | "text"> }>();
 
 /** Lanes compacting now, to the agent they belong to, and what the
- * engine said the session came down to. */
-const idleCompacting = new Map<string, { botId: string; after?: number | null }>();
+ * engine said the session came down to. One compacted before a turn
+ * (compactThenSend) has `beforeTurn`: where its marker goes, and what to
+ * call when it ends instead of freeing the lane, which the turn behind it
+ * still holds. */
+const idleCompacting = new Map<
+  string,
+  {
+    botId: string;
+    after?: number | null;
+    beforeTurn?: { roomId: string; inRoom: boolean; ended: () => void };
+  }
+>();
+
+/** Idle compactions only; one before a turn is part of that turn. */
+const idleCount = () => [...idleCompacting.values()].filter((run) => !run.beforeTurn).length;
 
 /** A compaction takes about a minute, and many agents can go quiet at
  * the same moment. Two at a time; a lane whose window passes while it
@@ -5036,9 +5163,64 @@ function noteRequest(event: Extract<RuntimeEvent, { type: "thread.token-usage.up
   });
 }
 
+/**
+ * Who made a reading: the engine the event came from, and the model the
+ * lane is running on it. The model is the turn's (or the last turn's, for
+ * an idle compaction), because a reading belongs to the engine and model
+ * that made it (GitHub 224).
+ */
+function readingBy(threadId: string, instanceId: string): { instanceId: string; model: string | null } {
+  const running = laneEngine.get(threadId);
+  if (running?.instanceId === instanceId) return { instanceId, model: running.model ?? null };
+  const sent = lastSent.get(threadId);
+  if (sent?.instanceId === instanceId) return { instanceId, model: sent.input.model ?? null };
+  const own = store.botByThread(threadId)?.modelSelection;
+  return { instanceId, model: own?.instanceId === instanceId ? (own.model ?? null) : null };
+}
+
+function noteLaneReading(event: RuntimeEvent, said: { used: number | null; window: number | null }) {
+  const instanceId = event.providerInstanceId ?? event.provider;
+  store.noteReading(event.threadId, readingBy(event.threadId, instanceId), said);
+  // under the line again, so the next time it crosses is a new crossing
+  const reading = store.taskByThread(event.threadId)?.task.reading;
+  if (reading && compactedFrom.has(event.threadId) && !overTheLine(reading)) compactedFrom.delete(event.threadId);
+}
+
+/** Where each lane last was when it was compacted before a turn, kept
+ * while it stays over the line, so a compaction that did not bring it
+ * down is not asked for again on every message (compactBeforeTurn). */
+const compactedFrom = new Map<string, number>();
+
+/** The settings for compacting before a turn: the ceiling in tokens (0 is
+ * off) and the share of the window. */
+function beforeTurnSettings(): { ceiling: number; at: number | undefined } {
+  const ceiling = cfg.compaction?.beforeTurn;
+  return {
+    ceiling: typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling >= 0 ? ceiling : BEFORE_TURN_CEILING,
+    at: cfg.compaction?.beforeTurnAt,
+  };
+}
+
+/** The reading's window: the engine's, or the table's when the model is
+ * in it; never the default, which is a guess and not a reason to act. */
+function readingWindow(reading: Reading): number | null {
+  return reading.window ?? knownLimitFor(reading.model);
+}
+
+function overTheLine(reading: Reading): boolean {
+  return compactBeforeTurn({ used: reading.used, window: readingWindow(reading), ...beforeTurnSettings() });
+}
+
+/** The engine compacted the session, by its own choice or ours: what it
+ * came down to is how full it is now, when it said. */
+function noteCompacted(event: Extract<RuntimeEvent, { type: "context.compacted" }>) {
+  if (event.after === null) return;
+  noteLaneReading(event, { used: event.after, window: null });
+}
+
 function sweepIdleLanes(now = Date.now()) {
   // nothing new while Bloks finishes up to restart (server/drain.ts)
-  if (!cfg.compaction?.idle || idleCompacting.size >= IDLE_COMPACTIONS_AT_ONCE || drain.on) return;
+  if (!cfg.compaction?.idle || idleCount() >= IDLE_COMPACTIONS_AT_ONCE || drain.on) return;
   const due: Array<{ bot: BotRecord; task: TaskRecord; at: number }> = [];
   for (const bot of store.bots) {
     for (const task of bot.tasks) {
@@ -5071,7 +5253,7 @@ function sweepIdleLanes(now = Date.now()) {
   }
   // the one closest to losing its cache first
   due.sort((a, b) => a.at - b.at);
-  for (const { bot, task } of due.slice(0, IDLE_COMPACTIONS_AT_ONCE - idleCompacting.size)) compactWhileIdle(bot, task);
+  for (const { bot, task } of due.slice(0, IDLE_COMPACTIONS_AT_ONCE - idleCount())) compactWhileIdle(bot, task);
 }
 setInterval(() => sweepIdleLanes(), Math.min(60_000, IDLE_CACHE_MS / 60)).unref?.();
 
@@ -5103,15 +5285,67 @@ function compactWhileIdle(bot: BotRecord, task: TaskRecord) {
   stop.unref?.();
 }
 
+/**
+ * Compact a Claude Code session before the turn about to resume it
+ * (compactBeforeTurn in server/context.ts), the way a quiet lane is
+ * compacted: /compact into the same session with the turn's own tools
+ * and system prompt, so it reads the cache the last turn left, and only
+ * the books and a marker come out of it. The lane stays the turn's
+ * throughout, so nothing else starts in it meanwhile.
+ *
+ * Resolves with whether the turn should still go, which it should unless
+ * somebody stopped it while the compaction ran. One that runs too long is
+ * stopped and the turn goes on the session as it is.
+ */
+function compactThenSend(
+  bot: BotRecord,
+  laneId: string,
+  roomId: string,
+  instance: ProviderInstance,
+  input: SendTurnInput,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let stop: ReturnType<typeof setTimeout> | null = null;
+    const run = {
+      botId: bot.id,
+      beforeTurn: {
+        roomId,
+        inRoom: roomId !== laneId,
+        ended: () => {
+          if (stop) clearTimeout(stop);
+          resolve(!cutOff.get(laneId)?.stopped);
+        },
+      },
+    };
+    idleCompacting.set(laneId, run);
+    lastRequest.delete(laneId);
+    turnTokens.delete(laneId);
+    const { handoff: _handoff, compactFirst: _compactFirst, ...same } = input;
+    instance.adapter
+      .sendTurn({ ...same, text: "/compact" })
+      .catch(() => idleCompacting.get(laneId) === run && idleCompactionEnded(laneId));
+    stop = setTimeout(() => {
+      if (idleCompacting.get(laneId) !== run) return;
+      void instance.adapter.interruptTurn(laneId).catch(() => {});
+      const letGo = setTimeout(() => idleCompacting.get(laneId) === run && idleCompactionEnded(laneId), 30_000);
+      letGo.unref?.();
+    }, IDLE_COMPACTION_LIMIT_MS);
+    stop.unref?.();
+  });
+}
+
 /** Events from an idle compaction. Only what keeps the books goes
  * through: the session cursor, the tokens, the marker, and the end. */
 function onIdleCompaction(event: RuntimeEvent) {
   const running = idleCompacting.get(event.threadId);
   const bot = running ? store.bot(running.botId) : undefined;
   if (!running || !bot) return;
+  const ahead = running.beforeTurn;
   switch (event.type) {
     case "turn.started":
-      broadcast({ kind: "runtime", event });
+      // before a turn, the lane already reads as working, and the turn's
+      // own start is the one the app should hear
+      if (!ahead) broadcast({ kind: "runtime", event });
       break;
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
@@ -5126,15 +5360,23 @@ function onIdleCompaction(event: RuntimeEvent) {
       turnTokens.set(event.threadId, high);
       break;
     }
+    case "context.reading":
+      noteLaneReading(event, event);
+      break;
     case "context.compacted": {
       running.after = event.after;
-      const marker = store.appendMessage(event.threadId, {
+      noteCompacted(event);
+      // A compaction before a turn is said where the turn is: in the
+      // room, as this agent, when the lane is speaking in one.
+      const where = ahead?.roomId ?? event.threadId;
+      const marker = store.appendMessage(where, {
         role: "bot",
+        ...(ahead?.inRoom ? { from: bot.id } : {}),
         kind: "notice",
-        text: compactedNotice({ ...event, idle: true }),
-        compaction: { before: event.before, after: event.after, idle: true },
+        text: compactedNotice({ ...event, idle: !ahead }),
+        compaction: { before: event.before, after: event.after, ...(ahead ? {} : { idle: true }) },
       });
-      broadcast({ kind: "message", threadId: event.threadId, message: marker });
+      broadcast({ kind: "message", threadId: where, message: marker });
       break;
     }
     case "request.opened":
@@ -5147,8 +5389,8 @@ function onIdleCompaction(event: RuntimeEvent) {
       }
       break;
     case "turn.completed": {
-      broadcast({ kind: "runtime", event });
-      usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null);
+      if (!ahead) broadcast({ kind: "runtime", event });
+      usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null, undefined, event.ok !== false);
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
       if (spent) store.addTaskUsage(event.threadId, spent.input, spent.output, running.after ?? undefined);
@@ -5158,11 +5400,16 @@ function onIdleCompaction(event: RuntimeEvent) {
   }
 }
 
-/** The lane is free again, and whatever waited for it goes now. */
+/** The lane is free again, and whatever waited for it goes now. One
+ * compacted before a turn is not free: the turn goes on. */
 function idleCompactionEnded(laneId: string) {
   const running = idleCompacting.get(laneId);
   if (!running) return;
   idleCompacting.delete(laneId);
+  if (running.beforeTurn) {
+    running.beforeTurn.ended();
+    return;
+  }
   store.setTaskBusy(laneId, false);
   turnStarted.delete(laneId);
   broadcast({ kind: "bot", bot: clientBot(store.bot(running.botId)) });
@@ -5182,8 +5429,12 @@ function idleCompactionEnded(laneId: string) {
  * nothing changes: the next turn sends a slightly-too-long transcript and
  * the provider says so, which is recoverable. Losing the messages instead
  * would not be.
+ *
+ * `handoff` is the budget of a story about to be handed to a new session
+ * (boundHandoff in server/context.ts), which is much smaller than the
+ * window: what does not fit in it is summarised rather than left out.
  */
-async function foldContext(botId: string, threadId: string, force = false): Promise<boolean> {
+async function foldContext(botId: string, threadId: string, force = false, handoff?: number): Promise<boolean> {
   const bot = store.bot(botId);
   const task = bot?.tasks.find((t) => t.id === threadId);
   if (!bot || !task) return false;
@@ -5204,7 +5455,7 @@ async function foldContext(botId: string, threadId: string, force = false): Prom
   // provider has already refused the request, our estimate has been shown
   // to be wrong and its word is the one that counts, so fold hard: keep
   // the last exchange and summarise the rest.
-  const budget = force ? 1 : Math.max(2_000, Math.floor(limit * COMPACT_AT) - 4_000);
+  const budget = force ? 1 : (handoff ?? Math.max(2_000, Math.floor(limit * COMPACT_AT) - 4_000));
   const plan = planCompaction(asTurns, budget, force ? 2 : 6);
   if (!plan.fold.length) return false;
 
@@ -5225,7 +5476,7 @@ async function foldContext(botId: string, threadId: string, force = false): Prom
   const notice = store.appendMessage(threadId, {
     role: "bot",
     kind: "notice",
-    text: compactionNotice(plan.fold.length),
+    text: compactionNotice(plan.fold.length, handoff !== undefined && !force ? "handoff" : "limit"),
   });
   broadcast({ kind: "message", threadId, message: notice });
   broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
@@ -6990,7 +7241,13 @@ function configStatus() {
     shortcuts: { quickAsk: cfg.shortcuts?.quickAsk ?? null },
     // off unless somebody turned it on; see server/context.ts for what it
     // trades against the fold it defers
-    compaction: { micro: Boolean(cfg.compaction?.micro), idle: Boolean(cfg.compaction?.idle) },
+    // beforeTurn is on unless turned off: the tokens a native session may
+    // carry into a turn before it is compacted first, 0 for never
+    compaction: {
+      micro: Boolean(cfg.compaction?.micro),
+      idle: Boolean(cfg.compaction?.idle),
+      beforeTurn: beforeTurnSettings().ceiling,
+    },
     // off unless asked for: reading a session back spends tokens on work
     // nobody requested, and what it finds is staged rather than installed
     skills: { propose: Boolean(cfg.skills?.propose) },
@@ -11938,8 +12195,7 @@ const server = createServer(async (req, res) => {
       // The search route and the job board already draw the same line.
       for (const bot of store.bots.filter((b) => !b.archivedAt)) {
         for (const task of bot.tasks) {
-          const limit = contextLimitFor(bot.modelSelection?.model);
-          const fill = pressure(task.lastInput ?? 0, limit);
+          const fill = laneFill(task.reading, task.lastInput, bot.modelSelection);
           lanes.push({
             threadId: task.id,
             botId: bot.id,
@@ -11984,7 +12240,10 @@ const server = createServer(async (req, res) => {
 
       usage.flush();
       const today = usage.since(1);
-      const spend = new Map<string, { botId: string; turns: number; input: number; output: number; cost: number }>();
+      const spend = new Map<
+        string,
+        { botId: string; turns: number; input: number; output: number; cost: number; unmeasured: number }
+      >();
       let costKnown = false;
       for (const bucket of today) {
         const row = spend.get(bucket.botId) ?? {
@@ -11993,11 +12252,13 @@ const server = createServer(async (req, res) => {
           input: 0,
           output: 0,
           cost: 0,
+          unmeasured: 0,
         };
         row.turns += bucket.turns;
         row.input += bucket.input;
         row.output += bucket.output;
         row.cost += bucket.cost;
+        row.unmeasured += bucket.unmeasured ?? 0;
         spend.set(bucket.botId, row);
         if (bucket.costKnown) costKnown = true;
       }
@@ -12713,12 +12974,21 @@ const server = createServer(async (req, res) => {
       // A boolean, not a credential, so it rides outside the string table
       // like the consent flags do.
       if (body.compaction && typeof body.compaction === "object" && !Array.isArray(body.compaction)) {
-        const { micro, idle } = body.compaction as Record<string, unknown>;
-        if (typeof micro === "boolean" || typeof idle === "boolean") {
+        const { micro, idle, beforeTurn, beforeTurnAt } = body.compaction as Record<string, unknown>;
+        // A ceiling is 0 (never) or a real number of tokens, and the share
+        // of the window is a share; anything else is left as it was.
+        const ceiling =
+          typeof beforeTurn === "number" && Number.isInteger(beforeTurn) && (beforeTurn === 0 || (beforeTurn >= 10_000 && beforeTurn <= 2_000_000))
+            ? beforeTurn
+            : undefined;
+        const share = typeof beforeTurnAt === "number" && beforeTurnAt >= 0.2 && beforeTurnAt < 1 ? beforeTurnAt : undefined;
+        if (typeof micro === "boolean" || typeof idle === "boolean" || ceiling !== undefined || share !== undefined) {
           saveConfig({
             compaction: {
               ...(typeof micro === "boolean" ? { micro } : {}),
               ...(typeof idle === "boolean" ? { idle } : {}),
+              ...(ceiling !== undefined ? { beforeTurn: ceiling } : {}),
+              ...(share !== undefined ? { beforeTurnAt: share } : {}),
             },
           });
           Object.assign(cfg, loadConfig());

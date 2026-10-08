@@ -101,6 +101,25 @@ export interface AcpConfig {
 
 const PROTOCOL_VERSION = 1;
 
+/** How long to wait for an agent to list its commands before deciding
+ * it has no /compact, and how long its compaction may take. */
+const COMMANDS_WAIT_MS = 2_000;
+const COMPACT_LIMIT_MS = 5 * 60_000;
+
+/**
+ * How full a session is, from a `usage_update`: `used` is the tokens in
+ * context now and `size` the window, by the spec's own definitions.
+ * Either is null when it is missing or not a count.
+ */
+export function acpReading(update: any): { used: number | null; window: number | null } {
+  const used = Number(update?.used);
+  const size = Number(update?.size);
+  return {
+    used: Number.isFinite(used) && used > 0 ? Math.round(used) : null,
+    window: Number.isFinite(size) && size > 0 ? Math.round(size) : null,
+  };
+}
+
 /** How long a probe session may take to report its catalog. A hung CLI
  * (pi-acp --version starts a session) will sit forever without this. */
 const PROBE_TIMEOUT_MS = 15_000;
@@ -419,7 +438,19 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // and said nothing still did something.
         // `stopping` is set by an interrupt: from then on nothing the agent
         // asks for is allowed, and a prompt not yet sent is not sent.
-        const state = { settled: false, text: "", live: false, banner: null as string | null, tools: 0, stopping: false };
+        // `commands` is what the agent said it takes with a slash, once it
+        // has said, and `commandsHeard` wakes a wait for that.
+        const state = {
+          settled: false,
+          text: "",
+          live: false,
+          banner: null as string | null,
+          tools: 0,
+          commands: null as Set<string> | null,
+          commandsHeard: null as (() => void) | null,
+          compacting: false,
+          stopping: false,
+        };
         const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string) => void>();
 
@@ -564,6 +595,27 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             state.banner = null;
             return;
           }
+          // What the agent can be asked with a slash, which says whether it
+          // can compact its own session (pi's /compact), and how full the
+          // session is, which the spec has the agent send whenever it
+          // changes. Neither is output, so both are read before the gate.
+          if (update.sessionUpdate === "available_commands_update") {
+            const names = (Array.isArray(update.availableCommands) ? update.availableCommands : [])
+              .map((c: any) => (typeof c?.name === "string" ? c.name.replace(/^\//, "") : ""))
+              .filter(Boolean);
+            state.commands = new Set(names);
+            state.commandsHeard?.();
+            return;
+          }
+          if (update.sessionUpdate === "usage_update") {
+            const reading = acpReading(update);
+            // the compaction reads the old session; what it leaves is what
+            // the next request reports
+            if (!state.compacting && (reading.used !== null || reading.window !== null)) {
+              emit({ ...base(threadId, turnId), type: "context.reading", ...reading });
+            }
+            return;
+          }
           // session/load replays history as the same notifications a live
           // turn uses. Until we have sent session/prompt, none of it is
           // this turn's output.
@@ -636,6 +688,46 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           settle(false, "exit_before_result");
         });
 
+        /**
+         * Ask a resumed session to compact itself, by the agent's own
+         * /compact, and say whether it did. The agent lists its commands
+         * just after the session opens, so a moment is given for that;
+         * one that never lists /compact cannot be asked. What the
+         * compaction says is not the reply, so it runs before the turn
+         * goes live and its words are dropped like a replay's.
+         */
+        async function compactSession(id: string): Promise<boolean> {
+          if (!state.commands) {
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, COMMANDS_WAIT_MS);
+              timer.unref?.();
+              state.commandsHeard = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+            });
+            state.commandsHeard = null;
+          }
+          if (!state.commands?.has("compact") || state.settled) return false;
+          state.compacting = true;
+          try {
+            const done: any = await within(
+              rpc.request("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "/compact" }] }),
+              "compacting the conversation",
+              spec.name,
+              COMPACT_LIMIT_MS,
+            );
+            const reason = String(done?.stopReason ?? "end_turn");
+            if (reason !== "end_turn") return false;
+          } catch {
+            return false;
+          } finally {
+            state.compacting = false;
+          }
+          emit({ ...base(threadId, turnId), type: "context.compacted", trigger: "manual", before: null, after: null });
+          return true;
+        }
+
         active.set(threadId, { interrupt, stop, turnId, asks });
         emit({ ...base(threadId, turnId), type: "turn.started" });
 
@@ -678,6 +770,16 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 /* the agent forgot this session; start a new one below */
               }
             }
+            // The session has grown past the lane's line. An agent with a
+            // /compact of its own (pi) compacts it before the words go; one
+            // without, or one whose compaction fails, gets a new session
+            // told the bounded story instead of the old one at full size.
+            if (session && turn.compactFirst && !(await compactSession(String(session.sessionId)))) {
+              session = null;
+            }
+            // a cursor that did not lead back to its session is a new one,
+            // and is told the story rather than only the words
+            const words = cursor && !session && turn.handoff ? turn.handoff : turn.text;
             if (!session) {
               session = await within(rpc.request("session/new", { cwd, mcpServers }), "opening a session", spec.name);
             }
@@ -747,7 +849,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             state.live = true;
             const result = await rpc.request("session/prompt", {
               sessionId,
-              prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
+              prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words }],
             });
             const usage = result?.usage;
             if (usage) {
@@ -849,7 +951,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         catalogReady,
         adapter: {
           provider: spec.kind,
-          capabilities: { sessionModelSwitch: "in-session" },
+          capabilities: { sessionModelSwitch: "in-session", compactsFirst: true },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),
           respondToRequest: async (threadId, requestId, decision) => {

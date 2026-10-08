@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
 import { DATA_DIR } from "./config.ts";
+import type { Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
 export type BlokColor =
@@ -259,6 +260,10 @@ export interface TaskRecord {
   /** Input tokens on the last turn, which is the closest thing to "how
    * full is this lane" that a provider tells us. */
   lastInput?: number;
+  /** How full this lane's session is, in the engine's own numbers, with
+   * the engine and model that measured it (server/context.ts). Preferred
+   * to `lastInput` wherever it belongs to the engine the lane is on. */
+  reading?: Reading;
   /** Per-engine conversation cursors, one set per lane so parallel
    * lanes never share a session. */
   resumeCursors: Record<string, unknown>;
@@ -913,6 +918,8 @@ export class Store {
     if (!found) return;
     found.task.resumeCursors = {};
     delete found.task.lastInstanceId;
+    // a reading measured a session that is not coming back
+    delete found.task.reading;
     this.saveBots();
   }
 
@@ -925,6 +932,32 @@ export class Store {
     const found = this.taskByThread(threadId);
     if (!found) return;
     found.task.resumeCursors = {};
+    delete found.task.reading;
+    this.saveBots();
+  }
+
+  /**
+   * Fold an engine's word on how full a lane is into what the lane knows.
+   * A part it did not say keeps its last value, but only from the same
+   * engine and model: a window measured by another is not this one's.
+   */
+  noteReading(
+    threadId: string,
+    by: { instanceId: string; model: string | null },
+    said: { used: number | null; window: number | null },
+    at = Date.now(),
+  ) {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    const was = found.task.reading;
+    const same = was && was.instanceId === by.instanceId && (was.model ?? null) === by.model ? was : null;
+    const used = said.used ?? same?.used ?? 0;
+    const window = said.window ?? same?.window ?? null;
+    const next = { used: Math.max(0, Math.round(used)), window, instanceId: by.instanceId, model: by.model, at };
+    found.task.reading = next;
+    // a tool loop restates the same numbers often; the file is written
+    // when they change, not each time they are said
+    if (same && same.used === next.used && same.window === next.window) return;
     this.saveBots();
   }
 

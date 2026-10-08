@@ -42,8 +42,9 @@ const LIMITS: Array<[RegExp, number]> = [
   [/^grok/i, 131_072],
   [/^(gpt-4o|gpt-4\.1|o[134])/i, 128_000],
   [/^gpt-5/i, 400_000],
-  // Codex's default window is smaller than the GPT-6 API maximum.
-  [/^gpt-6(?:$|-)/i, 272_000],
+  // Codex's default window is smaller than the GPT-6 API maximum. Point
+  // releases count too (gpt-6.1-sol), which once fell to the default.
+  [/^gpt-6(?:$|[-.])/i, 272_000],
   [/^deepseek/i, 65_536],
   [/^kimi|^moonshot/i, 131_072],
   [/^llama/i, 131_072],
@@ -58,11 +59,197 @@ const LIMITS: Array<[RegExp, number]> = [
 export const DEFAULT_LIMIT = 32_000;
 
 export function contextLimitFor(model: string | undefined | null): number {
+  return knownLimitFor(model) ?? DEFAULT_LIMIT;
+}
+
+/** The table's number for a model, or null when the name says nothing.
+ * The default above is a safety margin for the fold, not a fact, so a
+ * decision that would act on a guess (compacting a session before a
+ * turn) asks this instead. */
+export function knownLimitFor(model: string | undefined | null): number | null {
   const name = (model ?? "").trim();
   for (const [pattern, limit] of LIMITS) {
     if (pattern.test(name)) return limit;
   }
-  return DEFAULT_LIMIT;
+  return null;
+}
+
+// ── what the engine itself says ────────────────────────────────────────
+//
+// The table is a guess, and the engines that keep their own session know
+// better: Claude Code reports each request's prompt and, in its result,
+// the model's window; Codex reports the latest request and the window it
+// is using right now (which is not fixed per model); an ACP agent can
+// send both as a `usage_update`. Their word wins over the table.
+//
+// A reading belongs to the engine and model that made it. A conversation
+// moved to another engine has not been measured there yet, and showing
+// Codex's numbers against Claude's window (or the other way round) is a
+// claim nobody made.
+
+/** One engine's latest word on how full a lane's session is. */
+export interface Reading {
+  /** The size of the latest request, in tokens. */
+  used: number;
+  /** The window the engine reported, when it did. */
+  window: number | null;
+  instanceId: string;
+  model: string | null;
+  at: number;
+}
+
+/** The reading, if it was made by the engine and model about to use it. */
+export function readingFor(
+  reading: Reading | null | undefined,
+  selection: { instanceId: string; model?: string | null },
+): Reading | null {
+  if (!reading || reading.instanceId !== selection.instanceId) return null;
+  if ((reading.model ?? null) !== (selection.model ?? null)) return null;
+  return reading;
+}
+
+/**
+ * How full a lane is for the engine and model it is on now.
+ *
+ * Its own engine's reading first, with the engine's window when it gave
+ * one and the table's otherwise. A reading from another engine or model
+ * counts as nothing measured. A lane from before readings were kept has
+ * only `legacy`, the old per-turn number, and keeps showing it.
+ */
+export function laneFill(
+  reading: Reading | null | undefined,
+  legacy: number | undefined,
+  selection: { instanceId: string; model?: string | null },
+): Pressure & { window: "engine" | "table" } {
+  const own = readingFor(reading, selection);
+  const table = contextLimitFor(selection.model);
+  if (own) {
+    const window = own.window && own.window > 0 ? own.window : null;
+    return { ...pressure(own.used, window ?? table), window: window ? "engine" : "table" };
+  }
+  return { ...pressure(reading ? 0 : (legacy ?? 0), table), window: "table" };
+}
+
+// ── compacting before a turn ───────────────────────────────────────────
+//
+// A native session (Claude Code, Codex, an ACP agent) sends its whole
+// context again on every request, and a turn with twenty tool calls is
+// twenty requests. A session at 170k turns one tool-heavy message into
+// three and a half million input tokens, cached or not, and that is what
+// emptied a five-hour limit in twenty minutes (GitHub 222, 223). So before
+// a turn starts on a session that has grown past the line, the session is
+// compacted first, by the engine's own means where it has them.
+//
+// The line is the lower of a share of the window and a ceiling in tokens.
+// The share keeps room for the turn's own growth; the ceiling is there
+// because a million-token window is a limit, not a budget, and a request
+// of 800k is expensive however well it fits.
+
+/** Past this share of the window, compact before the next turn. */
+export const BEFORE_TURN_AT = 0.6;
+
+/** And never let a request start above this many tokens. */
+export const BEFORE_TURN_CEILING = 200_000;
+
+export interface TurnStartLane {
+  /** The latest request's size, from the engine about to run the turn. */
+  used: number;
+  /** That engine's window, its own word or the table's; null when
+   * neither knows, and then only the ceiling applies. */
+  window: number | null;
+  /** The share of the window; out of range means the default. */
+  at?: number;
+  /** In tokens; 0 is off. */
+  ceiling: number;
+  /** What the lane measured when it was last compacted before a turn,
+   * while it has not since come back under the line. */
+  lastFrom?: number;
+}
+
+/** The line a lane is compacted at, in tokens. */
+export function beforeTurnLine(lane: Pick<TurnStartLane, "window" | "at" | "ceiling">): number {
+  const at = lane.at !== undefined && lane.at > 0 && lane.at < 1 ? lane.at : BEFORE_TURN_AT;
+  const share = lane.window && lane.window > 0 ? Math.floor(lane.window * at) : Infinity;
+  return Math.min(lane.ceiling, share);
+}
+
+/**
+ * Whether to compact a resumed session before this turn.
+ *
+ * A compaction that did not bring the session under the line (an engine
+ * that keeps a lot, or one that ignored the request) is not asked for
+ * again on every message: only once the session has grown a tenth past
+ * where the last one started.
+ */
+export function compactBeforeTurn(lane: TurnStartLane): boolean {
+  if (!(lane.ceiling > 0) || !(lane.used > 0)) return false;
+  if (lane.used <= beforeTurnLine(lane)) return false;
+  if (lane.lastFrom !== undefined && lane.used < lane.lastFrom * 1.1) return false;
+  return true;
+}
+
+// ── handing a conversation to a new session ────────────────────────────
+//
+// A new engine session on an old conversation (a switch of engine, a
+// backup taking over, a session that could not be resumed, a rewind) is
+// told the story so far in its first message. Told whole, a long
+// conversation was a hundred thousand characters in one message, sent
+// again with every tool call of that turn. So the story is bounded: the
+// running summary, then the most recent messages whole while they fit,
+// and a word about what was left out. Nothing is lost from the thread
+// itself, which still has every message.
+
+/** The most a handoff is given, in tokens, however big the window. */
+export const HANDOFF_MAX_TOKENS = 16_000;
+
+/** And at most this share of the window it goes to. */
+export const HANDOFF_SHARE = 0.15;
+
+export function handoffBudget(window: number | null | undefined): number {
+  const share = window && window > 0 ? Math.floor(window * HANDOFF_SHARE) : HANDOFF_MAX_TOKENS;
+  return Math.max(2_000, Math.min(HANDOFF_MAX_TOKENS, share));
+}
+
+const SUMMARY_MARK = "[Earlier in this conversation, summarised]";
+
+/** A long message cut down to its beginning and its end, which is where
+ * a request and its conclusion usually are, saying how much went. */
+export function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const room = Math.max(40, max - 60);
+  const head = Math.ceil(room * 0.6);
+  const tail = room - head;
+  const gone = text.length - head - tail;
+  return `${text.slice(0, head)}\n[... ${gone} characters left out ...]\n${text.slice(text.length - tail)}`;
+}
+
+/**
+ * The part of a transcript a new session is handed, within `budget`
+ * tokens.
+ *
+ * A summary at the front is kept (clipped to a quarter of the budget),
+ * then messages from the end while they fit, each clipped to a quarter of
+ * the budget so one pasted log cannot crowd out everything else. The last
+ * exchange is always kept, clipped, however tight it is: a story that is
+ * only a summary has no thread to pull on. `left` is how many messages
+ * between the summary and what was kept are not included.
+ */
+export function boundHandoff(turns: Turn[], budget: number): { turns: Turn[]; left: number } {
+  const chars = Math.max(1, budget) * 4;
+  const each = Math.max(400, Math.floor(chars / 4));
+  const summary = turns[0]?.text.startsWith(SUMMARY_MARK) ? turns[0] : null;
+  const rest = summary ? turns.slice(1) : turns;
+  const head: Turn[] = summary ? [{ role: summary.role, text: clipText(summary.text, each) }] : [];
+  let used = head.reduce((n, t) => n + t.text.length + 16, 0);
+  const kept: Turn[] = [];
+  for (let i = rest.length - 1; i >= 0; i--) {
+    const turn = { role: rest[i].role, text: clipText(rest[i].text, each) };
+    const cost = turn.text.length + 16;
+    if (kept.length >= 2 && used + cost > chars) break;
+    kept.unshift(turn);
+    used += cost;
+  }
+  return { turns: [...head, ...kept], left: rest.length - kept.length };
 }
 
 /**
@@ -177,10 +364,14 @@ export function summaryTurn(summary: string): Turn {
 
 /** What people see in the thread when it happens. Compaction is a normal
  * state, so it says what it did rather than apologising. */
-export function compactionNotice(folded: number): string {
+export function compactionNotice(folded: number, why: "limit" | "handoff" = "limit"): string {
+  const because =
+    why === "handoff"
+      ? "This conversation went to a new session, which is told a shortened version"
+      : "This conversation reached the model's limit";
   return folded === 1
-    ? "This conversation reached the model's limit, so the earliest message was summarised. Everything since is intact, and the summary carries forward what mattered."
-    : `This conversation reached the model's limit, so the earliest ${folded} messages were summarised. Everything since is intact, and the summary carries forward what mattered.`;
+    ? `${because}, so the earliest message was summarised. Everything since is intact, and the summary carries forward what mattered.`
+    : `${because}, so the earliest ${folded} messages were summarised. Everything since is intact, and the summary carries forward what mattered.`;
 }
 
 /** A token count the way the marker shows it: 320k, 1.2M. */

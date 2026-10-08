@@ -286,7 +286,9 @@ export interface ConfigStatus {
   /** Shared context for every agent, not a secret, so it round-trips. */
   profile?: { about: string };
   /** How lanes are kept inside the model's window. */
-  compaction?: { micro: boolean; idle?: boolean };
+  /** `beforeTurn` is the size a native session is compacted at before a
+   * turn, in tokens; 0 is never. */
+  compaction?: { micro: boolean; idle?: boolean; beforeTurn?: number };
   /** Whether finished sessions are read back for something worth keeping. */
   skills?: { propose: boolean };
   /** How long a silent tool call may hold a turn, in minutes; 0 is never. */

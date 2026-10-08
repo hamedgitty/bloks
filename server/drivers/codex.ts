@@ -125,6 +125,28 @@ export function turnBaseline(known: TokenCount | undefined, total: TokenCount, l
   };
 }
 
+// ── how full the thread is ─────────────────────────────────────────────
+//
+// The same notification says how full the thread is, and that is a
+// different number from what a turn spent: `last` is the request just
+// made, the whole context it carried, and `modelContextWindow` is the
+// window Codex is holding it to. The turn's sum above, read as fullness,
+// put every Codex conversation at 100% (GitHub 224).
+
+/** The latest request's size and the window, either null when absent. */
+export function contextReading(tokenUsage: any): { used: number | null; window: number | null } {
+  const used = Number(tokenUsage?.last?.inputTokens);
+  const window = Number(tokenUsage?.modelContextWindow);
+  return {
+    used: Number.isFinite(used) && used > 0 ? Math.round(used) : null,
+    window: Number.isFinite(window) && window > 0 ? Math.round(window) : null,
+  };
+}
+
+/** How long a compaction asked for before a turn may take before the
+ * words go to a new thread instead. */
+const COMPACT_LIMIT_MS = 5 * 60_000;
+
 function rememberTotal(thread: string, total: TokenCount) {
   threadTotals.delete(thread);
   threadTotals.set(thread, total);
@@ -349,6 +371,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // which turn/steer has to quote back
       let codexThread: string | null = null;
       let codexTurn: string | null = null;
+      // the thread's latest request, for what a compaction started from
+      let lastUsed: number | null = null;
+      // set while a compaction asked for before the turn is running, and
+      // called with whether it worked when it ends
+      let compacting: ((ok: boolean) => void) | null = null;
 
       const abort = () => {
         try {
@@ -559,6 +586,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "thread/tokenUsage/updated": {
+            // How full the thread is: the latest request, not the turn's
+            // sum, against the window Codex says it is using now, which
+            // changes between turns of one thread (GitHub 224). Not while
+            // compacting, when the latest request is the compaction
+            // reading the old context, about to be replaced.
+            const reading = contextReading(params.tokenUsage);
+            if (reading.used !== null) lastUsed = reading.used;
+            if (!compacting && (reading.used !== null || reading.window !== null)) {
+              emit({ ...envelope(threadId, turnId), type: "context.reading", ...reading });
+            }
             const total = tokenCount(params.tokenUsage?.total);
             if (!total) break;
             const thread = typeof params.threadId === "string" ? params.threadId : null;
@@ -593,6 +630,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           case "turn/completed": {
             const completed = params.turn ?? {};
             const ok = completed.status === "completed";
+            // the compaction runs as a turn of its own, and its end is
+            // where the person's words go, not the end of this one
+            if (compacting) {
+              compacting(ok);
+              break;
+            }
             finish(ok, ok ? null : (completed.error?.message ?? completed.status ?? "failed"));
             break;
           }
@@ -600,8 +643,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           case "error": {
             // The app-server nests the text (`error.message`); older ones
             // had it at the top. One it is about to retry is not the end
-            // of the turn, so only the last one is said.
+            // of the turn, so only the last one is said. A compaction that
+            // fails is not the turn failing: a new thread takes the words.
             const message = params.error?.message ?? params.message;
+            if (compacting) break;
             if (typeof message === "string" && message.trim() && params.willRetry !== true) {
               emit({ ...envelope(threadId, turnId), type: "runtime.error", message });
             }
@@ -644,7 +689,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // refuses the call if that turn has ended, so a refusal means the
       // words were not taken and can go to the next turn instead.
       const steer = async (text: string) => {
-        if (finished || !codexThread || !codexTurn) return false;
+        // during a compaction the turn running is the compaction's
+        if (finished || compacting || !codexThread || !codexTurn) return false;
         try {
           await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }] });
           return true;
@@ -666,6 +712,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
           const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
           let reportedModel: string | null = null;
+          // the words go into the thread the cursor named, not a new one
+          let carriedOn = false;
           // fullAuto is the engine set that way; fullAccess is this agent.
           // Either takes the sandbox off and stops Codex asking. Stated on
           // resume too, so switching an agent's mode takes on its next turn.
@@ -690,8 +738,39 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               );
               codexThread = resumed?.thread?.id ?? cursor;
               reportedModel = resumed?.model ?? null;
+              carriedOn = true;
             } catch {
               /* forgotten or unsupported; a fresh thread below */
+            }
+          }
+
+          // The thread has grown past the lane's line: Codex compacts it
+          // first, as a turn of its own, and the words go into the
+          // compacted thread. One that cannot (an app-server without the
+          // method, a compaction that fails) gets a new thread instead,
+          // told the bounded story, rather than the old one at full size.
+          if (codexThread && turn.compactFirst) {
+            // what the compaction spends is this turn's, not history
+            turnSent = true;
+            const before = lastUsed;
+            const thread: string = codexThread;
+            const ok = await new Promise<boolean>((resolve) => {
+              const timer = setTimeout(() => compacting?.(false), COMPACT_LIMIT_MS);
+              timer.unref?.();
+              compacting = (worked) => {
+                compacting = null;
+                clearTimeout(timer);
+                resolve(worked);
+              };
+              rpc.request("thread/compact/start", { threadId: thread }).catch(() => compacting?.(false));
+            });
+            codexTurn = null;
+            if (finished) return;
+            if (ok) {
+              emit({ ...envelope(threadId, turnId), type: "context.compacted", trigger: "manual", before, after: null });
+            } else {
+              codexThread = null;
+              carriedOn = false;
             }
           }
 
@@ -727,10 +806,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           });
 
           turnSent = true;
+          // A cursor that did not lead back to its thread is a new thread
+          // after all, and is told the story rather than only the words.
+          const words = cursor && !carriedOn && turn.handoff ? turn.handoff : turn.text;
           const begun: any = await within(rpc.request("turn/start", {
             threadId: codexThread,
             input: [
-              { type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text },
+              { type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words },
             ],
           }), "starting the turn", "Codex");
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
@@ -782,7 +864,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "unsupported" },
+        capabilities: { sessionModelSwitch: "unsupported", compactsFirst: true },
         sendTurn,
 
         steerTurn: async (threadId, text) => (await running.get(threadId)?.steer(text)) ?? false,
