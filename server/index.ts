@@ -2039,7 +2039,7 @@ bus.subscribe((event: RuntimeEvent) => {
       turnLog.add(loggedTurn);
       // what the turn did to its folder, as a card with the way back
       const rehearsing = rehearsals.byTask(event.threadId);
-      void checkpoints
+      const carded = checkpoints
         .finish(event.threadId)
         .then(async (record) => {
           if (record) turnLog.attachCheckpoint(loggedTurn.id, record.id);
@@ -2052,6 +2052,15 @@ bus.subscribe((event: RuntimeEvent) => {
           checkpoints.attachCard(record.id, roomId, card.id);
         })
         .catch(() => {});
+      // the card belongs right under this turn, so whatever waited for
+      // the lane is delivered after it (see drainSteer)
+      cardsPending.set(event.threadId, carded);
+      void carded.then(() => {
+        if (cardsPending.get(event.threadId) !== carded) return;
+        cardsPending.delete(event.threadId);
+        // anything said while the card was being made goes now
+        drainSteer(event.threadId);
+      });
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
       cutOff.end(event.threadId);
@@ -6418,8 +6427,18 @@ function editClosed(laneId: string, messageId: string) {
  * editor, and going first would put them before things said earlier; or
  * Bloks is finishing up to restart (server/drain.ts). */
 function laneWaits(lane: { id: string; busy?: boolean }) {
-  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on;
+  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id);
 }
+
+/** Lanes whose last turn is still photographing its folder, until its
+ * change card is in. A message queued behind that turn is delivered
+ * after the card: delivered first, it would sit between the turn and its
+ * card, and the card would read as the answer's changes (GitHub 207). */
+const cardsPending = new Map<string, Promise<void>>();
+/** Longest a queued message waits for a card. A folder that takes longer
+ * to read than this gets its card below the message, which is the lesser
+ * harm than the message waiting on a slow disk. */
+const CARD_WAIT_MS = 10_000;
 
 /** Saves a message for a lane that is mid-turn, to go in the turn after.
  * The transcript keeps the words; the engine is told who they are from. */
@@ -6546,6 +6565,14 @@ function drainSteer(threadId: string) {
     return;
   }
   if (lane.busy) return;
+  const card = cardsPending.get(threadId);
+  if (card) {
+    void Promise.race([card, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]).then(() => {
+      if (cardsPending.get(threadId) === card) cardsPending.delete(threadId);
+      drainSteer(threadId);
+    });
+    return;
+  }
   // held, on disk, until Bloks is back or the drain is called off
   if (drain.on) return;
   // Somebody is rewording one of these. The whole burst waits rather than

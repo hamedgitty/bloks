@@ -10,7 +10,7 @@
 // that answers only when the test lets it, so "meanwhile" is real.
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +169,38 @@ test("a queued burst joins the conversation after what the agent said while it w
   const moved = (await framesSince(h, seq)).filter((f) => f.kind === "message.patch" && f.moved);
   assert.deepEqual(moved.map((f) => f.message.id), [a.id, b.id]);
   assert.ok(moved.every((f) => f.threadId === bot.threadId && f.message.queued === false));
+});
+
+test("a turn's change card stays under that turn, above a message delivered after it (GitHub 207)", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "bloks-queued-card-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const desk = join(home, "desk");
+  mkdirSync(desk, { recursive: true });
+  writeFileSync(join(desk, "plan.md"), "one\n");
+  const fake = await fakeProvider(t);
+  const h = await startHarness({ HOME: home });
+  t.after(() => h.stop());
+  const bot = await agentOn(h, fake.port);
+  const set = await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ cwd: desk }) });
+  assert.equal(set.status, 200, await set.clone().text());
+
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "FIRST_ASK" }) });
+  await waitFor(() => fake.state.calls.length >= 1, 15_000);
+  // the turn edits its folder, and a message waits behind it
+  writeFileSync(join(desk, "plan.md"), "two\n");
+  const said = await h.json(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "WAIT_A" }) });
+  assert.equal(said.queued, true);
+
+  fake.state.answerAtOnce = true;
+  fake.state.held.splice(0).forEach((f) => f());
+  const after = await waitFor(async () => {
+    const list = await lane(h, bot);
+    return list.some((m) => m.text === "Reply 2") ? list : null;
+  }, 15_000);
+  const order = after
+    .filter((m) => m.kind === "changes" || (m.kind === "text" && m.text))
+    .map((m) => (m.kind === "changes" ? "CARD" : m.text));
+  assert.deepEqual(order.slice(order.indexOf("FIRST_ASK")), ["FIRST_ASK", "Reply 1", "CARD", "WAIT_A", "Reply 2"]);
 });
 
 test("a message not sent after a restart stays out of the conversation until it is sent again", async (t) => {
