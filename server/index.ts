@@ -5738,10 +5738,12 @@ const telegramAsks = new Map<
  * or the rest of an album. */
 const telegramTurns = new Map<number, Promise<void>>();
 
-/** A reply to a chat. A failed send is not worth a crash. */
-async function telegramSay(chatId: number, text: string): Promise<void> {
+/** A reply to a chat. A failed send is not worth a crash. Only what an
+ * agent wrote is read as Markdown: the bot's own lines and a card's
+ * summary of a command are shown exactly as they are. */
+async function telegramSay(chatId: number, text: string, markdown = false): Promise<void> {
   const token = cfg.telegram?.token;
-  if (token) await telegram.send(token, chatId, text).catch(() => {});
+  if (token) await telegram.send(token, chatId, text, markdown).catch(() => {});
 }
 
 const telegramInbox = new telegram.Inbox({
@@ -5791,7 +5793,7 @@ const telegramInbox = new telegram.Inbox({
       const answer = await answerOverTelegram(bot.id, text, chatId).catch(
         (error: unknown) => `Could not answer: ${(error as Error).message}`,
       );
-      await telegramSay(chatId, answer);
+      await telegramSay(chatId, answer, true);
     });
     telegramTurns.set(chatId, turn);
     void turn.finally(() => {

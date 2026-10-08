@@ -24,6 +24,7 @@
 //   the pairing closes behind it.
 import { IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./attachments.ts";
 import { clamp, MAX_MESSAGE_CHARS } from "./limits.ts";
+import { messages } from "./telegram-format.ts";
 
 const API = "https://api.telegram.org";
 
@@ -212,6 +213,19 @@ export function pairingWord(random: () => number = Math.random): string {
   return word;
 }
 
+/** Telegram saying no, with the status kept so a caller can tell a
+ * message it could not read from one it was sent too quickly. */
+export class TelegramError extends Error {
+  status: number;
+  /** Seconds Telegram asked us to wait, when it asked. */
+  retryAfter: number;
+  constructor(status: number, retryAfter = 0) {
+    super(`Telegram answered HTTP ${status}`);
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function call(token: string, method: string, body: unknown, timeoutMs = 15_000) {
   const response = await fetch(`${API}/bot${token}/${method}`, {
     method: "POST",
@@ -219,7 +233,10 @@ async function call(token: string, method: string, body: unknown, timeoutMs = 15
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) throw new Error(`Telegram answered HTTP ${response.status}`);
+  if (!response.ok) {
+    const said = (await response.json().catch(() => null)) as { parameters?: { retry_after?: number } } | null;
+    throw new TelegramError(response.status, Number(said?.parameters?.retry_after) || 0);
+  }
   return response.json();
 }
 
@@ -231,10 +248,42 @@ export async function whoAmI(token: string): Promise<{ username: string }> {
   return { username };
 }
 
-export async function send(token: string, chatId: number, text: string): Promise<void> {
-  // Telegram refuses anything over 4096, and a long answer arriving as
-  // an error is worse than one arriving trimmed.
-  await call(token, "sendMessage", { chat_id: chatId, text: text.slice(0, 4_000) });
+/** One message. A long reply is several in a row, and Telegram slows a
+ * bot that sends quickly by asking it to wait; waiting once, when the
+ * wait is short, keeps the reply whole instead of losing its tail. */
+async function sendOne(token: string, body: Record<string, unknown>): Promise<void> {
+  try {
+    await call(token, "sendMessage", body);
+  } catch (error) {
+    if (!(error instanceof TelegramError) || error.status !== 429 || error.retryAfter > 30) throw error;
+    await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
+    await call(token, "sendMessage", body);
+  }
+}
+
+/**
+ * Say something in a chat, all of it, in as many messages as it takes.
+ *
+ * With `markdown`, which is how agents write, it is shown formatted. If
+ * Telegram will not take a message's formatting it answers 400, and that
+ * message goes again as plain text with its links written out, so a
+ * reply is never lost to its markup. Each message is sent only after the
+ * one before it, so they arrive in order, and a failure stops the rest
+ * rather than leaving a gap nobody can see.
+ */
+export async function send(token: string, chatId: number, text: string, markdown = false): Promise<void> {
+  for (const chunk of messages(text, markdown)) {
+    if (chunk.html === undefined) {
+      await sendOne(token, { chat_id: chatId, text: chunk.plain });
+      continue;
+    }
+    try {
+      await sendOne(token, { chat_id: chatId, text: chunk.html, parse_mode: "HTML" });
+    } catch (error) {
+      if (!(error instanceof TelegramError) || error.status !== 400) throw error;
+      await sendOne(token, { chat_id: chatId, text: chunk.plain });
+    }
+  }
 }
 
 /**
