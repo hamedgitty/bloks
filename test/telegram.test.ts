@@ -235,8 +235,9 @@ describe("what the bot cannot pass on", () => {
     assert.match(notDelivered({ kind: "other", what: "videos" }), /can't take videos/);
   });
 
-  test("a captioned file says its caption was not sent alone", () => {
-    assert.match(notDelivered({ kind: "other", what: "files" }, true), /caption was not sent/);
+  test("a captioned file says its caption went on without it", () => {
+    assert.match(notDelivered({ kind: "other", what: "files" }, true), /Your caption went to your agent without it/);
+    assert.match(notDelivered({ kind: "voice", fileId: "v", bytes: 1 }, true), /Your caption went to your agent without it/);
     assert.doesNotMatch(notDelivered({ kind: "other", what: "files" }), /caption/);
   });
 });
@@ -426,12 +427,21 @@ describe("the inbox", () => {
   test("stickers, videos and other files get a reply and go nowhere", async () => {
     const { box, seen } = inbox();
     for (const what of ["stickers", "videos", "video messages", "files"]) {
-      await box.take({ ...message(), text: "see this", media: { kind: "other", what } });
+      await box.take({ ...message(), text: "", media: { kind: "other", what } });
     }
-    assert.deepEqual(seen.delivered, [], "a caption is not sent on its own");
+    assert.deepEqual(seen.delivered, []);
     assert.deepEqual(seen.downloads, []);
     assert.equal(seen.sent.length, 4);
-    assert.match(seen.sent[0], /can't take stickers here.*caption was not sent/);
+    assert.match(seen.sent[0], /can't take stickers here, so that did not reach your agent/);
+  });
+
+  test("a video's caption reaches the agent, marked, and the person is told", async () => {
+    const { box, seen } = inbox();
+    await box.take({ ...message(), text: "what is wrong with this hinge?", media: { kind: "other", what: "videos" } });
+    assert.deepEqual(seen.delivered, [
+      "what is wrong with this hinge?\n\n[Something came with this that did not arrive (Bloks can't take videos from Telegram).]",
+    ]);
+    assert.deepEqual(seen.sent, ["I can't take videos here. Your caption went to your agent without it."]);
   });
 
   test("a voice message can answer a question", async () => {
@@ -459,6 +469,100 @@ describe("the inbox", () => {
     await box.take(photo("p1", { text: "this one" }));
     assert.deepEqual(seen.answers, []);
     assert.equal(seen.delivered.length, 1);
+  });
+
+  // What #210 was about: the photo timed out, and the caption, which is
+  // the part that is hard to type again on a phone, went with it.
+  test("a photo that cannot be taken still sends its caption on, saying what is missing", async () => {
+    const { box, seen } = inbox({
+      download: async () => {
+        throw new Error("timed out");
+      },
+    });
+    await box.take(photo("p1", { text: "what do you make of this?" }));
+    assert.deepEqual(seen.delivered, ["what do you make of this?\n\n[A photo came with this and did not arrive (timed out).]"]);
+    assert.deepEqual(seen.sent, ["I couldn't take that photo (timed out). Your caption went to your agent without it."]);
+  });
+
+  test("a caption whose photo is missing is a new message, never the answer to a card", async () => {
+    const { box, seen } = inbox(
+      {
+        download: async () => {
+          throw new Error("timed out");
+        },
+      },
+      { options: [], permission: false },
+    );
+    await box.take(photo("p1", { text: "yes" }));
+    assert.deepEqual(seen.answers, []);
+    assert.equal(seen.delivered.length, 1);
+  });
+
+  test("an uncaptioned photo that cannot be taken is answered as before", async () => {
+    const { box, seen } = inbox({
+      download: async () => {
+        throw new Error("timed out");
+      },
+    });
+    await box.take(photo("p1"));
+    assert.deepEqual(seen.delivered, []);
+    assert.deepEqual(seen.sent, ["I couldn't take that photo (timed out), so it did not reach your agent."]);
+  });
+
+  test("the agent is told which of an album's photos did not arrive", async () => {
+    const { box, seen } = inbox({
+      download: async (fileId) => {
+        if (fileId === "p2") throw new Error("timed out");
+        return PNG;
+      },
+    });
+    await box.take(photo("p1", { album: "g", text: "the kitchen" }));
+    await box.take(photo("p2", { album: "g" }));
+    await box.take(photo("p3", { album: "g" }));
+    await box.flush();
+    const { display, images } = splitAttachments(seen.delivered[0]!);
+    assert.equal(images.length, 2);
+    assert.equal(display, "the kitchen\n\n[1 of 3 photos did not arrive (timed out).]");
+    assert.match(seen.sent[0]!, /1 of those 3 did not reach your agent \(timed out\)\. The rest did\./);
+  });
+
+  test("an album where nothing arrived still sends its caption", async () => {
+    const { box, seen } = inbox({
+      download: async () => {
+        throw new Error("timed out");
+      },
+    });
+    await box.take(photo("p1", { album: "g", text: "before and after" }));
+    await box.take(photo("p2", { album: "g" }));
+    await box.flush();
+    assert.deepEqual(seen.delivered, ["before and after\n\n[2 photos came with this and none of them arrived (timed out).]"]);
+    assert.match(seen.sent[0]!, /None of those 2 reached your agent \(timed out\)\. Your caption went without them\./);
+  });
+
+  test("a transcribed voice message keeps its caption, first", async () => {
+    const { box, seen } = inbox();
+    await box.take(voice({ text: "for the shopping list" }));
+    const { display, voice: audio } = splitAttachments(seen.delivered[0]!);
+    assert.equal(display, "for the shopping list\n\nmeet Siobhan at 4:15");
+    assert.equal(audio.length, 1);
+    assert.match(seen.delivered[0]!, /note="Typed caption first, then transcribed/);
+  });
+
+  test("a voice message that cannot be heard still sends its caption on", async () => {
+    const { box, seen } = inbox({ transcriber: () => null });
+    await box.take(voice({ text: "for the shopping list" }));
+    assert.deepEqual(seen.delivered, [
+      "for the shopping list\n\n[A voice message came with this and did not arrive (there is no speech key to transcribe it).]",
+    ]);
+    assert.match(seen.sent[0]!, /Your caption went to your agent without it/);
+  });
+
+  test("a captioned voice message while an approval waits still asks for typing, and sends nothing", async () => {
+    const { box, seen } = inbox({}, { options: ["Allow", "Deny"], permission: true });
+    await box.take(voice({ text: "go ahead" }));
+    assert.deepEqual(seen.delivered, []);
+    assert.deepEqual(seen.answers, []);
+    assert.match(seen.sent[0]!, /typed answer/);
   });
 
   test("typed text still answers a card, and still asks again on an unclear approval", async () => {
@@ -496,6 +600,41 @@ describe("files and speech over the wire", () => {
       return Response.json({ ok: true, result: { file_path: "photos/a.jpg", file_size: 50 * 1024 * 1024 } });
     });
     await assert.rejects(download("T", "abc", 20 * 1024 * 1024), /over 20 MB/);
+    assert.equal(calls, 1);
+  });
+
+  test("a download that times out is tried once more", async (t) => {
+    let getFile = 0;
+    t.mock.method(globalThis, "fetch", async (url: string) => {
+      if (url.endsWith("/getFile")) {
+        getFile++;
+        if (getFile === 1) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        return Response.json({ ok: true, result: { file_path: "photos/a.jpg", file_size: 6 } });
+      }
+      return new Response(OGG);
+    });
+    assert.deepEqual([...(await download("T", "abc", 1_000))], [...OGG]);
+    assert.equal(getFile, 2);
+  });
+
+  test("a connection that drops twice gives up, and says so plainly", async (t) => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (url: string) => {
+      calls++;
+      if (url.endsWith("/getFile")) return Response.json({ ok: true, result: { file_path: "photos/a.jpg", file_size: 6 } });
+      throw new TypeError("fetch failed");
+    });
+    await assert.rejects(download("T", "abc", 1_000), (error: Error) => error.message === "the connection dropped");
+    assert.equal(calls, 4, "two tries of two calls each, and no third");
+  });
+
+  test("a file Telegram refuses is not tried again", async (t) => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return new Response("{}", { status: 400 });
+    });
+    await assert.rejects(download("T", "abc", 1_000), /HTTP 400/);
     assert.equal(calls, 1);
   });
 

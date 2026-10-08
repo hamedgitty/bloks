@@ -190,18 +190,38 @@ export function decide(state: TelegramState, message: Incoming): Decision {
  * The reply to something the bot could not pass on.
  *
  * Every one says it did not arrive, because the failure this replaces
- * was silence, and silence reads as "sent". A caption is not sent on
- * its own either: "what do you make of this?" without the this is a
- * different message from the one the person wrote.
+ * was silence, and silence reads as "sent". A caption goes on without
+ * it, marked so the agent knows something is missing, and the reply
+ * says so: the words are the part that is hard to type again.
  */
 export function notDelivered(media: Media, captioned = false): string {
-  const said =
-    media.kind === "voice"
-      ? "I can't read voice messages here yet, so that one did not reach your agent. Add a speech key in Bloks Settings, or type it."
-      : media.kind === "image"
-        ? "I can't take photos here yet, so that one did not reach your agent."
-        : `I can't take ${media.what} here, so that did not reach your agent.`;
-  return captioned && media.kind !== "voice" ? `${said} Its caption was not sent on its own either.` : said;
+  if (media.kind === "voice") {
+    return captioned
+      ? `I can't read voice messages here yet. ${WITHOUT} Add a speech key in Bloks Settings, or type it.`
+      : "I can't read voice messages here yet, so that one did not reach your agent. Add a speech key in Bloks Settings, or type it.";
+  }
+  if (media.kind === "image") {
+    return captioned
+      ? `I can't take photos here yet. ${WITHOUT}`
+      : "I can't take photos here yet, so that one did not reach your agent.";
+  }
+  return captioned
+    ? `I can't take ${media.what} here. ${WITHOUT}`
+    : `I can't take ${media.what} here, so that did not reach your agent.`;
+}
+
+/** Told to the person when their caption went on alone. */
+const WITHOUT = "Your caption went to your agent without it.";
+
+/**
+ * A caption whose attachment did not arrive, with a line saying so.
+ *
+ * The line is for the agent: without it "what do you make of this?"
+ * reads as complete, and the agent answers a question nobody asked. With
+ * it, the agent can answer what it can and ask for the rest.
+ */
+export function withMissing(caption: string, note: string): string {
+  return [caption.trim(), `[${note}]`].filter(Boolean).join("\n\n");
 }
 
 /** The word a person sends to claim the bot. Short enough to type on a
@@ -295,6 +315,34 @@ export async function send(token: string, chatId: number, text: string, markdown
  * a promise.
  */
 export async function download(token: string, fileId: string, maxBytes: number): Promise<Uint8Array> {
+  // A phone on a train and a laptop on hotel wifi drop connections, and
+  // one more go is usually all it takes. Only a timeout or a lost
+  // connection is tried again: a file that is too big will be too big
+  // the second time as well.
+  try {
+    return await fetchFile(token, fileId, maxBytes);
+  } catch (error) {
+    if (!dropped(error)) throw error;
+  }
+  try {
+    return await fetchFile(token, fileId, maxBytes);
+  } catch (error) {
+    const why = dropped(error);
+    throw why ? new Error(why) : error;
+  }
+}
+
+/** What went wrong, in the words the person is told, when it was the
+ * line rather than the file; null for anything else. */
+function dropped(error: unknown): string | null {
+  const name = (error as { name?: unknown })?.name;
+  if (name === "TimeoutError" || name === "AbortError") return "timed out";
+  // fetch reports a refused, reset or cut off connection as a TypeError.
+  if (error instanceof TypeError) return "the connection dropped";
+  return null;
+}
+
+async function fetchFile(token: string, fileId: string, maxBytes: number): Promise<Uint8Array> {
   const body = (await call(token, "getFile", { file_id: fileId })) as {
     result?: { file_path?: string; file_size?: number };
   };
@@ -397,10 +445,17 @@ function attr(value: string): string {
     .replaceAll("\r", "&#13;");
 }
 
+/** The note when a caption came with the recording, so the agent can
+ * tell the words that were typed from the ones that were heard. */
+const CAPTIONED_VOICE_NOTE =
+  "Typed caption first, then transcribed from a voice message. Names, numbers and spellings in the transcript may be misheard; check them before acting on them.";
+
 /** A transcript, with the audio it came from kept beside it so the
- * thread can play it back. */
-export function voiceText(path: string, said: string): string {
-  return `<voice-message path="${attr(path)}" note="${VOICE_NOTE}" />\n\n${said}`;
+ * thread can play it back. A caption goes first, the way a photo's does. */
+export function voiceText(path: string, said: string, caption = ""): string {
+  const note = caption.trim() ? CAPTIONED_VOICE_NOTE : VOICE_NOTE;
+  const words = [caption.trim(), said].filter(Boolean).join("\n\n");
+  return `<voice-message path="${attr(path)}" note="${note}" />\n\n${words}`;
 }
 
 /** A caption and its photos, in the shape the app's composer sends a
@@ -461,8 +516,11 @@ export class Inbox {
     if (decision.kind !== "deliver") return;
     const { chatId, media } = decision;
     if (media && message.album) return this.hold(message);
-    if (media?.kind === "other") return hooks.send(chatId, notDelivered(media, Boolean(decision.text)));
-    if (media?.kind === "voice") return this.voice(chatId, media);
+    if (media?.kind === "other") {
+      const note = `Something came with this that did not arrive (Bloks can't take ${media.what} from Telegram).`;
+      return this.missed(chatId, decision.text, note, notDelivered(media), notDelivered(media, true));
+    }
+    if (media?.kind === "voice") return this.voice(chatId, media, decision.text);
     // A photo is never an answer to a card. It is something new to look
     // at, and reading it as "yes" would be a guess.
     if (media?.kind === "image") return this.photos([message]);
@@ -487,46 +545,75 @@ export class Inbox {
     await this.hooks.send(chatId, "Sent.");
   }
 
-  private async voice(chatId: number, media: Extract<Media, { kind: "voice" }>): Promise<void> {
+  /**
+   * An attachment that could not be passed on. With no caption there is
+   * nothing to deliver and the person is told so. With one, the caption
+   * goes to the agent as a new message, never as the answer to a card,
+   * marked with what was missing and why.
+   */
+  private async missed(chatId: number, caption: string, note: string, alone: string, captioned: string) {
+    if (!caption) return this.hooks.send(chatId, alone);
+    this.hooks.deliver(chatId, withMissing(caption, note));
+    await this.hooks.send(chatId, captioned);
+  }
+
+  private async voice(chatId: number, media: Extract<Media, { kind: "voice" }>, caption = ""): Promise<void> {
     const { hooks } = this;
     // A misheard "no" is a "yes" to something that runs on this machine,
     // so an approval is answered by typing. Asked before the audio goes
     // anywhere, and again after, in case a card arrived meanwhile.
     const typed = "That one needs a typed answer. Reply 1 or 2, or yes / no.";
     if (hooks.waiting(chatId)?.permission) return hooks.send(chatId, typed);
+    const lost = (why: string, alone: string, captioned: string) =>
+      this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned);
     const transcribe = hooks.transcriber();
-    if (!transcribe) return hooks.send(chatId, notDelivered(media));
+    if (!transcribe) {
+      return lost("there is no speech key to transcribe it", notDelivered(media), notDelivered(media, true));
+    }
     let audio: Uint8Array;
     try {
       audio = await hooks.download(media.fileId, VOICE_MAX_BYTES);
     } catch (error) {
-      return hooks.send(
-        chatId,
-        `I couldn't get that voice message (${reason(error)}), so it did not reach your agent. Try again, or type it.`,
+      const why = reason(error);
+      return lost(
+        why,
+        `I couldn't get that voice message (${why}), so it did not reach your agent. Try again, or type it.`,
+        `I couldn't get that voice message (${why}). ${WITHOUT} Try again, or type it.`,
       );
     }
     let said: string;
     try {
       said = (await transcribe(audio)).trim().slice(0, MAX_MESSAGE_CHARS);
     } catch (error) {
-      return hooks.send(
-        chatId,
-        `I couldn't transcribe that voice message (${reason(error)}), so it did not reach your agent. Try again, or type it.`,
+      const why = reason(error);
+      return lost(
+        `it could not be transcribed: ${why}`,
+        `I couldn't transcribe that voice message (${why}), so it did not reach your agent. Try again, or type it.`,
+        `I couldn't transcribe that voice message (${why}). ${WITHOUT} Try again, or type it.`,
       );
     }
     if (!said) {
-      return hooks.send(chatId, "I couldn't make out any words in that voice message, so it did not reach your agent.");
+      return lost(
+        "no words could be made out in it",
+        "I couldn't make out any words in that voice message, so it did not reach your agent.",
+        `I couldn't make out any words in that voice message. ${WITHOUT}`,
+      );
     }
     const waiting = hooks.waiting(chatId);
     if (waiting?.permission) return hooks.send(chatId, typed);
-    if (waiting) return this.answer(chatId, waiting, said);
+    if (waiting) return this.answer(chatId, waiting, [caption, said].filter(Boolean).join("\n\n"));
     let path: string;
     try {
       path = hooks.saveVoice(audio);
     } catch (error) {
-      return hooks.send(chatId, `I couldn't keep that voice message (${reason(error)}), so it did not reach your agent.`);
+      const why = reason(error);
+      return lost(
+        `it could not be kept: ${why}`,
+        `I couldn't keep that voice message (${why}), so it did not reach your agent.`,
+        `I couldn't keep that voice message (${why}). ${WITHOUT}`,
+      );
     }
-    hooks.deliver(chatId, voiceText(path, said));
+    hooks.deliver(chatId, voiceText(path, said, caption));
   }
 
   /** One photo, or a whole album, as one message: every image that could
@@ -535,11 +622,15 @@ export class Inbox {
     const { hooks } = this;
     const chatId = parts[0]!.chatId;
     const paths: string[] = [];
+    // Said to the person, and to the agent, which hears about Bloks
+    // rather than from it.
     const problems = new Set<string>();
+    const told = new Set<string>();
     for (const part of parts) {
       const media = part.media;
       if (media?.kind !== "image") {
         problems.add(media?.kind === "other" ? `I can't take ${media.what}` : "only photos go in an album");
+        told.add(media?.kind === "other" ? `Bloks can't take ${media.what} from Telegram` : "only photos are taken from an album");
         continue;
       }
       try {
@@ -547,23 +638,41 @@ export class Inbox {
         paths.push(hooks.saveImage(await hooks.download(media.fileId, IMAGE_MAX_BYTES)));
       } catch (error) {
         problems.add(reason(error));
+        told.add(reason(error));
       }
     }
     const caption = parts
       .map((part) => part.text)
       .filter(Boolean)
       .join("\n\n");
-    if (paths.length) hooks.deliver(chatId, imagesText(caption, paths));
-    if (!problems.size) return;
+    if (!problems.size) return hooks.deliver(chatId, imagesText(caption, paths));
     const why = [...problems].join("; ");
-    await hooks.send(
-      chatId,
-      parts.length === 1
-        ? `I couldn't take that photo (${why}), so it did not reach your agent.`
-        : paths.length
-          ? `${parts.length - paths.length} of those ${parts.length} did not reach your agent (${why}). The rest did.`
-          : `None of those ${parts.length} reached your agent (${why}).`,
-    );
+    const toAgent = [...told].join("; ");
+    const missing = parts.length - paths.length;
+    const noun = parts.every((part) => part.media?.kind === "image") ? "photos" : "attachments";
+    if (parts.length === 1) {
+      return this.missed(
+        chatId,
+        caption,
+        `A photo came with this and did not arrive (${toAgent}).`,
+        `I couldn't take that photo (${why}), so it did not reach your agent.`,
+        `I couldn't take that photo (${why}). ${WITHOUT}`,
+      );
+    }
+    if (!paths.length) {
+      return this.missed(
+        chatId,
+        caption,
+        `${parts.length} ${noun} came with this and none of them arrived (${toAgent}).`,
+        `None of those ${parts.length} reached your agent (${why}).`,
+        `None of those ${parts.length} reached your agent (${why}). Your caption went without them.`,
+      );
+    }
+    // The agent is told what is missing beside what came, so it does not
+    // describe an album of three as if two were all of it.
+    const note = `${missing} of ${parts.length} ${noun} did not arrive (${toAgent}).`;
+    hooks.deliver(chatId, imagesText(withMissing(caption, note), paths));
+    await hooks.send(chatId, `${missing} of those ${parts.length} did not reach your agent (${why}). The rest did.`);
   }
 
   private hold(message: Incoming): void {
