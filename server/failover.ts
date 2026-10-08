@@ -27,10 +27,12 @@
 export type OutReason = "limit" | "overloaded" | "credit" | "signedOut";
 
 const PATTERNS: Array<[OutReason, RegExp]> = [
-  // subscription and plan limits, and API rate limits
+  // subscription and plan limits, and API rate limits. Claude Code names
+  // the limit it hit ("You've hit your session limit"), so the kind of
+  // limit is left open rather than listed.
   // (Moonshot, Kimi's API, says "exceeded your current token quota" and
   // "exceeded_current_quota_error")
-  ["limit", /usage limit|hit your (?:usage )?limit|you'?ve hit your limit|limit (?:reached|exceeded)|rate[ _-]?limit|too many requests|\b429\b|quota (?:exceeded|exhausted)|exceeded (?:your |the )?(?:current )?(?:[\w-]+ )?quota|exceeded_current_quota|resource[_ ]exhausted|out of (?:usage|messages)|weekly limit|daily limit/i],
+  ["limit", /usage limit|(?:hit|reached) your (?:[\w-]+ )?limit|(?:session|5-hour|five-hour|opus|sonnet) limit|limit (?:reached|exceeded)|rate[ _-]?limit|too many requests|\b429\b|quota (?:exceeded|exhausted)|exceeded (?:your |the )?(?:current )?(?:[\w-]+ )?quota|exceeded_current_quota|resource[_ ]exhausted|out of (?:usage|messages)|weekly limit|daily limit/i],
   // the provider, not the account
   ["overloaded", /overloaded|\b529\b|\b503\b|service unavailable|temporarily unavailable|capacity (?:constraints|limits)|server is busy/i],
   // money ("余额不足" is "insufficient balance", from providers in China)
@@ -62,12 +64,46 @@ const DEFAULT_REST: Record<OutReason, number> = {
  * should cost an afternoon on the backup, not a week. */
 const MAX_REST = 12 * HOUR;
 
+/** A zone's wall clock at an instant, read as if it were UTC. */
+function wallParts(zone: string, at: number): { year: number; month: number; day: number; asUtc: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    }).formatToParts(new Date(at));
+    const n = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+    const [year, month, day] = [n("year"), n("month") - 1, n("day")];
+    return { year, month, day, asUtc: Date.UTC(year, month, day, n("hour"), n("minute"), n("second")) };
+  } catch {
+    // a zone this runtime does not know
+    return null;
+  }
+}
+
+/** How far a zone's clock is ahead of UTC at an instant, or null for an unknown zone. */
+function offsetIn(zone: string, at: number): number | null {
+  const wall = wallParts(zone, at);
+  return wall ? wall.asUtc - Math.floor(at / 1000) * 1000 : null;
+}
+
+/** The date it is in a zone at an instant. */
+function wallDate(zone: string, at: number) {
+  return wallParts(zone, at);
+}
+
 /**
  * When the engine said it would be usable again, as a time, or null.
  * Reads the shapes providers actually use: an epoch after a pipe (Claude
  * Code's "usage limit reached|1759000000"), "try again in 20m" or "in 1
  * hour 5 minutes", "retry after 30 seconds", a clock time like "resets
- * 3pm" or "resets at 15:30", and a date and time like "resets Oct 9, 3pm".
+ * 3pm" or "resets at 15:30", and a date and time like "resets Oct 9, 3pm",
+ * each in the zone named after it ("(Asia/Yerevan)") when there is one.
  */
 export function resetAt(text: string, now = Date.now()): number | null {
   const said = text ?? "";
@@ -100,19 +136,36 @@ export function resetAt(text: string, now = Date.now()): number | null {
     if (half === "pm" && hour < 12) hour += 12;
     if (half === "am" && hour === 12) hour = 0;
     if (hour < 24 && minute < 60 && (half || time[1])) {
-      const at = new Date(now);
+      // Claude Code says whose clock it means: "resets 3:20pm
+      // (Asia/Yerevan)" is the account's zone, which need not be this
+      // computer's (a server in another country, a laptop that
+      // travelled). Read without it, the engine rests hours too long or
+      // comes back while it is still out.
+      const zone = said.match(/\(([A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)+|UTC|GMT)\)/)?.[1];
+      const wall = zone && offsetIn(zone, now) !== null ? zone : null;
+      const today = wall ? wallDate(wall, now) : null;
+      const at = (year: number, month: number, day: number) => {
+        if (!wall) return new Date(year, month, day, hour, minute, 0, 0).getTime();
+        // the instant whose wall clock there reads this, settled twice so
+        // a daylight saving change between now and then is counted
+        const guess = Date.UTC(year, month, day, hour, minute);
+        const first = guess - (offsetIn(wall, guess) ?? 0);
+        return guess - (offsetIn(wall, first) ?? 0);
+      };
+      const local = new Date(now);
+      const year = today?.year ?? local.getFullYear();
       if (dated) {
         const month = MONTHS.indexOf(dated[1].toLowerCase());
-        at.setMonth(month, Number(dated[2]));
-        at.setHours(hour, minute, 0, 0);
+        const day = Number(dated[2]);
+        const then = at(year, month, day);
         // a date already past this year means next year's
-        if (at.getTime() <= now) at.setFullYear(at.getFullYear() + 1);
-        return at.getTime();
+        return then > now ? then : at(year + 1, month, day);
       }
-      at.setHours(hour, minute, 0, 0);
+      const month = today?.month ?? local.getMonth();
+      const day = today?.day ?? local.getDate();
+      const then = at(year, month, day);
       // a reset time already past today means tomorrow's
-      if (at.getTime() <= now) at.setDate(at.getDate() + 1);
-      return at.getTime();
+      return then > now ? then : at(year, month, day + 1);
     }
   }
   return null;
@@ -173,8 +226,12 @@ export function describeRest(rest: Rest, now = Date.now()): string {
   }
   const at = new Date(rest.until);
   const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  const sameDay = new Date(now).toDateString() === at.toDateString();
-  return sameDay ? `until ${time}` : `until ${time} tomorrow`;
+  const today = new Date(now);
+  if (today.toDateString() === at.toDateString()) return `until ${time}`;
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  if (tomorrow.toDateString() === at.toDateString()) return `until ${time} tomorrow`;
+  // a weekly limit can be days away, and "tomorrow" would be a promise
+  return `until ${at.toLocaleDateString([], { weekday: "long" })} ${time}`;
 }
 
 export const REASON_WORDS: Record<OutReason, string> = {

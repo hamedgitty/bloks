@@ -631,7 +631,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 frame.error === "authentication_failed"
                   ? "Claude Code is not signed in on this computer. Open Terminal, run claude and sign in, then send this again. Or pick another engine for this agent."
                   : text.trim() || `Claude Code could not run this turn (${frame.error}).`;
-              if (outReason(said)) outNotice = said;
+              if (outReason(said) || isLimitNotice(said)) outNotice = said;
               emit({ ...envelope(threadId, turnId), type: "runtime.error", message: said });
               break;
             }

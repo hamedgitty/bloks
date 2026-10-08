@@ -1236,7 +1236,10 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
   broadcast({ kind: "message", threadId: laneId, message: notice });
   // after this event has finished settling the lane it ended
   setTimeout(() => {
-    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId) }).catch((e) => {
+    // A message another agent sent is still that agent's on the backup:
+    // the engine hears who wrote it, and the answer goes back to them.
+    const from = asked.agent?.dir === "in" ? { botId: asked.agent.peerId, name: asked.agent.peerName } : undefined;
+    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from }).catch((e) => {
       const failed = store.appendMessage(laneId, {
         role: "bot",
         kind: "notice",

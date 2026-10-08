@@ -17,6 +17,8 @@ describe("what counts as out", () => {
   test("limits, overload, credit and sign-in, in the words providers use", () => {
     assert.equal(outReason("Claude AI usage limit reached|1790400000"), "limit");
     assert.equal(outReason("You've hit your limit · resets 3pm (Europe/London)"), "limit");
+    assert.equal(outReason("You've hit your session limit · resets 3:20pm (Asia/Yerevan)"), "limit");
+    assert.equal(outReason("You’ve reached your Opus limit · resets Oct 9, 3pm"), "limit");
     assert.equal(outReason("Grok HTTP 429: Too Many Requests"), "limit");
     assert.equal(outReason("You exceeded your current quota, please check your plan and billing details."), "limit");
     assert.equal(outReason("RESOURCE_EXHAUSTED: Quota exceeded for quota metric"), "limit");
@@ -34,6 +36,7 @@ describe("what counts as out", () => {
       "5-hour limit reached ∙ resets 3pm",
       "Weekly limit reached ∙ resets Oct 9, 3pm",
       "Opus weekly limit reached ∙ resets Oct 9, 3pm",
+      "You've hit your session limit · resets 3:20pm (Asia/Yerevan)",
     ]) {
       assert.ok(isLimitNotice(notice), notice);
       assert.equal(outReason(notice), "limit", notice);
@@ -76,10 +79,19 @@ describe("when it is usable again", () => {
   });
 
   test("Claude Code's own reset wording, with a zone or a date", () => {
-    assert.equal(resetAt("You've hit your limit · resets 3pm (Europe/Berlin)", now), new Date(2026, 8, 26, 15, 0).getTime());
+    // 10am UTC is noon in Berlin, so 3pm there is 1pm UTC the same day
+    assert.equal(resetAt("You've hit your limit · resets 3pm (Europe/Berlin)", Date.UTC(2026, 8, 26, 10, 0)), Date.UTC(2026, 8, 26, 13, 0));
     assert.equal(resetAt("5-hour limit reached ∙ resets 3pm", now), new Date(2026, 8, 26, 15, 0).getTime());
     assert.equal(resetAt("Weekly limit reached ∙ resets Oct 9, 3pm", now), new Date(2026, 9, 9, 15, 0).getTime());
     assert.equal(resetAt("Weekly limit reached ∙ resets Sep 1 at 9am", now), new Date(2027, 8, 1, 9, 0).getTime());
+    // the zone named is the account's, not this computer's: 3:20pm in
+    // Yerevan (UTC+4) is 11:20 UTC, wherever the server is
+    const utcNoon = Date.UTC(2026, 9, 8, 9, 0);
+    assert.equal(resetAt("You've hit your session limit · resets 3:20pm (Asia/Yerevan)", utcNoon), Date.UTC(2026, 9, 8, 11, 20));
+    assert.equal(resetAt("You've hit your session limit · resets 3:20pm (Asia/Yerevan)", Date.UTC(2026, 9, 8, 12, 0)), Date.UTC(2026, 9, 9, 11, 20));
+    assert.equal(resetAt("Weekly limit reached ∙ resets Oct 9, 3pm (America/New_York)", utcNoon), Date.UTC(2026, 9, 9, 19, 0));
+    // a zone this runtime does not know falls back to the local clock
+    assert.equal(resetAt("resets 3pm (Mars/Olympus_Mons)", now), new Date(2026, 8, 26, 15, 0).getTime());
     // the rate limit's own reset, appended by the driver, wins over the clock
     assert.equal(resetAt("You've hit your limit · resets 3pm|1790600000", now), 1790600000_000);
   });
@@ -247,7 +259,18 @@ if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); proce
 const out = (frame) => console.log(JSON.stringify(frame));
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
+  // one agent writing to another, the way the CLI does
+  const ping = input.match(/PING ([\\w-]+)/);
+  if (ping) {
+    await fetch(process.env.BLOKS_URL + "/api/bots/" + ping[1] + "/messages", {
+      method: "POST",
+      headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" },
+      body: JSON.stringify({ text: "SHAPE relay can you check the deploy" }),
+    });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 120, total_cost_usd: 0, session_id: "sess-ping", result: "asked" });
+    return;
+  }
   const shape = input.match(/SHAPE (\\w+)/)?.[1] ?? "none";
   const tally = "__HOME__/asked-" + shape;
   writeFileSync(tally, String((existsSync(tally) ? Number(readFileSync(tally, "utf8")) : 0) + 1));
@@ -265,6 +288,11 @@ process.stdin.on("end", () => {
   } else if (shape === "flagged") {
     reply("5-hour limit reached ∙ resets 3pm", { error: "rate_limit" });
     result("5-hour limit reached ∙ resets 3pm");
+  } else if (shape === "session" || shape === "relay") {
+    // what 2.1.29x says now: the limit named, the account's zone after
+    // the time, flagged on the reply and failed on the result
+    reply("You've hit your session limit · resets 3:20pm (Asia/Yerevan)", { error: "rate_limit" });
+    out({ type: "result", subtype: "success", is_error: true, num_turns: 1, duration_api_ms: 120, total_cost_usd: 0, session_id: session, result: "You've hit your session limit · resets 3:20pm (Asia/Yerevan)" });
   } else if (shape === "bare") {
     const at = Math.floor(Date.now() / 1000) + 3 * 3600;
     reply("Claude AI usage limit reached|" + at, {}, "claude-sonnet-5");
@@ -280,7 +308,7 @@ describe("a Claude Code subscription limit moves to the backup", () => {
   let h: Harness;
   let home: string;
   let spare: Awaited<ReturnType<typeof fakeEngine>>;
-  const shapes = ["synthetic", "flagged", "bare", "talk"];
+  const shapes = ["synthetic", "flagged", "session", "relay", "bare", "talk"];
   before(async () => {
     home = mkdtempSync(join(tmpdir(), "bloks-claude-limit-"));
     mkdirSync(join(home, ".bloks"), { recursive: true });
@@ -324,7 +352,7 @@ describe("a Claude Code subscription limit moves to the backup", () => {
       return !me.busy && ready(me.messages) ? me.messages : null;
     });
 
-  for (const shape of ["synthetic", "flagged", "bare"]) {
+  for (const shape of ["synthetic", "flagged", "session", "bare"]) {
     test(`${shape}: the notice is not the agent's reply, the backup answers, and Claude rests`, async () => {
       const botId = await agentOn(shape);
       await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} summarise the week` }) });
@@ -341,6 +369,8 @@ describe("a Claude Code subscription limit moves to the backup", () => {
       // the rate limit's own reset is used when it gave one
       if (shape === "synthetic") assert.match(notice.text, /for about (39|40) minutes/);
       if (shape === "bare") assert.match(notice.text, /until /);
+      // said once, as the handover, not once per frame that carried it
+      assert.ok(!first.some((m: any) => m.kind === "notice" && /hit your/.test(m.text ?? "")), "the raw limit notice was shown");
 
       // the next message goes straight to the backup: Claude is resting
       await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} and next week?` }) });
@@ -349,6 +379,21 @@ describe("a Claude Code subscription limit moves to the backup", () => {
       assert.equal(asked(shape), 1, "a resting Claude was asked again");
     });
   }
+
+  test("a message from another agent is still theirs on the backup", async () => {
+    const botId = await agentOn("relay");
+    const { bot: sender } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Assistant" }) });
+    await h.fetch(`/api/bots/${sender.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ modelSelection: { instanceId: "claude-talk", model: "claude-sonnet-5" }, approvals: "auto" }),
+    });
+    await h.fetch(`/api/bots/${sender.id}/messages`, { method: "POST", body: JSON.stringify({ text: `PING ${botId}` }) });
+    const messages = await settled(botId, (m) => m.some((x) => x.text === "Done, from the spare."));
+    assert.ok(messages, "the backup never answered the other agent");
+    assert.equal(asked("relay"), 1, "Claude is tried first, once");
+    const heard = spare.asked.find((a) => a.includes("SHAPE relay"));
+    assert.match(heard ?? "", /A message from Assistant, another agent/, "the backup was not told who wrote it");
+  });
 
   test("an agent that only talks about a limit is answering, not out", async () => {
     const botId = await agentOn("talk");
