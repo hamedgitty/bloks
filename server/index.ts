@@ -3825,7 +3825,11 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
         run.values[onBehalfOf.stepId] = { text: said };
         run.cursor++;
       });
-      void advanceRun(onBehalfOf.runId).catch(() => {});
+      // After the ended turn has finished settling its lane. The next step
+      // can start in this same lane at once, and the rest of the ending
+      // (its credential revoked, its lane state cleared) would otherwise
+      // land on the step that just began.
+      setTimeout(() => void advanceRun(onBehalfOf.runId).catch(() => {}), 0);
     }
   } else if (onBehalfOf) {
     // the run stopped while its turn was still going
