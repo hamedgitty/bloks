@@ -1518,6 +1518,11 @@ for (const room of bloks.bloks) {
   store.settleOpenAsks(room.id);
 }
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
+/** The thread each live ask's card is in: the room it was asked in, or
+ * the lane. The answer goes to the lane (askThreadByRequest), but a card
+ * settled for an answer that could not be delivered is settled where it
+ * is, or the room's card stays open forever. */
+const askCardThread = new Map<string, string>();
 /** A collaborator who answered an approval, by request, so the record and
  * the card say who decided rather than "you". */
 const decidedByMember = new Map<string, string>();
@@ -1871,6 +1876,7 @@ bus.subscribe((event: RuntimeEvent) => {
       });
       if (event.requestId) {
         askMessageByRequest.set(event.requestId, message.id);
+        askCardThread.set(event.requestId, roomId);
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
         // A turn that began on a phone should not stall on a card the
@@ -1932,6 +1938,7 @@ bus.subscribe((event: RuntimeEvent) => {
         }
         if (event.requestId) {
           askMessageByRequest.delete(event.requestId);
+          askCardThread.delete(event.requestId);
           askThreadByRequest.delete(event.requestId);
           decidedByMember.delete(event.requestId);
         }
@@ -7580,6 +7587,7 @@ function settleRebuiltAsks(laneId: string) {
     askThreadByRequest.delete(requestId);
     const messageId = askMessageByRequest.get(requestId);
     askMessageByRequest.delete(requestId);
+    askCardThread.delete(requestId);
     const card = store.messagesFor(threadId).find((m) => m.id === messageId)?.card;
     if (!messageId || !card || card.answered || card.dismissed) continue;
     const patched = store.patchMessage(threadId, messageId, {
@@ -10348,23 +10356,27 @@ const server = createServer(async (req, res) => {
         // closed beats a 500 that leaves a dead card open forever, the
         // card settles as unanswerable, and the action was never run.
         const messageId = askMessageByRequest.get(requestId);
+        // where the card is, which in a room is not the lane that asked
+        const cardThread = askCardThread.get(requestId) ?? askThread;
         if (messageId) {
-          const existing = store.messagesFor(askThread).find((msg) => msg.id === messageId);
+          const existing = store.messagesFor(cardThread).find((msg) => msg.id === messageId);
           if (existing?.card && !existing.card.answered) {
-            const patched = store.patchMessage(askThread, messageId, {
+            const patched = store.patchMessage(cardThread, messageId, {
               card: { ...existing.card, answered: "unavailable", dismissed: true },
             });
-            if (patched) broadcast({ kind: "message.patch", threadId: askThread, message: patched });
+            if (patched) broadcast({ kind: "message.patch", threadId: cardThread, message: patched });
           }
           askMessageByRequest.delete(requestId);
+          askCardThread.delete(requestId);
           askThreadByRequest.delete(requestId);
         }
-        const notice = store.appendMessage(askThread, {
+        const notice = store.appendMessage(cardThread, {
           role: "bot",
+          ...(cardThread !== askThread ? { from: bot.id } : {}),
           kind: "activity",
           tool: { name: "that request had already closed, nothing was run", ok: false },
         });
-        broadcast({ kind: "message", threadId: askThread, message: notice });
+        broadcast({ kind: "message", threadId: cardThread, message: notice });
         return json(res, 200, { ok: false, outcome: "unavailable" });
       }
     }
