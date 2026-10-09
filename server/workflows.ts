@@ -34,7 +34,7 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -537,8 +537,9 @@ export class WorkflowStore {
       if (Array.isArray(parsed)) {
         this.workflows = parsed.filter((w) => w?.id && typeof w.name === "string" && Array.isArray(w.steps));
       }
-    } catch {
-      /* none yet */
+    } catch (error) {
+      // none yet, or a file that will not parse and is kept aside
+      setAside(WORKFLOWS_FILE, error);
     }
   }
 

@@ -100,6 +100,14 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `events/`, `native/` | Canonical events, and raw provider traffic |
 | `checkpoints/` | Content-addressed file versions, one photograph per folder, and the undo records |
 
+A store writes its whole file on every change. Where losing that file
+would hurt (agents, transcripts, rooms, config and the like) the write
+goes through `server/atomic-write.ts`: to a file beside it, flushed, then
+renamed over the old one, so a crash leaves the old file or the new one,
+never half. Such a file that is there and will not parse is moved aside
+as `<name>.corrupt-<time>` before its store starts empty, so the next
+save cannot write over the only copy.
+
 Checkpoints are not git. On a Mac without the developer tools
 `/usr/bin/git` is a stub that opens an installer, so the store hashes
 files itself: each version is kept once by its sha256, a file whose size

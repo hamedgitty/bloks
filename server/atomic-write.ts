@@ -5,7 +5,16 @@
 // a full disk or a power cut in between leaves it cut short. Here the new
 // text goes to a file beside it, is flushed to the disk, and only then is
 // renamed over the old one, which the filesystem does in one step.
+//
+// The other half is what a loader does with a file that will not parse.
+// Most of them take it as nothing saved yet, which is right on a first
+// run and a disaster after a bad write: the next save puts the empty
+// state over the only copy there was. config.json is the worst of them,
+// since it holds every key and is rewritten each time the Telegram offset
+// moves. setAside moves such a file out of the way first, so what was in
+// it is still on disk for somebody to recover by hand.
 import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 
 /** Replaces `file` with `data` in one step. With a mode, the new file has
  * exactly that mode from the moment it exists, so a key in it is never
@@ -41,4 +50,24 @@ export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: 
     rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/** Moves a file that could not be read out of the way, to
+ * `<name>.corrupt-<time>` beside it, so the next save starts a new file
+ * instead of writing over this one. A file that is simply not there yet
+ * is left alone. Returns where the file went, or null. */
+export function setAside(file: string, error: unknown): string | null {
+  if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+  const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    renameSync(file, aside);
+  } catch {
+    // gone already, or it cannot be moved; there is nothing more to try
+    return null;
+  }
+  // Never the parse error's message: V8 quotes the text around the fault,
+  // and in config.json that text can be part of a key.
+  const why = (error as NodeJS.ErrnoException | null)?.code ?? "it is not valid JSON";
+  console.warn(`[bloks] ${basename(file)} could not be read (${why}). It was kept as ${aside}, and a new one starts empty.`);
+  return aside;
 }

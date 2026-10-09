@@ -19,7 +19,7 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -213,8 +213,9 @@ export class JobStore {
     try {
       const parsed = JSON.parse(readFileSync(JOBS_FILE, "utf8"));
       if (Array.isArray(parsed)) this.jobs = parsed.filter((job) => job?.id && job?.title);
-    } catch {
-      /* no board yet */
+    } catch (error) {
+      // no board yet, or one that will not parse and is kept aside
+      setAside(JOBS_FILE, error);
     }
     // Work that was running when the app stopped did not carry on
     // running. Saying so beats a job that claims to be in progress

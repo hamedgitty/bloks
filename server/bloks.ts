@@ -13,7 +13,7 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { ChatLink } from "./chat-bridge.ts";
@@ -159,7 +159,8 @@ export class BlokStore {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     try {
       this.bloks = JSON.parse(readFileSync(BLOKS_FILE, "utf8"));
-    } catch {
+    } catch (error) {
+      setAside(BLOKS_FILE, error);
       this.bloks = [];
     }
   }

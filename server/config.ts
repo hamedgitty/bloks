@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
 
@@ -221,8 +221,10 @@ export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
   try {
     cfg = JSON.parse(readFileSync(join(DATA_DIR, "config.json"), "utf8"));
-  } catch {
-    /* first run, env fallbacks below */
+  } catch (error) {
+    // First run, env fallbacks below. A file that is there and will not
+    // parse is kept aside first, or the next save would write over it.
+    setAside(join(DATA_DIR, "config.json"), error);
   }
   cfg.xai = { key: process.env.XAI_API_KEY, ...cfg.xai };
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
@@ -264,8 +266,13 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   let disk: Record<string, unknown> = {};
   try {
     disk = JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    /* first write */
+  } catch (error) {
+    // First write. Or a file cut short: starting from nothing over that
+    // would wipe every key for good, so it goes aside first. Refusing to
+    // save would leave every later save failing as well, the Telegram
+    // offset's included, and the copy aside already keeps whatever there
+    // was to recover.
+    setAside(p, error);
   }
   // An allowlist, not a spread: this file holds credentials and a request
   // body is not a config file. A section missing from here is a section

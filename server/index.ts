@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engine-setup.ts";
@@ -1275,7 +1275,8 @@ let briefs: Array<Brief & { readAt?: number }> = (() => {
   try {
     const parsed = JSON.parse(readFileSync(BRIEFS_FILE, "utf8"));
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (error) {
+    setAside(BRIEFS_FILE, error);
     return [];
   }
 })();
@@ -3898,7 +3899,8 @@ let meetings: Meeting[] = (() => {
   try {
     const parsed = JSON.parse(readFileSync(MEETINGS_FILE, "utf8"));
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (error) {
+    setAside(MEETINGS_FILE, error);
     return [];
   }
 })();
@@ -3931,7 +3933,8 @@ let watchers: Watcher[] = (() => {
   try {
     const parsed = JSON.parse(readFileSync(WATCHERS_FILE, "utf8"));
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (error) {
+    setAside(WATCHERS_FILE, error);
     return [];
   }
 })();

@@ -1,16 +1,18 @@
-// Saving a file whole (server/atomic-write.ts).
+// Saving a file whole, and keeping one that will not parse
+// (server/atomic-write.ts).
 //
 // Several stores used to save with a plain writeFileSync, which empties
 // the file before writing it. A crash or a full disk in between left a
-// file cut short, and config.json, with every key in it, went the same
-// way.
+// file cut short, the loader read that as nothing saved, and the next
+// save made the loss permanent. config.json, with every key in it, went
+// the same way.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "../server/atomic-write.ts";
+import { setAside, writeFileAtomic } from "../server/atomic-write.ts";
 
 const scratch = (t: { after: (fn: () => void) => void }) => {
   const dir = mkdtempSync(join(tmpdir(), "bloks-atomic-"));
@@ -51,4 +53,31 @@ test("a save that fails part way leaves the old file exactly as it was", (t) => 
   assert.throws(() => writeFileAtomic(file, Symbol("not text") as unknown as string, 0o600));
   assert.equal(readFileSync(file, "utf8"), '[{"id":"r1"}]');
   assert.deepEqual(readdirSync(dir), ["routines.json"], "the half-written temp is cleaned up");
+});
+
+test("a file that will not parse is moved aside; a missing one is left alone", (t) => {
+  const dir = scratch(t);
+  const file = join(dir, "jobs.json");
+  writeFileSync(file, '[{"id":"j1","title":"Wri');
+  let error: unknown;
+  try {
+    JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    error = e;
+  }
+  const aside = setAside(file, error);
+  assert.ok(aside, "the unreadable file was kept");
+  assert.match(aside!, /jobs\.json\.corrupt-[\dT-]+Z$/);
+  assert.equal(readFileSync(aside!, "utf8"), '[{"id":"j1","title":"Wri');
+  assert.deepEqual(readdirSync(dir), [aside!.slice(dir.length + 1)]);
+
+  // A first run has no file at all, and that is not worth a copy or a word.
+  let missing: unknown;
+  try {
+    readFileSync(join(dir, "none.json"), "utf8");
+  } catch (e) {
+    missing = e;
+  }
+  assert.equal(setAside(join(dir, "none.json"), missing), null);
+  assert.deepEqual(readdirSync(dir).length, 1);
 });

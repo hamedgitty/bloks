@@ -21,7 +21,7 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -286,7 +286,8 @@ export class RoutineStore {
     try {
       const parsed = JSON.parse(readFileSync(ROUTINES_FILE, "utf8"));
       this.routines = Array.isArray(parsed) ? parsed.filter(isRoutine) : [];
-    } catch {
+    } catch (error) {
+      setAside(ROUTINES_FILE, error);
       this.routines = [];
     }
   }

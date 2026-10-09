@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import type { Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
@@ -470,7 +470,10 @@ export class Store {
     mkdirSync(DATA_DIR, { recursive: true });
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
-    } catch {
+    } catch (error) {
+      // Kept aside rather than lost: the first save after this would
+      // otherwise write no agents over every agent there was.
+      setAside(BOTS_FILE, error);
       this.bots = [];
     }
     // busy never survives a restart, no turn does either
@@ -506,7 +509,8 @@ export class Store {
     if (!list) {
       try {
         list = JSON.parse(readFileSync(messagesFile(threadId), "utf8"));
-      } catch {
+      } catch (error) {
+        setAside(messagesFile(threadId), error);
         list = [];
       }
       this.messages.set(threadId, list!);

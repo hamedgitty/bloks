@@ -29,7 +29,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 
 /** A row as placing it needs it: an agent or a room in the sidebar. */
@@ -204,8 +204,9 @@ export class SidebarStore {
         this.sectionOrder = order;
         this.saved = true;
       }
-    } catch {
-      /* nothing placed yet */
+    } catch (error) {
+      // nothing placed yet, or a file that will not parse and is kept aside
+      setAside(this.file, error);
     }
   }
 

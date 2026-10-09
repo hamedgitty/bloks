@@ -24,7 +24,7 @@
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic-write.ts";
+import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { BlokColor, BlokShape } from "./store.ts";
@@ -168,8 +168,9 @@ export class ProjectStore {
       if (Array.isArray(parsed)) {
         this.projects = parsed.filter((p) => p?.id && typeof p.name === "string");
       }
-    } catch {
-      /* no projects yet */
+    } catch (error) {
+      // no projects yet, or a file that will not parse and is kept aside
+      setAside(PROJECTS_FILE, error);
     }
   }
 
