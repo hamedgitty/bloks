@@ -4,6 +4,7 @@
 // origin, which includes the port, so the port has to be one it can keep.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,5 +49,37 @@ test("a port someone else took fails at once instead of hanging", async () => {
     assert.equal(outcome, "refused");
   } finally {
     squatter.close();
+  }
+});
+
+// The proxy signs everything it forwards as this device, so it has to
+// hold the same line the server does: only the window on this computer.
+test("a page from elsewhere is turned away, and the window's own page is pinned like the server's", async () => {
+  const proxy = await startRemoteProxy(profile, { staticDir: ui });
+  const port = proxy.port;
+  const ask = (headers: Record<string, string>, path = "/api/bots") =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
+      const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers }, (res) => {
+        res.resume();
+        resolve({ status: res.statusCode ?? 0, headers: res.headers });
+      });
+      req.on("error", reject);
+      req.end("{}");
+    });
+  try {
+    // another site in a browser on this machine
+    assert.equal((await ask({ host: `127.0.0.1:${port}`, origin: "https://somewhere.example" })).status, 403);
+    // a hostile name pointed at 127.0.0.1 still carries its own Host
+    assert.equal((await ask({ host: `rebound.example:${port}` })).status, 403);
+    // the window's own page, same origin
+    const page = await fetch(`http://127.0.0.1:${port}/`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+    // and its own requests get past the door (the relay here answers
+    // nobody, so what comes back is the proxy's own "could not reach")
+    const own = await ask({ host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
+    assert.notEqual(own.status, 403);
+  } finally {
+    proxy.stop();
   }
 });

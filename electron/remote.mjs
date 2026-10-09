@@ -139,6 +139,51 @@ const TYPES = {
   ".ico": "image/x-icon",
 };
 
+// The same rules the server holds its own page to (server/index.ts,
+// SECURITY_HEADERS and http-guard.ts). This proxy stands in for that
+// server, so the window should get the same page, and loopback is no
+// more a boundary here than there: any site open in a browser can send
+// requests to 127.0.0.1, and this proxy signs every one it forwards as
+// this device.
+const PAGE_HEADERS = {
+  "content-security-policy": [
+    "default-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; "),
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+};
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function hostnameOf(value) {
+  try {
+    return new URL(`http://${value}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** Only the window on this computer: a Host that names loopback (a
+ * hostile name that resolves to 127.0.0.1 still carries its own), and no
+ * Origin, or a loopback one. A page elsewhere cannot meet both. */
+export function fromThisComputer(req) {
+  if (!LOOPBACK_HOSTS.has(hostnameOf(req.headers.host ?? ""))) return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return LOOPBACK_HOSTS.has(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -200,7 +245,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, "");
     let file = join(staticDir, path);
     if (!file.startsWith(staticDir) || !existsSync(file) || statSync(file).isDirectory()) file = join(staticDir, "index.html");
-    res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" });
+    res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream", ...PAGE_HEADERS });
     res.end(readFileSync(file));
   };
 
@@ -262,6 +307,11 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
   };
 
   const server = createServer(async (req, res) => {
+    if (!fromThisComputer(req)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not from this computer" }));
+      return;
+    }
     const url = new URL(req.url, "http://x");
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
     if (url.pathname === "/api/events") {
@@ -283,7 +333,16 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
         path: url.pathname + url.search,
         ...(body && body.length ? { bodyB64: body.toString("base64"), type: req.headers["content-type"] ?? "application/json" } : {}),
       });
-      res.writeHead(answer.status, { "content-type": answer.type ?? "application/octet-stream" });
+      const type = answer.type ?? "application/octet-stream";
+      res.writeHead(answer.status, {
+        "content-type": type,
+        "x-content-type-options": "nosniff",
+        // A file the API returns as itself (an agent's HTML artifact, an
+        // app's page) is sandboxed by the server so it cannot run as this
+        // origin; that header does not survive the trip, so it is put
+        // back for anything that is not the API's own JSON.
+        ...(/^application\/json\b/i.test(type) ? {} : { "content-security-policy": "sandbox allow-scripts" }),
+      });
       res.end(answer.bytes);
     } catch (e) {
       const status = e?.status ?? 502;
