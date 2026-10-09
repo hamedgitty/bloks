@@ -183,7 +183,7 @@ function count(value: unknown): number | null {
  * frame itself, so both are read. Null for any other frame.
  */
 export function readCompactBoundary(frame: any): { trigger: string | null; before: number | null; after: number | null } | null {
-  if (frame?.type !== "system" || frame.subtype !== "compact_boundary") return null;
+  if (frame?.type !== "system" || frame.subtype !== "compact_boundary" || frame.parent_tool_use_id != null) return null;
   const meta = frame.compact_metadata && typeof frame.compact_metadata === "object" ? frame.compact_metadata : frame;
   return {
     trigger: typeof meta.trigger === "string" ? meta.trigger : null,
@@ -760,7 +760,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 // even when they cost less
                 input: (message.usage.input_tokens || 0) + (message.usage.cache_read_input_tokens || 0),
                 output: message.usage.output_tokens || 0,
-                context: promptSize(message.usage),
+                // Forwarded subagent usage is still accounted for, but it
+                // measured the child's session rather than this lane's.
+                ...(frame.parent_tool_use_id == null ? { context: promptSize(message.usage) } : {}),
                 ...(ttl ? { cacheTtl: ttl } : {}),
               });
             }

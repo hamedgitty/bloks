@@ -28,7 +28,7 @@ import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
 import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import { formatWhen, useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
-import { ContextRing, RING_FROM } from "./TaskStrip";
+import { ContextRing, RING_FROM, contextTitle, measuredContext, type TaskChipData } from "./TaskStrip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,15 +56,15 @@ export function LaneMark({ state, unread }: { state: string; unread?: boolean })
 
 /** How full a conversation is, once that is worth a glance. It lived on
  * the tab strip, which the sidebar replaces while it lists conversations. */
-export function LaneRing({ lane }: { lane: { context?: { fraction: number; summarised: boolean } } }) {
+export function LaneRing({ lane }: { lane: Pick<TaskChipData, "context"> }) {
   const c = lane.context;
-  if (!c || (c.fraction < RING_FROM && !c.summarised)) return null;
+  if (!c || (!(measuredContext(c) && c.fraction >= RING_FROM) && !c.summarised)) return null;
   return (
     <span
       className="shrink-0 text-muted-foreground"
-      title={`${Math.round(c.fraction * 100)}% of what this model will take` + (c.summarised ? ", and the earlier part has been summarised" : "")}
+      title={contextTitle(c)}
     >
-      <ContextRing fraction={c.fraction} summarised={c.summarised} size={12} />
+      <ContextRing fraction={measuredContext(c) ? c.fraction : 0} summarised={c.summarised} size={12} />
     </span>
   );
 }

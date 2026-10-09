@@ -58,7 +58,7 @@ export interface Lane {
   /** When the turn began. Absent when the caller does not know, which
    * happens for a turn that was already running before a restart. */
   since?: number;
-  context?: { used: number; limit: number; fraction: number };
+  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table" };
   /** A room rather than an agent's lane. A gate can park on a room's card
    * and somebody still has to answer it, so it belongs in the waiting
    * list; it does not belong in a tally of what each agent is doing. */

@@ -113,21 +113,21 @@ export function readingFor(
  *
  * Its own engine's reading first, with the engine's window when it gave
  * one and the table's otherwise. A reading from another engine or model
- * counts as nothing measured. A lane from before readings were kept has
- * only `legacy`, the old per-turn number, and keeps showing it.
+ * counts as nothing measured. Old per-turn sums and the default fold
+ * margin are not measurements. Keep numeric zeroes on the wire for
+ * older clients, with an explicit flag for clients that know the difference.
  */
 export function laneFill(
   reading: Reading | null | undefined,
-  legacy: number | undefined,
   selection: { instanceId: string; model?: string | null },
-): Pressure & { window: "engine" | "table" } {
+): Pressure & { measured: boolean; window: "engine" | "table" } {
   const own = readingFor(reading, selection);
-  const table = contextLimitFor(selection.model);
-  if (own) {
-    const window = own.window && own.window > 0 ? own.window : null;
-    return { ...pressure(own.used, window ?? table), window: window ? "engine" : "table" };
+  const window = own?.window && Number.isInteger(own.window) && own.window > 0 ? own.window : null;
+  const limit = window ?? knownLimitFor(selection.model);
+  if (!own || !Number.isFinite(own.used) || own.used <= 0 || limit === null) {
+    return { used: 0, limit: 0, fraction: 0, measured: false, window: "table" };
   }
-  return { ...pressure(reading ? 0 : (legacy ?? 0), table), window: "table" };
+  return { ...pressure(own.used, limit), measured: true, window: window ? "engine" : "table" };
 }
 
 // ── compacting before a turn ───────────────────────────────────────────

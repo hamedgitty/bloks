@@ -33,7 +33,17 @@ export interface TaskChipData {
   state: TaskState;
   usage?: { input: number; output: number; turns: number };
   /** How full this lane's conversation is. See server/context.ts. */
-  context?: { used: number; limit: number; fraction: number; summarised: boolean };
+  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table"; summarised: boolean };
+}
+
+export function measuredContext(context: TaskChipData["context"]): boolean {
+  return Boolean(context && context.measured !== false && context.used > 0 && context.limit > 0);
+}
+
+export function contextTitle(context: NonNullable<TaskChipData["context"]>): string {
+  if (!measuredContext(context)) return "The earlier part has been summarised";
+  return `${context.window === "table" ? "About " : ""}${Math.round(context.fraction * 100)}% of what this model will take` +
+    (context.summarised ? ", and the earlier part has been summarised" : "");
 }
 
 /** 842 tokens reads as itself; larger sums read as 12.3k or 1.2M. Zero
@@ -212,15 +222,12 @@ export function TaskStrip({
           >
             <StateDot state={task.state} />
             <span className="truncate font-medium">{task.title}</span>
-            {task.context && (task.context.fraction >= RING_FROM || task.context.summarised) && (
+            {task.context && ((measuredContext(task.context) && task.context.fraction >= RING_FROM) || task.context.summarised) && (
               <span
                 className={cn("shrink-0", active ? "opacity-80" : "text-muted-foreground")}
-                title={
-                  `${Math.round(task.context.fraction * 100)}% of what this model will take` +
-                  (task.context.summarised ? ", and the earlier part has been summarised" : "")
-                }
+                title={contextTitle(task.context)}
               >
-                <ContextRing fraction={task.context.fraction} summarised={task.context.summarised} />
+                <ContextRing fraction={measuredContext(task.context) ? task.context.fraction : 0} summarised={task.context.summarised} />
               </span>
             )}
             {(() => {

@@ -180,7 +180,7 @@ export interface TaskSummary {
   usage?: { input: number; output: number; turns: number };
   /** How full this lane's conversation is, and whether its earlier part
    * has been summarised. See server/context.ts. */
-  context?: { used: number; limit: number; fraction: number; summarised: boolean };
+  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table"; summarised: boolean };
 }
 
 export interface Bot {

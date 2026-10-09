@@ -1065,7 +1065,7 @@ function clientBot(bot: BotRecord | null) {
       // request against the window it reported, where the engine the
       // agent is on now made one, and the table's limit otherwise. See
       // server/context.ts.
-      const fill = laneFill(task.reading, task.lastInput, bot.modelSelection);
+      const fill = laneFill(task.reading, bot.modelSelection);
       const said = store.messagesFor(task.id);
       // a compaction marker is not something happening in the lane
       let last = said.length - 1;
@@ -1083,6 +1083,7 @@ function clientBot(bot: BotRecord | null) {
           used: fill.used,
           limit: fill.limit,
           fraction: fill.fraction,
+          measured: fill.measured,
           // "engine" when the window is the engine's own word, "table"
           // when it is the guess by model name
           window: fill.window,
@@ -1961,19 +1962,14 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "context.compacted": {
-      lastRequest.delete(event.threadId);
-      // An engine compacting on our asking may not say what it started
-      // from; the lane's own reading does, when it is that engine's.
-      const was = store.taskByThread(event.threadId)?.task.reading;
-      const by = readingBy(event.threadId, event.providerInstanceId ?? event.provider);
-      const before = event.before ?? (was ? readingFor(was, by)?.used ?? null : null);
-      noteCompacted(event);
-      pushMessage({
+      const before = compactionBefore(event);
+      const marker = pushMessage({
         role: "bot",
         kind: "notice",
-        text: compactedNotice({ ...event, before }),
-        compaction: { before, after: event.after },
+        text: compactedNotice({ before, after: null }),
+        compaction: { before, after: null },
       });
+      noteCompacted(event, roomId, marker.id);
       break;
     }
     case "runtime.error": {
@@ -2160,8 +2156,11 @@ bus.subscribe((event: RuntimeEvent) => {
       // If this lane is filling up, fold its older half now rather than
       // on the way into the next turn, so nobody waits on a summary.
       const settledLane = store.taskByThread(event.threadId)?.task;
-      const fill = laneFill(settledLane?.reading, settledLane?.lastInput, bot.modelSelection);
-      if (!command && shouldCompact(fill.used, fill.limit)) {
+      // Only a request from this engine/model can drive the fold. The
+      // default window stays a safety margin here, even when it is not
+      // a known window that the ring can display.
+      const own = readingFor(settledLane?.reading, bot.modelSelection);
+      if (!command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
         void foldContext(bot.id, event.threadId).catch(() => {});
       } else if (!command) {
         // Otherwise absorb one message into the running summary, if this
@@ -5329,7 +5328,7 @@ const IDLE_CACHE_MS = Number(process.env.BLOKS_IDLE_CACHE_MS) || CACHE_LIFETIME_
 
 function noteRequest(event: Extract<RuntimeEvent, { type: "thread.token-usage.updated" }>) {
   // only an engine that reports the whole prompt can be judged by it
-  if (typeof event.context !== "number") return;
+  if (typeof event.context !== "number" || !Number.isFinite(event.context) || event.context <= 0) return;
   const seen = lastRequest.get(event.threadId);
   lastRequest.set(event.threadId, {
     at: Date.now(),
@@ -5356,10 +5355,17 @@ function readingBy(threadId: string, instanceId: string): { instanceId: string; 
 
 function noteLaneReading(event: RuntimeEvent, said: { used: number | null; window: number | null }) {
   const instanceId = event.providerInstanceId ?? event.provider;
-  store.noteReading(event.threadId, readingBy(event.threadId, instanceId), said);
+  const by = readingBy(event.threadId, instanceId);
+  const used = typeof said.used === "number" && Number.isFinite(said.used) && said.used > 0 ? said.used : null;
+  const window = typeof said.window === "number" && Number.isFinite(said.window) && said.window > 0 ? said.window : null;
+  if (used !== null || window !== null) store.noteReading(event.threadId, by, { used, window });
   // under the line again, so the next time it crosses is a new crossing
   const reading = store.taskByThread(event.threadId)?.task.reading;
-  if (reading && compactedFrom.has(event.threadId) && !overTheLine(reading)) compactedFrom.delete(event.threadId);
+  if (used !== null && readingFor(reading, by) && compactedFrom.has(event.threadId) && !overTheLine(reading!)) {
+    compactedFrom.delete(event.threadId);
+  }
+  const patched = store.resolveCompaction(event.threadId, by, used);
+  if (patched) broadcast({ kind: "message.patch", ...patched });
 }
 
 /** Where each lane last was when it was compacted before a turn, kept
@@ -5387,11 +5393,18 @@ function overTheLine(reading: Reading): boolean {
   return compactBeforeTurn({ used: reading.used, window: readingWindow(reading), ...beforeTurnSettings() });
 }
 
-/** The engine compacted the session, by its own choice or ours: what it
- * came down to is how full it is now, when it said. */
-function noteCompacted(event: Extract<RuntimeEvent, { type: "context.compacted" }>) {
-  if (event.after === null) return;
-  noteLaneReading(event, { used: event.after, window: null });
+/** A marker uses the same own-origin request as the ring, before the
+ * boundary invalidates it. Native pre/post metadata counts differently. */
+function compactionBefore(event: RuntimeEvent): number | null {
+  const by = readingBy(event.threadId, event.providerInstanceId ?? event.provider);
+  const own = readingFor(store.taskByThread(event.threadId)?.task.reading, by);
+  return own && Number.isFinite(own.used) && own.used > 0 ? own.used : null;
+}
+
+function noteCompacted(event: RuntimeEvent, where: string, messageId: string) {
+  lastRequest.delete(event.threadId);
+  const by = readingBy(event.threadId, event.providerInstanceId ?? event.provider);
+  store.beginCompaction(event.threadId, by, where, messageId);
 }
 
 function sweepIdleLanes(now = Date.now()) {
@@ -5534,6 +5547,8 @@ function onIdleCompaction(event: RuntimeEvent) {
       high.input = Math.max(high.input, event.input);
       high.output = Math.max(high.output, event.output);
       turnTokens.set(event.threadId, high);
+      noteRequest(event);
+      if (typeof event.context === "number") noteLaneReading(event, { used: event.context, window: null });
       break;
     }
     case "context.reading":
@@ -5541,7 +5556,7 @@ function onIdleCompaction(event: RuntimeEvent) {
       break;
     case "context.compacted": {
       running.after = event.after;
-      noteCompacted(event);
+      const before = compactionBefore(event);
       // A compaction before a turn is said where the turn is: in the
       // room, as this agent, when the lane is speaking in one.
       const where = ahead?.roomId ?? event.threadId;
@@ -5549,9 +5564,10 @@ function onIdleCompaction(event: RuntimeEvent) {
         role: "bot",
         ...(ahead?.inRoom ? { from: bot.id } : {}),
         kind: "notice",
-        text: compactedNotice({ ...event, idle: !ahead }),
-        compaction: { before: event.before, after: event.after, ...(ahead ? {} : { idle: true }) },
+        text: compactedNotice({ before, after: null, idle: !ahead }),
+        compaction: { before, after: null, ...(ahead ? {} : { idle: true }) },
       });
+      noteCompacted(event, where, marker.id);
       broadcast({ kind: "message", threadId: where, message: marker });
       break;
     }
@@ -12437,7 +12453,7 @@ const server = createServer(async (req, res) => {
       // The search route and the job board already draw the same line.
       for (const bot of store.bots.filter((b) => !b.archivedAt)) {
         for (const task of bot.tasks) {
-          const fill = laneFill(task.reading, task.lastInput, bot.modelSelection);
+          const fill = laneFill(task.reading, bot.modelSelection);
           lanes.push({
             threadId: task.id,
             botId: bot.id,
@@ -12445,7 +12461,7 @@ const server = createServer(async (req, res) => {
             laneTitle: task.title,
             busy: Boolean(task.busy),
             since: turnStarted.get(task.id),
-            context: { used: fill.used, limit: fill.limit, fraction: fill.fraction },
+            context: { used: fill.used, limit: fill.limit, fraction: fill.fraction, measured: fill.measured, window: fill.window },
             blocked: blockedOn(store.messagesFor(task.id), live, { includingPutAside: true }),
           });
         }
