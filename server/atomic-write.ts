@@ -20,7 +20,12 @@ import { basename } from "node:path";
  * exactly that mode from the moment it exists, so a key in it is never
  * readable by anyone else, not even between a write and a chmod. Throws
  * when the new one cannot be written, and the old one is left as it was. */
-export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: number): void {
+export function writeFileAtomic(
+  file: string,
+  data: string | Uint8Array,
+  mode?: number,
+  { flush = true }: { flush?: boolean } = {},
+): void {
   // Beside the file, so the rename stays on one filesystem and is atomic.
   const temp = `${file}.${process.pid}.tmp`;
   const fd = openSync(temp, "w", mode ?? 0o666);
@@ -37,7 +42,10 @@ export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: 
     writeFileSync(fd, data);
     // The rename can reach the disk before the text does, so without
     // this a power cut soon after a save can still leave the file empty.
-    fsyncSync(fd);
+    // A file rewritten on every message (a transcript, the agents) skips
+    // it: the flush would sit on the server's only thread each time, and
+    // the rename alone already survives a crash of Bloks itself.
+    if (flush) fsyncSync(fd);
   } catch (error) {
     closeSync(fd);
     rmSync(temp, { force: true });
@@ -57,7 +65,10 @@ export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: 
  * instead of writing over this one. A file that is simply not there yet
  * is left alone. Returns where the file went, or null. */
 export function setAside(file: string, error: unknown): string | null {
-  if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+  // Only a file that was read and is not JSON. A file that could not be
+  // read this once (too many open files, a permission blip) may be fine,
+  // and moving it would hide a good conversation behind a bad moment.
+  if (!(error instanceof SyntaxError)) return null;
   const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   try {
     renameSync(file, aside);
@@ -67,7 +78,6 @@ export function setAside(file: string, error: unknown): string | null {
   }
   // Never the parse error's message: V8 quotes the text around the fault,
   // and in config.json that text can be part of a key.
-  const why = (error as NodeJS.ErrnoException | null)?.code ?? "it is not valid JSON";
-  console.warn(`[bloks] ${basename(file)} could not be read (${why}). It was kept as ${aside}, and a new one starts empty.`);
+  console.warn(`[bloks] ${basename(file)} could not be read (it is not valid JSON). It was kept as ${aside}, and a new one starts empty.`);
   return aside;
 }

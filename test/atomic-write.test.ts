@@ -81,3 +81,39 @@ test("a file that will not parse is moved aside; a missing one is left alone", (
   assert.equal(setAside(join(dir, "none.json"), missing), null);
   assert.deepEqual(readdirSync(dir).length, 1);
 });
+
+test("a file that could not be read this once is left where it is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-aside-io-"));
+  try {
+    const file = join(dir, "messages-x.json");
+    writeFileSync(file, '[{"id":"m1"}]');
+    // too many open files, say: the file itself may be fine
+    const busy = Object.assign(new Error("EMFILE: too many open files"), { code: "EMFILE" });
+    assert.equal(setAside(file, busy), null);
+    assert.equal(readFileSync(file, "utf8"), '[{"id":"m1"}]');
+    // a file that is there and is not JSON is the one that moves
+    writeFileSync(file, '[{"id":');
+    let parse: unknown;
+    try {
+      JSON.parse(readFileSync(file, "utf8"));
+    } catch (error) {
+      parse = error;
+    }
+    assert.ok(setAside(file, parse));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a save that skips the flush still replaces the file whole", () => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-noflush-"));
+  try {
+    const file = join(dir, "bots.json");
+    writeFileSync(file, "old");
+    writeFileAtomic(file, "new", undefined, { flush: false });
+    assert.equal(readFileSync(file, "utf8"), "new");
+    assert.deepEqual(readdirSync(dir), ["bots.json"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

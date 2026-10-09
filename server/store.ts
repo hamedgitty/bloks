@@ -407,11 +407,11 @@ export interface BotRecord {
 const BOTS_FILE = join(DATA_DIR, "bots.json");
 
 /** Writes a file so that it is either the old one or the new one, never
- * half of each: written aside, flushed, then renamed over. A crash mid-save
- * used to leave bots.json cut short, and a bots.json that does not parse
- * loads as no agents at all. */
+ * half of each: written aside, then renamed over. A crash mid-save used to
+ * leave bots.json cut short, and a bots.json that does not parse loads as
+ * no agents at all. Not flushed: these are rewritten on every message. */
 function writeWhole(file: string, text: string) {
-  writeFileAtomic(file, text);
+  writeFileAtomic(file, text, undefined, { flush: false });
 }
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 
