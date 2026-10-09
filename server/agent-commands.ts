@@ -10,6 +10,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { MAX_ENGINE_COMMANDS, MAX_ENGINE_COMMAND_BYTES, MAX_ENGINE_COMMAND_ID_CHARS, MAX_ENGINE_COMMAND_DESCRIPTION_CHARS } from "./limits.ts";
+import type { CodexSkill } from "./codex-skills.ts";
 
 export interface AgentCommand {
   /** What follows the slash. */
@@ -19,6 +20,8 @@ export interface AgentCommand {
   /** Where it comes from: the Bloks library, or the engine itself. */
   source: "library" | "engine";
   kind?: "skill" | "command";
+  /** Codex's engine skills use dollar names, still found through `/`. */
+  prefix?: "$";
 }
 
 export const CLAUDE_COMMANDS = new Map([
@@ -33,6 +36,11 @@ const TERMINAL_COMMANDS = new Set(["doctor", "color", "focus", "reload-plugins"]
 export function claudeCommand(text: string): string | null {
   const name = /^\/([^\s]+)(?:\s|$)/.exec(text)?.[1];
   return name && CLAUDE_COMMANDS.has(name) ? name : null;
+}
+
+export function engineCommand(text: string, driverKind: string | undefined): string | null {
+  if (driverKind === "claudeAgent") return claudeCommand(text);
+  return driverKind === "codex" && /^\/compact\s*$/.test(text) ? "compact" : null;
 }
 
 export interface ClaudeCommandRow { name: string; description: string; builtin?: boolean }
@@ -127,6 +135,8 @@ export function engineSkillsIn(dir: string): AgentCommand[] {
 export function agentCommands(input: {
   library: Array<{ id: string; name: string; description: string }>;
   onClaudeCode: boolean;
+  onCodex?: boolean;
+  codexSkills?: readonly CodexSkill[];
   cwd?: string | null;
   home?: string;
   reported?: ClaudeCatalog;
@@ -138,6 +148,18 @@ export function agentCommands(input: {
     source: "library",
     kind: "skill",
   }));
+  if (input.onCodex) {
+    const kept = library.filter((c) => c.id !== "compact");
+    const seen = new Set(kept.map((c) => c.id));
+    const engine: AgentCommand[] = [{ id: "compact", name: "compact", description: "Compact this conversation", source: "engine", kind: "command" }];
+    for (const skill of input.codexSkills ?? []) {
+      if (skill.name === "compact" || seen.has(skill.name)) continue;
+      seen.add(skill.name);
+      engine.push({ id: skill.name, name: skill.name, description: skill.description, source: "engine", kind: "skill", prefix: "$" });
+    }
+    engine.sort((a, b) => a.id.localeCompare(b.id));
+    return [...kept, ...engine];
+  }
   if (!input.onClaudeCode) return library;
   const reserved = new Set(input.reported?.reserved ?? [...CLAUDE_COMMANDS.keys(), "loop", ...TERMINAL_COMMANDS]);
   const kept = library.filter((c) => !reserved.has(c.id));

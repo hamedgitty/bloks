@@ -157,7 +157,8 @@ import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
-import { agentCommands, claudeCommand, type ClaudeCatalog } from "./agent-commands.ts";
+import { agentCommands, engineCommand, type ClaudeCatalog } from "./agent-commands.ts";
+import { codexSkillNames } from "./codex-skills.ts";
 import * as discord from "./discord.ts";
 import * as whatsapp from "./whatsapp.ts";
 import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
@@ -2456,6 +2457,7 @@ function carryOn(
       presetMessage: true,
       carriedOn: true,
       telegramMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
+      personalMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
       ...carryOnTarget(turn),
       byYou: Boolean(turn.byYou) || yours,
     })
@@ -2814,14 +2816,21 @@ const claudeCatalogs = new Map<string, { instanceId: string; cwd: string | null;
 const commandTurns = new Set<string>();
 /** Protect a queue segment until startTurn has claimed the lane. */
 const queueStarts = new Set<string>();
-function acceptingClaude(bot: BotRecord, laneId?: string): string | undefined {
+function acceptingNative(bot: BotRecord, laneId?: string): string | undefined {
   const selection = (laneId ? laneEngine.get(laneId) : undefined) ?? selectEngine(bot);
-  return registry.get(selection.instanceId)?.driverKind === "claudeAgent" ? selection.instanceId : undefined;
+  const kind = registry.get(selection.instanceId)?.driverKind;
+  return kind === "claudeAgent" || kind === "codex" ? selection.instanceId : undefined;
+}
+/** An unavailable accepting instance still refuses its queued command.
+ * PR 1's durable instance-id marker stays readable without a new format. */
+function commandFor(text: string, instanceId: string): string | null {
+  return engineCommand(text, registry.get(instanceId)?.driverKind ?? "claudeAgent");
 }
 function queuedCommand(laneId: string, item: { messageId?: string }): string | undefined {
   const m = item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
-  if (!m?.text || m.deleted || m.agent || m.via || m.commandInstance === null || !claudeCommand(m.text)) return undefined;
-  return m.commandInstance ?? (store.botByThread(laneId) ? acceptingClaude(store.botByThread(laneId)!, laneId) : undefined);
+  if (!m?.text || m.deleted || m.agent || m.via || m.commandInstance === null) return undefined;
+  const accepted = m.commandInstance ?? (store.botByThread(laneId) ? acceptingNative(store.botByThread(laneId)!, laneId) : undefined);
+  return accepted && commandFor(m.text, accepted) ? accepted : undefined;
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
 function queuedSegment(laneId: string, items: Array<{ messageId?: string; text?: string; source?: "webhook" }>, continuation = false) {
@@ -2847,6 +2856,9 @@ async function startTurn(
     presetMessage?: boolean;
     /** Telegram requests held by a drain, consumed by this turn only. */
     telegramMessages?: string[];
+    /** The dispatched segment's message ids, used only to find personal
+     * words for named skills. Never taken from a client body. */
+    personalMessages?: string[];
     /** Who asked, in a shared room: "owner" or a person id. Decides who
      * approvals go to (always the owner for a member's turn). */
     requester?: string;
@@ -2865,6 +2877,8 @@ async function startTurn(
      * them and moves the conversation up the sidebar. Unset for anything
      * else: another agent, a routine, a watcher, a job, a webhook. */
     byYou?: boolean;
+    /** False for generated words relayed on the person's behalf. */
+    personal?: boolean;
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
     /** This turn asks again what the lane's last turn was asked, after
@@ -2947,7 +2961,7 @@ async function startTurn(
       entry.items.push({ text });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, personal: opts.byYou === true && opts.personal !== false });
     }
     return;
   }
@@ -2975,11 +2989,16 @@ async function startTurn(
 
   const own = bot.modelSelection;
   const ownRest = cooldowns.of(own.instanceId);
-  const commandInstance = opts.commandInstance ?? (!opts.from && !opts.presetMessage ? acceptingClaude(bot, task.id) : undefined);
-  const command = Boolean(commandInstance && claudeCommand(text));
+  const directCommandInstance = !opts.from && !opts.presetMessage ? acceptingNative(bot, task.id) : undefined;
+  // Keep Claude's existing room/direct-command behavior. Codex's new
+  // command path is for the person's own input in an agent lane.
+  const directCommandAllowed = registry.get(directCommandInstance ?? "")?.driverKind === "claudeAgent" || (opts.byYou && opts.personal !== false && !opts.roomId);
+  const commandInstance = opts.commandInstance ?? (directCommandAllowed ? directCommandInstance : undefined);
+  const command = Boolean(commandInstance && commandFor(text, commandInstance));
   const selection = selectEngine(bot, opts.fallback);
-  if (command && (selection.instanceId !== commandInstance || acceptingClaude(bot) !== commandInstance || !engineUsable(selection))) {
-    throw Object.assign(new Error("This command was queued for Claude Code, but that engine is no longer selected or available. Choose it again and send the command again."), { status: 409 });
+  if (command && (selection.instanceId !== commandInstance || acceptingNative(bot) !== commandInstance || !engineUsable(selection))) {
+    const name = registry.get(commandInstance!)?.driverKind === "codex" ? "Codex" : "Claude Code";
+    throw Object.assign(new Error(`This command was queued for ${name}, but that engine is no longer selected or available. Choose it again and send the command again.`), { status: 409 });
   }
   const instance = registry.get(selection.instanceId);
   if (!instance) {
@@ -3057,6 +3076,12 @@ async function startTurn(
   else replyingTo.delete(task.id);
   // the words as written, for naming the lane; the engine also hears who sent them
   const said = text;
+  // A named skill injects instructions. Take names from the person's
+  // actual words, never from wrappers, notes or background sources.
+  const personalWords = opts.personalMessages && !blok
+    ? store.messagesFor(task.id).filter((m) => opts.personalMessages!.includes(m.id) && m.namedSkills === true && m.role === "user" && m.kind === "text" && !m.deleted && !m.agent && !m.via).map((m) => m.text ?? "")
+    : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
+  const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
   if (opts.from) text = fromAgentPrompt(opts.from, text);
 
   // ── the transcript for API-backed drivers ──
@@ -3593,6 +3618,8 @@ async function startTurn(
         // shared room, where the approvals protect other people
         ...(bot.approvals === "full" && !sharing ? { fullAccess: true } : {}),
         text: turnText,
+        ...(command && instance.driverKind === "codex" ? { compactOnly: true } : {}),
+        ...(skillNames.length ? { skillNames } : {}),
         stallMs: stallLimitMs(),
         model: selection.model,
         effort: bot.effort,
@@ -7014,7 +7041,7 @@ function editClosed(laneId: string, messageId: string) {
  * editor, and going first would put them before things said earlier; or
  * Bloks is finishing up to restart (server/drain.ts). */
 function laneWaits(lane: { id: string; busy?: boolean }) {
-  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id) || steerQueues.has(lane.id) || queueStarts.has(lane.id);
+  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id) || steerQueues.has(lane.id) || queueStarts.has(lane.id) || steerAttempts.has(lane.id);
 }
 
 /** Lanes whose last turn is still photographing its folder, until its
@@ -7033,15 +7060,16 @@ function queueOnLane(
   botId: string,
   laneId: string,
   text: string,
-  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; telegramReply?: TelegramReply } = {},
+  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; telegramReply?: TelegramReply; personal?: boolean } = {},
 ) {
   const message = store.appendMessage(laneId, {
     role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
+    namedSkills: !options.from && !options.via && options.personal !== false,
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
-    ...(!options.from && !options.via && store.bot(botId) ? { commandInstance: acceptingClaude(store.bot(botId)!, laneId) ?? null } : {}),
+    ...(!options.from && !options.via && store.bot(botId) ? { commandInstance: options.personal === false ? null : acceptingNative(store.bot(botId)!, laneId) ?? null } : {}),
   });
   broadcast({ kind: "message", threadId: laneId, message });
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
@@ -7066,13 +7094,37 @@ function queueOnLane(
  * Only for the person: another agent, a webhook, a watcher or a routine
  * is a request of its own and waits for a turn of its own.
  */
-async function steerLane(
+const steerAttempts = new Map<string, Promise<Message | null>>();
+
+/** A Codex skill lookup must not let the next person's words overtake
+ * this one. Return this exact promise: on refusal its caller queues it
+ * before the next attempt returns null and queues behind it. */
+function steerLane(bot: BotRecord, lane: TaskRecord, text: string, options: { replyTo?: ReplyRef; personal?: boolean } = {}): Promise<Message | null> {
+  const previous = steerAttempts.get(lane.id);
+  if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
+  const attempt = (async () => {
+    if (previous && !(await previous)) return null;
+    const current = store.bot(bot.id);
+    const currentLane = current?.tasks.find((task) => task.id === lane.id);
+    return current && currentLane ? steerOne(current, currentLane, text, options) : null;
+  })();
+  steerAttempts.set(lane.id, attempt);
+  const clear = () => {
+    if (steerAttempts.get(lane.id) !== attempt) return;
+    steerAttempts.delete(lane.id);
+    drainSteer(lane.id);
+  };
+  void attempt.then(clear, clear);
+  return attempt;
+}
+
+async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean } = {},
 ): Promise<Message | null> {
-  if (commandTurns.has(lane.id) || (acceptingClaude(bot, lane.id) && claudeCommand(text))) return null;
+  if (commandTurns.has(lane.id) || (acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
   if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return null;
   // Bloks compacting a quiet session is not a turn anybody is talking in
   if (idleCompacting.has(lane.id)) return null;
@@ -7085,7 +7137,8 @@ async function steerLane(
   if (yoursWaiting) return null;
   const adapter = laneInstance(bot, lane.id)?.adapter;
   if (!adapter?.steerTurn) return null;
-  const took = await adapter.steerTurn(lane.id, text).catch(() => false);
+  const names = options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
+  const took = await (names.length ? adapter.steerTurn(lane.id, text, { skillNames: names }) : adapter.steerTurn(lane.id, text)).catch(() => false);
   if (!took) return null;
   const message = store.appendMessage(lane.id, {
     role: "user",
@@ -7153,6 +7206,7 @@ async function sendUserMessage(
     replyTo?: ReplyRef;
     from?: { botId: string; name: string };
     yours?: boolean;
+    personal?: boolean;
     /** The person wrote this just now, so a running turn may take it
      * (steerLane). Unset for words relayed on their behalf. */
     steer?: boolean;
@@ -7177,7 +7231,7 @@ async function sendUserMessage(
   if (yours) withYou({ bot });
   if (laneWaits(lane)) {
     if (yours && options.steer) {
-      const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo });
+      const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo, personal: options.personal });
       if (steered) {
         return {
           ok: true,
@@ -7188,7 +7242,7 @@ async function sendUserMessage(
         };
       }
     }
-    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from });
+    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from, personal: options.personal });
     // Asking the engine took a moment, and the turn may have ended in it,
     // with nothing coming along after to take what now waits.
     if (yours && options.steer) drainSteer(lane.id);
@@ -7203,7 +7257,7 @@ async function sendUserMessage(
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
   }
-  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours });
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
   // which conversation it went to, so a caller outside the app (the MCP
   // connector) reads the answer from there and not from whichever lane
@@ -7222,7 +7276,7 @@ function drainSteer(threadId: string) {
     steerQueues.delete(threadId);
     return;
   }
-  if (lane.busy || queueStarts.has(threadId)) return;
+  if (lane.busy || queueStarts.has(threadId) || steerAttempts.has(threadId)) return;
   const card = cardsPending.get(threadId);
   if (card) {
     void Promise.race([card, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]).then(() => {
@@ -7273,7 +7327,7 @@ function drainSteer(threadId: string) {
   const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item) }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item) }).catch((e) => {
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -9346,7 +9400,7 @@ const server = createServer(async (req, res) => {
           enqueueRoomPost(room, text, { hops: 0, replyTo, byYou: true });
           triggersFired({ kind: "message", targetId: room.id, text, fromUser: true });
         } else {
-          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo, yours: true, steer: true });
+          await sendUserMessage(bot.id, text, { taskId: threadId, replyTo, yours: true, steer: true, personal: false });
         }
         const message = store.patchMessage(threadId, messageId, { decisionChoice: choice });
         broadcast({ kind: "message.patch", threadId, message: message! });
@@ -10203,10 +10257,20 @@ const server = createServer(async (req, res) => {
       const cwd = lane.cwd ?? bot.cwd ?? (project ? workingFolder(standingOf(project)) : null) ?? workspace.workspaceDir(bot.id);
       const cached = claudeCatalogs.get(lane.id);
       const reported = cached?.instanceId === selection.instanceId && cached.cwd === cwd ? cached.catalog : undefined;
+      const codexSkills = instance?.driverKind === "codex" ? await instance.skills?.(cwd) : undefined;
+      // Discovery is asynchronous: a menu must not borrow rows from an
+      // engine or folder the person left while the probe was running.
+      const current = store.bot(bot.id);
+      const currentLane = current?.tasks.find((t) => t.id === taskId);
+      const currentProject = current ? projects.forAgent(current.id) : null;
+      const currentCwd = currentLane?.cwd ?? current?.cwd ?? (currentProject ? workingFolder(standingOf(currentProject)) : null) ?? workspace.workspaceDir(bot.id);
+      if (!current || !currentLane || registry.get(selection.instanceId) !== instance || (laneEngine.get(lane.id) ?? selectEngine(current)).instanceId !== selection.instanceId || currentCwd !== cwd) return json(res, 409, { error: "This menu's engine or folder changed. Open it again." });
       return json(res, 200, {
         commands: agentCommands({
           library: getSkills(bot.skillIds ?? []),
           onClaudeCode: instance?.driverKind === "claudeAgent",
+          onCodex: instance?.driverKind === "codex",
+          codexSkills: codexSkills ?? undefined,
           cwd,
           reported,
         }),
@@ -11271,7 +11335,7 @@ const server = createServer(async (req, res) => {
       if (!meeting || !item) return json(res, 404, { error: "no such action item" });
       if (!item.botId || !store.bot(item.botId)) return json(res, 400, { error: `${item.owner} is not one of your agents` });
       if (item.sentAt) return json(res, 409, { error: "already handed over" });
-      await sendUserMessage(item.botId, `From the meeting${meeting.title ? ` "${meeting.title}"` : ""}: ${item.text}`, { yours: true });
+      await sendUserMessage(item.botId, `From the meeting${meeting.title ? ` "${meeting.title}"` : ""}: ${item.text}`, { yours: true, personal: false });
       item.sentAt = Date.now();
       saveMeetings();
       broadcast({ kind: "meetings" });

@@ -192,7 +192,8 @@ export function Composer({
       live = false;
     };
   }, [bot.id, skillKey, laneId, bot.modelSelection.instanceId, bot.cwd, bot.busy, commandTick, commandEngine]);
-  const commandIds = new Set(commands.map((c) => c.id));
+  const commandIds = new Set(commands.filter((c) => !c.prefix).map((c) => c.id));
+  const dollarIds = new Set(commands.filter((c) => c.prefix === "$").map((c) => c.id));
   const offered = slash ? matchCommands(commands, slash.query, 8, slash.start === 0) : [];
   const readSlash = (el: HTMLTextAreaElement) => {
     setSlash(slashAt(el.value, el.selectionStart ?? el.value.length));
@@ -203,7 +204,7 @@ export function Composer({
     if (!slash || !el) return;
     // the word being typed ends where the query does; the caret is not
     // trusted here, since a key handler can see it before it settles
-    const next = insertCommand(text, slash.start, slash.start + 1 + slash.query.length, command.id);
+    const next = insertCommand(text, slash.start, slash.start + 1 + slash.query.length, command.id, command.prefix);
     setText(next.text);
     setSlash(null);
     requestAnimationFrame(() => {
@@ -618,7 +619,7 @@ export function Composer({
                     i === pick ? "bg-accent" : "hover:bg-accent/60",
                   )}
                 >
-                  <span className="shrink-0 font-mono text-[12.5px] font-medium text-brand-ink">/{c.id}</span>
+                  <span className="shrink-0 font-mono text-[12.5px] font-medium text-brand-ink">{c.prefix ?? "/"}{c.id}</span>
                   <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">
                     {c.description || c.name}
                   </span>
@@ -665,7 +666,7 @@ export function Composer({
           className="pointer-events-none absolute inset-0 overflow-hidden px-1 py-1 text-[14.5px] leading-relaxed text-transparent [overflow-wrap:break-word] [white-space:pre-wrap]"
         >
           <div>
-            {segments(text, commandIds).map((run, i) =>
+            {segments(text, commandIds, dollarIds).map((run, i) =>
               run.skill ? (
                 <span key={i} className="rounded-[5px] bg-brand-soft ring-2 ring-brand-soft">
                   {run.text}

@@ -16,10 +16,11 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { attachRpc } from "../harness/jsonrpc-stdio.ts";
+import { attachRpc, type RpcLink } from "../harness/jsonrpc-stdio.ts";
+import { readCodexSkills, MAX_CODEX_SKILL_ITEMS, type CodexSkill } from "../codex-skills.ts";
 import type {
   DriverCreateInput,
   ModelCatalog,
@@ -155,12 +156,12 @@ function rememberTotal(thread: string, total: TokenCount) {
 
 /** Asks the installed CLI what it can run. No thread is started and
  * nothing is spent; the process is killed as soon as the list lands. */
-async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
+async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promise<T>): Promise<T | null> {
   const env: Record<string, string | undefined> = { ...process.env, NPM_CONFIG_LOGLEVEL: "error" };
   delete env.OPENAI_API_KEY;
   let child;
   try {
-    child = spawn(cli, ["app-server"], { cwd: homedir(), env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    child = spawn(cli, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   } catch {
     return null;
   }
@@ -178,17 +179,7 @@ async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
   try {
     await rpc.request("initialize", { clientInfo: { name: "bloks", version: "1" } });
     rpc.notify("initialized", {});
-    const pages: any[] = [];
-    let cursor: string | null = null;
-    // a handful of pages is every model there is; the cap stops a CLI
-    // that keeps handing back a cursor from holding the probe open
-    for (let i = 0; i < 5; i++) {
-      const page: any = await rpc.request("model/list", cursor ? { cursor } : {});
-      pages.push(page);
-      cursor = typeof page?.nextCursor === "string" && page.nextCursor ? page.nextCursor : null;
-      if (!cursor) break;
-    }
-    return catalogFromModelList(pages);
+    return await read(rpc);
   } catch {
     return null;
   } finally {
@@ -200,6 +191,20 @@ async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
     }
     rpc.failPending(new Error("probe ended"));
   }
+}
+
+async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
+  return probe(cli, homedir(), async (rpc) => {
+    const pages: any[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 5; i++) {
+      const page: any = await rpc.request("model/list", cursor ? { cursor } : {});
+      pages.push(page);
+      cursor = typeof page?.nextCursor === "string" && page.nextCursor ? page.nextCursor : null;
+      if (!cursor) break;
+    }
+    return catalogFromModelList(pages);
+  });
 }
 
 export interface CodexConfig {
@@ -302,10 +307,24 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       turnId: string;
       abort: () => void;
       /** More words for this turn; false when Codex would not take them. */
-      steer: (text: string) => Promise<boolean>;
+      steer: (text: string, options?: { skillNames?: string[] }) => Promise<boolean>;
       asks: Map<string, Answer>;
     }
     const running = new Map<string, RunningTurn>();
+    // Busy transitions and several open windows share a short menu
+    // read. A different folder or engine never borrows another's rows.
+    const skillCatalogs = new Map<string, { at: number; result: Promise<CodexSkill[] | null> }>();
+    const skills = (cwd: string): Promise<CodexSkill[] | null> => {
+      if (!isAbsolute(cwd) || /[\x00-\x1f\x7f]/.test(cwd)) return Promise.resolve(null);
+      const now = Date.now();
+      for (const [key, entry] of skillCatalogs) if (now - entry.at >= 60_000) skillCatalogs.delete(key);
+      const cached = skillCatalogs.get(cwd);
+      if (cached) return cached.result;
+      if (skillCatalogs.size >= 32) skillCatalogs.delete(skillCatalogs.keys().next().value!);
+      const result = probe(config.cli, homedir(), async (rpc) => readCodexSkills(await rpc.request("skills/list", { cwds: [cwd], forceReload: true }), cwd));
+      skillCatalogs.set(cwd, { at: now, result });
+      return result;
+    };
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -378,6 +397,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // set while a compaction asked for before the turn is running, and
       // called with whether it worked when it ends
       let compacting: ((ok: boolean) => void) | null = null;
+      let compactError: string | null = null;
+      // A process requests at most one compaction. Keep its native turn
+      // id after the wait ends, so late item frames still belong to it.
+      let requestedCompaction: string | null = null;
+      const compactionStarts = new Map<string, number | null>();
+      const compactionDone = new Set<string>();
+      const catalogCalls = new Set<unknown>();
+      const skillNamesSent = new Set<string>();
 
       const abort = () => {
         try {
@@ -394,7 +421,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const rpc = attachRpc({
         stdin: child.stdin,
         stdout: child.stdout,
-        onFrame: (msg, dir) => appendNative(threadId, { dir, source: NATIVE_SOURCE, msg }),
+        onFrame: (msg, dir) => {
+          if (dir === "out" && msg.method === "skills/list") { catalogCalls.add(msg.id); return; }
+          if (dir === "in" && !msg.method && catalogCalls.has(msg.id)) { catalogCalls.delete(msg.id); return; }
+          if (msg.method === "skills/changed") return;
+          appendNative(threadId, { dir, source: NATIVE_SOURCE, msg });
+        },
         onRequest: (msg) => onAgentRequest(msg),
         onNotify: (msg) => onAgentNotification(msg),
       });
@@ -402,6 +434,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const finish = (ok: boolean, stopReason: string | null) => {
         if (finished) return;
         finished = true;
+        compacting?.(false);
         for (const answer of [...asks.values()]) answer("deny", "Bloks: the turn ended", "turn-ended");
         rpc.failPending(new Error("turn settled"));
         running.delete(threadId);
@@ -519,7 +552,27 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       }
 
       // ── the agent narrating what it is doing ──
+      function compactionItem(params: any, completed: boolean) {
+        const item = params.item;
+        if (params.threadId !== codexThread || typeof params.turnId !== "string" || typeof item?.id !== "string" || !params.turnId || !item.id || params.turnId.length > 256 || item.id.length > 256 || /[\x00-\x1f\x7f]/.test(params.turnId + item.id)) return;
+        const key = `${params.turnId}\0${item.id}`;
+        if (compactionDone.has(key)) return;
+        if (!completed) {
+          if (!compactionStarts.has(key) && compactionStarts.size < 256) compactionStarts.set(key, lastUsed);
+          return;
+        }
+        // Bounded for a hostile stream; never forget a completed id and
+        // mistake its replay for another operation in this process.
+        const before = compactionStarts.has(key) ? compactionStarts.get(key)! : lastUsed;
+        compactionStarts.delete(key);
+        if (compactionDone.size >= 256) return;
+        compactionDone.add(key);
+        if (params.turnId === requestedCompaction) return;
+        emit({ ...envelope(threadId, turnId), type: "context.compacted", trigger: "auto", before, after: null });
+      }
+
       function onAgentNotification(msg: any) {
+        if (finished) return;
         const params = msg.params ?? {};
         // A resume that ran out of time can still be answered, late, on
         // this same process, along with that old thread's restored usage.
@@ -528,6 +581,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (typeof params.threadId === "string" && abandoned.has(params.threadId)) return;
 
         switch (msg.method) {
+          case "skills/changed": skillCatalogs.clear(); break;
           case "serverRequest/resolved": {
             const pending = rpcAsks.get(params.requestId);
             if (pending && pending.providerThreadId === params.threadId) {
@@ -537,6 +591,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           case "item/started": {
             const item = params.item ?? {};
+            if (item.type === "contextCompaction") { compactionItem(params, false); break; }
             const label = toolLabel(item);
             if (!label) break;
             // a patch names every file it touches, a rename both ends
@@ -557,6 +612,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
           case "item/completed": {
             const item = params.item ?? {};
+            if (item.type === "contextCompaction") { compactionItem(params, true); break; }
             if (item.type === "agentMessage") {
               if (!item.text?.trim()) break;
               emit({
@@ -630,16 +686,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "turn/started": {
-            if (typeof params.turn?.id === "string") codexTurn = params.turn.id;
+            if (typeof params.turn?.id === "string") {
+              codexTurn = params.turn.id;
+              if (compacting && params.threadId === codexThread) requestedCompaction = params.turn.id;
+            }
             break;
           }
 
           case "turn/completed": {
             const completed = params.turn ?? {};
             const ok = completed.status === "completed";
+            if (!compacting && requestedCompaction && completed.id === requestedCompaction) break;
             // the compaction runs as a turn of its own, and its end is
             // where the person's words go, not the end of this one
             if (compacting) {
+              if (!ok) compactError = completed.error?.message ?? "Codex could not compact this conversation.";
               compacting(ok);
               break;
             }
@@ -653,7 +714,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // of the turn, so only the last one is said. A compaction that
             // fails is not the turn failing: a new thread takes the words.
             const message = params.error?.message ?? params.message;
-            if (compacting) break;
+            if (compacting) {
+              if (turn.compactOnly && params.willRetry !== true) {
+                compactError = typeof message === "string" ? message : "Codex could not compact this conversation.";
+                compacting(false);
+              }
+              break;
+            }
             if (typeof message === "string" && message.trim() && params.willRetry !== true) {
               emit({ ...envelope(threadId, turnId), type: "runtime.error", message });
             }
@@ -695,18 +762,38 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // Codex checks expectedTurnId against the turn it is running and
       // refuses the call if that turn has ended, so a refusal means the
       // words were not taken and can go to the next turn instead.
-      const steer = async (text: string) => {
-        // during a compaction the turn running is the compaction's
-        if (finished || compacting || !codexThread || !codexTurn) return false;
+      const selectedSkills = async (names?: string[]): Promise<CodexSkill[]> => {
+        if (!names?.length) return [];
         try {
-          await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }] });
+          const cwd = turn.cwd ?? homedir();
+          const listed = readCodexSkills(await within(rpc.request("skills/list", { cwds: [cwd], forceReload: true }), "listing skills", "Codex", PROBE_TIMEOUT_MS), cwd) ?? [];
+          return [...new Set(names)].filter((name) => !skillNamesSent.has(name)).flatMap((name) => listed.find((skill) => skill.name === name) ?? []).slice(0, Math.max(0, MAX_CODEX_SKILL_ITEMS - skillNamesSent.size));
+        } catch {
+          // The unchanged dollar words remain Codex's own fallback.
+          return [];
+        }
+      };
+      const canSteer = () => Boolean(!finished && !compacting && codexThread && codexTurn && ![...compactionStarts.keys()].some((key) => requestedCompaction === null || !key.startsWith(`${requestedCompaction}\0`)));
+      const steer = async (text: string, options?: { skillNames?: string[] }) => {
+        // during a compaction the turn running is the compaction's
+        if (!canSteer()) return false;
+        const skills = await selectedSkills(options?.skillNames);
+        if (!canSteer()) return false;
+        for (const skill of skills) skillNamesSent.add(skill.name);
+        try {
+          await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
           return true;
         } catch {
+          for (const skill of skills) skillNamesSent.delete(skill.name);
           return false;
         }
       };
 
-      running.set(threadId, { turnId, abort, steer, asks });
+      running.set(threadId, { turnId, abort: turn.compactOnly ? () => {
+        if (finished) return;
+        emit({ ...envelope(threadId, turnId), type: "runtime.error", message: "Compaction was stopped." });
+        finish(false, "interrupted");
+      } : abort, steer, asks });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
       // Handshake and kickoff. Anything that goes wrong in here has to end
@@ -718,6 +805,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           rpc.notify("initialized", {});
 
           const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+          if (turn.compactOnly && !cursor) throw new Error("There is no Codex conversation to compact yet.");
           let reportedModel: string | null = null;
           // the words go into the thread the cursor named, not a new one
           let carriedOn = false;
@@ -755,12 +843,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 resumed = await resume();
               }
               codexThread = resumed?.thread?.id ?? cursor;
+              if (turn.compactOnly && (typeof resumed?.thread?.id !== "string" || codexThread !== cursor)) throw new Error("That Codex conversation is no longer available to compact.");
               reportedModel = resumed?.model ?? null;
               carriedOn = true;
-            } catch {
+            } catch (error) {
               // forgotten or unsupported; a fresh thread below. Anything
               // still to come about the old one is not about this turn.
               abandoned.add(cursor);
+              if (turn.compactOnly) throw error;
             }
           }
 
@@ -769,26 +859,34 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // compacted thread. One that cannot (an app-server without the
           // method, a compaction that fails) gets a new thread instead,
           // told the bounded story, rather than the old one at full size.
-          if (codexThread && turn.compactFirst) {
+          if (codexThread && (turn.compactFirst || turn.compactOnly)) {
             // what the compaction spends is this turn's, not history
             turnSent = true;
             const before = lastUsed;
             const thread: string = codexThread;
             const ok = await new Promise<boolean>((resolve) => {
-              const timer = setTimeout(() => compacting?.(false), COMPACT_LIMIT_MS);
+              const timer = setTimeout(() => {
+                compactError = "Codex compaction timed out.";
+                compacting?.(false);
+              }, COMPACT_LIMIT_MS);
               timer.unref?.();
               compacting = (worked) => {
                 compacting = null;
                 clearTimeout(timer);
                 resolve(worked);
               };
-              rpc.request("thread/compact/start", { threadId: thread }).catch(() => compacting?.(false));
+              rpc.request("thread/compact/start", { threadId: thread }).catch((error) => {
+                compactError = error instanceof Error ? error.message : "Codex could not compact this conversation.";
+                compacting?.(false);
+              });
             });
             codexTurn = null;
             if (finished) return;
             if (ok) {
               emit({ ...envelope(threadId, turnId), type: "context.compacted", trigger: "manual", before, after: null });
+              if (turn.compactOnly) { finish(true, null); return; }
             } else {
+              if (turn.compactOnly) throw new Error(compactError ?? "Codex could not compact this conversation.");
               codexThread = null;
               carriedOn = false;
             }
@@ -829,10 +927,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // A cursor that did not lead back to its thread is a new thread
           // after all, and is told the story rather than only the words.
           const words = cursor && !carriedOn && turn.handoff ? turn.handoff : turn.text;
+          const skills = await selectedSkills(turn.skillNames);
+          if (finished) return;
+          for (const skill of skills) skillNamesSent.add(skill.name);
           const begun: any = await within(rpc.request("turn/start", {
             threadId: codexThread,
             input: [
               { type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words },
+              ...skills.map(({ name, path }) => ({ type: "skill", name, path })),
             ],
           }), "starting the turn", "Codex");
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
@@ -881,13 +983,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       models,
       snapshot,
       catalogReady,
+      skills,
 
       adapter: {
         provider: DRIVER_KIND,
         capabilities: { sessionModelSwitch: "unsupported", compactsFirst: true },
         sendTurn,
 
-        steerTurn: async (threadId, text) => (await running.get(threadId)?.steer(text)) ?? false,
+        steerTurn: async (threadId, text, options) => (await running.get(threadId)?.steer(text, options)) ?? false,
 
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 
@@ -917,6 +1020,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       },
 
       dispose: async () => {
+        skillCatalogs.clear();
         for (const turn of running.values()) turn.abort();
         listeners.clear();
       },
