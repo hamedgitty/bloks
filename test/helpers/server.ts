@@ -10,7 +10,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { PROVIDER_SPECS } from "../../server/providers.ts";
+
 const ENTRY = fileURLToPath(new URL("../../server/index.ts", import.meta.url));
+
+/** Every provider's key variable (config.ts envVarFor), blanked: a key
+ * there connects that provider, and a test must never reach a real one. */
+const NO_PROVIDER_KEYS = Object.fromEntries(
+  PROVIDER_SPECS.map((spec) => [`${spec.kind.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`, ""]),
+);
 
 export interface Harness {
   url: string;
@@ -74,10 +82,17 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         USERPROFILE: home,
         BLOKS_PORT: String(port),
         // no inherited credentials: a test must never reach a real provider
+        ...NO_PROVIDER_KEYS,
         XAI_API_KEY: "",
         GEMINI_API_KEY: "",
         COMPOSIO_KEY: "",
         BOX_TOKEN: "",
+        BLOKS_COMPOSIO_KEY: "",
+        BLOKS_BOX_TOKEN: "",
+        OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        // a test run from inside a Bloks agent would otherwise act as it
+        BLOKS_TOKEN: "",
         PATH: "/nonexistent",
         // widenPath adds $npm_config_prefix/bin, which npx exports, and a
         // claude or codex there would make a test's engine real
