@@ -77,9 +77,11 @@ test("a request with no Host is rejected", () => {
   assert.equal(isLocalRequest(req({ host: "" })), false);
 });
 
-test("an opaque origin is allowed, since it cannot be a site", () => {
-  // sandboxed frames and file:// pages send "null"
-  assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "null" })), true);
+test("an opaque origin is not the owner", () => {
+  // Sandboxed frames send "null", and so does an agent's HTML artifact
+  // opened from its sandboxed response. Either is content an agent wrote,
+  // which must not be able to change settings or approve its own asks.
+  assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "null" })), false);
 });
 
 test("a malformed Origin is rejected rather than ignored", () => {

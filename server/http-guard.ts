@@ -55,11 +55,17 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   const host = req.headers.host;
   if (!host || !LOOPBACK_HOSTS.has(hostnameOf(host))) return false;
 
-  // No Origin: not a browser-initiated cross-site request (Electron's
-  // file://, curl, same-origin navigations). Browsers always attach one
-  // to cross-origin fetches, including no-cors simple requests.
+  // No Origin: not a browser-initiated cross-site request (curl, the
+  // CLIs, the app's own main process, same-origin navigations). Browsers
+  // always attach one to cross-origin fetches, including no-cors simple
+  // requests.
   const origin = req.headers.origin;
-  if (!origin || origin === "null") return true;
+  if (!origin) return true;
+  // "null" is an opaque origin: a sandboxed frame, or a page opened from
+  // a sandboxed response, such as an agent's own HTML artifact. That is
+  // exactly the content this check must not let act as the owner, and
+  // nothing of the app's own sends it (its window is served over http).
+  if (origin === "null") return false;
 
   try {
     return LOOPBACK_HOSTS.has(new URL(origin).hostname);

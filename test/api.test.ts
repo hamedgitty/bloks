@@ -89,6 +89,20 @@ describe("the origin check", () => {
     assert.ok(!bots.some((b: any) => b.name === "planted"));
   });
 
+  test("a sandboxed page, which says its origin is null, cannot change your approvals", async () => {
+    // an agent's HTML artifact opened in a browser, or any sandboxed frame:
+    // content an agent wrote, sending the simple POST that skips preflight
+    const res = await h.fetchAs("null", "/api/approvals", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ mode: "full", applyToAll: true }),
+    });
+    assert.equal(res.status, 403);
+    const after = await h.json("/api/approvals");
+    assert.notEqual(after.mode, "full", "the sandboxed page changed the approvals");
+    assert.equal(after.agents.full, 0);
+  });
+
   test("the app's own origin works", async () => {
     const res = await h.fetch("/api/bots");
     assert.equal(res.status, 200);
