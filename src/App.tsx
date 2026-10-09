@@ -28,6 +28,34 @@ import { ShortcutKeys } from "@/components/Shortcuts";
 import { Switcher } from "@/components/Switcher";
 import { QuickAsk } from "@/components/QuickAsk";
 
+/**
+ * Whatever last went wrong, said over every view. It used to be drawn by
+ * the chat alone, so a room send, an engine connect in Settings or a
+ * room rename that failed said nothing at all while a room or Settings
+ * was open. One timer, for the error on screen: a newer error restarts
+ * it rather than going early with the old one's.
+ */
+function ErrorNotice() {
+  const { state, dispatch } = useStore();
+  const { error, errorAt } = state;
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => dispatch({ type: "error", message: null, at: errorAt }), 6000);
+    return () => clearTimeout(timer);
+  }, [error, errorAt, dispatch]);
+  if (!error) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 top-[60px] z-[70] flex justify-center px-4">
+      <div
+        role="alert"
+        className="pointer-events-auto max-w-[560px] animate-rise-in rounded-xl border border-destructive/30 bg-popover px-3.5 py-2 text-[13px] text-destructive shadow-lg shadow-(color:--shadow-color)"
+      >
+        {error}
+      </div>
+    </div>
+  );
+}
+
 function Shell() {
   const { state, dispatch } = useStore();
   const room = state.bloks.find((b) => b.id === state.selectedId);
@@ -96,6 +124,7 @@ function Shell() {
       {state.activityOpen && <ActivityPanel />}
       <CommandPalette />
       <ShortcutKeys />
+      <ErrorNotice />
       {/* what is on screen, for Ctrl+Tab to come back to: a room, or one
           of an agent's conversations */}
       <Switcher

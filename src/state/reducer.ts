@@ -547,6 +547,9 @@ export interface AppState {
   hydrated: boolean;
   connected: boolean;
   error: string | null;
+  /** Counts the errors shown. The timer that clears one names it, so an
+   * older error's timer cannot take a newer one off the screen early. */
+  errorAt: number;
 }
 
 export type Action =
@@ -625,7 +628,8 @@ export type Action =
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
-  | { type: "error"; message: string | null }
+  /** `at` on a clear: only the error shown as that one (see errorAt). */
+  | { type: "error"; message: string | null; at?: number }
   | { type: "toggleSettings"; open?: boolean }
   | { type: "togglePlugins"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
@@ -1032,7 +1036,14 @@ export function reducer(state: AppState, action: Action): AppState {
     case "connected":
       return { ...state, connected: action.value };
     case "error":
-      return { ...state, error: action.message };
+      // A clear meant for an error that has since been replaced leaves the
+      // newer one up: it is owed its own six seconds.
+      if (action.message === null && action.at !== undefined && action.at !== state.errorAt) return state;
+      return {
+        ...state,
+        error: action.message,
+        errorAt: action.message === null ? state.errorAt : state.errorAt + 1,
+      };
     // the right-hand slot holds one thing at a time, so opening any of
     // these closes the rest
     case "toggleSettings": {
@@ -1177,4 +1188,5 @@ export const initialState: AppState = {
   hydrated: false,
   connected: false,
   error: null,
+  errorAt: 0,
 };

@@ -398,3 +398,18 @@ test("the order of the headings comes from the workspace, and a drag replaces it
   const moved = reducer(loaded, { type: "moveSections", order: ["Ops", "Travel"] });
   assert.deepEqual(moved.sectionOrder, ["Ops", "Travel"]);
 });
+
+test("an older error's timer does not take a newer error off the screen", () => {
+  // Every failure used to start its own six second clear, and the first
+  // one to fire cleared whatever was showing: a second error two seconds
+  // after the first was gone after four.
+  const first = reducer(withState({}), { type: "error", message: "Could not send that" });
+  const second = reducer(first, { type: "error", message: "Could not rename that room" });
+  const early = reducer(second, { type: "error", message: null, at: first.errorAt });
+  assert.equal(early.error, "Could not rename that room");
+  const due = reducer(early, { type: "error", message: null, at: second.errorAt });
+  assert.equal(due.error, null);
+  // the same words twice are two errors, each with its own time
+  const again = reducer(second, { type: "error", message: "Could not rename that room" });
+  assert.notEqual(again.errorAt, second.errorAt);
+});

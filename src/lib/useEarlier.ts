@@ -35,7 +35,6 @@ export function useEarlier(
       });
     } catch (e) {
       dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      setTimeout(() => dispatch({ type: "error", message: null }), 6000);
     } finally {
       inFlight.current = false;
       setLoading(false);

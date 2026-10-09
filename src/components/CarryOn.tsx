@@ -19,7 +19,6 @@ export function CarryOn({ message }: { message: Message }) {
         api(`/api/threads/${carry.laneId}/carry-on`, { method: "POST" }).catch((e) => {
           setPressed(false);
           dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-          setTimeout(() => dispatch({ type: "error", message: null }), 6000);
         });
       }}
     >

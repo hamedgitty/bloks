@@ -677,18 +677,12 @@ export function ChatView({ bot }: { bot: Bot }) {
       body: JSON.stringify({ text: message.text, taskId: threadId }),
     })
       .then(() => api(`/api/threads/${threadId}/messages/${message.id}`, { method: "DELETE" }))
-      .catch((e) => {
-        dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-        setTimeout(() => dispatch({ type: "error", message: null }), 6000);
-      });
+      .catch((e) => dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) }));
   };
   const rewindTo = (threadId: string, messageId: string) => {
     api(`/api/threads/${threadId}/rewind`, { method: "POST", body: JSON.stringify({ messageId }) })
       .then((r) => setPrefill({ text: r.text ?? "", nonce: Date.now() }))
-      .catch((e) => {
-        dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-        setTimeout(() => dispatch({ type: "error", message: null }), 6000);
-      });
+      .catch((e) => dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) }));
   };
   // The terminal drawer. Only whether it is on screen lives here: the
   // shell itself is on the server and outlives this component, so closing
@@ -865,15 +859,6 @@ export function ChatView({ bot }: { bot: Bot }) {
           </Button>
         </div>
       </div>
-
-      {/* Error banner */}
-      {state.error && (
-        <div className="mx-auto w-full max-w-[760px] px-4">
-          <div className="mt-2 animate-rise-in rounded-xl bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
-            {state.error}
-          </div>
-        </div>
-      )}
 
       {/* Messages. The strip repeats what the sidebar lists when it lists
           conversations, so it only shows when the sidebar does not. */}

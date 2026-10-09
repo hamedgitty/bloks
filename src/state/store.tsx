@@ -157,9 +157,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ]);
 
   const dispatch = useMemo(() => {
+    // The shell shows it over every view and takes it down again (App.tsx).
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
     };
     // Remembering that a card was dealt with is a nicety, not a
   // correctness requirement, so a failure here is allowed to pass.
