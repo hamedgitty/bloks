@@ -167,7 +167,9 @@ test("a quiet Claude Code lane is compacted without a word in the person's name,
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "start" }) });
   assert.ok(await waitFor(async () => (await messages(bot.id)).some((m) => m.text === "Reply 1") && !(await agent(bot.id)).busy), "the first turn never answered");
   const own = (await messages(bot.id)).find((m) => m.compaction);
-  assert.equal(own?.text, "Compacted · 320k → 48k", "Claude Code's own compaction left no line");
+  assert.equal(own?.text, "Compacted · now 176k", "without an own request before, compact pre_tokens is not borrowed");
+  assert.equal(own.compaction.before, null);
+  assert.equal(own.compaction.after, 176_010);
   assert.equal(own.kind, "notice");
   // read, so a dot afterwards could only have come from the compaction
   await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
@@ -178,7 +180,8 @@ test("a quiet Claude Code lane is compacted without a word in the person's name,
     return marker && !(await agent(bot.id)).busy ? marker : null;
   });
   assert.ok(compacted, "the quiet lane was never compacted");
-  assert.equal(compacted.text, "Compacted while idle · 176k → 50k");
+  assert.equal(compacted.text, "Compacted while idle · from 176k");
+  assert.equal(compacted.compaction.after, null);
   assert.equal(compacted.compaction.idle, true);
   const compaction = runs().find((r) => r.said === "/compact");
   assert.ok(compaction.args.includes("--resume") && compaction.args.includes("sess-162"), "it did not resume the lane's own session");
@@ -186,13 +189,16 @@ test("a quiet Claude Code lane is compacted without a word in the person's name,
   assert.equal((await messages(bot.id)).some((m) => m.role === "user" && /compact/.test(m.text ?? "")), false, "/compact was posted as a message");
   const after = await agent(bot.id);
   assert.equal(after.unread, false, "a compaction marked the agent unread");
-  assert.equal(after.tasks.find((l: any) => l.id === bot.threadId)?.context?.used, 50_000, "the lane still reads as full");
+  assert.equal(after.tasks.find((l: any) => l.id === bot.threadId)?.context?.used, 0, "no request has measured the compacted session yet");
   assert.ok((await h.json("/api/usage?days=1")).total.cost > spentBefore, "what the compaction spent was not counted");
 
   // Talked to again, and quiet again: the second compaction holds what is
   // said during it, which then goes as an ordinary turn.
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "again" }) });
   assert.ok(await waitFor(async () => !(await agent(bot.id)).busy && runs().length === 3), "the second turn never ran");
+  const patched = (await messages(bot.id)).find((m) => m.id === compacted.id);
+  assert.equal(patched.compaction.after, 176_010, "the first ordinary request completes the idle marker");
+  assert.equal(patched.at, compacted.at);
   assert.ok(await waitFor(async () => (runs().at(-1)?.said === "/compact" ? true : null)), "it was not compacted a second time");
   const reply = await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "while you were compacting" }) });
   assert.equal(reply.status, 202, "a message during the compaction did not wait in the queue");

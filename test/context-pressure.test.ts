@@ -76,19 +76,20 @@ describe("how full a session is", () => {
 
   test("a reading counts only for the engine and model that made it", () => {
     const codex: Reading = { used: 66_046, window: 258_400, instanceId: "codex", model: "gpt-6.1-sol", at: 1 };
-    const own = laneFill(codex, 958_776, { instanceId: "codex", model: "gpt-6.1-sol" });
+    const own = laneFill(codex, { instanceId: "codex", model: "gpt-6.1-sol" });
     assert.equal(own.used, 66_046);
     assert.equal(own.limit, 258_400);
     assert.equal(own.window, "engine");
     // the agent moved to Claude: Codex's numbers are not Claude's
-    const moved = laneFill(codex, 958_776, { instanceId: "claude", model: "claude-opus-5-5" });
+    const moved = laneFill(codex, { instanceId: "claude", model: "claude-opus-5-5" });
     assert.equal(moved.used, 0);
-    assert.equal(moved.limit, 1_000_000);
+    assert.equal(moved.limit, 0);
+    assert.equal(moved.measured, false);
     assert.equal(moved.window, "table");
     // the same engine on another model has not been measured either
-    assert.equal(laneFill(codex, 0, { instanceId: "codex", model: "gpt-6-luna" }).used, 0);
-    // a lane from before readings were kept shows what it showed
-    assert.equal(laneFill(undefined, 120_000, { instanceId: "claude", model: "claude-sonnet-5" }).used, 120_000);
+    assert.equal(laneFill(codex, { instanceId: "codex", model: "gpt-6-luna" }).used, 0);
+    // A lane from before readings were kept has no current measurement.
+    assert.equal(laneFill(undefined, { instanceId: "claude", model: "claude-sonnet-5" }).measured, false);
   });
 });
 
@@ -185,7 +186,7 @@ const WINDOW = 258_400;
  * compacts the way the real one does (a turn of its own), or is refused
  * with `refuseCompact`, the way an app-server without it answers.
  */
-function fakeCodex(home: string, refuseCompact = false): string {
+function fakeCodex(home: string, refuseCompact = false, loseCompactedThread = false): string {
   const cli = join(home, "fake-codex.mjs");
   writeFileSync(
     cli,
@@ -217,6 +218,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
   }
   if (m.method === "thread/resume") {
+    if (${loseCompactedThread} && state.stopped) return send({ id: m.id, error: { code: -32000, message: "thread not found" } });
     thread = m.params.threadId;
     return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
   }
@@ -233,6 +235,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (m.method === "turn/start") {
     send({ id: m.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "turn/started", params: { threadId: thread, turn: { id: "turn-1", status: "inProgress" } } });
+    if (${loseCompactedThread} && state.small[thread] && !state.stopped) {
+      state.stopped = true;
+      save(state);
+      return send({ method: "turn/completed", params: { threadId: thread, turn: { id: "turn-1", status: "interrupted" } } });
+    }
     const base = state.small[thread] || !text.includes("BIG") ? 40000 : 170000;
     let total = state.total[thread] ?? 0;
     for (let i = 0; i < ${TOOL_CALLS}; i++) {
@@ -258,10 +265,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   return cli;
 }
 
-async function codexHome(opts: { refuseCompact?: boolean; instances?: string[] } = {}) {
+async function codexHome(opts: { refuseCompact?: boolean; instances?: string[]; loseCompactedThread?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), "bloks-pressure-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
-  const cli = fakeCodex(home, opts.refuseCompact);
+  const cli = fakeCodex(home, opts.refuseCompact, opts.loseCompactedThread);
   const instances = Object.fromEntries((opts.instances ?? ["codex"]).map((id) => [id, { driver: "codex", config: { cli } }]));
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances }));
   const h = await startHarness({ HOME: home });
@@ -290,6 +297,28 @@ const methodsAfter = (log: any[], from: number) =>
     .filter((m) => m !== "initialized");
 
 describe("a Codex lane with a long context and two dozen tool calls a turn", () => {
+  test("an interrupted compactFirst marker is not resolved by a failed resume's new thread", async (t) => {
+    const { home, h, log } = await codexHome({ loseCompactedThread: true });
+    t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Rex" }) });
+    await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+    await turn(h, bot.id, "BIG: first turn");
+    const count = log().filter(l => l.method === "turn/start").length;
+    await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "BIG: compact then interrupt" }) });
+    assert.ok(await waitFor(async () => log().filter(l => l.method === "turn/start").length > count && !(await botOf(h, bot.id)).busy, 15_000));
+    const pending = (await messagesOf(h, bot.id)).find(m => m.compaction);
+    assert.equal(pending.compaction.after, null);
+    const before = log().length;
+    await turn(h, bot.id, "Continue after the thread was lost");
+    assert.ok(methodsAfter(log(), before).includes("thread/start"), "failed resume did not replace the thread");
+    const started = log().slice(before).find(l => l.method === "turn/start");
+    assert.match(started.text, /picking up this conversation/);
+    const retained = (await messagesOf(h, bot.id)).find(m => m.id === pending.id);
+    assert.equal(retained.compaction.after, null, "a different native thread completed the old marker");
+    const saved = JSON.parse(readFileSync(join(home, ".bloks", "bots.json"), "utf8")).find((b: any) => b.id === bot.id);
+    assert.equal(saved.tasks.find((l: any) => l.id === bot.threadId).pendingCompaction, undefined);
+  });
+
   test("reads the latest request against Codex's window, and is compacted before its next turn", async (t) => {
     const { home, h, log } = await codexHome();
     t.after(async () => {
@@ -322,7 +351,8 @@ describe("a Codex lane with a long context and two dozen tool calls a turn", () 
     assert.ok(order.indexOf("thread/compact/start") < order.indexOf("turn/start"), "the words went before the compaction");
     assert.equal(order.filter((m) => m === "thread/start").length, 0, "a compactable thread was replaced");
     const marker = (await messagesOf(h, bot.id)).find((m) => m.compaction);
-    assert.equal(marker?.text, "Compacted · from 172k");
+    assert.equal(marker?.text, "Compacted · 172k → 40k");
+    assert.equal(marker.compaction.after, 40_000, "the first request, not the last tool round");
     assert.equal(marker.compaction.idle, undefined);
     const after = (await botOf(h, bot.id)).tasks.find((l: any) => l.id === bot.threadId);
     assert.equal(after.context.used, 40_000 + (TOOL_CALLS - 1) * 100);
@@ -495,7 +525,9 @@ describe("a Claude Code lane with a long context and many tool calls a turn", ()
     assert.ok(runs()[2].args.includes("--resume"), "the turn did not go into the compacted session");
     const messages = await messagesOf(h, bot.id);
     const marker = messages.find((m) => m.compaction);
-    assert.equal(marker?.text, "Compacted · 252k → 50k");
+    assert.equal(marker?.text, "Compacted · 252k → 60k");
+    assert.equal(marker.compaction.before, 252_105, "the last request, not compact pre_tokens");
+    assert.equal(marker.compaction.after, 60_105, "the first request, not compact post_tokens or the final tool round");
     assert.equal(messages.some((m) => m.role === "user" && /compact/.test(m.text ?? "")), false, "/compact was posted as a message");
 
     // now small: the next turn goes straight in

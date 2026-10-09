@@ -45,7 +45,7 @@ interface Running {
   kind: "you" | "routine" | "job" | "workflow";
   because: string;
   since?: number;
-  context?: { used: number; limit: number; fraction: number };
+  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table" };
 }
 
 interface Waiting {
@@ -390,8 +390,8 @@ export function ActivityPanel() {
                       <div className="mt-0.5 text-[11.5px] text-muted-foreground">
                         {row.because}
                         {row.since ? ` · ${elapsed(row.since, now)}` : ""}
-                        {row.context && row.context.fraction >= 0.5
-                          ? ` · ${Math.round(row.context.fraction * 100)}% of the window`
+                        {row.context && row.context.measured !== false && row.context.used > 0 && row.context.fraction >= 0.5
+                          ? ` · ${row.context.window === "table" ? "About " : ""}${Math.round(row.context.fraction * 100)}% of the window`
                           : ""}
                       </div>
                     </div>

@@ -407,8 +407,9 @@ test("a room command defers the room transcript until the next ordinary turn", a
   assert.doesNotMatch(following.text, /EXACT_ROOM_ARG|SECOND_ROOM_LINE/);
 });
 
-test("manual compact uses the original session and produces the existing compaction marker", async (t) => {
+test("manual compact keeps the session and marks the last-before and first-after requests", async (t) => {
   const s = await setup(t);
+  s.spec({ used: 190000, window: 1000000 });
   const first = await s.turn("ordinary");
   s.spec({ compact: true });
   const command = await s.turn("/compact Keep the next action");
@@ -416,8 +417,8 @@ test("manual compact uses the original session and produces the existing compact
   assert.equal(command.session, first.session);
   const marker = (await s.messages()).find((m) => m.compaction);
   assert.equal(marker?.kind, "notice");
-  assert.equal(marker?.text, "Compacted · 176k → 50k");
-  assert.deepEqual(marker?.compaction, { before: 176000, after: 50000 });
+  assert.equal(marker?.text, "Compacted · 190k → 50k");
+  assert.deepEqual(marker?.compaction, { before: 190000, after: 50000 });
 });
 
 test("a queued command older than the recovery window remains not sent across restarts", async (t) => {

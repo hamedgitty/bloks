@@ -650,6 +650,11 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
           const { message, usage } = await completeRaw(messages, model, tools, signal);
           if (usage) {
             usageTotal = { input: usageTotal.input + usage.input, output: usageTotal.output + usage.output };
+            // Each request has its own prompt, while accounting still
+            // receives the whole turn's sum below.
+            if (Number.isFinite(usage.input) && usage.input > 0) {
+              emit({ ...base(threadId, turnId), type: "context.reading", used: usage.input, window: null });
+            }
           }
           const calls: any[] = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
@@ -916,7 +921,9 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
             }
             if (usage) {
-              emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
+              emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage,
+                ...(Number.isFinite(usage.input) && usage.input > 0 ? { context: usage.input } : {}),
+              });
             }
             active.delete(threadId);
             emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });

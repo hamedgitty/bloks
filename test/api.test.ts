@@ -5215,15 +5215,13 @@ describe("a conversation that fills up", () => {
       return bot && !bot.busy ? bot : null;
     });
 
-  test("the lane says how full it is, so a ring has something to draw", async (t) => {
+  test("a provider that reports no usage has no measured ring", async (t) => {
     await watchfulEngine(t, () => ({ text: "noted" }));
     const bot = await onGrok("Ringer");
     await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "hello" }) });
     const settled = await settle(bot.id);
     const lane = settled.tasks.find((t: any) => t.id === settled.activeTaskId);
-    assert.ok(lane.context, "a lane with no pressure to report cannot draw a ring");
-    assert.equal(lane.context.limit, 131_072, "grok's window");
-    assert.ok(lane.context.fraction >= 0 && lane.context.fraction <= 1);
+    assert.deepEqual(lane.context, { used: 0, limit: 0, fraction: 0, measured: false, window: "table", summarised: false });
     assert.equal(lane.context.summarised, false);
     await h.fetch(`/api/bots/${bot.id}?forget=1`, { method: "DELETE" });
   });

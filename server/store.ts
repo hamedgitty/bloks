@@ -9,7 +9,7 @@ import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
 import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
-import type { Reading } from "./context.ts";
+import { compactedNotice, readingFor, type Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
 export type BlokColor =
@@ -274,6 +274,15 @@ export interface TaskRecord {
    * the engine and model that measured it (server/context.ts). Preferred
    * to `lastInput` wherever it belongs to the engine the lane is on. */
   reading?: Reading;
+  /** One compaction waiting for its first subsequent request. Kept on
+   * the lane so an idle compaction can be completed after a restart. */
+  pendingCompaction?: {
+    threadId: string;
+    messageId: string;
+    instanceId: string;
+    model: string | null;
+    sessionId: string | null;
+  };
   /** Per-engine conversation cursors, one set per lane so parallel
    * lanes never share a session. */
   resumeCursors: Record<string, unknown>;
@@ -740,6 +749,7 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    if (patch.modelSelection) this.cancelPendingForSelection(bot, patch.modelSelection);
     Object.assign(bot, patch);
     this.saveBots();
     return bot;
@@ -753,11 +763,17 @@ export class Store {
     for (const { id, patch } of changes) {
       const bot = this.bot(id);
       if (!bot) continue;
+      if (patch.modelSelection) this.cancelPendingForSelection(bot, patch.modelSelection);
       Object.assign(bot, patch);
       changed.push(bot);
     }
     if (changed.length) this.saveBots();
     return changed;
+  }
+
+  private cancelPendingForSelection(bot: BotRecord, selection: ModelSelection) {
+    if (bot.modelSelection.instanceId === selection.instanceId && (bot.modelSelection.model ?? null) === (selection.model ?? null)) return;
+    for (const task of bot.tasks) delete task.pendingCompaction;
   }
 
   /** Cursors are per-lane: the thread that produced the session owns it. */
@@ -932,6 +948,7 @@ export class Store {
     delete found.task.lastInstanceId;
     // a reading measured a session that is not coming back
     delete found.task.reading;
+    delete found.task.pendingCompaction;
     this.saveBots();
   }
 
@@ -945,6 +962,7 @@ export class Store {
     if (!found) return;
     found.task.resumeCursors = {};
     delete found.task.reading;
+    delete found.task.pendingCompaction;
     this.saveBots();
   }
 
@@ -971,6 +989,41 @@ export class Store {
     // when they change, not each time they are said
     if (same && same.used === next.used && same.window === next.window) return;
     this.saveBots();
+  }
+
+  /** Compaction metadata is not a request size. Keep only the matching
+   * window until this session makes its next request. A second boundary
+   * replaces the single pending link, leaving the earlier marker alone. */
+  beginCompaction(threadId: string, by: { instanceId: string; model: string | null }, where: string, messageId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    const own = readingFor(found.task.reading, by);
+    if (own) found.task.reading = { ...own, used: 0, at: Date.now() };
+    else delete found.task.reading;
+    const cursor = found.task.resumeCursors[by.instanceId];
+    found.task.pendingCompaction = { ...by, threadId: where, messageId, sessionId: typeof cursor === "string" ? cursor : null };
+    this.saveBots();
+  }
+
+  /** Only the first real request from the same engine, model and session
+   * completes a marker. Reset or replacement sessions must not pair their
+   * request with a compaction they never went through. */
+  resolveCompaction(threadId: string, by: { instanceId: string; model: string | null }, used: number | null) {
+    const found = this.taskByThread(threadId);
+    const pending = found?.task.pendingCompaction;
+    if (!found || !pending) return null;
+    const cursor = found.task.resumeCursors[by.instanceId];
+    const same = pending.instanceId === by.instanceId && pending.model === by.model
+      && pending.sessionId === (typeof cursor === "string" ? cursor : null);
+    if (same && (typeof used !== "number" || !Number.isFinite(used) || used <= 0)) return null;
+    delete found.task.pendingCompaction;
+    this.saveBots();
+    if (!same) return null;
+    const marker = this.messagesFor(pending.threadId).find((m) => m.id === pending.messageId);
+    if (!marker?.compaction || marker.deleted) return null;
+    const compaction = { ...marker.compaction, after: Math.round(used!) };
+    const message = this.patchMessage(pending.threadId, pending.messageId, { compaction, text: compactedNotice(compaction) });
+    return message ? { threadId: pending.threadId, message } : null;
   }
 
   /** Record what a lane's earlier messages were folded into. */
