@@ -1087,7 +1087,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           let out = "";
           let err = "";
           const timer = setTimeout(() => {
-            child.kill("SIGKILL");
+            // asked to stop first, so it can take its own children with it,
+            // and only then made to
+            child.kill("SIGTERM");
+            setTimeout(() => child.kill("SIGKILL"), 3_000).unref?.();
             reject(new Error("Claude Code did not answer within a minute"));
           }, 60_000);
           timer.unref?.();
