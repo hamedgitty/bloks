@@ -15,7 +15,9 @@
 //
 // Up to twenty lanes per agent, each running one turn at a time. Any of
 // them can be closed except General, the first, which is cleared instead,
-// because an agent always has somewhere to be talked to.
+// because an agent always has somewhere to be talked to. Most agents have
+// only that one, so the strip appears once there is a second (ChatView);
+// the sidebar row opens one.
 //
 // A lane names itself from the first words of its first message, which
 // often say nothing about what it became. A double click renames it.

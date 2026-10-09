@@ -831,7 +831,7 @@ describe("routine shapes", () => {
     await h.fetch(`/api/bloks/${blok.id}`, { method: "DELETE" });
   });
 
-  test("a routine can run in a conversation of its own, and defaults to Routines", async () => {
+  test("a routine can run in a conversation of its own, and defaults to General", async () => {
     const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Two Jobs" }) });
     const routine = async (name: string, thread?: string) =>
       (
@@ -850,9 +850,10 @@ describe("routine shapes", () => {
     await h.fetch(`/api/routines/${inbox.id}/run`, { method: "POST" });
     const titles = (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id).tasks.map((t: any) => t.title);
     assert.ok(titles.includes("Morning news"), titles.join(", "));
-    assert.ok(titles.includes("Routines"), titles.join(", "));
+    // one that names none runs where the person talks to the agent
+    assert.deepEqual(titles, ["General", "Morning news"]);
 
-    // and it can be moved back to the shared lane
+    // and it can be moved back to General
     const { routine: moved } = await h.json(`/api/routines/${news.id}`, {
       method: "PATCH",
       body: JSON.stringify({ thread: null }),
@@ -6125,7 +6126,8 @@ describe("webhook dispatch", () => {
     });
     const { webhook } = await h.json("/api/webhooks", {
       method: "POST",
-      body: JSON.stringify({ name: "Ticker", botId }),
+      // a lane of its own, as every hook had before General became the default
+      body: JSON.stringify({ name: "Ticker", botId, thread: "Webhooks" }),
     });
 
     return {
@@ -6230,7 +6232,7 @@ describe("webhook dispatch", () => {
     const orphan = await agentWithoutEngine("Stranded");
     const { webhook } = await h.json("/api/webhooks", {
       method: "POST",
-      body: JSON.stringify({ name: "Stranded", botId: orphan }),
+      body: JSON.stringify({ name: "Stranded", botId: orphan, thread: "Webhooks" }),
     });
 
     const res = await h.fetch(`/hook/${webhook.token}`, { method: "POST", body: JSON.stringify({ x: 1 }) });

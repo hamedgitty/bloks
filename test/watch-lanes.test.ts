@@ -123,12 +123,13 @@ test("removing a watcher closes its lane, and lanes left behind close on start",
   const titles = async () => (await me()).tasks.map((task: any) => task.title as string);
   const idle = () => waitFor(async () => ((await me()).tasks.every((task: any) => !task.busy && task.state !== "working") ? true : null));
 
-  // a watcher that has fired once, so it has a lane of its own
+  // a watcher that has fired once, so it has a lane of its own: named as
+  // every watcher's own lane was before General became the default
   const fired = async (name: string) => {
     const dir = mkdtempSync(join(home, "watched-"));
     const { watcher } = await h.json("/api/watchers", {
       method: "POST",
-      body: JSON.stringify({ botId: bot.id, kind: "folder", target: dir, instruction: `Note the ${name} change.`, name }),
+      body: JSON.stringify({ botId: bot.id, kind: "folder", target: dir, instruction: `Note the ${name} change.`, name, thread: `Watching: ${name}` }),
     });
     await waitFor(async () => ((await h.json("/api/watchers")).watchers.find((w: any) => w.id === watcher.id)?.lastCheck ? true : null));
     writeFileSync(join(dir, "new.txt"), "x");
@@ -187,7 +188,8 @@ test("a full agent's watcher says what is open instead of only 'close one'", asy
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { watcher } = await h.json("/api/watchers", {
     method: "POST",
-    body: JSON.stringify({ botId: bot.id, kind: "folder", target: dir, instruction: "Note it.", name: "full" }),
+    // a conversation it has to open: General would take it, full or not
+    body: JSON.stringify({ botId: bot.id, kind: "folder", target: dir, instruction: "Note it.", name: "full", thread: "Watching: full" }),
   });
   await waitFor(async () => ((await h.json("/api/watchers")).watchers.find((w: any) => w.id === watcher.id)?.lastCheck ? true : null));
   writeFileSync(join(dir, "new.txt"), "x");

@@ -219,7 +219,7 @@ import {
   themeFrom,
 } from "./mcp-apps.ts";
 import { MAX_INPUT_BYTES, TerminalStore, clampCols, clampRows } from "./terminal.ts";
-import { WebhookStore, webhookMessage } from "./webhooks.ts";
+import { WebhookStore, cleanThread, webhookMessage } from "./webhooks.ts";
 import {
   WorkflowStore,
   clean as cleanWorkflow,
@@ -2738,9 +2738,10 @@ function mainLaneOf(bot: BotRecord) {
   return byAge.find((t) => !side.has(t.id) && !rehearsals.forTask(t.id)) ?? byAge[0];
 }
 
-/** The lane background work (routines, webhooks) runs in. Reuses an
- * idle lane with this title, creates one when there is room, and only
- * falls back to the active lane at the lane cap. */
+/** The lane background work with a title of its own runs in (jobs,
+ * workflows, mail, meetings, and a routine or webhook that names one).
+ * Reuses an idle lane with this title, creates one when there is room,
+ * and only falls back to the active lane at the lane cap. */
 function backgroundTaskId(botId: string, title: string): string | undefined {
   const bot = store.bot(botId);
   if (!bot) return undefined;
@@ -2757,6 +2758,50 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
   }
   const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id));
   return fallback?.id;
+}
+
+/** A conversation's id, as `--thread` and the routine and webhook fields
+ * may name one instead of its title. Never made into a title: a lane
+ * called by an id is one nobody meant to open (GitHub 237). */
+const LANE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The conversation a routine, a watcher or a webhook speaks in, without
+ * making one (GitHub 237). Naming none is the agent's first conversation:
+ * one agent, one conversation, unless somebody asks for another. Named,
+ * it is the lane with that id, or else that title; undefined for a title
+ * nobody has yet, which the caller makes. An id that is none of this
+ * agent's lanes (one since closed) is never a title, so that work goes to
+ * the first conversation as well.
+ */
+function namedLane(bot: BotRecord, named: string | undefined): TaskRecord | undefined {
+  if (!named) return mainLaneOf(bot);
+  return (
+    bot.tasks.find((t) => t.id === named) ??
+    bot.tasks.find((t) => t.title === named) ??
+    (LANE_ID.test(named) ? mainLaneOf(bot) : undefined)
+  );
+}
+
+/** Why background work cannot be filed with this conversation named, or
+ * null. An id has to be one of the agent's own lanes, since it is never
+ * made into a title; a title is made when it is first needed. */
+function threadRefusal(botId: string, named: string | undefined): string | null {
+  if (!named || !LANE_ID.test(named)) return null;
+  const bot = store.bot(botId);
+  if (bot?.tasks.some((t) => t.id === named)) return null;
+  return `${named} is not the id of any of ${bot?.name ?? "that agent"}'s conversations. Name one by its title or its id, or name none to use its first.`;
+}
+
+/** The lane a routine or a webhook event can start its turn in now: the
+ * one it names, made when a title is not there yet (backgroundTaskId), or
+ * the agent's first. Undefined while that lane is busy. */
+function workLaneId(botId: string, named: string | undefined): string | undefined {
+  const bot = store.bot(botId);
+  if (!bot) return undefined;
+  const lane = namedLane(bot, named);
+  if (!lane) return backgroundTaskId(botId, named!);
+  return lane.busy || claimedLanes.has(lane.id) ? undefined : lane.id;
 }
 
 /** Lanes a webhook has been handed a turn for, from acceptance until
@@ -2784,8 +2829,8 @@ function webhookRefusal(botId: string): { status: number; retryAfter?: string; e
 
 /** The lane a webhook event can start its turn in now, or undefined when the
  * lane is busy or another webhook event has already claimed it. */
-function claimWebhookLane(botId: string): string | undefined {
-  const laneId = backgroundTaskId(botId, "Webhooks");
+function claimWebhookLane(botId: string, thread: string | undefined): string | undefined {
+  const laneId = workLaneId(botId, thread);
   if (!laneId || webhookLanes.has(laneId)) return undefined;
   webhookLanes.add(laneId);
   return laneId;
@@ -4205,15 +4250,25 @@ function checkEnv(): NodeJS.ProcessEnv {
 
 const runsCommandsUnasked = (bot: BotRecord | null | undefined) => bot?.approvals === "auto" || bot?.approvals === "full";
 
-/** The lane a watcher's turns run in, made on first use. */
+/**
+ * The lane a watcher's turns run in: the conversation it names, by id or
+ * by title, or the agent's first when it names none (GitHub 237). A title
+ * nobody has yet is made without moving the person off the one they have
+ * open. One titled as a watcher's own, "Watching: <name>", which is where
+ * every watcher spoke before, is its own lane (`laneId`), and closes with
+ * it (GitHub 166); the one it already has comes first, should another
+ * lane share its title.
+ */
 function watcherLane(w: Watcher, bot: BotRecord) {
-  const known = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
-  if (known) return known;
+  const own = w.thread && w.laneId ? bot.tasks.find((t) => t.id === w.laneId && t.title === w.thread) : undefined;
+  const named = own ?? namedLane(bot, w.thread);
+  if (named) return named;
+  const title = w.thread!;
   const active = bot.activeTaskId;
-  const made = store.createTask(bot.id, `${WATCHING}${w.name}`.slice(0, 40));
+  const made = store.createTask(bot.id, title);
   if (!made) throw new Error(laneLimitError(bot.name, bot.tasks.map((t) => t.title)));
   store.setActiveTask(bot.id, active);
-  w.laneId = made.id;
+  if (title.startsWith(WATCHING)) w.laneId = made.id;
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
   return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
 }
@@ -4224,28 +4279,16 @@ function personSpokeIn(laneId: string) {
   return store.messagesFor(laneId).some((m) => m.role === "user" && m.via !== "watcher");
 }
 
-/** The conversation titled `title`, made if there is none, without
- * moving the person off the one they have open. */
-function laneTitled(bot: BotRecord, title: string) {
-  const named = bot.tasks.find((t) => t.title === title);
-  if (named) return named;
-  const active = bot.activeTaskId;
-  const made = store.createTask(bot.id, title);
-  if (!made) throw new Error(`${bot.name} has too many tasks open to start "${title}". Close one.`);
-  store.setActiveTask(bot.id, active);
-  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
-  return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
-}
-
 async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
   const text = watcherTurn(w, what);
   if (w.mode === "rehearse") {
     // a rehearsal keeps its own conversations, whatever the watcher names
     await openRehearsals([bot], text, { quiet: true, via: "watcher" });
-  } else if (w.thread) {
+  } else {
     // Into the conversation the work belongs to, where its context is.
-    // Busy, it waits in the same queue as a person's message would.
-    const lane = laneTitled(bot, w.thread);
+    // Busy, or Bloks finishing up to restart, it waits in the same queue
+    // as a person's message would.
+    const lane = watcherLane(w, bot);
     if (laneWaits(lane)) {
       queueOnLane(bot.id, lane.id, text, { via: "watcher" });
     } else {
@@ -4253,14 +4296,6 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
       broadcast({ kind: "message", threadId: lane.id, message: said });
       await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true });
     }
-  } else if (drain.on) {
-    // Bloks is finishing up to restart: it waits in the watcher's lane
-    queueOnLane(bot.id, watcherLane(w, bot).id, text, { via: "watcher" });
-  } else {
-    const lane = watcherLane(w, bot);
-    const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
-    broadcast({ kind: "message", threadId: lane.id, message: said });
-    await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true });
   }
   w.fires = [{ at: Date.now(), summary: what.split("\n")[0].slice(0, 160) }, ...w.fires].slice(0, 10);
 }
@@ -4361,6 +4396,30 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     saveWatchers();
     broadcast({ kind: "watchers" });
   }
+}
+
+/**
+ * One conversation per agent became the default (GitHub 237): a routine,
+ * a watcher or a webhook that names no conversation speaks in the agent's
+ * first. What was filed before keeps going where it went, so on the first
+ * start after the update each one that named none is given the
+ * conversation it already used: "Routines", "Webhooks", and for a watcher
+ * the lane of its own, by the title that lane has now. Nothing is moved
+ * or closed. Done once and noted in the config, so what is filed later
+ * without a conversation stays in the first one. Before the sweep below,
+ * which leaves a lane a watcher names alone.
+ */
+if (typeof cfg.oneConversationAt !== "number") {
+  routines.nameUnnamed("Routines");
+  webhooks.nameUnnamed("Webhooks");
+  const unnamed = watchers.filter((w) => !w.thread);
+  for (const w of unnamed) {
+    const own = w.laneId ? store.bot(w.botId)?.tasks.find((t) => t.id === w.laneId) : undefined;
+    w.thread = own?.title ?? `${WATCHING}${w.name}`.slice(0, 40);
+  }
+  if (unnamed.length) saveWatchers();
+  cfg.oneConversationAt = Date.now();
+  saveConfig({ oneConversationAt: cfg.oneConversationAt });
 }
 
 for (const w of watchers) armWatcher(w);
@@ -6456,7 +6515,8 @@ async function runDueRoutines() {
       // to do it, and restoring or handing back would bring back a
       // schedule that had already spent itself.
       if (bot.archivedAt || wheel.heldBy(bot.id)) continue;
-      const laneId = backgroundTaskId(bot.id, routine.thread ?? "Routines");
+      // the conversation it names, or the agent's first (GitHub 237)
+      const laneId = workLaneId(bot.id, routine.thread);
       if (!laneId) continue;
       routines.markRan(routine.id, now.getTime());
       const run = routines.beginRun(routine.id, laneId);
@@ -8460,17 +8520,19 @@ const server = createServer(async (req, res) => {
       if (refusal.retryAfter) res.setHeader("retry-after", refusal.retryAfter);
       return json(res, refusal.status, { error: refusal.error });
     }
-    const laneId = agentId && !drain.on ? claimWebhookLane(agentId) : undefined;
-    // The Webhooks lane is mid-turn, or another event has just claimed it,
-    // or Bloks is finishing up to restart: this one waits in that lane and
-    // goes in the next turn, as a message to a busy chat does. The wait is
-    // bounded, and past it the sender is told to retry; a 202 always means
-    // the event is saved and will be handled.
+    const laneId = agentId && !drain.on ? claimWebhookLane(agentId, hook.thread) : undefined;
+    // Its lane (the agent's first, or the one the hook names) is mid-turn,
+    // or another event has just claimed it, or Bloks is finishing up to
+    // restart: this one waits in that lane and goes in the next turn, as a
+    // message to a busy chat does. The wait is bounded, and past it the
+    // sender is told to retry; a 202 always means the event is saved and
+    // will be handled.
     let waitIn: string | undefined;
     if (agentId && !laneId) {
+      const target = store.bot(agentId);
       waitIn =
-        store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id ??
-        (drain.on ? backgroundTaskId(agentId, "Webhooks") : undefined);
+        (target ? namedLane(target, hook.thread)?.id : undefined) ??
+        (drain.on ? workLaneId(agentId, hook.thread) : undefined);
       const framed = webhookMessage(hook.name, raw);
       const queued = waitIn ? (steerQueues.get(waitIn)?.items.filter((item) => item.source === "webhook") ?? []) : [];
       const bytes = queued.reduce(
@@ -11856,6 +11918,8 @@ const server = createServer(async (req, res) => {
       if (asAgent) body.botId = asAgent.botId;
       const checked = cleanWatcher(body, (id) => Boolean(store.bot(id) && !store.bot(id)!.archivedAt));
       if (!checked.ok) return json(res, 400, { error: checked.error });
+      const unnamed = threadRefusal(checked.value.botId, checked.value.thread);
+      if (unnamed) return json(res, 400, { error: unnamed });
       if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
       const w: Watcher = { id: newId(), ...checked.value, createdAt: Date.now(), fires: [] };
       // A check runs a command with nobody watching. The person filing one
@@ -11891,9 +11955,10 @@ const server = createServer(async (req, res) => {
         // (GitHub 166). Through the close an agent asks for, so a lane
         // still working, or with a message waiting, closes once that is
         // done: the usual way a watcher is dropped is by its agent, from
-        // a turn in that very lane. A conversation named with --thread is
-        // never its laneId, and one the person talked in is theirs, so
-        // both stay.
+        // a turn in that very lane. Its laneId is only ever a lane it made
+        // under its own name, "Watching: <name>": General, or any other
+        // conversation named with --thread, is never one, and one the
+        // person talked in is theirs, so those stay.
         if (w.laneId && !watchers.some((x) => x.laneId === w.laneId) && !personSpokeIn(w.laneId)) {
           closeAfterTurn.add(w.laneId);
           closeIfAsked(w.laneId);
@@ -11904,6 +11969,9 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const checked = cleanWatcher({ ...w, ...body, botId: asAgent ? w.botId : (body.botId ?? w.botId) }, (id) => Boolean(store.bot(id)));
       if (!checked.ok) return json(res, 400, { error: checked.error });
+      const renamed = checked.value.thread !== w.thread || checked.value.botId !== w.botId;
+      const unnamed = renamed ? threadRefusal(checked.value.botId, checked.value.thread) : null;
+      if (unnamed) return json(res, 400, { error: unnamed });
       const moved = checked.value.target !== w.target || checked.value.kind !== w.kind;
       const owner = store.bot(checked.value.botId);
       const couldRun = checkAllowed(w, owner?.approvals);
@@ -12196,7 +12264,11 @@ const server = createServer(async (req, res) => {
       if (blokId && !bloks.get(blokId)) return json(res, 404, { error: "no such room" });
       const workflowId = typeof body.workflowId === "string" && workflows.get(body.workflowId) ? body.workflowId : undefined;
       if (!botId && !blokId && !workflowId) return json(res, 400, { error: "a webhook needs a target" });
-      const hook = webhooks.create(String(body.name ?? ""), { botId, blokId, workflowId });
+      // the conversation an agent's events go to; none is its first
+      const thread = cleanThread(body.thread);
+      const unnamed = botId ? threadRefusal(botId, thread) : null;
+      if (unnamed) return json(res, 400, { error: unnamed });
+      const hook = webhooks.create(String(body.name ?? ""), { botId, blokId, workflowId }, thread);
       if (!hook) return json(res, 409, { error: "webhook limit reached" });
       return json(res, 201, { webhook: hook });
     }
@@ -12204,6 +12276,13 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       let hook = null;
+      if (typeof body.thread === "string" || body.thread === null) {
+        const found = webhooks.hooks.find((h) => h.id === m![1]);
+        const thread = cleanThread(body.thread);
+        const unnamed = found?.botId && thread !== found.thread ? threadRefusal(found.botId, thread) : null;
+        if (unnamed) return json(res, 400, { error: unnamed });
+        hook = webhooks.setThread(m[1], thread);
+      }
       if (typeof body.enabled === "boolean") hook = webhooks.setEnabled(m[1], body.enabled);
       if (typeof body.name === "string") hook = webhooks.rename(m[1], body.name);
       return json(res, hook ? 200 : 404, hook ? { webhook: hook } : { error: "no such webhook" });
@@ -13353,6 +13432,8 @@ const server = createServer(async (req, res) => {
       const exists =
         clean.targetKind === "room" ? Boolean(bloks.get(clean.targetId)) : Boolean(store.bot(clean.targetId));
       if (!exists) return json(res, 404, { error: "no such agent or room" });
+      const unnamed = clean.targetKind === "agent" ? threadRefusal(clean.targetId, clean.thread) : null;
+      if (unnamed) return json(res, 400, { error: unnamed });
       const routine = routines.create(clean);
       if (!routine) return json(res, 507, { error: `you can have at most ${MAX_ROUTINES} routines` });
       broadcast({ kind: "routines" });
@@ -13387,6 +13468,10 @@ const server = createServer(async (req, res) => {
         thread: body.thread === null ? undefined : (body.thread ?? existing.thread),
       });
       if (!merged) return json(res, 400, { error: "that is not a valid routine" });
+      // only a conversation newly named: one named before and since closed
+      // must not stop the rest of an edit
+      const unnamed = merged.thread !== existing.thread ? threadRefusal(merged.targetId, merged.thread) : null;
+      if (unnamed) return json(res, 400, { error: unnamed });
       const routine = routines.patch(m[1], merged);
       broadcast({ kind: "routines" });
       return json(res, 200, { routine: { ...routine!, summary: describeRoutine(routine!) } });
@@ -13422,9 +13507,12 @@ const server = createServer(async (req, res) => {
             }),
           );
       } else {
-        const lane = routine.thread ?? "Routines";
-        const laneId = backgroundTaskId(routine.targetId, lane);
-        if (!laneId) return json(res, 409, { error: `that agent's ${lane} lane is busy. Try again when it settles` });
+        const laneId = workLaneId(routine.targetId, routine.thread);
+        if (!laneId) {
+          const target = store.bot(routine.targetId);
+          const lane = (target && namedLane(target, routine.thread)?.title) ?? routine.thread ?? "General";
+          return json(res, 409, { error: `that agent's ${lane} lane is busy. Try again when it settles` });
+        }
         const run = routines.beginRun(routine.id, laneId);
         if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
         broadcast({ kind: "routines" });

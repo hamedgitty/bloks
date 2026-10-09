@@ -53,6 +53,8 @@ interface WebhookRow {
   botId?: string;
   blokId?: string;
   enabled: boolean;
+  /** The conversation an agent's events go to; absent is its first. */
+  thread?: string;
   lastFiredAt?: number;
   firedCount?: number;
   deliveries?: Array<{ at: number; excerpt: string }>;
@@ -1088,6 +1090,34 @@ function WebhooksTab({
                 </code>
               </div>
             </div>
+
+            {selected.botId && (
+              <label className="mt-4 block rounded-2xl border bg-card p-4">
+                <div className="text-[13px] font-semibold text-foreground">Conversation</div>
+                <input
+                  key={`${selected.id}:${selected.thread ?? ""}`}
+                  defaultValue={selected.thread ?? ""}
+                  maxLength={40}
+                  placeholder="General"
+                  onBlur={(e) => {
+                    const thread = e.target.value.trim();
+                    if (thread === (selected.thread ?? "")) return;
+                    api(`/api/webhooks/${selected.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ thread: thread || null }),
+                    })
+                      .then(load)
+                      .catch((err) => setError(err.message));
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  className="mt-2 w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring/60"
+                />
+                <p className="mt-1.5 text-[12px] text-muted-foreground">
+                  Events go to {target?.name ?? "the agent"}'s first conversation, where you talk to it, unless you name
+                  another; one that does not exist is made.
+                </p>
+              </label>
+            )}
 
             <div className="mt-4 rounded-2xl border bg-card p-4">
               <div className="text-[13px] font-semibold text-foreground">Recent deliveries</div>

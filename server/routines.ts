@@ -49,10 +49,12 @@ export interface Routine {
    * "cloud" its cloud computer, "local" this Mac, "off" no computer.
    * Absent means wherever the agent normally runs. */
   runsOn?: "cloud" | "local" | "off";
-  /** The conversation it runs in, by title. Absent means the agent's
-   * shared "Routines" lane. Two routines that name different lanes run
-   * side by side, each with its own context; naming a lane the person
-   * already has puts the routine's turns in that conversation. */
+  /** The conversation it runs in, by title or by id. Absent means the
+   * agent's first, General, where the person talks to it too (GitHub
+   * 237); routines from before that were given "Routines", the lane they
+   * shared. Two routines that name different lanes run side by side,
+   * each with its own context; naming a lane the person already has puts
+   * the routine's turns in that conversation. */
   thread?: string;
   enabled: boolean;
   createdAt: number;
@@ -234,7 +236,7 @@ export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | nul
       : undefined;
   const runsOn =
     o.runsOn === "cloud" || o.runsOn === "local" || o.runsOn === "off" ? o.runsOn : undefined;
-  // a lane title: one line, as short as any other lane's
+  // a lane title or id: one line, as short as any other lane's
   const thread =
     typeof o.thread === "string" ? o.thread.replace(/\s+/g, " ").trim().slice(0, 40) || undefined : undefined;
 
@@ -349,6 +351,15 @@ export class RoutineStore {
     if (this.routines.length === before) return false;
     this.save();
     return true;
+  }
+
+  /** Every agent's routine that names no conversation is given this
+   * one, once, on the upgrade that made the first conversation the
+   * default (GitHub 237), so what is filed keeps running where it ran. */
+  nameUnnamed(thread: string): void {
+    const unnamed = this.routines.filter((r) => r.targetKind === "agent" && !r.thread);
+    for (const routine of unnamed) routine.thread = thread;
+    if (unnamed.length) this.save();
   }
 
   /** Drop every routine aimed at a deleted agent or room. */

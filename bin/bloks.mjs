@@ -107,7 +107,7 @@ const COMMANDS = {
       "act when a folder, a web page or a feed changes, or when a cheap check you wrote finds something: " +
       "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
       "Unless you may run commands without asking, the person approves the command before it runs. " +
-      "--thread sends its turns to that conversation (made if missing), so work you started in the background is picked up where its context is",
+      "Its turns come to your first conversation, where the person talks to you; --thread sends them to another, by its title (made if missing) or its id",
     run: async (args) => {
       const flags = parseFlags(args);
       const kind = flags.folder ? "folder" : flags.page ? "page" : flags.feed ? "feed" : flags.check ? "check" : null;
@@ -322,7 +322,8 @@ const COMMANDS = {
     use: 'routine --prompt <text> --time HH:MM [--date YYYY-MM-DD | --days "1,2,3"] [--name <name>] [--thread <conversation>]',
     about:
       "file a routine for yourself: weekly on --days (0 is Sunday, 6 is Saturday), or once on --date to come back to something later. " +
-      "Leave out --days and it runs every day. The prompt can be up to 4,000 characters",
+      "Leave out --days and it runs every day. The prompt can be up to 4,000 characters. " +
+      "It runs in your first conversation, where the person talks to you; --thread runs it in another, by its title (made if missing) or its id",
     run: async (args) => {
       const flags = parseFlags(args);
       if (!flags.prompt) throw new Error("a routine needs a --prompt");
@@ -342,7 +343,7 @@ const COMMANDS = {
         name: flags.name,
         prompt: flags.prompt,
         time: flags.time,
-        // its own conversation, so it does not share context with the rest
+        // another conversation, so it does not share context with the rest
         ...(flags.thread ? { thread: flags.thread } : {}),
         ...(once
           ? { repeat: "once", date: once, days: [] }

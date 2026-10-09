@@ -15,7 +15,8 @@ async function webhookHarness(t: TestContext) {
   const r = await chatHarness();
   t.after(() => r.stop());
   const { h, bot, calls, post } = r;
-  const { webhook } = await post("/api/webhooks", { name: "Build events", botId: bot.id });
+  // a lane of its own, as every hook had before General became the default
+  const { webhook } = await post("/api/webhooks", { name: "Build events", botId: bot.id, thread: "Webhooks" });
   const current = async () => (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
   return {
     h, bot, calls, current, post,

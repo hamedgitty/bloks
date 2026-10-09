@@ -169,8 +169,9 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
   const [instruction, setInstruction] = useState(w.instruction);
   const [thread, setThread] = useState(w.thread ?? "");
   useEffect(() => setThread(w.thread ?? ""), [w.id, w.thread]);
-  // where its turns land: the named conversation, or its own lane
-  const laneId = w.thread ? bot?.tasks?.find((t) => t.title === w.thread)?.id : w.laneId;
+  // where its turns land: the named conversation, by id or title, or the
+  // agent's first
+  const laneId = w.thread ? bot?.tasks?.find((t) => t.id === w.thread || t.title === w.thread)?.id : bot?.tasks?.[0]?.id;
   const [checking, setChecking] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => setInstruction(w.instruction), [w.id, w.instruction]);
@@ -240,11 +241,11 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
           value={thread}
           onChange={(e) => setThread(e.target.value)}
           onBlur={() => thread.trim() !== (w.thread ?? "") && patch({ thread: thread.trim() })}
-          placeholder={`Its own, "Watching: ${w.name}"`}
+          placeholder="General"
           className="text-[13px] text-foreground"
         />
         <span className="text-[11.5px]">
-          Name one, like General, for work the agent started there; it is made if it does not exist, and a busy one queues the turn.
+          Its first conversation, where you talk to it, unless you name another; one that does not exist is made, and a busy one queues the turn.
         </span>
       </label>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-muted-foreground">
@@ -305,7 +306,7 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
               dispatch({ type: "select", id: bot.id, lane: laneId });
             }}
           >
-            Open its lane
+            Open the conversation
           </Button>
         )}
         <Button

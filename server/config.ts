@@ -131,6 +131,11 @@ export interface AppConfig {
    * open the app on a different port, and a returning user is asked to
    * onboard again while a genuinely new one is skipped past it. */
   setupDoneAt?: number;
+  /** When the routines, watchers and webhooks that named no conversation
+   * were given the one they already ran in, once, on the upgrade that
+   * made an agent's first conversation the default (GitHub 237). Here
+   * for the same reason as setupDoneAt: it describes this workspace. */
+  oneConversationAt?: number;
   /** Shared context every agent receives, not a secret, echoed back to
    * the app so the settings field can prefill. */
   /** `name` is how members of a shared room see the owner. */
@@ -314,6 +319,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   if (typeof (patch as Record<string, unknown>).setupDoneAt === "number") {
     disk.setupDoneAt = (patch as Record<string, unknown>).setupDoneAt;
   }
+  if (typeof patch.oneConversationAt === "number") disk.oneConversationAt = patch.oneConversationAt;
   mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   // this file holds API keys in plaintext, never leave it group/world
   // readable; every save is a new file made 0600, whatever the old one was

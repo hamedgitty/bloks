@@ -475,7 +475,7 @@ function CreateForm({
           <label className="block">
             <div
               className="mb-1.5 text-[12.5px] font-medium text-muted-foreground"
-              title="Routines share one conversation unless you name another. Two routines in different conversations run side by side, each with its own context."
+              title="A routine runs in the agent's first conversation, where you talk to it, unless you name another. Two routines in different conversations run side by side, each with its own context."
             >
               Conversation
             </div>
@@ -483,7 +483,7 @@ function CreateForm({
               value={thread}
               maxLength={40}
               onChange={(e) => setThread(e.target.value)}
-              placeholder="Routines"
+              placeholder="General"
               className="w-[180px] rounded-lg border border-input bg-background px-2.5 py-1.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring/60"
             />
           </label>

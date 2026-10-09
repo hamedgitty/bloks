@@ -161,15 +161,19 @@ describe("through the server", () => {
     assert.equal(fired.fired, true, fired.note);
     const lane = await waitFor(async () => {
       const w = (await h.json("/api/watchers")).watchers.find((x: any) => x.id === watcher.id);
-      return w?.laneId ? w : null;
+      return w?.fires.length ? w : null;
     });
     assert.ok(lane);
     assert.equal(lane.fires.length, 1);
     await waitFor(async () => (heard.some((q) => q.includes("invoice-march.pdf")) ? true : null));
     assert.ok(heard.some((q) => /New: invoice-march\.pdf/.test(q) && /File new invoices by date/.test(q)));
+    // in the agent's one conversation, General, and no lane of its own (GitHub 237)
+    const general = bot.tasks[0].id;
+    const { messages } = await h.json(`/api/bots/${bot.id}/messages?thread=${general}&limit=50`);
+    assert.ok(messages.some((m: any) => m.via === "watcher" && /invoice-march\.pdf/.test(m.text)));
     const { bots } = await h.json("/api/bots");
     const me = bots.find((b: any) => b.id === bot.id);
-    assert.ok(me.tasks.some((t: any) => t.id === lane.laneId && /Watching/.test(t.title)));
+    assert.deepEqual(me.tasks.map((t: any) => t.title), ["General"]);
   });
 
   test("a page fires only when it mentions what it was told to look for", async () => {

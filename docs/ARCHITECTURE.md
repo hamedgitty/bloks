@@ -459,10 +459,10 @@ as the change, optionally only when it mentions something) or a feed
 (RSS or Atom entries not seen before). Folders are watched with
 `fs.watch` and settle for twenty seconds; everything is also looked at on
 its `every`. A first look is a baseline. A change becomes a turn in the
-watcher's own lane, or a rehearsal (`openRehearsals`), with the message
-marked `via: "watcher"`. A look is skipped while the agent is busy, so
-its own edits are not news to it, and `mayFire` caps a watcher at six
-turns an hour.
+agent's first conversation or the one the watcher names (see Lanes), or a
+rehearsal (`openRehearsals`), with the message marked `via: "watcher"`.
+A look is skipped while the agent is busy, so its own edits are not news
+to it, and `mayFire` caps a watcher at six turns an hour.
 
 ## Meeting notes
 
@@ -532,8 +532,28 @@ An agent keeps up to twenty lanes (`MAX_TASKS` in `server/store.ts`), each
 its own transcript, engine cursors and busy flag. Closing the last lane
 opens a fresh General in its place, because the active lane is what
 `threadId` names everywhere and an agent without one would be a special
-case in every route. A routine can name the lane it runs in
-(`routine.thread`), so two routines stop sharing one context.
+case in every route.
+
+One conversation per agent is the default. A routine, a watcher or an
+agent's webhook speaks in the agent's first lane, General, where the
+person talks to it, unless it names another with `thread` (the routine
+editor's Conversation, `--thread`, the webhook's Conversation), so two
+routines can still run side by side with their own context. `namedLane`
+reads a name as a lane's id first and its title second; a title nobody
+has is made when the work first needs it, and an id never is: one that
+is not this agent's lane is refused when filed and, once its lane has
+closed, sends the work to the first lane. A turn there shares the lane
+with the person, so what they say meanwhile queues behind it or joins it
+as steering. Everything filed before this kept going where it went: on
+the first start after the update, each one that named no lane was given
+the one it used ("Routines", "Webhooks", a watcher's "Watching: <name>"
+by its title then), once, marked by `oneConversationAt` in
+`config.json`. A watcher's own lane is one it made under that name, and
+closes with it.
+
+The chat's tab strip shows only while an agent has more than one lane;
+New conversation is on the agent's row in the sidebar (its menu, and the
+`+` of the conversations view), as Clear is.
 
 Unread is per lane: a turn that ends in a lane marks that lane
 (`store.markLane`), and the agent's own `unread` is kept as "any lane

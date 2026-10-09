@@ -116,9 +116,10 @@ process.stdin.on("data", (c) => (input += c));
   const dir = mkdtempSync(join(tmpdir(), "bloks-dm-watched-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "old.txt"), "x");
+  // a lane of its own, as every watcher had before General became the default
   const { watcher } = await h.json("/api/watchers", {
     method: "POST",
-    body: JSON.stringify({ botId: recipient.id, kind: "folder", target: dir, instruction: "Note new files." }),
+    body: JSON.stringify({ botId: recipient.id, kind: "folder", target: dir, instruction: "Note new files.", name: "files", thread: "Watching: files" }),
   });
   let baseline = false;
   for (let i = 0; i < 200 && !baseline; i++) {

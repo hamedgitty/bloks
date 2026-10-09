@@ -106,7 +106,8 @@ process.stdin.on("data", (c) => (input += c));
   assert.equal((await agent(manager.id)).activeWithYouAt, managerReply.at, "the reply to the person did not move the manager");
   assert.equal((await agent(teammate.id)).activeWithYouAt, start.teammate, "a message between agents moved the teammate");
 
-  // A routine wakes the third, and its answer is to nobody in particular.
+  // A routine wakes the third, and its answer is to nobody in particular,
+  // though it runs in General, where the person talks to it.
   const { routine } = await h.json("/api/routines", {
     method: "POST",
     body: JSON.stringify({ targetId: scheduled.id, targetKind: "agent", prompt: "the morning digest", time: "09:00", days: [1] }),
@@ -114,7 +115,7 @@ process.stdin.on("data", (c) => (input += c));
   assert.equal((await h.fetch(`/api/routines/${routine.id}/run`, { method: "POST" })).status, 202);
   const lanes = await until(async () => {
     const tasks = (await agent(scheduled.id)).tasks as any[];
-    const lane = tasks.find((x) => x.title === "Routines");
+    const lane = tasks.find((x) => x.title === "General");
     return lane && (await said(scheduled.id, lane.id)).some((m) => m.role === "bot" && m.text === "Done.") ? lane : null;
   }, "the routine's answer");
   assert.ok(lanes);

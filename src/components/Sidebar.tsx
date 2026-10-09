@@ -280,7 +280,7 @@ function RowMenu({
   const general = bot?.tasks?.[0];
 
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - (bot ? 300 : 100));
+  const top = Math.min(menu.y, window.innerHeight - (bot ? 340 : 100));
   const left = Math.min(menu.x, window.innerWidth - 220);
 
   const item = (
@@ -347,6 +347,13 @@ function RowMenu({
           void navigator.clipboard?.writeText(bot.threadId);
         }),
         divider("d2"),
+        // The chat shows no tabs while an agent has one conversation
+        // (GitHub 237), so a second one starts here as well as from the +
+        // the conversations view puts on the row.
+        item(<Plus size={15} className="text-muted-foreground" />, "New conversation", () => {
+          dispatch({ type: "select", id: bot.id });
+          dispatch({ type: "newTask", botId: bot.id });
+        }),
         // General is cleared, never closed; not while it is working
         general &&
           general.state !== "working" &&

@@ -13,8 +13,9 @@
 //   a feed       RSS or Atom; new entries since the last look
 //
 // When one changes, the agent gets a turn that says what changed and
-// what it was asked to do about it, in a lane of the watcher's own, or as
-// a rehearsal when the watcher was set to try things on a copy first.
+// what it was asked to do about it, in the agent's first conversation or
+// the one the watcher names, or as a rehearsal when the watcher was set
+// to try things on a copy first.
 //
 // Three limits keep a watcher from becoming a way to spend money in a
 // loop: a first look only takes a baseline and never fires, a watcher
@@ -68,10 +69,12 @@ export interface Watcher {
   lastCheck?: number;
   lastError?: string;
   laneId?: string;
-  /** The conversation its turns go to, by title, so the agent hears in
-   * the context the work came from (GitHub 138). Absent means a lane of
-   * its own, "Watching: <name>". Made if no conversation has the title;
-   * a busy one queues the turn like a person's message. */
+  /** The conversation its turns go to, by title or by id, so the agent
+   * hears in the context the work came from (GitHub 138). Absent means
+   * the agent's first, General (GitHub 237); watchers from before that
+   * were given the lane of their own they spoke in, "Watching: <name>".
+   * Made if no conversation has the title; a busy one queues the turn
+   * like a person's message. */
   thread?: string;
   fires: Array<{ at: number; summary: string }>;
   /** Checks only: who allowed its command to run unattended. "person"
@@ -395,7 +398,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   if (!instruction) return { ok: false, error: "say what the agent should do when it changes" };
   const every = Math.min(MAX_EVERY, Math.max(MIN_EVERY, Math.round(Number(raw.every) || 30)));
   const mentions = String(raw.mentions ?? "").trim().slice(0, 120);
-  // a lane title: one line, as short as any other lane's
+  // a lane title or id: one line, as short as any other lane's
   const thread = typeof raw.thread === "string" ? raw.thread.replace(/\s+/g, " ").trim().slice(0, 40) : "";
   return {
     ok: true,

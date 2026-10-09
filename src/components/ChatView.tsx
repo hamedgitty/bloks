@@ -790,6 +790,10 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [exchange, setExchange] = useState<{ peerId: string; messageId: string; text: string } | null>(null);
   const earlier = useEarlier("bot", bot);
   const lanesInSidebar = useLanesInSidebar();
+  // One conversation is the usual agent (GitHub 237): with nothing to
+  // switch to, the strip would only be a "+" inviting a second. New
+  // conversation and Clear stay on the agent's row in the sidebar.
+  const strip = !lanesInSidebar && (bot.tasks?.length ?? 0) > 1;
   const showEarlier = () => {
     preExpand.current = scrollRef.current?.scrollHeight ?? null;
     pinned.current = false;
@@ -805,13 +809,13 @@ export function ChatView({ bot }: { bot: Bot }) {
 
   return (
     <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      {/* Header. Its line usually comes from the tab strip below it; with
-          the conversations in the sidebar there is no strip, so the header
-          draws its own. */}
+      {/* Header. Its line comes from the tab strip below it when there is
+          one; with the conversations in the sidebar, or only one of them,
+          there is no strip, so the header draws its own. */}
       <div
         className={cn(
           "titlebar-drag flex h-[52px] shrink-0 items-center justify-between gap-2 px-3 md:px-4",
-          lanesInSidebar && "border-b",
+          !strip && "border-b",
         )}
       >
         <button
@@ -865,8 +869,9 @@ export function ChatView({ bot }: { bot: Bot }) {
       </div>
 
       {/* Messages. The strip repeats what the sidebar lists when it lists
-          conversations, so it only shows when the sidebar does not. */}
-      {!lanesInSidebar && <TaskStrip
+          conversations, so it only shows when the sidebar does not, and
+          only once there is more than one to choose between. */}
+      {strip && <TaskStrip
         tasks={bot.tasks ?? []}
         activeId={bot.activeTaskId ?? bot.threadId}
         onSelect={(taskId) => taskId !== bot.activeTaskId && dispatch({ type: "selectTask", botId: bot.id, taskId })}
