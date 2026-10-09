@@ -2,11 +2,12 @@
 // thread to instance binding and per-instance resume cursors: persist
 // that binding from day one, because retrofitting it is painful).
 // messages-<threadId>.json holds the folded transcript.
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
+import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import type { Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
@@ -406,13 +407,11 @@ export interface BotRecord {
 const BOTS_FILE = join(DATA_DIR, "bots.json");
 
 /** Writes a file so that it is either the old one or the new one, never
- * half of each: written aside, then renamed over. A crash mid-save used to
- * leave bots.json cut short, and a bots.json that does not parse loads as
- * no agents at all. */
+ * half of each: written aside, flushed, then renamed over. A crash mid-save
+ * used to leave bots.json cut short, and a bots.json that does not parse
+ * loads as no agents at all. */
 function writeWhole(file: string, text: string) {
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, text);
-  renameSync(temp, file);
+  writeFileAtomic(file, text);
 }
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 

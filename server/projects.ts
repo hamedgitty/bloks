@@ -21,9 +21,10 @@
 //
 // The pure half is here. Reading the disk and running turns is the
 // caller's problem.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { BlokColor, BlokShape } from "./store.ts";
@@ -175,7 +176,7 @@ export class ProjectStore {
   private save() {
     try {
       mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-      writeFileSync(PROJECTS_FILE, JSON.stringify(this.projects, null, 2), { mode: 0o600 });
+      writeFileAtomic(PROJECTS_FILE, JSON.stringify(this.projects, null, 2), 0o600);
     } catch {
       /* still a project for this session */
     }

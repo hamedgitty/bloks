@@ -26,9 +26,10 @@
 // only ever needs its pinned half, to number the pins when one moves, and
 // the copy of that half here is held to the client's by
 // test/sidebar-order.test.ts.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 
 /** A row as placing it needs it: an agent or a room in the sidebar. */
@@ -211,6 +212,6 @@ export class SidebarStore {
   setSectionOrder(order: string[]) {
     this.sectionOrder = order;
     this.saved = true;
-    writeFileSync(this.file, JSON.stringify({ sectionOrder: order }, null, 2), { mode: 0o600 });
+    writeFileAtomic(this.file, JSON.stringify({ sectionOrder: order }, null, 2), 0o600);
   }
 }

@@ -18,9 +18,10 @@
 //   A run missed by more than the grace window is skipped entirely. A
 //   "brief me at 09:00" that fires at 23:40 because the lid was shut all
 //   day is not a brief, it is a surprise. The next one comes tomorrow.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -291,7 +292,7 @@ export class RoutineStore {
   }
 
   private save() {
-    writeFileSync(ROUTINES_FILE, JSON.stringify(this.routines, null, 2), { mode: 0o600 });
+    writeFileAtomic(ROUTINES_FILE, JSON.stringify(this.routines, null, 2), 0o600);
   }
 
   get(id: string): Routine | null {

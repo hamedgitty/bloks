@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engine-setup.ts";
@@ -1281,7 +1282,7 @@ let briefs: Array<Brief & { readAt?: number }> = (() => {
 function saveBriefs() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(BRIEFS_FILE, JSON.stringify(briefs), { mode: 0o600 });
+    writeFileAtomic(BRIEFS_FILE, JSON.stringify(briefs), 0o600);
   } catch {
     /* a brief is a convenience; never fail over one */
   }
@@ -3904,7 +3905,7 @@ let meetings: Meeting[] = (() => {
 function saveMeetings() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(MEETINGS_FILE, JSON.stringify(meetings.slice(-50)), { mode: 0o600 });
+    writeFileAtomic(MEETINGS_FILE, JSON.stringify(meetings.slice(-50)), 0o600);
   } catch {
     /* kept in memory */
   }
@@ -3937,7 +3938,7 @@ let watchers: Watcher[] = (() => {
 function saveWatchers() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(WATCHERS_FILE, JSON.stringify(watchers), { mode: 0o600 });
+    writeFileAtomic(WATCHERS_FILE, JSON.stringify(watchers), 0o600);
   } catch {
     /* kept in memory; written next time */
   }

@@ -31,9 +31,10 @@
 //   is nothing that can run away. A regex is the single operator that
 //   would have brought that problem back, and "contains" covers what
 //   people actually write.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -544,7 +545,7 @@ export class WorkflowStore {
   private save() {
     try {
       mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-      writeFileSync(WORKFLOWS_FILE, JSON.stringify(this.workflows, null, 2), { mode: 0o600 });
+      writeFileAtomic(WORKFLOWS_FILE, JSON.stringify(this.workflows, null, 2), 0o600);
     } catch {
       /* still a workflow for this session */
     }

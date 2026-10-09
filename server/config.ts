@@ -8,11 +8,12 @@
 // Credentials may also arrive from the environment, which is what a
 // container or a CI run wants and what lets someone try the app without
 // writing a key to disk at all.
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { readFileSync, mkdirSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
 
@@ -307,13 +308,8 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   }
   mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   // this file holds API keys in plaintext, never leave it group/world
-  // readable (mode on write only applies to a fresh file, so chmod too)
-  writeFileSync(p, JSON.stringify(disk, null, 2), { mode: 0o600 });
-  try {
-    chmodSync(p, 0o600);
-  } catch {
-    /* non-POSIX filesystem, best effort */
-  }
+  // readable; every save is a new file made 0600, whatever the old one was
+  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
 }
 
 /** Forgets a provider's credential entirely, rather than blanking it. */
@@ -328,12 +324,7 @@ export function disconnectProvider(kind: string): void {
   if (disk.providers) delete disk.providers[kind];
   // the legacy slot is the same credential under an older name
   if (kind === "grok") delete disk.xai;
-  writeFileSync(p, JSON.stringify(disk, null, 2), { mode: 0o600 });
-  try {
-    chmodSync(p, 0o600);
-  } catch {
-    /* non-POSIX filesystem, best effort */
-  }
+  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
 }
 
 // Default fleet: the CLI agents and the box, plus an instance for every

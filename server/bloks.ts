@@ -10,9 +10,10 @@
 // conversation, so what it heard in a group is still in its memory when
 // you message it alone. Rooms decide what enters that conversation; they
 // do not fragment it.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { ChatLink } from "./chat-bridge.ts";
@@ -164,7 +165,7 @@ export class BlokStore {
   }
 
   private save() {
-    writeFileSync(BLOKS_FILE, JSON.stringify(this.bloks, null, 2), { mode: 0o600 });
+    writeFileAtomic(BLOKS_FILE, JSON.stringify(this.bloks, null, 2), 0o600);
   }
 
   get(id: string): BlokRecord | null {

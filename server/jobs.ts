@@ -16,9 +16,10 @@
 // cannot fail: an offer is a proposal the agent gets to refuse, so the
 // consequence of ranking badly is one wasted turn rather than a wrong
 // answer.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -230,7 +231,7 @@ export class JobStore {
   private save() {
     try {
       mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-      writeFileSync(JOBS_FILE, JSON.stringify(this.jobs, null, 2), { mode: 0o600 });
+      writeFileAtomic(JOBS_FILE, JSON.stringify(this.jobs, null, 2), 0o600);
     } catch {
       /* a board that cannot be written is still a board for this session */
     }
