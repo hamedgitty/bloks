@@ -235,9 +235,9 @@ function Bubble({
         {/* A column, so reactions hang under the bubble they belong to
             rather than beside it where they would push the text around. */}
         <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
-          {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook") && (
+          {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine") && (
             <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
-              {message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
+              {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
             </div>
           )}
           <div
@@ -1170,7 +1170,9 @@ export function ChatView({ bot }: { bot: Bot }) {
                 ? "a webhook"
                 : m.via === "email"
                   ? "email"
-                  : null
+                  : m.via === "routine"
+                    ? `your routine${m.routine?.name ? ` ${m.routine.name}` : ""}`
+                    : null
         }
         working={working}
         // the same stop Cmd+Enter makes before it sends: the turn ends,

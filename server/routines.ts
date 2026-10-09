@@ -31,7 +31,7 @@ export interface Routine {
   targetKind: "agent" | "room";
   /** A short label for the calendar. Absent means the prompt stands in. */
   name?: string;
-  /** What gets said to them, as though you had typed it. */
+  /** What gets said to them when the routine runs. */
   prompt: string;
   /** Local time of day on the Mac, "HH:MM", 24 hour. */
   time: string;
