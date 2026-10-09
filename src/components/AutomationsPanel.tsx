@@ -52,6 +52,8 @@ interface WebhookRow {
   name: string;
   botId?: string;
   blokId?: string;
+  workflowId?: string;
+  thread?: string;
   enabled: boolean;
   lastFiredAt?: number;
   firedCount?: number;
@@ -1045,6 +1047,30 @@ function WebhooksTab({
                 }
               />
             </div>
+
+            {selected.botId && !selected.blokId && !selected.workflowId && (
+              <label className="mt-5 block text-[12px] text-muted-foreground">
+                Conversation
+                <input
+                  key={`${selected.id}:${selected.thread ?? ""}`}
+                  defaultValue={selected.thread ?? ""}
+                  maxLength={40}
+                  placeholder="Webhooks"
+                  onBlur={(e) => {
+                    const thread = e.target.value;
+                    if (thread === (selected.thread ?? "")) return;
+                    api(`/api/webhooks/${selected.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ thread: thread || null }),
+                    })
+                      .then(load)
+                      .catch((err) => setError(err.message));
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  className="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-[13px] text-foreground outline-none focus:border-ring"
+                />
+              </label>
+            )}
 
             <div className="mt-5 rounded-2xl border bg-card p-4">
               <div className="flex items-center justify-between">

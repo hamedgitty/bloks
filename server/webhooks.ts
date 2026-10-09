@@ -21,6 +21,7 @@ import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
+import { normalizeThread } from "./routines.ts";
 
 export interface WebhookDelivery {
   at: number;
@@ -39,6 +40,8 @@ export interface WebhookRecord {
   botId?: string;
   blokId?: string;
   workflowId?: string;
+  /** An agent's conversation title. Unset uses Webhooks; other targets ignore it. */
+  thread?: string;
   enabled: boolean;
   createdAt: number;
   lastFiredAt?: number;
@@ -59,7 +62,7 @@ export class WebhookStore {
     try {
       const raw = JSON.parse(readFileSync(FILE, "utf8"));
       // hand-editable file: keep only rows that still look like ours
-      this.hooks = Array.isArray(raw) ? raw.filter(valid) : [];
+      this.hooks = Array.isArray(raw) ? raw.filter(valid).map((hook) => ({ ...hook, thread: normalizeThread(hook.thread) })) : [];
     } catch {
       this.hooks = [];
     }
@@ -69,7 +72,7 @@ export class WebhookStore {
     writeFileSync(FILE, JSON.stringify(this.hooks, null, 2), { mode: 0o600 });
   }
 
-  create(name: string, target: { botId?: string; blokId?: string; workflowId?: string }): WebhookRecord | null {
+  create(name: string, target: { botId?: string; blokId?: string; workflowId?: string }, thread?: unknown): WebhookRecord | null {
     if (this.hooks.length >= MAX_HOOKS) return null;
     const hook: WebhookRecord = {
       id: newId(),
@@ -78,6 +81,7 @@ export class WebhookStore {
       ...(target.botId ? { botId: target.botId } : {}),
       ...(target.blokId ? { blokId: target.blokId } : {}),
       ...(target.workflowId ? { workflowId: target.workflowId } : {}),
+      thread: normalizeThread(thread),
       enabled: true,
       createdAt: Date.now(),
     };
@@ -112,6 +116,14 @@ export class WebhookStore {
     const hook = this.hooks.find((h) => h.id === id);
     if (!hook) return null;
     hook.enabled = enabled;
+    this.save();
+    return hook;
+  }
+
+  setThread(id: string, thread: string | null): WebhookRecord | null {
+    const hook = this.hooks.find((h) => h.id === id);
+    if (!hook) return null;
+    hook.thread = normalizeThread(thread);
     this.save();
     return hook;
   }

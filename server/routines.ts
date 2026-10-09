@@ -234,9 +234,7 @@ export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | nul
       : undefined;
   const runsOn =
     o.runsOn === "cloud" || o.runsOn === "local" || o.runsOn === "off" ? o.runsOn : undefined;
-  // a lane title: one line, as short as any other lane's
-  const thread =
-    typeof o.thread === "string" ? o.thread.replace(/\s+/g, " ").trim().slice(0, 40) || undefined : undefined;
+  const thread = normalizeThread(o.thread);
 
   // every optional field is named, present-or-cleared, so a PATCH can
   // genuinely turn a once routine weekly or drop a name
@@ -254,6 +252,11 @@ export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | nul
     runsOn,
     thread: targetKind === "agent" ? thread : undefined,
   };
+}
+
+/** A conversation title, shared by routines and webhooks. */
+export function normalizeThread(value: unknown): string | undefined {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 40) || undefined : undefined;
 }
 
 /** Human summary, used by the clients so both agree on the wording. */

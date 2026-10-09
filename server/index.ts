@@ -2733,10 +2733,10 @@ function mainLaneOf(bot: BotRecord) {
 /** The lane background work (routines, webhooks) runs in. Reuses an
  * idle lane with this title, creates one when there is room, and only
  * falls back to the active lane at the lane cap. */
-function backgroundTaskId(botId: string, title: string): string | undefined {
+function backgroundTaskId(botId: string, title: string, eligible: (task: TaskRecord) => boolean = () => true): string | undefined {
   const bot = store.bot(botId);
   if (!bot) return undefined;
-  const named = bot.tasks.find((t) => t.title === title);
+  const named = bot.tasks.find((t) => t.title === title && eligible(t));
   if (named) return named.busy || claimedLanes.has(named.id) ? undefined : named.id;
   const active = bot.activeTaskId;
   const made = store.createTask(botId, title);
@@ -2747,7 +2747,7 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
     broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
     return made.id;
   }
-  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id));
+  const fallback = bot.tasks.find((t) => eligible(t) && !t.busy && !claimedLanes.has(t.id));
   return fallback?.id;
 }
 
@@ -2755,6 +2755,11 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
  * startTurn returns. startTurn marks its lane busy only after a few awaits,
  * so two events arriving together would both see the lane idle. */
 const webhookLanes = new Set<string>();
+
+/** A solo hook must not enter a room's session or a rehearsal's copy. */
+function webhookLaneEligible(botId: string, task: TaskRecord): boolean {
+  return !rehearsals.forTask(task.id) && !bloks.roomsFor(botId).some((room) => room.lanes?.[botId] === task.id);
+}
 
 /** Why this agent cannot take a webhook turn right now, decided by the same
  * checks startTurn makes first (hold, then engine). A hold is temporary, so
@@ -2764,20 +2769,22 @@ const webhookLanes = new Set<string>();
  * hold placed after this runs still stops the turn there. The body is generic:
  * the caller holds only the webhook token, so the bot's name, the hold's
  * reason and the engine's ID stay with the owner (chat and logs). */
-function webhookRefusal(botId: string): { status: number; retryAfter?: string; error: string } | undefined {
+function webhookRefusal(botId: string, title: string): { status: number; retryAfter?: string; error: string } | undefined {
   const bot = store.bot(botId);
   if (!bot) return { status: 409, error: "no such agent" };
   const hold = wheel.heldBy(bot.id);
   if (hold) return { status: 503, retryAfter: "60", error: "agent temporarily unavailable" };
   const selection = selectEngine(bot);
   if (!registry.get(selection.instanceId)) return { status: 409, error: "agent cannot take events right now" };
+  const named = bot.tasks.find((task) => task.title === title);
+  if (named && !webhookLaneEligible(botId, named)) return { status: 409, error: "that conversation cannot receive webhook events" };
   return undefined;
 }
 
 /** The lane a webhook event can start its turn in now, or undefined when the
  * lane is busy or another webhook event has already claimed it. */
-function claimWebhookLane(botId: string): string | undefined {
-  const laneId = backgroundTaskId(botId, "Webhooks");
+function claimWebhookLane(botId: string, title: string): string | undefined {
+  const laneId = backgroundTaskId(botId, title, (task) => webhookLaneEligible(botId, task));
   if (!laneId || webhookLanes.has(laneId)) return undefined;
   webhookLanes.add(laneId);
   return laneId;
@@ -2874,6 +2881,8 @@ async function startClaimedTurn(
     fallback?: boolean;
     /** Another agent sent this message (see AgentNote). */
     from?: { botId: string; name: string };
+    /** An external event, already framed by webhookMessage. */
+    via?: "webhook";
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
@@ -2968,7 +2977,7 @@ async function startClaimedTurn(
       entry.items.push({ text });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, via: opts.via });
     }
     return;
   }
@@ -3070,6 +3079,7 @@ async function startClaimedTurn(
       text,
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
+      ...(opts.via ? { via: opts.via } : {}),
     });
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
   }
@@ -8146,13 +8156,14 @@ const server = createServer(async (req, res) => {
     // refusal to retry (503) or to stop (409). A refused event records no
     // delivery and leaves no lane behind.
     const agentId = hook.workflowId || hook.blokId ? undefined : hook.botId;
-    const refusal = agentId ? webhookRefusal(agentId) : undefined;
+    const title = hook.thread ?? "Webhooks";
+    const refusal = agentId ? webhookRefusal(agentId, title) : undefined;
     if (refusal) {
       if (refusal.retryAfter) res.setHeader("retry-after", refusal.retryAfter);
       return json(res, refusal.status, { error: refusal.error });
     }
-    const laneId = agentId && !drain.on ? claimWebhookLane(agentId) : undefined;
-    // The Webhooks lane is mid-turn, or another event has just claimed it,
+    const laneId = agentId && !drain.on ? claimWebhookLane(agentId, title) : undefined;
+    // The chosen lane is mid-turn, or another event has just claimed it,
     // or Bloks is finishing up to restart: this one waits in that lane and
     // goes in the next turn, as a message to a busy chat does. The wait is
     // bounded, and past it the sender is told to retry; a 202 always means
@@ -8160,8 +8171,8 @@ const server = createServer(async (req, res) => {
     let waitIn: string | undefined;
     if (agentId && !laneId) {
       waitIn =
-        store.bot(agentId)?.tasks.find((t) => t.title === "Webhooks")?.id ??
-        (drain.on ? backgroundTaskId(agentId, "Webhooks") : undefined);
+        store.bot(agentId)?.tasks.find((t) => t.title === title && webhookLaneEligible(agentId, t))?.id ??
+        (drain.on ? backgroundTaskId(agentId, title, (task) => webhookLaneEligible(agentId, task)) : undefined);
       const framed = webhookMessage(hook.name, raw);
       const queued = waitIn ? (steerQueues.get(waitIn)?.items.filter((item) => item.source === "webhook") ?? []) : [];
       const bytes = queued.reduce(
@@ -8207,7 +8218,7 @@ const server = createServer(async (req, res) => {
           const blok = bloks.get(hook.blokId);
           if (blok) await postToRoom(blok, text, { hops: 0 });
         } else if (hook.botId) {
-          await startTurn(hook.botId, text, { taskId: laneId });
+          await startTurn(hook.botId, text, { taskId: laneId, via: "webhook" });
         }
       } catch (e) {
         // The sender is long gone; the failure belongs in the chat.
@@ -11835,16 +11846,20 @@ const server = createServer(async (req, res) => {
       if (blokId && !bloks.get(blokId)) return json(res, 404, { error: "no such room" });
       const workflowId = typeof body.workflowId === "string" && workflows.get(body.workflowId) ? body.workflowId : undefined;
       if (!botId && !blokId && !workflowId) return json(res, 400, { error: "a webhook needs a target" });
-      const hook = webhooks.create(String(body.name ?? ""), { botId, blokId, workflowId });
+      const hook = webhooks.create(String(body.name ?? ""), { botId, blokId, workflowId }, body.thread);
       if (!hook) return json(res, 409, { error: "webhook limit reached" });
       return json(res, 201, { webhook: hook });
     }
     m = path.match(/^\/api\/webhooks\/([\w-]+)$/);
     if (m && method === "PATCH") {
       const body = await readBody(req);
+      if (body.thread !== undefined && body.thread !== null && typeof body.thread !== "string") {
+        return json(res, 400, { error: "conversation must be a title or null" });
+      }
       let hook = null;
       if (typeof body.enabled === "boolean") hook = webhooks.setEnabled(m[1], body.enabled);
       if (typeof body.name === "string") hook = webhooks.rename(m[1], body.name);
+      if (body.thread === null || typeof body.thread === "string") hook = webhooks.setThread(m[1], body.thread);
       return json(res, hook ? 200 : 404, hook ? { webhook: hook } : { error: "no such webhook" });
     }
     if (m && method === "DELETE") {
