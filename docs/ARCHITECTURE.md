@@ -200,8 +200,17 @@ their next turn.
 
 Claude Code compacts its own session when it fills, and says so with a
 `compact_boundary` frame; the driver turns that into `context.compacted`,
-which leaves a one-line marker in the conversation with the tokens before
-and after. With idle compaction on (Settings, off by default), a minute
+which leaves a one-line marker in the conversation. Its numbers are the
+lane's own request readings, not the engine's compaction metadata, which
+counts differently: before is the last request the session made ahead of
+the boundary, and after is the first one it makes once past it, patched
+into the same marker when it comes (`store.beginCompaction` and
+`resolveCompaction`). Until then the marker says only where it started
+from, and the lane has no fill to show. A request from another engine,
+model or session (a switch, a rewind, a new session after a resume that
+failed) cancels the wait rather than completing it, and a subagent's own
+boundary or usage never marks or measures the lane it works for. With
+idle compaction on (Settings, off by default), a minute
 timer in `server/index.ts` finds Claude Code lanes over 100k tokens whose
 last request was 55 minutes ago, inside an hour's cache, and sends
 `/compact` into the resumed session with the same tools and system prompt
@@ -216,12 +225,17 @@ total: `context.reading` events carry the latest request's size and the
 window, which Claude Code gives per message (`promptSize`) and in its
 result (`modelUsage[model].contextWindow`), Codex in
 `thread/tokenUsage/updated` (`last.inputTokens` against
-`modelContextWindow`), and an ACP agent in `usage_update` (`used`,
-`size`). The lane keeps the latest as `reading`, with the engine and model
-that made it (`store.noteReading`), and `laneFill` uses it only while the
-agent is on that engine and model, with the table in `server/context.ts`
-as the fallback window. The Usage tokens, the turn's own spend, are kept
-apart and counted as before. A turn that answered with no tokens reported
+`modelContextWindow`), an ACP agent in `usage_update` (`used`, `size`),
+and an OpenAI-compatible provider in each response's `prompt_tokens`, one
+reading per request of a tool loop. The lane keeps the latest as
+`reading`, with the engine and model that made it (`store.noteReading`),
+and `laneFill` uses it only while the agent is on that engine and model,
+with the table in `server/context.ts` as the fallback window, which the
+lane then says is the table's. Without such a reading, or with neither
+an engine's window nor a model the table knows, the lane has no fill at
+all: the 32k default stays a margin for the fold, never a number shown.
+The Usage tokens, the turn's own spend, are kept apart and counted as
+before. A turn that answered with no tokens reported
 (Pi does not report any) counts as unmeasured, and Activity says "not
 reported" rather than showing zero.
 

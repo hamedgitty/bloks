@@ -267,12 +267,14 @@ export interface TaskRecord {
      * whole. Absent means the whole covered part is in the summary. */
     microFrom?: number;
   };
-  /** Input tokens on the last turn, which is the closest thing to "how
-   * full is this lane" that a provider tells us. */
+  /** Input tokens on the last turn, kept with the lane's usage. Not how
+   * full the lane is: a turn of many requests sums them all, so nothing
+   * reads it for that any more. */
   lastInput?: number;
   /** How full this lane's session is, in the engine's own numbers, with
-   * the engine and model that measured it (server/context.ts). Preferred
-   * to `lastInput` wherever it belongs to the engine the lane is on. */
+   * the engine and model that measured it (server/context.ts). The only
+   * measure there is: a lane without one from the engine and model it is
+   * on now has no fill. */
   reading?: Reading;
   /** One compaction waiting for its first subsequent request. Kept on
    * the lane so an idle compaction can be completed after a restart. */
