@@ -38,6 +38,14 @@ test("words for a lane whose turn is still getting ready wait for that turn, rat
   assert.ok(await waitFor(() => fake.state.folds.length >= 1), "the turn did not fold first, so this proves nothing");
   const asked = (await messagesOf(h, ivy)).find((m) => m.text === "FIRST");
   assert.equal(asked?.queued, undefined, "FIRST waited behind something else, so this proves nothing");
+  // while it is getting ready the lane is not free to close, and a drain
+  // counts it as running
+  const lane = (await h.json("/api/bots")).bots.find((b: any) => b.id === ivy.id).activeTaskId;
+  const close = await h.fetch(`/api/bots/${ivy.id}/tasks/${lane}`, { method: "DELETE" });
+  assert.equal(close.status, 409, "a lane still getting its turn ready was closed");
+  const drained = await h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 600 }) });
+  assert.equal(drained.idle, false, "a drain counted a lane getting ready as idle");
+  await h.fetch("/api/maintenance/drain", { method: "DELETE" });
   const second = say("SECOND");
   const answered = await Promise.race([second, new Promise((r) => setTimeout(() => r(null), 10_000))]);
   fake.state.folding = "fail";

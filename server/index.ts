@@ -2506,7 +2506,14 @@ function drainStatus() {
     startedAt,
     ...(tool ? { tool } : {}),
   }));
-  const busy = telegramReturns.busy || idleCompacting.size > 0 || store.bots.some((b) => b.tasks.some((t) => t.busy));
+  // a lane still getting a turn ready (claimedLanes) is as busy as one
+  // running: its message is in the transcript, and a restart now would
+  // lose the turn before the cut-off record that would pick it up exists
+  const busy =
+    telegramReturns.busy ||
+    idleCompacting.size > 0 ||
+    claimedLanes.size > 0 ||
+    store.bots.some((b) => b.tasks.some((t) => t.busy));
   return drain.status(running, busy);
 }
 
@@ -2816,6 +2823,12 @@ type LaneClaim = { lane?: string };
  * first. Whatever asks whether a lane is free counts a claimed one as
  * busy (laneWaits, backgroundTaskId, drainSteer). */
 const claimedLanes = new Map<string, LaneClaim>();
+
+/** store.deleteTask, counting a lane still getting a turn ready as busy:
+ * closed then, the turn would start in a lane that no longer exists. */
+function deleteLane(botId: string, laneId: string): ReturnType<typeof store.deleteTask> {
+  return claimedLanes.has(laneId) ? "busy" : store.deleteTask(botId, laneId);
+}
 
 /** Starts a turn (startClaimedTurn). A start that gives up before
  * marking its lane busy (refused, held by a drain, or failed getting
@@ -4277,7 +4290,7 @@ for (const w of watchers) armWatcher(w);
 // can fill an agent's limit with nothing it may close (GitHub 166).
 // Nothing runs yet, so closing is just the store's.
 for (const bot of store.bots) {
-  for (const id of orphanWatcherLanes(bot.tasks, watchers, personSpokeIn)) store.deleteTask(bot.id, id);
+  for (const id of orphanWatcherLanes(bot.tasks, watchers, personSpokeIn)) deleteLane(bot.id, id);
 }
 // Pages and feeds on their own schedules; folders as a fallback.
 setInterval(() => {
@@ -4840,7 +4853,7 @@ function closeIfAsked(laneId: string) {
   if ([...steerQueues.keys()].includes(laneId)) return;
   const owner = store.taskByThread(laneId)?.bot;
   if (!owner) return void closeAfterTurn.delete(laneId);
-  const outcome = store.deleteTask(owner.id, laneId);
+  const outcome = deleteLane(owner.id, laneId);
   if (outcome === "busy") return;
   if (outcome === "ok") claudeCatalogs.delete(laneId);
   closeAfterTurn.delete(laneId);
@@ -10235,7 +10248,7 @@ const server = createServer(async (req, res) => {
       if (asAgent && asAgent.taskId !== m[2]) {
         return json(res, 403, { error: "an agent can close only the conversation it is in" });
       }
-      const outcome = store.deleteTask(m[1], m[2]);
+      const outcome = deleteLane(m[1], m[2]);
       if (outcome === "missing") return json(res, 404, { error: "no such task" });
       // An agent closing its own conversation is doing it from inside its
       // turn there, so that turn is what keeps it busy: close it when the
