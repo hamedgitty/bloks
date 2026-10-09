@@ -151,6 +151,27 @@ function writesOf(update: any): string[] {
   return [...new Set(named.filter((p): p is string => typeof p === "string" && p.length > 0))];
 }
 
+const RULE_FIELDS = ["command", "cmd", "script", "file_path", "path", "filePath", "notebook_path", "target_file", "url", "uri"];
+
+/**
+ * What a permission request is about, in the fields the rules read: the
+ * call's own input (where a command usually is), and every file it names
+ * in its locations or diffs. Left out, rules about commands and paths
+ * could never match an ACP agent's request.
+ */
+export function permissionInput(call: any): Record<string, unknown> {
+  // only the fields a rule reads (policy.ts targetOf): a write's input can
+  // carry the whole file, and this event goes to every screen
+  const raw: Record<string, unknown> = {};
+  const given = call?.rawInput && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) ? call.rawInput : {};
+  for (const key of RULE_FIELDS) if (typeof given[key] === "string") raw[key] = String(given[key]).slice(0, 2_000);
+  const paths = [
+    ...(Array.isArray(call?.locations) ? call.locations.map((l: any) => l?.path) : []),
+    ...(Array.isArray(call?.content) ? call.content.filter((c: any) => c?.type === "diff").map((c: any) => c?.path) : []),
+  ].filter((p, i, all): p is string => typeof p === "string" && p.length > 0 && all.indexOf(p) === i);
+  return { ...raw, ...(paths.length ? { paths } : {}) };
+}
+
 function toolTitle(update: any): string {
   const title = typeof update?.title === "string" ? update.title : null;
   if (title) return title.slice(0, 100);
@@ -571,6 +592,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             requestId,
             requestType: "permission",
             tool: typeof call.kind === "string" ? call.kind : "tool",
+            input: permissionInput(call),
             summary: toolTitle(call),
             // the agent names its own choices, so use its words
             choices: options.map((o) => String(o?.name ?? "")).filter(Boolean).slice(0, 5),

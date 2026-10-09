@@ -176,14 +176,14 @@ import {
   OPS as POLICY_OPS,
   PolicyStore,
   cleanRule,
-  decide,
+  decideEach,
   describe as describeRule,
   isQuestionTool,
   Wheel,
   heldRefusal,
   pausedMessage,
   refusal,
-  targetOf,
+  targetsOf,
 } from "./policy.ts";
 import {
   ProposalStore,
@@ -1762,11 +1762,11 @@ bus.subscribe((event: RuntimeEvent) => {
           });
           break;
         }
-        const target = targetOf(event.tool ?? "", (event.input as Record<string, unknown>) ?? {}, {
+        const targets = targetsOf(event.tool ?? "", (event.input as Record<string, unknown>) ?? {}, {
           botId: bot.id,
           agent: bot.name,
         });
-        const decision = decide(policy.list(), target);
+        const decision = decideEach(policy.list(), targets);
         if (decision.verdict === "deny" || (decision.verdict === "allow" && !byMember)) {
           const allowed = decision.verdict === "allow";
           const instance = laneInstance(bot, event.threadId);

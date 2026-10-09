@@ -237,6 +237,31 @@ function toolOf(method: string, params: any): string {
   return "shell";
 }
 
+/**
+ * What an approval request is about, in the fields the rules read: the
+ * command, and every file a change touches. Left out, a rule about a
+ * command or a path could never match a Codex request, and only rules on
+ * the tool's name applied. A legacy patch names its files itself; a
+ * current one names its item, whose files came with item/started.
+ */
+export function requestInput(params: any, itemPaths: ReadonlyMap<string, string[]>): Record<string, unknown> {
+  const command = Array.isArray(params?.command)
+    ? params.command.filter((part: unknown) => typeof part === "string").join(" ")
+    : typeof params?.command === "string"
+      ? params.command
+      : "";
+  const paths =
+    params?.fileChanges && typeof params.fileChanges === "object"
+      ? Object.keys(params.fileChanges)
+      : typeof params?.itemId === "string"
+        ? (itemPaths.get(params.itemId) ?? [])
+        : [];
+  return {
+    ...(command ? { command } : {}),
+    ...(paths.length ? { path: paths[0], paths } : {}),
+  };
+}
+
 /** One line describing the request, from whichever field carries it. */
 function summarise(params: any, fallback: string): string {
   if (typeof params.message === "string") return params.message;
@@ -367,6 +392,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       let tokenBase: TokenCount | null = null;
       // threads this turn gave up on reopening (see onAgentNotification)
       const abandoned = new Set<string>();
+      // the files each change item touches, for its approval (requestInput)
+      const itemPaths = new Map<string, string[]>();
       // set once turn/start goes out; usage reported before it is history
       let turnSent = false;
       // Codex's own names for the conversation and the turn running in it,
@@ -511,6 +538,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestId,
           requestType: isQuestion ? "question" : "permission",
           tool,
+          ...(isQuestion || isMcp ? {} : { input: requestInput(params, itemPaths) }),
           summary: summarise(params, tool),
           choices: isQuestion
             ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).slice(0, 5)
@@ -544,6 +572,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               item.type === "fileChange" && Array.isArray(item.changes)
                 ? item.changes.flatMap((c: any) => [c?.path, c?.kind?.move_path].filter((p) => typeof p === "string" && p))
                 : [];
+            // kept for the approval the change may ask for next
+            if (paths.length && typeof item.id === "string") itemPaths.set(item.id, paths);
             emit({
               ...envelope(threadId, turnId),
               type: "item.started",

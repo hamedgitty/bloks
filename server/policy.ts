@@ -118,6 +118,20 @@ export function targetOf(tool: string, input: Record<string, unknown>, who: { bo
   };
 }
 
+/**
+ * One Ask per file when a request names several (a patch across files, a
+ * move), so a rule about one of them is not missed because another was
+ * listed first. See decideEach for how they combine.
+ */
+export function targetsOf(tool: string, input: Record<string, unknown>, who: { botId: string; agent: string }): Ask[] {
+  const one = targetOf(tool, input, who);
+  const paths = Array.isArray(input?.paths)
+    ? [...new Set(input.paths.filter((p): p is string => typeof p === "string" && p.trim().length > 0))]
+    : [];
+  if (paths.length <= 1) return [paths[0] && !one.path ? { ...one, path: paths[0] } : one];
+  return paths.map((path) => ({ ...one, path }));
+}
+
 // ── deciding ───────────────────────────────────────────────────────────
 
 /** What a rule is looking at in this request, or undefined when the
@@ -255,6 +269,18 @@ export function decide(rules: Rule[], ask: Ask): Decision {
     }
   }
   return { verdict: "ask", because: "no rule covers this" };
+}
+
+/** The answer for a request that names several files: refused if any
+ * of them is refused, allowed only if every one of them is allowed,
+ * otherwise asked. */
+export function decideEach(rules: Rule[], asks: Ask[]): Decision {
+  const decisions = asks.map((ask) => decide(rules, ask));
+  return (
+    decisions.find((d) => d.verdict === "deny") ??
+    decisions.find((d) => d.verdict === "ask") ??
+    decisions[0] ?? { verdict: "ask", because: "no rule covers this" }
+  );
 }
 
 /** What the agent is told when a rule refuses. It names the rule, because

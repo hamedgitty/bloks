@@ -12,11 +12,13 @@ import {
   applies,
   cleanRule,
   decide,
+  decideEach,
   describe as describeRule,
   heldRefusal,
   pausedMessage,
   refusal,
   targetOf,
+  targetsOf,
   type Ask,
   type Rule,
 } from "../server/policy.ts";
@@ -435,5 +437,29 @@ describe("taking the wheel", () => {
     const wheel = new Wheel();
     wheel.noteTurnedAway("bot-1");
     assert.equal(wheel.heldBy("bot-1"), null);
+  });
+});
+
+describe("a request that names several files", () => {
+  const who = { botId: "b1", agent: "Ada" };
+  const denyEnv = { id: "r1", effect: "deny", field: "path", op: "ends-with", value: ".env", enabled: true } as any;
+  const allowSrc = { id: "r2", effect: "allow", field: "path", op: "starts-with", value: "/w/src/", enabled: true } as any;
+
+  test("each file is checked, so the one a rule is about is not hidden behind the first", () => {
+    const asks = targetsOf("edit", { path: "/w/a.ts", paths: ["/w/a.ts", "/w/.env"] }, who);
+    assert.deepEqual(asks.map((a) => a.path), ["/w/a.ts", "/w/.env"]);
+    assert.equal(decideEach([denyEnv], asks).verdict, "deny");
+  });
+
+  test("an allow covers the request only when it covers every file", () => {
+    const some = targetsOf("edit", { paths: ["/w/src/a.ts", "/w/notes.md"] }, who);
+    assert.equal(decideEach([allowSrc], some).verdict, "ask");
+    const all = targetsOf("edit", { paths: ["/w/src/a.ts", "/w/src/b.ts"] }, who);
+    assert.equal(decideEach([allowSrc], all).verdict, "allow");
+  });
+
+  test("one file, or none, is the single request it always was", () => {
+    assert.deepEqual(targetsOf("edit", { paths: ["/w/x.ts"] }, who).map((a) => a.path), ["/w/x.ts"]);
+    assert.deepEqual(targetsOf("shell", { command: "ls" }, who).map((a) => a.command), ["ls"]);
   });
 });
