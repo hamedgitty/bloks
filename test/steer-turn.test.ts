@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { startHarness, type Harness } from "./helpers/server.ts";
 
@@ -192,6 +193,99 @@ done("Answer");`,
   assert.equal(spawns(home), 2);
   assert.ok(!heard(home, 1).includes("LATER"), "the turn that had stopped taking words was handed them anyway");
   assert.ok(heard(home, 2).includes("LATER"));
+});
+
+// ── another agent's correction (GitHub 238) ──
+
+const BLOKS = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
+
+/** Told RUN <tag> <args>, the stand-in runs the real `bloks` with those
+ * args on its turn's credential and keeps what it answered in
+ * said-<tag>.json. Told TASK, it works until more words come or 20
+ * seconds pass. Anything else it notes and ends. */
+const correcting = `const { execFileSync } = await import("node:child_process");
+const run = prompt.match(/RUN (\\w+) (.+)$/m);
+if (run) {
+  let said;
+  try { said = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(BLOKS)}, ...run[2].split(" ")], { encoding: "utf8" })); }
+  catch (e) { said = { error: String(e.stdout || e.message) }; }
+  writeFileSync(home + "/said-" + run[1] + ".json", JSON.stringify(said));
+  say("Sent");
+  done("Sent");
+} else if (prompt.includes("TASK")) {
+  say("Working on it");
+  const more = await next(20000);
+  if (more) { say("Changed course: " + (more.includes("CHANGE") ? "CHANGE" : "something else")); done("Changed course", 2); }
+  else { say("Nothing else came"); done("Nothing else came"); }
+} else {
+  say("Noted");
+  done("Noted");
+}`;
+
+test("an agent's correction goes into the turn its own message started, and anyone else's waits (GitHub 238)", async (t) => {
+  const { home, h, bot: worker } = await boot(t, correcting);
+  const hire = async (name: string) => {
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name }) });
+    await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+    return bot as { id: string };
+  };
+  const manager = await hire("Manager");
+  const other = await hire("Other");
+  const said = (tag: string) => waitFor(() => (existsSync(join(home, `said-${tag}.json`)) ? JSON.parse(readFileSync(join(home, `said-${tag}.json`), "utf8")) : null));
+
+  // the manager's message starts the worker's turn
+  await h.fetch(`/api/bots/${manager.id}/messages`, { method: "POST", body: JSON.stringify({ text: `RUN ask say ${worker.id} TASK find a boat tour` }) });
+  assert.ok(await waitFor(async () => texts(await messages(h, worker)).includes("Working on it")), "the worker's turn never started");
+
+  // An agent whose message did not start that turn, and who may not stop
+  // the worker, waits like any message, and is told why.
+  await h.fetch(`/api/bots/${other.id}/messages`, { method: "POST", body: JSON.stringify({ text: `RUN other say ${worker.id} --now OTHER drop it` }) });
+  const fromOther = await said("other");
+  assert.ok(fromOther, "the other agent's turn never ran");
+  assert.equal(fromOther.queued, true, JSON.stringify(fromOther));
+  assert.notEqual(fromOther.steered, true);
+  assert.match(fromOther.note, /did not join that turn/);
+  assert.match(fromOther.note, /not started by your message/);
+
+  // The manager's correction goes into the running turn, as the person's
+  // words would, and the manager is told the same thing the person is.
+  assert.ok(await waitFor(async () => !(await busy(h, manager))), "the manager's first turn never ended");
+  await h.fetch(`/api/bots/${manager.id}/messages`, { method: "POST", body: JSON.stringify({ text: `RUN now say ${worker.id} --now CHANGE only in the morning` }) });
+  const fromManager = await said("now");
+  assert.ok(fromManager, "the manager's second turn never ran");
+  assert.notEqual(fromManager.queued, true, `it waited for the next turn instead of going into this one: ${JSON.stringify(fromManager)}`);
+  assert.equal(fromManager.steered, true);
+  assert.match(fromManager.note, /reads this after the step it is on/);
+
+  assert.ok(await waitFor(async () => texts(await messages(h, worker)).includes("Changed course: CHANGE")), "the running turn never took the correction");
+  const list = await messages(h, worker);
+  const correction = list.find((m) => m.text === "CHANGE only in the morning");
+  assert.ok(correction, "the correction is not in the worker's conversation");
+  assert.ok(!correction.queued, "the correction is still flagged as waiting");
+  assert.equal(correction.agent?.dir, "in");
+  assert.equal(correction.agent?.peerId, manager.id, "the correction does not say which agent it came from");
+  const order = texts(list);
+  assert.ok(
+    order.indexOf("Working on it") < order.indexOf("CHANGE only in the morning") &&
+      order.indexOf("CHANGE only in the morning") < order.indexOf("Changed course: CHANGE"),
+    `out of order: ${JSON.stringify(order)}`,
+  );
+
+  // one process heard the task and the correction, framed as the
+  // manager's, and never the other agent's words
+  const worked = Array.from({ length: spawns(home) }, (_, i) => heard(home, i + 1)).find((words) => /A message from Manager[^\n]*\n\nTASK find a boat tour/.test(words));
+  assert.ok(worked, "no process heard the task as the manager's");
+  assert.match(worked, /A message from Manager[^\n]*\n\nCHANGE only in the morning/);
+  assert.ok(!worked.includes("OTHER drop it"), "the waiting message went into the turn it was not allowed into");
+
+  // and what waited goes once, in a turn of its own after that one
+  assert.ok(
+    await waitFor(async () => {
+      const now = texts(await messages(h, worker));
+      return now.indexOf("OTHER drop it") > now.indexOf("Changed course: CHANGE") && now.includes("Noted") && !(await busy(h, worker));
+    }),
+    "the other agent's message never got its turn",
+  );
 });
 
 // ── Codex, against an in-memory app-server ──

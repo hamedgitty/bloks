@@ -371,6 +371,20 @@ its chat is waiting on, and one answer covers both; a turn that did not
 start from Telegram takes the words too, or they wait, and either way
 the answer goes back to the chat instead of a refusal.
 
+Another agent can ask for the same thing when what it says changes the
+work under way: `bloks say <agent> --now <text>`, which is `now: true`
+on `POST /api/bots/:id/messages` from an agent's credential. It is
+honoured only when the sender's own message started the running turn
+(`replyingTo`) or the sender may stop that agent anyway (`mayStop`),
+both decided in `mayJoin`; joining is the gentler of the two, since
+nothing is thrown away and the agent reads it after the step it is on.
+Then it goes in through `steerLane` like the person's words, the engine
+hears who it is from, the conversation keeps it as that agent's
+message, and the sender is told the agent reads it after its current
+step. Otherwise, or when the turn cannot take it, it waits as below and
+the sender's answer says why. Without `--now` nothing changes, and a
+room never takes it: its members speak one at a time.
+
 Everything else said to a lane in the middle of a turn (another agent,
 a webhook, a watcher, a routine, or the person on an engine that cannot
 take words mid-turn) is written down at once, flagged `queued`, and

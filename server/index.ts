@@ -7096,11 +7096,12 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // Words the person says to a busy lane go into the turn that is running,
 // when its engine can take them (steerLane): the agent reads them after
 // the step it is on, so it can change course before it finishes work
-// that was asked to change (GitHub 213). Everything else said to a busy
-// lane is not an error either; it is the next thing to say. It is
-// written down immediately (flagged queued), waits in memory, and
-// drains into one follow-up turn when the lane settles; only then does
-// it join the conversation (deliverQueued). A restart rebuilds
+// that was asked to change (GitHub 213). So do another agent's, when it
+// asks for that and may (`bloks say --now`, GitHub 238). Everything
+// else said to a busy lane is not an error either; it is the next thing
+// to say. It is written down immediately (flagged queued), waits in
+// memory, and drains into one follow-up turn when the lane settles; only
+// then does it join the conversation (deliverQueued). A restart rebuilds
 // the waiting from the transcript (recoverQueued), so nothing flagged
 // queued is left behind waiting forever.
 // An item with a messageId carries no words of its own. They are read
@@ -7248,14 +7249,23 @@ const steerAttempts = new Map<string, Promise<Message | null>>();
  * (whoever asked sets its approvals and its spend), the person's own
  * earlier words are still waiting and these would jump ahead of them,
  * or Bloks is finishing up to restart.
- * Only for the person: another agent, a webhook, a watcher or a routine
- * is a request of its own and waits for a turn of its own.
+ * For the person, and for another agent that asked for its words to go
+ * now (`from`, GitHub 238) and may (mayJoin): the engine is told who
+ * they are from, the conversation keeps them as that agent's, and what
+ * the turn says from here on is still answering whoever it was. A
+ * webhook, a watcher or a routine is a request of its own and waits for
+ * a turn of its own.
  *
  * A Codex skill lookup must not let the next person's words overtake
  * this one. Return this exact promise: on refusal its caller queues it
  * before the next attempt returns null and queues behind it.
  */
-function steerLane(bot: BotRecord, lane: TaskRecord, text: string, options: { replyTo?: ReplyRef; personal?: boolean } = {}): Promise<Message | null> {
+function steerLane(
+  bot: BotRecord,
+  lane: TaskRecord,
+  text: string,
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string } } = {},
+): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
   const attempt = (async () => {
@@ -7278,9 +7288,10 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string } } = {},
 ): Promise<Message | null> {
-  if (commandTurns.has(lane.id) || (acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
+  // an agent's words reach the engine framed, so they are never a command
+  if (commandTurns.has(lane.id) || (!options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
   if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return null;
   // Bloks compacting a quiet session is not a turn anybody is talking in
   if (idleCompacting.has(lane.id)) return null;
@@ -7293,19 +7304,33 @@ async function steerOne(
   if (yoursWaiting) return null;
   const adapter = laneInstance(bot, lane.id)?.adapter;
   if (!adapter?.steerTurn) return null;
-  const names = options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
-  const took = await (names.length ? adapter.steerTurn(lane.id, text, { skillNames: names }) : adapter.steerTurn(lane.id, text)).catch(() => false);
+  const { from } = options;
+  const words = from ? fromAgentPrompt(from, text) : text;
+  // skills are named only in the person's own words
+  const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
+  const took = await (names.length ? adapter.steerTurn(lane.id, words, { skillNames: names }) : adapter.steerTurn(lane.id, words)).catch(() => false);
   if (!took) return null;
   const message = store.appendMessage(lane.id, {
     role: "user",
     kind: "text",
     text,
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+    ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
   });
   broadcast({ kind: "message", threadId: lane.id, message });
   // what the turn says from here on is an answer to the person too
-  turnsForYou.add(lane.id);
+  if (!from) turnsForYou.add(lane.id);
   return message;
+}
+
+/** Why another agent's words may not go into the turn running in a lane
+ * (`bloks say --now`, GitHub 238), or null when they may: the sender's
+ * own message started that turn, so it is correcting its own request,
+ * or the sender may stop the agent anyway (mayStop), and joining is the
+ * gentler of the two. Anyone else's words are a request of their own. */
+function mayJoin(senderId: string, bot: BotRecord, lane: TaskRecord): string | null {
+  if (replyingTo.get(lane.id)?.peerId === senderId || mayStop(senderId, bot.id)) return null;
+  return `${bot.name}'s turn was not started by your message, and you may not stop ${bot.name}, so --now does not apply`;
 }
 
 /**
@@ -7385,6 +7410,9 @@ async function sendUserMessage(
     /** The person wrote this just now, so a running turn may take it
      * (steerLane). Unset for words relayed on their behalf. */
     steer?: boolean;
+    /** The agent in `from` asked for this to go into the turn running
+     * now, since it changes what that turn is doing (`bloks say --now`). */
+    now?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -7417,10 +7445,31 @@ async function sendUserMessage(
         };
       }
     }
+    // Another agent saying this changes what the running turn is doing
+    // (GitHub 238). It goes in as the person's words do, when mayJoin
+    // lets it and the turn can take it; otherwise it waits as any
+    // agent's message does, and the sender is told why.
+    let notJoined = "";
+    let askedEngine = false;
+    if (options.from && options.now && lane.busy) {
+      const why = mayJoin(options.from.botId, bot, lane);
+      askedEngine = !why;
+      const steered = why ? null : await steerLane(bot, lane, text, { replyTo: options.replyTo, from: options.from, personal: false });
+      if (steered) {
+        return {
+          ok: true,
+          steered: true,
+          taskId: lane.id,
+          lane: lane.title,
+          note: `${bot.name} is in the middle of a turn and reads this after the step it is on.`,
+        };
+      }
+      notJoined = ` It did not join that turn: ${why ?? `${bot.name}'s turn could not take words mid-turn just then`}.`;
+    }
     queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from, personal: options.personal });
     // Asking the engine took a moment, and the turn may have ended in it,
     // with nothing coming along after to take what now waits.
-    if (yours && options.steer) drainSteer(lane.id);
+    if ((yours && options.steer) || askedEngine) drainSteer(lane.id);
     // Said to the sender too: an agent that thought its "stop" landed would
     // carry on as if the other had stopped (GitHub 141).
     const waits = lane.busy
@@ -7430,7 +7479,7 @@ async function sendUserMessage(
         : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
     const stop =
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
-    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + stop };
+    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
@@ -9199,7 +9248,15 @@ const server = createServer(async (req, res) => {
       };
       let result;
       try {
-        result = await sendUserMessage(m[1], text, { taskId, replyTo: replyRef(body.replyTo), from, yours: !asAgent, steer: !asAgent });
+        result = await sendUserMessage(m[1], text, {
+          taskId,
+          replyTo: replyRef(body.replyTo),
+          from,
+          yours: !asAgent,
+          steer: !asAgent,
+          // only another agent asks for this; the person's words always try
+          now: Boolean(from) && body.now === true,
+        });
       } catch (e) {
         noteSent("failed");
         throw e;

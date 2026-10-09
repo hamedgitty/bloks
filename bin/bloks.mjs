@@ -60,19 +60,28 @@ const COMMANDS = {
     },
   },
   say: {
-    use: "say <agent-id|room-id> <text…>",
-    about: "say something to another agent, or in a room",
+    use: "say <agent-id|room-id> [--now] <text…>",
+    about:
+      "say something to another agent, or in a room. A busy agent hears it when its turn ends; " +
+      "--now is for a correction to work already under way: it goes into the running turn, read after the step it is on, " +
+      "when your message started that turn or you may stop that agent, and otherwise waits as usual. Rooms keep their order",
     run: async (args) => {
-      const [target, ...rest] = args;
+      // --now before the text, or as the last word of it, which is where
+      // somebody who thought of it late puts it
+      const at = [0, 1, args.length - 1].find((i) => i >= 0 && args[i] === "--now");
+      const now = at !== undefined;
+      const [target, ...rest] = now ? args.filter((_, i) => i !== at) : args;
       const text = rest.join(" ");
       if (!target || !text) throw new Error("say needs someone to say it to, and something to say");
       // an id is either an agent or a room; try the agent first because
       // that is what most of them are
       try {
-        return await request("POST", `/api/bots/${target}/messages`, { text });
+        return await request("POST", `/api/bots/${target}/messages`, { text, ...(now ? { now: true } : {}) });
       } catch (error) {
         if (!/no such agent/i.test(String(error.message))) throw error;
-        return await request("POST", `/api/bloks/${target}/messages`, { text });
+        const said = await request("POST", `/api/bloks/${target}/messages`, { text });
+        // a room's agents speak one at a time, so nothing joins a turn there
+        return now ? { ...said, note: "Rooms keep their order, so --now does nothing there; this was said in the room as usual." } : said;
       }
     },
   },
