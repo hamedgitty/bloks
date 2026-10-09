@@ -52,15 +52,22 @@ export function QuickAsk() {
   // Reopening should feel like a fresh field, not like resuming a form
   // somebody abandoned three days ago.
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Which opening of the panel this is. Clicking away hides it while a
+  // send can still be out (through Bloks Cloud that is up to twenty
+  // seconds), and its answer must not clear what this visit typed or
+  // close it.
+  const visit = useRef(0);
   useEffect(() => {
     const bridge = window.bloks;
     if (!bridge?.onQuickOpened) return;
     return bridge.onQuickOpened(() => {
+      visit.current += 1;
       // the last send's goodbye must not close this visit
       if (hideTimer.current) clearTimeout(hideTimer.current);
       setText("");
       setSent(null);
       setError(null);
+      setSending(false);
       void loadBots();
       input.current?.focus();
     });
@@ -82,18 +89,30 @@ export function QuickAsk() {
     localStorage.setItem(LAST_USED, bot.id);
     setSending(true);
     setError(null);
+    const mine = visit.current;
     api(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: body }) })
       .then(() => {
+        // it went; a later visit has nothing to be told
+        if (visit.current !== mine) return;
         setSent(bot.name);
         setText("");
         // Long enough to read, short enough not to be in the way.
         hideTimer.current = setTimeout(() => window.bloks?.quickHide(), 900);
       })
       .catch((e) => {
-        setError(`That did not send: ${e instanceof Error ? e.message : String(e)}`);
+        const why = `That did not send: ${e instanceof Error ? e.message : String(e)}`;
+        if (visit.current !== mine) {
+          // the words from the visit before, back only into an empty box
+          setText((now) => (now.trim() ? now : body));
+          setError((now) => now ?? why);
+          return;
+        }
+        setError(why);
         input.current?.focus();
       })
-      .finally(() => setSending(false));
+      .finally(() => {
+        if (visit.current === mine) setSending(false);
+      });
   };
 
   const cycle = (by: number) => {
