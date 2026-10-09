@@ -2704,7 +2704,7 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
   const bot = store.bot(botId);
   if (!bot) return undefined;
   const named = bot.tasks.find((t) => t.title === title);
-  if (named) return named.busy ? undefined : named.id;
+  if (named) return named.busy || claimedLanes.has(named.id) ? undefined : named.id;
   const active = bot.activeTaskId;
   const made = store.createTask(botId, title);
   if (made) {
@@ -2714,7 +2714,7 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
     broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
     return made.id;
   }
-  const fallback = bot.tasks.find((t) => !t.busy);
+  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id));
   return fallback?.id;
 }
 
@@ -2778,7 +2778,37 @@ function queuedSegment(laneId: string, items: Array<{ messageId?: string; text?:
   return { items: alive.slice(0, size), rest: alive.slice(size) };
 }
 
-async function startTurn(
+/** A start's hold on its lane, from its busy check until it marks the
+ * lane busy. */
+type LaneClaim = { lane?: string };
+
+/** Lanes a start has found free and not yet marked busy, to the start
+ * that holds each. Getting ready awaits (a shared room's plan, a fold of
+ * a long conversation, which can take a minute), and a second start that
+ * found the lane free meanwhile went ahead too: two turns in one lane,
+ * and on Claude Code the second one failing freed the lane under the
+ * first. Whatever asks whether a lane is free counts a claimed one as
+ * busy (laneWaits, backgroundTaskId, drainSteer). */
+const claimedLanes = new Map<string, LaneClaim>();
+
+/** Starts a turn (startClaimedTurn). A start that gives up before
+ * marking its lane busy (refused, held by a drain, or failed getting
+ * ready) lets go of the lane here, and what waited behind it goes, as
+ * it would after a turn. */
+async function startTurn(botId: string, text: string, opts: Parameters<typeof startClaimedTurn>[2] = {}): Promise<void> {
+  const claim: LaneClaim = {};
+  try {
+    await startClaimedTurn(botId, text, opts, claim);
+  } finally {
+    if (claim.lane && claimedLanes.get(claim.lane) === claim) {
+      claimedLanes.delete(claim.lane);
+      drainSteer(claim.lane);
+      drainRoomTags(botId);
+    }
+  }
+}
+
+async function startClaimedTurn(
   botId: string,
   text: string,
   opts: {
@@ -2820,7 +2850,8 @@ async function startTurn(
     /** Server-created accepting instance for a queued native command. */
     commandInstance?: string;
   } = {},
-) {
+  claim: LaneClaim = {},
+): Promise<void> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
 
@@ -2868,12 +2899,16 @@ async function startTurn(
     ? sharedLaneFor(bot, sharedRoom!)
     : (bot.tasks.find((t) => t.id === (opts.taskId ?? bot.activeTaskId)) ?? bot.tasks[0]);
   if (!task) throw Object.assign(new Error("no task lane on this agent"), { status: 500 });
-  if (task.busy) {
+  if (task.busy || claimedLanes.has(task.id)) {
     throw Object.assign(new Error("this task is already running, interrupt it or open another task"), {
       status: 409,
       busy: true,
     });
   }
+  // Claimed before the first await below, until the lane is marked busy
+  // (or startTurn lets go of it, if this start gives up first).
+  claim.lane = task.id;
+  claimedLanes.set(task.id, claim);
 
   // Bloks is finishing what is running before it restarts
   // (server/drain.ts). Nothing new starts here, and nothing is turned
@@ -3153,6 +3188,8 @@ async function startTurn(
   // HTTP request must never be the thing holding that open.
   if (command) commandTurns.add(task.id);
   store.setTaskBusy(task.id, true);
+  // the busy flag holds the lane from here
+  if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
   turnStarted.set(task.id, Date.now());
   // on disk before the engine hears a word, so from here on a crash
   // leaves this turn to be picked up when Bloks starts again
@@ -5306,8 +5343,8 @@ function sweepIdleLanes(now = Date.now()) {
         lastRequestAt: seen.at,
         context: seen.context,
         cacheTtl: seen.cacheTtl,
-        // activeRoom and webhookLanes are set before a turn marks its lane busy
-        busy: Boolean(task.busy) || turnStarted.has(task.id) || activeRoom.has(task.id) || webhookLanes.has(task.id),
+        // a claim, activeRoom and webhookLanes are set before a turn marks its lane busy
+        busy: Boolean(task.busy) || claimedLanes.has(task.id) || turnStarted.has(task.id) || activeRoom.has(task.id) || webhookLanes.has(task.id),
         queued: steerQueues.has(task.id) || beingEdited.has(task.id),
         waiting: Boolean(blockedOn(store.messagesFor(task.id), liveCards())),
         paused:
@@ -7028,7 +7065,7 @@ function editClosed(laneId: string, messageId: string) {
  * editor, and going first would put them before things said earlier; or
  * Bloks is finishing up to restart (server/drain.ts). */
 function laneWaits(lane: { id: string; busy?: boolean }) {
-  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id) || steerQueues.has(lane.id) || queueStarts.has(lane.id);
+  return Boolean(lane.busy) || claimedLanes.has(lane.id) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id) || steerQueues.has(lane.id) || queueStarts.has(lane.id);
 }
 
 /** Lanes whose last turn is still photographing its folder, until its
@@ -7236,7 +7273,7 @@ function drainSteer(threadId: string) {
     steerQueues.delete(threadId);
     return;
   }
-  if (lane.busy || queueStarts.has(threadId)) return;
+  if (lane.busy || claimedLanes.has(threadId) || queueStarts.has(threadId)) return;
   const card = cardsPending.get(threadId);
   if (card) {
     void Promise.race([card, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]).then(() => {

@@ -27,6 +27,12 @@ export async function fakeProvider(t: { after: (fn: () => unknown) => void }) {
     answerAtOnce: false,
     /** A turn whose body has this in it gets a question back, once. */
     askOn: "",
+    /** Asked to summarise a conversation (a fold), answer like any other
+     * call; or fail, so the fold changes nothing; or hold it in `folds`
+     * until the test lets it go, and then fail. A fold failed or held is
+     * kept apart from `calls` and `held`. */
+    folding: "answer" as "answer" | "fail" | "hold",
+    folds: [] as Array<() => void>,
   };
   const provider = createServer((req, res) => {
     let body = "";
@@ -34,6 +40,15 @@ export async function fakeProvider(t: { after: (fn: () => unknown) => void }) {
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
       if (req.url?.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "grok-4" }] }));
+      if (state.folding !== "answer" && /Summarise this part of a conversation|Here is a summary of a conversation so far/.test(body)) {
+        const fail = () => {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: "not now" } }));
+        };
+        if (state.folding === "hold") state.folds.push(fail);
+        else fail();
+        return;
+      }
       state.calls.push(body);
       if (state.askOn && body.includes(state.askOn) && !body.includes(PICKUP) && !body.includes('"role":"tool"')) {
         return res.end(
@@ -63,6 +78,7 @@ export async function fakeProvider(t: { after: (fn: () => unknown) => void }) {
   await new Promise<void>((r) => provider.listen(0, "127.0.0.1", () => r()));
   t.after(() => {
     state.held.forEach((f) => f());
+    state.folds.forEach((f) => f());
     provider.closeAllConnections();
     provider.close();
   });
