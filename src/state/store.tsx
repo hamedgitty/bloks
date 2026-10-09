@@ -24,6 +24,7 @@ import { noticeFor } from "@/lib/notify";
 import { sendBotArchive } from "@/lib/botArchive";
 import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendRoomPatch } from "@/lib/roomPatch";
+import { keepTrying } from "@/lib/retry";
 import { placeRow, type Listed } from "@/lib/sections";
 import { maybeAutoSpeak } from "@/components/Voice";
 import {
@@ -604,10 +605,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let alive = true;
+    let stopBots: (() => void) | null = null;
     const loadAll = () => {
-      api("/api/bots")
-        .then(({ bots }) => alive && rawDispatch({ type: "hydrate", bots }))
-        .catch(() => {});
+      // The agent list is what ends the loading screen, so it is asked
+      // again until it comes; the rest can wait for the next reload.
+      stopBots?.();
+      stopBots = keepTrying(() =>
+        api("/api/bots").then(({ bots }) => {
+          if (alive) rawDispatch({ type: "hydrate", bots });
+        }),
+      );
       api("/api/bloks")
         .then(({ bloks }) => alive && rawDispatch({ type: "hydrateBloks", bloks }))
         .catch(() => {});
@@ -819,6 +826,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     connect();
     return () => {
       alive = false;
+      stopBots?.();
       if (retryTimer) clearTimeout(retryTimer);
       es?.close();
     };
