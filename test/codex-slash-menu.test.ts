@@ -184,7 +184,7 @@ test("a carry-on wrapper's tool name cannot acquire a skill, while its new perso
   assert.deepEqual(named(inputs(s)[1]).map((i: any) => i.name), ["other-skill"]);
 });
 
-test("a room's automatic marker lands in the room, keeps the reading, and never selects from room lines", async (t) => {
+test("a room's automatic marker lands in the room, sizes itself from the request before it, and never selects from room lines", async (t) => {
   const s = await codexCommands(t); s.spec({ auto: true });
   const peer = await s.hire("Ivy");
   const { blok } = await s.post("/api/bloks", { name: "Ops", memberIds: [s.bot.id, peer.id] });
@@ -193,19 +193,22 @@ test("a room's automatic marker lands in the room, keeps the reading, and never 
   assert.deepEqual(named(inputs(s)[0]), []);
   const room = (await s.h.json(`/api/bloks/${blok.id}/messages?limit=100`)).messages;
   assert.equal(room.filter((m: any) => m.compaction && m.from === s.bot.id).length, 1);
-  assert.equal(room.find((m: any) => m.compaction).compaction.after, null);
+  assert.deepEqual(room.find((m: any) => m.compaction).compaction, { before: 40000, after: null });
+  // the boundary keeps the window and waits for the next request's size
   const lane = s.stored().tasks.find((task: any) => task.reading);
-  assert.equal(lane.reading.used, 40000);
+  assert.deepEqual([lane.reading.used, lane.reading.window], [0, 1_000_000]);
   assert.doesNotMatch(JSON.stringify(room), /PLANTED_PATH/);
 });
 
 test("an automatic marker does not invent a reading or alter the next request and usage", async (t) => {
   const s = await codexCommands(t); s.spec({ auto: true }); await s.turn("first request");
   const one = s.stored();
-  assert.equal(one.tasks.find((task: any) => task.id === s.bot.threadId).reading.used, 40000);
-  assert.equal((await s.messages()).filter((m) => m.compaction).length, 1);
+  assert.equal(one.tasks.find((task: any) => task.id === s.bot.threadId).reading.used, 0);
+  const markers = (await s.messages()).filter((m) => m.compaction);
+  assert.deepEqual(markers.map((m) => m.compaction), [{ before: 40000, after: null }]);
   s.spec({ auto: false, used: 12000 }); await s.turn("next request");
   assert.equal(s.stored().tasks.find((task: any) => task.id === s.bot.threadId).reading.used, 12000);
+  assert.deepEqual((await s.messages()).filter((m) => m.compaction).map((m) => m.compaction), [{ before: 40000, after: 12000 }]);
   const usage = await s.h.json("/api/usage");
   assert.ok(JSON.stringify(usage).includes("52000"), "the two requests' native usage was not retained");
 });
@@ -282,10 +285,11 @@ test("a command above both automatic thresholds compacts once with no generation
 
 test("explicit compact failure is one lane refusal, with no backup or changed cursor", async (t) => {
   const s = await codexCommands(t); await s.turn("first"); s.spec({ compact: "reject" });
-  await s.say("/compact"); await s.settled();
+  const refused = async () => (await s.messages()).filter((m) => m.kind === "notice" && m.text.includes("Compaction refused"));
+  await s.say("/compact"); await waitFor(async () => (await refused()).length > 0); await s.settled();
   assert.equal(inputs(s).length, 1);
   assert.equal(s.calls().filter((c) => c.method === "thread/start").length, 1);
-  assert.equal((await s.messages()).filter((m) => m.kind === "notice" && m.text.includes("Compaction refused")).length, 1);
+  assert.equal((await refused()).length, 1);
   assert.equal((await s.messages()).filter((m) => m.compaction).length, 0);
 });
 

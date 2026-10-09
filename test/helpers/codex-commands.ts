@@ -4,8 +4,10 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { startHarness } from "./server.ts";
 
+// A file's first turn also waits for a cold server and engine, which on a
+// loaded CI runner can take most of fifteen seconds by itself.
 export async function waitFor(check: () => unknown | Promise<unknown>, why = "fixture did not finish") {
-  const end = Date.now() + 15_000;
+  const end = Date.now() + 30_000;
   while (Date.now() < end) { if (await check()) return; await new Promise((r) => setTimeout(r, 30)); }
   throw new Error(why);
 }
