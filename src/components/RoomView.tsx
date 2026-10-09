@@ -51,7 +51,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { replyCounts, replyLabel } from "@/lib/threads";
-import { keepDraft, readDraft } from "@/lib/drafts";
+import { keepDraft, readDraft, takeBack } from "@/lib/drafts";
 import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 
@@ -275,7 +275,14 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [text, setText] = useState(() => readDraft(draftKey).text);
   const latestText = useRef(text);
   latestText.current = text;
-  useEffect(() => () => keepDraft(draftKey, { text: latestText.current, attachments: [] }), [draftKey]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      keepDraft(draftKey, { text: latestText.current, attachments: [] });
+    };
+  }, [draftKey]);
   // Typing @ opens a list of the people in this room. Naming somebody is
   // how a room decides who answers, so guessing the spelling should
   // never be part of it: the list filters as you type, Tab or Enter
@@ -432,13 +439,24 @@ export function RoomView({ blok }: { blok: Blok }) {
 
   const send = () => {
     if (!text.trim()) return;
+    const sent = { text: text.trim(), attachments: [] };
     dispatch({
       type: "sendToRoom",
       blokId: blok.id,
-      text: text.trim(),
+      text: sent.text,
       replyTo: replyTo ?? undefined,
+      // a line that did not go comes back to the box, or to the room's
+      // kept draft when the room was left meanwhile
+      onFailed: () => {
+        const here = mounted.current;
+        const back = takeBack(here ? { text: latestText.current, attachments: [] } : readDraft(draftKey), sent);
+        if (!back) return;
+        if (here) setText(back.text);
+        else keepDraft(draftKey, back);
+      },
     });
     setText("");
+    latestText.current = "";
     setReplyTo(null);
   };
 

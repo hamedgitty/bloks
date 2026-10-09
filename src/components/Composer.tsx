@@ -26,7 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
-import { keepDraft, readDraft } from "@/lib/drafts";
+import { keepDraft, readDraft, takeBack, type Draft } from "@/lib/drafts";
 import { insert as insertCommand, matches as matchCommands, segments, slashAt, type Command } from "@/lib/slashCommands";
 
 /** Fade whichever edges have more text beyond them (see edgeMask). */
@@ -175,7 +175,23 @@ export function Composer({
   const [attachments, setAttachments] = useState(() => readDraft<Attachment>(draftKey).attachments);
   const latest = useRef({ text, attachments });
   latest.current = { text, attachments };
-  useEffect(() => () => keepDraft(draftKey, latest.current), [draftKey]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      keepDraft(draftKey, latest.current);
+    };
+  }, [draftKey]);
+  // A send that did not go comes back to the box it left, or, when this
+  // conversation was left meanwhile, to the draft kept for it.
+  const giveBack = (sent: Draft<Attachment>) => {
+    const back = takeBack(mounted.current ? latest.current : readDraft<Attachment>(draftKey), sent);
+    if (!back) return;
+    if (!mounted.current) return keepDraft(draftKey, back);
+    setText(back.text);
+    setAttachments(back.attachments);
+  };
   /** Why something did not become a chip, said once, dismissible. */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const pickerRef = useRef<HTMLInputElement>(null);
@@ -278,16 +294,21 @@ export function Composer({
   const send = () => {
     if (rehearse) return void startRehearsal();
     if (!text.trim() && !attachments.length) return;
+    const sent = { text, attachments };
     dispatch({
       type: "send",
       botId: bot.id,
       text: composeOutgoing(text, attachments),
       replyTo: replyTo ?? undefined,
+      onFailed: () => giveBack(sent),
     });
     track("message_sent", { driver: bot.modelSelection?.instanceId });
     setText("");
     setSlash(null);
     setAttachments([]);
+    // empty from now, not from the next render, which a quick refusal
+    // could beat and find the words still here
+    latest.current = { text: "", attachments: [] };
     setAttachNotice(null);
     onClearReply?.();
   };

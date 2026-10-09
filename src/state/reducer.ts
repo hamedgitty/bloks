@@ -583,7 +583,8 @@ export type Action =
   | { type: "sectionOrder"; order: string[] }
   /** The person dragged a heading: the new order, to show and to keep. */
   | { type: "moveSections"; order: string[] }
-  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"] }
+  /** `onFailed`: the send did not go, so the box can have it back. */
+  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
   | { type: "toggleNewRoom"; open?: boolean }
   | { type: "openTeamLink"; slug: string | null }
   | { type: "instances"; instances: InstanceInfo[] }
@@ -594,7 +595,7 @@ export type Action =
   | { type: "configStatus"; config: ConfigStatus }
   /** `lane` opens that conversation; without it, the one that pinged. */
   | { type: "select"; id: string; lane?: string }
-  | { type: "send"; botId: string; text: string; replyTo?: Message["replyTo"] }
+  | { type: "send"; botId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
   | { type: "answerCard"; botId: string; messageId: string; answer: string; roomId?: string }
   | { type: "dismissCard"; botId: string; messageId: string; roomId?: string }
   | { type: "hireTeam"; botId: string; messageId: string }

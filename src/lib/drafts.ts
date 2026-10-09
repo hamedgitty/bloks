@@ -33,3 +33,13 @@ export function keepDraft<A>(key: string, draft: Draft<A>): void {
   if (isEmptyDraft(draft)) drafts.delete(key);
   else drafts.set(key, draft);
 }
+
+/**
+ * What the box should hold after a send that failed: the words and chips
+ * that went, when it is still empty. The box clears the moment you send,
+ * so without this a refusal took the message with it. Anything typed
+ * since is the newer thought and stays, and then this says nothing.
+ */
+export function takeBack<A>(current: Draft<A>, sent: Draft<A>): Draft<A> | null {
+  return isEmptyDraft(current) ? sent : null;
+}

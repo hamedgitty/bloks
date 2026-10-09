@@ -178,7 +178,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
             body: JSON.stringify({ text: action.text, replyTo: action.replyTo }),
-          }).catch(showError);
+          }).catch((e) => {
+            showError(e);
+            action.onFailed?.();
+          });
           break;
         case "answerCard": {
           const card = findCard(stateRef.current, action);
@@ -392,7 +395,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/bloks/${action.blokId}/messages`, {
             method: "POST",
             body: JSON.stringify({ text: action.text, replyTo: action.replyTo }),
-          }).catch(showError);
+          }).catch((e) => {
+            showError(e);
+            action.onFailed?.();
+          });
           break;
         case "markLaneUnread": {
           const shown = stateRef.current.bots.find((b) => b.id === action.botId);
