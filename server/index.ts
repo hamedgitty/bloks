@@ -304,7 +304,7 @@ import {
 import { MemoryJournal } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
-import { Drain, DRAINING_TEXT, drainWindow } from "./drain.ts";
+import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -469,8 +469,9 @@ const turnLog = new TurnLogStore(join(DATA_DIR, "engine-turns.json"));
 const cutOff = new TurnsInFlight(join(DATA_DIR, "turns-in-flight.json"));
 setInterval(() => cutOff.touch(), 5 * 60_000).unref?.();
 // Before a planned restart: nothing new starts, what is running finishes
-// (server/drain.ts). In memory; a restart ends it.
-const drain = new Drain();
+// (server/drain.ts). In memory; a restart ends it, and so does its own
+// deadline long past. Tests shorten that grace through the environment.
+const drain = new Drain(Number(process.env.BLOKS_DRAIN_GRACE_MS) || DRAIN_GRACE_MS);
 // Notes about the person, suggested by agents and kept by them
 // (server/profile-notes.ts), and how many each running turn has offered.
 const profileNotes = new ProfileNotes(join(DATA_DIR, "profile-notes.json"));
@@ -2515,6 +2516,24 @@ function endDrain() {
   }
   void drainMail();
   void runDueRoutines().catch(() => {});
+}
+
+/** Ends a drain whose restart never came, its grace after its deadline.
+ * Armed at every start, since a later one moves the deadline, and it
+ * reads the deadline again when it fires for the same reason. */
+let drainLapse: ReturnType<typeof setTimeout> | null = null;
+function armDrainLapse() {
+  if (drainLapse) clearTimeout(drainLapse);
+  drainLapse = null;
+  const at = drain.lapsesAt();
+  if (at === null) return;
+  drainLapse = setTimeout(() => {
+    drainLapse = null;
+    if ((drain.lapsesAt() ?? 0) > Date.now()) return armDrainLapse();
+    if (drain.on) console.log("[bloks] a drain outlived its deadline with no restart, so it ended and what it held goes now");
+    endDrain();
+  }, Math.max(0, at - Date.now()));
+  drainLapse.unref?.();
 }
 /** Tokens of the turn in flight, per lane. Providers report a running
  * total for the turn, so this holds a high-water mark, popped when the
@@ -12495,6 +12514,7 @@ const server = createServer(async (req, res) => {
       if (method === "POST") {
         const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
         drain.start(drainWindow(body.seconds));
+        armDrainLapse();
       }
       if (method === "DELETE") endDrain();
       return json(res, 200, drainStatus());

@@ -15,15 +15,23 @@
 // when Bloks is back.
 //
 // Kept in memory. A restart ends a drain by definition, and a drain left
-// on by a restart that never came would hold every message forever.
+// on by a restart that never came would hold every message forever, so a
+// drain also ends itself a while after its deadline.
 
 /** How long a drain waits when nobody says. */
 export const DRAIN_DEFAULT_MS = 20 * 60_000;
 
 /** The longest anybody may ask for. Under the two hours a routine may
  * fire late (server/routines.ts), so one held back by a drain still
- * fires once Bloks is back. */
+ * fires once Bloks is back, grace included. */
 export const DRAIN_MAX_MS = 60 * 60_000;
+
+/** How long a drain outlasts its deadline before it ends itself. The
+ * restart it was for comes by the deadline; one that never comes (the
+ * updater quit, the script that asked for it was stopped) would hold
+ * every room, message, routine and job until somebody restarted Bloks by
+ * hand. Ending it lets what it held go, as calling it off does. */
+export const DRAIN_GRACE_MS = 10 * 60_000;
 
 /** How long a drain waits, from what was asked: seconds, defaulted and
  * kept within bounds. */
@@ -47,6 +55,18 @@ export interface DrainStatus {
 
 export class Drain {
   private window: { since: number; deadline: number } | null = null;
+
+  private readonly grace: number;
+
+  constructor(grace = DRAIN_GRACE_MS) {
+    this.grace = grace;
+  }
+
+  /** When the one under way ends itself, which a later start can move,
+   * or null with none. */
+  lapsesAt(): number | null {
+    return this.window ? this.window.deadline + this.grace : null;
+  }
 
   /** Starts a drain, or moves the deadline of the one under way. */
   start(ms: number, now = Date.now()) {

@@ -321,6 +321,8 @@ keeps the change unseen and sees it again; an email waits in its line,
 which is in memory, as it does for a busy Email lane. Questions, approvals and
 workflow gates are left exactly as they are. A drain lives in memory,
 so a restart ends it, and calling it off lets everything held go at once.
+One whose restart never comes ends itself the same way, ten minutes past
+its deadline.
 
 ## Queued messages
 

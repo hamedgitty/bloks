@@ -156,7 +156,7 @@ switch (command) {
       `Draining: nothing new starts, and what arrives waits until Bloks is back. Waiting for what is running until ${new Date(state.deadline).toLocaleTimeString()}.`,
     );
     // Ctrl-C stops the waiting, not the drain: that lasts until Bloks
-    // restarts, or until drain cancel
+    // restarts, until drain cancel, or ten minutes past its deadline
     let said = -1;
     while (!state.done) {
       if (state.running.length !== said) {

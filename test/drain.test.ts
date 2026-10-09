@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Drain, DRAIN_DEFAULT_MS, DRAIN_MAX_MS, drainWindow } from "../server/drain.ts";
+import { Drain, DRAIN_DEFAULT_MS, DRAIN_GRACE_MS, DRAIN_MAX_MS, drainWindow } from "../server/drain.ts";
 import { drainWait } from "../electron/drain-wait.mjs";
 import { RoomTagQueues } from "../server/room-tags.ts";
 import { startHarness } from "./helpers/server.ts";
@@ -46,6 +46,23 @@ test("a drain is done when nothing runs, or when its time is up", () => {
   assert.equal(d.stop(), true);
   assert.equal(d.on, false);
   assert.equal(d.stop(), false);
+});
+
+test("a drain whose restart never comes ends itself a while after its deadline, and a later start moves that too", () => {
+  assert.equal(DRAIN_GRACE_MS, 10 * 60_000);
+  // a routine held back by the longest drain still fires inside its grace
+  assert.ok(DRAIN_MAX_MS + DRAIN_GRACE_MS < 2 * 60 * 60_000);
+  const d = new Drain(5_000);
+  assert.equal(d.lapsesAt(), null, "nothing to end");
+  d.start(60_000, 1_000);
+  assert.equal(d.lapsesAt(), 66_000);
+  d.start(60_000, 30_000);
+  assert.equal(d.lapsesAt(), 95_000);
+  d.stop();
+  assert.equal(d.lapsesAt(), null);
+  const plain = new Drain();
+  plain.start(1_000, 0);
+  assert.equal(plain.lapsesAt(), 1_000 + DRAIN_GRACE_MS);
 });
 
 /** A harness for the updater's wait: answers from a script of statuses,
@@ -240,4 +257,30 @@ test("at the deadline what is still running is left for the restart, and what wa
   const room = bloks.find((b: any) => b.id === blok.id);
   assert.ok(room.messages.some((m: any) => m.from === jo.id && m.text === "Done."), "Jo's answer is not in the room");
   assert.ok((await messagesOf(second, jo)).some((m) => m.role === "bot" && m.text === "Done."), "Jo's answer is not in Jo's lane");
+});
+
+test("a drain whose restart never comes ends itself after its grace, and what it held goes", async (t) => {
+  const fake = await fakeProvider(t);
+  fake.state.answerAtOnce = true;
+  // the grace is ten minutes; here it is two seconds
+  const h = await startHarness({ BLOKS_DRAIN_GRACE_MS: "2000" });
+  t.after(() => h.stop());
+  const jo = await agentOn(h, fake.port, "Jo");
+
+  await h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 1 }) });
+  const said = await h.json(`/api/bots/${jo.id}/messages`, { method: "POST", body: JSON.stringify({ text: "HELD-WORDS" }) });
+  assert.equal(said.queued, true);
+  // asked again, the deadline moves, and the end moves with it
+  await new Promise((r) => setTimeout(r, 1_500));
+  await h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 1 }) });
+  await new Promise((r) => setTimeout(r, 2_000));
+  assert.equal((await drainState(h)).draining, true, "it ended on the deadline it was first given");
+  assert.equal(fake.sent("HELD-WORDS"), 0);
+
+  // No restart came and nobody called it off: it used to hold the lane,
+  // and every room, routine and job, until Bloks was restarted by hand.
+  assert.ok(await waitFor(async () => !(await drainState(h)).draining), "the drain never ended");
+  assert.ok(await waitFor(() => fake.sent("HELD-WORDS") >= 1), "what it held never went");
+  await idle(h, jo);
+  assert.equal((await messagesOf(h, jo)).find((m) => m.text === "HELD-WORDS").queued, false);
 });
