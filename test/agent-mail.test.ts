@@ -108,7 +108,8 @@ describe("agent mail", () => {
     });
     const { bots } = await h.json("/api/bots");
     const bea = bots.find((b: any) => b.name === "Bookkeeper Bea");
-    assert.ok(bea.tasks.some((t: any) => t.title === "Email"), "it has an Email lane");
+    // nobody is listed yet, so this is anyone's mail, in a lane of its own
+    assert.ok(bea.tasks.some((t: any) => t.title === "Unlisted email"), "it has a lane for unlisted mail");
     // the same message again is not a second turn
     assert.equal(await deliver("m-2", { to: `bookkeeper-bea.${MAIL_ID}@agents.bloks.dev`, from: "hamed@example.com", text: "again", messageId: "<x1@example.com>" }), 202);
   });

@@ -49,9 +49,33 @@ process.stdin.on("data", (c) => {
     go(String(frame.message?.content ?? ""));
   }
 });
-function go(prompt) {
+async function go(prompt) {
   out({ type: "system", subtype: "init", session_id: "sess-chain", model: "claude-sonnet-5" });
   const quiet = existsSync(home + "/quiet");
+  // ROOMLOOP: told it in a conversation, name the other agent in the room;
+  // named in the room, tell the first agent so in its conversation
+  const loop = prompt.match(/ROOMLOOP room=([\\w-]+) a=([\\w-]+) b=(\\w+)/);
+  // JOBLOOP: whoever takes the job posts one for the other agent
+  const job = prompt.includes("JOBLOOP");
+  const next = prompt.includes("JOBLOOP alpha") ? "JOBLOOP bravo" : "JOBLOOP alpha";
+  if ((loop || job) && !quiet) {
+    let said;
+    try {
+      if (job) {
+        const res = await fetch(process.env.BLOKS_URL + "/api/jobs", { method: "POST", headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" }, body: JSON.stringify({ title: next, brief: next }) });
+        said = { status: res.status };
+      } else {
+        const [, room, a, b] = loop;
+        const inRoom = prompt.includes("@" + b);
+        const words = (inRoom ? "" : "@" + b + " ") + "ROOMLOOP room=" + room + " a=" + a + " b=" + b;
+        said = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(BLOKS)}, "say", inRoom ? a : room, words], { encoding: "utf8" }));
+      }
+    } catch (e) { said = { ...JSON.parse(String(e.stdout || "{}")), refused: true }; }
+    appendFileSync(home + "/says.jsonl", JSON.stringify({ to: job ? "jobs" : "loop", said }) + "\\n");
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Done" }] } });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-chain", result: "Done" });
+    return;
+  }
   const start = prompt.match(/START ([\\w-]+)/);
   const asked = prompt.match(/use \`bloks say ([\\w-]+) <text>\`/);
   const self = prompt.includes("SELF");
@@ -149,4 +173,55 @@ test("an agent messaging itself is a chain too", async (t) => {
     told.includes("Solo has passed messages to itself 12 times without you; the next one waits for you."),
     `nothing in Solo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
+});
+
+/** Nothing new said for a while, with every agent idle: the loop is over. */
+async function settledSays(home: string, h: Harness) {
+  let seen = -1;
+  for (let i = 0; i < 120; i++) {
+    await idle(h);
+    await new Promise((r) => setTimeout(r, 1_500));
+    const now = says(home).length;
+    if (now === seen && !(await h.json("/api/bots?messages=0")).bots.some((b: any) => b.busy)) return now;
+    seen = now;
+  }
+  return null;
+}
+
+test("naming an agent in a room from a conversation, and being answered there, is the same chain", async (t) => {
+  // Alpha names Bravo in a room from its own conversation; Bravo, in the
+  // room, tells Alpha in Alpha's. A room turn used to start every chain
+  // again, so neither ever grew and the two kept each other going.
+  const { home, h, hire } = await boot(t);
+  const alpha = await hire("Alpha");
+  const bravo = await hire("Bravo");
+  const { blok } = await h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Ops", memberIds: [alpha.id, bravo.id] }) });
+  await h.fetch(`/api/bots/${alpha.id}/messages`, { method: "POST", body: JSON.stringify({ text: `ROOMLOOP room=${blok.id} a=${alpha.id} b=Bravo` }) });
+
+  const total = await settledSays(home, h);
+  assert.ok(total !== null && total <= 14, `the agents were still going after ${says(home).length} messages`);
+  const room = (await h.json(`/api/bloks/${blok.id}/messages?limit=200`)).messages as any[];
+  assert.ok(
+    room.some((m) => m.kind === "notice" && /turns in a row without you, so nobody was woken/.test(m.text)),
+    `nothing in the room says why it stopped: ${JSON.stringify(room.map((m) => m.text))}`,
+  );
+
+  // the person posting in the room starts it over
+  const before = says(home).length;
+  await h.fetch(`/api/bloks/${blok.id}/messages`, { method: "POST", body: JSON.stringify({ text: `@Bravo ROOMLOOP room=${blok.id} a=${alpha.id} b=Bravo` }) });
+  assert.ok(await waitFor(() => says(home).length > before), "the person's post did not start the room over");
+  writeFileSync(join(home, "quiet"), "");
+});
+
+test("jobs agents post for each other are a chain, and past it wait for the person", async (t) => {
+  const { home, h, hire } = await boot(t);
+  await hire("Alpha");
+  await hire("Bravo");
+  await h.json("/api/jobs", { method: "POST", body: JSON.stringify({ title: "JOBLOOP alpha", brief: "JOBLOOP alpha" }) });
+
+  const total = await settledSays(home, h);
+  assert.ok(total !== null && total <= 14, `jobs were still being posted after ${says(home).length}`);
+  const { jobs } = await h.json("/api/jobs");
+  const held = (jobs as any[]).find((job) => job.state === "failed" && /Not offered: agents had started 12 turns in a row/.test(job.result ?? ""));
+  assert.ok(held, `no job was held for the person: ${JSON.stringify((jobs as any[]).map((job) => [job.state, job.result]))}`);
 });

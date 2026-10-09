@@ -369,8 +369,8 @@ function EmailCard() {
           <div className="mt-3 border-t pt-3">
             <div className="text-[12px] text-muted-foreground">
               Who may write. Leave it empty and anyone with an address can; list addresses or @domains to allow only them.
-              While it is empty, mail runs without full access or saved secrets, and anything it asks to do comes to you
-              to approve.
+              While it is empty, mail is answered in its own conversation and in words only: no tools, none of your apps,
+              secrets, notes or past conversations, and only by agents on Claude Code or an API model.
             </div>
             <div className="mt-1.5 flex gap-2">
               <Input

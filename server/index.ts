@@ -1294,12 +1294,14 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
     text: `${engineName(used)} ${REASON_WORDS[reason]} ${describeRest(rest)}. ${engineName(backup)} is picking this up, with the conversation so far.`,
   });
   broadcast({ kind: "message", threadId: laneId, message: notice });
+  // who asked for the turn that ran out, before its end clears that
+  const requester = laneRequester.get(laneId) ?? askedLast.get(laneId);
   // after this event has finished settling the lane it ended
   setTimeout(() => {
     // A message another agent sent is still that agent's on the backup:
     // the engine hears who wrote it, and the answer goes back to them.
     const from = asked.agent?.dir === "in" ? { botId: asked.agent.peerId, name: asked.agent.peerName } : undefined;
-    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from, routine: asked.via === "routine" ? asked.routine : undefined }).catch((e) => {
+    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from, routine: asked.via === "routine" ? asked.routine : undefined, ...(requester ? { requester } : {}) }).catch((e) => {
       telegramReturns.finish(laneId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       const failed = store.appendMessage(laneId, {
         role: "bot",
@@ -1621,8 +1623,11 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         // a lead may have proposed a team; the plan becomes a card the
-        // user approves, never something that happens on its own
-        const { plan, text: afterPlan } = extractTeamPlan(event.text);
+        // user approves, never something that happens on its own. Never
+        // from a stranger's mail, which would be writing the agents the
+        // owner hires and the brief they start on.
+        const { plan, text: afterPlan } =
+          laneRequester.get(event.threadId) === MAIL_FROM_ANYONE ? { plan: null, text: event.text } : extractTeamPlan(event.text);
         // Components an engine wrote into its own answer. The CLI is the
         // route for engines with a shell; this is the one for the rest,
         // so an API model can answer with a chart like anybody else.
@@ -1702,6 +1707,27 @@ bus.subscribe((event: RuntimeEvent) => {
           })
           .catch(() => {});
         pushMessage({ role: "bot", kind: "activity", tool: { name: "refused: the agent was archived", ok: false } });
+        break;
+      }
+      // An email from anyone reads nothing of the owner's and keeps no
+      // note about them: what the agent looked up would go back to whoever
+      // wrote. A CLI engine has no credential to ask with on that turn, and
+      // an API engine, which asks here, is refused the same.
+      // Nor does it ask the owner for a key or an app: the turn that would
+      // pick up after the owner saved one is the owner's, with the owner's
+      // trust, still carrying out what the mail said.
+      if (
+        (event.tool === "note_about_person" || event.tool === "read_message" || event.tool === "search_history" ||
+          event.tool === "request_secret" || event.tool === "request_connection") &&
+        event.requestId &&
+        laneRequester.get(event.threadId) === MAIL_FROM_ANYONE
+      ) {
+        void laneInstance(bot, event.threadId)
+          ?.adapter.respondToRequest(event.threadId, event.requestId, {
+            behavior: "answer",
+            message: "Not for an email from someone the person has not listed: their conversations, notes, keys and apps stay theirs.",
+          })
+          .catch(() => {});
         break;
       }
       // the agent asking for an app: plant sign-in cards and answer the
@@ -1912,7 +1938,9 @@ bus.subscribe((event: RuntimeEvent) => {
           // it as the question it is, or the card says "Approval needed"
           // over a sentence ending in a question mark.
           title: asking ? "Your agent has a question" : "Approval needed",
-          subtitle: askedBy && !asking ? `${event.summary ?? ""} (asked for by ${askedBy})`.trim() : event.summary,
+          // a question for a stranger's mail says so too: its answer is
+          // emailed to them
+          subtitle: askedBy && (!asking || byMail) ? `${event.summary ?? ""} (${asking ? "for" : "asked for by"} ${askedBy})`.trim() : event.summary,
           options: event.choices?.length ? event.choices : asking ? [] : ["Allow", "Deny"],
           requestId: event.requestId,
           // a person, who may not then approve what they asked for
@@ -1931,7 +1959,9 @@ bus.subscribe((event: RuntimeEvent) => {
         // A turn that began on a phone should not stall on a card the
         // person cannot see. The card goes to the chat it came from, and
         // the next message from that chat is read as the answer.
-        const chatId = telegramLive.get(bot.id);
+        // Not a mail's: that turn began in nobody's chat, and the person's
+        // next line there would be emailed to whoever wrote.
+        const chatId = byMail ? undefined : telegramLive.get(bot.id);
         if (chatId !== undefined && cfg.telegram?.token) {
           telegramAsks.set(chatId, {
             requestId: event.requestId,
@@ -2030,15 +2060,27 @@ bus.subscribe((event: RuntimeEvent) => {
       // fix rather than report. Our idea of a model's limit is a guess, so
       // when the provider disagrees, fold and try the same thing again
       // once. Only once: a second failure is not about length.
-      if (!commandTurns.has(event.threadId) && isContextError(event.message) && !retriedForContext.has(event.threadId)) {
+      // Not a stranger's mail, which is told alone: there is nothing to fold,
+      // and what folding would summarise is other people's.
+      if (
+        !commandTurns.has(event.threadId) &&
+        isContextError(event.message) &&
+        !retriedForContext.has(event.threadId) &&
+        laneRequester.get(event.threadId) !== MAIL_FROM_ANYONE
+      ) {
         retriedForContext.add(event.threadId);
+        // what this turn was asked, not words still waiting for the next one
         const said = [...store.messagesFor(event.threadId)]
           .reverse()
-          .find((m) => m.role === "user" && m.kind === "text" && m.text && !m.deleted);
+          .find((m) => m.role === "user" && m.kind === "text" && m.text && !m.deleted && !m.queued);
+        // whoever asked for this turn, read now: the fold can take a
+        // minute, and a turn of the owner's in the lane meanwhile must not
+        // lend its trust to someone else's words asked again
+        const requester = laneRequester.get(event.threadId) ?? askedLast.get(event.threadId);
         void (async () => {
           const folded = await foldContext(bot.id, event.threadId, true).catch(() => false);
           if (folded && said?.text) {
-            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId), routine: said.via === "routine" ? said.routine : undefined }).catch(
+            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId), routine: said.via === "routine" ? said.routine : undefined, ...(requester ? { requester } : {}) }).catch(
               () => {},
             );
           } else {
@@ -2208,7 +2250,14 @@ bus.subscribe((event: RuntimeEvent) => {
       // default window stays a safety margin here, even when it is not
       // a known window that the ring can display.
       const own = readingFor(settledLane?.reading, bot.modelSelection);
-      if (!command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
+      // A stranger's mail is folded into nothing, read for no skill, and
+      // leaves no session behind: the lane's next turn may be the owner's,
+      // and none of what the mail said may reach it as context.
+      const guestEnded = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE;
+      if (guestEnded) store.startFreshSession(event.threadId);
+      if (guestEnded) {
+        // nothing of the owner's to keep from this turn
+      } else if (!command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
         void foldContext(bot.id, event.threadId).catch(() => {});
       } else if (!command) {
         // Otherwise absorb one message into the running summary, if this
@@ -2222,7 +2271,9 @@ bus.subscribe((event: RuntimeEvent) => {
       // and a summarised lane is a smaller thing to read.
       // Never a shared room's lane: what other people said there is not
       // the owner's to turn into the agent's standing skills.
-      if (!command && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+      // Nor the lane strangers' mail is answered in, whoever's turn this was.
+      const guestLane = guestEnded || settledLane?.title === UNLISTED_MAIL;
+      if (!command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
       drainRoomTags(bot.id);
       // before anything queued starts the next turn on the old session
       freshIfAsked(event.threadId);
@@ -2236,7 +2287,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (inRoom) {
         const said = store.messagesFor(roomId);
         const last = [...said].reverse().find((m) => m.from === bot.id && m.kind === "text");
-        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester);
+        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester, (agentChain.get(event.threadId) ?? 0) + 1);
         if (bloks.get(roomId)?.sharing) broadcast({ kind: "room.activity", roomId, botId: bot.id, busy: false });
       }
       activeRoom.delete(event.threadId);
@@ -2419,12 +2470,17 @@ function carryOn(
   delay = 0,
 ) {
   const threadId = turn.roomId ?? turn.laneId;
+  // A stranger's mail picks up alone: what waits in its lane is somebody
+  // else's, and goes in a turn of its own after this one.
+  const guest = turn.requester === MAIL_FROM_ANYONE;
   // claimed now, before a settle can drain it into a turn of its own
-  const queued = steerQueues.get(turn.laneId);
+  const queued = guest ? undefined : steerQueues.get(turn.laneId);
   const segment = queuedSegment(turn.laneId, queued?.items ?? [], true);
   const waiting = segment.items.length ? { botId: turn.botId, items: segment.items } : undefined;
-  if (segment.rest.length) steerQueues.set(turn.laneId, { botId: turn.botId, items: segment.rest });
-  else steerQueues.delete(turn.laneId);
+  if (!guest) {
+    if (segment.rest.length) steerQueues.set(turn.laneId, { botId: turn.botId, items: segment.rest });
+    else steerQueues.delete(turn.laneId);
+  }
   const start = () => {
     // A waiting word may have been edited into a command during the
     // sleep delay. Re-read before pickup; it still needs its own turn.
@@ -2781,14 +2837,25 @@ function mainLaneOf(bot: BotRecord) {
   return byAge.find((t) => !side.has(t.id) && !rehearsals.forTask(t.id)) ?? byAge[0];
 }
 
+/** The lane the person has open, as somewhere for work that names no
+ * lane: a phone message, a room's turn, a message with no lane. Not the
+ * lane strangers' mail is answered in, even when that is what is open,
+ * since the owner's work there would run beside what those mails said. */
+function activeLaneOf(bot: BotRecord): string {
+  const active = bot.tasks.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
+  return active && active.title !== UNLISTED_MAIL ? active.id : mainLaneOf(bot).id;
+}
+
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
  * and only falls back to the active lane at the lane cap. */
-function backgroundTaskId(botId: string, title: string): string | undefined {
+function backgroundTaskId(botId: string, title: string, options: { own?: boolean } = {}): string | undefined {
   const bot = store.bot(botId);
   if (!bot) return undefined;
-  const named = bot.tasks.find((t) => t.title === title);
+  // never a shared room's lane or a rehearsal's, whatever its title
+  const usable = (t: TaskRecord) => !isSharedLane(t.id) && !rehearsals.forTask(t.id);
+  const named = bot.tasks.find((t) => t.title === title && usable(t));
   if (named) return named.busy || claimedLanes.has(named.id) ? undefined : named.id;
   const active = bot.activeTaskId;
   const made = store.createTask(botId, title);
@@ -2799,7 +2866,11 @@ function backgroundTaskId(botId: string, title: string): string | undefined {
     broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
     return made.id;
   }
-  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id));
+  // work that must keep to a lane of its own waits for room instead
+  if (options.own) return undefined;
+  // nor, at the cap, the lane strangers' mail is answered in, which the
+  // owner's work must not run in
+  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id) && usable(t) && t.title !== UNLISTED_MAIL);
   return fallback?.id;
 }
 
@@ -2819,9 +2890,11 @@ const LANE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 function namedLane(bot: BotRecord, named: string | undefined): TaskRecord | undefined {
   if (!named) return mainLaneOf(bot);
+  // a shared room's lane is the room's, and a rehearsal's is its copy's
+  const lanes = bot.tasks.filter((t) => !isSharedLane(t.id) && !rehearsals.forTask(t.id));
   return (
-    bot.tasks.find((t) => t.id === named) ??
-    bot.tasks.find((t) => t.title === named) ??
+    lanes.find((t) => t.id === named) ??
+    lanes.find((t) => t.title === named) ??
     (LANE_ID.test(named) ? mainLaneOf(bot) : undefined)
   );
 }
@@ -2832,7 +2905,7 @@ function namedLane(bot: BotRecord, named: string | undefined): TaskRecord | unde
 function threadRefusal(botId: string, named: string | undefined): string | null {
   if (!named || !LANE_ID.test(named)) return null;
   const bot = store.bot(botId);
-  if (bot?.tasks.some((t) => t.id === named)) return null;
+  if (bot?.tasks.some((t) => t.id === named && !isSharedLane(t.id) && !rehearsals.forTask(t.id))) return null;
   return `${named} is not the id of any of ${bot?.name ?? "that agent"}'s conversations. Name one by its title or its id, or name none to use its first.`;
 }
 
@@ -2844,7 +2917,16 @@ function workLaneId(botId: string, named: string | undefined): string | undefine
   if (!bot) return undefined;
   const lane = namedLane(bot, named);
   if (!lane) return backgroundTaskId(botId, named!);
-  return lane.busy || claimedLanes.has(lane.id) ? undefined : lane.id;
+  // Taken while it runs, and while words said to it wait their turn: now
+  // that routines and webhooks share the agent's first conversation, they
+  // must not go ahead of what the person said there. Not the drain, which
+  // holds a webhook's event in the lane's queue instead, nor a change card
+  // still being made, which is nobody's words and done in seconds
+  // (laneWaits has both).
+  const waiting =
+    lane.busy || claimedLanes.has(lane.id) || beingEdited.has(lane.id) ||
+    steerQueues.has(lane.id) || queueStarts.has(lane.id) || steerAttempts.has(lane.id);
+  return waiting ? undefined : lane.id;
 }
 
 /** Lanes a webhook has been handed a turn for, from acceptance until
@@ -3004,6 +3086,10 @@ async function startClaimedTurn(
      * that goes on with another (a pickup, a backup, a retry), which
      * keeps that turn's place. */
     chain?: number;
+    /** The turn answering a mail (drainMail). Any other turn starting in
+     * its lane, other than one going on with it, ends that: its words
+     * are not the mail's reply (replyByMail). */
+    answersMail?: boolean;
   } = {},
   claim: LaneClaim = {},
 ): Promise<void> {
@@ -3052,7 +3138,7 @@ async function startClaimedTurn(
   const sharing: RoomSharing | null = sharedRoom?.sharing ?? null;
   const task = sharing
     ? sharedLaneFor(bot, sharedRoom!)
-    : (bot.tasks.find((t) => t.id === (opts.taskId ?? bot.activeTaskId)) ?? bot.tasks[0]);
+    : (bot.tasks.find((t) => t.id === (opts.taskId ?? activeLaneOf(bot))) ?? bot.tasks[0]);
   if (!task) throw Object.assign(new Error("no task lane on this agent"), { status: 500 });
   if (task.busy || claimedLanes.has(task.id)) {
     throw Object.assign(new Error("this task is already running, interrupt it or open another task"), {
@@ -3074,7 +3160,9 @@ async function startClaimedTurn(
   // go on: picked up after sleep, handed to a backup, or asked again
   // after a fold.
   if (drain.on && !opts.carriedOn && !opts.fallback && !opts.retry) {
-    if ((opts.roomId && opts.roomId !== task.id) || opts.rehearsal) {
+    // a note in the queue runs as the owner's, so a turn somebody else
+    // asked for is held by its caller instead
+    if ((opts.roomId && opts.roomId !== task.id) || opts.rehearsal || (opts.requester && opts.requester !== "owner")) {
       throw Object.assign(new Error(DRAINING_TEXT), { status: 503, draining: true });
     }
     if (opts.presetMessage) {
@@ -3131,6 +3219,20 @@ async function startClaimedTurn(
     throw Object.assign(
       new Error(
         `${bot.name} runs on an engine whose tools cannot be switched off yet, so it sits out shared rooms. Move it to Claude Code or an API model to bring it in.`,
+      ),
+      { status: 409 },
+    );
+  }
+  // An email from someone the owner has not listed is answered the way a
+  // guest in a shared room is: in conversation only, with nothing of the
+  // owner's, on an engine whose tools can be switched off. A shell that
+  // asks first still reads the whole disk without asking, the owner's
+  // keys included, and the answer is mailed to whoever wrote.
+  const guestMail = (opts.requester ?? (opts.fallback || opts.retry ? askedLast.get(task.id) : undefined)) === MAIL_FROM_ANYONE;
+  if (guestMail && !sharedSafe(instance.driverKind)) {
+    throw Object.assign(
+      new Error(
+        `${bot.name} runs on an engine whose tools cannot be switched off yet, so it does not answer mail from someone not on your list. List who may write under Email in Settings, or move it to Claude Code or an API model.`,
       ),
       { status: 409 },
     );
@@ -3225,7 +3327,9 @@ async function startClaimedTurn(
   // leave room for the system prompt and the reply
   const transcriptBudget = Math.max(2_000, Math.floor(contextLimit * COMPACT_AT) - 4_000);
   const buildTranscript = (): { turns: Turn[]; dropped: number } => {
-    if (blok) return { turns: [], dropped: 0 };
+    // a guest's mail is told alone: earlier mail in its lane was other
+    // people's, and what the owner said there is the owner's
+    if (blok || guestMail) return { turns: [], dropped: 0 };
     // a message marked not sent was never said, and one still queued has
     // not been yet (it joins at the end when it goes), so no engine hears either
     const settled = store
@@ -3276,8 +3380,8 @@ async function startClaimedTurn(
   const standingNow: Standing = {
     // what every agent has learned about them and they confirmed, and how
     // to add to it; never in a room other people are reading
-    notes: (!sharing && profileNotes.prompt()) || null,
-    memory: (!sharing || sharing.memoryFor?.includes(bot.id)) ? workspace.memoryPrompt(bot.id) : null,
+    notes: (!sharing && !guestMail && profileNotes.prompt()) || null,
+    memory: !guestMail && (!sharing || sharing.memoryFor?.includes(bot.id)) ? workspace.memoryPrompt(bot.id) : null,
   };
   const roomInMessage = Boolean(blok) && instance.driverKind === "claudeAgent";
   const personaWith = (moving: Standing) => [
@@ -3293,13 +3397,16 @@ async function startClaimedTurn(
     // engine gets a credential it could read them with. See the note in
     // server/skills.ts for why withholding one from an engine that cannot
     // fetch it would be losing the instruction rather than deferring it.
-    skillsPrompt(
-      disclose(attached, runsAProcess(instance.driverKind)),
-      `To read one, run: ${cliCommand} skill <id>`,
-    ),
+    // not for a guest's mail: what the owner wrote them is the owner's
+    !guestMail &&
+      skillsPrompt(
+        disclose(attached, runsAProcess(instance.driverKind)),
+        `To read one, run: ${cliCommand} skill <id>`,
+      ),
     // The composer offers these by id after a slash (#51), so a message
     // naming one that way is asking for it by name.
-    attached.length > 0 &&
+    !guestMail &&
+      attached.length > 0 &&
       "When a message names one of your skills with a slash and its id, like /id, the person is asking for that skill: follow it.",
     // Every engine gets the gallery; only the route differs. One with a
     // shell calls the CLI. One without writes the component into its own
@@ -3314,14 +3421,17 @@ async function startClaimedTurn(
     // In a shared room the owner's private context stays out unless the
     // owner has let this agent's memory into the room: other people are
     // reading the replies.
-    (!sharing || sharing.memoryFor?.includes(bot.id)) &&
+    !guestMail &&
+      (!sharing || sharing.memoryFor?.includes(bot.id)) &&
       cfg.profile?.about?.trim() &&
       `About the person you work for: ${cfg.profile.about.trim()}`,
     moving.notes,
-    !sharing && noteBriefing(runsAProcess(instance.driverKind) ? cliCommand : null),
+    !sharing && !guestMail && noteBriefing(runsAProcess(instance.driverKind) ? cliCommand : null),
     moving.memory,
     sharing && sharedBriefing(sharedRoom!, sharing, roomTools),
-    `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,
+    guestMail &&
+      "This is an email from someone the person you work for has not listed. Answer it from what you know, in conversation only: you have no tools here, and nothing private of theirs is yours to share.",
+    !guestMail && `Deliverables: when you produce a file for the user (a report, web page, slide deck, spreadsheet, PDF, chart), save it to ${artifacts.artifactsDir(bot.id)} with a descriptive filename. Files saved there appear in the chat as cards the user can open in-app or download. HTML, PDF, images, CSV, XLSX, markdown and text all render in-app; for slide decks, save an HTML version alongside any .pptx so the deck is viewable in place.`,
     HOUSE_STYLE,
     // In a room, who else is here and who decides. Solo chats stay silent
     // about all of it.
@@ -3329,7 +3439,7 @@ async function startClaimedTurn(
     blok && !roomInMessage && `Recent conversation in this room:\n${roomTranscript(roomId, bot.id).text}`,
     // only senior agents can ask for a team, and only outside a room,
     // inside one they already have colleagues to delegate to
-    !blok && (bot.seniority ?? 1) >= 3 && TEAM_PROTOCOL,
+    !blok && !guestMail && (bot.seniority ?? 1) >= 3 && TEAM_PROTOCOL,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -3367,6 +3477,8 @@ async function startClaimedTurn(
   // record of the turn it picks up).
   const requester = opts.requester ?? (opts.fallback || opts.retry ? askedLast.get(task.id) : undefined) ?? "owner";
   laneRequester.set(task.id, requester);
+  // somebody else's turn in a mail's lane: what it says is not emailed
+  if (!opts.answersMail && !opts.carriedOn && !opts.fallback && !opts.retry) mailAnswering.delete(task.id);
   askedLast.set(task.id, requester);
   // The owner asked for this turn, or something they set up did. A
   // member of a shared room or an email from anyone did not, and their
@@ -3375,7 +3487,8 @@ async function startClaimedTurn(
   // set before the engine hears a word, so a `bloks say` from this turn
   // reads this turn's place and not the last one's
   const goesOn = opts.carriedOn || opts.fallback || opts.retry;
-  agentChain.set(task.id, opts.chain ?? (goesOn ? (agentChain.get(task.id) ?? 0) : 0));
+  const inRoomChain = opts.roomId && opts.roomId !== task.id ? (roomChain.get(opts.roomId) ?? 0) : 0;
+  agentChain.set(task.id, opts.chain ?? (goesOn ? (agentChain.get(task.id) ?? 0) : inRoomChain));
   if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: true });
 
   // Mark it busy now, before any of the slow work, so the composer locks
@@ -3421,7 +3534,7 @@ async function startClaimedTurn(
       short = next;
     }
     short = (short || words[0].slice(0, 24)).replace(/[.,!?;:]+$/, "");
-    if (short) store.patchTaskTitle(bot.id, task.id, short);
+    if (short) retitleLane(bot.id, task.id, short);
   }
 
   // The lane goes back to idle, whichever way this turn ends without
@@ -3463,19 +3576,24 @@ async function startClaimedTurn(
       // Unless the owner has opened some of them to the room (roomTools),
       // and then only what is both open to the room and granted to this
       // agent: a room never widens what an agent could do on its own.
-      if ((!sharing || roomTools?.connectors) && cfg.composio?.key && bot.composio !== false) {
+      //
+      // An email from anyone gets none of them either. An API engine calls
+      // a connector or the computer with nothing to ask the owner first,
+      // and the answer goes back to whoever wrote.
+      const othersTurn = Boolean(sharing) || !owners;
+      if ((!othersTurn || roomTools?.connectors) && cfg.composio?.key && bot.composio !== false) {
         integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
       }
       const attached = (cfg.mcpServers ?? []).filter(
         (server) =>
-          (bot.mcpServers ?? []).includes(server.id) && (!sharing || (roomTools?.mcp ?? []).includes(server.id)),
+          (bot.mcpServers ?? []).includes(server.id) && (!othersTurn || (roomTools?.mcp ?? []).includes(server.id)),
       );
       if (attached.length) {
         integrations.mcpServers = attached.map(({ id: _id, ...rest }) => rest);
       }
       // cloud | sandbox | local | off | undefined(auto), with a per-turn
       // override taking precedence over the agent's own setting
-      const wants = sharing && !roomTools?.computer ? "off" : (opts.computerOverride ?? bot.computer);
+      const wants = othersTurn && !roomTools?.computer ? "off" : (opts.computerOverride ?? bot.computer);
       // "sandbox" is the stored name for the Local VM: a Cua desktop in a
       // container on this machine, shared by all agents one at a time
       let vmTurn = false;
@@ -3534,7 +3652,7 @@ async function startClaimedTurn(
       // does not also need the whole desktop, and the narrower tool is
       // the one to hand it. Off unless asked for, because a browser
       // starts a real process.
-      if ((!sharing || roomTools?.browser) && bot.browser === true) {
+      if ((!othersTurn || roomTools?.browser) && bot.browser === true) {
         integrations.browser = {
           // a shared room's browser is its own, never signed in as the owner
           profileDir: join(DATA_DIR, "browser", sharing ? `room-${sharedRoom!.id}` : bot.id),
@@ -3630,7 +3748,8 @@ async function startClaimedTurn(
       // one that can do neither starts a new session told the bounded
       // story. Only on the engine and model that made the reading, and
       // never mid-turn: a turn already running is left to finish.
-      const resumable = engineFresh ? undefined : task.resumeCursors[instanceId];
+      // a guest's mail resumes nothing, so it has nothing to compact
+      const resumable = engineFresh || guestMail ? undefined : task.resumeCursors[instanceId];
       const compactNow =
         !command &&
         !nativeReplay &&
@@ -3681,7 +3800,7 @@ async function startClaimedTurn(
       // of Bloks that is no longer where it was. Said once, in the turn
       // itself: an engine that keeps the first system prompt of a session
       // never reads a newer one (GitHub 150).
-      const resumeCursor = (engineFresh || replaceSession) && !command ? undefined : task.resumeCursors[instanceId];
+      const resumeCursor = ((engineFresh || replaceSession) && !command) || guestMail ? undefined : task.resumeCursors[instanceId];
       if (!command && credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
         turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
       }
@@ -3775,8 +3894,8 @@ async function startClaimedTurn(
         // its own workspace is always the agent's to edit: memory notes
         // must not queue approval cards behind a custom working folder.
         // Not in a shared room, where those notes are the owner's.
-        ...(onCloud || sharing ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
-        ...(sharing ? { shared: { tools: sharing.tools } } : {}),
+        ...(onCloud || sharing || guestMail ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
+        ...(sharing ? { shared: { tools: sharing.tools } } : guestMail ? { shared: { tools: "conversation" as const } } : {}),
         // full access takes the engine's own guards off too; never in a
         // shared room, where the approvals protect other people, and
         // never for a turn the owner did not vouch for, whose approvals
@@ -3814,7 +3933,7 @@ async function startClaimedTurn(
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : "") +
           (credential ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
-          (project ? `\n\n${briefFor(project)}` : ""),
+          (project && !guestMail ? `\n\n${briefFor(project)}` : ""),
         integrations,
       };
       // What an idle compaction sends again later, so its request starts
@@ -4030,6 +4149,8 @@ const askedLast = new Map<string, string>();
  * off, and no saved secret is in its environment. Mail from an address
  * the owner listed runs as the owner's own. */
 const MAIL_FROM_ANYONE = "mail:anyone";
+/** The conversation mail from an address nobody listed is answered in. */
+const UNLISTED_MAIL = "Unlisted email";
 
 /** Engines whose tools can be switched off for a shared room. Claude Code
  * takes --restricted and --tools; the API engines have no tools beyond
@@ -4316,6 +4437,22 @@ function watcherLane(w: Watcher, bot: BotRecord) {
   return store.bot(bot.id)!.tasks.find((t) => t.id === made.id)!;
 }
 
+/** Rename a lane. A watcher that speaks in it by its title follows the
+ * new one: otherwise its next fire would make a second lane under the old
+ * title, and closing the watcher would leave the renamed one behind. */
+function retitleLane(botId: string, laneId: string, title: string) {
+  const was = store.bot(botId)?.tasks.find((t) => t.id === laneId)?.title;
+  store.patchTaskTitle(botId, laneId, title);
+  const now = store.bot(botId)?.tasks.find((t) => t.id === laneId)?.title;
+  if (!was || !now || was === now) return;
+  const following = watchers.filter((w) => w.botId === botId && w.laneId === laneId && w.thread === was);
+  for (const w of following) w.thread = now;
+  if (following.length) {
+    saveWatchers();
+    broadcast({ kind: "watchers" });
+  }
+}
+
 /** Whether anyone but a watcher said something in a lane. Such a lane
  * is somebody's conversation now, and outlives the watcher that made it. */
 function personSpokeIn(laneId: string) {
@@ -4452,7 +4589,11 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
  * without a conversation stays in the first one. Before the sweep below,
  * which leaves a lane a watcher names alone.
  */
-if (typeof cfg.oneConversationAt !== "number") {
+// Noted twice: in config.json, and in a file of its own that outlives a
+// config.json set aside as unreadable. Done again after that, it would
+// send everything filed since the update back to the old lanes.
+const ONE_CONVERSATION_MARK = join(DATA_DIR, "one-conversation");
+if (typeof cfg.oneConversationAt !== "number" && !existsSync(ONE_CONVERSATION_MARK)) {
   routines.nameUnnamed("Routines");
   webhooks.nameUnnamed("Webhooks");
   const unnamed = watchers.filter((w) => !w.thread);
@@ -4462,7 +4603,19 @@ if (typeof cfg.oneConversationAt !== "number") {
   }
   if (unnamed.length) saveWatchers();
   cfg.oneConversationAt = Date.now();
-  saveConfig({ oneConversationAt: cfg.oneConversationAt });
+  // Neither note being written must stop Bloks starting. With both lost
+  // it is done again on the next start, which renames only what was filed
+  // in between with no conversation.
+  try {
+    writeFileAtomic(ONE_CONVERSATION_MARK, `${cfg.oneConversationAt}\n`, 0o600);
+  } catch {
+    /* config.json below, then */
+  }
+  try {
+    saveConfig({ oneConversationAt: cfg.oneConversationAt });
+  } catch {
+    /* the mark above, then */
+  }
 }
 
 for (const w of watchers) armWatcher(w);
@@ -4892,6 +5045,10 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
 }
 
 async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor, message: Message) {
+  // The person (or a member, or something they set up) has had a say.
+  // Cleared as it goes out rather than when it was posted, since a round
+  // still running ahead of it could set the place again in between.
+  if (!author.botId) roomChain.delete(blok.id);
   const members = blok.memberIds.map((id) => store.bot(id)).filter(Boolean) as BotRecord[];
   // Whether the room has anybody in it and whether anybody in it can
   // answer are two questions, and they used to be the same list. An
@@ -5014,6 +5171,16 @@ const MAX_AGENT_CHAIN = 12;
  * spans one run a single stretch more at most, and nothing is left on
  * disk for a closed lane or an old version to carry. */
 const agentChain = new Map<string, number>();
+
+/** How far along a chain of agents' messages a room is: the place of the
+ * latest agent's message that named someone there, until anyone else
+ * posts. A room turn that waited (a busy agent's line, or one named mid
+ * round) starts from it; one woken at once is handed its place directly.
+ * Otherwise an agent could keep another going by naming it in a room from
+ * a conversation, and be written back to from that room, without either
+ * chain ever growing. The latest rather than the highest, so a loop that
+ * stopped yesterday does not hold back what is asked today. */
+const roomChain = new Map<string, number>();
 
 /** A message an agent sent with `bloks say`, to another agent or to
  * itself: who sent it, and the place in the chain the turn it starts
@@ -5325,7 +5492,7 @@ function waitForIdle(botId: string, timeoutMs = 120_000): Promise<void> {
 }
 
 /** After an agent speaks, pass the room to anyone it named. */
-async function relayMentions(roomId: string, fromBotId: string, text: string, requester?: string) {
+async function relayMentions(roomId: string, fromBotId: string, text: string, requester: string | undefined, chain: number) {
   const blok = bloks.get(roomId);
   if (!blok) return;
   const hops = (agentHops.get(fromBotId) ?? 0) + 1;
@@ -5335,6 +5502,19 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
   const named = members.filter(
     (m) => m.id !== fromBotId && text.toLowerCase().includes(`@${m.name.toLowerCase()}`),
   );
+  if (!named.length) return;
+  // as far along as the turn that named them, and no further than any
+  // chain of agents' messages may go before the person has a say
+  if (chain > MAX_AGENT_CHAIN) {
+    const sender = store.bot(fromBotId);
+    const notice = `${sender?.name ?? "An agent"} named ${named.map((m) => m.name).join(", ")} after agents had started ${chain - 1} turns in a row without you, so nobody was woken. Post in the room to carry on.`;
+    if (store.messagesFor(roomId).at(-1)?.text !== notice) {
+      const said = store.appendMessage(roomId, { role: "bot", kind: "notice", text: notice });
+      broadcast({ kind: "message", threadId: roomId, message: said });
+    }
+    return;
+  }
+  roomChain.set(roomId, chain);
   const queue = dispatching.get(roomId);
   for (const target of named) {
     agentHops.set(target.id, hops);
@@ -5349,7 +5529,7 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
       queueRoomTag(target.id, roomId, text, requester);
       continue;
     }
-    await startTurn(target.id, text, { roomId, hops, requester }).catch((e) =>
+    await startTurn(target.id, text, { roomId, hops, requester, chain }).catch((e) =>
       waitsForTurn(e) ? queueRoomTag(target.id, roomId, text, requester) : sayTurnedAway(roomId, e),
     );
   }
@@ -5480,6 +5660,17 @@ async function offerJob(jobId: string): Promise<Job | null> {
     jobsHeld.add(job.id);
     return job;
   }
+  // Jobs agents post for one another are a chain like their messages
+  // are: past the limit the job is left for the person to offer again.
+  if ((job.chain ?? 0) > MAX_AGENT_CHAIN) {
+    const held = jobs.finish(job.id, {
+      ok: false,
+      result: `Not offered: agents had started ${job.chain! - 1} turns in a row without you. Offer it again to hand it out.`,
+      now: Date.now(),
+    });
+    broadcast({ kind: "jobs" });
+    return held;
+  }
   const agent = nextFor(job, candidates());
   if (!agent) {
     broadcast({ kind: "jobs" });
@@ -5495,7 +5686,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
   openJobs.set(laneId, job.id);
   broadcast({ kind: "jobs" });
   broadcast({ kind: "bot", bot: clientBot(store.bot(agent.id)) });
-  await startTurn(agent.id, offerText(job), { taskId: laneId }).catch((e) => {
+  await startTurn(agent.id, offerText(job), { taskId: laneId, ...(job.chain ? { chain: job.chain } : {}) }).catch((e) => {
     openJobs.delete(laneId);
     jobs.finish(job.id, {
       ok: false,
@@ -6184,6 +6375,16 @@ function finishRun(runId: string, state: "done" | "failed" | "stopped", error?: 
   broadcast({ kind: "workflows" });
 }
 
+/** The last thing an agent said in a lane after one message, or "" when
+ * that message is gone or nothing has been said since. */
+function saidAfter(threadId: string, messageId: string): string {
+  const all = store.messagesFor(threadId);
+  const from = all.findIndex((msg) => msg.id === messageId);
+  if (from < 0) return "";
+  const said = all.slice(from + 1).reverse().find((msg) => msg.role === "bot" && msg.kind === "text" && msg.text && !msg.deleted);
+  return said?.text ?? "";
+}
+
 /** The last thing an agent actually said in a lane, which is what a step
  * hands on to the next one. A row that only says "ok" answers half the
  * question people are asking. */
@@ -6676,7 +6877,7 @@ const telegramInbox = new telegram.Inbox({
       // A follow-up while this chat waits on an answer goes into the turn
       // being answered, and that one reply covers it, rather than waiting
       // for the answer to come back before it is even read (GitHub 213).
-      const lane = bot?.tasks.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
+      const lane = bot?.tasks.find((t) => t.id === activeLaneOf(bot));
       // A drain request recovered its own return address. A follow-up
       // joins that answer when steered, or gets one for its queued turn.
       // Neither path starts the normal busy wait and sends a second copy.
@@ -6738,7 +6939,7 @@ async function telegramRound(): Promise<void> {
 async function answerOverTelegram(botId: string, text: string, chatId: number): Promise<string> {
   const bot = store.bot(botId);
   if (!bot) throw new Error("that agent is gone");
-  const laneId = bot.activeTaskId ?? bot.threadId;
+  const laneId = activeLaneOf(bot);
   const before = store.messagesFor(laneId).length;
   telegramLive.set(botId, chatId);
   // only chats the person allowed get this far: this is them, on a phone
@@ -6955,7 +7156,7 @@ const mailSeen = new Set<string>();
 /** Mail waiting for its agent's Email lane to be free. */
 const mailQueue: Array<{ botId: string; mail: InboundMail }> = [];
 /** The mail each Email lane is answering, for the reply. */
-const mailAnswering = new Map<string, { botId: string; mail: InboundMail; until?: number }>();
+const mailAnswering = new Map<string, { botId: string; mail: InboundMail; until?: number; messageId?: string }>();
 
 /** The part of an address that names an agent: lowercase letters, digits
  * and dashes, from its name. */
@@ -7018,16 +7219,22 @@ async function onEmailHook(hook: { platform: string; body: string }): Promise<nu
 
 /** Starts a turn for each waiting mail whose agent's Email lane is free. */
 async function drainMail() {
-  // waits in the line, as it does for a busy Email lane, until Bloks is
-  // back or the drain is called off
-  if (drain.on) return;
   for (const item of [...mailQueue]) {
+    // waits in the line, as it does for a busy Email lane, until Bloks is
+    // back or the drain is called off. Asked before each one, since a
+    // drain can begin while the last one's turn was starting.
+    if (drain.on) return;
     // Another pass over the line may have taken this one while this pass
     // waited on a turn starting. It is being answered already, and
     // splicing at -1 would drop whichever mail is last in the line.
     const at = mailQueue.indexOf(item);
     if (at < 0) continue;
-    const laneId = backgroundTaskId(item.botId, "Email");
+    // Mail from someone the owner has not listed has a conversation of its
+    // own. The owner's turns in "Email" resume that lane's session, and
+    // would read whatever such a mail told the agent with the owner's
+    // trust; and at the lane cap it waits rather than borrow one of theirs.
+    const listed = mailListed(String(item.mail.from ?? ""));
+    const laneId = listed ? backgroundTaskId(item.botId, "Email") : backgroundTaskId(item.botId, UNLISTED_MAIL, { own: true });
     if (!laneId) continue;
     mailQueue.splice(at, 1);
     const { mail } = item;
@@ -7040,12 +7247,21 @@ async function drainMail() {
     ].join("\n");
     const said = store.appendMessage(laneId, { role: "user", kind: "text", text, via: "email" });
     broadcast({ kind: "message", threadId: laneId, message: said });
-    mailAnswering.set(laneId, item);
+    // the reply is what is said after this mail, and only that
+    mailAnswering.set(laneId, { ...item, messageId: said.id });
     // mail from an address the owner listed is the owner's business; mail
     // from anyone else runs on none of the owner's standing trust
-    const requester = mailListed(String(mail.from ?? "")) ? undefined : MAIL_FROM_ANYONE;
-    await startTurn(item.botId, text, { taskId: laneId, presetMessage: true, ...(requester ? { requester } : {}) }).catch((e) => {
+    const requester = listed ? undefined : MAIL_FROM_ANYONE;
+    await startTurn(item.botId, text, { taskId: laneId, presetMessage: true, answersMail: true, ...(requester ? { requester } : {}) }).catch((e) => {
       mailAnswering.delete(laneId);
+      // Bloks began finishing up to restart: back in line, and out of the
+      // lane until it is answered, so it is not there twice
+      if ((e as { draining?: boolean }).draining) {
+        mailQueue.unshift(item);
+        const gone = store.patchMessage(laneId, said.id, { deleted: true });
+        if (gone) broadcast({ kind: "message.patch", threadId: laneId, message: gone });
+        return;
+      }
       const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: `The email could not be answered: ${(e as Error).message}` });
       broadcast({ kind: "message", threadId: laneId, message: notice });
     });
@@ -7067,7 +7283,9 @@ function replyByMail(laneId: string, ok: boolean) {
   mailAnswering.delete(laneId);
   const bot = store.bot(answering.botId);
   const address = bot ? mailAddressOf(bot) : null;
-  const said = lastSaid(laneId);
+  // Said after the mail, or nothing: the last words in the lane may be an
+  // earlier sender's reply, when this turn's answer was only a component.
+  const said = answering.messageId ? saidAfter(laneId, answering.messageId) : lastSaid(laneId);
   if (!bot || !address || !ok || !said) return;
   const subject = answering.mail.subject ? (/^re:/i.test(answering.mail.subject) ? answering.mail.subject : `Re: ${answering.mail.subject}`) : "A reply from your agent";
   void relayLink
@@ -7672,7 +7890,7 @@ async function sendUserMessage(
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
-  const taskId = options.taskId ?? bot.activeTaskId;
+  const taskId = options.taskId ?? activeLaneOf(bot);
   const lane = bot.tasks.find((t) => t.id === taskId);
   if (!lane) throw Object.assign(new Error("no such task"), { status: 404 });
   const holding = wheel.heldBy(bot.id);
@@ -9526,8 +9744,9 @@ const server = createServer(async (req, res) => {
           // only another agent asks for this; the person's words always try
           now: Boolean(from) && body.now === true,
           // an agent writing, to another or to itself, carries its turn's
-          // place in a chain of agents' messages one further
-          ...(sender ? { chain: chainFrom(sender, asAgent!.taskId) } : {}),
+          // place in a chain of agents' messages one further; and never as
+          // the person's own words, which alone may name a skill or a command
+          ...(sender ? { chain: chainFrom(sender, asAgent!.taskId), personal: false } : {}),
         });
       } catch (e) {
         noteSent("failed");
@@ -10681,7 +10900,7 @@ const server = createServer(async (req, res) => {
       const unread = typeof body.unread === "boolean" ? body.unread : undefined;
       if (!title && unread === undefined) return json(res, 400, { error: "a task needs a title" });
       if (!store.bot(m[1])?.tasks.some((t) => t.id === m![2])) return json(res, 404, { error: "no such task" });
-      if (title) store.patchTaskTitle(m[1], m[2], title);
+      if (title) retitleLane(m[1], m[2], title);
       // "mark as unread" on one conversation, from its row in the sidebar
       if (unread !== undefined) store.markLane(m[1], m[2], unread);
       const fresh = store.bot(m[1])!;
@@ -11427,7 +11646,7 @@ const server = createServer(async (req, res) => {
         broadcast({ kind: "message", threadId: blok.id, message });
         // whoever started the turn it said this from is still the one who
         // asked, so a member's chain does not become the owner's
-        void relayMentions(blok.id, asAgent.botId, text, laneRequester.get(asAgent.taskId)).catch(() => {});
+        void relayMentions(blok.id, asAgent.botId, text, laneRequester.get(asAgent.taskId), (agentChain.get(asAgent.taskId) ?? 0) + 1).catch(() => {});
         triggersFired({ kind: "message", targetId: blok.id, text, fromUser: false });
         return json(res, 201, { message });
       }
@@ -12594,7 +12813,9 @@ const server = createServer(async (req, res) => {
       const title = clamp(body.title, MAX_TITLE_CHARS) ?? "";
       const brief = clamp(body.brief, MAX_DESCRIPTION_CHARS) ?? "";
       if (!title && !brief) return json(res, 400, { error: "a job needs something to do" });
-      const job = jobs.post({ title: title || brief.slice(0, 80), brief: brief || title, now: Date.now() });
+      // posted from an agent's turn, its taker's turn is one more in that chain
+      const chain = asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined;
+      const job = jobs.post({ title: title || brief.slice(0, 80), brief: brief || title, now: Date.now(), chain });
       record({
         at: Date.now(),
         kind: "job.posted",
@@ -12628,8 +12849,11 @@ const server = createServer(async (req, res) => {
       if (job.state === "claimed") return json(res, 409, { error: "somebody is on it" });
       // asking again after everyone has passed starts the round over
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
-      if (body.again) jobs.patch(job.id, { offers: [], state: "open", result: undefined });
-      else jobs.patch(job.id, { state: "open" });
+      // the person offering it has had their say; an agent offering it
+      // takes it one further along its own chain
+      const chain = asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined;
+      if (body.again) jobs.patch(job.id, { offers: [], state: "open", result: undefined, chain });
+      else jobs.patch(job.id, { state: "open", chain });
       const offered = await offerJob(job.id);
       return json(res, 200, { job: offered ?? jobs.get(job.id) });
     }
@@ -13043,7 +13267,7 @@ const server = createServer(async (req, res) => {
           ? body.taskId
           : (asAgent?.taskId && bot.tasks.some((t) => t.id === asAgent.taskId)
               ? asAgent.taskId
-              : bot.activeTaskId);
+              : activeLaneOf(bot));
       const destination = activeRoom.get(laneId) ?? laneId;
       const message = store.appendMessage(destination, {
         role: "bot",

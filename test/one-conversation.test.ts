@@ -236,6 +236,7 @@ test("what was filed before the update keeps running where it ran, and what is f
   assert.equal(typeof config.oneConversationAt, "number", "the upgrade was not noted");
   delete config.oneConversationAt;
   writeFileSync(join(data, "config.json"), JSON.stringify(config));
+  rmSync(join(data, "one-conversation"));
   w.h = await startHarness({ HOME: w.home });
 
   const routines = (await w.h.json("/api/routines")).routines;
@@ -265,5 +266,41 @@ test("what was filed before the update keeps running where it ran, and what is f
   // done once: a routine filed now, with no conversation, stays in General
   const { routine: later } = await (await routine(w, "evening wrap")).json();
   await w.restart();
+  assert.equal((await w.h.json("/api/routines")).routines.find((r: any) => r.id === later.id).thread, undefined);
+});
+
+test("a watcher's own lane, renamed, is still where it speaks and what closes with it", async (t) => {
+  const w = await workspace(t);
+  const prices = await watching(w, "prices", "Watching: prices");
+  await prices.fire("one.txt");
+  assert.ok(await waitFor(() => w.asked.some((a) => a.includes("Note the prices change."))));
+  await w.idle();
+  const own = (await w.me()).tasks.find((task: any) => task.title === "Watching: prices").id;
+
+  // the person (or the agent, with bloks rename) gives it a better name
+  await w.h.fetch(`/api/bots/${w.botId}/tasks/${own}`, { method: "PATCH", body: JSON.stringify({ title: "Price moves" }) });
+  const watcher = (await w.h.json("/api/watchers")).watchers.find((x: any) => x.id === prices.id);
+  assert.equal(watcher.thread, "Price moves", "the watcher still names the lane's old title");
+
+  const before = w.asked.length;
+  await prices.fire("two.txt");
+  assert.ok(await waitFor(() => w.asked.length > before));
+  await w.idle();
+  assert.deepEqual((await w.titles()).filter((title) => /prices|Price moves/.test(title)), ["Price moves"], "a second lane was made under the old title");
+  assert.equal((await w.said(own)).filter((m) => m.via === "watcher").length, 2);
+});
+
+test("a config set aside as unreadable does not send what was filed since back to the old lanes", async (t) => {
+  const w = await workspace(t);
+  const { routine: later } = await (await routine(w, "evening wrap")).json();
+  await w.h.stop();
+  // the note in config.json that the upgrade was done went with the file;
+  // the one beside it did not
+  const data = join(w.home, ".bloks");
+  const config = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  delete config.oneConversationAt;
+  writeFileSync(join(data, "config.json"), JSON.stringify(config));
+  writeFileSync(join(data, "config.json.corrupt-2026-10-09T00-00-00-000Z"), "{ cut sh");
+  w.h = await startHarness({ HOME: w.home });
   assert.equal((await w.h.json("/api/routines")).routines.find((r: any) => r.id === later.id).thread, undefined);
 });

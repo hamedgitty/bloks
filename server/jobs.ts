@@ -49,6 +49,10 @@ export interface Job {
   finishedAt?: number;
   /** The agent's own account of what it did, or why it could not. */
   result?: string;
+  /** Posted from an agent's turn: the place in a chain of agents'
+   * messages its taker's turn would take (MAX_AGENT_CHAIN in
+   * server/index.ts). Absent when the person posted or offered it. */
+  chain?: number;
 }
 
 export const MAX_JOBS = 200;
@@ -246,7 +250,7 @@ export class JobStore {
     return this.jobs.find((job) => job.id === id) ?? null;
   }
 
-  post(input: { title: string; brief: string; now: number }): Job {
+  post(input: { title: string; brief: string; now: number; chain?: number }): Job {
     const job: Job = {
       id: newId(),
       title: input.title.trim().slice(0, MAX_TITLE),
@@ -254,6 +258,7 @@ export class JobStore {
       postedAt: input.now,
       state: "open",
       offers: [],
+      ...(input.chain ? { chain: input.chain } : {}),
     };
     this.jobs.unshift(job);
     if (this.jobs.length > MAX_JOBS) this.jobs.length = MAX_JOBS;

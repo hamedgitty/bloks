@@ -432,8 +432,18 @@ and a pickup, a backup engine or a retry keeps the place of the turn it
 continues. The places live in memory, with the queue they ride on,
 rather than on the lane record: a restart begins every chain again,
 which lets a loop that spans one run a stretch more at most, and leaves
-nothing on disk to clear when a lane closes. Rooms are bounded by
-`MAX_AGENT_HOPS` instead and are not counted here.
+nothing on disk to clear when a lane closes.
+
+Rooms and the job board carry the count too, or an agent could keep
+another going through them. An agent naming someone in a room, from the
+room or from a conversation, hands the turn it wakes a place one past its
+own; past the limit nobody is woken and the room says why. A room also
+keeps the latest such place (`roomChain`) for a turn that waited, behind
+a busy agent or a round, and anyone but an agent posting there clears it
+as the post goes out. A job posted from an agent's turn
+records the place its taker's turn would take; past the limit it is not
+offered, and the person offering it again clears it. A round inside one
+room is also bounded by `MAX_AGENT_HOPS`.
 
 ## Chat platforms
 
@@ -512,22 +522,45 @@ suggested for that agent.
 Mail to `<agent>.<id>@agents.bloks.dev` is received by Bloks Cloud and
 arrives as a `hook:` ask with `platform: "email"`, like WhatsApp.
 `onEmailHook` routes it by the name before the dot, checks `allowFrom`,
-dedupes by Message-ID, and queues it into the agent's Email lane; the
-reply is the agent's last message, sent back through Bloks Cloud, which
-only sends to an address that wrote in.
+dedupes by Message-ID, and queues it into the agent's Email lane (or
+"Unlisted email", below); the reply is the agent's last message, sent
+back through Bloks Cloud, which only sends to an address that wrote in.
 
 With `allowFrom` empty anyone may write, so a mail's turn runs on none
-of the owner's standing trust: its requester is `MAIL_FROM_ANYONE`, not
-the owner, as a shared room member's is. Its approvals come to the owner
-as cards that say which address asked, allow rules and the `auto` and
-`edits` modes do not answer for it (deny rules still refuse), full
-access is off and the driver gets `untrusted`, so no engine skips its
-own guards however its instance is set, and Claude Code pre-allows no
-connector or other tool and asks before edits as well. No saved secret
-is in its environment. A backup engine or a retry after a fold goes on
-for the same requester (`askedLast`), and a pickup after a restart
-reads it from the turn's record. Mail from an address or @domain in
-`allowFrom`, checked when its turn starts, runs as the owner's own.
+of the owner's standing trust: its requester is `MAIL_FROM_ANYONE`, and
+it is answered the way a guest in a shared room is (`guestMail` in
+`startClaimedTurn`). Only an engine whose tools can be switched off
+(`sharedSafe`) answers it; on Codex, an ACP engine or the computer the
+lane says why and nobody is emailed, since a shell that asks before
+acting still reads the whole disk without asking, the owner's keys
+included. The driver gets `shared: { tools: "conversation" }` and
+`untrusted`: no tools, none of the owner's connectors, MCP servers,
+computer, browser or extra folders, no CLAUDE.md or auto memory, no saved
+secret and no agent credential. The persona leaves out the owner's
+profile, notes, memory, attached skills, project brief, folders and the
+team protocol, and no team plan is read from its answer. Each mail
+starts a session of its own with no transcript and nothing compacted
+first, and its session is dropped when it ends, unfolded and unread for
+skills, so one stranger never reads another's mail and no turn of the
+owner's resumes one. The reply is what was said after the mail, and any
+other turn starting in the lane ends the wait for it, so nobody is
+emailed words that were not their answer. A pickup after a cut off takes
+none of the words queued in the lane, and a context error is not folded
+and retried. `search_history`, `read_message`, `note_about_person`,
+`request_secret` and `request_connection` are refused: a secret saved or
+an app connected from such a card would resume the turn as the owner's.
+A question it asks the owner says whose mail it is for and is never
+sent to the owner's phone. It is answered in "Unlisted email", never in
+"Email", and at the lane cap it waits rather than borrow another lane;
+no other work falls back into that lane either, and work that names no
+lane (a phone message, a room's turn) goes to the first conversation
+when that lane is the one open (`activeLaneOf`). A backup engine or a
+retry after a fold goes on for the same requester, read when the error
+arrives, and a pickup after a restart reads it from the turn's record.
+During a drain it waits in the mail line rather than as a note in a
+lane, since a note runs as the owner's. Mail from an address or @domain
+in `allowFrom`, checked when its turn starts, runs as the owner's own,
+in "Email".
 Webhooks are not affected: their address is a secret the owner handed
 out.
 

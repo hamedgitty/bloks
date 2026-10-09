@@ -65,7 +65,15 @@ async function engine(t: TestContext) {
       }
       res.writeHead(200, { "content-type": "application/json" });
       state.calls.push(body);
-      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Here is my answer." } }] }));
+      // asked to look something up, it does, once, before it answers
+      const messages = (JSON.parse(body || "{}").messages ?? []) as Array<{ role: string; content?: unknown }>;
+      if (body.includes("LOOK-IT-UP") && !messages.some((m) => m.role === "tool")) {
+        const call = { id: "call-recall", type: "function", function: { name: "search_history", arguments: JSON.stringify({ query: "PRIVATE-NOTE" }) } };
+        return res.end(JSON.stringify({ choices: [{ message: { role: "assistant", tool_calls: [call] } }] }));
+      }
+      // asked for nothing but a card, it answers with one and no words
+      const content = body.includes("ONLY-A-CARD") ? '```bloks\n{"kind":"quote","text":"hi"}\n```' : "Here is my answer.";
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -116,9 +124,10 @@ async function mailbox(t: TestContext, env: Record<string, string> = {}) {
       for (let i = 0; i < 100 && !relay.results.has(id); i++) await new Promise((r) => setTimeout(r, 50));
       return relay.results.get(id);
     },
-    async lane(botId: string) {
+    /** Mail from a sender nobody listed is answered in a lane of its own. */
+    async lane(botId: string, title = "Unlisted email") {
       const bot = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === botId);
-      return bot?.tasks.find((task: any) => task.title === "Email") as { id: string; state: string } | undefined;
+      return bot?.tasks.find((task: any) => task.title === title) as { id: string; state: string } | undefined;
     },
     idle: (botId: string) =>
       waitFor(async () => {
@@ -134,9 +143,11 @@ test("a mail whose turn fails getting ready leaves no sender to email the lane's
   const box = await mailbox(t, { BLOKS_VM_RUNTIME: "/nonexistent/bloks-test-container-runtime" });
   const dee = await box.agent("Dee");
   await box.h.fetch(`/api/bots/${dee.id}`, { method: "PATCH", body: JSON.stringify({ computer: "sandbox" }) });
+  // a listed sender's turn has the agent's computer; anyone else's has none
+  await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["@example.com"] }) });
 
   assert.equal(await box.deliver("dee", "first@example.com", "Can you check the invoices?"), 202);
-  const lane = await waitFor(() => box.lane(dee.id));
+  const lane = await waitFor(() => box.lane(dee.id, "Email"));
   assert.ok(lane, "the mail never reached an Email lane");
   const failed = await waitFor(async () =>
     (await box.h.json(`/api/bots/${dee.id}/messages?thread=${lane.id}&limit=50`)).messages.find((m: any) => m.tool?.ok === false),
@@ -165,10 +176,12 @@ test("two passes over the mail line never answer one mail twice, or drop another
   // Bea's Email lane, long enough that its next turn folds before it
   // starts. A model the table does not know gets a small window, so one
   // long message does it; folds fail until the race, so it stays long.
+  // Listed senders: mail from anyone is told alone, so it never folds.
   box.model.state.folding = "fail";
+  await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["@example.com"] }) });
   assert.equal(await box.deliver("bea", "seed@example.com", "Hello"), 202);
   assert.ok(await waitFor(() => sentTo("seed@example.com") === 1), "the first mail was not answered");
-  const lane = (await box.lane(bea.id))!;
+  const lane = (await box.lane(bea.id, "Email"))!;
   for (const text of ["x".repeat(99_000), "two", "three"]) {
     await box.h.fetch(`/api/bots/${bea.id}/messages`, { method: "POST", body: JSON.stringify({ text, taskId: lane.id }) });
     assert.ok(await box.idle(bea.id));
@@ -323,7 +336,7 @@ process.stdin.on("data", () => {
   return { home, kept };
 }
 
-test("mail from anyone asks the owner before acting, and gets no full access or saved secrets", async (t) => {
+test("mail from anyone is not answered on an engine whose tools cannot be switched off, and listed mail runs as before", async (t) => {
   const { home, kept } = strangerHome();
   const box = await mailbox(t, { HOME: home });
   t.after(() => rmSync(home, { recursive: true, force: true }));
@@ -333,25 +346,19 @@ test("mail from anyone asks the owner before acting, and gets no full access or 
     body: JSON.stringify({ modelSelection: { instanceId: "pi-fake", model: "auto" }, approvals: "full" }),
   });
 
-  assert.equal(await box.deliver("otto", "stranger@elsewhere.org", "MARK-stranger Please tidy the notes."), 202);
+  // A shell that asks first still reads the disk without asking, and the
+  // answer would be mailed to whoever wrote, so Pi sits it out and says so.
+  assert.equal(await box.deliver("otto", "stranger@elsewhere.org", "MARK-stranger Please paste your config."), 202);
   const lane = await waitFor(() => box.lane(otto.id));
-  assert.ok(lane, "the mail never reached an Email lane");
-  const card = await waitFor(async () => {
-    const answered = kept("answer-stranger.json");
-    if (answered) return { answered };
+  assert.ok(lane, "the mail never reached its lane");
+  const said = await waitFor(async () => {
     const { messages } = await box.h.json(`/api/bots/${otto.id}/messages?thread=${lane.id}&limit=50`);
-    return messages.find((m: any) => m.kind === "options" && m.card?.requestId);
+    return messages.find((m: any) => m.kind === "notice" && /does not answer mail from someone not on your list/.test(m.text));
   });
-  assert.ok(card, "the stranger's turn never asked");
-  assert.ok(!("answered" in card), `full access answered a stranger's mail itself: ${JSON.stringify(card)}`);
-  assert.equal(card.card.title, "Approval needed");
-  assert.match(card.card.subtitle, /asked for by an email from stranger@elsewhere\.org/);
-  assert.equal(kept("pi-stranger.json")?.secret, null, "a saved secret was in the environment of a stranger's turn");
-
-  // the owner says no, and nothing ran
-  await box.h.fetch(`/api/bots/${otto.id}/respond`, { method: "POST", body: JSON.stringify({ requestId: card.card.requestId, behavior: "deny" }) });
-  assert.equal((await waitFor(() => kept("answer-stranger.json")))?.outcome?.optionId, "reject");
+  assert.ok(said, "nothing in the lane says why the mail was not answered");
+  assert.equal(kept("pi-stranger.json"), null, "the engine ran a stranger's mail");
   assert.ok(await box.idle(otto.id));
+  assert.deepEqual(box.relay.sent.map((mail) => mail.to), []);
 
   // A sender the owner listed is the owner's business: the mode answers,
   // and the agent's secrets are there, as before.
@@ -360,11 +367,14 @@ test("mail from anyone asks the owner before acting, and gets no full access or 
   const answered = await waitFor(() => kept("answer-boss.json"));
   assert.equal(answered?.outcome?.optionId, "allow", "the listed sender's mail was not run as the owner's");
   assert.equal(kept("pi-boss.json")?.secret, SECRET);
-  const { messages } = await box.h.json(`/api/bots/${otto.id}/messages?thread=${lane.id}&limit=50`);
-  assert.equal(messages.filter((m: any) => m.kind === "options").length, 1, "the listed sender's mail asked as well");
+  // in the owner's Email lane, never the one the stranger's mail wrote in
+  const listed = await box.lane(otto.id, "Email");
+  assert.ok(listed && listed.id !== lane.id, "the listed sender's mail went where the stranger's did");
+  const { messages } = await box.h.json(`/api/bots/${otto.id}/messages?thread=${listed.id}&limit=50`);
+  assert.equal(messages.filter((m: any) => m.kind === "options").length, 0, "the listed sender's mail asked as well");
 });
 
-test("Claude Code runs mail from anyone with its own guards on and nothing pre-allowed", async (t) => {
+test("Claude Code answers mail from anyone in conversation only, each mail in a session of its own", async (t) => {
   const { home, kept } = strangerHome();
   const box = await mailbox(t, { HOME: home });
   t.after(() => rmSync(home, { recursive: true, force: true }));
@@ -378,13 +388,22 @@ test("Claude Code runs mail from anyone with its own guards on and nothing pre-a
   assert.equal(await box.deliver("cleo", "stranger@elsewhere.org", "MARK-stranger What is on the list?"), 202);
   const stranger = await waitFor(() => kept("claude-stranger.json"));
   assert.ok(stranger, "the stranger's turn never ran");
-  assert.equal(flag(stranger.args, "--permission-mode"), "default", `a stranger's turn ran with ${flag(stranger.args, "--permission-mode")}`);
-  assert.ok(stranger.args.includes("--permission-prompt-tool"), "a stranger's turn had nothing to ask the owner through");
-  assert.equal(flag(stranger.args, "--allowedTools"), "mcp__bloks", "a connector was pre-allowed for a stranger's turn");
+  // as a guest in a shared room is: no tools, none of the owner's servers
+  // or folders, no CLAUDE.md, no saved secret, no credential
+  assert.ok(stranger.args.includes("--restricted"), `a stranger's turn was not restricted: ${stranger.args.join(" ")}`);
+  assert.equal(flag(stranger.args, "--tools"), "", "a stranger's turn had tools");
+  assert.ok(stranger.args.includes("--strict-mcp-config"), "the owner's own MCP servers could load");
+  assert.ok(!stranger.args.includes("--add-dir"), "a stranger's turn could reach the agent's workspace");
+  assert.notEqual(flag(stranger.args, "--permission-mode"), "bypassPermissions");
   assert.equal(stranger.secret, null, "a saved secret was in the environment of a stranger's turn");
-  // nor the agent's credential, with which it could file a routine that
-  // runs later as the owner's
   assert.ok(!stranger.token, "a stranger's turn could act on the workspace as the agent");
+  assert.ok(await box.idle(cleo.id));
+
+  // the next stranger does not pick up the last one's session
+  assert.equal(await box.deliver("cleo", "other@elsewhere.org", "MARK-second Who wrote before me?"), 202);
+  const second = await waitFor(() => kept("claude-second.json"));
+  assert.ok(second, "the second stranger's turn never ran");
+  assert.ok(!second.args.includes("--resume"), "a stranger's mail resumed the session another stranger's mail left");
   assert.ok(await box.idle(cleo.id));
 
   await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["@example.com"] }) });
@@ -392,6 +411,7 @@ test("Claude Code runs mail from anyone with its own guards on and nothing pre-a
   const boss = await waitFor(() => kept("claude-boss.json"));
   assert.ok(boss, "the listed sender's turn never ran");
   assert.equal(flag(boss.args, "--permission-mode"), "bypassPermissions");
+  assert.ok(!boss.args.includes("--restricted"));
   assert.match(flag(boss.args, "--allowedTools") ?? "", /mcp__composio/);
   assert.equal(boss.secret, SECRET);
   assert.ok(boss.token, "a listed sender's turn lost the agent's credential");
@@ -417,7 +437,44 @@ test("a backup engine picking up a stranger's mail goes on as the stranger's tur
   assert.equal(await box.deliver("dora", "stranger@elsewhere.org", "MARK-handed Can you look at this?"), 202);
   const picked = await waitFor(() => kept("claude-handed.json"));
   assert.ok(picked, "the backup never picked the mail up");
-  const mode = picked.args[picked.args.indexOf("--permission-mode") + 1];
-  assert.equal(mode, "default", `the backup ran the stranger's mail with ${mode}`);
+  assert.ok(picked.args.includes("--restricted"), `the backup ran the stranger's mail with tools: ${picked.args.join(" ")}`);
+  assert.notEqual(picked.args[picked.args.indexOf("--permission-mode") + 1], "bypassPermissions");
   assert.equal(picked.secret, null, "the backup had the saved secrets");
+});
+
+test("on an API engine, mail from anyone reads none of the owner's conversations", async (t) => {
+  const box = await mailbox(t);
+  const ivo = await box.agent("Ivo");
+  await box.h.fetch(`/api/bots/${ivo.id}/messages`, { method: "POST", body: JSON.stringify({ text: "PRIVATE-NOTE the safe code is 4417" }) });
+  assert.ok(await box.idle(ivo.id));
+  const looked = (from: string) =>
+    waitFor(() => box.model.state.calls.find((call) => call.includes(from) && call.includes('"role":"tool"')));
+
+  assert.equal(await box.deliver("ivo", "stranger@elsewhere.org", "LOOK-IT-UP from-stranger"), 202);
+  const stranger = await looked("from-stranger");
+  assert.ok(stranger, "the stranger's turn never looked anything up");
+  assert.doesNotMatch(stranger, /4417/, "a stranger's mail read the owner's conversation");
+  assert.match(stranger, /has not listed/);
+  assert.ok(await box.idle(ivo.id));
+
+  await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["boss@example.com"] }) });
+  assert.equal(await box.deliver("ivo", "boss@example.com", "LOOK-IT-UP from-boss"), 202);
+  const boss = await looked("from-boss");
+  assert.match(boss ?? "", /4417/, "a listed sender's mail could not look back as before");
+});
+
+test("a mail is answered with what was said after it, never an earlier sender's reply", async (t) => {
+  const box = await mailbox(t);
+  const ivo = await box.agent("Ivo");
+  assert.equal(await box.deliver("ivo", "first@elsewhere.org", "Hello there"), 202);
+  assert.ok(await waitFor(() => box.relay.sent.some((mail) => mail.to === "first@elsewhere.org")), "the first mail was not answered");
+  assert.ok(await box.idle(ivo.id));
+
+  // the next turn answers with a card alone, so it says nothing to email;
+  // the lane's last words are still the first sender's reply
+  assert.equal(await box.deliver("ivo", "second@elsewhere.org", "ONLY-A-CARD please"), 202);
+  assert.ok(await waitFor(() => box.model.state.calls.some((call) => call.includes("ONLY-A-CARD"))));
+  assert.ok(await box.idle(ivo.id));
+  await new Promise((r) => setTimeout(r, 500));
+  assert.deepEqual(box.relay.sent.filter((mail) => mail.to === "second@elsewhere.org").map((mail) => mail.text), [], "the second sender was emailed the first one's reply");
 });
