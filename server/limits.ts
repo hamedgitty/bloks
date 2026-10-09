@@ -20,6 +20,12 @@ export const MAX_DESCRIPTION_CHARS = 4_000;
 export const MAX_SKILL_CHARS = 400;
 export const MAX_SKILLS = 12;
 
+/** Engine-reported invocation metadata, never skill or command bodies. */
+export const MAX_ENGINE_COMMANDS = 2048;
+export const MAX_ENGINE_COMMAND_BYTES = 1024 * 1024;
+export const MAX_ENGINE_COMMAND_ID_CHARS = 128;
+export const MAX_ENGINE_COMMAND_DESCRIPTION_CHARS = 300;
+
 /** Request bodies. Screen frames are the only large ones. */
 export const MAX_BODY_BYTES = 2_000_000;
 

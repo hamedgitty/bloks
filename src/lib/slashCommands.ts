@@ -7,6 +7,7 @@ export interface Command {
   name: string;
   description: string;
   source: "library" | "engine";
+  kind?: "skill" | "command";
 }
 
 /**
@@ -52,8 +53,9 @@ function inOrder(field: string, q: string): boolean {
 }
 
 /** Matching commands, best first, library skills ahead of engine ones on a tie. */
-export function matches(commands: Command[], query: string, limit = 8): Command[] {
+export function matches(commands: Command[], query: string, limit = 8, atStart = true): Command[] {
   return commands
+    .filter((c) => atStart || c.kind !== "command")
     .map((c) => ({ c, s: score(c, query) }))
     .filter((x) => x.s >= 0)
     .sort((a, b) => b.s - a.s || (a.c.source === b.c.source ? 0 : a.c.source === "library" ? -1 : 1) || a.c.id.localeCompare(b.c.id))
@@ -79,8 +81,10 @@ export function insert(text: string, start: number, caret: number, id: string): 
  */
 export function segments(text: string, ids: Set<string>): Array<{ text: string; skill: boolean }> {
   const out: Array<{ text: string; skill: boolean }> = [];
-  // dots only between word characters, so "/tldr." ends at the r
-  const pattern = /(^|\s)(\/[A-Za-z0-9][\w-]*(?:\.[\w-]+)*)(?=$|[\s,.;:!?)])/g;
+  if (!ids.size) return text ? [{ text, skill: false }] : [];
+  // Match the actual invocation IDs, including plugin and MCP namespaces.
+  const names = [...ids].sort((a, b) => b.length - a.length).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(^|\\s)(\\/(?:${names.join("|")}))(?=$|[\\s,.;:!?)])`, "g");
   let last = 0;
   for (const m of text.matchAll(pattern)) {
     const token = m[2];

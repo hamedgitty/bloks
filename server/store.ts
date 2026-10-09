@@ -165,6 +165,10 @@ export interface Message {
   /** Server-only return address for a Telegram request queued during
    * drain. Preserved on edits, never accepted from a client body. */
   telegramReply?: TelegramReply;
+  /** Server-only: the Claude instance that accepted this queued text.
+   * Null means it was accepted on another engine; absent is a legacy queue.
+   * Derive command dispatch from the current text, including after edits. */
+  commandInstance?: string | null;
   /** When a queued message stopped waiting and went to the turn that
    * answers it, which is also its `at` from then on, since that is when
    * it entered the conversation. With `queuedAt` it says how long it waited. Absent on a

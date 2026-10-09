@@ -62,7 +62,8 @@ still writing raises ENOTEMPTY, which fails a test that had already
 passed. If a run is killed halfway, stale directories are under your
 system temp as `bloks-test-*`.
 
-A stand-in Claude Code CLI has to answer on the first line it reads, not
-when stdin ends. The driver keeps stdin open for the whole turn, so the
-person can say more while it runs, and only closes it at the first
-`result`; a stand-in that waits for the end waits forever.
+A stand-in Claude Code CLI answers the first `user` frame, not the end
+of stdin. Before it, the driver sends a bare `initialize` control request
+for command metadata. A fixture can answer that request or ignore it.
+The driver keeps stdin open for follow-ups until the first `result`, so
+a stand-in that waits for the end waits forever.

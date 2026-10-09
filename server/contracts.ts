@@ -95,6 +95,7 @@ export interface RuntimeEventBase {
 export type RuntimeEvent = RuntimeEventBase &
   (
     | { type: "session.started"; sessionId: string | null; model?: string | null }
+    | { type: "commands.updated"; cwd: string | null; catalog: import("./agent-commands.ts").ClaudeCatalog }
     | { type: "session.exited"; reason?: string }
     | { type: "turn.started" }
     | {

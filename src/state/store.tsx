@@ -700,7 +700,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         case "runtime": {
           const event = frame.event;
-          if (event.type === "content.delta" && event.streamKind === "assistant_text") {
+          if (event.type === "commands.updated") {
+            rawDispatch({ type: "tick", key: `commands:${event.threadId}` });
+          } else if (event.type === "content.delta" && event.streamKind === "assistant_text") {
             rawDispatch({ type: "streamDelta", threadId: event.threadId, delta: event.delta });
           } else if (event.type === "turn.started") {
             rawDispatch({ type: "turnStarted", threadId: event.threadId });

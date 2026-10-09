@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { DATA_DIR } from "../config.ts";
 import { outReason } from "../failover.ts";
 import { SessionCosts } from "./session-costs.ts";
+import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
@@ -625,6 +626,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         );
       };
 
+      const initializeId = newId();
+      let commands: ClaudeCommandRow[] | null = null;
+      let initSkills: unknown;
+      let terminalCommands: unknown;
+      const reportCommands = () => {
+        const catalog = classifyClaudeCommands(commands, initSkills, terminalCommands);
+        if (catalog) emit({ ...envelope(threadId, turnId), type: "commands.updated", cwd: turn.cwd ?? null, catalog });
+      };
       const consume = (raw: string) => {
         if (abandoned) return;
         lastSign = Date.now();
@@ -634,11 +643,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         } catch {
           return; // a log line, not protocol
         }
+        // initialize also returns account, models, pid and session state.
+        // None of those belong in Bloks' logs, transcript or event stream.
+        if (frame.type === "control_response") {
+          if (frame.response?.request_id === initializeId && frame.response?.subtype === "success") {
+            commands = readClaudeCommands(frame.response.response?.commands);
+            reportCommands();
+          }
+          return;
+        }
+        if (frame.type === "system" && frame.subtype === "commands_changed") {
+          commands = readClaudeCommands(frame.commands);
+          reportCommands();
+          return;
+        }
         appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: frame });
 
         switch (frame.type) {
           case "system":
             if (frame.subtype === "init") {
+              initSkills = frame.skills;
+              terminalCommands = frame.terminal_slash_commands;
+              reportCommands();
               if (typeof frame.session_id === "string") sessionId = frame.session_id;
               if (typeof frame.model === "string") sessionModel = frame.model;
               emit({
@@ -955,6 +981,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       running.set(threadId, { turnId, abort, steer, broker });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
+      // Bare metadata request: does not change permissions, hooks or tools.
+      // Do not await it; an older CLI can ignore it and still run this turn.
+      const initialize = { type: "control_request", request_id: initializeId, request: { subtype: "initialize" } };
+      child.stdin.write(JSON.stringify(initialize) + "\n");
+      appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: initialize });
       say(turn.text);
 
       return { turnId };

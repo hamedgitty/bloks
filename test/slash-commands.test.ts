@@ -61,10 +61,23 @@ test("an agent on Claude Code also offers the engine's skills; library ones win 
     }
     const library = [{ id: "tldr", name: "TL;DR", description: "library tldr" }];
     const onClaude = agentCommands({ library, onClaudeCode: true, home });
-    assert.deepEqual(onClaude.map((c) => `${c.source}:${c.id}`), ["library:tldr", "engine:pdf"]);
+    assert.deepEqual(onClaude.map((c) => `${c.source}:${c.id}`), ["library:tldr", "engine:compact", "engine:context", "engine:pdf", "engine:recap", "engine:usage"]);
     const onApi = agentCommands({ library, onClaudeCode: false, home });
     assert.deepEqual(onApi.map((c) => c.id), ["tldr"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("built-ins are offered only at the start, while namespaced skills insert and highlight intact", () => {
+  const native: Command = { id: "compact", name: "compact", description: "Compact the conversation", source: "engine", kind: "command" };
+  const namespaced = cmd("plugin:review", "Review", "engine");
+  assert.deepEqual(matches([native, namespaced], "com").map((c) => c.id), ["compact"]);
+  assert.deepEqual(matches([native, namespaced], "com", 8, false), []);
+  assert.deepEqual(matches([native, namespaced], "review", 8, false).map((c) => c.id), ["plugin:review"]);
+  assert.equal(insert("/pl", 0, 3, "plugin:review").text, "/plugin:review ");
+  const text = "/plugin:review, then /mcp__papers__find. and /plugin:review:extra";
+  const runs = segments(text, new Set(["plugin:review", "mcp__papers__find"]));
+  assert.equal(runs.map((r) => r.text).join(""), text);
+  assert.deepEqual(runs.filter((r) => r.skill).map((r) => r.text), ["/plugin:review", "/mcp__papers__find", "/plugin:review"]);
 });
