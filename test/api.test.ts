@@ -1467,13 +1467,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     writeFileSync(
       cli,
       `#!${process.execPath}
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 const argv = process.argv.slice(2);
 if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const note = (line) => appendFileSync(${JSON.stringify(log)}, JSON.stringify(line) + "\\n");
-const cfg = JSON.parse(argv[argv.indexOf("--mcp-config") + 1]);
+const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8"));
 const socketPath = cfg.mcpServers.bloks.args.at(-1);
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(() => {

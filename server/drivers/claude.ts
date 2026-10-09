@@ -370,12 +370,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // system prompt carries whatever the user wrote about themselves
       // in settings. A private file read only by the CLI is not.
       let personaDir: string | null = null;
-      if (turn.system) {
-        personaDir = mkdtempSync(join(tmpdir(), "bloks-persona-"));
-        const personaFile = join(personaDir, "system.md");
-        writeFileSync(personaFile, turn.system, { mode: 0o600 });
-        argv.push("--append-system-prompt-file", personaFile);
-      }
+      const privateFile = (name: string, content: string) => {
+        personaDir ??= mkdtempSync(join(tmpdir(), "bloks-persona-"));
+        const file = join(personaDir, name);
+        writeFileSync(file, content, { mode: 0o600 });
+        return file;
+      };
+      if (turn.system) argv.push("--append-system-prompt-file", privateFile("system.md", turn.system));
 
       // Every MCP server has to be named in --allowedTools as well as
       // --mcp-config. A headless acceptEdits run denies anything unlisted
@@ -497,7 +498,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       allowed.push("mcp__bloks");
 
       if (Object.keys(mcpServers).length) {
-        argv.push("--mcp-config", JSON.stringify({ mcpServers }));
+        // A file too, for the same reason: the servers' headers carry the
+        // Composio key, a person's own MCP credentials and the box token.
+        argv.push("--mcp-config", privateFile("mcp.json", JSON.stringify({ mcpServers })));
         // In a shared room nothing of the owner's is pre-allowed: every
         // call to a connector, the browser or the computer goes through
         // the bridge and becomes an approval, which is the point.

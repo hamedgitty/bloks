@@ -87,10 +87,11 @@ const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const prompt = readFileSync(args[args.indexOf("--append-system-prompt-file") + 1], "utf8");
+const mcp = readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8");
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(() => {
   const said = execFileSync(process.execPath, [process.env.BLOKS_CLI, "secret", "Transistor API key", "--hint", "From transistor.fm, under Account"], { encoding: "utf8" });
-  writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, prompt, said: JSON.parse(said) }));
+  writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, prompt, mcp, said: JSON.parse(said) }));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "asked" }));
 });
 `,
@@ -112,11 +113,13 @@ process.stdin.resume();
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Publish the episode." }) });
   for (let i = 0; i < 200 && !existsSync(seen); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(existsSync(seen), "the turn never ran");
-  const { args, prompt, said } = JSON.parse(readFileSync(seen, "utf8"));
+  const { args, prompt, mcp, said } = JSON.parse(readFileSync(seen, "utf8"));
 
   assert.equal(args[args.indexOf("--permission-mode") + 1], "bypassPermissions");
   assert.ok(!args.includes("--permission-prompt-tool"), "full access has no permission checks to send anywhere");
-  const { mcpServers } = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+  // the servers come in a private file, never on the command line
+  assert.ok(!args.some((a: string) => a.includes("mcpServers")), "the MCP config went out in argv");
+  const { mcpServers } = JSON.parse(mcp);
   assert.ok(mcpServers.bloks, "full access dropped the asking tools along with the approvals");
   // no Composio key, so nothing to connect with either
   assert.equal(mcpServers.bloks.env.BLOKS_PUBLISH, "ask_user,request_secret");
