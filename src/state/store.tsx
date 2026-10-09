@@ -21,6 +21,7 @@ import {
   type ReactNode,
 } from "react";
 import { noticeFor } from "@/lib/notify";
+import { sendBotArchive } from "@/lib/botArchive";
 import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendRoomPatch } from "@/lib/roomPatch";
 import { placeRow, type Listed } from "@/lib/sections";
@@ -304,12 +305,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // Archived unless the caller says otherwise. Everything that
           // presses this from a row means "put it away"; only the drawer
           // asks for the other thing, and it asks in as many words.
-          api(`/api/bots/${action.botId}${action.forget ? "?forget=1" : ""}`, { method: "DELETE" }).catch(
+          void sendBotArchive(
+            api,
+            action.botId,
+            action.forget ? "forget" : "archive",
+            (bots) => rawDispatch({ type: "hydrate", bots }),
             showError,
           );
           break;
         case "restoreBot":
-          api(`/api/bots/${action.botId}/restore`, { method: "POST" }).catch(showError);
+          void sendBotArchive(api, action.botId, "restore", (bots) => rawDispatch({ type: "hydrate", bots }), showError);
           break;
         case "createRoom":
           api("/api/bloks", {
@@ -796,8 +801,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             rawDispatch({ type: "engineUpdates", updates: frame.updates });
           }
           break;
+        // only ever a delete for good (an archive arrives as a bot frame),
+        // so it leaves the drawer too rather than staying there as a ghost
         case "bot.deleted":
-          rawDispatch({ type: "deleteBot", botId: frame.botId });
+          rawDispatch({ type: "deleteBot", botId: frame.botId, forget: true });
           break;
         // credentials changed and the engines were rebuilt, so the
         // picker needs to hear that something became usable
