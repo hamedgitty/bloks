@@ -92,7 +92,7 @@ test("a compaction that finishes after the limit is not the new session's reply"
   assert.equal(h.prompt("old-session")?.params?.prompt?.[0]?.text, "/compact");
 
   // the limit passes with the compaction still running
-  t.mock.timers.tick(5 * 60_000);
+  t.mock.timers.tick(10 * 60_000);
   await h.until(() => Boolean(h.prompt("new-session")));
   const asked = h.prompt("new-session");
   assert.ok(asked, "the words never went to a new session");

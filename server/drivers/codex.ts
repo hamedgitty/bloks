@@ -146,8 +146,11 @@ export function contextReading(tokenUsage: any): { used: number | null; window: 
 
 /** How long a compaction asked for before a turn may take before the
  * words go to a new thread instead. The person's message waits for it,
- * so a longer one keeps more compactions but holds more messages. */
-export const COMPACT_LIMIT_MS = 5 * 60_000;
+ * so a longer one keeps more compactions but holds more messages. Ten
+ * minutes: measured Codex compactions of long threads took about two and
+ * a half minutes as a rule and up to eight and a half, and five cut those
+ * off and cost the agent its thread (GitHub 234). */
+export const COMPACT_LIMIT_MS = 10 * 60_000;
 
 function rememberTotal(thread: string, total: TokenCount) {
   threadTotals.delete(thread);

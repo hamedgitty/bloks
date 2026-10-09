@@ -121,7 +121,7 @@ test("a compaction that finishes after the limit does not end the turn on the ne
   // and the person is told the conversation moved
   const said = h.events.filter((e) => e.type === "runtime.error").map((e: any) => e.message);
   assert.equal(said.length, 1, `said: ${said.join(" | ")}`);
-  assert.match(said[0], /more than 5 minutes to compact/);
+  assert.match(said[0], /more than 10 minutes to compact/);
   assert.match(said[0], /new Codex session/);
 
   // the old compaction finishes late, with its usage

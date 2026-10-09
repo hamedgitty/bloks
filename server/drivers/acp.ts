@@ -104,7 +104,8 @@ const PROTOCOL_VERSION = 1;
 /** How long to wait for an agent to list its commands before deciding
  * it has no /compact, and how long its compaction may take. */
 const COMMANDS_WAIT_MS = 2_000;
-const COMPACT_LIMIT_MS = 5 * 60_000;
+// the same allowance as Codex's (codex.ts COMPACT_LIMIT_MS)
+const COMPACT_LIMIT_MS = 10 * 60_000;
 
 /** How long a turn that ended empty waits for the agent's stderr to say
  * why, when it has not said yet. Short, since an empty turn with no
