@@ -125,7 +125,8 @@ process.stdin.on('data', (c) => {
   t.after(async () => { writeFileSync(join(home, "gate"), ""); await h.stop(); rmSync(home, { recursive: true, force: true }); });
   const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Keeper" }) });
   await h.json(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
-  const calls = (): Call[] => existsSync(join(home, "calls.jsonl")) ? readFileSync(join(home, "calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((s) => JSON.parse(s)) : [];
+  // Do not parse the child's currently unfinished JSONL frame.
+  const calls = (): Call[] => existsSync(join(home, "calls.jsonl")) ? readFileSync(join(home, "calls.jsonl"), "utf8").split("\n").slice(0, -1).filter(Boolean).map((s) => JSON.parse(s)) : [];
   const busy = async () => (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id)?.busy;
   const post = (path: string, body: unknown) => h.json(path, { method: "POST", body: JSON.stringify(body) });
   const s = {
@@ -538,4 +539,20 @@ test("a command after an engine switch leaves the conversation handoff for the n
   assert.match(next.text, /You are picking up this conversation mid-thread/);
   assert.match(next.text, /SECOND_ENGINE_WORK/);
   assert.doesNotMatch((await s.turn("following ordinary")).text, /SECOND_ENGINE_WORK/);
+});
+
+test("a Claude command queued with PR 1's persisted instance marker remains readable", async (t) => {
+  const s = await setup(t);
+  await s.say("HOLD"); await until(() => s.calls().length === 1, "the first turn did not start");
+  await s.say("/compact");
+  const file = join(s.home, ".bloks", `messages-${s.bot.threadId}.json`);
+  const messages = JSON.parse(readFileSync(file, "utf8"));
+  const queued = messages.find((m: any) => m.queued && m.text === "/compact");
+  assert.equal(queued.commandInstance, "claude");
+  delete queued.namedSkills; // PR 1 has only the durable instance id.
+  writeFileSync(file, JSON.stringify(messages));
+  s.spec({ compact: true });
+  await s.reboot();
+  await until(() => s.calls().some((c) => c.text === "/compact"), "the legacy queued command was not dispatched");
+  assert.equal(s.calls().filter((c) => c.text === "/compact").length, 1);
 });

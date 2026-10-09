@@ -362,8 +362,7 @@ describe("a Codex lane with a long context and two dozen tool calls a turn", () 
     assert.match(story, /LOG-3/);
     assert.ok(story.length <= HANDOFF_MAX_TOKENS * 4 + 2_000, `the story was ${story.length} characters`);
     const commands = (await h.json(`/api/bots/${bot.id}/commands?taskId=${bot.threadId}`)).commands;
-    assert.ok(commands.every((c: any) => c.source === "library"), "a replaced Codex session acquired Claude commands");
-    assert.ok(!commands.some((c: any) => c.kind === "command"));
+    assert.deepEqual(commands.filter((c: any) => c.kind === "command").map((c: any) => c.id), ["compact"], "a replaced Codex session must offer only its own command");
   });
 
   test("a room lane is compacted before its next turn too", async (t) => {

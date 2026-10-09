@@ -260,6 +260,10 @@ export interface SendTurnInput {
    * session and sends `handoff` instead. Never set on a fresh session.
    */
   compactFirst?: boolean;
+  /** An explicit Codex command: compact this session and stop there. */
+  compactOnly?: boolean;
+  /** Names found only in this segment's personal messages, before notes. */
+  skillNames?: string[];
 }
 
 export interface TurnStartResult {
@@ -295,7 +299,7 @@ export interface ProviderAdapter {
    * would be said twice. Optional: an engine that cannot take input
    * mid-turn leaves it out and everything waits for the next turn.
    */
-  steerTurn?(threadId: ThreadId, text: string): Promise<boolean>;
+  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[] }): Promise<boolean>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
   respondToRequest(
     threadId: ThreadId,
@@ -350,6 +354,8 @@ export interface ProviderInstance {
   /** Resolves when a deferred catalog probe has finished, if this engine
    * has one. The picker loads before that, so the harness refetches. */
   catalogReady?: Promise<void>;
+  /** Read-only native skill discovery. Paths are server-only. */
+  skills?(cwd: string): Promise<import("./codex-skills.ts").CodexSkill[] | null>;
   snapshot(): Promise<ProviderSnapshot>;
   /** A cheap one-shot completion, for naming and summarising. Optional:
    * not every engine has something small enough to be worth using. */

@@ -172,6 +172,9 @@ export interface Message {
    * Null means it was accepted on another engine; absent is a legacy queue.
    * Derive command dispatch from the current text, including after edits. */
   commandInstance?: string | null;
+  /** Server-created provenance for queued personal words. Never read
+   * from a message create/patch body; background text cannot name skills. */
+  namedSkills?: boolean;
   /** When a queued message stopped waiting and went to the turn that
    * answers it, which is also its `at` from then on, since that is when
    * it entered the conversation. With `queuedAt` it says how long it waited. Absent on a
