@@ -158,6 +158,7 @@ import * as telegram from "./telegram.ts";
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
 import { agentCommands, claudeCommand, type ClaudeCatalog } from "./agent-commands.ts";
+import { reservedEnvName } from "./env-names.ts";
 import * as discord from "./discord.ts";
 import * as whatsapp from "./whatsapp.ts";
 import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
@@ -6866,6 +6867,9 @@ function plantSecretCard(
   if (!label) return "The secret needs a name, e.g. \"Transistor API key\". Try again with one.";
   const envName = secretEnvName(label);
   if (!envName) return "That name has no usable characters; try a plainer one.";
+  if (reservedEnvName(envName)) {
+    return `${envName} is a name the system and the engines read for themselves, so a secret cannot be saved under it. Ask again with a name for what the key is for, e.g. "Transistor API key".`;
+  }
   const message = store.appendMessage(threadId, {
     role: "bot",
     kind: "secret",
@@ -9798,6 +9802,10 @@ const server = createServer(async (req, res) => {
       const value = typeof body.value === "string" ? body.value.trim() : "";
       if (!value || value.length > 4_000) {
         return json(res, 400, { error: "paste the value first" });
+      }
+      // a card planted before names were checked is held to the same rule
+      if (reservedEnvName(card.secret.envName)) {
+        return json(res, 400, { error: `${card.secret.envName} is a name the system reads for itself, so it cannot hold a secret` });
       }
       // straight to the config file; the transcript never sees it
       saveConfig({ secrets: { [card.secret.envName]: value } });
