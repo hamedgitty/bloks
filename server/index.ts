@@ -159,7 +159,7 @@ import * as telegram from "./telegram.ts";
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
 import { agentCommands, claudeCommand, type ClaudeCatalog } from "./agent-commands.ts";
-import { reservedEnvName } from "./env-names.ts";
+import { reservedEnvName, usableSecrets } from "./env-names.ts";
 import * as discord from "./discord.ts";
 import * as whatsapp from "./whatsapp.ts";
 import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
@@ -3580,7 +3580,7 @@ async function startTurn(
                 // engine starts a process per turn, so a value saved a
                 // moment ago is in this one without restarting anything.
                 // Listed first so a secret can never shadow the lines below.
-                ...(cfg.secrets ?? {}),
+                ...usableSecrets(cfg.secrets),
                 BLOKS_URL: `http://127.0.0.1:${PORT}`,
                 BLOKS_TOKEN: credential.token,
                 BLOKS_CLI: AGENT_CLI,
@@ -4019,7 +4019,7 @@ function checkFolder(bot: BotRecord): string {
  * saved for agents, never an agent's workspace credential, which lives
  * for one turn and a check is not a turn. */
 function checkEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...(cfg.secrets ?? {}) };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...usableSecrets(cfg.secrets) };
   delete env.BLOKS_TOKEN;
   return env;
 }

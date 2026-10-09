@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { setAside, writeFileAtomic } from "./atomic-write.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
+import { usableSecrets } from "./env-names.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
 
 /** One connected engine: the credential, plus an override for people
@@ -389,7 +390,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   }
   for (const entry of Object.values(map)) {
     entry.environment = {
-      ...cfg.secrets,
+      ...usableSecrets(cfg.secrets),
       ...Object.fromEntries(
         Object.entries(cfg.providers ?? {})
           .filter(([, v]) => v?.key)
