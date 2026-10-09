@@ -93,6 +93,9 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         ANTHROPIC_API_KEY: "",
         // a test run from inside a Bloks agent would otherwise act as it
         BLOKS_TOKEN: "",
+        // tests speak as the dev UI (origin :5199), which a server serving
+        // its own page does not trust
+        BLOKS_STATIC_DIR: "",
         PATH: "/nonexistent",
         // widenPath adds $npm_config_prefix/bin, which npx exports, and a
         // claude or codex there would make a test's engine real

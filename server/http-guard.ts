@@ -75,15 +75,18 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   try {
     const from = new URL(origin);
     if (!LOOPBACK_HOSTS.has(from.hostname)) return false;
-    return from.host === host || from.port === DEV_UI_PORT;
+    return from.host === host || (from.port === DEV_UI_PORT && !servesItsOwnPage());
   } catch {
     return false;
   }
 }
 
 /** The port `pnpm dev` serves the UI on (vite.config.ts), which proxies
- * the API here, so its pages carry that origin. */
+ * the API here, so its pages carry that origin. Trusted only while this
+ * server is not serving the page itself: the installed app and
+ * bloks-server do, and there a page on 5199 is just another local page. */
 const DEV_UI_PORT = "5199";
+const servesItsOwnPage = () => Boolean(process.env.BLOKS_STATIC_DIR);
 
 /** The bearer token a request carries, if it carries a well formed one. */
 export function bearerToken(req: IncomingMessage): string | null {

@@ -92,6 +92,19 @@ test("a page on another loopback port is not the app", () => {
   assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "http://127.0.0.1:8799" })), true);
 });
 
+test("the dev UI's port counts only while this server is not serving its own page", () => {
+  const dev = req({ host: "127.0.0.1:8799", origin: "http://127.0.0.1:5199" });
+  assert.equal(isLocalRequest(dev), true);
+  const before = process.env.BLOKS_STATIC_DIR;
+  process.env.BLOKS_STATIC_DIR = "/Applications/Bloks.app/Contents/Resources/ui";
+  try {
+    assert.equal(isLocalRequest(dev), false);
+  } finally {
+    if (before === undefined) delete process.env.BLOKS_STATIC_DIR;
+    else process.env.BLOKS_STATIC_DIR = before;
+  }
+});
+
 test("a malformed Origin is rejected rather than ignored", () => {
   assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "not a url" })), false);
 });
