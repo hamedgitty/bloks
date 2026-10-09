@@ -8246,6 +8246,7 @@ const server = createServer(async (req, res) => {
       if (typeof body.shape === "string") profile.shape = body.shape as NewBotProfile["shape"];
       if (typeof body.seniority === "number") {
         profile.seniority = Math.max(1, Math.min(5, Math.round(body.seniority)));
+        if (asAgent) profile.seniority = Math.min(profile.seniority, store.bot(asAgent.botId)?.seniority ?? 1);
       }
       for (const key of ["skills", "skillIds"] as const) {
         const list = clampList(body[key], MAX_SKILL_CHARS, MAX_SKILLS);
@@ -8486,13 +8487,20 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "modelSelection must name an engine this workspace has and a model id" });
         }
       }
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "computer", "color", "shape", "skills", "skillIds", "seniority", "effort", "mascotExpression", "hidden"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "computer", "color", "shape", "skills", "skillIds", "effort", "mascotExpression", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.cwd !== undefined) {
         const checked = workspace.validateWorkingFolder(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.path;
+      }
+      if (typeof body.seniority === "number") {
+        const seniority = Math.max(1, Math.min(5, Math.round(body.seniority)));
+        if (asAgent && seniority > (store.bot(m[1])?.seniority ?? 1)) {
+          return json(res, 403, { error: "an agent cannot raise its own seniority" });
+        }
+        patch.seniority = seniority;
       }
       if (body.approvals !== undefined) {
         if (!APPROVALS.includes(body.approvals as Approvals)) {
