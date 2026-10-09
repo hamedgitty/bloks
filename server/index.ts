@@ -10249,8 +10249,10 @@ const server = createServer(async (req, res) => {
       // 202 says the work started. It has to be true for every reason it
       // might not have, not only the two this route happened to know
       // about: a busy lane and a missing engine end the same way, with
-      // nothing running and the person told it was sent.
-      const refused = await startTurn(botId, text, { byYou: true }).then(
+      // nothing running and the person told it was sent. The words are
+      // written here around the file's name, which the agent chose, so
+      // they name no Codex skill, as a meeting's action item does not.
+      const refused = await startTurn(botId, text, { byYou: true, personal: false }).then(
         () => null,
         (e: unknown) => ({
           status: (e as { status?: number }).status ?? 500,

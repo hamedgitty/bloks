@@ -145,6 +145,18 @@ test("a webhook and routine carrying a valid name stay ordinary inputs", async (
   assert.deepEqual(named(inputs(s).find((c) => c.params.input[0].text.includes("ROUTINE $selected"))), []);
 });
 
+test("notes sent from an artifact the agent named after a skill stay an ordinary input", async (t) => {
+  const s = await codexCommands(t);
+  const base = `/api/bots/${s.bot.id}/artifacts/${encodeURIComponent("$selected.csv")}/comments`;
+  const note = await s.h.fetch(base, { method: "POST", body: JSON.stringify({ text: "Recheck this total", anchor: { kind: "cell", row: 2, column: 1 } }) });
+  assert.equal(note.status, 201);
+  assert.equal((await s.h.fetch(`${base}/send`, { method: "POST", body: "{}" })).status, 202);
+  await waitFor(() => inputs(s).some((c) => c.params.input[0].text.includes("$selected.csv")));
+  await s.settled();
+  assert.deepEqual(named(inputs(s).find((c) => c.params.input[0].text.includes("$selected.csv"))), []);
+  assert.equal(s.calls().filter((c) => c.method === "skills/list").length, 0);
+});
+
 test("a watcher with a valid name stays an ordinary input", async (t) => {
   const s = await codexCommands(t);
   await s.h.json(`/api/bots/${s.bot.id}/tasks/${s.bot.threadId}`, { method: "PATCH", body: JSON.stringify({ title: "Work" }) });
