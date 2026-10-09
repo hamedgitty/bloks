@@ -598,6 +598,8 @@ export type Action =
   | { type: "send"; botId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
   | { type: "answerCard"; botId: string; messageId: string; answer: string; roomId?: string }
   | { type: "dismissCard"; botId: string; messageId: string; roomId?: string }
+  /** An answer that did not go: the card can be answered again. */
+  | { type: "cardReopened"; botId: string; messageId: string; roomId?: string }
   | { type: "hireTeam"; botId: string; messageId: string }
   | { type: "newBot"; profile?: NewAgentProfile }
   | { type: "toggleNewAgent"; open?: boolean; firstRun?: boolean }
@@ -861,6 +863,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return patchCard(state, action.botId, action.messageId, { answered: action.answer }, action.roomId);
     case "dismissCard":
       return patchCard(state, action.botId, action.messageId, { dismissed: true }, action.roomId);
+    case "cardReopened":
+      return patchCard(state, action.botId, action.messageId, { answered: undefined }, action.roomId);
     case "hireTeam":
       return patchCard(state, action.botId, action.messageId, { answered: "Hire the team" });
     case "botAdded":

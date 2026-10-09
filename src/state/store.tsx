@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import { noticeFor } from "@/lib/notify";
+import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendRoomPatch } from "@/lib/roomPatch";
 import { placeRow, type Listed } from "@/lib/sections";
 import { maybeAutoSpeak } from "@/components/Voice";
@@ -183,45 +184,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             action.onFailed?.();
           });
           break;
-        case "answerCard": {
-          const card = findCard(stateRef.current, action);
-          if (card?.runId) {
-            // A workflow run is parked on this card. Answering resumes
-            // the run, which is a different thing from saying something
-            // to an agent, so it goes to its own route. That route marks
-            // the card answered itself: this one can be in a room, and
-            // the card route only reaches an agent's own thread.
-            api(`/api/workflows/runs/${card.runId}/answer`, {
-              method: "POST",
-              body: JSON.stringify({ answer: action.answer }),
-            }).catch(showError);
-          } else if (card?.requestId) {
-            // a live provider ask settles against the agent that raised it,
-            // wherever the card happens to be shown
-            const behavior =
-              action.answer === "Allow" ? "allow" : action.answer === "Deny" ? "deny" : "answer";
-            api(`/api/bots/${action.botId}/respond`, {
-              method: "POST",
-              body: JSON.stringify({
-                requestId: card.requestId,
-                behavior,
-                message: behavior === "answer" ? action.answer : undefined,
-              }),
-            }).catch(showError);
-          } else if (action.roomId) {
-            api(`/api/bloks/${action.roomId}/messages`, {
-              method: "POST",
-              body: JSON.stringify({ text: action.answer }),
-            }).catch(showError);
-          } else {
-            persistCard(action.botId, action.messageId, { answered: action.answer });
-            api(`/api/bots/${action.botId}/messages`, {
-              method: "POST",
-              body: JSON.stringify({ text: action.answer }),
-            }).catch(showError);
-          }
+        case "answerCard":
+          void sendCardAnswer(
+            api,
+            action,
+            findCard(stateRef.current, action),
+            () => rawDispatch({ type: "cardReopened", botId: action.botId, messageId: action.messageId, roomId: action.roomId }),
+            showError,
+          );
           break;
-        }
         // connecting an engine reloads the fleet server-side, so the model
         // picker has to be refetched alongside the provider list
         case "connectProvider":
