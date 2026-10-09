@@ -88,7 +88,7 @@ if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const prompt = readFileSync(args[args.indexOf("--append-system-prompt-file") + 1], "utf8");
 process.stdin.resume();
-((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
+((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(() => {
   const said = execFileSync(process.execPath, [process.env.BLOKS_CLI, "secret", "Transistor API key", "--hint", "From transistor.fm, under Account"], { encoding: "utf8" });
   writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, prompt, said: JSON.parse(said) }));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "asked" }));

@@ -178,17 +178,22 @@ export function Composer({
   const [slash, setSlash] = useState<{ start: number; query: string } | null>(null);
   const [pick, setPick] = useState(0);
   const skillKey = (bot.skillIds ?? []).join(",");
+  const laneId = bot.activeTaskId ?? bot.threadId;
+  const commandTick = state.ticks[`commands:${laneId}`] ?? 0;
+  const engine = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId);
+  const commandEngine = `${engine?.driverKind}:${engine?.snapshot.version}`;
   useEffect(() => {
     let live = true;
-    api(`/api/bots/${bot.id}/commands`)
+    setCommands([]);
+    api(`/api/bots/${bot.id}/commands?taskId=${encodeURIComponent(laneId)}`)
       .then((r: { commands: Command[] }) => live && setCommands(r.commands ?? []))
       .catch(() => live && setCommands([]));
     return () => {
       live = false;
     };
-  }, [bot.id, skillKey]);
+  }, [bot.id, skillKey, laneId, bot.modelSelection.instanceId, bot.cwd, bot.busy, commandTick, commandEngine]);
   const commandIds = new Set(commands.map((c) => c.id));
-  const offered = slash ? matchCommands(commands, slash.query) : [];
+  const offered = slash ? matchCommands(commands, slash.query, 8, slash.start === 0) : [];
   const readSlash = (el: HTMLTextAreaElement) => {
     setSlash(slashAt(el.value, el.selectionStart ?? el.value.length));
     setPick(0);
@@ -589,7 +594,7 @@ export function Composer({
         <div className="mx-auto mb-1.5 max-w-[760px]">
           <div
             role="listbox"
-            aria-label={`${bot.name}'s skills`}
+            aria-label={`${bot.name}'s commands`}
             className="overflow-hidden rounded-xl border bg-popover p-1 shadow-lg shadow-(color:--shadow-color)"
           >
             {offered.length === 0 ? (
@@ -617,9 +622,9 @@ export function Composer({
                   <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">
                     {c.description || c.name}
                   </span>
-                  {c.source === "engine" && (
-                    <span className="shrink-0 text-[11px] text-muted-foreground/70">Claude Code</span>
-                  )}
+                  <span className="shrink-0 text-[11px] text-muted-foreground/70">
+                    {c.source === "library" ? "Agent skill" : c.kind === "command" ? "Engine command" : "Engine skill"}
+                  </span>
                 </button>
               ))
             )}

@@ -58,7 +58,9 @@ process.stdin.on("data", (c) => {
     const line = buf.slice(0, i);
     buf = buf.slice(i + 1);
     if (!line.trim()) continue;
-    const words = String(JSON.parse(line).message?.content ?? "");
+    const frame = JSON.parse(line);
+    if (frame.type !== "user") continue;
+    const words = String(frame.message?.content ?? "");
     appendFileSync(home + "/heard-" + n, words + "\\n");
     lines.push(words);
   }

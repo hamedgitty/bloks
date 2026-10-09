@@ -361,6 +361,9 @@ describe("a Codex lane with a long context and two dozen tool calls a turn", () 
     assert.match(story, /go through all of them/, "the most recent part of the story is missing");
     assert.match(story, /LOG-3/);
     assert.ok(story.length <= HANDOFF_MAX_TOKENS * 4 + 2_000, `the story was ${story.length} characters`);
+    const commands = (await h.json(`/api/bots/${bot.id}/commands?taskId=${bot.threadId}`)).commands;
+    assert.ok(commands.every((c: any) => c.source === "library"), "a replaced Codex session acquired Claude commands");
+    assert.ok(!commands.some((c: any) => c.kind === "command"));
   });
 
   test("a room lane is compacted before its next turn too", async (t) => {
@@ -436,7 +439,7 @@ const out = (frame) => console.log(JSON.stringify(frame));
 const small = ${JSON.stringify(join(home, "compacted"))};
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(() => {
+((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(() => {
   const said = JSON.parse(input.split("\\n")[0]).message.content;
   appendFileSync(${JSON.stringify(join(home, "runs.jsonl"))}, JSON.stringify({ said: said.slice(0, 200), args }) + "\\n");
   out({ type: "system", subtype: "init", session_id: "sess-223", model: "claude-sonnet-5" });

@@ -23,7 +23,7 @@ if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0)
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));
-((go) => { let line = ""; const take = (c) => { line += c; if (!line.includes(String.fromCharCode(10))) return; process.stdin.off("data", take); go(); }; process.stdin.on("data", take); })(async () => {
+((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(async () => {
   const asked = input.match(/CLOSE(?: (lane-[\\w-]+))?/);
   if (asked) {
     const auth = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };

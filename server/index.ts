@@ -157,7 +157,7 @@ import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
-import { agentCommands } from "./agent-commands.ts";
+import { agentCommands, claudeCommand, type ClaudeCatalog } from "./agent-commands.ts";
 import * as discord from "./discord.ts";
 import * as whatsapp from "./whatsapp.ts";
 import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
@@ -1201,7 +1201,8 @@ function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boole
   heldErrors.delete(laneId);
   // a call that went silent is about the work, not the engine running
   // out, whatever words the stuck command happened to contain
-  const tryBackup = !ok && used && stopReason !== "interrupted" && stopReason !== "tool_stalled";
+  const command = commandTurns.delete(laneId);
+  const tryBackup = !command && !ok && used && stopReason !== "interrupted" && stopReason !== "tool_stalled";
   if (tryBackup && handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
   // an error kept back for a backup that then did not take over is shown
   // after all, exactly as it would have been
@@ -1532,7 +1533,8 @@ function recoverPlan(messageId: string, botId: string) {
 }
 
 bus.subscribe((event: RuntimeEvent) => {
-  // a compaction Bloks started on a quiet lane is not a turn anyone took
+  // Maintenance compaction (idle or before a turn) does not own a
+  // command catalog: keep the latest agent turn's report.
   if (idleCompacting.has(event.threadId)) return onIdleCompaction(event);
   broadcast({ kind: "runtime", event });
   const bot = store.botByThread(event.threadId);
@@ -1550,6 +1552,12 @@ bus.subscribe((event: RuntimeEvent) => {
   };
 
   switch (event.type) {
+    case "commands.updated":
+      if (event.providerInstanceId && registry.get(event.providerInstanceId)?.driverKind === "claudeAgent") {
+        for (const laneId of claudeCatalogs.keys()) if (!store.taskByThread(laneId)) claudeCatalogs.delete(laneId);
+        claudeCatalogs.set(event.threadId, { instanceId: event.providerInstanceId, cwd: event.cwd, catalog: event.catalog });
+      }
+      break;
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
         store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
@@ -1967,7 +1975,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // fix rather than report. Our idea of a model's limit is a guess, so
       // when the provider disagrees, fold and try the same thing again
       // once. Only once: a second failure is not about length.
-      if (isContextError(event.message) && !retriedForContext.has(event.threadId)) {
+      if (!commandTurns.has(event.threadId) && isContextError(event.message) && !retriedForContext.has(event.threadId)) {
         retriedForContext.add(event.threadId);
         const said = [...store.messagesFor(event.threadId)]
           .reverse()
@@ -2011,6 +2019,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "turn.completed": {
+      const command = commandTurns.has(event.threadId);
       usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null, undefined, event.ok !== false);
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
@@ -2185,9 +2194,9 @@ bus.subscribe((event: RuntimeEvent) => {
       // on the way into the next turn, so nobody waits on a summary.
       const settledLane = store.taskByThread(event.threadId)?.task;
       const fill = laneFill(settledLane?.reading, settledLane?.lastInput, bot.modelSelection);
-      if (shouldCompact(fill.used, fill.limit)) {
+      if (!command && shouldCompact(fill.used, fill.limit)) {
         void foldContext(bot.id, event.threadId).catch(() => {});
-      } else {
+      } else if (!command) {
         // Otherwise absorb one message into the running summary, if this
         // workspace asked for that. Deliberately in the else: a lane that
         // is already over the threshold wants the whole fold, not one
@@ -2199,7 +2208,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // and a summarised lane is a smaller thing to read.
       // Never a shared room's lane: what other people said there is not
       // the owner's to turn into the agent's standing skills.
-      if (!isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+      if (!command && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
       // A job ends where its turn does too, and whether the agent took it
       // or handed it back is in the same last thing they said.
       if (openJobs.has(event.threadId)) {
@@ -2409,9 +2418,22 @@ function carryOn(
 ) {
   const threadId = turn.roomId ?? turn.laneId;
   // claimed now, before a settle can drain it into a turn of its own
-  const waiting = steerQueues.get(turn.laneId);
-  steerQueues.delete(turn.laneId);
+  const queued = steerQueues.get(turn.laneId);
+  const segment = queuedSegment(turn.laneId, queued?.items ?? [], true);
+  const waiting = segment.items.length ? { botId: turn.botId, items: segment.items } : undefined;
+  if (segment.rest.length) steerQueues.set(turn.laneId, { botId: turn.botId, items: segment.rest });
+  else steerQueues.delete(turn.laneId);
   const start = () => {
+    // A waiting word may have been edited into a command during the
+    // sleep delay. Re-read before pickup; it still needs its own turn.
+    if (waiting) {
+      const current = queuedSegment(turn.laneId, waiting.items, true);
+      waiting.items = current.items;
+      if (current.rest.length) {
+        const since = steerQueues.get(turn.laneId)?.items ?? [];
+        steerQueues.set(turn.laneId, { botId: turn.botId, items: [...current.rest, ...since] });
+      }
+    }
     const notice = store.appendMessage(threadId, {
       role: "bot",
       kind: "notice",
@@ -2449,8 +2471,10 @@ function carryOn(
           drainSteer(turn.laneId);
         }
         sayTurnedAway(threadId, e);
-      });
+      })
+      .finally(() => { queueStarts.delete(turn.laneId); drainSteer(turn.laneId); });
   };
+  queueStarts.add(turn.laneId);
   if (delay) setTimeout(start, delay);
   else start();
 }
@@ -2784,6 +2808,28 @@ function claimWebhookLane(botId: string): string | undefined {
  * restart the next turn starts the record again, and pays the one cache
  * write any restart would. */
 const standing = new Map<string, StandingRecord>();
+/** Only the latest classified report for this lane, instance and folder. */
+const claudeCatalogs = new Map<string, { instanceId: string; cwd: string | null; catalog: ClaudeCatalog }>();
+/** A native command is never steered or handed to a backup as words. */
+const commandTurns = new Set<string>();
+/** Protect a queue segment until startTurn has claimed the lane. */
+const queueStarts = new Set<string>();
+function acceptingClaude(bot: BotRecord, laneId?: string): string | undefined {
+  const selection = (laneId ? laneEngine.get(laneId) : undefined) ?? selectEngine(bot);
+  return registry.get(selection.instanceId)?.driverKind === "claudeAgent" ? selection.instanceId : undefined;
+}
+function queuedCommand(laneId: string, item: { messageId?: string }): string | undefined {
+  const m = item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
+  if (!m?.text || m.deleted || m.agent || m.via || m.commandInstance === null || !claudeCommand(m.text)) return undefined;
+  return m.commandInstance ?? (store.botByThread(laneId) ? acceptingClaude(store.botByThread(laneId)!, laneId) : undefined);
+}
+/** One ordinary prefix or one command. The remaining words stay in FIFO order. */
+function queuedSegment(laneId: string, items: Array<{ messageId?: string; text?: string; source?: "webhook" }>, continuation = false) {
+  const alive = items.filter((item) => steerWords(laneId, item) !== null);
+  const first = alive.findIndex((item) => queuedCommand(laneId, item));
+  const size = first < 0 ? alive.length : first === 0 && !continuation ? 1 : first;
+  return { items: alive.slice(0, size), rest: alive.slice(size) };
+}
 
 async function startTurn(
   botId: string,
@@ -2824,6 +2870,8 @@ async function startTurn(
     /** This turn asks again what the lane's last turn was asked, after
      * the conversation was folded to fit. */
     retry?: boolean;
+    /** Server-created accepting instance for a queued native command. */
+    commandInstance?: string;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -2927,7 +2975,12 @@ async function startTurn(
 
   const own = bot.modelSelection;
   const ownRest = cooldowns.of(own.instanceId);
+  const commandInstance = opts.commandInstance ?? (!opts.from && !opts.presetMessage ? acceptingClaude(bot, task.id) : undefined);
+  const command = Boolean(commandInstance && claudeCommand(text));
   const selection = selectEngine(bot, opts.fallback);
+  if (command && (selection.instanceId !== commandInstance || acceptingClaude(bot) !== commandInstance || !engineUsable(selection))) {
+    throw Object.assign(new Error("This command was queued for Claude Code, but that engine is no longer selected or available. Choose it again and send the command again."), { status: 409 });
+  }
   const instance = registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(new Error(unavailableEngineMessage(selection.instanceId)), { status: 409 });
@@ -3039,7 +3092,7 @@ async function startTurn(
   // limit would never fire, because trimming is what makes it fit, and
   // the trimming is exactly the silent forgetting this replaces.
   let built = buildTranscript();
-  if (!blok && built.dropped > 0) {
+  if (!command && !blok && built.dropped > 0) {
     if (await foldContext(bot.id, task.id).catch(() => false)) built = buildTranscript();
   }
   const transcript = built.turns;
@@ -3151,6 +3204,7 @@ async function startTurn(
   // the instant someone presses send. The dispatch itself is deliberately
   // not awaited: provisioning a box can take a minute and a half, and an
   // HTTP request must never be the thing holding that open.
+  if (command) commandTurns.add(task.id);
   store.setTaskBusy(task.id, true);
   turnStarted.set(task.id, Date.now());
   // on disk before the engine hears a word, so from here on a crash
@@ -3194,6 +3248,7 @@ async function startTurn(
   // reaching its engine. Nothing is listening for a turn.completed that
   // was never going to come.
   const settleUnsent = (failure?: string) => {
+    commandTurns.delete(task.id);
     activeRoom.delete(task.id);
     laneRequester.delete(task.id);
     if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
@@ -3329,6 +3384,7 @@ async function startTurn(
           });
           broadcast({ kind: "message", threadId: roomId, message: notice });
           telegramReturns.finish(task.id);
+          commandTurns.delete(task.id);
           store.setTaskBusy(task.id, false);
           turnStarted.delete(task.id);
           cutOff.end(task.id);
@@ -3361,7 +3417,7 @@ async function startTurn(
           hasUserTurn: transcript.some((m) => m.role === "user"),
         });
       const nativeReplay = Boolean(instance.adapter.capabilities.replaysNatively);
-      let turnText = opts.replyTo
+      let turnText = !command && opts.replyTo
         ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
         : text;
 
@@ -3392,6 +3448,7 @@ async function startTurn(
       // never mid-turn: a turn already running is left to finish.
       const resumable = engineFresh ? undefined : task.resumeCursors[instanceId];
       const compactNow =
+        !command &&
         !nativeReplay &&
         typeof resumable === "string" &&
         ownReading !== null &&
@@ -3405,7 +3462,7 @@ async function startTurn(
       const compactHere = compactNow && instance.driverKind === "claudeAgent";
       const compactInTurn = compactNow && !compactHere && Boolean(instance.adapter.capabilities.compactsFirst);
       const replaceSession = compactNow && !compactHere && !compactInTurn;
-      if (engineFresh && !nativeReplay) {
+      if (!command && engineFresh && !nativeReplay) {
         const told = await story(true);
         turnText = freshTurnText(told.turns, turnText, { left: told.left });
       } else if (replaceSession) {
@@ -3413,13 +3470,13 @@ async function startTurn(
         turnText = freshTurnText(told.turns, turnText, { left: told.left, why: "session" });
       }
       const undone = undoneSince.get(task.id);
-      if (undone) {
+      if (undone && !command) {
         undoneSince.delete(task.id);
         const named = undone.slice(0, 20).join(", ") + (undone.length > 20 ? `, and ${undone.length - 20} more` : "");
         turnText = `(Since your last turn, the user undid your changes to: ${named}. Those files are back as they were before that turn.)\n\n${turnText}`;
       }
       const stalledNote = stalledSince.get(task.id);
-      if (stalledNote) {
+      if (stalledNote && !command) {
         stalledSince.delete(task.id);
         turnText = `${stallPreface(stalledNote)}\n\n${turnText}`;
       }
@@ -3437,8 +3494,8 @@ async function startTurn(
       // of Bloks that is no longer where it was. Said once, in the turn
       // itself: an engine that keeps the first system prompt of a session
       // never reads a newer one (GitHub 150).
-      const resumeCursor = engineFresh || replaceSession ? undefined : task.resumeCursors[instanceId];
-      if (credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
+      const resumeCursor = (engineFresh || replaceSession) && !command ? undefined : task.resumeCursors[instanceId];
+      if (!command && credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
         turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
       }
 
@@ -3454,11 +3511,11 @@ async function startTurn(
           instanceId,
           resuming: typeof resumeCursor === "string",
         });
-        standingNext = kept.next;
+        standingNext = command ? null : kept.next;
         persona = personaWith(kept.system);
         const ahead: string[] = [];
-        if (kept.preamble) ahead.push(kept.preamble);
-        if (blok) {
+        if (!command && kept.preamble) ahead.push(kept.preamble);
+        if (!command && blok) {
           const seen = kept.next.roomSeen[blok.id];
           const room = roomTranscript(roomId, bot.id, seen);
           if (room.text) {
@@ -3647,7 +3704,8 @@ async function startTurn(
       await engine.adapter.sendTurn(sending);
       if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
-      store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
+      // A local command has not heard a pending engine handoff or CLI note.
+      if (!command) store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
       const message = redactSecrets(e instanceof Error ? e.message : String(e));
       const failure = store.appendMessage(roomId, {
@@ -4691,6 +4749,7 @@ function closeIfAsked(laneId: string) {
   if (!owner) return void closeAfterTurn.delete(laneId);
   const outcome = store.deleteTask(owner.id, laneId);
   if (outcome === "busy") return;
+  if (outcome === "ok") claudeCatalogs.delete(laneId);
   closeAfterTurn.delete(laneId);
   if (outcome === "ok") broadcast({ kind: "bot", bot: clientBot(store.bot(owner.id)!) });
 }
@@ -6955,7 +7014,7 @@ function editClosed(laneId: string, messageId: string) {
  * editor, and going first would put them before things said earlier; or
  * Bloks is finishing up to restart (server/drain.ts). */
 function laneWaits(lane: { id: string; busy?: boolean }) {
-  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id);
+  return Boolean(lane.busy) || beingEdited.has(lane.id) || drain.on || cardsPending.has(lane.id) || steerQueues.has(lane.id) || queueStarts.has(lane.id);
 }
 
 /** Lanes whose last turn is still photographing its folder, until its
@@ -6982,6 +7041,7 @@ function queueOnLane(
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
+    ...(!options.from && !options.via && store.bot(botId) ? { commandInstance: acceptingClaude(store.bot(botId)!, laneId) ?? null } : {}),
   });
   broadcast({ kind: "message", threadId: laneId, message });
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
@@ -7012,6 +7072,7 @@ async function steerLane(
   text: string,
   options: { replyTo?: ReplyRef } = {},
 ): Promise<Message | null> {
+  if (commandTurns.has(lane.id) || (acceptingClaude(bot, lane.id) && claudeCommand(text))) return null;
   if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return null;
   // Bloks compacting a quiet session is not a turn anybody is talking in
   if (idleCompacting.has(lane.id)) return null;
@@ -7161,7 +7222,7 @@ function drainSteer(threadId: string) {
     steerQueues.delete(threadId);
     return;
   }
-  if (lane.busy) return;
+  if (lane.busy || queueStarts.has(threadId)) return;
   const card = cardsPending.get(threadId);
   if (card) {
     void Promise.race([card, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]).then(() => {
@@ -7176,10 +7237,13 @@ function drainSteer(threadId: string) {
   // the rest going ahead, so the edited one does not arrive after words
   // that were said after it; closing the editor drains it (editClosed).
   if (beingEdited.has(threadId)) return;
-  // claimed before any async work, so two racing settles fire it once
-  steerQueues.delete(threadId);
+  // Claim only this segment before any async work; a command is a turn
+  // of its own, and the suffix stays ahead of any newly arriving words.
+  const segment = queuedSegment(threadId, entry.items);
+  if (segment.rest.length) steerQueues.set(threadId, { ...entry, items: segment.rest });
+  else steerQueues.delete(threadId);
   // the words as they stand now, not as they stood when they were queued
-  const alive = entry.items.flatMap((item) => {
+  const alive = segment.items.flatMap((item) => {
     const words = steerWords(threadId, item);
     return words === null ? [] : [{ item, words }];
   });
@@ -7208,7 +7272,8 @@ function drainSteer(threadId: string) {
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
   const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages }).catch((e) => {
+  queueStarts.add(threadId);
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item) }).catch((e) => {
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -7216,7 +7281,7 @@ function drainSteer(threadId: string) {
       text: `Your queued message could not start a turn: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200)}`,
     });
     broadcast({ kind: "message", threadId, message: failure });
-  });
+  }).finally(() => { queueStarts.delete(threadId); drainSteer(threadId); });
 }
 
 /** Per-agent hop depth for the current chain of agent-to-agent turns. */
@@ -7345,6 +7410,7 @@ async function rebuildEngines(): Promise<boolean> {
     }
   }
   if (!stale.length) return false;
+  for (const [laneId, report] of claudeCatalogs) if (stale.includes(report.instanceId)) claudeCatalogs.delete(laneId);
   // read before anything changes: which lanes the old engines are in the
   // middle of a turn for
   const cut: Array<{ laneId: string; instanceId: string; driverKind: string }> = [];
@@ -10034,6 +10100,7 @@ const server = createServer(async (req, res) => {
       }
       if (outcome === "busy") return json(res, 409, { error: "that task is running, interrupt it first" });
       if (outcome === "general") return json(res, 409, { error: "General is cleared, not closed" });
+      claudeCatalogs.delete(m[2]);
       const fresh = store.bot(m[1])!;
       broadcast({ kind: "bot", bot: clientBot(fresh) });
       return json(
@@ -10127,12 +10194,21 @@ const server = createServer(async (req, res) => {
     if (m && method === "GET") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such agent" });
-      const instance = registry.get(bot.modelSelection.instanceId);
+      const taskId = url.searchParams.get("taskId") ?? bot.activeTaskId;
+      const lane = bot.tasks.find((t) => t.id === taskId);
+      if (!lane) return json(res, 404, { error: "no such task" });
+      const selection = laneEngine.get(lane.id) ?? selectEngine(bot);
+      const instance = registry.get(selection.instanceId);
+      const project = projects.forAgent(bot.id);
+      const cwd = lane.cwd ?? bot.cwd ?? (project ? workingFolder(standingOf(project)) : null) ?? workspace.workspaceDir(bot.id);
+      const cached = claudeCatalogs.get(lane.id);
+      const reported = cached?.instanceId === selection.instanceId && cached.cwd === cwd ? cached.catalog : undefined;
       return json(res, 200, {
         commands: agentCommands({
           library: getSkills(bot.skillIds ?? []),
           onClaudeCode: instance?.driverKind === "claudeAgent",
-          cwd: bot.cwd ?? null,
+          cwd,
+          reported,
         }),
       });
     }

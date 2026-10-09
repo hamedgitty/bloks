@@ -116,7 +116,9 @@ process.stdin.on("data", (c) => {
   for (let i = buf.indexOf("\\n"); i >= 0; i = buf.indexOf("\\n")) {
     const line = buf.slice(0, i); buf = buf.slice(i + 1);
     if (!line.trim()) continue;
-    const text = String(JSON.parse(line).message?.content ?? "");
+    const frame = JSON.parse(line);
+    if (frame.type !== "user") continue;
+    const text = String(frame.message?.content ?? "");
     appendFileSync(root + "/heard-" + n, text + "\\n"); lines.push(text);
   }
 });
@@ -177,6 +179,43 @@ test("drain intake keeps its chat and task through restart, returns once, and ne
   assert.ok(await idle(f.h, f.bot));
   await sleep(250);
   assert.equal(f.tg.answers().length, 1);
+});
+
+test("drain-held words and compact recover as separate turns and return each answer once", async (t) => {
+  const f = await fixture(t, `say(prompt.startsWith("/compact") ? "COMPACT_ANSWER" : "WORDS_ANSWER");`);
+  const words = await f.queue("ORDINARY_DRAIN_WORDS");
+  const command = await f.queue("/compact ORIGINAL_ARG");
+  await f.reboot();
+  assert.ok(await waitFor(() => f.tg.answers().length === 2));
+  assert.deepEqual(f.tg.answers().map((m) => [m.chat_id, m.text]), [[CHAT, "WORDS_ANSWER"], [CHAT, "COMPACT_ANSWER"]]);
+  assert.equal(readFileSync(join(f.dataRoot, "heard-1"), "utf8").trim(), "ORDINARY_DRAIN_WORDS");
+  assert.equal(readFileSync(join(f.dataRoot, "heard-2"), "utf8").trim(), "/compact ORIGINAL_ARG");
+  const after = await messagesOf(f.h, f.bot);
+  assert.equal(after.find((m) => m.id === words.id).telegramReply.state, "sent");
+  assert.equal(after.find((m) => m.id === command.id).telegramReply.state, "sent");
+  await f.reboot();await sleep(250);
+  assert.equal(f.tg.answers().length, 2);
+});
+
+test("a cut-off pickup binds only ordinary drain messages and leaves compact for its own return", async (t) => {
+  const f = await fixture(t, `
+if(n===1){say("ORIGINAL_WORKING");await nap(15000);}
+else say(prompt.startsWith("/compact") ? "COMPACT_ANSWER" : "PICKUP_ANSWER");
+`);
+  await f.h.json(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "OLD_WORK" }) });
+  assert.ok(await waitFor(() => (awaitCount() >= 1)));
+  function awaitCount(){try{return Number(readFileSync(join(f.dataRoot,"spawns"),"utf8"));}catch{return 0;}}
+  const words = await f.queue("NEW_DRAIN_WORDS");
+  const command = await f.queue("/compact ORIGINAL_ARG");
+  await f.reboot();
+  assert.ok(await waitFor(() => f.tg.answers().length === 2));
+  const pickup = readFileSync(join(f.dataRoot, "heard-2"), "utf8");
+  assert.match(pickup, /NEW_DRAIN_WORDS/);assert.doesNotMatch(pickup, /\/compact/);
+  assert.equal(readFileSync(join(f.dataRoot, "heard-3"), "utf8").trim(), "/compact ORIGINAL_ARG");
+  assert.deepEqual(f.tg.answers().map((m) => [m.chat_id, m.text]), [[CHAT, "PICKUP_ANSWER"], [CHAT, "COMPACT_ANSWER"]]);
+  const after = await messagesOf(f.h, f.bot);
+  assert.equal(after.find((m) => m.id === words.id).telegramReply.state, "sent");
+  assert.equal(after.find((m) => m.id === command.id).telegramReply.state, "sent");
 });
 
 test("two restarts before queue recovery leave one request and one return", async (t) => {
