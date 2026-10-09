@@ -84,6 +84,14 @@ test("an opaque origin is not the owner", () => {
   assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "null" })), false);
 });
 
+test("a page on another loopback port is not the app", () => {
+  // an agent's dev server, a notebook, a container's desktop, opened in a browser
+  assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "http://127.0.0.1:3000" })), false);
+  assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "http://localhost:8888" })), false);
+  // the server's own page is
+  assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "http://127.0.0.1:8799" })), true);
+});
+
 test("a malformed Origin is rejected rather than ignored", () => {
   assert.equal(isLocalRequest(req({ host: "127.0.0.1:8799", origin: "not a url" })), false);
 });

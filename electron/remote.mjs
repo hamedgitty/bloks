@@ -172,13 +172,16 @@ function hostnameOf(value) {
 
 /** Only the window on this computer: a Host that names loopback (a
  * hostile name that resolves to 127.0.0.1 still carries its own), and no
- * Origin, or a loopback one. A page elsewhere cannot meet both. */
+ * Origin, or this proxy's own. A page on another loopback port (an
+ * agent's dev server, say) is not the window. */
 export function fromThisComputer(req) {
-  if (!LOOPBACK_HOSTS.has(hostnameOf(req.headers.host ?? ""))) return false;
+  const host = req.headers.host ?? "";
+  if (!LOOPBACK_HOSTS.has(hostnameOf(host))) return false;
   const origin = req.headers.origin;
   if (!origin) return true;
   try {
-    return LOOPBACK_HOSTS.has(new URL(origin).hostname);
+    const from = new URL(origin);
+    return LOOPBACK_HOSTS.has(from.hostname) && from.host === host;
   } catch {
     return false;
   }

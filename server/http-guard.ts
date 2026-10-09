@@ -9,7 +9,8 @@
 // your stored credentials and your global agent instructions.
 //
 // Two checks close it:
-//   Origin, must be absent (Electron, curl, same-origin) or loopback.
+//   Origin, must be absent (curl, the CLIs, same-origin navigations),
+//            or this server's own origin (or the dev UI that proxies to it).
 //   Host, must be loopback, which defeats DNS rebinding (evil.com
 //            resolving to 127.0.0.1 still sends Host: evil.com).
 //
@@ -67,12 +68,22 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   // nothing of the app's own sends it (its window is served over http).
   if (origin === "null") return false;
 
+  // A loopback origin is not enough: agents serve dev servers, notebooks
+  // and desktops on other loopback ports, and a page from one of those,
+  // opened in a browser, is not the app. The app's page is this server's
+  // own origin, or the Vite dev server that proxies to it.
   try {
-    return LOOPBACK_HOSTS.has(new URL(origin).hostname);
+    const from = new URL(origin);
+    if (!LOOPBACK_HOSTS.has(from.hostname)) return false;
+    return from.host === host || from.port === DEV_UI_PORT;
   } catch {
     return false;
   }
 }
+
+/** The port `pnpm dev` serves the UI on (vite.config.ts), which proxies
+ * the API here, so its pages carry that origin. */
+const DEV_UI_PORT = "5199";
 
 /** The bearer token a request carries, if it carries a well formed one. */
 export function bearerToken(req: IncomingMessage): string | null {

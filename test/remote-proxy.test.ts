@@ -71,6 +71,9 @@ test("a page from elsewhere is turned away, and the window's own page is pinned 
     assert.equal((await ask({ host: `127.0.0.1:${port}`, origin: "https://somewhere.example" })).status, 403);
     // a hostile name pointed at 127.0.0.1 still carries its own Host
     assert.equal((await ask({ host: `rebound.example:${port}` })).status, 403);
+    // a page on another loopback port, or a sandboxed one
+    assert.equal((await ask({ host: `127.0.0.1:${port}`, origin: "http://127.0.0.1:3000" })).status, 403);
+    assert.equal((await ask({ host: `127.0.0.1:${port}`, origin: "null" })).status, 403);
     // the window's own page, same origin
     const page = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(page.status, 200);
