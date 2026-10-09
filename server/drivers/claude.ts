@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
+import { lineSplitter } from "../ndjson.ts";
 import { outReason } from "../failover.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
@@ -802,17 +803,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
       };
 
-      let stdout = "";
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        for (;;) {
-          const cut = stdout.indexOf("\n");
-          if (cut === -1) break;
-          const line = stdout.slice(0, cut);
-          stdout = stdout.slice(cut + 1);
+      // read in linear time, however long a line (see lineSplitter)
+      child.stdout.on(
+        "data",
+        lineSplitter((line) => {
           if (line.trim()) consume(line);
-        }
-      });
+        }),
+      );
 
       // Keep only the tail: if this process dies early, the last thing it
       // said is the part that explains why.

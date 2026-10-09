@@ -16,6 +16,7 @@
 //
 // Not protocol-aware beyond that. It routes; the drivers interpret.
 import type { Readable, Writable } from "node:stream";
+import { lineSplitter } from "../ndjson.ts";
 
 export interface RpcLink {
   /** Call the child and wait for its reply. */
@@ -60,47 +61,40 @@ export function attachRpc(options: RpcOptions): RpcLink {
     options.onFrame?.(frame, "out");
   };
 
-  let buffered = "";
-  options.stdout.on("data", (chunk) => {
-    buffered += chunk;
-    for (;;) {
-      const cut = buffered.indexOf("\n");
-      if (cut === -1) break;
-      const line = buffered.slice(0, cut);
-      buffered = buffered.slice(cut + 1);
-      if (!line.trim()) continue;
+  // read in linear time, however long a line (see lineSplitter)
+  options.stdout.on("data", lineSplitter((line) => {
+    if (!line.trim()) return;
 
-      let frame: any;
-      try {
-        frame = JSON.parse(line);
-      } catch {
-        continue; // CLIs log to stdout too; not everything is protocol
-      }
-      options.onFrame?.(frame, "in");
-
-      const hasId = frame.id !== undefined;
-      const isReply = hasId && (frame.result !== undefined || frame.error !== undefined);
-
-      if (isReply) {
-        const waiting = pending.get(frame.id);
-        if (!waiting) continue;
-        pending.delete(frame.id);
-        if (frame.error) {
-          // the error's data rides along: an ACP agent's SDK turns any
-          // thrown error into a bare "Internal error" and puts what went
-          // wrong in data.details
-          const error = new Error(frame.error.message ?? JSON.stringify(frame.error));
-          waiting.reject(frame.error.data === undefined ? error : Object.assign(error, { data: frame.error.data }));
-        } else {
-          waiting.resolve(frame.result);
-        }
-      } else if (hasId && frame.method) {
-        options.onRequest(frame);
-      } else if (frame.method) {
-        options.onNotify(frame);
-      }
+    let frame: any;
+    try {
+      frame = JSON.parse(line);
+    } catch {
+      return; // CLIs log to stdout too; not everything is protocol
     }
-  });
+    options.onFrame?.(frame, "in");
+
+    const hasId = frame.id !== undefined;
+    const isReply = hasId && (frame.result !== undefined || frame.error !== undefined);
+
+    if (isReply) {
+      const waiting = pending.get(frame.id);
+      if (!waiting) return;
+      pending.delete(frame.id);
+      if (frame.error) {
+        // the error's data rides along: an ACP agent's SDK turns any
+        // thrown error into a bare "Internal error" and puts what went
+        // wrong in data.details
+        const error = new Error(frame.error.message ?? JSON.stringify(frame.error));
+        waiting.reject(frame.error.data === undefined ? error : Object.assign(error, { data: frame.error.data }));
+      } else {
+        waiting.resolve(frame.result);
+      }
+    } else if (hasId && frame.method) {
+      options.onRequest(frame);
+    } else if (frame.method) {
+      options.onNotify(frame);
+    }
+  }));
 
   return {
     request(method, params) {

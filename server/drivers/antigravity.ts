@@ -19,6 +19,8 @@
 import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
+import { lineSplitter } from "../ndjson.ts";
+
 import type {
   DriverCreateInput,
   ModelCatalog,
@@ -267,17 +269,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       // multibyte text can split across chunks; decode as utf8 stream
       child.stdout.setEncoding("utf8");
-      let pending = "";
-      child.stdout.on("data", (chunk: string) => {
-        pending += chunk;
-        for (;;) {
-          const cut = pending.indexOf("\n");
-          if (cut === -1) break;
-          const line = pending.slice(0, cut);
-          pending = pending.slice(cut + 1);
+      // read in linear time, however long a line (see lineSplitter)
+      child.stdout.on(
+        "data",
+        lineSplitter((line) => {
           if (line.trim()) consume(line);
-        }
-      });
+        }),
+      );
 
       let stderr = "";
       child.stderr.on("data", (chunk) => {

@@ -365,6 +365,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       let finished = false;
       // the thread's token total before this turn, set by its first update
       let tokenBase: TokenCount | null = null;
+      // threads this turn gave up on reopening (see onAgentNotification)
+      const abandoned = new Set<string>();
       // set once turn/start goes out; usage reported before it is history
       let turnSent = false;
       // Codex's own names for the conversation and the turn running in it,
@@ -519,6 +521,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // ── the agent narrating what it is doing ──
       function onAgentNotification(msg: any) {
         const params = msg.params ?? {};
+        // A resume that ran out of time can still be answered, late, on
+        // this same process, along with that old thread's restored usage.
+        // Read as this turn's, its total became the baseline and the new
+        // thread's turn reported nothing at all (GitHub 230).
+        if (typeof params.threadId === "string" && abandoned.has(params.threadId)) return;
 
         switch (msg.method) {
           case "serverRequest/resolved": {
@@ -728,19 +735,32 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // keeps the model and the provider it started with, so a model
             // picked later never reached Codex. With it, Codex serves the
             // model from its configured provider, as it does a new thread.
-            const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard };
+            // excludeTurns: only the thread's state, not its history.
+            // Bloks reads the id and the model from the answer, and the
+            // history of a long thread is tens of megabytes on one line,
+            // which took long enough to read that the resume timed out
+            // and the agent lost its session (GitHub 230).
+            const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard, excludeTurns: true };
             if (turn.model) resumeParams.model = turn.model;
+            const resume = () => within(rpc.request("thread/resume", resumeParams), "reopening the conversation", "Codex");
             try {
-              const resumed = await within(
-                rpc.request("thread/resume", resumeParams),
-                "reopening the conversation",
-                "Codex",
-              );
+              let resumed: any;
+              try {
+                resumed = await resume();
+              } catch (error) {
+                // an app-server older than the field says so; it still
+                // resumes, just with the history in the answer
+                if (!/exclude_?turns|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
+                delete resumeParams.excludeTurns;
+                resumed = await resume();
+              }
               codexThread = resumed?.thread?.id ?? cursor;
               reportedModel = resumed?.model ?? null;
               carriedOn = true;
             } catch {
-              /* forgotten or unsupported; a fresh thread below */
+              // forgotten or unsupported; a fresh thread below. Anything
+              // still to come about the old one is not about this turn.
+              abandoned.add(cursor);
             }
           }
 
