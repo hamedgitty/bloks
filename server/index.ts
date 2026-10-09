@@ -7345,6 +7345,38 @@ function drainSteer(threadId: string) {
   // the rest going ahead, so the edited one does not arrive after words
   // that were said after it; closing the editor drains it (editClosed).
   if (beingEdited.has(threadId)) return;
+  // An agent archived or held cannot take them (startTurn refuses it).
+  // Delivered first, they read as heard when nothing heard them, and a
+  // restored agent never would. They are marked not sent instead, as a
+  // stale queue is after a restart, for the person to send again.
+  const hold = wheel.heldBy(bot.id);
+  if (bot.archivedAt || hold) {
+    steerQueues.delete(threadId);
+    const why = hold ? heldRefusal(hold, bot.name) : archivedRefusal(bot).message;
+    const waiting = entry.items.flatMap((item) => {
+      const said = item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined;
+      return said?.queued && !said.deleted ? [said.id] : [];
+    });
+    // a Telegram request among them is told why, before being marked
+    // not sent ends its return
+    telegramReturns.finish(threadId, `Could not answer: ${why}`, waiting);
+    for (const id of waiting) {
+      const patched = store.patchMessage(threadId, id, { queued: false, unsent: true });
+      if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
+    }
+    if (waiting.length) {
+      if (hold) wheel.noteTurnedAway(bot.id);
+      const notice = store.appendMessage(threadId, {
+        role: "bot",
+        kind: "notice",
+        text: `${waiting.length === 1 ? "A message" : `${waiting.length} messages`} waiting for ${bot.name} ${waiting.length === 1 ? "was" : "were"} not sent. ${why}`,
+      });
+      broadcast({ kind: "message", threadId, message: notice });
+    }
+    drainRoomTags(entry.botId);
+    closeIfAsked(threadId);
+    return;
+  }
   // Claim only this segment before any async work; a command is a turn
   // of its own, and the suffix stays ahead of any newly arriving words.
   const segment = queuedSegment(threadId, entry.items);

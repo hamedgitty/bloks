@@ -218,3 +218,36 @@ test("an archived agent's schedules are suspended, unchanged, and resume on Rest
   assert.match(resumed!, /Weekly report/);
   assert.match(resumed!, /Invoices/);
 });
+
+test("words waiting behind a turn the archive stopped are marked not sent, not delivered to nobody", async (t) => {
+  const fake = await fakeProvider(t);
+  const h = await startHarness();
+  t.after(() => h.stop());
+  const bot = await agentOn(h, fake.port, "Wren");
+
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "LONG-WORK" }) });
+  assert.ok(await waitFor(() => fake.sent("LONG-WORK") >= 1), "the turn never started");
+  const said = await h.json(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "AND-THEN" }) });
+  assert.equal(said.queued, true);
+
+  // The archive stops the turn, and the turn's end goes to what waited.
+  // That used to deliver it, so it read as heard, and then refuse it.
+  assert.equal((await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ hidden: true }) })).status, 200);
+  assert.ok(await idle(h, bot), "the turn did not stop");
+  const waited = await waitFor(async () => {
+    const m = (await messagesOf(h, bot)).find((x) => x.text === "AND-THEN");
+    return m && !m.queued ? m : null;
+  });
+  assert.ok(waited, "what waited is still waiting");
+  assert.equal(waited.unsent, true, "what waited reads as delivered, though nothing heard it");
+  assert.ok(
+    (await messagesOf(h, bot)).some((m) => m.kind === "notice" && /was not sent\. Wren is archived/.test(m.text ?? "")),
+    "nothing said why it was not sent",
+  );
+
+  // Restore does not send it behind the person's back either
+  fake.state.answerAtOnce = true;
+  assert.equal((await h.fetch(`/api/bots/${bot.id}/restore`, { method: "POST" })).status, 200);
+  await new Promise((r) => setTimeout(r, 1_000));
+  assert.equal(fake.sent("AND-THEN"), 0);
+});
