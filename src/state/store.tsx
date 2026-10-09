@@ -97,7 +97,9 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
     ...init,
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  // the status rides along, for a caller deciding whether trying again
+  // could ever help (a 404 will not)
+  if (!res.ok) throw Object.assign(new Error(body.error ?? `${res.status} ${res.statusText}`), { status: res.status });
   return body;
 }
 
@@ -512,7 +514,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api(`/api/bots/${botId}/messages?thread=${encodeURIComponent(threadId)}`)
         .then((page) => {
           if (!latest()) return;
-          laneFailures.current.delete(botId);
+          laneFailures.current.delete(`${botId}:${threadId}`);
           rawDispatch({
             type: "laneLoaded",
             id: botId,
@@ -523,12 +525,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         })
         .catch((e) => {
           if (!latest() || stateRef.current.laneLoads[botId] !== threadId) return;
-          const failures = (laneFailures.current.get(botId) ?? 0) + 1;
-          laneFailures.current.set(botId, failures);
+          const key = `${botId}:${threadId}`;
+          const failures = (laneFailures.current.get(key) ?? 0) + 1;
+          laneFailures.current.set(key, failures);
           // an empty conversation needs a reason, said once rather than on
           // every try
           if (failures === 1) rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-          setTimeout(() => setLaneRetry((t) => t + 1), Math.min(15_000, 1_000 * 2 ** (failures - 1)));
+          // Tried again only when that could help: the line, or the
+          // server, having a moment. A conversation that is gone stays gone.
+          const status = (e as { status?: number }).status;
+          const final = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+          if (!final) setTimeout(() => setLaneRetry((t) => t + 1), Math.min(15_000, 1_000 * 2 ** (failures - 1)));
         })
         .finally(() => {
           if (latest()) laneAsks.current.delete(botId);
