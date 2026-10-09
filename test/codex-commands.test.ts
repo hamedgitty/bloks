@@ -7,7 +7,7 @@ import { PassThrough, Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 import type { RuntimeEvent } from "../server/contracts.ts";
-import { CodexDriver } from "../server/drivers/codex.ts";
+import { COMPACT_LIMIT_MS, CodexDriver } from "../server/drivers/codex.ts";
 
 type Script = { compact?: "reject" | "failed" | "error" | "hold"; resume?: "reject" | "forgotten" | "legacy"; resumeFallbackFails?: boolean; skills?: "reject" | "hold"; late?: boolean; holdTurn?: boolean; onTurn?: (send: (frame: unknown) => void, thread: string) => void };
 async function setup(t: TestContext, script: Script = {}) {
@@ -152,7 +152,7 @@ for (const mode of ["no-cursor", "resume-rejected", "forgotten", "reject", "fail
   const script: Script = mode === "resume-rejected" ? { resume: "reject" } : mode === "forgotten" ? { resume: "forgotten" } : mode === "timeout" || mode === "stop" ? { compact: "hold" } : mode === "reject" || mode === "failed" || mode === "error" ? { compact: mode } : {};
   const h = await setup(t, script);
   await h.turn({ compactOnly: true, ...(mode === "no-cursor" ? {} : { resumeCursor: h.thread }) });
-  if (mode === "timeout") { t.mock.timers.tick(5 * 60_000); await h.spin(); }
+  if (mode === "timeout") { t.mock.timers.tick(COMPACT_LIMIT_MS); await h.spin(); }
   if (mode === "stop") { await h.instance.adapter.interruptTurn("lane"); await h.spin(); }
   assert.equal(calls(h, "thread/start").length, 0);
   assert.equal(calls(h, "turn/start").length, 0);
