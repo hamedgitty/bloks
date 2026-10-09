@@ -39,7 +39,13 @@ for (const event of ["ends", "compacts"] as const) test(`a turn that ${event} du
   const a = s.say("A $selected");
   await waitFor(() => s.calls().some((c) => c.method === "skills/list"));
   if (event === "ends") { s.gate(); await waitFor(() => s.calls().filter((c) => c.method === "skills/list").length === 2); }
-  else { s.startAuto(); await new Promise((r) => setTimeout(r, 75)); }
+  else {
+    // the driver logs a frame before it handles it, so once the compaction
+    // is in the lane's native log the turn can no longer take a steer
+    s.startAuto();
+    const native = join(s.root, ".bloks/native", `${s.bot.threadId}.ndjson`);
+    await waitFor(() => { try { return readFileSync(native, "utf8").includes("held-auto"); } catch { return false; } });
+  }
   s.skillsGate(); await a;
   assert.equal(s.calls().filter((c) => c.method === "turn/steer").length, 0);
   if (event === "compacts") s.gate();

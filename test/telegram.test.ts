@@ -672,13 +672,16 @@ describe("files and speech over the wire", () => {
 
 describe("typing while the agent works", () => {
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  // a loaded machine runs a 10 ms interval late, never early: wait for the
+  // ticks themselves, up to a bound, rather than for the time they should take
+  const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await wait(10); };
 
   test("says typing at once, then again and again until the turn ends", async () => {
     let said = 0;
     const typing = keepTyping(async () => void said++, () => false, 10);
     await wait(0);
     assert.equal(said, 1, "at once, not one interval in");
-    await wait(45);
+    await until(() => said >= 3);
     assert.ok(said >= 3);
     await typing.stop();
     const stopped = said;
@@ -696,7 +699,7 @@ describe("typing while the agent works", () => {
     await wait(40);
     assert.equal(said, before, "typing would say the agent is working when it is waiting on them");
     waiting = false;
-    await wait(40);
+    await until(() => said > before);
     assert.ok(said > before, "and it comes back once the card is answered");
     await typing.stop();
   });
