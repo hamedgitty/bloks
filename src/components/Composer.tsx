@@ -737,10 +737,8 @@ export function Composer({
               e.preventDefault();
               return;
             }
-            // Enter sends; Shift+Enter starts a new line. While the agent
-            // works, plain Enter queues behind the running turn, and
-            // Cmd+Enter stops the turn first: both the patient road and
-            // the impatient one, the same way the CLIs offer both.
+            // Enter sends; Shift+Enter starts a new line. Cmd/Ctrl+Enter
+            // stops a running turn first, then sends the same message.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if ((e.metaKey || e.ctrlKey) && openLaneWorking(bot)) {
@@ -758,7 +756,7 @@ export function Composer({
                   ? "Describe the task for each of them to rehearse…"
                   : `Describe the task for ${bot.name} to rehearse…`
                 : openLaneWorking(bot)
-                ? `${bot.name} is working. Enter queues, ${modKey()}Enter interrupts…`
+                ? `${bot.name} is working. Enter sends, ${modKey()}Enter stops it first.`
                 : `Message ${bot.name}`
           }
           className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
@@ -775,7 +773,19 @@ export function Composer({
         >
           <FlaskConical size={16} />
         </button>
-        {openLaneWorking(bot) ? (
+        <button
+          onClick={() => void toggleMic()}
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 active:scale-95",
+            recording
+              ? "animate-pulse bg-destructive/15 text-destructive"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+          title={recording ? "Stop dictation (Esc)" : "Dictate"}
+        >
+          {recording ? <VoiceMeter level={level} /> : <Mic size={17} />}
+        </button>
+        {openLaneWorking(bot) && !canSend ? (
           <button
             onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
             className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
@@ -785,31 +795,19 @@ export function Composer({
           </button>
         ) : (
           <button
-            onClick={() => void toggleMic()}
+            onClick={send}
+            disabled={!canSend}
             className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 active:scale-95",
-              recording
-                ? "animate-pulse bg-destructive/15 text-destructive"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              "flex size-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-150 ease-out active:scale-95",
+              canSend
+                ? "bg-primary text-primary-foreground hover:opacity-90"
+                : "cursor-not-allowed bg-muted text-muted-foreground/60",
             )}
-            title={recording ? "Stop dictation (Esc)" : "Dictate"}
+            title="Send"
           >
-            {recording ? <VoiceMeter level={level} /> : <Mic size={17} />}
+            <ArrowUp size={17} strokeWidth={2.4} />
           </button>
         )}
-        <button
-          onClick={send}
-          disabled={!canSend}
-          className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-150 ease-out active:scale-95",
-            canSend
-              ? "bg-primary text-primary-foreground hover:opacity-90"
-              : "cursor-not-allowed bg-muted text-muted-foreground/60",
-          )}
-          title="Send"
-        >
-          <ArrowUp size={17} strokeWidth={2.4} />
-        </button>
       </div>
     </div>
   );

@@ -7,7 +7,6 @@ import History from "lucide-react/dist/esm/icons/history.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
-import Square from "lucide-react/dist/esm/icons/square.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, openLaneWorking, type Bot, type Message } from "@/state/store";
 import { CarryOn } from "@/components/CarryOn";
@@ -833,17 +832,6 @@ export function ChatView({ bot }: { bot: Bot }) {
           </span>
         </button>
         <div className="flex shrink-0 items-center gap-1.5">
-          {working && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
-              title="Stop this turn"
-            >
-              <Square size={11} className="fill-current" />
-              Stop
-            </Button>
-          )}
           <ModelPicker bot={bot} />
           <CallButton bot={bot} />
           {window.bloks?.meetingStart && (
