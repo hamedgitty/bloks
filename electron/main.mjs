@@ -143,7 +143,7 @@ app.on("open-url", (event, url) => {
   event.preventDefault();
   deliverLink(url);
 });
-ipcMain.handle("link:pending", () => {
+handle("link:pending", () => {
   const link = pendingLink;
   pendingLink = null;
   return link;
@@ -167,7 +167,7 @@ function menuCommand(command) {
   main.focus();
   main.webContents.send("menu:command", command);
 }
-ipcMain.handle("menu:pending", () => {
+handle("menu:pending", () => {
   const command = pendingMenuCommand;
   pendingMenuCommand = null;
   return command;
@@ -373,9 +373,24 @@ const isHttpUrl = (url) => {
 // have had the preload's bridge (pairing a remote, Touch ID, the screen).
 const isOurOwnPage = (url) => sameAppOrigin(url, appUrl());
 
-/** Only the app's own page may use the bridges that reach past the
- * window: the screen, pairing with another computer, installing an update. */
-const fromOurPage = (event) => isOurOwnPage(event?.senderFrame?.url ?? "");
+/** Only the app's own page may use the bridge: the top frame of one of
+ * its windows, judged by the frame's real origin. A frame inside the page
+ * (an artifact, an app, an agent's desktop) has its own origin, and a
+ * sandboxed one says "null", so neither passes. */
+const fromOurPage = (event) => {
+  const frame = event?.senderFrame;
+  if (!frame || frame !== event.sender?.mainFrame) return false;
+  return isOurOwnPage(frame.origin ?? "");
+};
+
+/** ipcMain.handle, answering only the app's own page (fromOurPage). Every
+ * bridge goes through this, so a new one cannot forget the check. */
+function handle(channel, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!fromOurPage(event)) throw new Error("not from the app");
+    return fn(event, ...args);
+  });
+}
 
 /** The same rules for every window that loads the app: links go to the
  * real browser, and the window itself never leaves the app's origin. */
@@ -696,8 +711,7 @@ function createWindow() {
 
 // ── permissions the web layer cannot ask for ───────────────────────────
 
-ipcMain.handle("screen:frame", async (event) => {
-  if (!fromOurPage(event)) return null;
+handle("screen:frame", async (event) => {
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
     thumbnailSize: { width: 1280, height: 800 },
@@ -705,12 +719,12 @@ ipcMain.handle("screen:frame", async (event) => {
   return sources[0]?.thumbnail.toDataURL() ?? null;
 });
 
-ipcMain.handle("perm:status", () => ({
+handle("perm:status", () => ({
   mic: systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown",
   screen: systemPreferences.getMediaAccessStatus?.("screen") ?? "unknown",
 }));
 
-ipcMain.handle("perm:request-mic", async () => {
+handle("perm:request-mic", async () => {
   try {
     return await systemPreferences.askForMediaAccess("microphone");
   } catch {
@@ -726,7 +740,7 @@ ipcMain.handle("perm:request-mic", async () => {
  * directly. Being a child of this app, it inherits the app's identity, so
  * the prompt and the pane entry both say Bloks.
  */
-ipcMain.handle("perm:request-screen", async () => {
+handle("perm:request-screen", async () => {
   try {
     const helper = nativeHelper("perm-helper");
     await new Promise((resolve) => {
@@ -740,7 +754,7 @@ ipcMain.handle("perm:request-screen", async () => {
 });
 
 /** Once denied, macOS will not ask again. Deep-link to the exact pane. */
-ipcMain.handle("perm:open-settings", (_event, pane) => {
+handle("perm:open-settings", (_event, pane) => {
   const panes = {
     mic: "Privacy_Microphone",
     screen: "Privacy_ScreenCapture",
@@ -782,7 +796,7 @@ async function bannerIcon(avatar) {
   }
 }
 
-ipcMain.handle("notify:show", async (event, notice) => {
+handle("notify:show", async (event, notice) => {
   if (!Notification.isSupported()) return;
   const target = String(notice?.target ?? "");
   const icon = await bannerIcon(notice?.avatar);
@@ -817,7 +831,7 @@ ipcMain.handle("notify:show", async (event, notice) => {
  * Typing a path stays possible; this is for everyone who should not
  * have to know what an absolute path is. Answers null on cancel.
  */
-ipcMain.handle("dialog:pick-folder", async (event) => {
+handle("dialog:pick-folder", async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return null;
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
@@ -835,7 +849,7 @@ ipcMain.handle("dialog:pick-folder", async (event) => {
  * icon instead.
  */
 let badgeOverlay = null;
-ipcMain.handle("badge:set", (event, value) => {
+handle("badge:set", (event, value) => {
   const count = normalizeBadgeCount(value);
   if (process.platform === "win32") {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -905,9 +919,9 @@ function showUpdate(next) {
   }
 }
 
-ipcMain.handle("app:version", () => app.getVersion());
-ipcMain.handle("update:state", () => updaterState);
-ipcMain.handle("update:check", async () => {
+handle("app:version", () => app.getVersion());
+handle("update:state", () => updaterState);
+handle("update:check", async () => {
   if (!app.isPackaged) return { state: "dev" };
   try {
     await electronUpdater.autoUpdater.checkForUpdates();
@@ -950,31 +964,30 @@ async function drainBeforeRestart() {
   return outcome;
 }
 
-ipcMain.handle("update:install", async (event) => {
-  if (!fromOurPage(event)) return;
+handle("update:install", async (event) => {
   if (!app.isPackaged || drainWaiting) return;
   if ((await drainBeforeRestart()) === "cancel") return;
   // same teardown as a normal quit, then the installer takes over
   electronUpdater.autoUpdater.quitAndInstall();
 });
-ipcMain.handle("update:restart-now", () => drainWaiting?.stop("now"));
-ipcMain.handle("update:later", () => drainWaiting?.stop("cancel"));
+handle("update:restart-now", () => drainWaiting?.stop("now"));
+handle("update:later", () => drainWaiting?.stop("cancel"));
 
 // Some settings only take effect at start, pairing above all: widening
 // what the server listens on is deliberately not a live change. This is
 // how the renderer offers to do the restart instead of asking somebody to
 // find Quit and then find the app again. relaunch() schedules the new
 // process; quit() then runs the normal teardown, daemon and all.
-ipcMain.handle("app:relaunch", () => {
+handle("app:relaunch", () => {
   app.relaunch();
   app.quit();
 });
 
-ipcMain.handle("shortcut:apply", (_event, accelerator) =>
+handle("shortcut:apply", (_event, accelerator) =>
   applyQuickShortcut(typeof accelerator === "string" && accelerator ? accelerator : null),
 );
-ipcMain.handle("quick:hide", () => quickWin?.hide());
-ipcMain.handle("quick:open-main", () => {
+handle("quick:hide", () => quickWin?.hide());
+handle("quick:open-main", () => {
   quickWin?.hide();
   const [main] = BrowserWindow.getAllWindows().filter((w) => w !== quickWin);
   if (!main || main.isDestroyed()) return;
@@ -1009,26 +1022,26 @@ function askHelper(args) {
   });
 }
 
-ipcMain.handle("auth:status", () =>
+handle("auth:status", () =>
   process.platform === "darwin" ? askHelper(["check"]) : Promise.resolve("unavailable"),
 );
 
-ipcMain.handle("auth:confirm", (_event, reason) => {
+handle("auth:confirm", (_event, reason) => {
   if (process.platform !== "darwin") return "unavailable";
   const said = typeof reason === "string" ? reason.slice(0, 120) : "";
   return askHelper(["ask", said]);
 });
 
-ipcMain.handle("speech:start", (event) => {
+handle("speech:start", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win) startSpeech(win);
 });
-ipcMain.handle("speech:stop", () => stopSpeech());
-ipcMain.handle("meeting:start", (event, options) => {
+handle("speech:stop", () => stopSpeech());
+handle("meeting:start", (event, options) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win) startMeeting(win, { system: Boolean(options?.system) });
 });
-ipcMain.handle("meeting:stop", () => stopMeeting());
+handle("meeting:stop", () => stopMeeting());
 
 // ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -1283,11 +1296,10 @@ async function startRemote(profile) {
   }
 }
 
-ipcMain.handle("remote:status", () =>
+handle("remote:status", () =>
   remoteProfile ? { mode: "remote", host: remoteProfile.host, ...remoteState } : { mode: "local" },
 );
-ipcMain.handle("remote:connect", async (event, link) => {
-  if (!fromOurPage(event)) return { error: "not from the app" };
+handle("remote:connect", async (event, link) => {
   if (!app.isPackaged) return { error: "Connecting to another computer works in the installed app." };
   try {
     const profile = await claimPairLink(String(link ?? ""), `${os.hostname().replace(/\.local$/, "")} (desktop)`);
@@ -1299,7 +1311,7 @@ ipcMain.handle("remote:connect", async (event, link) => {
   app.exit(0);
   return { ok: true };
 });
-ipcMain.handle("remote:disconnect", () => {
+handle("remote:disconnect", () => {
   saveRemoteProfile(null);
   app.relaunch();
   app.exit(0);
