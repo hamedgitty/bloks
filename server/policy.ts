@@ -38,11 +38,12 @@
 //
 // Questions are never governed. An agent asking its owner something is not
 // an action, and a rule that answered it would be inventing an answer.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export type Effect = "allow" | "deny";
 
@@ -427,14 +428,7 @@ export class PolicyStore {
 
   constructor(file: string = RULES_FILE) {
     this.file = file;
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8"));
-      if (Array.isArray(parsed)) {
-        this.rules = parsed.filter((r) => r?.id && typeof r.value === "string");
-      }
-    } catch {
-      /* no rules yet, which means every question still reaches a person */
-    }
+    this.rules = readSaved<Rule[]>(this.file, [], Array.isArray).filter((r) => r?.id && typeof r.value === "string");
   }
 
   private readonly file: string;

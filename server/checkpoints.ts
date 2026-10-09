@@ -61,6 +61,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realpathSync } from "node:fs";
 
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 /** Bigger than this is noted as changed and never kept. */
 export const MAX_FILE = 2 * 1024 * 1024;
@@ -357,12 +358,7 @@ export class Checkpoints {
     this.blobs = join(root, "blobs");
     this.photos = join(root, "photos");
     this.indexFile = join(root, "index.json");
-    try {
-      this.records = JSON.parse(readFileSync(this.indexFile, "utf8"));
-      if (!Array.isArray(this.records)) this.records = [];
-    } catch {
-      this.records = [];
-    }
+    this.records = readSaved<CheckpointRecord[]>(this.indexFile, [], Array.isArray);
   }
 
   /** Photographs the folder before a turn. Never throws: a turn does not

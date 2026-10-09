@@ -7,11 +7,12 @@
 //
 // One JSON file under DATA_DIR, small and rewritten whole; this is a
 // bookshelf, not a database.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export interface SavedTeam {
   id: string;
@@ -29,12 +30,7 @@ export class TeamLibrary {
   constructor(file: string = FILE) {
     this.file = file;
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8"));
-      if (Array.isArray(parsed)) this.teams = parsed.filter((t) => t && typeof t.id === "string");
-    } catch {
-      /* first run */
-    }
+    this.teams = readSaved<SavedTeam[]>(this.file, [], Array.isArray).filter((t) => t && typeof t.id === "string");
   }
 
   private readonly file: string;

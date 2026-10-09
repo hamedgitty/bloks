@@ -12,10 +12,11 @@
 // session's whole history again. A resumed session whose earlier total
 // was never seen here (one that predates this file) gets no cost for that
 // turn rather than a guess, and is exact from the next one on.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { DATA_DIR } from "../config.ts";
+import { readSaved, isRecord } from "../atomic-write.ts";
 
 /** Sessions remembered, most recent last. Enough for every lane in use. */
 const MAX_SESSIONS = 2_000;
@@ -26,15 +27,9 @@ export class SessionCosts {
 
   constructor(dir: string = DATA_DIR) {
     this.file = join(dir, "claude-session-costs.json");
-    try {
-      const saved = JSON.parse(readFileSync(this.file, "utf8"));
-      if (saved && typeof saved === "object") {
-        for (const [id, total] of Object.entries(saved)) {
-          if (typeof total === "number" && Number.isFinite(total)) this.totals.set(id, total);
-        }
-      }
-    } catch {
-      /* first run, or a file someone removed: start empty */
+    const saved = readSaved<Record<string, unknown>>(this.file, {}, isRecord);
+    for (const [id, total] of Object.entries(saved)) {
+      if (typeof total === "number" && Number.isFinite(total)) this.totals.set(id, total);
     }
   }
 

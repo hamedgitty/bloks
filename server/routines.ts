@@ -18,10 +18,10 @@
 //   A run missed by more than the grace window is skipped entirely. A
 //   "brief me at 09:00" that fires at 23:40 because the lid was shut all
 //   day is not a brief, it is a surprise. The next one comes tomorrow.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -283,13 +283,7 @@ export class RoutineStore {
 
   constructor() {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    try {
-      const parsed = JSON.parse(readFileSync(ROUTINES_FILE, "utf8"));
-      this.routines = Array.isArray(parsed) ? parsed.filter(isRoutine) : [];
-    } catch (error) {
-      setAside(ROUTINES_FILE, error);
-      this.routines = [];
-    }
+    this.routines = readSaved<Routine[]>(ROUTINES_FILE, [], Array.isArray).filter(isRoutine);
   }
 
   private save() {

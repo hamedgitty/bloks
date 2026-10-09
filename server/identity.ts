@@ -21,6 +21,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "n
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
+import { readSaved } from "./atomic-write.ts";
 
 const IDENTITIES = join(DATA_DIR, "identities");
 
@@ -100,10 +101,13 @@ export function identityFor(botId: string, now: number = Date.now()): Identity {
   if (known) return known;
   const file = fileFor(botId);
   let identity: Identity;
-  try {
-    const pem = readFileSync(file, "utf8");
-    identity = { botId, fingerprint: rawPublic(createPublicKey(createPrivateKey(pem))), createdAt: now };
-  } catch {
+  const key = readSaved<ReturnType<typeof createPublicKey> | null>(
+    file, null, (value) => value !== null,
+    (pem) => createPublicKey(createPrivateKey(pem)),
+  );
+  if (key) {
+    identity = { botId, fingerprint: rawPublic(key), createdAt: now };
+  } else {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     mkdirSync(IDENTITIES, { recursive: true, mode: 0o700 });
     writeFileSync(file, privateKey.export({ format: "pem", type: "pkcs8" }) as string, { mode: 0o600 });
@@ -116,6 +120,17 @@ export function identityFor(botId: string, now: number = Date.now()): Identity {
   }
   cache.set(botId, identity);
   return identity;
+}
+
+/** Identity is optional on listings and notices. A key that could not
+ * be read must not turn a successful transcript write into a failed
+ * request, or replace the key. The next call can retry it. */
+export function fingerprintFor(botId: string): string | undefined {
+  try {
+    return identityFor(botId).fingerprint;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Sign a statement as this agent. Null when the key cannot be read,

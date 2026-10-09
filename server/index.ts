@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engine-setup.ts";
@@ -149,7 +149,7 @@ import {
   type Turn,
 } from "./context.ts";
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
-import { identityFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
+import { identityFor, fingerprintFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
 import { assemble as assembleActivity, blockedOn, lastWithYou, towardYou } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
@@ -418,6 +418,9 @@ async function newAgentSettings(hiredBy?: Approvals): Promise<Partial<BotRecord>
   return out;
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+// Membership is used in broadcasts after writes. Load it before serving
+// requests so a failed first read cannot make a saved action look failed.
+people.people();
 const store = new Store(() => bootSelection);
 const bloks = new BlokStore();
 // the order of the sidebar's headings; pins and activity live on the rows
@@ -779,8 +782,7 @@ const teamLibrary = new TeamLibrary();
 {
   const found = await probeOllama();
   if (shouldAdopt(cfg, found)) {
-    saveConfig({ providers: { ...(cfg.providers ?? {}), ollama: { url: `${OLLAMA_URL}/v1` } } });
-    Object.assign(cfg, loadConfig());
+    Object.assign(cfg, saveConfig({ providers: { ...(cfg.providers ?? {}), ollama: { url: `${OLLAMA_URL}/v1` } } }));
     console.log(`[bloks] found Ollama running here with ${found.models.length} model(s); connected it`);
   }
 }
@@ -1037,7 +1039,7 @@ function clientBot(bot: BotRecord | null) {
     ...visible,
     // The public half of its key. Only ever the public half: the private
     // one never leaves this machine, and nothing in the app displays it.
-    fingerprint: identityFor(bot.id).fingerprint,
+    fingerprint: fingerprintFor(bot.id),
     // Somebody is driving this one. On the agent rather than behind a
     // second poll, so every surface knows at the same moment and can say
     // so before the person hits a refusal they could have been shown
@@ -1177,7 +1179,13 @@ function broadcast(payload: unknown) {
   // of pixels the phone throws away, and a batch over the relay's cap is
   // dropped whole.
   if ((payload as { kind?: string })?.kind !== "screen") {
-    relayLink.publish(payload, wakeFor(payload));
+    try {
+      relayLink.publish(payload, wakeFor(payload));
+    } catch (error) {
+      // Device settings may be unreadable. Do not turn an already saved
+      // message into a failed request that the sender repeats.
+      console.error(redactSecrets(error instanceof Error ? error.message : "[bloks] Relay frame could not be sent."));
+    }
   }
 }
 
@@ -1272,15 +1280,7 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
 const BRIEFS_FILE = join(DATA_DIR, "briefs.json");
 /** A month of mornings, then the oldest go. */
 const MAX_BRIEFS = 30;
-let briefs: Array<Brief & { readAt?: number }> = (() => {
-  try {
-    const parsed = JSON.parse(readFileSync(BRIEFS_FILE, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    setAside(BRIEFS_FILE, error);
-    return [];
-  }
-})();
+let briefs: Array<Brief & { readAt?: number }> = readSaved(BRIEFS_FILE, [], Array.isArray);
 function saveBriefs() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
@@ -2074,8 +2074,14 @@ bus.subscribe((event: RuntimeEvent) => {
       if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
       sweepArtifacts(bot.id, event.threadId, pushMessage);
       // what the turn changed in the agent's memory, into its journal
-      const remembered = memoryJournal.finish(event.threadId);
-      if (remembered.length) broadcast({ kind: "memory.changed", botId: bot.id, changes: remembered.length });
+      try {
+        const remembered = memoryJournal.finish(event.threadId);
+        if (remembered.length) broadcast({ kind: "memory.changed", botId: bot.id, changes: remembered.length });
+      } catch (error) {
+        // The engine already finished. Leave the unreadable journal
+        // untouched and still settle the lane and its changes card.
+        console.error(error instanceof Error ? error.message : "[bloks] Memory history could not be saved.");
+      }
       // the turn, for the engine report: which engine, what it cost, and
       // (once the card exists) the checkpoint its outcome is read from
       const ranOn = laneEngine.get(event.threadId) ?? bot.modelSelection;
@@ -3996,15 +4002,7 @@ function sharedLaneFor(bot: BotRecord, blok: BlokRecord) {
 // ── meeting notes (server/meetings.ts) ─────────────────────────────────
 
 const MEETINGS_FILE = join(DATA_DIR, "meetings.json");
-let meetings: Meeting[] = (() => {
-  try {
-    const parsed = JSON.parse(readFileSync(MEETINGS_FILE, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    setAside(MEETINGS_FILE, error);
-    return [];
-  }
-})();
+let meetings: Meeting[] = readSaved(MEETINGS_FILE, [], Array.isArray);
 function saveMeetings() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
@@ -4030,15 +4028,7 @@ function collectMeetingItems(laneId: string, ok: boolean) {
 // ── watchers (server/watchers.ts) ──────────────────────────────────────
 
 const WATCHERS_FILE = join(DATA_DIR, "watchers.json");
-let watchers: Watcher[] = (() => {
-  try {
-    const parsed = JSON.parse(readFileSync(WATCHERS_FILE, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    setAside(WATCHERS_FILE, error);
-    return [];
-  }
-})();
+let watchers: Watcher[] = readSaved(WATCHERS_FILE, [], Array.isArray);
 function saveWatchers() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
@@ -4597,12 +4587,22 @@ function roomPeopleFrame(roomId: string) {
   });
 }
 
-/** Takes a person's access away entirely: devices, relay token. Used when
- * they leave or are removed from their last room. */
+/** Closes a person's open streams and revokes their relay token. Their
+ * paired devices are revoked earlier, by removeMemberFromRoom, while the
+ * membership still stands. Used when they leave or are removed from
+ * their last room. */
 async function revokeMember(personId: string, relayTokenHash?: string) {
-  revokePerson(personId);
   closeMemberStreams(personId);
   if (relayTokenHash) await relayLink.revokeClient(relayTokenHash);
+}
+
+/** Removes a person from a room. When it is their last room, their
+ * paired devices are revoked first, while the membership still stands,
+ * so a refused settings read leaves both unchanged. */
+function removeMemberFromRoom(personId: string, roomId: string) {
+  return people.removeFromRoom(personId, roomId, (roomless) => {
+    if (roomless) revokePerson(personId);
+  });
 }
 
 /** Stops sharing a room: every member out, every open invite closed,
@@ -4615,7 +4615,7 @@ async function stopSharing(roomId: string) {
     if (inv.relayTokenHash) await relayLink.revokeClient(inv.relayTokenHash);
   }
   for (const m of members) {
-    const { roomless } = people.removeFromRoom(m.personId, roomId);
+    const { roomless } = removeMemberFromRoom(m.personId, roomId);
     if (roomless) await revokeMember(m.personId, m.person.relayTokenHash);
   }
   const blok = bloks.unshare(roomId);
@@ -5121,9 +5121,10 @@ relayLink.onRejected = () => {
 };
 relayLink.pairClaim = (linkId, body) => {
   const b = (body ?? {}) as { name?: unknown; tokenHash?: unknown };
-  const device = claimPairLink(linkId, b.name, b.tokenHash);
+  const device = claimPairLink(linkId, b.name, b.tokenHash, (saved) => {
+    broadcast({ kind: "pairing", ...pairingStatus(saved) });
+  });
   if (!device) return null;
-  broadcast({ kind: "pairing", ...pairingStatus() });
   return { deviceId: device.id, host: hostName() };
 };
 relayLink.inviteSecret = (inviteId) => {
@@ -5149,13 +5150,13 @@ function relayBase(): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-function syncRelay() {
+function syncRelay(config?: AppConfig) {
   // Pairing is the master switch. Turning pairing off is the documented
   // way to cut every remote device loose, and it must cut the relay too;
   // otherwise a relay phone keeps reaching the remote surface after the
   // owner believes they closed the door.
   const on =
-    remoteEnabled() && cfg.relay?.enabled && cfg.relay.url && cfg.relay.agentToken;
+    remoteEnabled(config) && cfg.relay?.enabled && cfg.relay.url && cfg.relay.agentToken;
   relayLink.configure(on ? { url: cfg.relay!.url!, agentToken: cfg.relay!.agentToken! } : null);
 }
 syncRelay();
@@ -7728,10 +7729,9 @@ async function providerCatalog() {
 const oauthCallback = (kind: string) => `http://127.0.0.1:${PORT}/api/oauth/${kind}/callback`;
 
 async function connectProvider(kind: string, key: string, endpoint = "") {
-  saveConfig({
+  Object.assign(cfg, saveConfig({
     providers: { [kind]: { ...(key ? { key } : {}), ...(endpoint ? { url: endpoint } : {}) } },
-  });
-  Object.assign(cfg, loadConfig());
+  }));
   await reloadProviders();
   broadcast({ kind: "providers", ...(await providerCatalog()) });
 }
@@ -7759,9 +7759,8 @@ function customCatalog() {
 }
 
 async function persistCustom(next: CustomEndpoint[]) {
-  saveConfig({ custom: next } as Partial<AppConfig>);
-  Object.assign(cfg, loadConfig());
-  // loadConfig re-reads the file; keep the in-memory list aligned with
+  Object.assign(cfg, saveConfig({ custom: next } as Partial<AppConfig>));
+  // Keep the in-memory list aligned with
   // what we just wrote so a follow-up in this request sees it.
   cfg.custom = next;
   await reloadProviders();
@@ -8010,7 +8009,7 @@ async function serveMember(
 
     case "leave": {
       const blok = bloks.get(action.roomId)!;
-      const { roomless } = people.removeFromRoom(personId, blok.id);
+      const { roomless } = removeMemberFromRoom(personId, blok.id);
       if (roomless) await revokeMember(personId, who.relayTokenHash);
       const notice = store.appendMessage(blok.id, { role: "bot", kind: "notice", event: true, text: `${who.name} left the room.` });
       broadcast({ kind: "message", threadId: blok.id, message: notice });
@@ -8866,13 +8865,13 @@ const server = createServer(async (req, res) => {
       // The fingerprint is read before the key is burned, because it is
       // the only checkable handle the record keeps on an identity that
       // no longer exists.
-      const fingerprint = identityFor(bot.id).fingerprint;
+      const fingerprint = fingerprintFor(bot.id);
       record({
         at: Date.now(),
         kind: "agent.deleted",
         actor: "you",
         summary: `Deleted ${bot.name} for good`,
-        detail: { agent: bot.name, fingerprint, conversations: bot.tasks.length, key: "destroyed" },
+        detail: { agent: bot.name, ...(fingerprint ? { fingerprint } : {}), conversations: bot.tasks.length, key: "destroyed" },
       });
       forgetIdentity(bot.id);
       proposals.removeForBot(bot.id);
@@ -9211,9 +9210,8 @@ const server = createServer(async (req, res) => {
       if (typeof body.agentToken === "string") patch.agentToken = body.agentToken.trim();
       if (typeof body.clientToken === "string") patch.clientToken = body.clientToken.trim();
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
-      saveConfig({ relay: patch });
-      Object.assign(cfg, loadConfig());
-      syncRelay();
+      Object.assign(cfg, saveConfig({ relay: patch }));
+      syncRelay(cfg);
       return json(res, 200, {
         ...relayLink.state,
         url: cfg.relay?.url ?? "",
@@ -9305,14 +9303,13 @@ const server = createServer(async (req, res) => {
       if (!agentToken || !clientToken) {
         return json(res, 502, { error: "Bloks Cloud opened a space but sent no tokens for it" });
       }
-      saveConfig({ relay: { url, agentToken, clientToken, enabled: true } });
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig({ relay: { url, agentToken, clientToken, enabled: true } }));
       // Pairing stays exactly as the owner left it. It is the master
       // switch for every remote path (see syncRelay), and paying for
       // Cloud is not the same act as opening this Mac to the network, so
       // the answer below reports what is actually true instead: with
       // pairing off, `configured` and `connected` are both false.
-      syncRelay();
+      syncRelay(cfg);
       return json(res, 200, {
         ...relayLink.state,
         // the space that was just minted, which is the truth for the
@@ -9446,8 +9443,7 @@ const server = createServer(async (req, res) => {
       if (transport === "http" ? !entry.url : !entry.command) {
         return json(res, 400, { error: transport === "http" ? "a valid http(s) url is required" : "a command is required" });
       }
-      saveConfig({ mcpServers: [...(cfg.mcpServers ?? []), entry] } as Partial<AppConfig>);
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig({ mcpServers: [...(cfg.mcpServers ?? []), entry] } as Partial<AppConfig>));
       return json(res, 201, { id: entry.id });
     }
     m = path.match(/^\/api\/mcp-servers\/([\w-]+)$/);
@@ -9457,8 +9453,7 @@ const server = createServer(async (req, res) => {
       if (remaining.length === (cfg.mcpServers ?? []).length) {
         return json(res, 404, { error: "no such server" });
       }
-      saveConfig({ mcpServers: remaining } as Partial<AppConfig>);
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig({ mcpServers: remaining } as Partial<AppConfig>));
       // detach it from every agent so nothing dangles
       for (const b of store.bots) {
         if (b.mcpServers?.includes(m![1])) {
@@ -9962,8 +9957,7 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: `${card.secret.envName} is a name the system reads for itself, so it cannot hold a secret` });
       }
       // straight to the config file; the transcript never sees it
-      saveConfig({ secrets: { [card.secret.envName]: value } });
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig({ secrets: { [card.secret.envName]: value } }));
       // No engine reload: the next turn reads secrets fresh (see startTurn).
       // Reloading tore down every engine, killing any turn in flight,
       // including the one the previous card had just resumed.
@@ -10045,10 +10039,11 @@ const server = createServer(async (req, res) => {
         });
       }
       const was = readRaw(memoryJournal.pathOf(m[1], "MEMORY.md"));
-      if (!workspace.writeMemoryFile(m[1], body.text)) {
-        return json(res, 409, { error: "MEMORY.md is a link to somewhere else now, so it was not saved. Look at the agent's workspace." });
-      }
-      if (memoryJournal.record(m[1], "MEMORY.md", "you", was, body.text)) {
+      if (memoryJournal.record(m[1], "MEMORY.md", "you", was, body.text, undefined, () => {
+        if (!workspace.writeMemoryFile(m![1], body.text)) {
+          throw Object.assign(new Error("MEMORY.md is a link to somewhere else now, so it was not saved. Look at the agent's workspace."), { status: 409 });
+        }
+      })) {
         broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
       }
       return json(res, 200, { ok: true, truncated: workspace.readMemoryFile(m[1]).truncated });
@@ -10100,16 +10095,18 @@ const server = createServer(async (req, res) => {
       const was = readRaw(target);
       if (method === "DELETE") {
         if (was === null) return json(res, 404, { error: "no such topic" });
-        rmSync(target, { force: true });
-        memoryJournal.record(m[1], file, "you", was, null);
+        memoryJournal.record(m[1], file, "you", was, null, undefined, () => rmSync(target, { force: true }));
       } else {
         const body = await readBody(req);
         if (typeof body.text !== "string") return json(res, 400, { error: "text required" });
         if (Buffer.byteLength(body.text, "utf8") > workspace.MEMORY_FILE_MAX_BYTES) {
           return json(res, 400, { error: "a topic is capped at 256KB" });
         }
-        if (!workspace.writeMemoryTopic(m[1], name, body.text)) return json(res, 400, { error: "a topic is a name ending in .md" });
-        memoryJournal.record(m[1], file, "you", was, body.text);
+        memoryJournal.record(m[1], file, "you", was, body.text, undefined, () => {
+          if (!workspace.writeMemoryTopic(m![1], name, body.text)) {
+            throw Object.assign(new Error("a topic is a name ending in .md"), { status: 400 });
+          }
+        });
       }
       broadcast({ kind: "memory.changed", botId: m[1], changes: 1 });
       return json(res, 200, { ok: true, topics: workspace.listMemoryTopics(m[1]) });
@@ -10609,9 +10606,8 @@ const server = createServer(async (req, res) => {
     if (m && method === "DELETE") {
       const spec = specFor(m[1]);
       if (!spec) return json(res, 404, { error: "no such provider" });
-      disconnectProvider(spec.kind);
-      Object.assign(cfg, loadConfig());
-      // loadConfig re-reads the file; drop the key it no longer holds
+      Object.assign(cfg, disconnectProvider(spec.kind));
+      // Drop the key the saved config no longer holds
       delete cfg.providers?.[spec.kind];
       if (spec.kind === "grok") delete cfg.xai;
       await reloadProviders();
@@ -11012,8 +11008,7 @@ const server = createServer(async (req, res) => {
       if (typeof body.hostName === "string") {
         const name = people.cleanName(body.hostName);
         if (name) {
-          saveConfig({ profile: { ...(cfg.profile ?? {}), name } });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ profile: { ...(cfg.profile ?? {}), name } }));
         }
       }
       if (!blok.sharing) {
@@ -11147,9 +11142,11 @@ const server = createServer(async (req, res) => {
       }
       const blok = bloks.get(inv.roomId);
       if (!blok?.sharing) return json(res, 409, { error: "that room is no longer shared" });
-      const approved = people.approveInvite(inv.id);
+      let device!: ReturnType<typeof addMemberDevice>;
+      const approved = people.approveInvite(inv.id, (person) => {
+        device = addMemberDevice(person.id, person.name, inv.claim!.tokenHash);
+      });
       if (!approved) return json(res, 409, { error: "nobody is waiting on that invite" });
-      const device = addMemberDevice(approved.person.id, approved.person.name, inv.claim!.tokenHash);
       people.noteInviteDevice(inv.id, device.id);
       const notice = store.appendMessage(blok.id, {
         role: "bot",
@@ -11182,7 +11179,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "DELETE") {
       const who = people.person(m[2]);
       if (!who) return json(res, 404, { error: "no such person" });
-      const { removed, roomless } = people.removeFromRoom(who.id, m[1]);
+      const { removed, roomless } = removeMemberFromRoom(who.id, m[1]);
       if (!removed) return json(res, 404, { error: "no such person in that room" });
       if (roomless) await revokeMember(who.id, who.relayTokenHash);
       const notice = store.appendMessage(m[1], { role: "bot", kind: "notice", event: true, text: `${who.name} was removed from the room.` });
@@ -12044,7 +12041,7 @@ const server = createServer(async (req, res) => {
         name: bot?.name ?? "",
         title: bot?.title ?? "",
         taskId: asAgent.taskId,
-        fingerprint: identityFor(asAgent.botId).fingerprint,
+        fingerprint: fingerprintFor(asAgent.botId),
         can: capabilities(),
       });
     }
@@ -13096,11 +13093,12 @@ const server = createServer(async (req, res) => {
       if (typeof body.enabled !== "boolean") {
         return json(res, 400, { error: "enabled must be true or false" });
       }
-      setRemoteEnabled(body.enabled);
+      const saved = setRemoteEnabled(body.enabled);
+      Object.assign(cfg, saved);
       // pairing is the master switch for all remote access, the relay
       // included: turning it off drops the outbound line immediately
-      syncRelay();
-      const status = pairingStatus();
+      syncRelay(saved);
+      const status = pairingStatus(saved);
       broadcast({ kind: "pairing", ...status });
       return json(res, 200, status);
     }
@@ -13140,22 +13138,24 @@ const server = createServer(async (req, res) => {
     if (method === "POST" && path === "/api/pair/claim") {
       const body = await readBody(req);
       // `credential` is the QR token or the code; `code` is the old name
-      const claimed = claimPairing(body.credential ?? body.code, body.device);
+      const claimed = claimPairing(body.credential ?? body.code, body.device, (saved) => {
+        broadcast({ kind: "pairing", ...pairingStatus(saved) });
+      });
       if (!claimed) return json(res, 401, { error: "that code is not valid" });
-      broadcast({ kind: "pairing", ...pairingStatus() });
       return json(res, 200, claimed);
     }
     if (method === "DELETE" && path === "/api/pair/devices") {
       if (!local) return json(res, 403, { error: "not from here" });
-      revokeAll();
-      broadcast({ kind: "pairing", ...pairingStatus() });
+      const saved = revokeAll();
+      broadcast({ kind: "pairing", ...pairingStatus(saved) });
       return json(res, 200, { ok: true });
     }
     m = path.match(/^\/api\/pair\/devices\/([\w-]+)$/);
     if (m && method === "DELETE") {
       if (!local) return json(res, 403, { error: "not from here" });
-      const ok = revokeDevice(m[1]);
-      if (ok) broadcast({ kind: "pairing", ...pairingStatus() });
+      const ok = revokeDevice(m[1], (saved) => {
+        broadcast({ kind: "pairing", ...pairingStatus(saved) });
+      });
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "no such device" });
     }
 
@@ -13174,8 +13174,7 @@ const server = createServer(async (req, res) => {
       const mode = body.mode as Approvals;
       if (!APPROVALS.includes(mode)) return json(res, 400, { error: "mode is ask, edits, auto or full" });
       const { approvals: _old, ...rest } = cfg.agentDefaults ?? {};
-      saveConfig({ agentDefaults: mode === "ask" ? rest : { ...rest, approvals: mode } });
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig({ agentDefaults: mode === "ask" ? rest : { ...rest, approvals: mode } }));
       let changed = 0;
       if (body.applyToAll === true) {
         for (const b of store.bots) {
@@ -13233,15 +13232,14 @@ const server = createServer(async (req, res) => {
             : undefined;
         const share = typeof beforeTurnAt === "number" && beforeTurnAt >= 0.2 && beforeTurnAt < 1 ? beforeTurnAt : undefined;
         if (typeof micro === "boolean" || typeof idle === "boolean" || ceiling !== undefined || share !== undefined) {
-          saveConfig({
+          Object.assign(cfg, saveConfig({
             compaction: {
               ...(typeof micro === "boolean" ? { micro } : {}),
               ...(typeof idle === "boolean" ? { idle } : {}),
               ...(ceiling !== undefined ? { beforeTurn: ceiling } : {}),
               ...(share !== undefined ? { beforeTurnAt: share } : {}),
             },
-          });
-          Object.assign(cfg, loadConfig());
+          }));
           wroteSomething = true;
         }
       }
@@ -13251,16 +13249,14 @@ const server = createServer(async (req, res) => {
           if (!STALL_CHOICES.includes(minutes as (typeof STALL_CHOICES)[number])) {
             return json(res, 400, { error: `stallMinutes is one of ${STALL_CHOICES.join(", ")} (0 is never)` });
           }
-          saveConfig({ turns: { stallMinutes: minutes as number } });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ turns: { stallMinutes: minutes as number } }));
           wroteSomething = true;
         }
       }
       if (body.skills && typeof body.skills === "object" && !Array.isArray(body.skills)) {
         const propose = (body.skills as Record<string, unknown>).propose;
         if (typeof propose === "boolean") {
-          saveConfig({ skills: { propose } });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ skills: { propose } }));
           wroteSomething = true;
         }
       }
@@ -13270,8 +13266,7 @@ const server = createServer(async (req, res) => {
       if (body.shortcuts && typeof body.shortcuts === "object" && !Array.isArray(body.shortcuts)) {
         const asked = (body.shortcuts as Record<string, unknown>).quickAsk;
         if (asked === null) {
-          saveConfig({ shortcuts: { quickAsk: null } });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ shortcuts: { quickAsk: null } }));
           wroteSomething = true;
         } else if (typeof asked === "string") {
           const accelerator = asked.trim();
@@ -13280,8 +13275,7 @@ const server = createServer(async (req, res) => {
             /^([A-Za-z]+\+)+[A-Za-z0-9]+$/.test(accelerator) &&
             /(Command|Control|Alt|Shift|Super|CommandOrControl)\+/.test(accelerator);
           if (!valid) return json(res, 400, { error: "that is not a keyboard shortcut" });
-          saveConfig({ shortcuts: { quickAsk: accelerator } });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ shortcuts: { quickAsk: accelerator } }));
           wroteSomething = true;
         }
       }
@@ -13317,16 +13311,14 @@ const server = createServer(async (req, res) => {
           }
           next.modelSelection = { instanceId: pick.instanceId, model: pick.model };
         }
-        saveConfig({ agentDefaults: next });
-        Object.assign(cfg, loadConfig());
+        Object.assign(cfg, saveConfig({ agentDefaults: next }));
         wroteSomething = true;
       }
       if (body.setupDone === true) {
         // saying setup is done when it already is, is still a success: the
         // first answer used to be "nothing to save", a 400 for doing it right
         if (!cfg.setupDoneAt) {
-          saveConfig({ setupDoneAt: Date.now() });
-          Object.assign(cfg, loadConfig());
+          Object.assign(cfg, saveConfig({ setupDoneAt: Date.now() }));
         }
         wroteSomething = true;
       }
@@ -13368,8 +13360,7 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "Composio didn't accept that API key" });
         }
       }
-      saveConfig(patch);
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, saveConfig(patch));
       // Only a section instanceConfigs builds engines from is worth the
       // reload, because a reload cuts off the turns of every engine it
       // rebuilds, and these two reach the environment of all of them.

@@ -16,8 +16,9 @@
 //
 // Nothing here leaves the machine, and nothing switches on its own: a
 // suggestion is a sentence with a button.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { readSaved } from "./atomic-write.ts";
 
 export interface TurnLog {
   id: string;
@@ -50,12 +51,7 @@ export class TurnLogStore {
 
   constructor(file: string) {
     this.file = file;
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(parsed)) this.turns = parsed;
-    } catch {
-      /* none yet */
-    }
+    this.turns = readSaved<TurnLog[]>(file, [], Array.isArray);
   }
 
   private save() {

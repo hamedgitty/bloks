@@ -14,7 +14,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "../server/atomic-write.ts";
+import { readSaved, writeFileAtomic } from "../server/atomic-write.ts";
 
 const scratch = (t: { after: (fn: () => void) => void }) => {
   const dir = mkdtempSync(join(tmpdir(), "bloks-atomic-"));
@@ -61,50 +61,94 @@ test("a file that will not parse is moved aside; a missing one is left alone", (
   const dir = scratch(t);
   const file = join(dir, "jobs.json");
   writeFileSync(file, '[{"id":"j1","title":"Wri');
-  let error: unknown;
-  try {
-    JSON.parse(readFileSync(file, "utf8"));
-  } catch (e) {
-    error = e;
-  }
-  const aside = setAside(file, error);
+  assert.deepEqual(readSaved(file, [], Array.isArray), []);
+  const aside = join(dir, readdirSync(dir)[0]);
   assert.ok(aside, "the unreadable file was kept");
-  assert.match(aside!, /jobs\.json\.corrupt-[\dT-]+Z$/);
+  assert.match(aside!, /jobs\.json\.corrupt-[\dT-]+Z-[\da-f-]+$/);
   assert.equal(readFileSync(aside!, "utf8"), '[{"id":"j1","title":"Wri');
   assert.deepEqual(readdirSync(dir), [aside!.slice(dir.length + 1)]);
 
   // A first run has no file at all, and that is not worth a copy or a word.
-  let missing: unknown;
-  try {
-    readFileSync(join(dir, "none.json"), "utf8");
-  } catch (e) {
-    missing = e;
-  }
-  assert.equal(setAside(join(dir, "none.json"), missing), null);
+  assert.deepEqual(readSaved(join(dir, "none.json"), [], Array.isArray), []);
   assert.deepEqual(readdirSync(dir).length, 1);
 });
 
-test("a file that could not be read this once is left where it is", () => {
+test("a file that could not be read this once refuses empty state and can be retried", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "bloks-aside-io-"));
   try {
     const file = join(dir, "messages-x.json");
     writeFileSync(file, '[{"id":"m1"}]');
     // too many open files, say: the file itself may be fine
-    const busy = Object.assign(new Error("EMFILE: too many open files"), { code: "EMFILE" });
-    assert.equal(setAside(file, busy), null);
+    const real = fs.readFileSync;
+    t.mock.method(fs, "readFileSync", (path: any, ...args: any[]) => {
+      if (path === file) throw Object.assign(new Error("planted-secret"), { code: "EMFILE" });
+      return (real as any)(path, ...args);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.throws(() => readSaved(file, [], Array.isArray), /EMFILE.*Restore file access and retry/);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     assert.equal(readFileSync(file, "utf8"), '[{"id":"m1"}]');
     // a file that is there and is not JSON is the one that moves
     writeFileSync(file, '[{"id":');
-    let parse: unknown;
-    try {
-      JSON.parse(readFileSync(file, "utf8"));
-    } catch (error) {
-      parse = error;
-    }
-    assert.ok(setAside(file, parse));
+    assert.deepEqual(readSaved(file, [], Array.isArray), []);
+    assert.equal(readdirSync(dir).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a refused preservation never returns empty or quotes the invalid text", (t) => {
+  const dir = scratch(t);
+  const file = join(dir, "config.json");
+  const text = '{"key":planted-secret}';
+  writeFileSync(file, text, { mode: 0o600 });
+  t.mock.method(fs, "renameSync", () => {
+    throw Object.assign(new Error("planted-secret in the filesystem error"), { code: "EACCES" });
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.throws(() => readSaved(file, {}, (value) => Boolean(value)), (error: any) => {
+    assert.match(error.message, /config\.json \(EACCES\).*Restore file access and retry/);
+    assert.doesNotMatch(String(error.stack), /planted-secret/);
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  assert.equal(readFileSync(file, "utf8"), text);
+  assert.deepEqual(readdirSync(dir), ["config.json"]);
+});
+
+test("a rejected top level or decoder preserves the original bytes and permissions", (t) => {
+  const dir = scratch(t);
+  for (const [name, text, decode] of [
+    ["array.json", "{}", JSON.parse],
+    ["key.pem", "planted-secret", () => { throw new Error("planted-secret"); }],
+  ] as const) {
+    const file = join(dir, name);
+    writeFileSync(file, text, { mode: 0o600 });
+    const warn = t.mock.method(console, "warn", () => {});
+    assert.deepEqual(readSaved(file, [], Array.isArray, decode), []);
+    const aside = readdirSync(dir).find((f) => f.startsWith(name + ".corrupt-"));
+    assert.ok(aside);
+    assert.equal(readFileSync(join(dir, aside), "utf8"), text);
+    if (process.platform !== "win32") assert.equal(statSync(join(dir, aside)).mode & 0o777, 0o600);
+    assert.doesNotMatch(warn.mock.calls.map((c) => c.arguments.join(" ")).join("\n"), /planted-secret/);
+    t.mock.restoreAll();
+  }
+});
+
+test("two invalid versions kept at the same timestamp preserve both originals", (t) => {
+  const dir = scratch(t);
+  const file = join(dir, "config.json");
+  t.mock.method(Date.prototype, "toISOString", () => "2026-01-01T00:00:00.000Z");
+  t.mock.method(console, "warn", () => {});
+  for (const text of ["first invalid version", "second invalid version"]) {
+    writeFileSync(file, text);
+    assert.deepEqual(readSaved(file, {}, () => true), {});
+  }
+  const copies = readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")).sort();
+  assert.deepEqual(copies, ["first invalid version", "second invalid version"]);
 });
 
 test("a save that skips the flush still replaces the file whole", () => {
