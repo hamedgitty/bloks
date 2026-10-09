@@ -6686,9 +6686,14 @@ async function drainMail() {
   // back or the drain is called off
   if (drain.on) return;
   for (const item of [...mailQueue]) {
+    // Another pass over the line may have taken this one while this pass
+    // waited on a turn starting. It is being answered already, and
+    // splicing at -1 would drop whichever mail is last in the line.
+    const at = mailQueue.indexOf(item);
+    if (at < 0) continue;
     const laneId = backgroundTaskId(item.botId, "Email");
     if (!laneId) continue;
-    mailQueue.splice(mailQueue.indexOf(item), 1);
+    mailQueue.splice(at, 1);
     const { mail } = item;
     const text = [
       `An email from ${mail.fromName && mail.fromName !== mail.from ? `${mail.fromName} <${mail.from}>` : mail.from}${mail.subject ? `, subject "${mail.subject}"` : ""}:`,

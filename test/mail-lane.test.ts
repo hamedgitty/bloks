@@ -37,21 +37,36 @@ function stubRelay() {
   return { server, ask: (id: string, payload: string) => send?.({ kind: "ask", id, payload }), results, sent, connected: () => send !== null };
 }
 
-/** An engine that answers every turn at once with the same words. */
+/** An engine that answers every turn at once with the same words. Asked
+ * to summarise a conversation (a fold), it answers the same way, or fails
+ * at once, or holds the call in `folds` until the test lets it fail. */
 async function engine(t: TestContext) {
-  const state = { calls: [] as string[] };
+  const state = { calls: [] as string[], folding: "answer" as "answer" | "fail" | "hold", folds: [] as Array<() => void> };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
+      if (req.url?.endsWith("/models")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ data: [{ id: "m-1" }] }));
+      }
+      if (state.folding !== "answer" && /Summarise this part of a conversation|Here is a summary of a conversation so far/.test(body)) {
+        const fail = () => {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "not now" } }));
+        };
+        if (state.folding === "hold") state.folds.push(fail);
+        else fail();
+        return;
+      }
       res.writeHead(200, { "content-type": "application/json" });
-      if (req.url?.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "m-1" }] }));
       state.calls.push(body);
       res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Here is my answer." } }] }));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   t.after(() => {
+    state.folds.forEach((fail) => fail());
     server.closeAllConnections();
     server.close();
   });
@@ -134,4 +149,52 @@ test("a mail whose turn fails getting ready leaves no sender to email the lane's
   assert.ok(await box.idle(dee.id));
   await new Promise((r) => setTimeout(r, 500));
   assert.deepEqual(box.relay.sent.map((mail) => mail.to), [], "somebody was emailed an answer that was not to them");
+});
+
+test("two passes over the mail line never answer one mail twice, or drop another", async (t) => {
+  const box = await mailbox(t);
+  const bea = await box.agent("Bea");
+  const cy = await box.agent("Cy");
+  const sentTo = (address: string) => box.relay.sent.filter((mail) => mail.to === address).length;
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // Bea's Email lane, long enough that its next turn folds before it
+  // starts. A model the table does not know gets a small window, so one
+  // long message does it; folds fail until the race, so it stays long.
+  box.model.state.folding = "fail";
+  assert.equal(await box.deliver("bea", "seed@example.com", "Hello"), 202);
+  assert.ok(await waitFor(() => sentTo("seed@example.com") === 1), "the first mail was not answered");
+  const lane = (await box.lane(bea.id))!;
+  for (const text of ["x".repeat(99_000), "two", "three"]) {
+    await box.h.fetch(`/api/bots/${bea.id}/messages`, { method: "POST", body: JSON.stringify({ text, taskId: lane.id }) });
+    assert.ok(await box.idle(bea.id));
+    await pause(1_000);
+  }
+
+  // A for Bea and B for Cy wait in the line through a drain, so the pass
+  // that calling it off starts has both. A's turn then waits on its fold.
+  box.model.state.folding = "hold";
+  await box.h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 60 }) });
+  assert.equal(await box.deliver("bea", "a@example.com", "Mail A"), 202);
+  assert.equal(await box.deliver("cy", "b@example.com", "Mail B"), 202);
+  await box.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => box.model.state.folds.length >= 1), "A's turn did not fold first, so this proves nothing");
+
+  // Meanwhile another pass answers B, then C after it, and D waits for
+  // Bea's lane, last in the line.
+  assert.equal(await box.deliver("cy", "c@example.com", "Mail C"), 202);
+  assert.ok(await waitFor(() => sentTo("b@example.com") === 1 && sentTo("c@example.com") === 1), "B and C were not answered");
+  assert.equal(await box.deliver("bea", "d@example.com", "Mail D"), 202);
+  await pause(500);
+
+  // The first pass carries on past A, to the B the other pass already
+  // answered. It used to splice it out at -1, taking D with it, and
+  // answer B a second time.
+  box.model.state.folding = "fail";
+  box.model.state.folds.splice(0).forEach((fail) => fail());
+  assert.ok(await waitFor(() => sentTo("a@example.com") === 1 && sentTo("d@example.com") === 1, 20_000), "A or D was never answered");
+  await pause(1_000);
+  assert.ok(await box.idle(cy.id));
+  assert.equal(sentTo("b@example.com"), 1, "B was answered twice");
+  assert.equal(sentTo("d@example.com"), 1);
 });
