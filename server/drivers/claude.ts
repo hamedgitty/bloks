@@ -1068,14 +1068,42 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         },
       },
 
+      // The prompt goes in on stdin, like a turn's: a summary prompt is the
+      // conversation itself, and argv is readable by every process on the
+      // machine. The same variables a turn drops are dropped here, or a key
+      // in the environment would bill these summaries to the API instead
+      // of the person's subscription.
       generateText: (prompt: string) =>
         new Promise((resolve, reject) => {
-          execFile(
-            config.cli,
-            ["-p", prompt, "--model", ONE_SHOT_MODEL, "--output-format", "text"],
-            { timeout: 60_000, env: { ...process.env }, windowsHide: true },
-            (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
-          );
+          const env: Record<string, string | undefined> = { ...process.env };
+          delete env.ANTHROPIC_API_KEY;
+          delete env.CLAUDECODE;
+          delete env.CLAUDE_CODE_ENTRYPOINT;
+          const child = spawn(config.cli, ["-p", "--model", ONE_SHOT_MODEL, "--output-format", "text"], {
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          let out = "";
+          let err = "";
+          const timer = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error("Claude Code did not answer within a minute"));
+          }, 60_000);
+          timer.unref?.();
+          child.stdout.on("data", (chunk) => (out += chunk));
+          child.stderr.on("data", (chunk) => (err = (err + chunk).slice(-2_000)));
+          child.stdin.on("error", () => {});
+          child.on("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          child.on("close", (code) => {
+            clearTimeout(timer);
+            if (code === 0) resolve(out.trim());
+            else reject(new Error(err.trim() || `Claude Code exited with ${code}`));
+          });
+          child.stdin.end(prompt);
         }),
 
       dispose: async () => {
