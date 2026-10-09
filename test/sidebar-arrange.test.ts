@@ -15,10 +15,10 @@ const patch = (h: Harness, path: string, body: unknown) =>
 
 test("pins, their places and the order of the headings outlast a restart", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-arrange-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const first = await startHarness({ HOME: home });
   // stopped below as well; a failure on the way must not leave it running
   t.after(() => first.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
 
   const hire = async (name: string) => (await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name }) })).bot;
   const ada = await hire("Ada");
@@ -91,9 +91,9 @@ test("pins, their places and the order of the headings outlast a restart", async
 
 test("a workspace from before: rooms pinned in their old order, pinned agents after them, activity read off the transcripts", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-upgrade-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const first = await startHarness({ HOME: home });
   t.after(() => first.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const hire = async (name: string) => (await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name }) })).bot;
   const talked = await hire("Talked");
   const told = await hire("Told by an agent");

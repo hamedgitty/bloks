@@ -38,6 +38,8 @@ const FAKE_PI = [
   '  if (msg.method === "initialize") reply(msg.id, { protocolVersion: 1, agentCapabilities: {} });',
   '  else if (msg.method === "session/new" || msg.method === "session/load") reply(msg.id, { sessionId: "s1", models: models() });',
   '  else if (msg.method === "session/prompt") {',
+  // the session is open, with the catalog it was opened with
+  '    fs.writeFileSync(path.join(home, "pi-prompted"), "");',
   "    const wait = setInterval(() => {",
   '      if (!fs.existsSync(path.join(home, "pi-release"))) return;',
   "      clearInterval(wait);",
@@ -55,7 +57,6 @@ const piModels = async (h: Harness): Promise<string[]> => {
 
 test("an engine updated mid-turn is rebuilt once its turn ends, and other engines carry on", { skip: process.platform === "win32" }, async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-update-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   mkdirSync(join(home, ".local", "bin"), { recursive: true });
   writeFileSync(join(home, ".local", "bin", "pi-acp"), FAKE_PI + "\n", { mode: 0o755 });
   writeFileSync(join(home, "pi-models.json"), catalog("vendor/old"));
@@ -66,6 +67,8 @@ test("an engine updated mid-turn is rebuilt once its turn ends, and other engine
   const fake = await fakeProvider(t);
   const h = await startHarness({ HOME: home, SHELL: shell });
   t.after(() => h.stop());
+  // only once the server has stopped writing into it
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   assert.ok(await waitFor(async () => (await piModels(h)).includes("vendor/old")), "pi never served its catalog");
 
   const { bot: pi } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Pia" }) });
@@ -75,7 +78,10 @@ test("an engine updated mid-turn is rebuilt once its turn ends, and other engine
     await waitFor(async () => (await h.json("/api/bots")).bots.find((b: any) => b.id === pi.id)?.busy),
     "the pi turn never started",
   );
-  await new Promise((r) => setTimeout(r, 500));
+  // Busy is set before the engine has opened its session. Updated before
+  // that, the session would open on the new catalog and the turn would
+  // rightly report the new models, so wait for the prompt itself.
+  assert.ok(await waitFor(() => existsSync(join(home, "pi-prompted"))), "pi never got the prompt");
 
   const updated = await h.json("/api/engines/pi/update", { method: "POST" });
   assert.equal(updated.ok, true, updated.log);

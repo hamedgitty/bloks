@@ -34,7 +34,7 @@
     "dev:desktop": "node scripts/bundle-updater.mjs && electron .",
     "build": "node scripts/bundle-updater.mjs && tsc -b && tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json && tsc -p tsconfig.test.json",
-    "test": "node --test \"test/*.test.ts\"",
+    "test": "node --test --test-timeout=300000 \"test/*.test.ts\"",
     "test:watch": "node --test --watch \"test/*.test.ts\"",
     "preview": "vite preview",
     "build:server": "tsc -p tsconfig.server.build.json && node scripts/mark-server-esm.mjs",

@@ -147,7 +147,6 @@ test("each turn is charged its own cost, not the session's running total, across
 });
 `,
   );
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const cost = async (h: Awaited<ReturnType<typeof startHarness>>) => (await h.json("/api/usage?days=1")).total.cost;
   const turn = async (h: Awaited<ReturnType<typeof startHarness>>, botId: string, n: number) => {
     await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `turn ${n}` }) });
@@ -167,6 +166,7 @@ test("each turn is charged its own cost, not the session's running total, across
 
   const second = await startHarness({ HOME: home });
   t.after(() => second.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   await turn(second, bot.id, 4);
   assert.equal(await cost(second), 4, "the first turn after a restart was charged the whole session again");
 });

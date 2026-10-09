@@ -110,10 +110,10 @@ async function currentSeq(h: Harness) {
 
 test("a queued burst joins the conversation after what the agent said while it waited, on disk and in the replay", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-queued-order-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const fake = await fakeProvider(t);
   const h = await startHarness({ HOME: home });
   t.after(() => h.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const bot = await agentOn(h, fake.port);
 
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "FIRST_ASK" }) });
@@ -207,7 +207,6 @@ test("a turn's change card stays under that turn, above a message delivered afte
 
 test("a message not sent after a restart stays out of the conversation until it is sent again", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-queued-order-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const fake = await fakeProvider(t);
   fake.state.answerAtOnce = true;
   const first = await startHarness({ HOME: home });
@@ -226,6 +225,7 @@ test("a message not sent after a restart stays out of the conversation until it 
 
   const h = await startHarness({ HOME: home });
   t.after(() => h.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const unsent = await waitFor(async () => (await lane(h, bot)).find((m) => m.id === "stale-words" && m.unsent), 15_000);
   assert.equal(unsent.queued, false);
 

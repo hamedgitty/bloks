@@ -60,7 +60,6 @@ test("a lock naming a live process that is not Bloks is stale", { skip: process.
 
 test("a second server on the same home refuses to start, and the first keeps its data", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-two-servers-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const first = await startHarness({ HOME: home });
   const { bot } = await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Keeper", description: "the right one" }) });
 
@@ -91,6 +90,7 @@ test("a second server on the same home refuses to start, and the first keeps its
   // and once it has stopped, the next one starts as usual
   const again = await startHarness({ HOME: home });
   t.after(() => again.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const { bots: after } = await again.json("/api/bots?messages=0");
   assert.equal(after.find((b: any) => b.id === bot.id)?.description, "the right one");
 });

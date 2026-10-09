@@ -80,7 +80,6 @@ test("a turn cut off by a crash is picked up once, in its own lane, with what wa
 
 test("a turn somebody stopped, or one whose agent was put away, stays stopped", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-cutoff-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const fake = await fakeProvider(t);
 
   const first = await startHarness({ HOME: home });
@@ -101,6 +100,7 @@ test("a turn somebody stopped, or one whose agent was put away, stays stopped", 
   fake.state.answerAtOnce = true;
   const second = await startHarness({ HOME: home });
   t.after(() => second.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   await new Promise((r) => setTimeout(r, 2_000));
   assert.equal(fake.sent(PICKUP), 0, "a turn that should have stayed stopped was picked up");
   for (const bot of [stopped, shelved]) {
@@ -112,7 +112,6 @@ test("a turn somebody stopped, or one whose agent was put away, stays stopped", 
 
 test("after too long away the person decides, an old card answers nothing, and stale queued words stay unsent", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-cutoff-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const fake = await fakeProvider(t);
   fake.state.askOn = "DECIDE-SHIP";
 
@@ -137,6 +136,7 @@ test("after too long away the person decides, an old card answers nothing, and s
   const callsBefore = fake.state.calls.length;
   const second = await startHarness({ HOME: home });
   t.after(() => second.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const offered = await waitFor(async () => (await messagesOf(second, bot)).find((m) => m.kind === "notice" && m.carryOn));
   assert.ok(offered, "no Continue was offered");
   assert.match(offered.text, /^Kat was cut off when Bloks stopped, more than 12 hours ago/);

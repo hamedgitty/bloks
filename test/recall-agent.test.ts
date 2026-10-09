@@ -12,7 +12,6 @@ import { startHarness } from "./helpers/server.ts";
 
 test("a hit from another agent names it and gives its id; the person's own words stay the person's", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-recall-agent-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const first = await startHarness({ HOME: home });
   const { bot: alpha } = await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Alpha" }) });
   const { bot: bravo } = await first.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Bravo" }) });
@@ -35,6 +34,7 @@ test("a hit from another agent names it and gives its id; the person's own words
 
   const h = await startHarness({ HOME: home });
   t.after(() => h.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const { hits } = await h.json(`/api/bots/${bravo.id}/recall?q=zebra`);
   const fromAlpha = hits.find((hit: any) => hit.messageId === "from-alpha");
   const fromPerson = hits.find((hit: any) => hit.messageId === "from-person");

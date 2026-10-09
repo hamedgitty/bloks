@@ -206,7 +206,6 @@ test("a quiet Claude Code lane is compacted without a word in the person's name,
 test("an idle compaction cut off by a restart is dropped, not picked up", async (t) => {
   // long enough to still be running when the server goes
   const home = fakeClaudeHome(20_000);
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const runs = () =>
     existsSync(join(home, "runs.jsonl"))
       ? readFileSync(join(home, "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
@@ -234,6 +233,7 @@ test("an idle compaction cut off by a restart is dropped, not picked up", async 
 
   const second = await startHarness({ HOME: home, BLOKS_IDLE_CACHE_MS: "8000" });
   t.after(() => second.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const ran = runs().length;
   await new Promise((r) => setTimeout(r, 2_000));
   assert.equal(runs().length, ran, "something ran in the lane after the restart");

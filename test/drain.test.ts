@@ -127,10 +127,10 @@ const drainState = async (h: { json(path: string, init?: RequestInit): Promise<a
 
 test("during a drain the running turn finishes, and what arrives waits until it is called off", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-drain-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const fake = await fakeProvider(t);
   const h = await startHarness({ HOME: home });
   t.after(() => h.stop());
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const ivy = await agentOn(h, fake.port, "Ivy");
   const jo = await agentOn(h, fake.port, "Jo");
 
