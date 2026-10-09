@@ -17,6 +17,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import { noticeFor } from "@/lib/notify";
@@ -140,6 +141,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /** Lane requests out from this window, by agent (see switchLane), and a
+   * count bumped as each one settles, for the lane asking below. */
+  const switching = useRef(new Map<string, number>());
+  const [switchesSettled, setSwitchesSettled] = useState(0);
+
   // Text fields save as you type, so edits are coalesced per agent
   // rather than sending a request per keystroke.
   const patchTimers = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; patch: Record<string, unknown> }>());
@@ -161,6 +167,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // The shell shows it over every view and takes it down again (App.tsx).
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+    };
+    // A request that opens, makes or closes one of an agent's
+    // conversations. Its answer brings the open conversation's messages,
+    // so while it is out, the frame that announces the switch first does
+    // not ask for them a second time (see laneLoads below).
+    const switchLane = (botId: string, request: Promise<any>) => {
+      switching.current.set(botId, (switching.current.get(botId) ?? 0) + 1);
+      request
+        .then(adoptAnswer)
+        .catch(showError)
+        .finally(() => {
+          const left = (switching.current.get(botId) ?? 1) - 1;
+          if (left > 0) switching.current.set(botId, left);
+          else switching.current.delete(botId);
+          // an answer that brought nothing (a refusal) leaves the lane to ask for
+          setSwitchesSettled((n) => n + 1);
+        });
     };
     // Remembering that a card was dealt with is a nicety, not a
   // correctness requirement, so a failure here is allowed to pass.
@@ -334,25 +357,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .catch(showError);
           break;
         case "newTask":
-          api(`/api/bots/${action.botId}/tasks`, { method: "POST", body: "{}" })
-            .then(adoptAnswer)
-            .catch(showError);
+          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks`, { method: "POST", body: "{}" }));
           break;
         case "selectTask":
           keptUnread.current = null;
-          api(`/api/bots/${action.botId}/tasks/${action.taskId}/activate`, { method: "POST" })
-            .then(adoptAnswer)
-            .catch(showError);
+          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}/activate`, { method: "POST" }));
           break;
         case "closeTask":
-          api(`/api/bots/${action.botId}/tasks/${action.taskId}`, { method: "DELETE" })
-            .then(adoptAnswer)
-            .catch(showError);
+          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}`, { method: "DELETE" }));
           break;
         case "clearTask":
-          api(`/api/bots/${action.botId}/tasks/${action.taskId}/clear`, { method: "POST" })
-            .then(adoptAnswer)
-            .catch(showError);
+          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}/clear`, { method: "POST" }));
           break;
         case "renameTask":
           api(`/api/bots/${action.botId}/tasks/${action.taskId}`, {
@@ -393,9 +408,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const open = bot.activeTaskId ?? bot.threadId;
           const pinged = action.lane ? (action.lane === open ? null : action.lane) : pingedLane(bot);
           if (pinged) {
-            api(`/api/bots/${bot.id}/tasks/${pinged}/activate`, { method: "POST" })
-              .then(adoptAnswer)
-              .catch(showError);
+            switchLane(bot.id, api(`/api/bots/${bot.id}/tasks/${pinged}/activate`, { method: "POST" }));
           } else if (openLaneUnread(bot)) {
             api(`/api/bots/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
           }
@@ -467,6 +480,46 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     return wrapped;
   }, []);
+
+  // An agent's open conversation can change with no transcript to show,
+  // when a lane is opened on another device or a rehearsal opens one. The
+  // reducer empties the old lane's messages and names the new lane in
+  // laneLoads; this asks for them. A message said in the new lane just
+  // before the switch reached no conversation here, and the page has it.
+  // Only the latest ask for an agent is taken, and the reducer drops an
+  // answer for a lane that is no longer open. A switch made here waits
+  // for its own answer instead (switchLane).
+  const laneAsks = useRef(new Map<string, { threadId: string; n: number }>());
+  const laneAskCount = useRef(0);
+  useEffect(() => {
+    for (const [botId, threadId] of Object.entries(state.laneLoads)) {
+      if (switching.current.has(botId)) continue;
+      if (laneAsks.current.get(botId)?.threadId === threadId) continue;
+      const n = ++laneAskCount.current;
+      laneAsks.current.set(botId, { threadId, n });
+      const latest = () => laneAsks.current.get(botId)?.n === n;
+      api(`/api/bots/${botId}/messages?thread=${encodeURIComponent(threadId)}`)
+        .then((page) => {
+          if (!latest()) return;
+          rawDispatch({
+            type: "laneLoaded",
+            id: botId,
+            threadId,
+            messages: Array.isArray(page.messages) ? page.messages : [],
+            olderMessages: typeof page.olderMessages === "number" ? page.olderMessages : 0,
+          });
+        })
+        .catch((e) => {
+          // an empty conversation needs a reason, while it is still open
+          if (latest() && stateRef.current.laneLoads[botId] === threadId) {
+            rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+          }
+        })
+        .finally(() => {
+          if (latest()) laneAsks.current.delete(botId);
+        });
+    }
+  }, [state.laneLoads, switchesSettled]);
 
   // ── first load, then live updates ────────────────────────────────────
   /**

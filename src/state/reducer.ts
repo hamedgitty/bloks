@@ -532,6 +532,10 @@ export interface AppState {
    * of them is late (pushes through the relay can arrive out of order)
    * and would reopen a finished reply beside its own message. */
   settledTurns: Record<string, true>;
+  /** Agents whose open conversation changed with no transcript to show
+   * for it, as when a lane is opened on another device: the lane, by
+   * agent, whose messages the store is asking for. */
+  laneLoads: Record<string, string>;
   /** the most recent picture of each agent's screen */
   screens: Record<string, { png: string; mime: string; source?: "browser" }>;
   /** People in each shared room, by room id. */
@@ -557,6 +561,9 @@ export type Action =
   /** A page of earlier messages for a transcript that arrived trimmed.
    * `threadId` guards against a lane that changed while it was loading. */
   | { type: "earlierLoaded"; id: string; threadId: string; messages: Message[]; olderMessages: number }
+  /** The transcript asked for after an agent's open conversation changed
+   * (see laneLoads). Taken only while that lane is still the one open. */
+  | { type: "laneLoaded"; id: string; threadId: string; messages: Message[]; olderMessages: number }
   | { type: "hydrateBloks"; bloks: Blok[] }
   | { type: "blokPatched"; blok: Omit<Blok, "messages"> }
   | { type: "roomPeople"; roomId: string; people: RoomPerson[] }
@@ -749,7 +756,7 @@ export function reducer(state: AppState, action: Action): AppState {
         : wanted && !action.bots.some((b) => b.id === wanted)
           ? wanted
           : (action.bots.find((b) => !b.hidden)?.id ?? "");
-      return { ...state, bots: action.bots, selectedId, hydrated: true };
+      return { ...state, bots: action.bots, selectedId, hydrated: true, laneLoads: {} };
     }
     case "earlierLoaded": {
       const prepend = <T extends { messages: Message[]; olderMessages?: number }>(t: T): T => {
@@ -954,11 +961,49 @@ export function reducer(state: AppState, action: Action): AppState {
         if (!arrival.threadId) return state;
         return { ...state, bots: [{ messages: [], ...arrival } as Bot, ...state.bots] };
       }
-      return updateBot(state, action.bot.id, (b) => ({
+      const incoming = action.bot as Partial<Bot>;
+      const shown = state.bots.find((b) => b.id === action.bot.id)!;
+      // Another conversation is open now, and what says so brings no
+      // transcript: a bot frame never does. Keeping the messages put the
+      // last lane's words under the new lane's name, so they go, and the
+      // store asks for the new lane's own.
+      if (incoming.threadId && incoming.threadId !== shown.threadId && !incoming.messages) {
+        return {
+          ...updateBot(state, action.bot.id, (b) => ({ ...b, ...action.bot, messages: [], olderMessages: undefined })),
+          laneLoads: { ...state.laneLoads, [action.bot.id]: incoming.threadId },
+        };
+      }
+      const next = updateBot(state, action.bot.id, (b) => ({
         ...b,
         ...action.bot,
-        messages: (action.bot as Partial<Bot>).messages ?? b.messages,
+        messages: incoming.messages ?? b.messages,
       }));
+      // a transcript for the open lane is what was being asked for
+      if (!incoming.messages || !(action.bot.id in state.laneLoads)) return next;
+      const { [action.bot.id]: _, ...laneLoads } = state.laneLoads;
+      return { ...next, laneLoads };
+    }
+    case "laneLoaded": {
+      if (state.laneLoads[action.id] !== action.threadId) return state;
+      const { [action.id]: _, ...laneLoads } = state.laneLoads;
+      return {
+        ...updateBot(state, action.id, (b) => {
+          // What the stream brought while this loaded is as new as the
+          // page or newer, so it wins where both have a message, and the
+          // rest of it follows the page.
+          const streamed = new Map(b.messages.map((m) => [m.id, m]));
+          const paged = new Set(action.messages.map((m) => m.id));
+          return {
+            ...b,
+            messages: [
+              ...action.messages.map((m) => streamed.get(m.id) ?? m),
+              ...b.messages.filter((m) => !paged.has(m.id)),
+            ],
+            olderMessages: action.olderMessages,
+          };
+        }),
+        laneLoads,
+      };
     }
     case "messageAdded": {
       const room = state.bloks.find((b) => b.id === action.threadId);
@@ -1185,6 +1230,7 @@ export const initialState: AppState = {
   sectionOrder: [],
   streaming: {},
   settledTurns: {},
+  laneLoads: {},
   screens: {},
   roomPeople: {},
   joinRequests: {},

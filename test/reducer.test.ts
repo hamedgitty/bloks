@@ -399,6 +399,53 @@ test("the order of the headings comes from the workspace, and a drag replaces it
   assert.deepEqual(moved.sectionOrder, ["Ops", "Travel"]);
 });
 
+test("a lane opened elsewhere drops the last lane's transcript and asks for its own", () => {
+  // A bot frame never carries messages. One that moved the agent to
+  // another lane (a rehearsal, or a lane picked on the phone) kept the old
+  // lane's words on screen under the new lane's name.
+  const state = withState({ bots: [bot("a", { threadId: "t1", activeTaskId: "t1", messages: [msg("old")], olderMessages: 40 })] });
+  const moved = reducer(state, { type: "botPatched", bot: { id: "a", threadId: "t2", activeTaskId: "t2" } });
+  assert.deepEqual(moved.bots[0].messages, []);
+  assert.equal(moved.bots[0].olderMessages, undefined);
+  assert.deepEqual(moved.laneLoads, { a: "t2" });
+  // nothing changed lanes: nothing to ask for
+  const same = reducer(state, { type: "botPatched", bot: { id: "a", threadId: "t1", name: "Ada" } });
+  assert.deepEqual(same.bots[0].messages.map((m) => m.id), ["old"]);
+  assert.deepEqual(same.laneLoads, {});
+});
+
+test("the asked-for transcript lands once, with what the stream brought meanwhile after it", () => {
+  let state = withState({ bots: [bot("a", { threadId: "t1", activeTaskId: "t1", messages: [msg("old")] })] });
+  state = reducer(state, { type: "botPatched", bot: { id: "a", threadId: "t2", activeTaskId: "t2" } });
+  // said in the new lane while its page was on the way
+  state = reducer(state, { type: "messageAdded", threadId: "t2", message: msg("live", { text: "newest" }) });
+  const page = [msg("first", { role: "user" }), msg("live", { text: "older copy" })];
+  const loaded = reducer(state, { type: "laneLoaded", id: "a", threadId: "t2", messages: page, olderMessages: 3 });
+  assert.deepEqual(loaded.bots[0].messages.map((m) => m.id), ["first", "live"]);
+  assert.equal(loaded.bots[0].messages[1].text, "newest");
+  assert.equal(loaded.bots[0].olderMessages, 3);
+  assert.deepEqual(loaded.laneLoads, {});
+  // a second answer for the same lane is not stacked on the first
+  const twice = reducer(loaded, { type: "laneLoaded", id: "a", threadId: "t2", messages: page, olderMessages: 3 });
+  assert.equal(twice, loaded);
+});
+
+test("an answer for a lane no longer open is dropped", () => {
+  let state = withState({ bots: [bot("a", { threadId: "t1", activeTaskId: "t1" })] });
+  state = reducer(state, { type: "botPatched", bot: { id: "a", threadId: "t2", activeTaskId: "t2" } });
+  state = reducer(state, { type: "botPatched", bot: { id: "a", threadId: "t3", activeTaskId: "t3" } });
+  const stale = reducer(state, { type: "laneLoaded", id: "a", threadId: "t2", messages: [msg("x")], olderMessages: 0 });
+  assert.deepEqual(stale.bots[0].messages, []);
+  assert.deepEqual(stale.laneLoads, { a: "t3" });
+  // a switch that brings its own transcript needs no asking
+  const answered = reducer(state, {
+    type: "botPatched",
+    bot: { id: "a", threadId: "t4", activeTaskId: "t4", messages: [msg("y")] },
+  });
+  assert.deepEqual(answered.bots[0].messages.map((m) => m.id), ["y"]);
+  assert.deepEqual(answered.laneLoads, {});
+});
+
 test("an older error's timer does not take a newer error off the screen", () => {
   // Every failure used to start its own six second clear, and the first
   // one to fire cleared whatever was showing: a second error two seconds
