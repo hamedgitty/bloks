@@ -12,6 +12,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { after, before, describe, test } from "node:test";
 
 import { deviceKey, open, peek, seal } from "../server/relay-crypto.ts";
+import { SeenNonces } from "../server/relay-link.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
 /** A relay just real enough: it holds the agent stream, hands over asks,
@@ -509,5 +510,39 @@ describe("the relay link", () => {
         body: JSON.stringify({ requestId: (card as any).requestId, behavior: "answer", message: "Yes" }),
       });
     }
+  });
+});
+
+describe("replay protection over time", () => {
+  // The freshness check accepts a stamp within two minutes either way, so
+  // a nonce has to be remembered for as long as its stamp can pass. The
+  // old memory cleared itself every two minutes and forgot nonces that
+  // were still inside that window.
+  test("a nonce is remembered for as long as its timestamp is fresh", () => {
+    const seen = new SeenNonces();
+    const t0 = 1_000_000_000_000;
+    // the shape of the old hole: a request, another 100s later, and a
+    // third at 125s, which used to clear everything seen before it
+    seen.remember("first", t0, t0);
+    seen.remember("a", t0 + 100_000, t0 + 100_000);
+    seen.remember("b", t0 + 125_000, t0 + 125_000);
+    // "a" is stamped 100s in and stays fresh until 220s, so a replay at
+    // 130s must still be recognised
+    assert.equal(seen.has("a"), true, "a nonce still inside its window was forgotten");
+    // once its stamp is past the window it is refused on freshness anyway,
+    // and the memory lets it go
+    seen.remember("c", t0 + 230_000, t0 + 230_000);
+    assert.equal(seen.has("a"), false);
+    assert.equal(seen.has("first"), false);
+  });
+
+  test("a stamp ahead of this clock is kept until it, too, goes stale", () => {
+    const seen = new SeenNonces();
+    const t0 = 1_000_000_000_000;
+    seen.remember("ahead", t0 + 100_000, t0);
+    seen.remember("later", t0 + 200_000, t0 + 200_000);
+    assert.equal(seen.has("ahead"), true);
+    seen.remember("much-later", t0 + 230_000, t0 + 230_000);
+    assert.equal(seen.has("ahead"), false);
   });
 });

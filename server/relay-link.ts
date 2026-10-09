@@ -155,6 +155,28 @@ const WATCHDOG_MS = 60_000;
  * for a slow relay hop and modest clock skew, tight enough that a
  * captured frame is useless minutes later. */
 const REPLAY_WINDOW_MS = 120_000;
+
+/**
+ * The nonces of mutating requests already served. Each is kept until its
+ * own timestamp stops being fresh, since until then a repeat would pass
+ * the freshness check. Clearing the whole set on a timer used to forget a
+ * nonce while its timestamp could still pass, so a request captured just
+ * before a clear could be replayed once after it. A nonce is kept at most
+ * two windows (a timestamp may be a window ahead of this clock), which is
+ * what bounds the set.
+ */
+export class SeenNonces {
+  private until = new Map<string, number>();
+
+  has(nonce: string): boolean {
+    return this.until.has(nonce);
+  }
+
+  remember(nonce: string, ts: number, now = Date.now()) {
+    for (const [seen, stale] of this.until) if (stale < now) this.until.delete(seen);
+    this.until.set(nonce, ts + REPLAY_WINDOW_MS);
+  }
+}
 /** How long an answer keeps trying. The relay holds a phone's request for
  * 20s and then tells it the Mac is offline, so past that a retry lands on
  * nobody; a result it no longer waits for is a harmless 202. */
@@ -191,8 +213,7 @@ export class RelayLink {
   /** Nonces of mutating requests served recently, so a hostile relay
    * cannot replay a captured "approve" or "send". Bounded and time-swept;
    * the freshness window makes unbounded growth impossible anyway. */
-  private seenNonces = new Set<string>();
-  private nonceSweep = 0;
+  private seenNonces = new SeenNonces();
   state: RelayState = {
     configured: false,
     connected: false,
@@ -479,18 +500,7 @@ export class RelayLink {
     };
   }
 
-  /** Record a nonce and, every so often, forget the whole set. Since a
-   * nonce is only accepted inside the freshness window, anything older is
-   * refused on timestamp anyway, so a periodic clear is safe and bounds
-   * the set without per-entry timers. */
-  private rememberNonce(nonce: string) {
-    this.seenNonces.add(nonce);
-    if (Date.now() - this.nonceSweep > REPLAY_WINDOW_MS) {
-      // keep only this generation; the previous one is now all stale
-      this.seenNonces = new Set([nonce]);
-      this.nonceSweep = Date.now();
-    }
-  }
+
 
   private schedule() {
     if (this.stopped) return;
@@ -655,7 +665,7 @@ export class RelayLink {
       if (!fresh || this.seenNonces.has(request.nonce!)) {
         return void this.answer(id, 409, { error: "stale or replayed request" }, replyKey, device.id);
       }
-      this.rememberNonce(request.nonce!);
+      this.seenNonces.remember(request.nonce!, request.ts!);
     }
     // Only our own API, and never a path that climbs out of it.
     if (!request.path.startsWith("/api/") || request.path.includes("..")) {
@@ -720,7 +730,7 @@ export class RelayLink {
       if (!fresh || this.seenNonces.has(request.nonce!)) {
         return void this.answer(id, 409, { error: "stale or replayed request" }, replyKey, inviteId);
       }
-      this.rememberNonce(request.nonce!);
+      this.seenNonces.remember(request.nonce!, request.ts!);
     }
     try {
       const res = await fetch(`http://127.0.0.1:${this.port}${request.path}`, {
@@ -818,7 +828,7 @@ export class RelayLink {
       request.nonce.length > 0 &&
       !this.seenNonces.has(request.nonce);
     if (!fresh) return void this.answer(id, 409, { error: "stale or replayed request" }, replyKey, linkId);
-    this.rememberNonce(request.nonce!);
+    this.seenNonces.remember(request.nonce!, request.ts!);
     const claimed = this.pairClaim(linkId, request.body);
     if (!claimed) return void this.answer(id, 410, { error: "this pairing link was already used or has expired" }, replyKey, linkId);
     this.answer(id, 200, claimed, replyKey, linkId);
