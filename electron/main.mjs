@@ -40,6 +40,7 @@ import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
 import { appMenuTemplate } from "./app-menu.mjs";
 import { drainWait } from "./drain-wait.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
+import { sameAppOrigin } from "./navigation.mjs";
 import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
@@ -366,14 +367,31 @@ const isHttpUrl = (url) => {
   }
 };
 
-const isOurOwnPage = (url) => {
-  try {
-    const { hostname } = new URL(url);
-    return hostname === "127.0.0.1" || hostname === "localhost";
-  } catch {
-    return false;
-  }
-};
+// The app's own page is its exact origin, port included. Any page on
+// localhost used to count, and agents run dev servers, notebooks and
+// desktops on localhost: one of those loaded into the app window would
+// have had the preload's bridge (pairing a remote, Touch ID, the screen).
+const isOurOwnPage = (url) => sameAppOrigin(url, appUrl());
+
+/** Only the app's own page may use the bridges that reach past the
+ * window: the screen, pairing with another computer, installing an update. */
+const fromOurPage = (event) => isOurOwnPage(event?.senderFrame?.url ?? "");
+
+/** The same rules for every window that loads the app: links go to the
+ * real browser, and the window itself never leaves the app's origin. */
+function guardNavigation(target) {
+  target.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpUrl(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  target.webContents.on("will-navigate", (event, url) => {
+    if (isOurOwnPage(url)) return; // the app reloading itself
+    event.preventDefault();
+    if (isHttpUrl(url)) shell.openExternal(url);
+  });
+  // A compromised renderer must not be able to grow itself new surfaces.
+  target.webContents.on("will-attach-webview", (event) => event.preventDefault());
+}
 
 /**
  * Right-click, the way native apps mean it.
@@ -539,6 +557,8 @@ function quickWindow() {
     },
   });
   quickWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // it loads the same page, with the same bridge, so the same guards
+  guardNavigation(quickWin);
   installContextMenu(quickWin);
   quickWin.loadURL(appUrl("quick=1"));
   // Clicking away is a dismissal. Anything else would leave a floating
@@ -665,19 +685,7 @@ function createWindow() {
   // so every URL is treated as hostile until proven to be plain http(s):
   // those open in the real browser, and everything else is dropped. The
   // app frame itself never navigates anywhere but its own origin.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isHttpUrl(url)) shell.openExternal(url);
-    return { action: "deny" };
-  });
-
-  win.webContents.on("will-navigate", (event, url) => {
-    if (isOurOwnPage(url)) return; // the app reloading itself
-    event.preventDefault();
-    if (isHttpUrl(url)) shell.openExternal(url);
-  });
-
-  // A compromised renderer must not be able to grow itself new surfaces.
-  win.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  guardNavigation(win);
 
   if (app.isPackaged) {
     win.loadURL(serverStarted ? `http://127.0.0.1:${serverPort}` : startupFailure);
@@ -688,7 +696,8 @@ function createWindow() {
 
 // ── permissions the web layer cannot ask for ───────────────────────────
 
-ipcMain.handle("screen:frame", async () => {
+ipcMain.handle("screen:frame", async (event) => {
+  if (!fromOurPage(event)) return null;
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
     thumbnailSize: { width: 1280, height: 800 },
@@ -941,7 +950,8 @@ async function drainBeforeRestart() {
   return outcome;
 }
 
-ipcMain.handle("update:install", async () => {
+ipcMain.handle("update:install", async (event) => {
+  if (!fromOurPage(event)) return;
   if (!app.isPackaged || drainWaiting) return;
   if ((await drainBeforeRestart()) === "cancel") return;
   // same teardown as a normal quit, then the installer takes over
@@ -1276,7 +1286,8 @@ async function startRemote(profile) {
 ipcMain.handle("remote:status", () =>
   remoteProfile ? { mode: "remote", host: remoteProfile.host, ...remoteState } : { mode: "local" },
 );
-ipcMain.handle("remote:connect", async (_event, link) => {
+ipcMain.handle("remote:connect", async (event, link) => {
+  if (!fromOurPage(event)) return { error: "not from the app" };
   if (!app.isPackaged) return { error: "Connecting to another computer works in the installed app." };
   try {
     const profile = await claimPairLink(String(link ?? ""), `${os.hostname().replace(/\.local$/, "")} (desktop)`);
