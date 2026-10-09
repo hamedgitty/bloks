@@ -2414,6 +2414,9 @@ function carryOn(
       personalMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
       ...carryOnTarget(turn),
       byYou: Boolean(turn.byYou) || yours,
+      // the turn's own place, or further along if an agent's message is
+      // in it; the person's words in it start the chain over
+      chain: burstChain(turn.laneId, alive.map(({ item }) => item), agentChain.get(turn.laneId)),
     })
       // under the notice, where the pickup took them
       .then(() => deliverQueued(turn.laneId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : []))))
@@ -2813,7 +2816,7 @@ function queuedCommand(laneId: string, item: { messageId?: string }): string | u
   return accepted && commandFor(m.text, accepted) ? accepted : undefined;
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
-function queuedSegment(laneId: string, items: Array<{ messageId?: string; text?: string; source?: "webhook" }>, continuation = false) {
+function queuedSegment<T extends { messageId?: string; text?: string }>(laneId: string, items: T[], continuation = false) {
   const alive = items.filter((item) => steerWords(laneId, item) !== null);
   const first = alive.findIndex((item) => queuedCommand(laneId, item));
   const size = first < 0 ? alive.length : first === 0 && !continuation ? 1 : first;
@@ -2904,6 +2907,11 @@ async function startClaimedTurn(
     retry?: boolean;
     /** Server-created accepting instance for a queued native command. */
     commandInstance?: string;
+    /** How many turns in a row agents have started, this one included,
+     * since anything else did (agentChain). Unset is 0, except on a turn
+     * that goes on with another (a pickup, a backup, a retry), which
+     * keeps that turn's place. */
+    chain?: number;
   } = {},
   claim: LaneClaim = {},
 ): Promise<void> {
@@ -2981,10 +2989,10 @@ async function startClaimedTurn(
       // already in the conversation, or a note from Bloks itself, so it
       // waits as a note: in memory, like every note in the queue
       const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
-      entry.items.push({ text });
+      entry.items.push({ text, ...(opts.chain ? { chain: opts.chain } : {}) });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false, chain: opts.chain });
     }
     return;
   }
@@ -3263,6 +3271,10 @@ async function startClaimedTurn(
   }
 
   laneRequester.set(task.id, opts.requester ?? "owner");
+  // set before the engine hears a word, so a `bloks say` from this turn
+  // reads this turn's place and not the last one's
+  const goesOn = opts.carriedOn || opts.fallback || opts.retry;
+  agentChain.set(task.id, opts.chain ?? (goesOn ? (agentChain.get(task.id) ?? 0) : 0));
   if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: true });
 
   // Mark it busy now, before any of the slow work, so the composer locks
@@ -4847,6 +4859,80 @@ const replyingTo = new Map<string, { peerId: string; peerName: string }>();
  * finished without a word has nothing for the person to read, so it does
  * not mark the conversation unread. */
 const spokeInTurn = new Set<string>();
+
+/** How many turns in a row agents may start in one another, or in
+ * themselves, with `bloks say` before the person has a say. Each one is
+ * a paid turn, and a turn's own budget (TURN_BUDGET in
+ * server/agent-cli.ts) starts again in every one of them, so nothing
+ * else stops two agents keeping each other going all afternoon. Twelve
+ * is longer than any real handoff and far shorter than a loop. Rooms
+ * have their own bound (MAX_AGENT_HOPS). */
+const MAX_AGENT_CHAIN = 12;
+
+/** Where each lane's latest turn sits in a chain of agents' messages: 0
+ * for one the person, a routine, a watcher, a webhook or an email
+ * started, and one more than the sender's own turn for one another
+ * agent's message started. Kept in memory rather than on the lane
+ * record: a restart begins every chain again, which lets a loop that
+ * spans one run a single stretch more at most, and nothing is left on
+ * disk for a closed lane or an old version to carry. */
+const agentChain = new Map<string, number>();
+
+/** A message an agent sent with `bloks say`, to another agent or to
+ * itself: who sent it, and the place in the chain the turn it starts
+ * would take, one more than the sender's own turn. */
+interface AgentChain {
+  depth: number;
+  sender: { botId: string; name: string };
+}
+
+/** The place in the chain a message from the agent whose turn runs in
+ * `laneId` would take. */
+function chainFrom(sender: { id: string; name: string }, laneId: string): AgentChain {
+  return { depth: (agentChain.get(laneId) ?? 0) + 1, sender: { botId: sender.id, name: sender.name } };
+}
+
+/** The place in the chain for a turn that takes these waiting items,
+ * or goes on with one at `from` and takes them: 0 when the person's own
+ * words are among them, since the person writing starts a chain over;
+ * otherwise as far along as the furthest agent's message, with a note
+ * from Bloks itself keeping the place of the turn it carries on, and a
+ * webhook's or a watcher's at 0. */
+function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; chain?: number }>, from = 0): number {
+  let depth = from;
+  for (const item of items) {
+    if (item.chain) depth = Math.max(depth, item.chain);
+    else if (!item.messageId) depth = Math.max(depth, agentChain.get(laneId) ?? 0);
+    else {
+      const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
+      if (m && !m.agent && !m.via) return 0;
+    }
+  }
+  return depth;
+}
+
+/** The refusal an agent gets for a message past MAX_AGENT_CHAIN, and the
+ * notice the person finds in the recipient's conversation, once however
+ * often the agent tries again. Whoever the person writes to next starts
+ * from 0. */
+function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain) {
+  const times = chain.depth - 1;
+  const text =
+    chain.sender.botId === bot.id
+      ? `${bot.name} has passed messages to itself ${times} times without you; the next one waits for you.`
+      : `${chain.sender.name} and ${bot.name} have passed messages back and forth ${times} times without you; the next one waits for you.`;
+  const last = store.messagesFor(laneId).at(-1);
+  if (!(last?.kind === "notice" && last.text === text)) {
+    const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
+    broadcast({ kind: "message", threadId: laneId, message: notice });
+  }
+  return Object.assign(
+    new Error(
+      `${bot.name} did not get this. Agents have started ${times} turns in a row without the person, which is as many as Bloks lets run before they have a say. Finish this turn and say where things stand; the person carries it on from there.`,
+    ),
+    { status: 429 },
+  );
+}
 
 /** Conversations an agent asked to close from inside its own turn there.
  * A lane cannot close while it is working, and the agent asking is the
@@ -7111,9 +7197,11 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // An item with no messageId is a note from Bloks itself, like the one
 // that resumes a task after a secret is saved: nothing in the transcript
 // to wait on, so it is always still due, and its words travel with it.
+// An item an agent sent carries its place in a chain of agents' messages
+// (agentChain), which a restart forgets along with the rest of memory.
 const steerQueues = new Map<
   string,
-  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook" }> }
+  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number }> }
 >();
 
 /** What one waiting item says now, or null for a message that no longer
@@ -7208,7 +7296,17 @@ function queueOnLane(
   botId: string,
   laneId: string,
   text: string,
-  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; routine?: Message["routine"]; telegramReply?: TelegramReply; personal?: boolean } = {},
+  options: {
+    replyTo?: ReplyRef;
+    from?: { botId: string; name: string };
+    via?: "webhook" | "watcher";
+    routine?: Message["routine"];
+    telegramReply?: TelegramReply;
+    personal?: boolean;
+    /** An agent sent it: the place in a chain of agents' messages the
+     * turn that takes it would have (agentChain). */
+    chain?: number;
+  } = {},
 ) {
   // A routine's command keeps Claude Code's command path, as it does
   // when it starts a turn directly; Codex takes one only from the
@@ -7230,6 +7328,7 @@ function queueOnLane(
   entry.items.push({
     messageId: message.id,
     ...(options.via === "webhook" ? { source: "webhook" as const } : {}),
+    ...(options.chain ? { chain: options.chain } : {}),
   });
   steerQueues.set(laneId, entry);
   return message;
@@ -7318,8 +7417,12 @@ async function steerOne(
     ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
   });
   broadcast({ kind: "message", threadId: lane.id, message });
-  // what the turn says from here on is an answer to the person too
-  if (!from) turnsForYou.add(lane.id);
+  // what the turn says from here on is an answer to the person too, and
+  // with the person in it, a chain of agents' messages starts over
+  if (!from) {
+    turnsForYou.add(lane.id);
+    agentChain.delete(lane.id);
+  }
   return message;
 }
 
@@ -7413,6 +7516,8 @@ async function sendUserMessage(
     /** The agent in `from` asked for this to go into the turn running
      * now, since it changes what that turn is doing (`bloks say --now`). */
     now?: boolean;
+    /** An agent sent this, to another agent or to itself (chainFrom). */
+    chain?: AgentChain;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -7429,6 +7534,9 @@ async function sendUserMessage(
   if (bot.archivedAt) {
     throw Object.assign(new Error(`${bot.name} is archived. Restore it to give it work.`), { status: 409 });
   }
+  // Refused whether it would start a turn or wait for one: either way it
+  // is one more turn nobody but the agents asked for.
+  if (options.chain && options.chain.depth > MAX_AGENT_CHAIN) throw chainRefusal(bot, lane.id, options.chain);
   // waiting behind a turn or not, it was said to this agent now
   const yours = Boolean(options.yours && !options.from);
   if (yours) withYou({ bot });
@@ -7466,7 +7574,7 @@ async function sendUserMessage(
       }
       notJoined = ` It did not join that turn: ${why ?? `${bot.name}'s turn could not take words mid-turn just then`}.`;
     }
-    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from, personal: options.personal });
+    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from, personal: options.personal, chain: options.chain?.depth });
     // Asking the engine took a moment, and the turn may have ended in it,
     // with nothing coming along after to take what now waits.
     if ((yours && options.steer) || askedEngine) drainSteer(lane.id);
@@ -7481,7 +7589,7 @@ async function sendUserMessage(
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop };
   }
-  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal });
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
   // which conversation it went to, so a caller outside the app (the MCP
   // connector) reads the answer from there and not from whichever lane
@@ -7582,8 +7690,9 @@ function drainSteer(threadId: string) {
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
   const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
+  const chain = burstChain(threadId, alive.map(({ item }) => item));
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item) }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -9256,6 +9365,9 @@ const server = createServer(async (req, res) => {
           steer: !asAgent,
           // only another agent asks for this; the person's words always try
           now: Boolean(from) && body.now === true,
+          // an agent writing, to another or to itself, carries its turn's
+          // place in a chain of agents' messages one further
+          ...(sender ? { chain: chainFrom(sender, asAgent!.taskId) } : {}),
         });
       } catch (e) {
         noteSent("failed");
@@ -10631,8 +10743,16 @@ const server = createServer(async (req, res) => {
         const notice = store.appendMessage(lane.id, { role: "bot", kind: "notice", text: `${caller.name} stopped this turn.` });
         broadcast({ kind: "message", threadId: lane.id, message: notice });
         const why = clamp(body.text, MAX_MESSAGE_CHARS);
-        if (why) await sendUserMessage(bot.id, why, { taskId: lane.id, from: { botId: caller.id, name: caller.name } }).catch(() => {});
-        return json(res, 200, { ok: true, stopped: true, ...(why ? { said: why } : {}) });
+        // the reason starts a turn like any message, so it is one more in a
+        // chain of agents' messages, and past the cap only the stop lands
+        const said = why
+          ? await sendUserMessage(bot.id, why, {
+              taskId: lane.id,
+              from: { botId: caller.id, name: caller.name },
+              chain: chainFrom(caller, asAgent.taskId),
+            }).then(() => true, () => false)
+          : false;
+        return json(res, 200, { ok: true, stopped: true, ...(said ? { said: why } : {}) });
       }
       // a named lane is interruptible even when another lane is on screen
       const laneId =

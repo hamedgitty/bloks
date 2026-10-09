@@ -54,6 +54,12 @@ export type TurnAlive = (taskId: string) => boolean;
  * ceiling the two of them can spend an afternoon and a lot of somebody's
  * money agreeing with each other. Twelve is more than any real piece of
  * work needs and far less than a loop.
+ *
+ * It starts again with every turn, so it bounds one turn and not the
+ * back and forth. That is counted across turns as well: a turn another
+ * agent's message started is one further along a chain than the
+ * sender's, and past MAX_AGENT_CHAIN (server/index.ts) the next message
+ * waits for the person.
  */
 export const TURN_BUDGET = 12;
 

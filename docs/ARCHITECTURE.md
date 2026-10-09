@@ -399,6 +399,28 @@ things in, and everything that reads it (a room's history, a replayed
 transcript, an export) agrees. A room's own queue behind its current
 round, and a pickup after a restart, deliver the same way.
 
+## Agents writing to agents
+
+`bloks say` to an idle agent starts a turn there, a paid one, and a
+turn's own budget (`TURN_BUDGET` in `server/agent-cli.ts`) starts again
+in every one of them, so it bounds a turn and not the back and forth.
+That is counted on its own: each lane's latest turn has a place in a
+chain (`agentChain` in `server/index.ts`), 0 when the person, a routine,
+a watcher, a webhook or an email started it, and one more than the
+sender's turn when an agent's message did, an agent writing to itself
+included. A message that would start or wait for a turn past
+`MAX_AGENT_CHAIN` (twelve) is refused: the sender is told to finish up,
+and the conversation it was meant for says the next one waits for the
+person. Whoever the person writes to next starts over at 0, whether
+their words start the turn, join it, or are among what it takes when it
+goes. A burst of waiting messages takes the furthest place among them,
+and a pickup, a backup engine or a retry keeps the place of the turn it
+continues. The places live in memory, with the queue they ride on,
+rather than on the lane record: a restart begins every chain again,
+which lets a loop that spans one run a stretch more at most, and leaves
+nothing on disk to clear when a lane closes. Rooms are bounded by
+`MAX_AGENT_HOPS` instead and are not counted here.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group
