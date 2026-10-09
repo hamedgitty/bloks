@@ -2134,8 +2134,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
       }
-      replyByMail(event.threadId, event.ok !== false);
-      collectMeetingItems(event.threadId, event.ok !== false);
+      settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null });
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
@@ -2149,49 +2148,6 @@ bus.subscribe((event: RuntimeEvent) => {
       } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
       else store.patchBot(bot.id, { unread: true });
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
-      // A routine's run ends where its turn does, and its summary is
-      // what the agent actually said: a row that only says "ok" answers
-      // half the question people are asking.
-      if (openRuns.has(event.threadId)) {
-        const said = store.messagesFor(event.threadId);
-        const reply = [...said]
-          .reverse()
-          .find((msg) => msg.role === "bot" && msg.kind === "text" && msg.text && !msg.deleted);
-        closeRun(event.threadId, {
-          ok: event.ok !== false,
-          summary: reply?.text,
-          error: event.ok === false ? (event.stopReason ?? "The turn did not finish.") : undefined,
-        });
-      }
-      // A workflow's ask step ends where its turn does, and what the
-      // agent actually said is the value the next step reads.
-      const onBehalfOf = workflowTurns.get(event.threadId);
-      if (onBehalfOf && workflows.run(onBehalfOf.runId)?.run.state === "running") {
-        workflowTurns.delete(event.threadId);
-        const said = lastSaid(event.threadId);
-        if (event.ok === false) {
-          // A turn stopped because somebody took the computer is not the
-          // agent failing at the step. The run still fails, because the
-          // alternative is resuming a plan made before the person
-          // changed things, but it has to say who stopped it or it reads
-          // as a crash.
-          const why = wheel.heldBy(bot.id)
-            ? `stopped: you took ${bot.name}'s computer`
-            : (event.stopReason ?? "the turn did not finish");
-          endStep(onBehalfOf.runId, onBehalfOf.stepId, "failed", { error: why });
-          finishRun(onBehalfOf.runId, "failed", why);
-        } else {
-          endStep(onBehalfOf.runId, onBehalfOf.stepId, "ok", { summary: said });
-          workflows.update(onBehalfOf.runId, (run) => {
-            run.values[onBehalfOf.stepId] = { text: said };
-            run.cursor++;
-          });
-          void advanceRun(onBehalfOf.runId).catch(() => {});
-        }
-      } else if (onBehalfOf) {
-        // the run stopped while its turn was still going
-        workflowTurns.delete(event.threadId);
-      }
       retriedForContext.delete(event.threadId);
       // If this lane is filling up, fold its older half now rather than
       // on the way into the next turn, so nobody waits on a summary.
@@ -2212,18 +2168,6 @@ bus.subscribe((event: RuntimeEvent) => {
       // Never a shared room's lane: what other people said there is not
       // the owner's to turn into the agent's standing skills.
       if (!command && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
-      // A job ends where its turn does too, and whether the agent took it
-      // or handed it back is in the same last thing they said.
-      if (openJobs.has(event.threadId)) {
-        const reply = [...store.messagesFor(event.threadId)]
-          .reverse()
-          .find((msg) => msg.role === "bot" && msg.kind === "text" && msg.text && !msg.deleted);
-        settleJob(
-          event.threadId,
-          event.ok !== false,
-          reply?.text ?? (event.stopReason ?? ""),
-        );
-      }
       drainRoomTags(bot.id);
       // before anything queued starts the next turn on the old session
       freshIfAsked(event.threadId);
@@ -3254,12 +3198,20 @@ async function startTurn(
     commandTurns.delete(task.id);
     activeRoom.delete(task.id);
     laneRequester.delete(task.id);
+    replyingTo.delete(task.id);
+    // what was got ready for it goes with it: the folder's photograph,
+    // the Local VM, and the credential it would have run with
+    checkpoints.cancel(task.id);
+    releaseVm(task.id);
+    agentTokens.revokeTask(task.id);
     if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
     store.setTaskBusy(task.id, false);
     // a Telegram request this turn took is answered with why it did not run
     telegramReturns.finish(task.id, failure);
     turnStarted.delete(task.id);
     cutOff.end(task.id);
+    // and so is whatever registered to hear how it ended
+    settleOwners(bot, task.id, { ok: false, why: failure ?? null, unsent: true });
     broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
     drainRoomTags(bot.id);
     freshIfAsked(task.id);
@@ -3379,19 +3331,15 @@ async function startTurn(
         projectDesk = workingFolder(standing);
         if (standing.folders.length && !projectDesk) {
           const gone = standing.folderStates.filter((f) => f.state !== "ok").map((f) => f.path);
+          const why = missingFolderMessage(project, gone);
           const notice = store.appendMessage(roomId, {
             role: "bot",
             ...(blok ? { from: bot.id } : {}),
             kind: "notice",
-            text: missingFolderMessage(project, gone),
+            text: why,
           });
           broadcast({ kind: "message", threadId: roomId, message: notice });
-          telegramReturns.finish(task.id);
-          commandTurns.delete(task.id);
-          store.setTaskBusy(task.id, false);
-          turnStarted.delete(task.id);
-          cutOff.end(task.id);
-          broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+          settleUnsent(why);
           return;
         }
       }
@@ -3687,10 +3635,6 @@ async function startTurn(
       // and the lane is left as if it had never been asked.
       const withdrawn = unsendable(bot.id);
       if (withdrawn) {
-        checkpoints.cancel(task.id);
-        releaseVm(task.id);
-        agentTokens.revokeTask(task.id);
-        closeRun(task.id, { ok: false, error: withdrawn });
         // a deleted agent's conversations are gone, and stay gone
         if (store.bot(bot.id)) {
           const notice = store.appendMessage(roomId, {
@@ -3750,6 +3694,68 @@ function unsendable(botId: string): string | null {
     return heldRefusal(hold, now.name);
   }
   return null;
+}
+
+/**
+ * Whatever registered to hear how a lane's turn ended hears it: a
+ * routine's run, a workflow's ask step, a job, the email being answered
+ * and the meeting being written up. Once per turn, from turn.completed,
+ * or `unsent` from a start that failed before reaching its engine, which
+ * otherwise left each of them waiting on an end that never came.
+ */
+function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean }) {
+  const { ok, why, unsent } = outcome;
+  // what the agent actually said; a turn that never ran said nothing,
+  // and the last reply in its lane belongs to an earlier one
+  const said = unsent ? "" : lastSaid(laneId);
+  // A failed turn may still be answered by a backup engine, so its mail
+  // waits a little for that (replyByMail). Nothing picks up a turn that
+  // never ran, and a sender left waiting would be emailed whatever the
+  // lane says next.
+  if (unsent) mailAnswering.delete(laneId);
+  else replyByMail(laneId, ok);
+  collectMeetingItems(laneId, ok);
+  // A routine's run ends where its turn does, and its summary is
+  // what the agent actually said: a row that only says "ok" answers
+  // half the question people are asking.
+  if (openRuns.has(laneId)) {
+    closeRun(laneId, {
+      ok,
+      summary: said || undefined,
+      error: ok ? undefined : (why ?? "The turn did not finish."),
+    });
+  }
+  // A workflow's ask step ends where its turn does, and what the
+  // agent actually said is the value the next step reads.
+  const onBehalfOf = workflowTurns.get(laneId);
+  if (onBehalfOf && workflows.run(onBehalfOf.runId)?.run.state === "running") {
+    workflowTurns.delete(laneId);
+    if (!ok) {
+      // A turn stopped because somebody took the computer is not the
+      // agent failing at the step. The run still fails, because the
+      // alternative is resuming a plan made before the person
+      // changed things, but it has to say who stopped it or it reads
+      // as a crash.
+      const failed = wheel.heldBy(bot.id)
+        ? `stopped: you took ${bot.name}'s computer`
+        : (why ?? "the turn did not finish");
+      endStep(onBehalfOf.runId, onBehalfOf.stepId, "failed", { error: failed });
+      finishRun(onBehalfOf.runId, "failed", failed);
+    } else {
+      endStep(onBehalfOf.runId, onBehalfOf.stepId, "ok", { summary: said });
+      workflows.update(onBehalfOf.runId, (run) => {
+        run.values[onBehalfOf.stepId] = { text: said };
+        run.cursor++;
+      });
+      void advanceRun(onBehalfOf.runId).catch(() => {});
+    }
+  } else if (onBehalfOf) {
+    // the run stopped while its turn was still going
+    workflowTurns.delete(laneId);
+  }
+  // A job ends where its turn does too, and whether the agent took it
+  // or handed it back is in the same last thing they said.
+  if (openJobs.has(laneId)) settleJob(laneId, ok, said || (why ?? ""));
 }
 
 // ── shared rooms ──────────────────────────────────────────────────────

@@ -398,6 +398,21 @@ test("a consuming turn that cannot start sends the ordinary refusal once", async
   assert.equal(f.engine.state.calls.length, 0);
 });
 
+test("a consuming turn stopped by a missing project folder sends why, not an empty answer", async (t) => {
+  const f = await fixture(t);
+  await f.queue();
+  await f.h.json("/api/projects", { method: "POST", body: JSON.stringify({
+    name: "Atlas", folders: ["/nonexistent/bloks-test-atlas"], memberIds: [f.bot.id],
+  }) });
+  await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => f.tg.answers().length === 1));
+  // it used to say "(the agent finished without saying anything)"
+  assert.match(f.tg.answers()[0].text, /Atlas points at \/nonexistent\/bloks-test-atlas/);
+  assert.equal(f.engine.state.calls.length, 0);
+  await sleep(250);
+  assert.equal(f.tg.answers().length, 1);
+});
+
 test("a failed consuming turn without a pickup returns the normal empty-answer fallback once", async (t) => {
   const f = await fixture(t);
   await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
