@@ -458,6 +458,13 @@ describe("a request that names several files", () => {
     assert.equal(decideEach([allowSrc], all).verdict, "allow");
   });
 
+  test("the path an input names itself is checked beside its list", () => {
+    // an ACP call: its input names one file, its locations another
+    const asks = targetsOf("edit", { path: "/w/a.ts", paths: ["/w/.env"] }, who);
+    assert.deepEqual(asks.map((a) => a.path), ["/w/a.ts", "/w/.env"]);
+    assert.equal(decideEach([denyEnv], asks).verdict, "deny");
+  });
+
   test("one file, or none, is the single request it always was", () => {
     assert.deepEqual(targetsOf("edit", { paths: ["/w/x.ts"] }, who).map((a) => a.path), ["/w/x.ts"]);
     assert.deepEqual(targetsOf("shell", { command: "ls" }, who).map((a) => a.command), ["ls"]);

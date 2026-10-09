@@ -21,3 +21,12 @@ test("only the fields a rule reads go with it, never a file's contents", () => {
   const input = permissionInput({ kind: "edit", rawInput: { file_path: "/w/big.txt", content: "x".repeat(100_000) } });
   assert.deepEqual(input, { file_path: "/w/big.txt" });
 });
+
+test("a long command reaches the rules whole, so padding cannot hide its end", () => {
+  const padded = `echo ${"x".repeat(5_000)}; git push --force`;
+  assert.equal(permissionInput({ kind: "execute", rawInput: { command: padded } }).command, padded);
+});
+
+test("a command given as its argv is read as one line", () => {
+  assert.deepEqual(permissionInput({ kind: "execute", rawInput: { command: ["git", "push", "--force"] } }), { command: "git push --force" });
+});

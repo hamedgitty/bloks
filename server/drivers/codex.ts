@@ -253,7 +253,10 @@ export function requestInput(params: any, itemPaths: ReadonlyMap<string, string[
       : "";
   const paths =
     params?.fileChanges && typeof params.fileChanges === "object"
-      ? Object.keys(params.fileChanges)
+      ? // a rename names where it goes as well as where it was
+        Object.entries(params.fileChanges).flatMap(([path, change]: [string, any]) =>
+          [path, change?.move_path, change?.update?.move_path].filter((p): p is string => typeof p === "string" && p.length > 0),
+        )
       : typeof params?.itemId === "string"
         ? (itemPaths.get(params.itemId) ?? [])
         : [];

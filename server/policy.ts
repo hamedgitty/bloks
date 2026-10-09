@@ -125,10 +125,11 @@ export function targetOf(tool: string, input: Record<string, unknown>, who: { bo
  */
 export function targetsOf(tool: string, input: Record<string, unknown>, who: { botId: string; agent: string }): Ask[] {
   const one = targetOf(tool, input, who);
-  const paths = Array.isArray(input?.paths)
-    ? [...new Set(input.paths.filter((p): p is string => typeof p === "string" && p.trim().length > 0))]
-    : [];
-  if (paths.length <= 1) return [paths[0] && !one.path ? { ...one, path: paths[0] } : one];
+  // the path the input names itself and every path in its list, each once:
+  // either can be the one a rule is about
+  const listed = Array.isArray(input?.paths) ? input.paths : [];
+  const paths = [...new Set([one.path, ...listed].filter((p): p is string => typeof p === "string" && p.trim().length > 0))];
+  if (paths.length <= 1) return [paths[0] ? { ...one, path: paths[0] } : one];
   return paths.map((path) => ({ ...one, path }));
 }
 

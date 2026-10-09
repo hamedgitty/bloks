@@ -247,14 +247,14 @@ test("an approval request says which command, and which files a change touches",
   peer.send({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "codex-thread", turnId: "codex-turn", itemId: "c1", command: "rm -rf build", cwd: "/w" } });
   peer.send({ method: "item/started", params: { threadId: "codex-thread", item: { id: "f1", type: "fileChange", changes: [{ path: "/w/a.ts" }, { path: "/w/.env" }] } } });
   peer.send({ id: 8, method: "item/fileChange/requestApproval", params: { threadId: "codex-thread", turnId: "codex-turn", itemId: "f1" } });
-  peer.send({ id: 9, method: "applyPatchApproval", params: { conversationId: "codex-thread", fileChanges: { "/w/b.ts": {}, "/w/c.ts": {} } } });
+  peer.send({ id: 9, method: "applyPatchApproval", params: { conversationId: "codex-thread", fileChanges: { "/w/b.ts": {}, "/w/c.ts": { update: { move_path: "/w/.env" } } } } });
   peer.send({ id: 10, method: "execCommandApproval", params: { conversationId: "codex-thread", command: ["git", "push", "--force"] } });
   await setImmediate();
   const asks = h.events.filter((e): e is Extract<typeof e, { type: "request.opened" }> => e.type === "request.opened");
   assert.deepEqual(asks.map((a) => a.input), [
     { command: "rm -rf build" },
     { path: "/w/a.ts", paths: ["/w/a.ts", "/w/.env"] },
-    { path: "/w/b.ts", paths: ["/w/b.ts", "/w/c.ts"] },
+    { path: "/w/b.ts", paths: ["/w/b.ts", "/w/c.ts", "/w/.env"] },
     { command: "git push --force" },
   ]);
 });

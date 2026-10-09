@@ -165,11 +165,18 @@ const RULE_FIELDS = ["command", "cmd", "script", "file_path", "path", "filePath"
  * could never match an ACP agent's request.
  */
 export function permissionInput(call: any): Record<string, unknown> {
-  // only the fields a rule reads (policy.ts targetOf): a write's input can
-  // carry the whole file, and this event goes to every screen
+  // Only the fields a rule reads (policy.ts targetOf): a write's input can
+  // carry the whole file, and this event goes to every screen. Those
+  // fields go whole, never cut short: a rule that saw only the start of a
+  // command could be walked past by padding the front of it.
   const raw: Record<string, unknown> = {};
   const given = call?.rawInput && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) ? call.rawInput : {};
-  for (const key of RULE_FIELDS) if (typeof given[key] === "string") raw[key] = String(given[key]).slice(0, 2_000);
+  for (const key of RULE_FIELDS) {
+    const value = given[key];
+    if (typeof value === "string") raw[key] = value;
+    // a command can come as its argv, the way Codex's legacy one does
+    else if (Array.isArray(value) && value.every((part) => typeof part === "string")) raw[key] = value.join(" ");
+  }
   const paths = [
     ...(Array.isArray(call?.locations) ? call.locations.map((l: any) => l?.path) : []),
     ...(Array.isArray(call?.content) ? call.content.filter((c: any) => c?.type === "diff").map((c: any) => c?.path) : []),
