@@ -443,7 +443,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const argv = [
           ...spec.args,
           ...(spec.turnArgs?.({
-            fullAuto: config.fullAuto,
+            // a turn the owner did not vouch for asks, however the engine is set
+            fullAuto: config.fullAuto && !turn.untrusted,
             model: turn.model,
             effort: turn.effort,
           }) ?? []),
@@ -570,7 +571,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           if (state.stopping) {
             return rpc.reply(msg.id, { outcome: { outcome: "cancelled" } });
           }
-          if (config.fullAuto && allowId) {
+          if (config.fullAuto && !turn.untrusted && allowId) {
             return rpc.reply(msg.id, { outcome: { outcome: "selected", optionId: allowId } });
           }
 
@@ -908,7 +909,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // agents use modes for something else entirely (pi-acp's are
             // thinking levels), so only ask for it where it exists.
             const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
-            if ((config.fullAuto || (turn.fullAccess && !turn.shared)) && modes.some((m) => m?.id === "yolo")) {
+            if (((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) && modes.some((m) => m?.id === "yolo")) {
               try {
                 await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
               } catch (e) {

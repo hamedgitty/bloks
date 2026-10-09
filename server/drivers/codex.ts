@@ -536,8 +536,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
         // fullAuto, or an agent in full access, waives approvals but never
         // questions: a question has no safe automatic answer, only a less
-        // useful one.
-        if ((config.fullAuto || turn.fullAccess) && !isQuestion) {
+        // useful one. A turn the owner did not vouch for asks anyway.
+        if (((config.fullAuto && !turn.untrusted) || turn.fullAccess) && !isQuestion) {
           logDecision("resolved", "allow", "auto");
           return rpc.reply(msg.id, permissionReply(true, "auto"));
         }
@@ -877,7 +877,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // fullAuto is the engine set that way; fullAccess is this agent.
           // Either takes the sandbox off and stops Codex asking. Stated on
           // resume too, so switching an agent's mode takes on its next turn.
-          const full = config.fullAuto || Boolean(turn.fullAccess);
+          // A turn the owner did not vouch for keeps both, however set.
+          const full = (config.fullAuto && !turn.untrusted) || Boolean(turn.fullAccess);
           const guard = {
             sandbox: full ? "danger-full-access" : "workspace-write",
             approvalPolicy: full ? "never" : "on-request",

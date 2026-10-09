@@ -502,6 +502,21 @@ dedupes by Message-ID, and queues it into the agent's Email lane; the
 reply is the agent's last message, sent back through Bloks Cloud, which
 only sends to an address that wrote in.
 
+With `allowFrom` empty anyone may write, so a mail's turn runs on none
+of the owner's standing trust: its requester is `MAIL_FROM_ANYONE`, not
+the owner, as a shared room member's is. Its approvals come to the owner
+as cards that say which address asked, allow rules and the `auto` and
+`edits` modes do not answer for it (deny rules still refuse), full
+access is off and the driver gets `untrusted`, so no engine skips its
+own guards however its instance is set, and Claude Code pre-allows no
+connector or other tool and asks before edits as well. No saved secret
+is in its environment. A backup engine or a retry after a fold goes on
+for the same requester (`askedLast`), and a pickup after a restart
+reads it from the turn's record. Mail from an address or @domain in
+`allowFrom`, checked when its turn starts, runs as the owner's own.
+Webhooks are not affected: their address is a secret the owner handed
+out.
+
 ## MCP server
 
 `bin/bloks-mcp.mjs` is a dependency-free stdio MCP server that finds the
@@ -565,7 +580,9 @@ Code runs with `bypassPermissions` and no approval bridge, Codex with
 `danger-full-access` and `approvalPolicy: never` (stated on resume too),
 ACP engines in their `yolo` mode, Antigravity with
 `--dangerously-skip-permissions`. Nothing asks, so rules cannot refuse
-anything in that mode. A shared room never gets `fullAccess`.
+anything in that mode. A shared room never gets `fullAccess`, and nor
+does an email from anyone (see Email your agent): a turn somebody other
+than the owner asked for is held to the owner's yes, whatever the mode.
 
 ## Boundaries worth knowing
 

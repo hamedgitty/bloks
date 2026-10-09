@@ -325,8 +325,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let abandoned = false;
 
       // No permission is asked when the engine is set to bypass, or when
-      // this agent is in full access; a shared room is never either.
-      const bypass = !turn.shared && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
+      // this agent is in full access; a shared room is never either, and
+      // nor is a turn the owner did not vouch for, whose asks are theirs.
+      const bypass = !turn.shared && !turn.untrusted && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
       const argv = [
         "-p",
         "--output-format", "stream-json",
@@ -335,12 +336,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // A shared room never bypasses: the approval bridge below is what
         // holds the owner's tools to a yes. acceptEdits only waves through
         // file edits, which --restricted confines to the room's folder.
+        // A turn the owner did not vouch for works in the owner's own
+        // folders, with nothing confining it, so it asks before edits too.
         "--permission-mode",
         turn.shared
           ? "acceptEdits"
-          : bypass
-            ? "bypassPermissions"
-            : config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
+          : turn.untrusted
+            ? "default"
+            : bypass
+              ? "bypassPermissions"
+              : config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
       ];
       // Resuming continues the CLI's own session; otherwise name the new
       // one ourselves so the id exists before its first event arrives.
@@ -510,8 +515,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         argv.push("--mcp-config", privateFile("mcp.json", JSON.stringify({ mcpServers })));
         // In a shared room nothing of the owner's is pre-allowed: every
         // call to a connector, the browser or the computer goes through
-        // the bridge and becomes an approval, which is the point.
-        const allowList = turn.shared ? allowed.filter((tool) => tool === "mcp__bloks") : allowed;
+        // the bridge and becomes an approval, which is the point. The
+        // same for a turn the owner did not vouch for.
+        const allowList = turn.shared || turn.untrusted ? allowed.filter((tool) => tool === "mcp__bloks") : allowed;
         if (allowList.length) argv.push("--allowedTools", allowList.join(","));
       }
 

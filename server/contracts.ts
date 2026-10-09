@@ -233,6 +233,12 @@ export interface SendTurnInput {
    * (no permission prompts, no sandbox), so nothing asks and nothing is
    * routed through the approval gate. Never set on a shared turn. */
   fullAccess?: boolean;
+  /** Somebody the owner has not vouched for asked for this turn (an
+   * email when anyone may write), and its approvals go to the owner as
+   * cards. No driver skips its engine's guards for it, however its
+   * instance is set, and one that pre-allows tools or edits of its own
+   * accord (Claude Code) does not. Never with `fullAccess`. */
+  untrusted?: boolean;
   cwd?: string;
   /** Folders the agent may edit without asking, beyond its cwd. The
    * harness grants its own workspace (memory lives there) so an agent

@@ -1724,13 +1724,16 @@ bus.subscribe((event: RuntimeEvent) => {
       const permission = event.requestType === "permission";
       // Whether this is really a question, whatever the engine called it.
       const asking = !permission || isQuestionTool(event.tool);
-      // A turn a member of a shared room started. The owner's standing
-      // rules and modes were written for the owner's own requests, so for
-      // this one an allow rule or an auto mode does not answer: the owner
-      // does. A deny rule still refuses, since refusing is always safe.
+      // A turn a member of a shared room started, or an email from anyone
+      // (MAIL_FROM_ANYONE). The owner's standing rules and modes were
+      // written for the owner's own requests, so for this one an allow
+      // rule or an auto mode does not answer: the owner does. A deny rule
+      // still refuses, since refusing is always safe.
       const requester = laneRequester.get(event.threadId);
       const byMember = requester !== undefined && requester !== "owner";
-      const askedBy = byMember ? people.person(requester!)?.name : undefined;
+      const byMail = requester === MAIL_FROM_ANYONE;
+      const mailFrom = byMail ? mailAnswering.get(event.threadId)?.mail.from : undefined;
+      const askedBy = byMail ? `an email from ${mailFrom || "someone not on your list"}` : byMember ? people.person(requester!)?.name : undefined;
 
       // A decision made here (the wheel, a rule, a mode) that could not
       // reach the agent allowed nothing: the ask it answered is gone. Say
@@ -1869,7 +1872,8 @@ bus.subscribe((event: RuntimeEvent) => {
           subtitle: askedBy && !asking ? `${event.summary ?? ""} (asked for by ${askedBy})`.trim() : event.summary,
           options: event.choices?.length ? event.choices : asking ? [] : ["Allow", "Deny"],
           requestId: event.requestId,
-          ...(byMember && !asking ? { askedFor: requester } : {}),
+          // a person, who may not then approve what they asked for
+          ...(byMember && !byMail && !asking ? { askedFor: requester } : {}),
           // The tool rides along so the card can offer to remember the
           // answer as a rule. Never for a question: a rule cannot answer
           // one, it can only stop it being asked.
@@ -3270,7 +3274,16 @@ async function startClaimedTurn(
     throw archivedRefusal(bot);
   }
 
-  laneRequester.set(task.id, opts.requester ?? "owner");
+  // A backup engine or a retry after a fold goes on with the turn before
+  // it, for whoever asked for that one (a pickup is told who, by the
+  // record of the turn it picks up).
+  const requester = opts.requester ?? (opts.fallback || opts.retry ? askedLast.get(task.id) : undefined) ?? "owner";
+  laneRequester.set(task.id, requester);
+  askedLast.set(task.id, requester);
+  // The owner asked for this turn, or something they set up did. A
+  // member of a shared room or an email from anyone did not, and their
+  // turn gets none of the owner's standing trust (MAIL_FROM_ANYONE).
+  const owners = requester === "owner";
   // set before the engine hears a word, so a `bloks say` from this turn
   // reads this turn's place and not the last one's
   const goesOn = opts.carriedOn || opts.fallback || opts.retry;
@@ -3292,7 +3305,7 @@ async function startClaimedTurn(
     laneId: task.id,
     botId: bot.id,
     ...(roomId !== task.id ? { roomId } : {}),
-    requester: opts.requester ?? "owner",
+    requester,
     ...(opts.byYou ? { byYou: true } : {}),
     instanceId: selection.instanceId,
     session: sessionRef(task.resumeCursors[selection.instanceId]),
@@ -3660,7 +3673,8 @@ async function startClaimedTurn(
                 // engine starts a process per turn, so a value saved a
                 // moment ago is in this one without restarting anything.
                 // Listed first so a secret can never shadow the lines below.
-                ...usableSecrets(cfg.secrets),
+                // Only on the owner's own turns: they are the owner's keys.
+                ...(owners ? usableSecrets(cfg.secrets) : {}),
                 BLOKS_URL: `http://127.0.0.1:${PORT}`,
                 BLOKS_TOKEN: credential.token,
                 BLOKS_CLI: AGENT_CLI,
@@ -3673,8 +3687,11 @@ async function startClaimedTurn(
         ...(onCloud || sharing ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
         ...(sharing ? { shared: { tools: sharing.tools } } : {}),
         // full access takes the engine's own guards off too; never in a
-        // shared room, where the approvals protect other people
-        ...(bot.approvals === "full" && !sharing ? { fullAccess: true } : {}),
+        // shared room, where the approvals protect other people, and
+        // never for a turn the owner did not vouch for, whose approvals
+        // come to the owner and so need the guards that raise them
+        ...(bot.approvals === "full" && !sharing && owners ? { fullAccess: true } : {}),
+        ...(!owners && !sharing ? { untrusted: true } : {}),
         text: turnText,
         ...(command && instance.driverKind === "codex" ? { compactOnly: true } : {}),
         ...(skillNames.length ? { skillNames } : {}),
@@ -3902,11 +3919,26 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
 // server/people.ts (who is in); what is here is how a shared room changes
 // an agent's turn. See notes in startTurn for each of these.
 
-/** Who started a lane's current turn: "owner", or a person id. Set when
- * a turn is dispatched and cleared when it ends. An approval raised by a
- * turn a member started always goes to the owner, whatever the owner's
- * standing rules and modes would have done on their own. */
+/** Who started a lane's current turn: "owner", a person id, or
+ * MAIL_FROM_ANYONE. Set when a turn is dispatched and cleared when it
+ * ends. An approval raised by a turn anyone but the owner started always
+ * goes to the owner, whatever the owner's standing rules and modes would
+ * have done on their own. */
 const laneRequester = new Map<string, string>();
+
+/** Who asked for each lane's latest turn, kept after it ends: a backup
+ * engine picking the turn up, or the same words asked again after a
+ * fold, go on with it for whoever asked, and not as the owner. */
+const askedLast = new Map<string, string>();
+
+/** The requester of a turn an email started when the Email settings let
+ * anyone write (no `allowFrom`). Whoever that is, the owner has not
+ * vouched for them, so the turn runs like one a member of a shared room
+ * asked for: approvals come to the owner as cards, allow rules and auto
+ * modes do not answer for it (deny rules still refuse), full access is
+ * off, and no saved secret is in its environment. Mail from an address
+ * the owner listed runs as the owner's own. */
+const MAIL_FROM_ANYONE = "mail:anyone";
 
 /** Engines whose tools can be switched off for a shared room. Claude Code
  * takes --restricted and --tools; the API engines have no tools beyond
@@ -6838,10 +6870,19 @@ function mailAddressOf(bot: BotRecord): string | null {
 }
 
 function mayMail(from: string): boolean {
-  const allow = (cfg.chat?.email?.allowFrom ?? []).map((a) => a.trim().toLowerCase()).filter(Boolean);
-  if (!allow.length) return true;
+  return !mailAllowList().length || mailListed(from);
+}
+
+function mailAllowList(): string[] {
+  return (cfg.chat?.email?.allowFrom ?? []).map((a) => a.trim().toLowerCase()).filter(Boolean);
+}
+
+/** Whether the owner named this sender, by address or @domain. Asked
+ * when the mail's turn starts, so a list changed while it waited decides,
+ * and a list emptied in that time vouches for nobody. */
+function mailListed(from: string): boolean {
   const address = from.toLowerCase();
-  return allow.some((a) => (a.startsWith("@") ? address.endsWith(a) : address === a));
+  return mailAllowList().some((a) => (a.startsWith("@") ? address.endsWith(a) : address === a));
 }
 
 async function onEmailHook(hook: { platform: string; body: string }): Promise<number> {
@@ -6894,7 +6935,10 @@ async function drainMail() {
     const said = store.appendMessage(laneId, { role: "user", kind: "text", text, via: "email" });
     broadcast({ kind: "message", threadId: laneId, message: said });
     mailAnswering.set(laneId, item);
-    await startTurn(item.botId, text, { taskId: laneId, presetMessage: true }).catch((e) => {
+    // mail from an address the owner listed is the owner's business; mail
+    // from anyone else runs on none of the owner's standing trust
+    const requester = mailListed(String(mail.from ?? "")) ? undefined : MAIL_FROM_ANYONE;
+    await startTurn(item.botId, text, { taskId: laneId, presetMessage: true, ...(requester ? { requester } : {}) }).catch((e) => {
       mailAnswering.delete(laneId);
       const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: `The email could not be answered: ${(e as Error).message}` });
       broadcast({ kind: "message", threadId: laneId, message: notice });

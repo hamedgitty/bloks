@@ -1,7 +1,11 @@
 // An agent's Email lane, past the happy path in agent-mail.test.ts: who
-// is emailed when a turn for a mail goes wrong.
+// is emailed when a turn for a mail goes wrong, and what a mail from
+// anyone may do on the owner's machine.
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { startHarness } from "./helpers/server.ts";
@@ -197,4 +201,219 @@ test("two passes over the mail line never answer one mail twice, or drop another
   assert.ok(await box.idle(cy.id));
   assert.equal(sentTo("b@example.com"), 1, "B was answered twice");
   assert.equal(sentTo("d@example.com"), 1);
+});
+
+// ── mail from anyone ──
+//
+// With nobody listed under who may write, anyone with the address can
+// start a turn. It ran under the agent's own approvals, so an agent in
+// full access ran a stranger's mail with every guard off and every saved
+// secret in its environment. Now that turn runs as one the owner did not
+// ask for, and a listed sender's mail runs as before.
+
+const SECRET = "widget-secret-value";
+
+/** A home whose engines are stand-ins that keep, per mail (MARK-<tag> in
+ * the words), what they were started with: a Pi over ACP that asks to
+ * edit a file and keeps the answer, a Claude Code that keeps its
+ * arguments, and one that is always out of usage. A secret is saved for
+ * agents, and Composio is connected so Claude Code has a connector to
+ * pre-allow. */
+function strangerHome() {
+  const home = mkdtempSync(join(tmpdir(), "bloks-mail-anyone-"));
+  const pi = join(home, "fake-pi.cjs");
+  writeFileSync(
+    pi,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const say = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+const waiting = new Map();
+let asked = 9000;
+require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (!msg.method) return waiting.get(msg.id)?.(msg.result);
+  if (msg.id === undefined) return;
+  const reply = (result) => say({ jsonrpc: "2.0", id: msg.id, result });
+  if (msg.method === "initialize") return reply({ protocolVersion: 1, agentCapabilities: {} });
+  if (msg.method === "session/new") return reply({ sessionId: "s1" });
+  if (msg.method !== "session/prompt") return reply({});
+  const text = msg.params.prompt.map((p) => p.text).join("");
+  const tag = (text.match(/MARK-(\\w+)/) || [])[1] || "none";
+  fs.writeFileSync(${JSON.stringify(home)} + "/pi-" + tag + ".json", JSON.stringify({ secret: process.env.WIDGET_TOKEN ?? null }));
+  const id = asked++;
+  waiting.set(id, (result) => {
+    fs.writeFileSync(${JSON.stringify(home)} + "/answer-" + tag + ".json", JSON.stringify(result ?? null));
+    reply({ stopReason: "end_turn" });
+  });
+  say({ jsonrpc: "2.0", id, method: "session/request_permission", params: {
+    sessionId: "s1",
+    toolCall: { toolCallId: "t1", title: "Edit notes.txt", kind: "edit" },
+    options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }],
+  } });
+});
+`,
+    { mode: 0o755 },
+  );
+  const claude = join(home, "fake-claude.mjs");
+  writeFileSync(
+    claude,
+    `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+const out = (frame) => console.log(JSON.stringify(frame));
+let buf = "";
+let started = false;
+process.stdin.on("data", (c) => {
+  buf += c;
+  for (let i = buf.indexOf("\\n"); i >= 0; i = buf.indexOf("\\n")) {
+    const line = buf.slice(0, i);
+    buf = buf.slice(i + 1);
+    if (!line.trim() || started) continue;
+    const frame = JSON.parse(line);
+    if (frame.type !== "user") continue;
+    started = true;
+    const tag = (String(frame.message?.content ?? "").match(/MARK-(\\w+)/) || [])[1] || "none";
+    writeFileSync(${JSON.stringify(home)} + "/claude-" + tag + ".json", JSON.stringify({ args, secret: process.env.WIDGET_TOKEN ?? null }));
+    out({ type: "system", subtype: "init", session_id: "sess-mail", model: "claude-sonnet-5" });
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Thanks for writing." }] } });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-mail", result: "Thanks for writing." });
+  }
+});
+`,
+    { mode: 0o755 },
+  );
+  // a Claude Code that is out of usage, so its turn goes to the backup
+  const out = join(home, "fake-claude-out.mjs");
+  writeFileSync(
+    out,
+    `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+const out = (frame) => console.log(JSON.stringify(frame));
+let started = false;
+process.stdin.on("data", () => {
+  if (started) return;
+  started = true;
+  const said = "Claude AI usage limit reached|" + (Math.floor(Date.now() / 1000) + 3 * 3600);
+  out({ type: "system", subtype: "init", session_id: "sess-out", model: "claude-sonnet-5" });
+  out({ type: "assistant", session_id: "sess-out", message: { id: "msg-out", model: "claude-sonnet-5", role: "assistant", content: [{ type: "text", text: said }], usage: { input_tokens: 0, output_tokens: 0 } } });
+  out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-out", result: said });
+});
+`,
+    { mode: 0o755 },
+  );
+  mkdirSync(join(home, ".bloks"), { recursive: true });
+  writeFileSync(
+    join(home, ".bloks", "config.json"),
+    JSON.stringify({
+      instances: {
+        "pi-fake": { driver: "pi", config: { cli: pi } },
+        claude: { driver: "claudeAgent", config: { cli: claude } },
+        "claude-out": { driver: "claudeAgent", config: { cli: out } },
+      },
+      secrets: { WIDGET_TOKEN: SECRET },
+      composio: { key: "composio-test-key" },
+    }),
+  );
+  const kept = (name: string) => (existsSync(join(home, name)) ? JSON.parse(readFileSync(join(home, name), "utf8")) : null);
+  return { home, kept };
+}
+
+test("mail from anyone asks the owner before acting, and gets no full access or saved secrets", async (t) => {
+  const { home, kept } = strangerHome();
+  const box = await mailbox(t, { HOME: home });
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const { bot: otto } = await box.h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Otto" }) });
+  await box.h.fetch(`/api/bots/${otto.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ modelSelection: { instanceId: "pi-fake", model: "auto" }, approvals: "full" }),
+  });
+
+  assert.equal(await box.deliver("otto", "stranger@elsewhere.org", "MARK-stranger Please tidy the notes."), 202);
+  const lane = await waitFor(() => box.lane(otto.id));
+  assert.ok(lane, "the mail never reached an Email lane");
+  const card = await waitFor(async () => {
+    const answered = kept("answer-stranger.json");
+    if (answered) return { answered };
+    const { messages } = await box.h.json(`/api/bots/${otto.id}/messages?thread=${lane.id}&limit=50`);
+    return messages.find((m: any) => m.kind === "options" && m.card?.requestId);
+  });
+  assert.ok(card, "the stranger's turn never asked");
+  assert.ok(!("answered" in card), `full access answered a stranger's mail itself: ${JSON.stringify(card)}`);
+  assert.equal(card.card.title, "Approval needed");
+  assert.match(card.card.subtitle, /asked for by an email from stranger@elsewhere\.org/);
+  assert.equal(kept("pi-stranger.json")?.secret, null, "a saved secret was in the environment of a stranger's turn");
+
+  // the owner says no, and nothing ran
+  await box.h.fetch(`/api/bots/${otto.id}/respond`, { method: "POST", body: JSON.stringify({ requestId: card.card.requestId, behavior: "deny" }) });
+  assert.equal((await waitFor(() => kept("answer-stranger.json")))?.outcome?.optionId, "reject");
+  assert.ok(await box.idle(otto.id));
+
+  // A sender the owner listed is the owner's business: the mode answers,
+  // and the agent's secrets are there, as before.
+  await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["boss@example.com"] }) });
+  assert.equal(await box.deliver("otto", "boss@example.com", "MARK-boss Please tidy the notes."), 202);
+  const answered = await waitFor(() => kept("answer-boss.json"));
+  assert.equal(answered?.outcome?.optionId, "allow", "the listed sender's mail was not run as the owner's");
+  assert.equal(kept("pi-boss.json")?.secret, SECRET);
+  const { messages } = await box.h.json(`/api/bots/${otto.id}/messages?thread=${lane.id}&limit=50`);
+  assert.equal(messages.filter((m: any) => m.kind === "options").length, 1, "the listed sender's mail asked as well");
+});
+
+test("Claude Code runs mail from anyone with its own guards on and nothing pre-allowed", async (t) => {
+  const { home, kept } = strangerHome();
+  const box = await mailbox(t, { HOME: home });
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const { bot: cleo } = await box.h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Cleo" }) });
+  await box.h.fetch(`/api/bots/${cleo.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, approvals: "full" }),
+  });
+  const flag = (args: string[], name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+
+  assert.equal(await box.deliver("cleo", "stranger@elsewhere.org", "MARK-stranger What is on the list?"), 202);
+  const stranger = await waitFor(() => kept("claude-stranger.json"));
+  assert.ok(stranger, "the stranger's turn never ran");
+  assert.equal(flag(stranger.args, "--permission-mode"), "default", `a stranger's turn ran with ${flag(stranger.args, "--permission-mode")}`);
+  assert.ok(stranger.args.includes("--permission-prompt-tool"), "a stranger's turn had nothing to ask the owner through");
+  assert.equal(flag(stranger.args, "--allowedTools"), "mcp__bloks", "a connector was pre-allowed for a stranger's turn");
+  assert.equal(stranger.secret, null, "a saved secret was in the environment of a stranger's turn");
+  assert.ok(await box.idle(cleo.id));
+
+  await box.h.json("/api/chat/email", { method: "PATCH", body: JSON.stringify({ allowFrom: ["@example.com"] }) });
+  assert.equal(await box.deliver("cleo", "boss@example.com", "MARK-boss What is on the list?"), 202);
+  const boss = await waitFor(() => kept("claude-boss.json"));
+  assert.ok(boss, "the listed sender's turn never ran");
+  assert.equal(flag(boss.args, "--permission-mode"), "bypassPermissions");
+  assert.match(flag(boss.args, "--allowedTools") ?? "", /mcp__composio/);
+  assert.equal(boss.secret, SECRET);
+});
+
+test("a backup engine picking up a stranger's mail goes on as the stranger's turn", async (t) => {
+  // The backup starts a new turn with the same words, after the first one
+  // has ended and forgotten who asked for it; it used to go on as the
+  // owner's, with everything the stranger's turn was kept from.
+  const { home, kept } = strangerHome();
+  const box = await mailbox(t, { HOME: home });
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const { bot: dora } = await box.h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Dora" }) });
+  await box.h.fetch(`/api/bots/${dora.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      modelSelection: { instanceId: "claude-out", model: "claude-sonnet-5" },
+      backupSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      approvals: "full",
+    }),
+  });
+
+  assert.equal(await box.deliver("dora", "stranger@elsewhere.org", "MARK-handed Can you look at this?"), 202);
+  const picked = await waitFor(() => kept("claude-handed.json"));
+  assert.ok(picked, "the backup never picked the mail up");
+  const mode = picked.args[picked.args.indexOf("--permission-mode") + 1];
+  assert.equal(mode, "default", `the backup ran the stranger's mail with ${mode}`);
+  assert.equal(picked.secret, null, "the backup had the saved secrets");
 });
