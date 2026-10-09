@@ -2272,7 +2272,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // Never a shared room's lane: what other people said there is not
       // the owner's to turn into the agent's standing skills.
       // Nor the lane strangers' mail is answered in, whoever's turn this was.
-      const guestLane = guestEnded || settledLane?.title === UNLISTED_MAIL;
+      const guestLane = guestEnded || Boolean(settledLane?.guestMail);
       if (!command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
       drainRoomTags(bot.id);
       // before anything queued starts the next turn on the old session
@@ -2834,7 +2834,7 @@ function mainLaneOf(bot: BotRecord) {
     ...bloks.roomsFor(bot.id).map((r) => r.lanes?.[bot.id]).filter((id): id is string => Boolean(id)),
   ]);
   const byAge = [...bot.tasks].sort((a, b) => a.createdAt - b.createdAt);
-  return byAge.find((t) => !side.has(t.id) && !rehearsals.forTask(t.id)) ?? byAge[0];
+  return byAge.find((t) => !side.has(t.id) && !rehearsals.forTask(t.id) && !t.guestMail) ?? byAge[0];
 }
 
 /** The lane the person has open, as somewhere for work that names no
@@ -2843,18 +2843,19 @@ function mainLaneOf(bot: BotRecord) {
  * since the owner's work there would run beside what those mails said. */
 function activeLaneOf(bot: BotRecord): string {
   const active = bot.tasks.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
-  return active && active.title !== UNLISTED_MAIL ? active.id : mainLaneOf(bot).id;
+  return active && !active.guestMail ? active.id : mainLaneOf(bot).id;
 }
 
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
  * and only falls back to the active lane at the lane cap. */
-function backgroundTaskId(botId: string, title: string, options: { own?: boolean } = {}): string | undefined {
+function backgroundTaskId(botId: string, title: string): string | undefined {
   const bot = store.bot(botId);
   if (!bot) return undefined;
-  // never a shared room's lane or a rehearsal's, whatever its title
-  const usable = (t: TaskRecord) => !isSharedLane(t.id) && !rehearsals.forTask(t.id);
+  // never a shared room's lane, a rehearsal's, or the one strangers' mail
+  // is answered in, whatever its title
+  const usable = (t: TaskRecord) => !isSharedLane(t.id) && !rehearsals.forTask(t.id) && !t.guestMail;
   const named = bot.tasks.find((t) => t.title === title && usable(t));
   if (named) return named.busy || claimedLanes.has(named.id) ? undefined : named.id;
   const active = bot.activeTaskId;
@@ -2866,11 +2867,8 @@ function backgroundTaskId(botId: string, title: string, options: { own?: boolean
     broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
     return made.id;
   }
-  // work that must keep to a lane of its own waits for room instead
-  if (options.own) return undefined;
-  // nor, at the cap, the lane strangers' mail is answered in, which the
-  // owner's work must not run in
-  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id) && usable(t) && t.title !== UNLISTED_MAIL);
+  // nor, at the cap, any of those, which the owner's work must not run in
+  const fallback = bot.tasks.find((t) => !t.busy && !claimedLanes.has(t.id) && usable(t));
   return fallback?.id;
 }
 
@@ -2890,8 +2888,9 @@ const LANE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 function namedLane(bot: BotRecord, named: string | undefined): TaskRecord | undefined {
   if (!named) return mainLaneOf(bot);
-  // a shared room's lane is the room's, and a rehearsal's is its copy's
-  const lanes = bot.tasks.filter((t) => !isSharedLane(t.id) && !rehearsals.forTask(t.id));
+  // a shared room's lane is the room's, a rehearsal's is its copy's, and
+  // the one strangers' mail is answered in is theirs
+  const lanes = bot.tasks.filter((t) => !isSharedLane(t.id) && !rehearsals.forTask(t.id) && !t.guestMail);
   return (
     lanes.find((t) => t.id === named) ??
     lanes.find((t) => t.title === named) ??
@@ -2905,7 +2904,7 @@ function namedLane(bot: BotRecord, named: string | undefined): TaskRecord | unde
 function threadRefusal(botId: string, named: string | undefined): string | null {
   if (!named || !LANE_ID.test(named)) return null;
   const bot = store.bot(botId);
-  if (bot?.tasks.some((t) => t.id === named && !isSharedLane(t.id) && !rehearsals.forTask(t.id))) return null;
+  if (bot?.tasks.some((t) => t.id === named && !isSharedLane(t.id) && !rehearsals.forTask(t.id) && !t.guestMail)) return null;
   return `${named} is not the id of any of ${bot?.name ?? "that agent"}'s conversations. Name one by its title or its id, or name none to use its first.`;
 }
 
@@ -4469,12 +4468,13 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
     // Busy, or Bloks finishing up to restart, it waits in the same queue
     // as a person's message would.
     const lane = watcherLane(w, bot);
+    const chain = w.chain ? { chain: w.chain } : {};
     if (laneWaits(lane)) {
-      queueOnLane(bot.id, lane.id, text, { via: "watcher" });
+      queueOnLane(bot.id, lane.id, text, { via: "watcher", ...chain });
     } else {
       const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
       broadcast({ kind: "message", threadId: lane.id, message: said });
-      await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true });
+      await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true, ...chain });
     }
   }
   w.fires = [{ at: Date.now(), summary: what.split("\n")[0].slice(0, 160) }, ...w.fires].slice(0, 10);
@@ -4508,6 +4508,13 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     if (!checkAllowed(w, bot.approvals)) {
       w.lastCheck = Date.now();
       w.lastError = `Waiting for approval: its command does not run until ${hostName()} approves it here.`;
+      return { fired: false, note: w.lastError };
+    }
+    // An agent's watcher past the limit is held without looking, so
+    // whatever changed is still there for the look after the person's say.
+    if ((w.chain ?? 0) > MAX_AGENT_CHAIN) {
+      w.lastCheck = Date.now();
+      w.lastError = chainHeld(w.chain!);
       return { fired: false, note: w.lastError };
     }
 
@@ -4592,6 +4599,15 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
 // Noted twice: in config.json, and in a file of its own that outlives a
 // config.json set aside as unreadable. Done again after that, it would
 // send everything filed since the update back to the old lanes.
+// Bloks 2.5.36 knew the lane strangers' mail is answered in by its title
+// alone. An agent with no marked lane has its lane of that title marked,
+// so the protections follow it from here on, renamed or not.
+for (const bot of store.bots) {
+  if (bot.tasks.some((t) => t.guestMail)) continue;
+  const old = bot.tasks.find((t) => t.title === UNLISTED_MAIL);
+  if (old) store.markGuestMail(old.id);
+}
+
 const ONE_CONVERSATION_MARK = join(DATA_DIR, "one-conversation");
 if (typeof cfg.oneConversationAt !== "number" && !existsSync(ONE_CONVERSATION_MARK)) {
   routines.nameUnnamed("Routines");
@@ -5213,6 +5229,12 @@ function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; c
     }
   }
   return depth;
+}
+
+/** Why a routine or a watcher an agent filed did not start its turn:
+ * agents had already started too many in a row (MAX_AGENT_CHAIN). */
+function chainHeld(chain: number): string {
+  return `Held: agents had started ${chain - 1} turns in a row without you. Run it or change it to go on.`;
 }
 
 /** The refusal an agent gets for a message past MAX_AGENT_CHAIN, and the
@@ -6766,10 +6788,17 @@ async function runDueRoutines() {
       const run = routines.beginRun(routine.id, laneId);
       if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
       broadcast({ kind: "routines" });
+      // An agent's routine past the limit is held, run by run, until the
+      // person runs it or changes it: the run says so in its history.
+      if ((routine.chain ?? 0) > MAX_AGENT_CHAIN) {
+        closeRun(laneId, { ok: false, error: chainHeld(routine.chain!) });
+        continue;
+      }
       await startTurn(routine.targetId, routine.prompt, {
         taskId: laneId,
         computerOverride: routine.runsOn,
         routine: { name: routine.name, manual: false },
+        ...(routine.chain ? { chain: routine.chain } : {}),
       }).catch((e) => {
         // it never even started; that is a finished run, not a hung one
         closeRun(laneId, {
@@ -7217,6 +7246,27 @@ async function onEmailHook(hook: { platform: string; body: string }): Promise<nu
   return 202;
 }
 
+/**
+ * The lane an agent answers strangers' mail in: the one marked for it,
+ * made and marked when there is none, or undefined while it is busy. Not
+ * found by its title, which the person may change, and never another lane
+ * at the cap: the mail waits for room instead.
+ */
+function guestMailLaneId(botId: string): string | undefined {
+  const bot = store.bot(botId);
+  if (!bot) return undefined;
+  const marked = bot.tasks.find((t) => t.guestMail);
+  if (marked) return marked.busy || claimedLanes.has(marked.id) ? undefined : marked.id;
+  const active = bot.activeTaskId;
+  const made = store.createTask(botId, UNLISTED_MAIL);
+  if (!made) return undefined;
+  store.markGuestMail(made.id);
+  // background work keeps the person's screen where it was
+  store.setActiveTask(botId, active);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
+  return made.id;
+}
+
 /** Starts a turn for each waiting mail whose agent's Email lane is free. */
 async function drainMail() {
   for (const item of [...mailQueue]) {
@@ -7234,7 +7284,7 @@ async function drainMail() {
     // would read whatever such a mail told the agent with the owner's
     // trust; and at the lane cap it waits rather than borrow one of theirs.
     const listed = mailListed(String(item.mail.from ?? ""));
-    const laneId = listed ? backgroundTaskId(item.botId, "Email") : backgroundTaskId(item.botId, UNLISTED_MAIL, { own: true });
+    const laneId = listed ? backgroundTaskId(item.botId, "Email") : guestMailLaneId(item.botId);
     if (!laneId) continue;
     mailQueue.splice(at, 1);
     const { mail } = item;
@@ -12193,7 +12243,14 @@ const server = createServer(async (req, res) => {
       const unnamed = threadRefusal(checked.value.botId, checked.value.thread);
       if (unnamed) return json(res, 400, { error: unnamed });
       if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
-      const w: Watcher = { id: newId(), ...checked.value, createdAt: Date.now(), fires: [] };
+      const w: Watcher = {
+        id: newId(),
+        ...checked.value,
+        createdAt: Date.now(),
+        fires: [],
+        // filed from an agent's turn, its turns go on from that one's place
+        ...(asAgent ? { chain: (agentChain.get(asAgent.taskId) ?? 0) + 1 } : {}),
+      };
       // A check runs a command with nobody watching. The person filing one
       // has approved it by writing it; an agent's waits for the person,
       // unless that agent already runs commands without asking.
@@ -12268,6 +12325,12 @@ const server = createServer(async (req, res) => {
       }
       const canRun = checkAllowed(w, owner?.approvals);
       if (canRun && !couldRun) w.lastError = undefined;
+      // the person changing it has had their say; an agent changing it
+      // carries its own turn's place (MAX_AGENT_CHAIN)
+      const wasHeld = (w.chain ?? 0) > MAX_AGENT_CHAIN;
+      if (asAgent) w.chain = (agentChain.get(asAgent.taskId) ?? 0) + 1;
+      else delete w.chain;
+      if (wasHeld && !((w.chain ?? 0) > MAX_AGENT_CHAIN)) w.lastError = undefined;
       saveWatchers();
       armWatcher(w);
       // approving a check takes its baseline straight away
@@ -12279,6 +12342,11 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const w = watchers.find((x) => x.id === m![1]);
       if (!w || (asAgent && w.botId !== asAgent.botId)) return json(res, 404, { error: "no such watcher" });
+      // the person looking by hand starts it over (MAX_AGENT_CHAIN)
+      if (!asAgent && w.chain) {
+        delete w.chain;
+        saveWatchers();
+      }
       return json(res, 200, await checkWatcher(w.id, true));
     }
 
@@ -13711,7 +13779,8 @@ const server = createServer(async (req, res) => {
       if (!exists) return json(res, 404, { error: "no such agent or room" });
       const unnamed = clean.targetKind === "agent" ? threadRefusal(clean.targetId, clean.thread) : null;
       if (unnamed) return json(res, 400, { error: unnamed });
-      const routine = routines.create(clean);
+      // filed from an agent's turn, its turns go on from that one's place
+      const routine = routines.create({ ...clean, ...(asAgent ? { chain: (agentChain.get(asAgent.taskId) ?? 0) + 1 } : {}) });
       if (!routine) return json(res, 507, { error: `you can have at most ${MAX_ROUTINES} routines` });
       broadcast({ kind: "routines" });
       return json(res, 201, { routine: { ...routine, summary: describeRoutine(routine) } });
@@ -13749,7 +13818,9 @@ const server = createServer(async (req, res) => {
       // must not stop the rest of an edit
       const unnamed = merged.thread !== existing.thread ? threadRefusal(merged.targetId, merged.thread) : null;
       if (unnamed) return json(res, 400, { error: unnamed });
-      const routine = routines.patch(m[1], merged);
+      // the person changing it has had their say; an agent changing it
+      // carries its own turn's place
+      const routine = routines.patch(m[1], { ...merged, chain: asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined });
       broadcast({ kind: "routines" });
       return json(res, 200, { routine: { ...routine!, summary: describeRoutine(routine!) } });
     }
@@ -13766,6 +13837,8 @@ const server = createServer(async (req, res) => {
       const routine = routines.get(m[1]);
       if (!routine) return json(res, 404, { error: "no such routine" });
       if (drain.on) return json(res, 503, { error: "Bloks is finishing what is running before it restarts. Run this again once it is back." });
+      // the person running it by hand starts it over (MAX_AGENT_CHAIN)
+      if (routine.chain) routines.patch(routine.id, { chain: undefined });
       // A hand-run is still a run. It is how anybody checks that a
       // routine does what they meant, so it belongs in the history at
       // least as much as the scheduled ones do.

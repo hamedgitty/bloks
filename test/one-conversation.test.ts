@@ -304,3 +304,15 @@ test("a config set aside as unreadable does not send what was filed since back t
   w.h = await startHarness({ HOME: w.home });
   assert.equal((await w.h.json("/api/routines")).routines.find((r: any) => r.id === later.id).thread, undefined);
 });
+
+test("the lane 2.5.36 answered strangers' mail in, known then by its title, is marked on the next start", async (t) => {
+  const w = await workspace(t);
+  const made = (await (await w.post(`/api/bots/${w.botId}/tasks`, { title: "Unlisted email" })).json()).bot.tasks
+    .find((task: any) => task.title === "Unlisted email").id;
+  await w.restart();
+  const saved = JSON.parse(readFileSync(join(w.home, ".bloks", "bots.json"), "utf8")).find((b: any) => b.id === w.botId);
+  assert.equal(saved.tasks.find((task: any) => task.id === made)?.guestMail, true);
+  // and so it is nothing a routine can name
+  const named = await routine(w, "into strangers", made);
+  assert.equal(named.status, 400);
+});

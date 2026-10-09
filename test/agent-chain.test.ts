@@ -55,6 +55,18 @@ async function go(prompt) {
   // ROOMLOOP: told it in a conversation, name the other agent in the room;
   // named in the room, tell the first agent so in its conversation
   const loop = prompt.match(/ROOMLOOP room=([\\w-]+) a=([\\w-]+) b=(\\w+)/);
+  // FILE: file a routine and a folder watcher for itself, with its own
+  // credential, as an agent does with bloks routine and bloks watch
+  const file = prompt.match(/FILE routine=([\\w-]+) dir=(\\S+)/);
+  if (file && !quiet) {
+    const auth = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
+    const routine = await fetch(process.env.BLOKS_URL + "/api/routines", { method: "POST", headers: auth, body: JSON.stringify({ targetId: file[1], targetKind: "agent", prompt: "ROUTINE-RAN", time: "03:00", days: [] }) });
+    const watcher = await fetch(process.env.BLOKS_URL + "/api/watchers", { method: "POST", headers: auth, body: JSON.stringify({ kind: "folder", target: file[2], instruction: "WATCHER-RAN", name: "drops" }) });
+    appendFileSync(home + "/says.jsonl", JSON.stringify({ to: "file", said: { routine: routine.status, watcher: watcher.status } }) + "\\n");
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Done" }] } });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-chain", result: "Done" });
+    return;
+  }
   // JOBLOOP: whoever takes the job posts one for the other agent
   const job = prompt.includes("JOBLOOP");
   const next = prompt.includes("JOBLOOP alpha") ? "JOBLOOP bravo" : "JOBLOOP alpha";
@@ -224,4 +236,74 @@ test("jobs agents post for each other are a chain, and past it wait for the pers
   const { jobs } = await h.json("/api/jobs");
   const held = (jobs as any[]).find((job) => job.state === "failed" && /Not offered: agents had started 12 turns in a row/.test(job.result ?? ""));
   assert.ok(held, `no job was held for the person: ${JSON.stringify((jobs as any[]).map((job) => [job.state, job.result]))}`);
+});
+
+test("routines and watchers an agent files carry its place, and past the limit wait for the person", async (t) => {
+  const home = workspace();
+  let h = await startHarness({ HOME: home });
+  t.after(async () => {
+    writeFileSync(join(home, "quiet"), "");
+    await h.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+  const { bot: alpha } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Alpha" }) });
+  await h.fetch(`/api/bots/${alpha.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+  const dir = join(home, "drops");
+  mkdirSync(dir);
+
+  // filed from a turn the person started, so one along
+  await h.fetch(`/api/bots/${alpha.id}/messages`, { method: "POST", body: JSON.stringify({ text: `FILE routine=${alpha.id} dir=${dir}` }) });
+  const filed = await waitFor(() => says(home).find((line) => line.to === "file") ?? null);
+  assert.deepEqual(filed?.said, { routine: 201, watcher: 201 });
+  assert.ok(await idle(h));
+  const routine = (await h.json("/api/routines")).routines[0];
+  const watcher = (await h.json("/api/watchers")).watchers[0];
+  assert.equal(routine.chain, 1);
+  assert.equal(watcher.chain, 1);
+  // the person changing one, or looking by hand, has had their say; the
+  // look is also the watcher's first, the baseline a change is measured
+  // against, which its agent being busy filing it put off
+  await h.fetch(`/api/routines/${routine.id}`, { method: "PATCH", body: JSON.stringify({ name: "Nightly" }) });
+  assert.equal((await h.json("/api/routines")).routines[0].chain, undefined);
+  await h.json(`/api/watchers/${watcher.id}/check`, { method: "POST" });
+  const looked = (await h.json("/api/watchers")).watchers[0];
+  assert.equal(looked.chain, undefined);
+  assert.ok(looked.lastCheck, "the person's look took no baseline");
+
+  // As if an agent had filed both deep in a chain: the routine comes due
+  // and the folder changes, and neither starts a turn.
+  await h.stop();
+  const data = join(home, ".bloks");
+  const rewrite = (file: string, change: (rows: any[]) => void) => {
+    const rows = JSON.parse(readFileSync(join(data, file), "utf8"));
+    change(rows);
+    writeFileSync(join(data, file), JSON.stringify(rows));
+  };
+  const due = new Date(Date.now() - 60_000);
+  rewrite("routines.json", (rows) => {
+    rows[0].chain = 13;
+    rows[0].time = `${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`;
+    rows[0].scheduledAt = due.getTime() - 60_000;
+    delete rows[0].lastRunAt;
+  });
+  rewrite("watchers.json", (rows) => { rows[0].chain = 13; });
+  h = await startHarness({ HOME: home });
+  const held = await waitFor(async () => (await h.json("/api/routines")).routines[0].runs?.find((run: any) => run.state === "failed") ?? null, 20_000);
+  assert.match(held?.error ?? "", /^Held: agents had started 12 turns in a row without you/);
+  writeFileSync(join(dir, "new.txt"), "x");
+  // a folder is looked at once it has been still for SETTLE_MS (20 s)
+  const quietly = await waitFor(async () => (/^Held:/.test((await h.json("/api/watchers")).watchers[0].lastError ?? "") ? true : null), 45_000);
+  assert.ok(quietly, "the watcher looked and acted past the limit");
+  const asked = async (words: string) => ((await h.json(`/api/bots/${alpha.id}/messages?limit=200`)).messages as any[]).some((m) => m.text?.includes(words));
+  assert.ok(!(await asked("ROUTINE-RAN")) && !(await asked("WATCHER-RAN")), "a held routine or watcher started a turn");
+
+  // the person running or looking by hand starts each over
+  assert.equal((await h.fetch(`/api/routines/${routine.id}/run`, { method: "POST" })).status, 202);
+  assert.ok(await waitFor(() => asked("ROUTINE-RAN")), "the person's run was still held");
+  assert.ok(await idle(h));
+  const look = await h.json(`/api/watchers/${watcher.id}/check`, { method: "POST" });
+  assert.equal(look.fired, true, look.note);
+  assert.ok(await waitFor(() => asked("WATCHER-RAN")), "the person's look was still held");
+  assert.equal((await h.json("/api/watchers")).watchers[0].chain, undefined);
+  assert.equal((await h.json("/api/routines")).routines[0].chain, undefined);
 });

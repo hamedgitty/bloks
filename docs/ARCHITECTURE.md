@@ -442,7 +442,11 @@ keeps the latest such place (`roomChain`) for a turn that waited, behind
 a busy agent or a round, and anyone but an agent posting there clears it
 as the post goes out. A job posted from an agent's turn
 records the place its taker's turn would take; past the limit it is not
-offered, and the person offering it again clears it. A round inside one
+offered, and the person offering it again clears it. Routines and
+watchers an agent files or changes do the same (`chain` on each): past
+the limit a routine's run is recorded as held and a watcher holds
+without looking, until the person changes it, runs it, or looks by
+hand. Agents cannot file workflows. A round inside one
 room is also bounded by `MAX_AGENT_HOPS`.
 
 ## Chat platforms
@@ -550,7 +554,10 @@ and retried. `search_history`, `read_message`, `note_about_person`,
 `request_secret` and `request_connection` are refused: a secret saved or
 an app connected from such a card would resume the turn as the owner's.
 A question it asks the owner says whose mail it is for and is never
-sent to the owner's phone. It is answered in "Unlisted email", never in
+sent to the owner's phone. It is answered in a lane of its own, made as "Unlisted email" and
+marked (`TaskRecord.guestMail`) rather than known by its title, so it
+keeps all of this when the person renames it; nothing names it, and a
+lane 2.5.36 made under that title is marked on the next start. Never in
 "Email", and at the lane cap it waits rather than borrow another lane;
 no other work falls back into that lane either, and work that names no
 lane (a phone message, a room's turn) goes to the first conversation

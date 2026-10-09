@@ -478,3 +478,39 @@ test("a mail is answered with what was said after it, never an earlier sender's 
   await new Promise((r) => setTimeout(r, 500));
   assert.deepEqual(box.relay.sent.filter((mail) => mail.to === "second@elsewhere.org").map((mail) => mail.text), [], "the second sender was emailed the first one's reply");
 });
+
+test("the lane strangers' mail is answered in keeps to it when renamed, and takes nothing of the owner's", async (t) => {
+  const box = await mailbox(t);
+  const ivo = await box.agent("Ivo");
+  assert.equal(await box.deliver("ivo", "first@elsewhere.org", "from-first"), 202);
+  const lane = await waitFor(() => box.lane(ivo.id));
+  assert.ok(lane, "the mail never reached its lane");
+  assert.ok(await box.idle(ivo.id));
+
+  // the person gives it a name of their own
+  await box.h.fetch(`/api/bots/${ivo.id}/tasks/${lane.id}`, { method: "PATCH", body: JSON.stringify({ title: "Strangers" }) });
+  assert.equal(await box.deliver("ivo", "second@elsewhere.org", "from-second"), 202);
+  assert.ok(await waitFor(() => box.model.state.calls.some((call) => call.includes("from-second"))));
+  assert.ok(await box.idle(ivo.id));
+  const titles = async () => ((await box.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === ivo.id).tasks as any[]).map((task) => task.title);
+  assert.ok(!(await titles()).includes("Unlisted email"), "a second lane was made for strangers' mail under the old title");
+  const { messages } = await box.h.json(`/api/bots/${ivo.id}/messages?thread=${lane.id}&limit=50`);
+  assert.ok(messages.some((m: any) => m.text?.includes("from-second")), "the second mail went elsewhere");
+
+  // Open, it is still not where the owner's work lands when it names no
+  // lane, and a routine naming it by its new title gets a lane of its own.
+  await box.h.fetch(`/api/bots/${ivo.id}/tasks/${lane.id}/activate`, { method: "POST" });
+  await box.h.fetch(`/api/bots/${ivo.id}/messages`, { method: "POST", body: JSON.stringify({ text: "OWNER-WORDS" }) });
+  assert.ok(await box.idle(ivo.id));
+  const after = (await box.h.json(`/api/bots/${ivo.id}/messages?thread=${lane.id}&limit=50`)).messages;
+  assert.ok(!after.some((m: any) => m.text === "OWNER-WORDS"), "the owner's words ran beside strangers' mail");
+  const { routine } = await box.h.json("/api/routines", {
+    method: "POST",
+    body: JSON.stringify({ targetId: ivo.id, targetKind: "agent", prompt: "ROUTINE-WORDS", time: "03:00", days: [], thread: "Strangers" }),
+  });
+  assert.equal((await box.h.fetch(`/api/routines/${routine.id}/run`, { method: "POST" })).status, 202);
+  assert.ok(await waitFor(() => box.model.state.calls.some((call) => call.includes("ROUTINE-WORDS"))));
+  assert.ok(await box.idle(ivo.id));
+  const ran = (await box.h.json("/api/routines")).routines.find((r: any) => r.id === routine.id);
+  assert.notEqual(ran.runs?.[0]?.threadId, lane.id, "a routine ran as the owner's in the lane strangers' mail is answered in");
+});

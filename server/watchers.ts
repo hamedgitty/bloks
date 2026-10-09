@@ -82,6 +82,10 @@ export interface Watcher {
    * auto or full when it filed it, which holds only while they still
    * are. Absent means nobody yet, and it does not run. */
   approvedBy?: "person" | "mode";
+  /** Filed from an agent's turn: the place in a chain of agents'
+   * messages its turns take (MAX_AGENT_CHAIN in server/index.ts). Absent
+   * once the person has changed it or looked by hand. */
+  chain?: number;
 }
 
 export const MIN_EVERY = 5;

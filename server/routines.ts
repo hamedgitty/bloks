@@ -64,6 +64,12 @@ export interface Routine {
   scheduledAt?: number;
   /** When it last actually fired. Absent until the first run. */
   lastRunAt?: number;
+  /** Filed or last changed from an agent's turn: the place in a chain
+   * of agents' messages its turns take (MAX_AGENT_CHAIN in
+   * server/index.ts), so an agent cannot keep itself going through
+   * routines it files. Absent once the person has filed, changed or run
+   * it. Set by the server, never from a request body. */
+  chain?: number;
   /** The last few runs, newest first. A routine you cannot inspect is a
    * routine you cannot trust: "did my 9am brief run, and what did it
    * say" is the first question anybody asks, and until now the honest
@@ -341,6 +347,7 @@ export class RoutineStore {
     if ("thread" in patch) routine.thread = patch.thread;
     if ("repeat" in patch) routine.repeat = patch.repeat;
     if ("date" in patch) routine.date = patch.date;
+    if ("chain" in patch) routine.chain = patch.chain || undefined;
     this.save();
     return routine;
   }

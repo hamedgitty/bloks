@@ -289,6 +289,11 @@ export interface TaskRecord {
    * lanes never share a session. */
   resumeCursors: Record<string, unknown>;
   createdAt: number;
+  /** Mail from senders the owner has not listed is answered here, and
+   * nothing of the owner's runs here unasked (drainMail in
+   * server/index.ts). Marked rather than known by its title, which the
+   * person may change. */
+  guestMail?: boolean;
 }
 
 /** How many lanes an agent keeps open. Once three, which ran out as soon
@@ -803,6 +808,14 @@ export class Store {
     bot.tasks.push(task);
     this.setActiveTask(botId, task.id);
     return task;
+  }
+
+  /** Mark the lane strangers' mail is answered in (TaskRecord.guestMail). */
+  markGuestMail(threadId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found || found.task.guestMail) return;
+    found.task.guestMail = true;
+    this.saveBots();
   }
 
   setActiveTask(botId: string, taskId: string): boolean {
