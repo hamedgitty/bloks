@@ -14,6 +14,17 @@ const msg = (over: Partial<Message>): Message =>
   ({ id: "m", role: "bot", kind: "text", at: 0, ...over }) as Message;
 
 describe("every kind says something", () => {
+  test("an own-only changes summary has the ordinary file-count row line", () => {
+    const summary = {
+      checkpointId: "checkpoint",
+      files: [{ path: "a.md", status: "modified" as const }, { path: "b.md", status: "added" as const }],
+      total: 2,
+    };
+    const line = previewLine(msg({ kind: "changes", changes: summary }));
+    assert.equal(line, "Changed 2 files");
+    assert.equal(line.includes("while others"), false);
+  });
+
   test("nothing at all is a new agent", () => {
     assert.equal(previewLine(undefined), "New agent");
   });

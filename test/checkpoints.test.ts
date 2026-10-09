@@ -221,7 +221,7 @@ describe("checkpoints", () => {
 
 // GitHub 153: two agents in one folder. A turn that ran beside another
 // keeps as its own only what its engine said it edited; the rest is
-// listed apart and Undo leaves it alone.
+// kept in the checkpoint while the card and Undo show only its own files.
 describe("turns that share a folder", () => {
   test("each turn claims what it said it edited, and Undo leaves the other agent's work", async () => {
     const dir = folder("shared", { "notes.md": "a\n", "log.md": "b\n", "skill.md": "c\n" });
@@ -245,11 +245,13 @@ describe("turns that share a folder", () => {
     assert.deepEqual(a.alongside, ["linus"]);
     assert.equal(a.files[0].path, "notes.md", "its own come first on the card");
     const summary = cp.summary(a);
-    assert.deepEqual(summary.shared, { total: 2, alongside: ["linus"] });
+    assert.deepEqual(summary.files.map((f) => f.path), ["notes.md"]);
+    assert.equal(summary.total, 1);
+    assert.equal(Object.hasOwn(summary, "shared"), false);
 
     const undo = (await cp.revert(a.id))!;
     assert.deepEqual(undo.restored, ["notes.md"]);
-    assert.deepEqual(undo.skipped.map((s) => s.path).sort(), ["log.md", "skill.md"]);
+    assert.deepEqual(undo.skipped, []);
     assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "a\n");
     assert.equal(readFileSync(join(dir, "log.md"), "utf8"), "b, by Linus\n", "the other agent's work is untouched");
 
@@ -257,6 +259,81 @@ describe("turns that share a folder", () => {
     const b = (await cp.finish("lane-b"))!;
     assert.deepEqual(b.files.filter((f) => !f.shared).map((f) => f.path), ["log.md"]);
     assert.deepEqual(b.alongside, ["ada"]);
+  });
+
+  test("a summary filters shared files before its list limit", async () => {
+    const dir = folder("summary-limit", { "own.md": "before\n", "other.md": "before\n" });
+    const cp = new Checkpoints(join(scratch, "store-summary-limit"));
+    await cp.begin("a", "a", dir);
+    await cp.begin("b", "b", dir);
+    cp.noteEdits("a", ["own.md"]);
+    writeFileSync(join(dir, "own.md"), "own\n");
+    writeFileSync(join(dir, "other.md"), "other\n");
+    const record = (await cp.finish("a"))!;
+    const own = record.files.find((f) => !f.shared)!;
+    const other = record.files.find((f) => f.shared)!;
+    const old = { ...record, files: [...Array.from({ length: 60 }, (_, i) => ({ ...other, path: `other-${i}.md` })), own] };
+    const summary = cp.summary(old, 1);
+    assert.equal(summary.total, 1);
+    assert.deepEqual(summary.files.map((f) => f.path), ["own.md"]);
+    assert.equal(Object.hasOwn(summary, "shared"), false);
+    const empty = cp.summary({ ...record, files: [other] });
+    assert.deepEqual(empty.files, []);
+    assert.equal(empty.total, 0);
+    assert.equal(Object.hasOwn(empty, "shared"), false);
+    assert.equal(record.files.length, 2, "summary does not change the retained checkpoint");
+    cp.cancel("b");
+  });
+
+  test("shared skips are silent before path and size checks, own changed-since still reports", async () => {
+    const dir = folder("silent-shared", { "own.md": "before\n", "other.md": "before\n" });
+    const cp = new Checkpoints(join(scratch, "store-silent-shared"));
+    await cp.begin("a", "a", dir);
+    await cp.begin("b", "b", dir);
+    cp.noteEdits("a", ["own.md"]);
+    writeFileSync(join(dir, "own.md"), "own\n");
+    writeFileSync(join(dir, "other.md"), "other\n");
+    const record = (await cp.finish("a"))!;
+    const other = record.files.find((f) => f.shared)!;
+    const outside = join(dir, "..", "outside-shared.md");
+    writeFileSync(outside, "leave outside alone\n");
+    record.files.push({ ...other, path: "../outside-shared.md" }, { ...other, path: "big-shared.bin", big: true });
+    writeFileSync(join(dir, "own.md"), "changed since\n");
+    const result = (await cp.revert(record.id))!;
+    assert.deepEqual(result.restored, []);
+    assert.deepEqual(result.skipped, [{ path: "own.md", why: "changed since" }]);
+    assert.equal(readFileSync(join(dir, "other.md"), "utf8"), "other\n");
+    assert.equal(readFileSync(outside, "utf8"), "leave outside alone\n");
+    assert.equal(readFileSync(join(dir, "own.md"), "utf8"), "changed since\n");
+    cp.cancel("b");
+  });
+
+  test("later cards restore across a retained cardless shared checkpoint", async () => {
+    const dir = folder("cardless-between", { "notes.md": "before\n", "log.md": "before\n" });
+    const cp = new Checkpoints(join(scratch, "store-cardless-between"));
+    await cp.begin("a", "a", dir);
+    writeFileSync(join(dir, "notes.md"), "first\n");
+    const first = (await cp.finish("a"))!;
+    cp.attachCard(first.id, "a", "first-card");
+    await cp.begin("a", "a", dir);
+    await cp.begin("b", "b", dir);
+    cp.noteEdits("b", ["log.md"]);
+    writeFileSync(join(dir, "log.md"), "other turn\n");
+    const hidden = (await cp.finish("a"))!;
+    await cp.finish("b");
+    assert.equal(cp.summary(hidden).total, 0);
+    assert.equal(hidden.card, undefined);
+    await cp.begin("a", "a", dir);
+    writeFileSync(join(dir, "notes.md"), "later\n");
+    const later = (await cp.finish("a"))!;
+    cp.attachCard(later.id, "a", "later-card");
+    assert.deepEqual(cp.undoableSince("a", first.at).map((r) => r.id), [later.id, hidden.id, first.id]);
+    assert.deepEqual(await cp.revert(later.id), { restored: ["notes.md"], skipped: [] });
+    assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "first\n");
+    assert.deepEqual(await cp.revert(hidden.id), { restored: [], skipped: [] });
+    assert.deepEqual(await cp.revert(first.id), { restored: ["notes.md"], skipped: [] });
+    assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "before\n");
+    assert.equal(readFileSync(join(dir, "log.md"), "utf8"), "other turn\n");
   });
 
   test("a turn that came and went in the middle of a long one still counts", async () => {

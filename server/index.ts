@@ -597,14 +597,18 @@ async function settleRehearsalTurn(
   broadcast({ kind: "rehearsals" });
 }
 
-/** A rehearsal card, redrawn after its decision. */
+/** A change card, redrawn after Undo, rewind or a rehearsal decision. */
 function patchChangesCard(record: CheckpointRecord, extra: Partial<NonNullable<Message["changes"]>> = {}) {
   if (!record.card) return;
   const current = store.messagesFor(record.card.threadId).find((msg) => msg.id === record.card!.messageId);
   if (!current?.changes) return;
-  const patched = store.patchMessage(record.card.threadId, record.card.messageId, {
-    changes: { ...current.changes, ...checkpoints.summary(record), ...extra },
-  });
+  const summary = checkpoints.summary(record);
+  // A retained all-shared card keeps its old summary; only metadata changes.
+  const redraw = Boolean(record.rehearsal) || summary.total > 0;
+  if (!redraw && !Object.keys(extra).length) return;
+  const changes = { ...current.changes, ...(redraw ? summary : {}), ...extra };
+  if (redraw) delete changes.shared;
+  const patched = store.patchMessage(record.card.threadId, record.card.messageId, { changes });
   if (patched) broadcast({ kind: "message.patch", threadId: record.card.threadId, message: patched });
 }
 
@@ -2107,7 +2111,9 @@ bus.subscribe((event: RuntimeEvent) => {
             return;
           }
           if (!record) return;
-          const card = pushMessage({ role: "bot", kind: "changes", changes: checkpoints.summary(record) });
+          const changes = checkpoints.summary(record);
+          if (!changes.total) return;
+          const card = pushMessage({ role: "bot", kind: "changes", changes });
           checkpoints.attachCard(record.id, roomId, card.id);
         })
         .catch(() => {});
@@ -9912,18 +9918,9 @@ const server = createServer(async (req, res) => {
       if (result.restored.length) {
         undoneSince.set(record.threadId, [...(undoneSince.get(record.threadId) ?? []), ...result.restored]);
       }
-      if (record.card) {
-        const current = store.messagesFor(record.card.threadId).find((msg) => msg.id === record.card!.messageId);
-        if (current?.changes) {
-          const patched = store.patchMessage(record.card.threadId, record.card.messageId, {
-            changes: {
-              ...current.changes,
-              reverted: { at: Date.now(), restored: result.restored.length, skipped: result.skipped.length },
-            },
-          });
-          if (patched) broadcast({ kind: "message.patch", threadId: record.card.threadId, message: patched });
-        }
-      }
+      patchChangesCard(record, {
+        reverted: { at: Date.now(), restored: result.restored.length, skipped: result.skipped.length },
+      });
       return json(res, 200, result);
     }
 
