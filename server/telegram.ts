@@ -84,21 +84,21 @@ export interface Press {
 export type Media =
   | { kind: "voice"; fileId: string; bytes: number }
   | { kind: "image"; fileId: string; bytes: number; mime: string }
+  | { kind: "file"; fileId: string; bytes: number; what: string; mime: string; name?: string }
   /** `what` is how the reply names it, plural: "videos", "stickers". */
-  | { kind: "other"; what: string };
+  | { kind: "other"; what: string; bytes?: number };
 
 /** The images a pasted image may be, so Telegram's match the app's. */
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-/** Message fields that mean content the bot has no way to pass on, and
- * what to call each in the reply. Order matters: a GIF arrives with a
- * `document` beside its `animation`, so it is named before files are. */
+/** A GIF also carries a document, so animation is checked first. */
+const FILES: [field: string, what: string][] = [
+  ["animation", "GIFs"], ["video", "videos"], ["video_note", "video messages"], ["audio", "audio files"],
+];
+
+/** Content the bot cannot take, named in the refusal. */
 const OTHER: [field: string, what: string][] = [
-  ["animation", "GIFs"],
-  ["video", "videos"],
-  ["video_note", "video messages"],
   ["sticker", "stickers"],
-  ["audio", "audio files"],
   ["location", "locations"],
   ["venue", "locations"],
   ["contact", "contacts"],
@@ -107,6 +107,36 @@ const OTHER: [field: string, what: string][] = [
   ["game", "games"],
   ["story", "stories"],
 ];
+
+const sizeOf = (file: Record<string, any>): number => {
+  const bytes = Number(file.file_size);
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+};
+
+function fileMedia(file: Record<string, any>, what: string): Media {
+  const fileId = typeof file.file_id === "string" ? clamp(file.file_id, 1024) : undefined;
+  const bytes = sizeOf(file);
+  return { kind: "file", fileId: fileId ?? "", bytes, what,
+    mime: typeof file.mime_type === "string" ? file.mime_type.slice(0, 120).toLowerCase() : "",
+    ...(typeof file.file_name === "string" ? { name: file.file_name.slice(0, 300) } : {}),
+  };
+}
+
+// Unchecked files must not get names the image/voice serving route takes.
+const FILE_EXTENSIONS = new Map([
+  ["application/pdf", "pdf"], ["text/plain", "txt"], ["text/csv", "csv"], ["application/json", "json"],
+  ["application/zip", "zip"], ["video/mp4", "mp4"], ["video/webm", "webm"], ["video/quicktime", "mov"],
+  ["audio/mpeg", "mp3"], ["audio/mp4", "m4a"], ["audio/ogg", "oga"], ["audio/wav", "wav"], ["audio/flac", "flac"],
+]);
+const SERVED_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "ogg"]);
+function fileExtension(media: Extract<Media, { kind: "file" }>): string {
+  const mime = media.mime.split(";")[0]!.trim();
+  const known = FILE_EXTENSIONS.get(mime);
+  if (known) return known;
+  const ext = /\.([a-z0-9]{1,8})$/i.exec(media.name ?? "")?.[1]?.toLowerCase();
+  if (ext && !SERVED_EXTENSIONS.has(ext)) return ext;
+  return ["videos", "video messages", "GIFs"].includes(media.what) ? "mp4" : "bin";
+}
 
 function mediaOf(message: Record<string, any>): Media | undefined {
   const voice = message.voice;
@@ -123,19 +153,24 @@ function mediaOf(message: Record<string, any>): Media | undefined {
       return { kind: "image", fileId: biggest.file_id, bytes: Number(biggest.file_size) || 0, mime: "image/jpeg" };
     }
   }
+  for (const [field, what] of FILES) {
+    if (message[field] !== undefined && message[field] !== null) return fileMedia(message[field], what);
+  }
   for (const [field, what] of OTHER) {
-    if (message[field] !== undefined && message[field] !== null) return { kind: "other", what };
+    if (message[field] !== undefined && message[field] !== null) {
+      return { kind: "other", what, ...(field === "sticker" ? { bytes: sizeOf(message[field]) } : {}) };
+    }
   }
   const document = message.document;
-  if (document && typeof document.file_id === "string") {
-    const mime = String(document.mime_type ?? "").toLowerCase();
+  if (document) {
+    const mime = typeof document.mime_type === "string" ? document.mime_type.slice(0, 120).toLowerCase() : "";
     // An image sent "as a file" keeps its full resolution, which is
     // often exactly why somebody sent it that way.
-    if (IMAGE_MIMES.has(mime)) {
+    if (IMAGE_MIMES.has(mime) && typeof document.file_id === "string" && document.file_id) {
       return { kind: "image", fileId: document.file_id, bytes: Number(document.file_size) || 0, mime };
     }
-    if (mime.startsWith("image/")) return { kind: "other", what: `${mime.slice(6).toUpperCase()} images` };
-    return { kind: "other", what: "files" };
+    if (mime.startsWith("image/")) return { kind: "other", what: `${mime.slice(6).toUpperCase()} images`, bytes: sizeOf(document) };
+    return fileMedia(document, "files");
   }
   return undefined;
 }
@@ -824,6 +859,35 @@ export function imagesText(caption: string, paths: string[]): string {
     .join("\n\n");
 }
 
+function attachmentsText(caption: string, paths: { kind: "image" | "file"; path: string }[]): string {
+  return [caption.trim(), ...paths.map(({ kind, path }) => `<attached-${kind} path="${attr(path)}" />`)]
+    .filter(Boolean).join("\n\n");
+}
+
+const ITEM_NAMES = new Map([
+  ["videos", "video"], ["video messages", "video message"], ["audio files", "audio file"], ["GIFs", "GIF"],
+  ["files", "file"], ["stickers", "sticker"], ["locations", "location"], ["contacts", "contact"],
+  ["polls", "poll"], ["dice", "die"], ["games", "game"], ["stories", "story"],
+]);
+
+function mediaName(media: Media): string {
+  if (media.kind === "voice") return "voice message";
+  if (media.kind === "image") return "photo";
+  return ITEM_NAMES.get(media.what) ?? (media.what.endsWith(" images") ? "image" : "attachment");
+}
+
+function mediaDescription(media: Media, capital = true): string {
+  const name = mediaName(media);
+  const article = /^[aeiou]/i.test(name) ? "an" : "a";
+  const what = `${capital ? article[0]!.toUpperCase() + article.slice(1) : article} ${name}`;
+  if (!("bytes" in media)) return what;
+  return `${what} (${media.bytes ? `${media.bytes} bytes` : "size not provided"})`;
+}
+
+const refusalNote = (media: Media, why: string) => `${mediaDescription(media)} did not arrive (${why}).`;
+const fileAdvice = (media: Extract<Media, { kind: "file" }>) =>
+  `Telegram bots have a 20 MB limit. Try a ${media.what === "files" ? "smaller file" : "shorter clip"}.`;
+
 /** Everything the inbox needs from outside, so the rules can be tested
  * without Telegram, a vendor or a disk. */
 export interface InboxHooks {
@@ -839,6 +903,7 @@ export interface InboxHooks {
   /** Throws when the bytes are not an image the app would take. */
   saveImage(bytes: Uint8Array): string;
   saveVoice(bytes: Uint8Array): string;
+  saveFile(bytes: Uint8Array, extension: string): string;
   /** A card forwarded to this chat and not yet answered. */
   waiting(chatId: number): { options: string[]; permission: boolean } | undefined;
   answer(chatId: number, read: { option?: string; free?: string }): Promise<void>;
@@ -881,13 +946,14 @@ export class Inbox {
     const { chatId, media } = decision;
     if (media && message.album) return this.hold(message);
     if (media?.kind === "other") {
-      const note = `Something came with this that did not arrive (Bloks can't take ${media.what} from Telegram).`;
-      return this.missed(chatId, decision.text, note, notDelivered(media), notDelivered(media, true));
+      const note = `${mediaDescription(media)} came with this and did not arrive (Bloks can't take ${media.what} from Telegram).`;
+      return this.missed(chatId, decision.text, note, notDelivered(media), notDelivered(media, true),
+        refusalNote(media, `Bloks can't take ${media.what} from Telegram`));
     }
     if (media?.kind === "voice") return this.voice(chatId, media, decision.text);
     // A photo is never an answer to a card. It is something new to look
     // at, and reading it as "yes" would be a guess.
-    if (media?.kind === "image") return this.photos([message]);
+    if (media?.kind === "image" || media?.kind === "file") return this.attachments([message]);
     const waiting = hooks.waiting(chatId);
     if (waiting) return this.answer(chatId, waiting, decision.text);
     hooks.deliver(chatId, decision.text);
@@ -912,15 +978,14 @@ export class Inbox {
   }
 
   /**
-   * An attachment that could not be passed on. With no caption there is
-   * nothing to deliver and the person is told so. With one, the caption
+   * An attachment that could not be passed on. With no caption the agent
+   * gets its type and reason. With one, the caption
    * goes to the agent as a new message, never as the answer to a card,
    * marked with what was missing and why.
    */
-  private async missed(chatId: number, caption: string, note: string, alone: string, captioned: string) {
-    if (!caption) return this.hooks.send(chatId, alone);
-    this.hooks.deliver(chatId, withMissing(caption, note));
-    await this.hooks.send(chatId, captioned);
+  private async missed(chatId: number, caption: string, note: string, alone: string, captioned: string, standalone: string) {
+    this.hooks.deliver(chatId, withMissing(caption, caption ? note : standalone));
+    await this.hooks.send(chatId, caption ? captioned : alone);
   }
 
   private async voice(chatId: number, media: Extract<Media, { kind: "voice" }>, caption = ""): Promise<void> {
@@ -931,7 +996,7 @@ export class Inbox {
     const typed = `That one needs a tap or a typed answer. ${ASK_AGAIN}`;
     if (hooks.waiting(chatId)?.permission) return hooks.send(chatId, typed);
     const lost = (why: string, alone: string, captioned: string) =>
-      this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned);
+      this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned, refusalNote(media, why));
     const transcribe = hooks.transcriber();
     if (!transcribe) {
       return lost("there is no speech key to transcribe it", notDelivered(media), notDelivered(media, true));
@@ -982,47 +1047,58 @@ export class Inbox {
     hooks.deliver(chatId, voiceText(path, said, caption));
   }
 
-  /** One photo, or a whole album, as one message: every image that could
+  /** One attachment, or a whole album, as one message: every file that could
    * be taken, the caption, and a word about anything that could not. */
-  private async photos(parts: Incoming[]): Promise<void> {
+  private async attachments(parts: Incoming[]): Promise<void> {
     const { hooks } = this;
     const chatId = parts[0]!.chatId;
-    const paths: string[] = [];
+    const paths: { kind: "image" | "file"; path: string }[] = [];
+    const caption = parts.map((part) => part.text).filter(Boolean).join("\n\n");
+    const onlyImages = parts.every((part) => part.media?.kind === "image");
+    const advice = new Set<string>();
     // Said to the person, and to the agent, which hears about Bloks
     // rather than from it.
     const problems = new Set<string>();
     const told = new Set<string>();
     for (const part of parts) {
       const media = part.media;
-      if (media?.kind !== "image") {
-        problems.add(media?.kind === "other" ? `I can't take ${media.what}` : "only photos go in an album");
-        told.add(media?.kind === "other" ? `Bloks can't take ${media.what} from Telegram` : "only photos are taken from an album");
+      if (media?.kind !== "image" && media?.kind !== "file") {
+        problems.add(media?.kind === "other" ? `I can't take ${media.what}` : "only images and files go in an album");
+        const why = media?.kind === "other" ? `Bloks can't take ${media.what} from Telegram` : "only images and files are taken from an album";
+        told.add(media ? `${mediaDescription(media, false)}: ${why}` : why);
         continue;
       }
+      let sizeOrDownload = false;
       try {
-        if (media.bytes > IMAGE_MAX_BYTES) throw new Error("it is over 10 MB");
-        paths.push(hooks.saveImage(await hooks.download(media.fileId, IMAGE_MAX_BYTES)));
+        const max = media.kind === "image" ? IMAGE_MAX_BYTES : VOICE_MAX_BYTES;
+        if (!media.fileId) throw new Error("Telegram did not provide a file ID");
+        sizeOrDownload = true;
+        if (media.bytes > max) throw new Error(`it is over ${max / (1024 * 1024)} MB`);
+        const bytes = await hooks.download(media.fileId, max);
+        sizeOrDownload = false;
+        const path = media.kind === "image" ? hooks.saveImage(bytes) : hooks.saveFile(bytes, fileExtension(media));
+        paths.push({ kind: media.kind, path });
       } catch (error) {
         problems.add(reason(error));
-        told.add(reason(error));
+        told.add(caption && onlyImages ? reason(error) : `${mediaDescription(media, false)}: ${reason(error)}`);
+        if (media.kind === "file" && sizeOrDownload) advice.add(fileAdvice(media));
       }
     }
-    const caption = parts
-      .map((part) => part.text)
-      .filter(Boolean)
-      .join("\n\n");
-    if (!problems.size) return hooks.deliver(chatId, imagesText(caption, paths));
+    if (!problems.size) return hooks.deliver(chatId, attachmentsText(caption, paths));
     const why = [...problems].join("; ");
     const toAgent = [...told].join("; ");
     const missing = parts.length - paths.length;
-    const noun = parts.every((part) => part.media?.kind === "image") ? "photos" : "attachments";
+    const noun = onlyImages ? "photos" : "attachments";
+    const hint = advice.size ? ` ${[...advice].join(" ")}` : "";
     if (parts.length === 1) {
+      const media = parts[0]!.media!;
       return this.missed(
         chatId,
         caption,
-        `A photo came with this and did not arrive (${toAgent}).`,
-        `I couldn't take that photo (${why}), so it did not reach your agent.`,
-        `I couldn't take that photo (${why}). ${WITHOUT}`,
+        `${media.kind === "image" ? "A photo" : mediaDescription(media)} came with this and did not arrive (${why}).`,
+        `I couldn't take that ${mediaName(media)} (${why}), so it did not reach your agent.${hint}`,
+        `I couldn't take that ${mediaName(media)} (${why}). ${WITHOUT}${hint}`,
+        refusalNote(media, why),
       );
     }
     if (!paths.length) {
@@ -1030,15 +1106,16 @@ export class Inbox {
         chatId,
         caption,
         `${parts.length} ${noun} came with this and none of them arrived (${toAgent}).`,
-        `None of those ${parts.length} reached your agent (${why}).`,
-        `None of those ${parts.length} reached your agent (${why}). Your caption went without them.`,
+        `None of those ${parts.length} reached your agent (${why}).${hint}`,
+        `None of those ${parts.length} reached your agent (${why}). Your caption went without them.${hint}`,
+        `${parts.length} ${noun} did not arrive, none reached the agent (${toAgent}).`,
       );
     }
     // The agent is told what is missing beside what came, so it does not
     // describe an album of three as if two were all of it.
     const note = `${missing} of ${parts.length} ${noun} did not arrive (${toAgent}).`;
-    hooks.deliver(chatId, imagesText(withMissing(caption, note), paths));
-    await hooks.send(chatId, `${missing} of those ${parts.length} did not reach your agent (${why}). The rest did.`);
+    hooks.deliver(chatId, attachmentsText(withMissing(caption, note), paths));
+    await hooks.send(chatId, `${missing} of those ${parts.length} did not reach your agent (${why}). The rest did.${hint}`);
   }
 
   private hold(message: Incoming): void {
@@ -1056,7 +1133,7 @@ export class Inbox {
     if (!held) return;
     this.albums.delete(key);
     clearTimeout(held.timer);
-    const done: Promise<void> = this.photos(held.parts)
+    const done: Promise<void> = this.attachments(held.parts)
       .catch(() => {})
       .finally(() => this.releasing.delete(done));
     this.releasing.add(done);
