@@ -37,8 +37,9 @@ const PATTERNS: Array<[OutReason, RegExp]> = [
   ["overloaded", /overloaded|\b529\b|\b503\b|service unavailable|temporarily unavailable|capacity (?:constraints|limits)|server is busy/i],
   // money ("余额不足" is "insufficient balance", from providers in China)
   ["credit", /credit balance is too low|insufficient[_ ](?:quota|credits|funds|(?:account )?balance)|billing (?:hard )?limit|payment required|\b402\b|out of credits|check your plan and billing|余额不足/i],
-  // the engine cannot act for this person at all right now
-  ["signedOut", /not (?:logged|signed) in|please (?:run \/login|log ?in|sign in)|invalid api key|incorrect api key|invalid x-api-key|authentication (?:failed|error)|unauthori[sz]ed|\b401\b|oauth token (?:has )?expired/i],
+  // the engine cannot act for this person at all right now ("Authentication
+  // required" is what an ACP agent answers when its login has lapsed)
+  ["signedOut", /not (?:logged|signed) in|please (?:run \/login|log ?in|sign in)|invalid api key|incorrect api key|invalid x-api-key|authentication (?:failed|error|required)|unauthori[sz]ed|\b401\b|oauth token (?:has )?expired/i],
 ];
 
 /** Why the engine is out, or null when the failure is about the work. */

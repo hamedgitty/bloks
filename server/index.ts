@@ -47,7 +47,7 @@ import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { ModelSelection, PlanUsage, ProviderInstance, RuntimeEvent, SendTurnInput } from "./contracts.ts";
+import type { ModelSelection, PlanUsage, ProviderInstance, ProviderSnapshot, RuntimeEvent, SendTurnInput } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -264,6 +264,7 @@ import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
+import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
 import { recall, recallText, type RecallSource, type Speaker } from "./recall.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
@@ -752,6 +753,44 @@ function engineName(selection: ModelSelection): string {
   const name = instance?.displayName ?? instance?.driverKind ?? selection.instanceId;
   return label && label !== name ? `${name} (${label})` : name;
 }
+
+/** What each engine last said of itself, kept half a minute: asking runs
+ * its CLI, and an agent listing the workspace must not run one for every
+ * teammate (GitHub 239). A probe that throws reads as unavailable, as it
+ * does in the model picker. */
+const SNAPSHOT_FRESH_MS = 30_000;
+const snapshotsSeen = new Map<string, { at: number; snapshot: Promise<ProviderSnapshot> }>();
+function recentSnapshot(instance: ProviderInstance): Promise<ProviderSnapshot> {
+  const seen = snapshotsSeen.get(instance.instanceId);
+  if (seen && Date.now() - seen.at < SNAPSHOT_FRESH_MS) return seen.snapshot;
+  const snapshot = instance.snapshot().catch((): ProviderSnapshot => ({ state: "unavailable" }));
+  snapshotsSeen.set(instance.instanceId, { at: Date.now(), snapshot });
+  return snapshot;
+}
+
+/** Whether this agent's engine can answer it now, for another agent to
+ * read (server/engine-readiness.ts): its own engine, or its backup when
+ * that is where the turn would go. `engine` is the one that decided it,
+ * by the name the app shows, when it is there to have one. */
+async function readinessOf(bot: BotRecord): Promise<{ readiness: Readiness; engine?: string }> {
+  const one = async (selection: ModelSelection) => {
+    const instance = registry.get(selection.instanceId);
+    const rest = cooldowns.of(selection.instanceId);
+    const present = Boolean(instance && instance.enabled !== false);
+    const readiness = engineReadiness({
+      present,
+      rest,
+      snapshot: present && !rest ? await recentSnapshot(instance!) : null,
+    });
+    return { readiness, ...(instance ? { engine: instance.displayName ?? engineName(selection) } : {}) };
+  };
+  const own = await one(bot.modelSelection);
+  const backup =
+    own.readiness.state !== "ready" && bot.backupSelection && bot.backupSelection.instanceId !== bot.modelSelection.instanceId
+      ? await one(bot.backupSelection)
+      : null;
+  return backup && agentReadiness(own.readiness, backup.readiness) === backup.readiness ? backup : own;
+}
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
 // An agent doing the work on a clone of its folder, for you to apply or not.
@@ -1204,6 +1243,10 @@ function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boole
   laneEngine.delete(laneId);
   turnErrors.delete(laneId);
   heldErrors.delete(laneId);
+  // An engine that just answered is signed in, whatever a refusal said
+  // before: the rest it began is over, or other agents would go on being
+  // told for hours that this one cannot answer (GitHub 239).
+  if (ok && used && cooldowns.of(used.instanceId)?.reason === "signedOut") cooldowns.clear(used.instanceId);
   // a call that went silent is about the work, not the engine running
   // out, whatever words the stuck command happened to contain
   const command = commandTurns.delete(laneId);
@@ -8748,10 +8791,14 @@ const server = createServer(async (req, res) => {
         Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
       const lists = store.bots.map((b) => trim(store.messagesFor(b.threadId)));
       const fitted = viaRelay ? fitTranscripts(lists, Number.isFinite(tail) && tail >= 0 ? tail : RELAY_TAIL) : null;
+      // Another agent reads whether each one can answer now (GitHub 239);
+      // the person's app has its banner, and asks the engines itself.
+      const engines = asAgent ? await Promise.all(store.bots.map((b) => readinessOf(b))) : null;
       return json(res, 200, {
         bots: store.bots.map((b, i) => ({
           ...clientBot(b)!,
           ...(fitted ? fitted[i] : { messages: lists[i] }),
+          ...(engines ? { engine: { ...engines[i].readiness, ...(engines[i].engine ? { name: engines[i].engine } : {}) } } : {}),
         })),
       });
     }
@@ -9464,6 +9511,10 @@ const server = createServer(async (req, res) => {
         });
         broadcast({ kind: "message", threadId: asAgent.taskId, message: note });
       };
+      // Whether the one written to can answer now, read as it is sent: a
+      // sender that will not be answered is told so with the ok, rather
+      // than waiting on a reply that is not coming (GitHub 239).
+      const reach = from && recipient ? readinessOf(recipient).catch(() => null) : null;
       let result;
       try {
         result = await sendUserMessage(m[1], text, {
@@ -9483,7 +9534,9 @@ const server = createServer(async (req, res) => {
         throw e;
       }
       noteSent(result.queued ? "queued" : "sent");
-      return json(res, 202, result);
+      const ready = await reach;
+      const warning = ready ? readinessWarning(recipient!.name, ready.engine, ready.readiness) : null;
+      return json(res, 202, warning ? { ...result, engine: warning } : result);
     }
     // ── task lanes ──
     // ── voices: how agents sound ──

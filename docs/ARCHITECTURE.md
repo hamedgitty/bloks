@@ -194,7 +194,21 @@ solo turn started again on the backup, once, with `fallback: true`; the
 engine switch hands over the bounded story as any switch does (see
 Compactions). The raw error is held back while a backup takes over and
 shown if none does. Room turns do not retry, but the rest applies to
-their next turn.
+their next turn. A turn that answers ends a sign-in rest on its engine
+early, since the login works again.
+
+Other agents read the same facts the person sees
+(`server/engine-readiness.ts`). With an agent's credential,
+`GET /api/bots` gives each agent an `engine`: `ready`, `signedOut`, `out`
+with `until` and `reason`, or `unavailable`, with the engine's name. It
+comes from whether the instance is there and switched on, its rest, and
+its own snapshot (installed, signed in), which is asked at most every half
+minute; an agent whose own engine cannot answer and whose backup can is
+ready. `bloks agents` lists it as ready, not signed in, out until a time,
+or unavailable. A message from another agent to one that cannot answer is
+still delivered, and the answer to the sender carries an `engine`
+sentence saying why and who can fix it. No key, path or engine error is
+part of either.
 
 ## Compactions
 

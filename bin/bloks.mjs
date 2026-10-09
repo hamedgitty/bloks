@@ -33,7 +33,9 @@ const COMMANDS = {
   },
   agents: {
     use: "agents",
-    about: "everyone in the workspace, with their roles and skills",
+    about:
+      "everyone in the workspace, with their roles and skills, and whether each one's engine can answer now: " +
+      "ready, not signed in, out until a time, or unavailable. Only the person can fix the last three",
     run: async () => {
       const { bots } = await request("GET", "/api/bots?messages=0");
       // an archived agent cannot answer, so listing it by name only
@@ -44,6 +46,7 @@ const COMMANDS = {
         title: bot.title,
         skills: bot.skills ?? [],
         busy: Boolean(bot.busy),
+        engine: engineWord(bot.engine),
         // where it sits in the sidebar; `sidebar` has the places
         section: bot.section ?? null,
         pinned: Boolean(bot.pinned),
@@ -64,7 +67,8 @@ const COMMANDS = {
     about:
       "say something to another agent, or in a room. A busy agent hears it when its turn ends; " +
       "--now is for a correction to work already under way: it goes into the running turn, read after the step it is on, " +
-      "when your message started that turn or you may stop that agent, and otherwise waits as usual. Rooms keep their order",
+      "when your message started that turn or you may stop that agent, and otherwise waits as usual. Rooms keep their order. " +
+      "When the agent cannot answer right now (its engine is not signed in, out until a time, or unavailable), the answer says so in `engine`",
     run: async (args) => {
       // --now before the text, or as the last word of it, which is where
       // somebody who thought of it late puts it
@@ -448,6 +452,16 @@ const COMMANDS = {
     },
   },
 };
+
+/** An agent's engine as `agents` lists it: ready, not signed in, out until
+ * a time on this Mac's clock, or unavailable. Nothing from a workspace too
+ * old to say. */
+function engineWord(engine) {
+  if (!engine?.state) return undefined;
+  if (engine.state === "signedOut") return "not signed in";
+  if (engine.state === "out") return `out until ${localStamp(new Date(engine.until))}`;
+  return engine.state;
+}
 
 /** A place among the pins, checked here so a typo is an error now. */
 function placeNumber(raw) {
