@@ -81,7 +81,7 @@ function Shell() {
       ) : state.routinesOpen ? (
         <AutomationsPanel onClose={() => dispatch({ type: "toggleRoutines", open: false })} />
       ) : room ? (
-        <RoomView blok={room} />
+        <RoomView key={room.id} blok={room} />
       ) : bot ? (
         <ChatView bot={bot} />
       ) : (

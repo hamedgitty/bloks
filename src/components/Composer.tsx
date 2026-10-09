@@ -26,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
+import { keepDraft, readDraft } from "@/lib/drafts";
 import { insert as insertCommand, matches as matchCommands, segments, slashAt, type Command } from "@/lib/slashCommands";
 
 /** Fade whichever edges have more text beyond them (see edgeMask). */
@@ -142,7 +143,12 @@ export function Composer({
   onEditLast?: () => boolean;
 }) {
   const { state, dispatch } = useStore();
-  const [text, setText] = useState("");
+  // One composer per conversation: ChatView keys it by agent and lane, so
+  // nothing in it (the words, the chips, rehearsing, dictation) can be
+  // carried to another agent and sent there. What it holds is kept for
+  // this conversation when it goes, and found again when it comes back.
+  const draftKey = `${bot.id}:${bot.activeTaskId ?? bot.threadId}`;
+  const [text, setText] = useState(() => readDraft(draftKey).text);
   useEffect(() => {
     if (prefill) setText(prefill.text);
   }, [prefill]);
@@ -166,7 +172,10 @@ export function Composer({
   const baseText = useRef("");
   const inputRef = useAutoSize(text);
   /** Chips riding with the next message. */
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState(() => readDraft<Attachment>(draftKey).attachments);
+  const latest = useRef({ text, attachments });
+  latest.current = { text, attachments };
+  useEffect(() => () => keepDraft(draftKey, latest.current), [draftKey]);
   /** Why something did not become a chip, said once, dismissible. */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const pickerRef = useRef<HTMLInputElement>(null);

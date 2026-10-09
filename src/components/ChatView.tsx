@@ -705,6 +705,10 @@ export function ChatView({ bot }: { bot: Bot }) {
   if (lastThreadKey.current !== threadKey) {
     lastThreadKey.current = threadKey;
     setBoundary(null);
+    // A quote is of a message in the conversation it was picked in, and a
+    // rewind's words belong to theirs: neither goes with you to another.
+    setReplyTo(null);
+    setPrefill(null);
   }
   // ── find within this conversation ──
   // The palette answers "which thread was that in"; this answers "where
@@ -1166,6 +1170,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         editAsk={editAsk}
       />
       <Composer
+        key={`${bot.id}:${bot.activeTaskId ?? bot.threadId}`}
         bot={bot}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}

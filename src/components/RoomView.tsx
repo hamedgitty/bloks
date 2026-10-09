@@ -51,6 +51,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { replyCounts, replyLabel } from "@/lib/threads";
+import { keepDraft, readDraft } from "@/lib/drafts";
 import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 
@@ -267,7 +268,14 @@ function RoomMessage({
 
 export function RoomView({ blok }: { blok: Blok }) {
   const { state, dispatch } = useStore();
-  const [text, setText] = useState("");
+  // One view per room (App keys it), so a half-written line and a reply
+  // quote stay with the room they were written in. The line is kept when
+  // the room goes, and found again when it comes back.
+  const draftKey = `room:${blok.id}`;
+  const [text, setText] = useState(() => readDraft(draftKey).text);
+  const latestText = useRef(text);
+  latestText.current = text;
+  useEffect(() => () => keepDraft(draftKey, { text: latestText.current, attachments: [] }), [draftKey]);
   // Typing @ opens a list of the people in this room. Naming somebody is
   // how a room decides who answers, so guessing the spelling should
   // never be part of it: the list filters as you type, Tab or Enter
