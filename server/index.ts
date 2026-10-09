@@ -3583,8 +3583,11 @@ async function startClaimedTurn(
       //
       // Not in a shared room: the credential reaches the owner's whole
       // workspace, and the saved secrets ride in the same environment.
+      // Nor for a turn someone else asked for, such as mail from an
+      // address nobody listed: with it, that turn could file a routine
+      // or a watcher for the agent, and those run later as the owner's.
       const credential =
-        !sharing && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
+        !sharing && owners && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
 
       // A session that has run the CLI before may have run it from a copy
       // of Bloks that is no longer where it was. Said once, in the turn
