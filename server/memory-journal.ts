@@ -6,8 +6,9 @@
 // tools, which is what makes memory yours to read. It also means a change
 // can happen without anyone watching, so this keeps the record.
 //
-// Every change becomes an entry: which file, who changed it (the agent in
-// a turn, you in the editor, or an undo), and the text before and after.
+// Changes with known before and after states become entries: which file,
+// who changed it (the agent in a turn, you in the editor, or an undo),
+// and the text before and after.
 // Memory files are small, so whole texts are kept rather than diffs; that
 // makes undo exact and the journal readable without the files it
 // describes.
@@ -56,7 +57,23 @@ export interface MemoryEntryView extends Omit<MemoryEntry, "before" | "after"> {
   deleted: boolean;
 }
 
-type Snapshot = Map<string, string>;
+/** Only ENOENT means absence. An unreadable file must never become null. */
+export function readMemoryText(path: string, file: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    const reason = typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "READ_ERROR";
+    throw Object.assign(new Error(`Could not read ${file} (${reason}). Restore file access and retry; nothing was changed.`), { code: reason });
+  }
+}
+
+type Snapshot = {
+  files: Map<string, string | null>;
+  unreadable: Set<string>;
+  topicsReadable: boolean;
+};
 
 export class MemoryJournal {
   private readonly root: string;
@@ -71,12 +88,12 @@ export class MemoryJournal {
   /** The memory files as they are, by journal name. */
   snapshot(botId: string): Snapshot {
     const dir = this.workspaceOf(botId);
-    const out: Snapshot = new Map();
+    const out: Snapshot = { files: new Map(), unreadable: new Set(), topicsReadable: true };
     const read = (name: string, path: string) => {
       try {
-        out.set(name, readFileSync(path, "utf8"));
+        out.files.set(name, readMemoryText(path, name));
       } catch {
-        /* not there */
+        out.unreadable.add(name);
       }
     };
     read("MEMORY.md", join(dir, "MEMORY.md"));
@@ -84,8 +101,8 @@ export class MemoryJournal {
       for (const name of readdirSync(join(dir, "memory"))) {
         if (TOPIC.test(name)) read(`memory/${name}`, join(dir, "memory", name));
       }
-    } catch {
-      /* no topics yet */
+    } catch (error) {
+      out.topicsReadable = (error as NodeJS.ErrnoException).code === "ENOENT";
     }
     return out;
   }
@@ -102,9 +119,13 @@ export class MemoryJournal {
     if (!before) return [];
     const after = this.snapshot(before.botId);
     const entries: MemoryEntry[] = [];
-    for (const file of new Set([...before.snapshot.keys(), ...after.keys()])) {
-      const a = before.snapshot.get(file) ?? null;
-      const b = after.get(file) ?? null;
+    for (const file of new Set([...before.snapshot.files.keys(), ...after.files.keys()])) {
+      if (before.snapshot.unreadable.has(file) || after.unreadable.has(file)) continue;
+      if (file.startsWith("memory/") && (!before.snapshot.topicsReadable || !after.topicsReadable)) continue;
+      // A name absent from a readable listing is known absent. Unknown
+      // file reads and directory listings were excluded above.
+      const a = before.snapshot.files.get(file) ?? null;
+      const b = after.files.get(file) ?? null;
       if (a === b) continue;
       entries.push(this.entry(file, "agent", a, b));
     }
@@ -149,14 +170,14 @@ export class MemoryJournal {
     if (target.big) return { ok: false, status: 409, error: "that change was too large to keep, so it cannot be undone" };
     const path = this.pathOf(botId, target.file);
     if (!path) return { ok: false, status: 400, error: "not a memory file" };
-    let now: string | null = null;
-    try {
-      now = readFileSync(path, "utf8");
-    } catch {
-      now = null;
-    }
     if (isLink(path) || isLink(join(this.workspaceOf(botId), "memory"))) {
       return { ok: false, status: 409, error: "that file is a link to somewhere else now, so it was left alone" };
+    }
+    let now: string | null;
+    try {
+      now = readMemoryText(path, target.file);
+    } catch (error) {
+      return { ok: false, status: 409, error: (error as Error).message };
     }
     if (now !== target.after) {
       return { ok: false, status: 409, error: "that file has changed since; undo the later changes first, or edit it directly" };
