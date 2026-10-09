@@ -54,7 +54,8 @@ const BLANK: Item = { kind: "blank" };
 
 // ── reading Markdown ───────────────────────────────────────────────────
 
-const LINK = /^\[([^\]\n]+)\]\(\s*((?:https?:\/\/|mailto:|tg:\/\/)[^\s)]+)\s*\)/i;
+/** What follows a link's words: the closing bracket and the address. */
+const LINK_END = /^\]\(\s*((?:https?:\/\/|mailto:|tg:\/\/)[^\s)]+)\s*\)/i;
 const ESCAPABLE = /[!-/:-@[-`{-~]/;
 const WORD = /[\p{L}\p{N}]/u;
 const SPACE = /\s/;
@@ -73,15 +74,30 @@ function runOf(source: string, at: number, char: string): number {
  * whole CommonMark algorithm: the words inside may not start or end with
  * a space, and an underscore inside a word is part of the word, so
  * snake_case_names stay as they are.
+ *
+ * Where the search goes from any one place does not depend on which
+ * marker started it, so `known` keeps each answer by the places the
+ * search passed through, and a later search stops at the first of those
+ * it reaches. Without it a line of markers that never close (`*a *a *a`)
+ * was searched to its end once for every marker, and a long one held
+ * the server for seconds.
  */
-function closes(source: string, at: number, marker: string): number {
+function closes(source: string, at: number, marker: string, known: Map<number, number>): number {
   const char = marker[0]!;
   const start = at + marker.length;
   const first = source[start];
   if (!first || SPACE.test(first)) return -1;
   if (char === "_" && at > 0 && WORD.test(source[at - 1]!)) return -1;
+  const passed: number[] = [];
+  let found = -1;
   let j = source.indexOf(marker, start + 1);
   while (j >= 0) {
+    const answer = known.get(j);
+    if (answer !== undefined) {
+      found = answer;
+      break;
+    }
+    passed.push(j);
     const run = runOf(source, j, char);
     // A single marker passes over doubled ones, which belong to bold
     // inside it. A double marker closes on the last two of a longer run,
@@ -90,13 +106,16 @@ function closes(source: string, at: number, marker: string): number {
       j = source.indexOf(marker, j + run);
       continue;
     }
-    if (marker.length === 2) j += run - 2;
-    const next = source[j + marker.length];
-    const fine = !SPACE.test(source[j - 1]!) && !(char === "_" && next && WORD.test(next));
-    if (fine) return j;
-    j = source.indexOf(marker, j + marker.length);
+    const end = marker.length === 2 ? j + run - 2 : j;
+    const next = source[end + marker.length];
+    if (!SPACE.test(source[end - 1]!) && !(char === "_" && next && WORD.test(next))) {
+      found = end;
+      break;
+    }
+    j = source.indexOf(marker, end + marker.length);
   }
-  return -1;
+  for (const place of passed) known.set(place, found);
+  return found;
 }
 
 /** One line's worth of inline Markdown, as runs. */
@@ -107,6 +126,14 @@ function inline(source: string, look: Look = {}): Run[] {
     if (text) out.push({ ...look, text });
     text = "";
   };
+  // what closes() has learned about this line, for each marker
+  const known = new Map<string, Map<number, number>>();
+  // A link's words run from its "[" to the first "]" after it, so every
+  // "[" before the same "]" ends the same way. Each "]" is looked at
+  // once, and a line of brackets that are not links costs one pass, not
+  // one for each bracket. `bracket` is the line's length when none is left.
+  let bracket = -1;
+  const ends = new Map<number, RegExpExecArray | null>();
   let i = 0;
   while (i < source.length) {
     const char = source[i]!;
@@ -141,12 +168,19 @@ function inline(source: string, look: Look = {}): Run[] {
       continue;
     }
     if (char === "[" && !look.url) {
-      const link = LINK.exec(source.slice(i));
-      if (link) {
-        settle();
-        out.push(...inline(link[1]!, { ...look, url: link[2]! }));
-        i += link[0].length;
-        continue;
+      if (bracket <= i) {
+        bracket = source.indexOf("]", i + 1);
+        if (bracket < 0) bracket = source.length;
+      }
+      if (bracket > i + 1 && bracket < source.length) {
+        if (!ends.has(bracket)) ends.set(bracket, LINK_END.exec(source.slice(bracket)));
+        const end = ends.get(bracket);
+        if (end) {
+          settle();
+          out.push(...inline(source.slice(i + 1, bracket), { ...look, url: end[1]! }));
+          i = bracket + end[0].length;
+          continue;
+        }
       }
     }
     const marker =
@@ -158,7 +192,8 @@ function inline(source: string, look: Look = {}): Run[] {
             ? char
             : "";
     if (marker) {
-      const end = closes(source, i, marker);
+      if (!known.has(marker)) known.set(marker, new Map());
+      const end = closes(source, i, marker, known.get(marker)!);
       if (end >= 0) {
         settle();
         const style: Look =
@@ -430,13 +465,35 @@ function plainItem(item: Item): string {
 }
 
 /**
+ * A link whose address takes more than half a message, written out as
+ * text. Each piece of a cut link carries its address, so the words of
+ * one like that were cut a few characters at a time, and one whose
+ * address was longer than a message went as a message for every
+ * character of its words. As text, it is cut like any other.
+ */
+function spellOutLongLinks(unit: Unit, limit: number): Unit {
+  const items = unit.items.map((item): Item => {
+    if (item.kind !== "line" || !item.runs.some((run) => run.url && run.url.length > limit / 2)) return item;
+    return {
+      kind: "line",
+      runs: item.runs.map((run) => {
+        if (!run.url || run.url.length <= limit / 2) return run;
+        const { url: _url, ...look } = run;
+        return { ...look, text: plainRun(run) };
+      }),
+    };
+  });
+  return { ...unit, items };
+}
+
+/**
  * A reply as the messages that carry it, in order.
  *
  * With `markdown`, each message comes as Telegram HTML and as plain text
  * to fall back on. Without, it is the text as written, only split.
  */
 export function messages(text: string, markdown: boolean, limit = MESSAGE_CHARS): Chunk[] {
-  return pack(units(text, markdown), limit)
+  return pack(units(text, markdown).map((unit) => spellOutLongLinks(unit, limit)), limit)
     .map((items) => ({
       plain: items.map(plainItem).join("\n"),
       ...(markdown ? { html: items.map(htmlItem).join("\n") } : {}),

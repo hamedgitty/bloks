@@ -88,6 +88,38 @@ describe("long replies", () => {
     for (const chunk of linked) assert.match(chunk.plain, /\(https:\/\/example\.com\/far\)/);
   });
 
+  test("a long line of markers and brackets that never close is read in one pass", () => {
+    // Each opening star searched the rest of its line for a close, so a
+    // 24,000 character line of them held the server for seconds; a line
+    // of brackets did the same looking for a link.
+    const lines = ["*a ", "_a ", "**a ", "~~a ", "[a "].map((piece) => piece.repeat(Math.ceil(60_000 / piece.length)));
+    lines.push(`${"[a ".repeat(20_000)}](not a link)`);
+    const started = Date.now();
+    for (const line of lines) {
+      const sent = messages(line, true);
+      assert.deepEqual(words(sent.map((chunk) => chunk.plain).join(" ")), words(line));
+      for (const chunk of sent) assert.doesNotMatch(chunk.html!, /<[ibsa][ >]/, "nothing in it closes");
+    }
+    // the old reading took about ten seconds for these; this takes milliseconds
+    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+  });
+
+  test("a link to an address longer than a message goes as text, not a message per letter", () => {
+    const address = `https://example.com/${"x".repeat(9_000)}`;
+    const sent = messages(`See [the long one](${address}) for more.`, true);
+    assert.ok(sent.length <= 4, `${sent.length} messages`);
+    for (const chunk of sent) {
+      assert.ok(chunk.plain.length <= MESSAGE_CHARS);
+      assert.ok(shown(chunk.html!).length <= MESSAGE_CHARS);
+      assert.ok(balanced(chunk.html!));
+    }
+    const all = sent.map((chunk) => chunk.plain).join("");
+    assert.ok(all.includes(`the long one(${address})`) || all.includes(`the long one (${address})`), "the words or the address went missing");
+    // an ordinary link in the same reply is still a link
+    const [chunk] = messages(`[short](https://example.com/a) and [long](${address})`, true);
+    assert.match(chunk!.html!, /<a href="https:\/\/example\.com\/a">short<\/a>/);
+  });
+
   test("a code block too long for one message is a code block in each", () => {
     const code = Array.from({ length: 200 }, (_, i) => `line_${i} = value_${i}`).join("\n");
     const sent = messages(`Here it is:\n\n\`\`\`python\n${code}\n\`\`\`\n\nDone.`, true, 1_000);
