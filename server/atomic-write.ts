@@ -52,13 +52,34 @@ export function writeFileAtomic(
     throw error;
   }
   closeSync(fd);
-  try {
-    renameSync(temp, file);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
+  // On Windows a rename over a file fails for a moment while an antivirus
+  // scanner, the indexer or a backup tool has it open. It is tried again
+  // a few times, briefly, and then the file is written in place, which is
+  // what these saves did before they were atomic: a save that is merely
+  // not atomic beats one that throws after memory has already changed.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(temp, file);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const busy = code === "EPERM" || code === "EBUSY" || code === "EACCES";
+      if (busy && attempt < RENAME_TRIES) {
+        Atomics.wait(PAUSE, 0, 0, 20 * (attempt + 1));
+        continue;
+      }
+      rmSync(temp, { force: true });
+      if (!busy) throw error;
+      writeFileSync(file, data, mode === undefined ? undefined : { mode });
+      return;
+    }
   }
 }
+
+/** How many times a busy rename is tried again, 20 ms further apart each. */
+const RENAME_TRIES = 5;
+/** Something to wait on, for a short synchronous pause between tries. */
+const PAUSE = new Int32Array(new SharedArrayBuffer(4));
 
 /** Moves a file that could not be read out of the way, to
  * `<name>.corrupt-<time>` beside it, so the next save starts a new file

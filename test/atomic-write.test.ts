@@ -8,6 +8,8 @@
 // the same way.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,4 +118,45 @@ test("a save that skips the flush still replaces the file whole", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Windows: a scanner or the indexer holding the file makes a rename over
+// it fail for a moment.
+test("a rename refused for a moment is tried again", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-busy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "rooms.json");
+  writeFileSync(file, "old");
+  const real = fs.renameSync;
+  let refused = 0;
+  t.mock.method(fs, "renameSync", (from: string, to: string) => {
+    if (refused++ < 2) throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+    return real(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  writeFileAtomic(file, "new");
+  assert.equal(readFileSync(file, "utf8"), "new");
+  assert.deepEqual(readdirSync(dir), ["rooms.json"]);
+});
+
+test("a rename that stays refused falls back to writing the file in place", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-busy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "config.json");
+  writeFileSync(file, "old");
+  t.mock.method(fs, "renameSync", () => {
+    throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  writeFileAtomic(file, "new", 0o600);
+  assert.equal(readFileSync(file, "utf8"), "new");
+  assert.deepEqual(readdirSync(dir), ["config.json"], "the temp file was left behind");
 });
