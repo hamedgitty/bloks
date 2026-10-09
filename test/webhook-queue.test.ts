@@ -236,7 +236,6 @@ test("a message waiting when Bloks stops runs after it starts again", async (t) 
     held.forEach((f) => f());
     provider.closeAllConnections();
     provider.close();
-    rmSync(home, { recursive: true, force: true });
   });
 
   const first = await startHarness({ HOME: home });
@@ -253,6 +252,8 @@ test("a message waiting when Bloks stops runs after it starts again", async (t) 
   answerAtOnce = true;
   const second = await startHarness({ HOME: home });
   t.after(() => second.stop());
+  // only once the second server has stopped writing into it
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   await waitFor(() => calls.some((c) => c.includes("WAITING-THROUGH-RESTART")));
   const message = await waitFor(async () => {
     const { messages } = await second.json(`/api/bots/${bot.id}/messages?thread=${bot.threadId}&limit=500`);
