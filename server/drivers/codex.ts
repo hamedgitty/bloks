@@ -24,6 +24,7 @@ import { readCodexSkills, MAX_CODEX_SKILL_ITEMS, type CodexSkill } from "../code
 import type {
   DriverCreateInput,
   ModelCatalog,
+  PlanUsage,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -32,6 +33,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { codexPlanUsage } from "../plan-usage.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
@@ -357,6 +359,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       skillCatalogs.set(cwd, { at: now, result });
       return result;
     };
+    // What the plan signed in here has left, as Codex last said, for the
+    // composer's card (server/plan-usage.ts). The limits belong to the
+    // account, so one for the instance, whichever turn heard it.
+    let plan: PlanUsage | null = null;
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -732,6 +738,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             break;
           }
 
+          case "account/rateLimits/updated": {
+            // about the account, not this thread, so nothing is elsewhere
+            plan = codexPlanUsage(params.rateLimits) ?? plan;
+            break;
+          }
+
           case "turn/started": {
             if (elsewhere(params)) break;
             if (typeof params.turn?.id === "string") {
@@ -1064,6 +1076,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       snapshot,
       catalogReady,
       skills,
+      planUsage: () => plan,
 
       adapter: {
         provider: DRIVER_KIND,

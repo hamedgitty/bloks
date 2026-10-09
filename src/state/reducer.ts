@@ -7,6 +7,7 @@
 // it should be testable without mounting anything. store.tsx owns the
 // transports and wires this up.
 import type { BlokColor, BlokExpression, BlokShape } from "@/lib/mascot";
+import type { LaneContext } from "@/lib/contextCard";
 
 export type { BlokColor, BlokShape } from "@/lib/mascot";
 
@@ -182,7 +183,7 @@ export interface TaskSummary {
   usage?: { input: number; output: number; turns: number };
   /** How full this lane's conversation is, and whether its earlier part
    * has been summarised. See server/context.ts. */
-  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table"; summarised: boolean };
+  context?: LaneContext;
 }
 
 export interface Bot {

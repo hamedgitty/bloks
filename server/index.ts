@@ -47,7 +47,7 @@ import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView } from "./member-access.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { ModelSelection, ProviderInstance, RuntimeEvent, SendTurnInput } from "./contracts.ts";
+import type { ModelSelection, PlanUsage, ProviderInstance, RuntimeEvent, SendTurnInput } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -10606,6 +10606,19 @@ const server = createServer(async (req, res) => {
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
       return json(res, 200, { instances: await registry.describe() });
+    }
+    // What each engine's plan has left, as it last said, for the card on
+    // the composer's ring (server/plan-usage.ts). The person's to read on
+    // this Mac: not a phone's, a remote window's or an agent's, and
+    // never said in a prompt.
+    if (method === "GET" && path === "/api/plan-usage") {
+      if (!local || asAgent) return json(res, 403, { error: "not from here" });
+      const usage: Record<string, PlanUsage> = {};
+      for (const instance of registry.instances()) {
+        const latest = instance.planUsage?.();
+        if (latest) usage[instance.instanceId] = latest;
+      }
+      return json(res, 200, { usage });
     }
 
     // Setting an engine up from the app (server/engine-setup.ts). This

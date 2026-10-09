@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { DATA_DIR } from "../config.ts";
 import { lineSplitter } from "../ndjson.ts";
 import { outReason } from "../failover.ts";
+import { claudePlanUsage } from "../plan-usage.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
@@ -58,6 +59,7 @@ function askChoices(input: any): string[] | undefined {
 import type {
   DriverCreateInput,
   ModelCatalog,
+  PlanUsage,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -267,6 +269,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       });
     });
     await readVersion();
+
+    // What the plan signed in here has left, as the CLI last said, for
+    // the composer's card (server/plan-usage.ts). The limits belong to
+    // the account, so one for the instance, whichever turn said it.
+    let plan: PlanUsage | null = null;
 
     interface RunningTurn {
       turnId: string;
@@ -778,6 +785,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             if (info.status === "rejected" && Number.isFinite(at) && at > 0) {
               resetsAt = Math.floor(at > 1e12 ? at / 1000 : at);
             }
+            // and how much of each window is used, which it says every turn
+            plan = claudePlanUsage(info, plan);
             break;
           }
 
@@ -1034,6 +1043,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       enabled: input.enabled,
       models: MODELS,
       snapshot,
+      planUsage: () => plan,
 
       adapter: {
         provider: DRIVER_KIND,

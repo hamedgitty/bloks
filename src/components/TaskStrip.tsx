@@ -24,6 +24,7 @@ import Plus from "lucide-react/dist/esm/icons/plus.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/plural";
+import { contextTitle, measuredContext, type LaneContext } from "@/lib/contextCard";
 
 export type TaskState = "working" | "needs-you" | "idle";
 
@@ -33,17 +34,7 @@ export interface TaskChipData {
   state: TaskState;
   usage?: { input: number; output: number; turns: number };
   /** How full this lane's conversation is. See server/context.ts. */
-  context?: { used: number; limit: number; fraction: number; measured?: boolean; window?: "engine" | "table"; summarised: boolean };
-}
-
-export function measuredContext(context: TaskChipData["context"]): boolean {
-  return Boolean(context && context.measured !== false && context.used > 0 && context.limit > 0);
-}
-
-export function contextTitle(context: NonNullable<TaskChipData["context"]>): string {
-  if (!measuredContext(context)) return "The earlier part has been summarised";
-  return `${context.window === "table" ? "About " : ""}${Math.round(context.fraction * 100)}% of what this model will take` +
-    (context.summarised ? ", and the earlier part has been summarised" : "");
+  context?: LaneContext;
 }
 
 /** 842 tokens reads as itself; larger sums read as 12.3k or 1.2M. Zero

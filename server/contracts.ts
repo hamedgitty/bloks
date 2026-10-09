@@ -323,6 +323,31 @@ export interface ProviderSnapshot {
   version?: string | null;
 }
 
+// ── what a plan has left ───────────────────────────────────────────────
+
+/** One limit of the subscription an engine is signed in with, as the
+ * engine reported it (server/plan-usage.ts). */
+export interface PlanWindow {
+  /** The engine's own name for it: five_hour, seven_day, primary. */
+  id: string;
+  /** How long the window is, when the engine says or its name does. */
+  minutes: number | null;
+  /** The share used, from 0. Past 1 when usage ran over the cap. */
+  used: number;
+  /** When it starts again, in epoch milliseconds, when known. */
+  resetsAt: number | null;
+  /** The engine's own word that this one is near its limit, or at it. */
+  status?: "warning" | "rejected";
+}
+
+export interface PlanUsage {
+  windows: PlanWindow[];
+  /** The plan's name, when the engine says (Codex does). */
+  plan: string | null;
+  /** When the engine last said, in epoch milliseconds. */
+  at: number;
+}
+
 // ── defining a driver ──────────────────────────────────────────────────
 
 export interface ModelCatalog {
@@ -360,6 +385,11 @@ export interface ProviderInstance {
   /** A cheap one-shot completion, for naming and summarising. Optional:
    * not every engine has something small enough to be worth using. */
   generateText?(prompt: string): Promise<string>;
+  /** The latest the engine said about its plan's limits, kept in memory
+   * on the instance and null until it says anything. Optional: only an
+   * engine signed in to a subscription has limits to report. For the
+   * person to read; never part of a prompt. */
+  planUsage?(): PlanUsage | null;
   dispose(): Promise<void>;
 }
 

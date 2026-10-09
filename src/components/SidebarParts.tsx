@@ -28,7 +28,8 @@ import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
 import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import { formatWhen, useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
-import { ContextRing, RING_FROM, contextTitle, measuredContext, type TaskChipData } from "./TaskStrip";
+import { ContextRing, RING_FROM, type TaskChipData } from "./TaskStrip";
+import { contextTitle, measuredContext } from "@/lib/contextCard";
 import {
   DropdownMenu,
   DropdownMenuContent,

@@ -86,6 +86,8 @@ describe("light mode reads", () => {
     muted: hex(token("muted", "light")),
     accent: hex(token("accent", "light")),
     sidebar: hex(token("sidebar", "light")),
+    // the menus and the composer ring's card
+    popover: hex(token("popover", "light")),
   };
 
   test("body and muted text clear the bar on every surface they sit on", () => {
@@ -152,6 +154,7 @@ describe("dark mode reads", () => {
     muted: hex(token("muted", "dark")),
     accent: hex(token("accent", "dark")),
     sidebar: hex(token("sidebar", "dark")),
+    popover: hex(token("popover", "dark")),
   };
 
   test("body, muted and every status colour clear the bar", () => {

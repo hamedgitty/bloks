@@ -11,6 +11,7 @@ import X from "lucide-react/dist/esm/icons/x.mjs";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical.mjs";
 import { api, useStore, openLaneWorking, type Bot } from "@/state/store";
 import { ReplyChip, type ReplyDraft } from "./MessageActions";
+import { ComposerRing } from "./ComposerRing";
 import { cn } from "@/lib/cn";
 import { AgentAvatar } from "./Avatar";
 import {
@@ -842,6 +843,7 @@ export function Composer({
         >
           <FlaskConical size={16} />
         </button>
+        <ComposerRing bot={bot} />
         <button
           onClick={() => void toggleMic()}
           className={cn(

@@ -235,7 +235,19 @@ lane then says is the table's. Without such a reading, or with neither
 an engine's window nor a model the table knows, the lane has no fill at
 all: the 32k default stays a margin for the fold, never a number shown.
 The Usage tokens, the turn's own spend, are kept apart and counted as
-before. A turn that answered with no tokens reported
+before. The chips, the sidebar rows and Activity show that fill past
+their own thresholds, and the composer of an agent's chat shows it as
+one ring from the first answer on (`src/components/ComposerRing.tsx`),
+only while the lane has a reading. Hover or a tap opens a card: the
+tokens used of the window ("about" when the window is the table's), a
+line when Bloks summarised the earlier part, and what the engine's plan
+has left. Claude Code reports its plan's windows in `rate_limit_event`
+(`unifiedWindows`) and Codex in `account/rateLimits/updated`; each engine
+instance keeps only the latest, in memory (`server/plan-usage.ts`), and
+`GET /api/plan-usage` serves it to this Mac alone, never to a phone, a
+remote window or an agent, and it is never put in a prompt. A room has
+no ring, since every agent in it has a context of its own. A turn that
+answered with no tokens reported
 (Pi does not report any) counts as unmeasured, and Activity says "not
 reported" rather than showing zero.
 
