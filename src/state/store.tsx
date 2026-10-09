@@ -497,6 +497,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // for its own answer instead (switchLane).
   const laneAsks = useRef(new Map<string, { threadId: string; n: number }>());
   const laneAskCount = useRef(0);
+  // A load that failed is asked for again, further apart each time, while
+  // the conversation still waits for it; nothing else would ask, and it
+  // would stay empty until some unrelated switch or a reconnect.
+  const laneFailures = useRef(new Map<string, number>());
+  const [laneRetry, setLaneRetry] = useState(0);
   useEffect(() => {
     for (const [botId, threadId] of Object.entries(state.laneLoads)) {
       if (switching.current.has(botId)) continue;
@@ -507,6 +512,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api(`/api/bots/${botId}/messages?thread=${encodeURIComponent(threadId)}`)
         .then((page) => {
           if (!latest()) return;
+          laneFailures.current.delete(botId);
           rawDispatch({
             type: "laneLoaded",
             id: botId,
@@ -516,16 +522,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           });
         })
         .catch((e) => {
-          // an empty conversation needs a reason, while it is still open
-          if (latest() && stateRef.current.laneLoads[botId] === threadId) {
-            rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-          }
+          if (!latest() || stateRef.current.laneLoads[botId] !== threadId) return;
+          const failures = (laneFailures.current.get(botId) ?? 0) + 1;
+          laneFailures.current.set(botId, failures);
+          // an empty conversation needs a reason, said once rather than on
+          // every try
+          if (failures === 1) rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+          setTimeout(() => setLaneRetry((t) => t + 1), Math.min(15_000, 1_000 * 2 ** (failures - 1)));
         })
         .finally(() => {
           if (latest()) laneAsks.current.delete(botId);
         });
     }
-  }, [state.laneLoads, switchesSettled]);
+  }, [state.laneLoads, switchesSettled, laneRetry]);
 
   // ── first load, then live updates ────────────────────────────────────
   /**
