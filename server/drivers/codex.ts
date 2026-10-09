@@ -144,8 +144,9 @@ export function contextReading(tokenUsage: any): { used: number | null; window: 
 }
 
 /** How long a compaction asked for before a turn may take before the
- * words go to a new thread instead. */
-const COMPACT_LIMIT_MS = 5 * 60_000;
+ * words go to a new thread instead. The person's message waits for it,
+ * so a longer one keeps more compactions but holds more messages. */
+export const COMPACT_LIMIT_MS = 5 * 60_000;
 
 function rememberTotal(thread: string, total: TokenCount) {
   threadTotals.delete(thread);
@@ -390,6 +391,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       let finished = false;
       // the thread's token total before this turn, set by its first update
       let tokenBase: TokenCount | null = null;
+      // what this turn has been charged so far, and the part of it spent
+      // on a thread the turn has since left, which a new thread's count
+      // carries on from rather than replacing
+      let spent: TokenCount = { input: 0, output: 0 };
+      let carried: TokenCount = { input: 0, output: 0 };
       // threads this turn gave up on reopening (see onAgentNotification)
       const abandoned = new Set<string>();
       // the files each change item touches, for its approval (requestInput)
@@ -546,6 +552,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         });
       }
 
+      // News of a thread other than the one this turn is in. Before the
+      // turn knows its thread, or from an app-server that does not say
+      // which thread it means, nothing counts as elsewhere.
+      const elsewhere = (params: any) =>
+        typeof params.threadId === "string" && codexThread !== null && params.threadId !== codexThread;
+
       // ── the agent narrating what it is doing ──
       function onAgentNotification(msg: any) {
         const params = msg.params ?? {};
@@ -650,21 +662,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             if (thread) rememberTotal(thread, total);
             // Each update restates the total, so a repeated one changes
             // nothing here, where summing `last` would count it twice.
-            emit({
-              ...envelope(threadId, turnId),
-              type: "thread.token-usage.updated",
-              input: Math.max(0, total.input - tokenBase.input),
-              output: Math.max(0, total.output - tokenBase.output),
-            });
+            spent = {
+              input: carried.input + Math.max(0, total.input - tokenBase.input),
+              output: carried.output + Math.max(0, total.output - tokenBase.output),
+            };
+            emit({ ...envelope(threadId, turnId), type: "thread.token-usage.updated", ...spent });
             break;
           }
 
           case "turn/started": {
+            if (elsewhere(params)) break;
             if (typeof params.turn?.id === "string") codexTurn = params.turn.id;
             break;
           }
 
           case "turn/completed": {
+            // Only the thread the turn is in can end it. Another one
+            // ending (a compaction left behind) said the person's turn
+            // was done while it was still working, and the process was
+            // killed under it (GitHub 234).
+            if (elsewhere(params)) break;
             const completed = params.turn ?? {};
             const ok = completed.status === "completed";
             // the compaction runs as a turn of its own, and its end is
@@ -804,8 +821,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             turnSent = true;
             const before = lastUsed;
             const thread: string = codexThread;
+            let timedOut = false;
             const ok = await new Promise<boolean>((resolve) => {
-              const timer = setTimeout(() => compacting?.(false), COMPACT_LIMIT_MS);
+              const timer = setTimeout(() => {
+                timedOut = true;
+                compacting?.(false);
+              }, COMPACT_LIMIT_MS);
               timer.unref?.();
               compacting = (worked) => {
                 compacting = null;
@@ -814,13 +835,38 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               };
               rpc.request("thread/compact/start", { threadId: thread }).catch(() => compacting?.(false));
             });
+            const compaction = codexTurn;
             codexTurn = null;
             if (finished) return;
             if (ok) {
               emit({ ...envelope(threadId, turnId), type: "context.compacted", trigger: "manual", before, after: null });
             } else {
+              // A compaction past the limit is still running in this same
+              // process, and finishes minutes later on the thread left
+              // behind. Its end, its usage and its reading are not this
+              // turn's, so the thread is let go of as a failed resume is,
+              // and the compaction is asked to stop rather than spend on
+              // a thread nobody will use.
+              abandoned.add(thread);
+              if (timedOut && compaction) {
+                rpc.request("turn/interrupt", { threadId: thread, turnId: compaction }).catch(() => {});
+              }
+              // the new thread counts from its own start, on top of what
+              // the compaction already spent
+              tokenBase = null;
+              carried = spent;
               codexThread = null;
               carriedOn = false;
+              // said, since the agent loses its own history here and the
+              // message has already waited for the compaction
+              const why = timedOut
+                ? `Codex took more than ${Math.round(COMPACT_LIMIT_MS / 60_000)} minutes to compact this conversation`
+                : "Codex could not compact this conversation";
+              emit({
+                ...envelope(threadId, turnId),
+                type: "runtime.error",
+                message: `${why}, so it went to a new Codex session${turn.handoff ? ", which is told a shortened version of it" : ""}.`,
+              });
             }
           }
 
