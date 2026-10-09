@@ -3017,6 +3017,7 @@ async function startClaimedTurn(
   activeRoom.set(task.id, roomId);
   // decided before the person's own message below is written, so the
   // door every message passes reads this turn and not the last one
+  const forYouBefore = turnsForYou.has(task.id);
   if (opts.byYou) turnsForYou.add(task.id);
   else turnsForYou.delete(task.id);
 
@@ -3170,14 +3171,28 @@ async function startClaimedTurn(
   // the driver already knows about, and a turn between the first check
   // and this line is in neither place: not yet registered, so nothing
   // interrupts it, and already past the gate, so nothing refuses it.
+  //
+  // What this start marked above is taken back before it refuses, or the
+  // lane reads as speaking with no turn behind it until its next one:
+  // idle compaction passes it over, and a room waits on it.
+  const unmark = () => {
+    activeRoom.delete(task.id);
+    replyingTo.delete(task.id);
+    if (forYouBefore) turnsForYou.add(task.id);
+    else turnsForYou.delete(task.id);
+  };
   const stillHeld = wheel.heldBy(bot.id);
   if (stillHeld) {
+    unmark();
     wheel.noteTurnedAway(bot.id);
     broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
     throw Object.assign(new Error(heldRefusal(stillHeld, bot.name)), { status: 409, held: true });
   }
   // and the same for an archive that landed during the fold
-  if (store.bot(bot.id)?.archivedAt) throw archivedRefusal(bot);
+  if (store.bot(bot.id)?.archivedAt) {
+    unmark();
+    throw archivedRefusal(bot);
+  }
 
   laneRequester.set(task.id, opts.requester ?? "owner");
   if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: true });
