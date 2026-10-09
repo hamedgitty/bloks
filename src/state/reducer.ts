@@ -1017,20 +1017,23 @@ export function reducer(state: AppState, action: Action): AppState {
           ),
         };
       }
+      // the reply has landed as a real message, so the streaming preview
+      // for that thread has done its job. That holds for a lane in the
+      // background too, whose messages are not kept here: its preview
+      // kept growing, and opening the lane while it worked said again
+      // what it had already said.
+      let landed = state;
+      if (action.message.role === "bot" && action.message.kind === "text" && action.threadId in state.streaming) {
+        const { [action.threadId]: _, ...rest } = state.streaming;
+        landed = { ...state, streaming: rest };
+      }
       const bot = state.bots.find((b) => b.threadId === action.threadId);
-      if (!bot) return state;
-      const next = updateBot(state, bot.id, (b) =>
+      if (!bot) return landed;
+      return updateBot(landed, bot.id, (b) =>
         b.messages.some((m) => m.id === action.message.id)
           ? b
           : { ...b, messages: [...b.messages, action.message] },
       );
-      // the reply has landed as a real message, so the streaming preview
-    // for that thread has done its job
-      if (action.message.role === "bot" && action.message.kind === "text") {
-        const { [action.threadId]: _, ...rest } = next.streaming;
-        return { ...next, streaming: rest };
-      }
-      return next;
     }
     case "messagePatched": {
       const patched = (messages: Message[]) =>

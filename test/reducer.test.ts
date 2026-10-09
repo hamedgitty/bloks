@@ -446,6 +446,23 @@ test("an answer for a lane no longer open is dropped", () => {
   assert.deepEqual(answered.laneLoads, {});
 });
 
+test("a reply landing in a lane in the background ends that lane's streamed text", () => {
+  // Only the open lane's messages are kept here, and the message for a
+  // background lane returned before the preview was cleared. Its preview
+  // kept every word of the turn, so opening the lane mid-turn repeated
+  // what had already been said above it.
+  const state = withState({
+    bots: [bot("a", { threadId: "t-open" })],
+    streaming: { "t-back": "Here is the first part", "t-open": "still going" },
+  });
+  const next = reducer(state, { type: "messageAdded", threadId: "t-back", message: msg("m1", { text: "Here is the first part" }) });
+  assert.deepEqual(next.streaming, { "t-open": "still going" });
+  assert.equal(next.bots[0].messages.length, 0);
+  // a tool call is not the reply, and leaves the preview alone
+  const tool = reducer(state, { type: "messageAdded", threadId: "t-back", message: msg("m2", { kind: "activity" }) });
+  assert.equal(tool.streaming["t-back"], "Here is the first part");
+});
+
 test("an older error's timer does not take a newer error off the screen", () => {
   // Every failure used to start its own six second clear, and the first
   // one to fire cleared whatever was showing: a second error two seconds
