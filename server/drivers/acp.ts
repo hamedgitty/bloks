@@ -522,6 +522,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // the kill, after the person had been told it was stopped (GitHub
         // 220). Anything it was waiting to be allowed is refused now.
         let sessionId: string | null = null;
+        // sessions this turn gave up on, which can still talk (see handleUpdate)
+        const leftBehind = new Set<string>();
         let exited = false;
         const gone = new Promise<void>((resolve) => child.once("close", () => resolve()));
         void gone.then(() => (exited = true));
@@ -611,6 +613,14 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // ── streaming updates ──
         function handleUpdate(params: any) {
           const update = params?.update ?? {};
+          // A session the turn has left can still be talking, late, on
+          // this same process: a compaction that ran out of time goes on
+          // in the old session after the words went to a new one. Its
+          // words are not the reply and its usage is not the new
+          // session's reading. Once the turn has its session, only that
+          // one counts; before, only the ones it gave up on are dropped.
+          const from = typeof params?.sessionId === "string" ? params.sessionId : null;
+          if (from && (sessionId ? from !== sessionId : leftBehind.has(from))) return;
           // pi-acp returns its startup listing (pi version, skills,
           // extensions) in session/new's _meta.piAcp.startupInfo and then
           // sends the same text as an agent_message_chunk from a timer
@@ -774,16 +784,20 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           }
           if (!state.commands?.has("compact") || state.settled) return false;
           state.compacting = true;
+          let running = true;
           try {
-            const done: any = await within(
-              rpc.request("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "/compact" }] }),
-              "compacting the conversation",
-              spec.name,
-              COMPACT_LIMIT_MS,
+            const asked = rpc.request("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "/compact" }] });
+            asked.then(
+              () => (running = false),
+              () => (running = false),
             );
+            const done: any = await within(asked, "compacting the conversation", spec.name, COMPACT_LIMIT_MS);
             const reason = String(done?.stopReason ?? "end_turn");
             if (reason !== "end_turn") return false;
           } catch {
+            // one past the limit is still running, on a session about to
+            // be left; asked to stop, it spends nothing more there
+            if (running) rpc.notify("session/cancel", { sessionId: id });
             return false;
           } finally {
             state.compacting = false;
@@ -831,7 +845,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                   )) ?? {};
                 session.sessionId ??= cursor;
               } catch {
-                /* the agent forgot this session; start a new one below */
+                // the agent forgot this session; start a new one below.
+                // Anything still to come about the old one is not this turn's.
+                leftBehind.add(cursor);
               }
             }
             // The session has grown past the lane's line. An agent with a
@@ -839,6 +855,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // without, or one whose compaction fails, gets a new session
             // told the bounded story instead of the old one at full size.
             if (session && turn.compactFirst && !(await compactSession(String(session.sessionId)))) {
+              leftBehind.add(String(session.sessionId));
               session = null;
             }
             // a cursor that did not lead back to its session is a new one,
