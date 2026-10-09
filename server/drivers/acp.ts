@@ -106,6 +106,11 @@ const PROTOCOL_VERSION = 1;
 const COMMANDS_WAIT_MS = 2_000;
 const COMPACT_LIMIT_MS = 5 * 60_000;
 
+/** How long a turn that ended empty waits for the agent's stderr to say
+ * why, when it has not said yet. Short, since an empty turn with no
+ * reason anywhere waits this long for nothing. */
+const STDERR_GRACE_MS = 200;
+
 /**
  * How full a session is, from a `usage_update`: `used` is the tokens in
  * context now and `size` the window, by the spec's own definitions.
@@ -461,6 +466,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // asks for is allowed, and a prompt not yet sent is not sent.
         // `commands` is what the agent said it takes with a slash, once it
         // has said, and `commandsHeard` wakes a wait for that.
+        // `deciding` is set while an empty turn waits for stderr: the
+        // reply has come, so the agent exiting meanwhile is not the turn
+        // stopping early.
         const state = {
           settled: false,
           text: "",
@@ -471,6 +479,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           commandsHeard: null as (() => void) | null,
           compacting: false,
           stopping: false,
+          deciding: false,
         };
         const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string) => void>();
@@ -687,6 +696,39 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           stderr += c;
           if (stderr.length > 8192) stderr = stderr.slice(-8192);
         });
+        /** The last line on stderr saying the engine is out, if any. */
+        const stderrReason = () =>
+          stderr
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line && outReason(line))
+            .at(-1);
+        /**
+         * Gives stderr a moment to catch up with a reply on stdout. They
+         * are separate pipes, so a reason the agent wrote before replying
+         * can still be read after the reply, and on a busy machine it was:
+         * the turn read as empty and the backup was never asked (GitHub
+         * 233). The wait ends early on a reason or the agent exiting, and
+         * whatever reached the pipe by then is read before deciding.
+         */
+        const stderrCaughtUp = async () => {
+          if (!stderrReason() && !exited) {
+            await new Promise<void>((resolve) => {
+              const done = () => {
+                clearTimeout(timer);
+                child.stderr.off("data", heard);
+                resolve();
+              };
+              const heard = () => {
+                if (stderrReason()) done();
+              };
+              const timer = setTimeout(done, STDERR_GRACE_MS);
+              child.stderr.on("data", heard);
+              void gone.then(done);
+            });
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        };
         child.on("error", (e) => {
           emit({
             ...base(threadId, turnId),
@@ -701,7 +743,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           settle(false, "spawn_error");
         });
         child.on("close", (code) => {
-          if (state.settled) return;
+          if (state.settled || state.deciding) return;
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
@@ -906,11 +948,11 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // Silence reads as the message being ignored, so say so, with
             // whatever the agent's stderr gave as the reason.
             if (ended && !state.tools && !state.text.trim()) {
-              const why = stderr
-                .split("\n")
-                .map((line) => line.trim())
-                .filter((line) => line && outReason(line))
-                .at(-1);
+              state.deciding = true;
+              await stderrCaughtUp();
+              state.deciding = false;
+              if (state.settled) return;
+              const why = stderrReason();
               emit({
                 ...base(threadId, turnId),
                 type: "runtime.error",

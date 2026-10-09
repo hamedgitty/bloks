@@ -14,6 +14,8 @@
 //   text     the provider's error passed through as the whole reply
 //   rpc      a JSON-RPC error whose reason is in data.details
 //   stderr   end_turn with nothing, the reason on stderr
+//   late     the same, with the reason written just after the reply, so
+//            it reaches Bloks after the reply does (GitHub 233)
 //   empty    end_turn with nothing at all
 //   refusal  stopReason "refusal" with nothing
 //   talk     an agent talking about a limit it met in its work
@@ -85,6 +87,10 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (shape === "stderr") {
     process.stderr.write("pi: provider error: 429 Too Many Requests\\n");
     return reply({ stopReason: "end_turn" });
+  }
+  if (shape === "late") {
+    reply({ stopReason: "end_turn" });
+    return setImmediate(() => process.stderr.write("pi: provider error: 429 Too Many Requests\\n"));
   }
   if (shape === "refusal") return reply({ stopReason: "refusal" });
   if (shape === "talk") {
@@ -168,7 +174,7 @@ describe("a Pi engine that runs out moves to the backup", () => {
   let h: Harness;
   let home: string;
   let spare: Awaited<ReturnType<typeof spareEngine>>;
-  const shapes = ["file", "text", "rpc", "stderr", "empty", "refusal", "talk"];
+  const shapes = ["file", "text", "rpc", "stderr", "late", "empty", "refusal", "talk"];
   before(async () => {
     home = mkdtempSync(join(tmpdir(), "bloks-pi-limit-"));
     mkdirSync(join(home, ".bloks"), { recursive: true });
@@ -209,7 +215,7 @@ describe("a Pi engine that runs out moves to the backup", () => {
       return !me.busy && ready(me.messages) ? me.messages : null;
     });
 
-  for (const shape of ["file", "text", "rpc", "stderr"]) {
+  for (const shape of ["file", "text", "rpc", "stderr", "late"]) {
     test(`${shape}: the backup answers, nothing of the failure is the agent's reply, and Pi rests`, async () => {
       const botId = await agentOn(shape);
       await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} summarise the week` }) });
