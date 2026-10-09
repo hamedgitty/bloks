@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { reservedEnvName, usableSecrets } from "../server/env-names.ts";
 
 test("names that steer what runs, or where traffic goes, are refused", () => {
-  for (const name of ["PATH", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "HTTPS_PROXY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "GIT_SSH_COMMAND", "BLOKS_TOKEN", "PYTHONPATH", "JAVA_TOOL_OPTIONS", "PERL5OPT", "LESSOPEN", "DOCKER_HOST", "PIP_INDEX_URL"]) {
+  for (const name of ["PATH", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "HTTPS_PROXY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "GIT_SSH_COMMAND", "BLOKS_TOKEN", "PYTHONPATH", "PYTHONWARNINGS", "PYTHONBREAKPOINT", "PYTHON_COLORS", "BROWSER", "JAVA_TOOL_OPTIONS", "PERL5OPT", "LESSOPEN", "DOCKER_HOST", "PIP_INDEX_URL"]) {
     assert.equal(reservedEnvName(name), true, name);
   }
 });

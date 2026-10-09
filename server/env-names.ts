@@ -14,7 +14,7 @@ const EXACT = new Set([
   "BASH_ENV", "ENV", "ZDOTDIR", "IFS", "PS4", "PROMPT_COMMAND", "CDPATH",
   "LANG", "TERM", "EDITOR", "VISUAL", "PAGER", "LESSOPEN", "LESSCLOSE",
   "SSH_AUTH_SOCK", "SSH_ASKPASS", "SUDO_ASKPASS", "SSL_CERT_FILE", "SSL_CERT_DIR",
-  "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT",
+  "BROWSER",
   "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
   "GOFLAGS", "GOPROXY", "DOCKER_HOST", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL",
 ]);
@@ -23,10 +23,21 @@ const PREFIXES = ["NODE_", "NPM_CONFIG_", "LD_", "DYLD_", "GIT_", "XDG_", "BLOKS
 
 const SUFFIXES = ["_PROXY", "_BASE_URL"];
 
+/** Python reads every PYTHONSOMETHING and PYTHON_SOMETHING it knows of
+ * (PYTHONPATH, PYTHONWARNINGS, PYTHONSTARTUP, PYTHON_COLORS...), and new
+ * ones arrive with each release, so the whole shape is reserved; a name
+ * that only starts with the word, like PYTHONANYWHERE_TOKEN, is a key. */
+const PYTHON = /^PYTHON(?:[A-Z]+|_[A-Z0-9_]+)$/;
+
 /** Whether a secret may not be saved under this (already normalised,
  * upper case) environment variable name. */
 export function reservedEnvName(name: string): boolean {
-  return EXACT.has(name) || PREFIXES.some((p) => name.startsWith(p)) || SUFFIXES.some((s) => name.endsWith(s));
+  return (
+    EXACT.has(name) ||
+    PYTHON.test(name) ||
+    PREFIXES.some((p) => name.startsWith(p)) ||
+    SUFFIXES.some((s) => name.endsWith(s))
+  );
 }
 
 /** Saved secrets without any under a reserved name: one saved before the
