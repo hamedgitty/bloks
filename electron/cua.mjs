@@ -237,8 +237,10 @@ async function cuaRequestPermissions() {
   return cuaPermissionsStatus();
 }
 
-export function registerCuaIpc() {
-  ipcMain.handle("cua:connection", () => descriptor);
-  ipcMain.handle("cua:permissions", () => cuaPermissionsStatus());
-  ipcMain.handle("cua:request-permissions", () => cuaRequestPermissions());
+/** `handle` is the main process's guarded ipcMain.handle, which answers
+ * only the app's own page; plain ipcMain.handle when none is given. */
+export function registerCuaIpc(handle = (channel, fn) => ipcMain.handle(channel, fn)) {
+  handle("cua:connection", () => descriptor);
+  handle("cua:permissions", () => cuaPermissionsStatus());
+  handle("cua:request-permissions", () => cuaRequestPermissions());
 }

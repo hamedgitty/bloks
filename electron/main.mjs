@@ -1104,7 +1104,7 @@ app.whenReady().then(async () => {
   // Must precede every fork below, or the children keep launchd's PATH.
   await adoptLoginShellPath();
 
-  registerCuaIpc();
+  registerCuaIpc(handle);
   // Started before the window so the harness can read the connection
   // descriptor on its first turn. Failure is survivable: computer use
   // reports itself unavailable and everything else works.
