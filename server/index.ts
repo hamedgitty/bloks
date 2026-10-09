@@ -4919,8 +4919,7 @@ async function speakInTurn(
     await startTurn(member.id, text, { roomId, hops, requester, byYou }).catch((e) =>
       waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester) : sayTurnedAway(roomId, e),
     );
-    if (shared) await waitForLaneIdle(member.id, roomId);
-    else await waitForIdle(member.id);
+    await waitForRoomTurn(member.id, roomId);
   }
 }
 
@@ -4935,13 +4934,25 @@ function isSharedLane(laneId: string): boolean {
   return bloks.bloks.some((b) => b.lanes && Object.values(b.lanes).includes(laneId));
 }
 
-/** waitForIdle, for one shared room's lane rather than the whole agent. */
-function waitForLaneIdle(botId: string, roomId: string, timeoutMs = 120_000): Promise<void> {
+/** How long the next speaker in a room waits for the last one's turn. A
+ * room turn on Claude Code can run for many minutes, and the two minutes
+ * this used to be let the next speaker talk over one still working and
+ * ended the round before its handoffs came in. */
+const ROOM_TURN_WAIT_MS = 30 * 60_000;
+
+/** Resolves once an agent's turn in this room has ended, so the next
+ * speaker sees it. That turn's own lane, not the whole agent: what it is
+ * doing in another lane is no reason to hold the room. A lane still
+ * marked as speaking here but no longer busy has no turn under it, so it
+ * holds nothing either. */
+function waitForRoomTurn(botId: string, roomId: string, timeoutMs = ROOM_TURN_WAIT_MS): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
-      const bot = store.bot(botId);
-      if (!bot || !laneBusy(bot, roomId) || Date.now() - started > timeoutMs) return resolve();
+      const speaking = store
+        .bot(botId)
+        ?.tasks.some((t) => activeRoom.get(t.id) === roomId && (t.busy || claimedLanes.has(t.id)));
+      if (!speaking || Date.now() - started > timeoutMs) return resolve();
       setTimeout(tick, 250);
     };
     setTimeout(tick, 250);
@@ -5023,7 +5034,7 @@ function unresume(threadId: string, error: unknown): boolean {
   return true;
 }
 
-/** Resolves once an agent's turn has settled, so the next speaker sees it. */
+/** Resolves once an agent has nothing running in any lane. */
 function waitForIdle(botId: string, timeoutMs = 120_000): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
