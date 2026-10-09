@@ -197,7 +197,9 @@ for (const manual of [false, true]) {
     assert.equal(said.commandInstance, "claude");
     assert.equal(inFlight(f.home).find((entry: any) => entry.laneId === f.bot.threadId)?.byYou, undefined);
     await f.finish();
-    assert.ok((await messagesOf(f.h, f.bot)).some((m: any) => m.compaction?.before === 176000));
+    // the compaction happened and left its marker; what its numbers say
+    // comes from the lane's request readings (test/compaction-markers)
+    assert.ok((await messagesOf(f.h, f.bot)).some((m: any) => m.compaction));
     if (manual) for (const [i, command] of ["/context", "/usage", "/recap"].entries()) {
       const { routine: next } = await f.h.json("/api/routines", post({ name: "Other native command", prompt: command, time: futureTime(), days: [], targetId: f.bot.id, thread: "General" }));
       assert.equal((await f.h.fetch(`/api/routines/${next.id}/run`, post({}))).status, 202);
