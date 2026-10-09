@@ -29,6 +29,7 @@ function claudeHome(): string {
     join(home, "fake-claude.mjs"),
     `#!${process.execPath}
 import { createConnection } from "node:net";
+import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
@@ -48,7 +49,8 @@ const said = await new Promise((resolve) => {
 });
 out({ type: "system", subtype: "init", session_id: "sess-card", model: "claude-sonnet-5" });
 if (said.includes("ASK-ME")) {
-  const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+  // the servers come in a private file, never on the command line
+  const config = JSON.parse(readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"));
   const socket = createConnection(config.mcpServers.bloks.args[1]);
   socket.on("error", () => {});
   socket.write(JSON.stringify({ t: "ask", id: "ask-ship", kind: "question", tool: "ask_user", input: { question: "Ship it?" } }) + "\\n");
