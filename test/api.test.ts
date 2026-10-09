@@ -1588,7 +1588,7 @@ process.stdin.resume();
     assert.deepEqual(JSON.parse(quiet[quiet.indexOf("--settings") + 1]), { disableAllHooks: true });
   });
 
-  test("an agent never passes on or takes more approvals than it has", async (t) => {
+  test("an agent never passes on or takes more approvals or seniority than it has", async (t) => {
     // A stand-in for Claude Code that uses the turn's real credential the
     // way the CLI does, so the checks under test are the server's own.
     const home = mkdtempSync(join(tmpdir(), "bloks-approvals-"));
@@ -1608,9 +1608,15 @@ process.stdin.resume();
   const call = (method, path, body) => fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
   const me = (await (await call("GET", "/api/agent/whoami")).json()).botId;
   const raise = (await call("PATCH", "/api/bots/" + me, { approvals: "auto" })).status;
-  const hired = (await (await call("POST", "/api/bots", { name: "Hired" })).json()).bot.id;
+  const raiseSeniority = await call("PATCH", "/api/bots/" + me, { seniority: 5 });
+  const refusedSeniority = { status: raiseSeniority.status, body: await raiseSeniority.json() };
+  const afterRaise = (await (await call("GET", "/api/bots")).json()).bots.find((bot) => bot.id === me).seniority;
+  await call("PATCH", "/api/bots/" + me, { seniority: "5" });
+  const afterStringRaise = (await (await call("GET", "/api/bots")).json()).bots.find((bot) => bot.id === me).seniority;
+  const hired = (await (await call("POST", "/api/bots", { name: "Hired", seniority: 5 })).json()).bot.id;
   const lower = (await call("PATCH", "/api/bots/" + me, { approvals: "ask" })).status;
-  writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ me, raise, hired, lower })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
+  const lowerSeniority = (await call("PATCH", "/api/bots/" + me, { seniority: 2 })).status;
+  writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify({ me, raise, refusedSeniority, afterRaise, afterStringRaise, hired, lower, lowerSeniority })); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
 });
 `,
@@ -1629,7 +1635,7 @@ process.stdin.resume();
 
     await h2.fetch("/api/config", { method: "PUT", body: JSON.stringify({ agentDefaults: { approvals: "auto" } }) });
     // the person may hand out anything, and a hire of theirs gets the default
-    const { bot: lead } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Lead" }) });
+    const { bot: lead } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Lead", seniority: 3 }) });
     assert.equal(lead.approvals, "auto");
     await h2.fetch(`/api/bots/${lead.id}`, {
       method: "PATCH",
@@ -1637,7 +1643,7 @@ process.stdin.resume();
     });
 
     await h2.fetch(`/api/bots/${lead.id}/messages`, { method: "POST", body: JSON.stringify({ text: "go" }) });
-    let seen: { me: string; raise: number; hired: string; lower: number } | undefined;
+    let seen: { me: string; raise: number; refusedSeniority: { status: number; body: any }; afterRaise: number; afterStringRaise: unknown; hired: string; lower: number; lowerSeniority: number } | undefined;
     for (let i = 0; i < 200 && !seen; i++) {
       if (existsSync(out)) seen = JSON.parse(readFileSync(out, "utf8"));
       else await new Promise((r) => setTimeout(r, 50));
@@ -1651,6 +1657,29 @@ process.stdin.resume();
     // capped at the hirer's level at the moment of hiring, not the default
     assert.equal(bots.find((b: any) => b.id === seen!.hired).approvals, "edits");
     assert.equal(bots.find((b: any) => b.id === lead.id).approvals, "ask");
+
+    await t.test("an agent's own seniority raise is refused without changing it", () => {
+      assert.equal(seen!.refusedSeniority.status, 403);
+      assert.equal(seen!.refusedSeniority.body.error, "an agent cannot raise its own seniority");
+      assert.equal(seen!.afterRaise, 3);
+    });
+    await t.test("a string cannot raise an agent's stored seniority", () => {
+      assert.equal(seen!.afterStringRaise, 3);
+    });
+    await t.test("an agent's own seniority lower is accepted", () => {
+      assert.equal(seen!.lowerSeniority, 200);
+      assert.equal(bots.find((b: any) => b.id === lead.id).seniority, 2);
+    });
+    await t.test("a hire cannot outrank the agent that hires it", () => {
+      assert.equal(bots.find((b: any) => b.id === seen!.hired).seniority, 3);
+    });
+    for (const [wanted, seniority] of [[0, 1], [9, 5], [2.6, 3]]) {
+      await t.test(`the person can set seniority ${wanted}, rounded and clamped to ${seniority}`, async () => {
+        const res = await h2.fetch(`/api/bots/${lead.id}`, { method: "PATCH", body: JSON.stringify({ seniority: wanted }) });
+        assert.equal(res.status, 200);
+        assert.equal((await res.json()).bot.seniority, seniority);
+      });
+    }
   });
 });
 
