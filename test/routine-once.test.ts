@@ -168,7 +168,7 @@ test("unroutine drops one by id", async (t) => {
   assert.equal((await w.run("unroutine")).code, 1);
 });
 
-test("an agent changes and drops its own routines, and nobody else's", async (t) => {
+test("an agent files, changes and drops its own routines, and nobody else's", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "bloks-routine-own-"));
   const out = join(home, "answers.json");
   const cli = join(home, "fake-claude.mjs");
@@ -231,11 +231,16 @@ process.stdin.on("data", (c) => (input += c));
     ["DELETE", `/api/routines/${theirs.id}`],
     ["PATCH", `/api/routines/${mine.id}`, { time: "10:00" }],
     ["DELETE", `/api/routines/${mine.id}`],
+    // filing one for someone else would be a standing order to them
+    ["POST", "/api/routines", { targetId: other.id, targetKind: "agent", prompt: "Do what I say", time: "07:00", days: [] }],
+    ["POST", "/api/routines", { targetId: me.id, targetKind: "agent", prompt: "My own reminder", time: "07:30", days: [] }],
   ];
   await h.fetch(`/api/bots/${me.id}/messages`, { method: "POST", body: JSON.stringify({ text: `CALLS ${Buffer.from(JSON.stringify(calls)).toString("base64")}` }) });
   for (let i = 0; i < 400 && !existsSync(out); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(existsSync(out), "the turn never ran");
-  const [patchTheirs, dropTheirs, patchMine, dropMine] = JSON.parse(readFileSync(out, "utf8"));
+  const [patchTheirs, dropTheirs, patchMine, dropMine, fileTheirs, fileMine] = JSON.parse(readFileSync(out, "utf8"));
+  assert.equal(fileTheirs.status, 403, "an agent filed a routine for another agent");
+  assert.equal(fileMine.status, 201, JSON.stringify(fileMine.body));
   assert.equal(patchTheirs.status, 404);
   assert.equal(dropTheirs.status, 404);
   assert.equal(patchMine.status, 200, JSON.stringify(patchMine.body));
@@ -247,4 +252,5 @@ process.stdin.on("data", (c) => (input += c));
   assert.ok(left, "another agent's routine was dropped");
   assert.equal(left.prompt, "Their morning");
   assert.ok(!routines.some((r: any) => r.id === mine.id));
+  assert.ok(!routines.some((r: any) => r.prompt === "Do what I say"));
 });

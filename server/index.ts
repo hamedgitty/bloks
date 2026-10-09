@@ -12814,6 +12814,13 @@ const server = createServer(async (req, res) => {
       if (tooLong) return json(res, 400, { error: tooLong });
       const clean = normalizeRoutine(body);
       if (!clean) return json(res, 400, { error: "a routine needs a target, something to say, and a time" });
+      // An agent files routines for itself, the same line its changes and
+      // removals keep to below. Aimed at another agent, a routine would be
+      // a standing instruction to it that outlives this agent's turn and
+      // runs under that agent's approvals, not this one's.
+      if (asAgent && (clean.targetKind !== "agent" || clean.targetId !== asAgent.botId)) {
+        return json(res, 403, { error: "an agent files routines for itself" });
+      }
       // A routine aimed at nothing would fire forever into the void.
       const exists =
         clean.targetKind === "room" ? Boolean(bloks.get(clean.targetId)) : Boolean(store.bot(clean.targetId));
