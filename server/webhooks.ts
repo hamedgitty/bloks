@@ -206,7 +206,7 @@ function valid(row: any): row is WebhookRecord {
     typeof row.token === "string" &&
     row.token.length >= 24 &&
     typeof row.name === "string" &&
-    (typeof row.botId === "string" || typeof row.blokId === "string")
+    (typeof row.botId === "string" || typeof row.blokId === "string" || typeof row.workflowId === "string")
   );
 }
 
