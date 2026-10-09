@@ -51,7 +51,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { replyCounts, replyLabel } from "@/lib/threads";
-import { keepDraft, readDraft, takeBack } from "@/lib/drafts";
+import { boxFor, carryFocus, keepDraft, readDraft, showBox, takeBack, takeFocus, type Draft } from "@/lib/drafts";
 import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 
@@ -276,10 +276,20 @@ export function RoomView({ blok }: { blok: Blok }) {
   const latestText = useRef(text);
   latestText.current = text;
   const mounted = useRef(true);
+  // a line a failed send hands back, into this box when it is the one on
+  // screen for this room (see showBox in lib/drafts)
+  const receive = (sent: Draft) => {
+    const back = takeBack({ text: latestText.current, attachments: [] }, sent);
+    if (back) setText(back.text);
+  };
+  const receiveRef = useRef(receive);
+  receiveRef.current = receive;
   useEffect(() => {
     mounted.current = true;
+    const hide = showBox(draftKey, (sent) => receiveRef.current(sent));
     return () => {
       mounted.current = false;
+      hide();
       keepDraft(draftKey, { text: latestText.current, attachments: [] });
     };
   }, [draftKey]);
@@ -307,6 +317,12 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // the keyboard follows from the box this one replaced (lib/drafts)
+  useLayoutEffect(() => {
+    if (takeFocus()) inputRef.current?.focus();
+    const input = inputRef.current;
+    return () => carryFocus(Boolean(input) && document.activeElement === input);
+  }, [draftKey]);
   const [sharingOpen, setSharingOpen] = useState(false);
   const [ownerName, setOwnerName] = useState<string | undefined>(undefined);
   const roomPeople = state.roomPeople[blok.id] ?? [];
@@ -448,11 +464,11 @@ export function RoomView({ blok }: { blok: Blok }) {
       // a line that did not go comes back to the box, or to the room's
       // kept draft when the room was left meanwhile
       onFailed: () => {
-        const here = mounted.current;
-        const back = takeBack(here ? { text: latestText.current, attachments: [] } : readDraft(draftKey), sent);
-        if (!back) return;
-        if (here) setText(back.text);
-        else keepDraft(draftKey, back);
+        if (mounted.current) return receive(sent);
+        const box = boxFor(draftKey);
+        if (box) return box(sent);
+        const back = takeBack(readDraft(draftKey), sent);
+        if (back) keepDraft(draftKey, back);
       },
     });
     setText("");

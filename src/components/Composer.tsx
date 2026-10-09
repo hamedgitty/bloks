@@ -1,5 +1,5 @@
 import { track } from "@/lib/analytics";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import Mic from "lucide-react/dist/esm/icons/mic.mjs";
 import Plus from "lucide-react/dist/esm/icons/plus.mjs";
@@ -26,7 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
-import { keepDraft, readDraft, takeBack, type Draft } from "@/lib/drafts";
+import { boxFor, carryFocus, keepDraft, readDraft, showBox, takeBack, takeFocus, type Draft } from "@/lib/drafts";
 import { insert as insertCommand, matches as matchCommands, segments, slashAt, type Command } from "@/lib/slashCommands";
 
 /** Fade whichever edges have more text beyond them (see edgeMask). */
@@ -176,21 +176,42 @@ export function Composer({
   const latest = useRef({ text, attachments });
   latest.current = { text, attachments };
   const mounted = useRef(true);
+  // the words a failed send hands back, into this box when it is the one
+  // on screen for this conversation
+  const receive = (sent: Draft<Attachment>) => {
+    const back = takeBack(latest.current, sent);
+    if (!back) return;
+    setText(back.text);
+    setAttachments(back.attachments);
+  };
+  const receiveRef = useRef(receive);
+  receiveRef.current = receive;
   useEffect(() => {
     mounted.current = true;
+    const hide = showBox<Attachment>(draftKey, (sent) => receiveRef.current(sent));
     return () => {
       mounted.current = false;
+      hide();
       keepDraft(draftKey, latest.current);
     };
   }, [draftKey]);
-  // A send that did not go comes back to the box it left, or, when this
-  // conversation was left meanwhile, to the draft kept for it.
+  // Layout, not passive: on the way out the box has to still be in the
+  // page to tell whether it had the keyboard, and the box replacing it
+  // takes the keyboard in the same commit.
+  useLayoutEffect(() => {
+    if (takeFocus()) inputRef.current?.focus();
+    const input = inputRef.current;
+    return () => carryFocus(Boolean(input) && document.activeElement === input);
+  }, [draftKey]);
+  // A send that did not go comes back to the box it left; when this
+  // conversation was left meanwhile, to the box now on screen for it, or
+  // else to the draft kept for it.
   const giveBack = (sent: Draft<Attachment>) => {
-    const back = takeBack(mounted.current ? latest.current : readDraft<Attachment>(draftKey), sent);
-    if (!back) return;
-    if (!mounted.current) return keepDraft(draftKey, back);
-    setText(back.text);
-    setAttachments(back.attachments);
+    if (mounted.current) return receive(sent);
+    const box = boxFor<Attachment>(draftKey);
+    if (box) return box(sent);
+    const back = takeBack(readDraft<Attachment>(draftKey), sent);
+    if (back) keepDraft(draftKey, back);
   };
   /** Why something did not become a chip, said once, dismissible. */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
@@ -319,17 +340,29 @@ export function Composer({
     if (!task || rehearsing) return;
     setRehearsing(true);
     setRehearseError(null);
+    // Emptied as it goes, like a send. Starting a rehearsal opens its own
+    // lane, which can unmount this box before the answer comes back, and
+    // the words left in it were then kept as this conversation's draft:
+    // back here, Enter would have sent the task for real.
+    const sent = { text, attachments };
+    latest.current = { text: "", attachments: [] };
+    setText("");
+    setAttachments([]);
     api("/api/rehearsals", { method: "POST", body: JSON.stringify({ botId: bot.id, text: task, compareWith }) })
       .then(() => {
         track("rehearsal_started", { compared: compareWith.length });
-        setText("");
-        setAttachments([]);
+        if (!mounted.current) return;
         setRehearse(false);
         setCompareWith([]);
         onClearReply?.();
       })
-      .catch((e: Error) => setRehearseError(e.message))
-      .finally(() => setRehearsing(false));
+      .catch((e: Error) => {
+        giveBack(sent);
+        if (mounted.current) setRehearseError(e.message);
+      })
+      .finally(() => {
+        if (mounted.current) setRehearsing(false);
+      });
   };
 
   // Dictation runs through a native helper rather than the browser speech

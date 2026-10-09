@@ -43,3 +43,38 @@ export function keepDraft<A>(key: string, draft: Draft<A>): void {
 export function takeBack<A>(current: Draft<A>, sent: Draft<A>): Draft<A> | null {
   return isEmptyDraft(current) ? sent : null;
 }
+
+/** The box on screen for each conversation, by key, to hand a failed send
+ * back to. A send can fail after you left and came back, and then the box
+ * that sent it is gone while a new one for the same conversation is up;
+ * writing the words into the kept draft would leave them where nothing
+ * reads them until that box goes too, and it would save its empty self
+ * over them. */
+const live = new Map<string, (sent: Draft) => void>();
+
+/** Register the box on screen for a conversation. Returns its unregister. */
+export function showBox<A>(key: string, receive: (sent: Draft<A>) => void): () => void {
+  const fn = receive as (sent: Draft) => void;
+  live.set(key, fn);
+  return () => {
+    if (live.get(key) === fn) live.delete(key);
+  };
+}
+
+/** The box on screen for a conversation, if one is. */
+export function boxFor<A>(key: string): ((sent: Draft<A>) => void) | undefined {
+  return live.get(key) as ((sent: Draft<A>) => void) | undefined;
+}
+
+/** Whether the box that just went had the keyboard, so the one that
+ * replaces it (another agent, another lane) takes it, rather than the
+ * typing that follows going nowhere. */
+let focusCarried = false;
+export function carryFocus(had: boolean): void {
+  focusCarried = had;
+}
+export function takeFocus(): boolean {
+  const had = focusCarried;
+  focusCarried = false;
+  return had;
+}

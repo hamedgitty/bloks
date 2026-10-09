@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isEmptyDraft, keepDraft, readDraft, takeBack } from "../src/lib/drafts.ts";
+import { boxFor, carryFocus, isEmptyDraft, keepDraft, readDraft, showBox, takeBack, takeFocus } from "../src/lib/drafts.ts";
 
 test("a draft stays with its conversation and is found there again", () => {
   keepDraft("agent-a:lane-1", { text: "for a", attachments: [{ id: "chip" }] });
@@ -39,4 +39,29 @@ test("chips alone are a draft worth keeping", () => {
   assert.equal(isEmptyDraft({ text: "", attachments: [{ id: "chip" }] }), false);
   assert.equal(isEmptyDraft({ text: " ", attachments: [] }), true);
   assert.equal(isEmptyDraft(undefined), true);
+});
+
+test("a failed send reaches the box on screen for its conversation, not a draft nothing reads", () => {
+  const got: unknown[] = [];
+  const hide = showBox<string>("bot:lane", (sent) => got.push(sent));
+  boxFor<string>("bot:lane")?.({ text: "the words", attachments: [] });
+  assert.deepEqual(got, [{ text: "the words", attachments: [] }]);
+  hide();
+  assert.equal(boxFor("bot:lane"), undefined);
+});
+
+test("a box that went away does not unregister the one that replaced it", () => {
+  const hideOld = showBox("bot:lane", () => {});
+  const replacement = () => {};
+  showBox("bot:lane", replacement);
+  hideOld();
+  assert.equal(boxFor("bot:lane"), replacement);
+});
+
+test("the keyboard is carried to the next box once", () => {
+  carryFocus(true);
+  assert.equal(takeFocus(), true);
+  assert.equal(takeFocus(), false);
+  carryFocus(false);
+  assert.equal(takeFocus(), false);
 });
