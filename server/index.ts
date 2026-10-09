@@ -1254,7 +1254,7 @@ function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSel
     // A message another agent sent is still that agent's on the backup:
     // the engine hears who wrote it, and the answer goes back to them.
     const from = asked.agent?.dir === "in" ? { botId: asked.agent.peerId, name: asked.agent.peerName } : undefined;
-    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from }).catch((e) => {
+    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from, routine: asked.via === "routine" ? asked.routine : undefined }).catch((e) => {
       telegramReturns.finish(laneId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       const failed = store.appendMessage(laneId, {
         role: "bot",
@@ -1994,7 +1994,7 @@ bus.subscribe((event: RuntimeEvent) => {
         void (async () => {
           const folded = await foldContext(bot.id, event.threadId, true).catch(() => false);
           if (folded && said?.text) {
-            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId) }).catch(
+            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId), routine: said.via === "routine" ? said.routine : undefined }).catch(
               () => {},
             );
           } else {
@@ -2800,7 +2800,7 @@ function acceptingClaude(bot: BotRecord, laneId?: string): string | undefined {
 }
 function queuedCommand(laneId: string, item: { messageId?: string }): string | undefined {
   const m = item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
-  if (!m?.text || m.deleted || m.agent || m.via || m.commandInstance === null || !claudeCommand(m.text)) return undefined;
+  if (!m?.text || m.deleted || m.agent || (m.via && m.via !== "routine") || m.commandInstance === null || !claudeCommand(m.text)) return undefined;
   return m.commandInstance ?? (store.botByThread(laneId) ? acceptingClaude(store.botByThread(laneId)!, laneId) : undefined);
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
@@ -2874,6 +2874,8 @@ async function startClaimedTurn(
     fallback?: boolean;
     /** Another agent sent this message (see AgentNote). */
     from?: { botId: string; name: string };
+    /** A routine started this turn; the transcript keeps its prompt alone. */
+    routine?: Message["routine"];
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
@@ -2968,7 +2970,7 @@ async function startClaimedTurn(
       entry.items.push({ text });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine });
     }
     return;
   }
@@ -3070,6 +3072,7 @@ async function startClaimedTurn(
       text,
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
+      ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
     });
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
   }
@@ -3080,6 +3083,7 @@ async function startClaimedTurn(
   // the words as written, for naming the lane; the engine also hears who sent them
   const said = text;
   if (opts.from) text = fromAgentPrompt(opts.from, text);
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text);
 
   // ── the transcript for API-backed drivers ──
   //
@@ -3104,7 +3108,7 @@ async function startClaimedTurn(
       .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
-        text: m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text!) : m.text!,
+        text: storedPrompt(m),
       }));
     return assembleTranscript(settled, task.context ?? null, transcriptBudget);
   };
@@ -6293,9 +6297,10 @@ async function runDueRoutines() {
       const run = routines.beginRun(routine.id, laneId);
       if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
       broadcast({ kind: "routines" });
-      await startTurn(bot.id, routine.prompt, {
+      await startTurn(routine.targetId, routine.prompt, {
         taskId: laneId,
         computerOverride: routine.runsOn,
+        routine: { name: routine.name, manual: false },
       }).catch((e) => {
         // it never even started; that is a finished run, not a hung one
         closeRun(laneId, {
@@ -7074,7 +7079,7 @@ function steerWords(laneId: string, item: { messageId?: string; text?: string })
   if (!item.messageId) return item.text ?? null;
   const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
   if (!m || m.deleted || !m.text) return null;
-  return m.agent?.dir === "in" ? fromAgentPrompt({ botId: m.agent.peerId, name: m.agent.peerName }, m.text) : m.text;
+  return storedPrompt(m);
 }
 
 /** Waiting messages go. Until now they sat above the composer, outside
@@ -7158,13 +7163,14 @@ function queueOnLane(
   botId: string,
   laneId: string,
   text: string,
-  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; telegramReply?: TelegramReply } = {},
+  options: { replyTo?: ReplyRef; from?: { botId: string; name: string }; via?: "webhook" | "watcher"; routine?: Message["routine"]; telegramReply?: TelegramReply } = {},
 ) {
   const message = store.appendMessage(laneId, {
     role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
+    ...(options.routine ? { via: "routine" as const, routine: options.routine } : {}),
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance: acceptingClaude(store.bot(botId)!, laneId) ?? null } : {}),
   });
@@ -7265,6 +7271,25 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
  * sender as data, so the person's chat can say who it was. */
 function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
   return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`.)\n\n${text}`;
+}
+
+/** Name the source without claiming whether the person is here. */
+function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string) {
+  const quoted = routine.name ? JSON.stringify(routine.name).replace(/[\u0085\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : "";
+  const name = quoted ? ` ${quoted}` : "";
+  const started = routine.manual ? "was run by hand." : "started this turn on its schedule.";
+  return `(Your routine${name} ${started})\n\n${text}`;
+}
+
+/** Stored words stay unchanged; engines hear who started the message. */
+function storedPrompt(message: Message): string {
+  const text = message.text ?? "";
+  if (message.agent?.dir === "in") {
+    return fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text);
+  }
+  return message.via === "routine" && message.routine && !(message.commandInstance && claudeCommand(text))
+    ? fromRoutinePrompt(message.routine, text) : text;
 }
 
 /** `yours` says the person wrote it, which moves the agent up the
@@ -13079,6 +13104,7 @@ const server = createServer(async (req, res) => {
           await startTurn(routine.targetId, routine.prompt, {
             taskId: laneId,
             computerOverride: routine.runsOn,
+            routine: { name: routine.name, manual: true },
           });
         } catch (e) {
           closeRun(laneId, {

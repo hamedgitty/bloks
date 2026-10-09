@@ -106,7 +106,9 @@ export interface Message {
   afterAgent?: { peerId: string; peerName: string };
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
-  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook";
+  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine";
+  /** The routine's name and start mode when this message was written. */
+  routine?: { name?: string; manual: boolean };
   /** The user's selection on a decision component; distinct from the agent's recommendation. */
   decisionChoice?: number;
   id: string;
