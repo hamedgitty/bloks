@@ -809,9 +809,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         finish(false, "exit_before_result");
       });
 
-      // Codex checks expectedTurnId against the turn it is running and
-      // refuses the call if that turn has ended, so a refusal means the
-      // words were not taken and can go to the next turn instead.
       const selectedSkills = async (names?: string[]): Promise<CodexSkill[]> => {
         if (!names?.length) return [];
         try {
@@ -823,6 +820,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           return [];
         }
       };
+      // Codex checks expectedTurnId against the turn it is running and
+      // refuses the call if that turn has ended, so a refusal means the
+      // words were not taken and can go to the next turn instead.
       const canSteer = () => Boolean(!finished && !compacting && codexThread && codexTurn && ![...compactionStarts.keys()].some((key) => requestedCompaction === null || !key.startsWith(`${requestedCompaction}\0`)));
       const steer = async (text: string, options?: { skillNames?: string[] }) => {
         // during a compaction the turn running is the compaction's

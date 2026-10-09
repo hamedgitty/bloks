@@ -541,7 +541,7 @@ test("a command after an engine switch leaves the conversation handoff for the n
   assert.doesNotMatch((await s.turn("following ordinary")).text, /SECOND_ENGINE_WORK/);
 });
 
-test("a Claude command queued with PR 1's persisted instance marker remains readable", async (t) => {
+test("a Claude command queued by 2.5.33, with only its instance marker, remains readable", async (t) => {
   const s = await setup(t);
   await s.say("HOLD"); await until(() => s.calls().length === 1, "the first turn did not start");
   await s.say("/compact");
@@ -549,7 +549,7 @@ test("a Claude command queued with PR 1's persisted instance marker remains read
   const messages = JSON.parse(readFileSync(file, "utf8"));
   const queued = messages.find((m: any) => m.queued && m.text === "/compact");
   assert.equal(queued.commandInstance, "claude");
-  delete queued.namedSkills; // PR 1 has only the durable instance id.
+  delete queued.namedSkills; // 2.5.33 wrote only the instance id.
   writeFileSync(file, JSON.stringify(messages));
   s.spec({ compact: true });
   await s.reboot();

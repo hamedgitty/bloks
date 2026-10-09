@@ -2801,8 +2801,9 @@ function acceptingNative(bot: BotRecord, laneId?: string): string | undefined {
   const kind = registry.get(selection.instanceId)?.driverKind;
   return kind === "claudeAgent" || kind === "codex" ? selection.instanceId : undefined;
 }
-/** An unavailable accepting instance still refuses its queued command.
- * PR 1's durable instance-id marker stays readable without a new format. */
+/** An instance that is gone reads as Claude Code, the only engine a
+ * marker written by 2.5.33 can name, so its queued command is still
+ * refused rather than sent on as words. */
 function commandFor(text: string, instanceId: string): string | null {
   return engineCommand(text, registry.get(instanceId)?.driverKind ?? "claudeAgent");
 }
@@ -7217,6 +7218,10 @@ function queueOnLane(
   return message;
 }
 
+/** Each lane's latest steer still asking its engine, the next in line
+ * behind it (steerLane). */
+const steerAttempts = new Map<string, Promise<Message | null>>();
+
 /**
  * Hands the person's words to the turn running in a lane, and writes
  * them into the conversation as it takes them, after what the agent has
@@ -7229,12 +7234,11 @@ function queueOnLane(
  * or Bloks is finishing up to restart.
  * Only for the person: another agent, a webhook, a watcher or a routine
  * is a request of its own and waits for a turn of its own.
- */
-const steerAttempts = new Map<string, Promise<Message | null>>();
-
-/** A Codex skill lookup must not let the next person's words overtake
+ *
+ * A Codex skill lookup must not let the next person's words overtake
  * this one. Return this exact promise: on refusal its caller queues it
- * before the next attempt returns null and queues behind it. */
+ * before the next attempt returns null and queues behind it.
+ */
 function steerLane(bot: BotRecord, lane: TaskRecord, text: string, options: { replyTo?: ReplyRef; personal?: boolean } = {}): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
