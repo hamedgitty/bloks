@@ -5,7 +5,7 @@
 // only ever reaches the page as text nodes and elements chosen here, never
 // as HTML. Shared by solo chats and rooms, which is why a room can ask for
 // its @mentions to be picked out as well.
-import { useState } from "react";
+import { memo, useState } from "react";
 import { splitBlocks, type CodeBlock, type TableBlock } from "@/lib/markdownTable";
 import { parseInline, type InlineToken } from "@/lib/inlineMarkdown";
 import { cn } from "@/lib/cn";
@@ -175,16 +175,30 @@ function mentionPattern(names: string[] | undefined): RegExp | null {
   return new RegExp(`(@(?:${escaped.join("|")}))`, "gi");
 }
 
-export function Markdownish({
-  text,
-  highlight = "",
-  mentions,
-}: {
+interface MarkdownishProps {
   text: string;
   highlight?: string;
   /** Names whose @mentions are picked out, in a room. */
   mentions?: string[];
-}) {
+}
+
+/**
+ * Drawn again only when what it would draw changes. While a reply
+ * streams, the transcript renders with every word, and each settled
+ * bubble above it parsed its whole text again for nothing. A room hands
+ * over a fresh list of names each time, so the names are compared by
+ * what they say.
+ */
+export const Markdownish = memo(
+  MarkdownishBlocks,
+  (a, b) =>
+    a.text === b.text &&
+    (a.highlight ?? "") === (b.highlight ?? "") &&
+    (a.mentions ?? []).length === (b.mentions ?? []).length &&
+    (a.mentions ?? []).every((name, i) => name === b.mentions![i]),
+);
+
+function MarkdownishBlocks({ text, highlight = "", mentions }: MarkdownishProps) {
   const names = mentionPattern(mentions);
   const blocks = splitBlocks(text);
   if (blocks.some((block) => block.kind !== "lines")) {
