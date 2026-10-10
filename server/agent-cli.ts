@@ -119,6 +119,7 @@ export const RULES: Rule[] = [
   { method: "DELETE", path: "/api/routines/:id", why: "drop a routine" },
   { method: "GET", path: "/api/watchers", why: "see its own watchers" },
   { method: "POST", path: "/api/watchers", why: "watch a folder, a web page or a feed, or run a cheap check, and act when it finds something" },
+  { method: "PATCH", path: "/api/watchers/:id", why: "change one of its own watchers without replacing it" },
   { method: "DELETE", path: "/api/watchers/:id", why: "stop one of its own watchers" },
   { method: "GET", path: "/api/jobs", why: "read the job board" },
   { method: "POST", path: "/api/jobs", why: "post work to the board" },
