@@ -527,7 +527,71 @@ ready for a look. No model call. A minute timer makes one when the chosen
 time has passed and today's has not been made (`briefDue`), and a
 `brief.ready` frame wakes the owner's phone with a sealed preview.
 `/api/briefs/:id/parts/:n/audio` speaks one part in that agent's voice,
-or a Mac voice picked per agent.
+or a Mac voice picked per agent. Quiet check-ins (see Routines) are left
+out of what an agent worked on and said as one count at the end of its
+part ("12 quiet check-ins, nothing needed you"); they are not things in
+the headline, and a night of nothing but them is still a quiet night,
+which wakes no phone.
+
+## Routines and check-ins
+
+`server/routines.ts` keeps routines in `routines.json` and a thirty
+second timer (`runDueRoutines` in `server/index.ts`) fires whatever is
+due. A routine runs at a time of day on chosen days, once on a date, or,
+for an agent, as a check-in: `every` so many minutes (15 to 1440),
+within `activeHours` (`from` and `to`, local, on one day, both ends
+included) on chosen days. A check-in's slots start where its hours do
+and step by its interval, so they fall at the same times every day
+(`checkInsOn`); its `time` is its first slot, for clients that read only
+that. A missed slot fires once, within the grace window (two hours, or
+half the interval for a check-in, since by then the next one is nearly
+due), and never for a slot from before its schedule was set
+(`scheduledAt`, moved by a change of time, days, date, interval or
+hours). An interval or hours that cannot run, a check-in that is also
+once, and a check-in or quiet routine for a room are refused with the
+reason (`scheduleProblem`); a room's routine keeps to a time of day,
+since several agents answer it and a channel may be reading. The agent
+command line files one with `bloks routine --every 30m --between
+09:00-18:00`, and `--quiet` for a time of day.
+
+A check-in is always quiet, and a time-of-day routine can be (`quiet`).
+Its prompt is marked `routine.quiet`, and the turn is told, in its own
+words after the line saying where it came from and never in the system
+prompt, which a resumed session keeps byte for byte, that if nothing
+needs the person it answers with exactly QUIET (`QUIET_ASK`). While it
+runs the lane is in `checkInTurns`: its start leaves the lane's unread
+as it was, its message frames carry `checkIn` so the app holds their
+banner (`CheckInHold` in `src/lib/notify.ts`), and an answer of QUIET
+(trimmed, any case, with a full stop or exclamation) is written with
+`quiet: true` at once. When the turn ends well with QUIET as its last
+words, nothing but words, tool calls, a screen or a compaction marker
+after the prompt, and none of the person's words joined it,
+`foldQuietRun` marks the prompt and everything after it `quiet`: no
+unread, nothing for a banner, a linked chat or the phone, the run is recorded
+`quiet` in its history (an "ok" run with the flag) and left out of the
+record, whose recent view a check-in every quarter of an hour would
+flood. A check-in that fails, reports anything else, raises a card or
+saves a file is shown like any turn, and its held reply is announced when
+it ends. The chat folds a run of quiet messages into one muted line ("3
+quiet check-ins, last at 10:30", `quietRunAt`), which opens to show
+them; the sidebar's line and a lane's `lastAt` read past them.
+
+Each routine keeps what its last run that was not quiet said
+(`lastReport`, apart from the twenty `runs`, which quiet runs would
+otherwise push it out of), and its next turn carries it as a note before
+the prompt ("Last time this routine reported: ...", one line, about 600
+characters at most), so a run that lands in a fresh or summarised
+session still knows what it said. The note is said only as the turn
+goes; a replayed transcript has the answer in it already.
+
+The routine editor (`src/components/RoutinesDialog.tsx`) chooses At a
+time or Every, in minutes or hours, with hours and days, and the quiet
+switch for a time of day (`src/lib/checkIns.ts` holds its checks). The
+calendar in Automations draws a check-in as one thin band over its hours
+with a tick per run, rather than a card per run that would bury the
+week, as one chip a day in the month, and as a row in words in a
+Check-ins strip under the grid; its history folds a stretch of quiet
+runs into one row.
 
 ## Watchers
 
@@ -660,7 +724,8 @@ New conversation is on the agent's row in the sidebar (its menu, and the
 `+` of the conversations view), as Clear is.
 
 Unread is per lane: a turn that ends in a lane marks that lane
-(`store.markLane`), and the agent's own `unread` is kept as "any lane
+(`store.markLane`), except a quiet check-in (see Routines and check-ins),
+which leaves it as it was, and the agent's own `unread` is kept as "any lane
 unread" so the iPhone app and the Dock badge read it unchanged. Opening a
 lane (`POST .../tasks/:id/activate`) reads it; `PATCH /api/bots/:id` with
 `unread` reads or marks the lane on screen. The client's `select` goes to
