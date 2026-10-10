@@ -162,7 +162,8 @@ export const MAX_STEPS = 12;
 export const MAX_STEP_TEXT = 2_000;
 export const MAX_NAME = 80;
 /** How many runs a workflow remembers. Enough to see a pattern, not
- * enough to turn a settings file into a log store. */
+ * enough to turn a settings file into a log store. Runs not yet finished
+ * are kept past it (WorkflowStore.begin). */
 export const MAX_RUNS = 20;
 /** The longest a run may sit on an approval, and the default. A day is
  * what a person away from their desk needs; a week is a run nobody is
@@ -597,7 +598,13 @@ export class WorkflowStore {
       values: {},
       steps: [],
     };
-    workflow.runs = [run, ...(workflow.runs ?? [])].slice(0, MAX_RUNS);
+    // Only finished runs make room. One still running has a turn coming
+    // back to it, and one waiting has a card out; dropped from the list,
+    // neither could be found again, and the card would answer nothing.
+    const runs = [run, ...(workflow.runs ?? [])];
+    const live = (r: WorkflowRun) => r.state === "running" || r.state === "waiting";
+    let room = MAX_RUNS - runs.filter(live).length;
+    workflow.runs = runs.filter((r) => live(r) || room-- > 0);
     workflow.lastRunAt = now;
     this.save();
     return run;
