@@ -23,11 +23,14 @@
 // one, and a turn that ran beside another one there cannot tell from two
 // photographs whose writes were whose (GitHub 153). So a turn knows which
 // other turns overlapped it in the same folder, or one inside the other,
-// and keeps as its own only the files its engine said it edited. The rest
-// are on its card apart, as changed while others were working here, and
-// Undo leaves them alone: undoing another agent's work is the same harm
-// as undoing a later turn's. A turn that ran alone claims everything, as
-// it always did.
+// and keeps as its own only the files its engine said it edited. Its card
+// lists those, and Undo leaves the rest alone: undoing another agent's
+// work is the same harm as undoing a later turn's. A turn with none of its
+// own posts no card, unless it ran something that writes without saying
+// which files (a shell command, or an engine that never names them): then
+// the files changed while it worked are counted on a card without Undo,
+// the only sign the folder moved. A turn that ran alone claims everything,
+// as it always did.
 //
 // Limits, all of them deliberate: folders too big to photograph in a
 // moment are not tracked (the card says so rather than pretending), files
@@ -113,7 +116,7 @@ export interface FileChange {
   big?: boolean;
   /** Changed while another turn was working in the folder, and not a file
    * this turn's engine said it edited: possibly the other turn's, so it is
-   * shown apart and Undo leaves it alone. */
+   * not on this turn's card and Undo leaves it alone. */
   shared?: boolean;
   /** For a big file, its size and time before the turn, which is all a
    * rehearsal's Apply has to tell whether it was changed since. */
@@ -134,6 +137,10 @@ export interface CheckpointRecord {
   card?: { threadId: string; messageId: string };
   /** The agents whose turns overlapped this one in the folder. */
   alongside?: string[];
+  /** It overlapped others and ran something that may write files without
+   * naming them, so its card counts the shared ones when it has none of
+   * its own. */
+  unnamedWrites?: boolean;
   /** A rehearsal: the changes are in a clone, not yet in `dir`. They
    * reach `dir` only through apply, and only then can they be undone. */
   rehearsal?: { copy: string };
@@ -144,9 +151,12 @@ export interface CheckpointRecord {
 /** What goes on the card: small, and nothing the diff call cannot fetch. */
 export interface ChangesSummary {
   checkpointId: string;
-  /** This turn's own first, then any changed while others worked here. */
+  /** This turn's own files; or, for a turn with none that may have
+   * written some without naming them, the files changed while others
+   * worked here, each marked shared. */
   files: Array<Pick<FileChange, "path" | "status" | "big" | "added" | "removed" | "shared">>;
-  /** Files changed while other agents were working here, and who they were. */
+  /** On that second kind of card: how many changed while other agents
+   * were working here, and who they were. */
   shared?: { total: number; alongside: string[] };
   /** How many files changed in all, when more than the card lists. */
   total: number;
@@ -352,6 +362,9 @@ export class Checkpoints {
   /** The files each running turn's engine said it edited, relative to the
    * turn's folder. */
   private edited = new Map<string, Set<string>>();
+  /** Running turns that did something which may write files it does not
+   * name (noteUnnamedWrites). */
+  private unnamed = new Set<string>();
 
   constructor(root: string) {
     this.root = root;
@@ -393,6 +406,7 @@ export class Checkpoints {
     this.active.delete(threadId);
     const edited = this.edited.get(threadId) ?? new Set<string>();
     this.edited.delete(threadId);
+    const unnamed = this.unnamed.delete(threadId);
     if (!before) return null;
     const where = before.afterDir ?? before.dir;
     const after = await this.serial(where, () => this.photograph(where, before.ignore, before.afterDir ? before.photo : undefined));
@@ -412,6 +426,7 @@ export class Checkpoints {
       at: Date.now(),
       files,
       ...(alongside.length ? { alongside } : {}),
+      ...(alongside.length && unnamed ? { unnamedWrites: true } : {}),
       ...(before.afterDir ? { rehearsal: { copy: before.afterDir } } : {}),
     };
     this.records.push(record);
@@ -428,6 +443,13 @@ export class Checkpoints {
     this.pending.delete(threadId);
     this.active.delete(threadId);
     this.edited.delete(threadId);
+    this.unnamed.delete(threadId);
+  }
+
+  /** A running turn did something that may write files without naming
+   * them (FileChange.shared, unnamedWrites). */
+  noteUnnamedWrites(threadId: string) {
+    if (this.active.has(threadId)) this.unnamed.add(threadId);
   }
 
   /** Files a running turn's engine says it is editing, as it says them:
@@ -497,6 +519,23 @@ export class Checkpoints {
 
   summary(record: CheckpointRecord, listed = 50): ChangesSummary {
     const own = record.files.filter((f) => !f.shared);
+    // none of its own, but it may have written some without saying which:
+    // what changed while it worked, counted, listed apart, without Undo
+    if (!own.length && record.unnamedWrites && record.files.length && !record.rehearsal) {
+      return {
+        checkpointId: record.id,
+        files: record.files.slice(0, listed).map(({ path, status, big, added, removed }) => ({
+          path,
+          status,
+          ...(big ? { big } : {}),
+          ...(added !== undefined ? { added } : {}),
+          ...(removed !== undefined ? { removed } : {}),
+          shared: true,
+        })),
+        total: record.files.length,
+        shared: { total: record.files.length, alongside: record.alongside ?? [] },
+      };
+    }
     return {
       ...(record.rehearsal
         ? { rehearsal: { state: record.discardedAt ? ("discarded" as const) : record.appliedAt ? ("applied" as const) : ("pending" as const) } }

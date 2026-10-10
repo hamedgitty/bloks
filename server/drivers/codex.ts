@@ -660,6 +660,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               itemId: item.id,
               title: label,
               ...(paths.length ? { paths } : {}),
+              // a command writes what it writes, and says nothing of it
+              ...(item.type === "commandExecution" ? { mayWrite: true } : {}),
             });
             break;
           }

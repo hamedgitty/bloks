@@ -692,6 +692,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 itemId: String(update.toolCallId ?? newId()),
                 title: toolTitle(update),
                 ...(paths.length ? { paths } : {}),
+                // a command writes what it writes, and says nothing of it
+                ...(update.kind === "execute" ? { mayWrite: true } : {}),
               });
               break;
             }

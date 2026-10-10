@@ -217,6 +217,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                   itemType: "tool",
                   itemId,
                   title: payload.tool_name,
+                  // agy never says which files a step wrote
+                  mayWrite: true,
                 });
               } else if (payload.state === "DONE" || payload.state === "ERROR") {
                 emit({

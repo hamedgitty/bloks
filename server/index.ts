@@ -608,11 +608,12 @@ function patchChangesCard(record: CheckpointRecord, extra: Partial<NonNullable<M
   const current = store.messagesFor(record.card.threadId).find((msg) => msg.id === record.card!.messageId);
   if (!current?.changes) return;
   const summary = checkpoints.summary(record);
-  // A retained all-shared card keeps its old summary; only metadata changes.
+  // A card from before own files alone were listed, for a turn with none,
+  // keeps its old summary; only what is said about it changes.
   const redraw = Boolean(record.rehearsal) || summary.total > 0;
   if (!redraw && !Object.keys(extra).length) return;
   const changes = { ...current.changes, ...(redraw ? summary : {}), ...extra };
-  if (redraw) delete changes.shared;
+  if (redraw && !summary.shared) delete changes.shared;
   const patched = store.patchMessage(record.card.threadId, record.card.messageId, { changes });
   if (patched) broadcast({ kind: "message.patch", threadId: record.card.threadId, message: patched });
 }
@@ -1673,8 +1674,10 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.started":
       if (event.itemType === "tool") {
-        // what the change card can be sure is this turn's own
+        // what the change card can be sure is this turn's own, and whether
+        // it may have written files it did not name
         if (event.paths?.length) checkpoints.noteEdits(event.threadId, event.paths);
+        if (event.mayWrite) checkpoints.noteUnnamedWrites(event.threadId);
         const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
         // named on disk, so a turn cut off mid-call can say which call

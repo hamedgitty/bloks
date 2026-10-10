@@ -112,6 +112,9 @@ export type RuntimeEvent = RuntimeEventBase &
         /** The files this call writes, when the engine says: what a change
          * card can be sure was this turn's own work (server/checkpoints.ts). */
         paths?: string[];
+        /** This call may write files it does not name: a shell command, or
+         * any call on an engine that never says which files it wrote. */
+        mayWrite?: boolean;
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | { type: "item.completed"; itemType: "tool"; ok: boolean }

@@ -190,18 +190,29 @@ test("Undo keeps an old all-shared summary while recording its result", async (t
   assert.equal(readFileSync(join(f.desk, "log.md"), "utf8"), "log, by Linus\n");
 });
 
-test("all-shared overlapping turns keep checkpoints without posting cards", async (t) => {
-  for (const mode of ["NONE", "COMMAND"]) await t.test(mode, async (t) => {
-    const f = await fixture(t), done = await f.run(`ADA ${mode}`);
-    assert.ok(done.record.files.length > 0);
-    assert.ok(done.record.files.every((p: any) => p.shared));
-    assert.equal(done.record.card, undefined);
-    assert.equal(done.ada.messages.some((m: any) => m.kind === "changes"), false);
-    assert.equal(done.ada.messages.at(-1).kind, "text");
-    assert.equal(done.ada.messages.at(-1).text, "Done.");
-    assert.equal(previewLine(lastSaid(done.ada.messages)), "Done.");
-    assert.deepEqual(done.linus.messages.find((m: any) => m.kind === "changes").changes.files.map((p: any) => p.path), ["log.md"]);
-  });
+test("an overlapping turn that edited nothing of its own keeps its checkpoint without a card", async (t) => {
+  const f = await fixture(t), done = await f.run("ADA NONE");
+  assert.ok(done.record.files.length > 0);
+  assert.ok(done.record.files.every((p: any) => p.shared));
+  assert.equal(done.record.card, undefined);
+  assert.equal(done.ada.messages.some((m: any) => m.kind === "changes"), false);
+  assert.equal(done.ada.messages.at(-1).kind, "text");
+  assert.equal(done.ada.messages.at(-1).text, "Done.");
+  assert.equal(previewLine(lastSaid(done.ada.messages)), "Done.");
+  assert.deepEqual(done.linus.messages.find((m: any) => m.kind === "changes").changes.files.map((p: any) => p.path), ["log.md"]);
+});
+
+test("an overlapping turn that ran a command still counts what changed, without Undo", async (t) => {
+  // a command names none of the files it writes, so this card is the only
+  // sign the folder moved while the turn worked
+  const f = await fixture(t), done = await f.run("ADA COMMAND");
+  assert.ok(done.record.files.every((p: any) => p.shared));
+  const card = done.ada.messages.find((m: any) => m.kind === "changes");
+  assert.ok(card, "a turn that ran a command left no sign the folder changed");
+  assert.equal(card.changes.total, done.record.files.length);
+  assert.equal(card.changes.shared.total, done.record.files.length);
+  assert.ok(card.changes.files.every((p: any) => p.shared), "a shared file was offered as this turn's own");
+  assert.deepEqual(done.linus.messages.find((m: any) => m.kind === "changes").changes.files.map((p: any) => p.path), ["log.md"]);
 });
 
 test("a cardless checkpoint finishes before the next queued turn starts", async (t) => {

@@ -763,6 +763,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 itemId: block.id,
                 title: block.name,
                 ...(paths.length ? { paths } : {}),
+                // a command writes what it writes, and says nothing of it
+                ...(block.name === "Bash" ? { mayWrite: true } : {}),
               });
             }
             if (message.usage) {
