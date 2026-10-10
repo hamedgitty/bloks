@@ -8888,8 +8888,13 @@ const server = createServer(async (req, res) => {
         } else if (hook.blokId) {
           const blok = bloks.get(hook.blokId);
           if (blok) await postToRoom(blok, text, { hops: 0 });
-        } else if (hook.botId) {
-          await startTurn(hook.botId, text, { taskId: laneId });
+        } else if (hook.botId && laneId) {
+          // Written as the webhook's, as a watcher's is: in the agent's
+          // first conversation it would otherwise read as the person's own
+          // words, offered to edit and send again as theirs (GitHub 242).
+          const said = store.appendMessage(laneId, { role: "user", kind: "text", text, via: "webhook" });
+          broadcast({ kind: "message", threadId: laneId, message: said });
+          await startTurn(hook.botId, text, { taskId: laneId, presetMessage: true });
         }
       } catch (e) {
         // The sender is long gone; the failure belongs in the chat.
@@ -9061,7 +9066,12 @@ const server = createServer(async (req, res) => {
       const trim = (list: Message[]) =>
         Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
       const lists = store.bots.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)));
-      const fitted = viaRelay ? fitTranscripts(lists, Number.isFinite(tail) && tail >= 0 ? tail : RELAY_TAIL) : null;
+      // Through Bloks Cloud the cut is made from the whole conversation, so
+      // what stayed behind counts every older message, not only those past
+      // a list already trimmed to the tail; a client pages back by it.
+      const fitted = viaRelay
+        ? fitTranscripts(store.bots.map((b) => store.messagesFor(b.threadId)), Number.isFinite(tail) && tail >= 0 ? Math.floor(tail) : RELAY_TAIL)
+        : null;
       // Another agent reads whether each one can answer now (GitHub 239);
       // the person's app has its banner, and asks the engines itself.
       const engines = asAgent ? await Promise.all(store.bots.map((b) => readinessOf(b))) : null;

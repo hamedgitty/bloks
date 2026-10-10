@@ -141,7 +141,10 @@ test("a routine, a watcher and a webhook that name no conversation speak in Gene
   assert.equal((await fire(w, hook.token, { event: "deployed-one" })).status, 202);
   assert.ok(await waitFor(() => w.asked.some((a) => a.includes("deployed-one"))), "the webhook never reached the agent");
   await w.idle();
-  assert.ok((await w.said(general)).some((m) => /deployed-one/.test(m.text ?? "")), "the webhook did not land in General");
+  // and as the webhook's, never as the person's own words (GitHub 242)
+  const event = (await w.said(general)).find((m) => /deployed-one/.test(m.text ?? ""));
+  assert.ok(event, "the webhook did not land in General");
+  assert.equal(event.via, "webhook", "a webhook's event in General read as the person's own message");
 
   assert.deepEqual(await w.titles(), ["General"], "background work opened a conversation of its own");
 

@@ -333,9 +333,10 @@ describe("the relay link", () => {
 
     const zero = await ask("zero-list", "/api/bots?messages=0");
     assert.equal(zero.status, 200);
+    // nothing carried, and every message left behind for a page back
     for (const b of zero.body.bots) {
       assert.deepEqual(b.messages, []);
-      assert.equal(b.olderMessages, 0);
+      assert.equal(b.olderMessages, local.bots.find((l: any) => l.id === b.id).messages.length);
     }
     const metadata = ({ messages: _messages, olderMessages: _older, ...fields }: any) => fields;
     assert.deepEqual(zero.body.bots.map(metadata), local.bots.map(metadata));
