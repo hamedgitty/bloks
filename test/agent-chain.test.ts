@@ -156,9 +156,13 @@ test("two agents answering each other stop after twelve turns, and the person wr
   // and the person reads why in the conversation it was meant for
   const told = await notices(h, bravo);
   assert.ok(
-    told.includes("Alpha and Bravo have passed messages back and forth 12 times without you; the next one waits for you."),
+    told.includes("Agents have started 12 turns in a row without you, the last from Alpha to Bravo; the next one waits for you."),
     `nothing in Bravo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
+  const heldNotices = ((await h.json(`/api/bots/${bravo.id}/messages?limit=200`)).messages as any[]).filter((m) => m.chainHeld);
+  assert.equal(heldNotices.length, 1, "the hold is not marked as waiting for the person, so the phone would not wake for it");
+  const bravoLane = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bravo.id).tasks[0];
+  assert.equal(bravoLane.unread, true, "the conversation that stopped was not marked unread");
 
   // The person writes to either, and that turn starts the chain over: its
   // message goes through.
@@ -182,7 +186,7 @@ test("an agent messaging itself is a chain too", async (t) => {
   assert.equal(says(home).length, 13);
   const told = await notices(h, solo);
   assert.ok(
-    told.includes("Solo has passed messages to itself 12 times without you; the next one waits for you."),
+    told.includes("Agents have started 12 turns in a row without you, the last from Solo to itself; the next one waits for you."),
     `nothing in Solo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
 });
@@ -271,7 +275,10 @@ test("routines and watchers an agent files carry its place, and past the limit w
   assert.ok(looked.lastCheck, "the person's look took no baseline");
 
   // As if an agent had filed both deep in a chain: the routine comes due
-  // and the folder changes, and neither starts a turn.
+  // and the folder changes, and neither starts a turn. The conversation
+  // they speak in has been read, so a hold is what marks it again.
+  const laneId = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === alpha.id).tasks[0].id;
+  await h.fetch(`/api/bots/${alpha.id}/tasks/${laneId}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
   await h.stop();
   const data = join(home, ".bloks");
   const rewrite = (file: string, change: (rows: any[]) => void) => {
@@ -296,6 +303,15 @@ test("routines and watchers an agent files carry its place, and past the limit w
   assert.ok(quietly, "the watcher looked and acted past the limit");
   const asked = async (words: string) => ((await h.json(`/api/bots/${alpha.id}/messages?limit=200`)).messages as any[]).some((m) => m.text?.includes(words));
   assert.ok(!(await asked("ROUTINE-RAN")) && !(await asked("WATCHER-RAN")), "a held routine or watcher started a turn");
+  // and the person is told, where the work would have gone on, not only
+  // in each one's last error (GitHub 248)
+  const heldNotices = ((await h.json(`/api/bots/${alpha.id}/messages?limit=200`)).messages as any[]).filter((m) => m.chainHeld).map((m) => m.text);
+  assert.deepEqual(heldNotices, [
+    "The routine Nightly did not run: agents had started 12 turns in a row without you. Run it or change it to go on.",
+    "The watcher drops did not look: agents had started 12 turns in a row without you. Look now or change it to go on.",
+  ]);
+  const alphaLane = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === alpha.id).tasks[0];
+  assert.equal(alphaLane.unread, true, "a held routine or watcher left its conversation read");
 
   // the person running or looking by hand starts each over
   assert.equal((await h.fetch(`/api/routines/${routine.id}/run`, { method: "POST" })).status, 202);

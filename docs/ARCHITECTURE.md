@@ -511,6 +511,13 @@ without looking, until the person changes it, runs it, or looks by
 hand. Agents cannot file workflows. A round inside one
 room is also bounded by `MAX_AGENT_HOPS`.
 
+A hold is the person's to lift, so it is said where they will find it
+(`chainNotice`): a notice in the conversation the next turn would have
+gone on in, naming the whole count and its last step, that conversation
+marked unread, and the phone woken for it as for a goal blocked on them.
+A routine or a watcher says so once when its hold starts, not at every
+run or look it holds.
+
 ## Goals
 
 A conversation can be given a goal, and then keeps working turn after

@@ -147,6 +147,11 @@ export interface Message {
   /** A notice about the lane's goal (server/goals.ts): set, or where it
    * ended up. Done is news like a finished reply, blocked like a question. */
   goal?: "set" | "done" | "blocked" | "out" | "paused";
+  /** A notice that agents stopped at MAX_AGENT_CHAIN (server/index.ts):
+   * their next message, or a routine or a watcher one of them filed,
+   * waits for the person. Like a goal blocked on them, it marks the
+   * conversation unread and wakes the phone (GitHub 248). */
+  chainHeld?: boolean;
   /** A notice marking where the engine compacted its own session, and by
    * how much. A line in the conversation, not a warning, and never news:
    * it marks nothing unread and is not carried into a linked channel. */

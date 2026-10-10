@@ -1655,8 +1655,9 @@ function wakeFor(payload: unknown): Wake | undefined {
   const shared = blok?.sharing ? blok : null;
 
   // a goal blocked on the person is as stopped as a question: the owner's,
-  // since goals are only ever set in the owner's own conversations
-  if (message.kind === "notice" && message.goal === "blocked") {
+  // since goals are only ever set in the owner's own conversations. So
+  // are agents held at the chain limit, whose next turn is the person's.
+  if (message.kind === "notice" && (message.goal === "blocked" || message.chainHeld)) {
     return owner ? { reason: "needs-you", clients: [owner], preview: true } : { reason: "needs-you", preview: true };
   }
 
@@ -1722,6 +1723,10 @@ function previewOf(frame: unknown): WakePreview | null {
       };
     }
     return { title: `${who} has a question`, body: clip(m.card.subtitle || m.card.title), category: "question", threadId: f.threadId };
+  }
+  // stopped and waiting for the person, in Bloks's own words
+  if (m.kind === "notice" && m.text && (m.goal === "blocked" || m.chainHeld)) {
+    return { title: room ? `${room.name} is waiting for you` : `${bot?.name ?? "An agent"} is waiting for you`, body: clip(m.text), category: "question", threadId: f.threadId };
   }
   if (m.kind === "text" && m.text) {
     const speaker = m.role === "bot" ? (bot?.name ?? "An agent") : m.author ? (people.person(m.author)?.name ?? "Someone") : hostName();
@@ -4963,8 +4968,16 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // An agent's watcher past the limit is held without looking, so
     // whatever changed is still there for the look after the person's say.
     if ((w.chain ?? 0) > MAX_AGENT_CHAIN) {
+      const why = chainHeld(w.chain!);
+      // the person is told once a hold starts, not at every look it holds
+      const toldAlready = w.lastError === why;
       w.lastCheck = Date.now();
-      w.lastError = chainHeld(w.chain!);
+      w.lastError = why;
+      const speaksIn = w.laneId && w.thread ? bot.tasks.find((t) => t.id === w.laneId && t.title === w.thread) : undefined;
+      const lane = speaksIn ?? namedLane(bot, w.thread) ?? mainLaneOf(bot);
+      if (!toldAlready && lane) {
+        chainNotice(bot, lane.id, `The watcher ${w.name} did not look: agents had started ${w.chain! - 1} turns in a row without you. Look now or change it to go on.`);
+      }
       return { fired: false, note: w.lastError };
     }
 
@@ -5836,21 +5849,31 @@ function chainHeld(chain: number): string {
   return `Held: agents had started ${chain - 1} turns in a row without you. Run it or change it to go on.`;
 }
 
+/** A chain held at MAX_AGENT_CHAIN, said where the person will find it:
+ * a notice in the conversation it would have gone on in, that
+ * conversation marked unread, and the phone woken for it (wakeFor), as
+ * for a goal blocked on them. Held at night, it used to wait unseen
+ * until somebody happened to open the right conversation (GitHub 248).
+ * Once, however often the same hold is met again. */
+function chainNotice(bot: BotRecord, laneId: string, text: string) {
+  const last = store.messagesFor(laneId).at(-1);
+  if (last?.kind === "notice" && last.text === text) return;
+  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, chainHeld: true });
+  store.markLane(bot.id, laneId, true);
+  broadcast({ kind: "message", threadId: laneId, message: notice });
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+}
+
 /** The refusal an agent gets for a message past MAX_AGENT_CHAIN, and the
- * notice the person finds in the recipient's conversation, once however
- * often the agent tries again. Whoever the person writes to next starts
- * from 0. */
+ * notice the person finds in the recipient's conversation (chainNotice).
+ * The count is the whole chain, every agent's turn since the person last
+ * had a say, so the notice says so and names only the last step of it,
+ * rather than calling it back and forth between the last two. Whoever
+ * the person writes to next starts from 0. */
 function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain) {
   const times = chain.depth - 1;
-  const text =
-    chain.sender.botId === bot.id
-      ? `${bot.name} has passed messages to itself ${times} times without you; the next one waits for you.`
-      : `${chain.sender.name} and ${bot.name} have passed messages back and forth ${times} times without you; the next one waits for you.`;
-  const last = store.messagesFor(laneId).at(-1);
-  if (!(last?.kind === "notice" && last.text === text)) {
-    const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
-    broadcast({ kind: "message", threadId: laneId, message: notice });
-  }
+  const last = chain.sender.botId === bot.id ? `${bot.name} to itself` : `${chain.sender.name} to ${bot.name}`;
+  chainNotice(bot, laneId, `Agents have started ${times} turns in a row without you, the last from ${last}; the next one waits for you.`);
   return Object.assign(
     new Error(
       `${bot.name} did not get this. Agents have started ${times} turns in a row without the person, which is as many as Bloks lets run before they have a say. Finish this turn and say where things stand; the person carries it on from there.`,
@@ -6130,7 +6153,7 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
     const sender = store.bot(fromBotId);
     const notice = `${sender?.name ?? "An agent"} named ${named.map((m) => m.name).join(", ")} after agents had started ${chain - 1} turns in a row without you, so nobody was woken. Post in the room to carry on.`;
     if (store.messagesFor(roomId).at(-1)?.text !== notice) {
-      const said = store.appendMessage(roomId, { role: "bot", kind: "notice", text: notice });
+      const said = store.appendMessage(roomId, { role: "bot", kind: "notice", text: notice, chainHeld: true });
       broadcast({ kind: "message", threadId: roomId, message: said });
     }
     return;
@@ -7425,7 +7448,13 @@ async function runDueRoutines() {
       // An agent's routine past the limit is held, run by run, until the
       // person runs it or changes it: the run says so in its history.
       if ((routine.chain ?? 0) > MAX_AGENT_CHAIN) {
-        closeRun(laneId, { ok: false, error: chainHeld(routine.chain!) });
+        const why = chainHeld(routine.chain!);
+        // the person is told once a hold starts, not at every run it holds
+        const toldAlready = routine.runs?.[1]?.error === why;
+        closeRun(laneId, { ok: false, error: why });
+        if (!toldAlready) {
+          chainNotice(bot, laneId, `${routine.name ? `The routine ${routine.name}` : "A routine"} did not run: agents had started ${routine.chain! - 1} turns in a row without you. Run it or change it to go on.`);
+        }
         continue;
       }
       await startTurn(routine.targetId, routine.prompt, {
