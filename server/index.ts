@@ -293,8 +293,8 @@ import { standingFor, type Standing, type StandingRecord } from "./standing-prom
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
-import { indexMemory, indexMessages, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
-import { IndexCache, type TermIndex } from "./recall-index.ts";
+import { indexMemory, indexMessages, mostOf, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
+import { excerpt, IndexCache, rank, type TermIndex } from "./recall-index.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
 import { localDate } from "./usage.ts";
@@ -5069,9 +5069,9 @@ function recallSources(bot: BotRecord, laneId?: string | null, options: { memory
   return reach.private ? [...sources, ...memorySources(bot, options.memory ?? "all")] : sources;
 }
 
-/** The cache back under budget, keeping what a search just used. */
-function recallDone(sources: ReadonlyArray<{ index: TermIndex }>) {
-  recallIndexes.trim(new Set(sources.map((source) => source.index)));
+/** The cache back under budget, once a search is done with it. */
+function recallDone() {
+  recallIndexes.trim();
 }
 
 /** One message in full, from the places recall searches and nowhere
@@ -5088,7 +5088,7 @@ function recalledMessage(bot: BotRecord, messageId: string, laneId?: string | nu
 function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit = 8) {
   const sources = recallSources(bot, laneId);
   const hits = recallFrom(query, sources, speakerFor(bot), { limit });
-  recallDone(sources);
+  recallDone();
   return hits;
 }
 
@@ -5134,7 +5134,7 @@ function recallAhead(bot: BotRecord, laneId: string, words: string): { notes: Re
       return !told.has(core) && !said.some((line) => line.includes(core));
     })
     .slice(0, RECALL_AHEAD.notes);
-  recallDone(sources);
+  recallDone();
   if (!hits.length) return null;
   const places = new Map(sources.map((source) => [source.threadId, source.place]));
   const notes = hits.map((hit): RecalledNote => {
@@ -13735,9 +13735,40 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     if (method === "GET" && path === "/api/search") {
-      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase().slice(0, 300);
       const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit")) || 20));
       if (!q) return json(res, 200, { hits: [] });
+      // The person's own search: every conversation of every agent still
+      // in the list, and every room, ranked the way an agent's recall is
+      // (server/recall-index.ts) and from the same indexes, so the message
+      // that answers comes before the one that happens to be newest and
+      // "vendors" finds "vendor". Nothing taken back, rewound or still
+      // waiting to be said is in them.
+      if (termsOf(q).length) {
+        const places = [
+          ...store.bots
+            .filter((bot) => !bot.hidden)
+            .flatMap((bot) => bot.tasks.map((task) => ({ threadId: task.id, about: { botId: bot.id, name: bot.name, task: task.title } }))),
+          ...bloks.bloks.map((blok) => ({ threadId: blok.id, about: { blokId: blok.id, name: blok.name } })),
+        ];
+        const ranked = rank(q, places.map((place) => laneIndex(place.threadId)), { limit, need: mostOf });
+        const hits = ranked.map((hit) => {
+          const place = places[hit.source];
+          const message = store.messagesFor(place.threadId).find((m) => m.id === hit.doc.id);
+          return {
+            threadId: place.threadId,
+            messageId: hit.doc.id,
+            at: hit.doc.at,
+            role: message?.role ?? "user",
+            snippet: excerpt(hit.doc.text, hit.focus, 170),
+            ...place.about,
+          };
+        });
+        recallDone();
+        return json(res, 200, { hits });
+      }
+      // Only small words ("to be or not"): nothing for the index to go
+      // on, so the words as typed, anywhere, newest first, as before.
       const hits: object[] = [];
       const snip = (text: string) => {
         const flat = text.replace(/\s+/g, " ").trim();

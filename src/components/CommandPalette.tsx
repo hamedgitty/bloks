@@ -2,8 +2,9 @@
 //
 // Empty query is a switcher, every agent and room, ready to jump to.
 // Typing filters those by name (prefix matches first) and, after a short
-// debounce, searches every transcript on the server; a message hit jumps
-// to the exact conversation and lane it lives in. One flat keyboard
+// debounce, searches every transcript on the server, best match first
+// (ranked as an agent's own recall is); a message hit jumps to the exact
+// conversation and lane it lives in. One flat keyboard
 // cursor runs across all sections, because reaching for arrow keys
 // should never care about headings.
 //

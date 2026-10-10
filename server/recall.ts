@@ -111,7 +111,9 @@ const PIECE = 600;
  * A memory file as the pieces a hit can be: a section under its heading,
  * cut at blank lines (or, for one long paragraph, at line ends) so no
  * piece runs much past PIECE characters. Each piece keeps its heading,
- * since "- Sticker Mule, net 30" means little without "## Vendors".
+ * since "- Sticker Mule, net 30" means little without "Vendors" above it,
+ * though not the marks in front, which read as noise once a piece is cut
+ * into one line for a turn or a note under the person's message.
  */
 export function memoryPieces(text: string): string[] {
   const pieces: string[] = [];
@@ -144,7 +146,7 @@ export function memoryPieces(text: string): string[] {
   for (const line of (text ?? "").split("\n")) {
     if (/^#{1,6}\s/.test(line)) {
       flushSection();
-      heading = line.trim();
+      heading = line.replace(/^#+/, "").trim();
     } else {
       lines.push(line);
     }

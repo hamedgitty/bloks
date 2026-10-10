@@ -486,13 +486,13 @@ export class IndexCache {
     return this.entries.has(key);
   }
 
-  /** Back under budget, oldest first, never one of `using`: a search
-   * that needs more than the budget holds it only while it runs. */
-  trim(using: ReadonlySet<TermIndex> = new Set()): void {
+  /** Back under budget, the least recently searched first. Called once
+   * a search is done, so a search that needs more than the budget holds
+   * it only while it runs, and what it used is rebuilt if asked for again. */
+  trim(): void {
     let total = this.size;
     for (const [key, { index }] of this.entries) {
       if (total <= this.budget) break;
-      if (using.has(index)) continue;
       this.entries.delete(key);
       total -= index.size;
     }

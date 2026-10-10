@@ -138,9 +138,9 @@ describe("memory files", () => {
       `${"A long note about the launch. ".repeat(40)}`,
     ].join("\n");
     const pieces = memoryPieces(text);
-    assert.ok(pieces.some((p) => p.startsWith("## Vendors\n- Sticker Mule")));
-    assert.ok(pieces.filter((p) => p.startsWith("## People")).length >= 2, "a long section is cut, each piece under its heading");
-    assert.ok(!pieces.includes("# Memory"), "a heading alone is not a piece");
+    assert.ok(pieces.some((p) => p.startsWith("Vendors\n- Sticker Mule")));
+    assert.ok(pieces.filter((p) => p.startsWith("People\n")).length >= 2, "a long section is cut, each piece under its heading");
+    assert.ok(!pieces.some((p) => p.startsWith("Memory")), "a heading alone is not a piece");
     const index = indexMemory(text, NOW);
     const [hit] = rank("sticker vendor", [index], { now: NOW });
     assert.match(hit.doc.text, /Sticker Mule/);
@@ -177,20 +177,21 @@ describe("the index", () => {
     assert.equal(index.update("m1", 5, null), false, "taken back");
   });
 
-  test("the cache keeps to its budget, oldest first, never what a search is using", () => {
+  test("the cache keeps to its budget, the least recently searched first", () => {
     const cache = new IndexCache(10);
     const build = (n: number) => () => {
       const index = new TermIndex();
       index.add("a", 1, Array.from({ length: n }, (_, i) => `word${i}`).join(" "));
       return index;
     };
-    const a = cache.get("a", build(6));
-    cache.get("b", build(6));
-    const c = cache.get("c", build(6));
-    cache.trim(new Set([a, c]));
-    assert.equal(cache.has("b"), false, "the one nobody was using went");
-    assert.equal(cache.has("a") && cache.has("c"), true);
+    const a = cache.get("a", build(4));
+    cache.get("b", build(4));
+    cache.get("c", build(4));
+    // searched again, "a" is the newest
+    assert.equal(cache.get("a", build(4)), a);
     cache.trim();
+    assert.equal(cache.has("b"), false, "the one searched longest ago went");
+    assert.equal(cache.has("a") && cache.has("c"), true);
     assert.equal(cache.size <= 10, true);
     // a stamp that has moved builds it again
     const first = cache.get("memory", build(2), "1:10");

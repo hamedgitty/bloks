@@ -763,9 +763,19 @@ and dropped transcript. The same words at another time (a reaction, a
 queued message going) keep the index, and an edit, a deletion or a closed
 lane drops it to be built again. A memory file's index is rebuilt when its
 size or time moves, and a link is never read through. `IndexCache` holds
-them all to a budget of three million postings, a few bytes each, letting
-the least recently searched go first; a test indexes 30,000 messages and
+them all to a budget of three million postings, a few bytes each: once a
+search is done, the least recently searched go until what is left fits,
+and are built again if asked for. A test indexes 30,000 messages and
 answers in well under a second.
+
+The person's own search, the command palette and the MCP server's
+`search` (`GET /api/search`), reads the same indexes over every
+conversation of every agent still in the list and every room, ranked the
+same way and wanting most of the words, so the message that answers comes
+before the one that happens to be newest. Nothing taken back, rewound or
+still waiting is in an index. A query of nothing but small words ("to be
+or not") has nothing to rank on and is matched as typed, newest first, as
+it always was.
 
 Recall also runs before the person's own turn in one of an agent's
 conversations (`recallAhead` in `server/index.ts`): never in a room,
@@ -777,8 +787,9 @@ MEMORY.md, which the standing prompt carries, and not the conversation it
 is in. A hit has to share at least two of the words, hold at least 45% of
 what makes them particular (their words, each weighted by how rare it is)
 and score at least 4.5, which is about two telling words in a history of
-any size; a message of fewer than two words worth matching is not looked
-up at all. Up to three excerpts of about 500 characters each, each with
+a few hundred messages (a very short history scores nothing that high,
+which is the point); a message of fewer than two words worth matching is
+not looked up at all. Up to three excerpts of about 500 characters each, each with
 where and when it was said and by whom, go ahead of the person's words in
 the turn's text, in a block that says they were found by matching words
 and may be ignored. Never in the system prompt, so a resumed Claude Code
@@ -786,7 +797,9 @@ session keeps reading its cache (see Compactions). Nothing the
 conversation's last forty messages were already given, or already say, is
 given again. The person's message keeps what was added as `recalled`
 (where, when, who, the excerpt), which the chat shows as "Recalled 2
-notes" under it; GET `/api/bots` leaves it out for an agent's credential,
+notes" under it (`src/components/RecalledNotes.tsx`), opening to each
+excerpt with where and when it was said, and a link to the conversation
+or room it came from; GET `/api/bots` leaves it out for an agent's credential,
 since it came from the agent's other conversations. Words that waited for
 a turn are looked up together and the last of them keeps the notes. An
 engine that is told the transcript each turn hears the notes once, with
