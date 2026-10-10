@@ -3704,18 +3704,31 @@ async function startClaimedTurn(
       }
       if (wants !== "off" && wants !== "local" && wants !== "sandbox" && box.boxConfigured(cfg)) {
         let b = await box.findBox(cfg, bot.id).catch(() => null);
-        // the Computer driver runs ON the box, provision it on first use
-        if (!b && instance.driverKind === "boxAgent") {
-          broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-          await box.provisionBox(cfg, bot.id, bot.name);
-          b = await box.findBox(cfg, bot.id).catch(() => null);
-        }
-        // A computer put to sleep for being idle wakes before the turn
-        // needs it, rather than failing the turn's first command.
-        if (b && !box.isAwake(b)) {
-          broadcast({ kind: "computer", botId: bot.id, state: "waking" });
-          b = await box.wakeBox(cfg, b);
-          if (!b) throw new Error(`${bot.name}'s computer did not wake in time. Try again in a minute.`);
+        // The app shows "setting up" from the first word until the next
+        // one, so a box being made or woken always ends with one, ready or
+        // failed. A provision that threw, or one that came up awake, used
+        // to say nothing more, and the chat spun on it until a reload.
+        let said = false;
+        let ready = false;
+        try {
+          // the Computer driver runs ON the box, provision it on first use
+          if (!b && instance.driverKind === "boxAgent") {
+            broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
+            said = true;
+            await box.provisionBox(cfg, bot.id, bot.name);
+            b = await box.findBox(cfg, bot.id).catch(() => null);
+          }
+          // A computer put to sleep for being idle wakes before the turn
+          // needs it, rather than failing the turn's first command.
+          if (b && !box.isAwake(b)) {
+            broadcast({ kind: "computer", botId: bot.id, state: "waking" });
+            said = true;
+            b = await box.wakeBox(cfg, b);
+            if (!b) throw new Error(`${bot.name}'s computer did not wake in time. Try again in a minute.`);
+          }
+          ready = Boolean(b);
+        } finally {
+          if (said) broadcast({ kind: "computer", botId: bot.id, state: ready ? "ready" : "failed" });
         }
         if (b) {
           integrations.computer = { boxId: b.id, token: cfg.box!.token! };

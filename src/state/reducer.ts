@@ -665,7 +665,9 @@ export type Action =
    * with resumed: false), so what it was in the middle of is stale. */
   | { type: "streamRestarted" }
   | { type: "screenFrame"; botId: string; png: string; mime: string; source?: "browser" }
-  | { type: "provisioning"; botId: string; on: boolean }
+  /** A `computer` frame: an agent's cloud computer is provisioning,
+   * waking, ready, failed or asleep. */
+  | { type: "computerState"; botId: string; state: string }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
@@ -1121,8 +1123,11 @@ export function reducer(state: AppState, action: Action): AppState {
         },
         provisioning: { ...state.provisioning, [action.botId]: false },
       };
-    case "provisioning":
-      return { ...state, provisioning: { ...state.provisioning, [action.botId]: action.on } };
+    case "computerState":
+      // Only setting one up shows in the chat. Every other word ends that,
+      // and the server always sends one after it, ready or failed, so a
+      // box that never came up cannot leave the line spinning.
+      return { ...state, provisioning: { ...state.provisioning, [action.botId]: action.state === "provisioning" } };
     case "setModel":
       return updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection }));
     case "connected":

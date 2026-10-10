@@ -808,7 +808,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           });
           break;
         case "computer":
-          rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
+          rawDispatch({ type: "computerState", botId: frame.botId, state: String(frame.state ?? "") });
           break;
         case "blok":
           rawDispatch({ type: "blokPatched", blok: frame.blok });

@@ -205,6 +205,19 @@ test("a finished turn's text stays until its message lands, and a late delta can
   assert.equal(state.streaming["t-a"], "Next");
 });
 
+test("a computer being set up stops spinning once the server says it is ready or failed", () => {
+  // Only a screen frame used to end it, and a box that failed to come up
+  // never sends one: "Setting up this agent's computer" spun until reload.
+  let state = withState({ bots: [bot("a"), bot("b")] });
+  state = reducer(state, { type: "computerState", botId: "a", state: "provisioning" });
+  state = reducer(state, { type: "computerState", botId: "b", state: "provisioning" });
+  assert.equal(state.provisioning.a, true);
+  state = reducer(state, { type: "computerState", botId: "a", state: "failed" });
+  state = reducer(state, { type: "computerState", botId: "b", state: "ready" });
+  assert.equal(state.provisioning.a, false, "a box that failed still read as being set up");
+  assert.equal(state.provisioning.b, false);
+});
+
 test("a stream that comes back without what it missed drops the half-said reply", () => {
   // The turn ended while the line was down and the server could not
   // replay it. The reload brings the finished reply, but the partial from
@@ -213,7 +226,7 @@ test("a stream that comes back without what it missed drops the half-said reply"
   state = reducer(state, { type: "turnStarted", threadId: "t-a" });
   state = reducer(state, { type: "streamDelta", threadId: "t-a", delta: "Half a rep" });
   state = reducer(state, { type: "turnSettled", threadId: "t-b" });
-  state = reducer(state, { type: "provisioning", botId: "a", on: true });
+  state = reducer(state, { type: "computerState", botId: "a", state: "provisioning" });
   state = reducer(state, { type: "streamRestarted" });
   assert.deepEqual(state.streaming, {}, "a partial from before the drop was kept");
   assert.deepEqual(state.settledTurns, {});
