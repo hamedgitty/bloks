@@ -346,8 +346,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ name: action.name, memberIds: action.memberIds }),
           })
             .then(({ blok }) => {
+              // shown at once, and the list read again around it, never
+              // emptied first: a read that failed left no rooms at all
               rawDispatch({ type: "blokPatched", blok });
-              rawDispatch({ type: "hydrateBloks", bloks: [] });
               return api("/api/bloks").then(({ bloks }) => {
                 rawDispatch({ type: "hydrateBloks", bloks });
                 rawDispatch({ type: "select", id: blok.id });
