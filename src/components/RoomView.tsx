@@ -31,6 +31,7 @@ import {
   Reactions,
   ReplyChip,
   ReplyContext,
+  useTapToShow,
   type ReplyDraft,
 } from "./MessageActions";
 import { OptionCard } from "./OptionCard";
@@ -118,6 +119,8 @@ function RoomMessage({
   const speaker = message.from ? members.find((m) => m.id === message.from) : null;
   const nameOfReactor = (id: string) =>
     id === "user" ? "You" : (members.find((m) => m.id === id)?.name ?? "An agent");
+  // where nothing hovers, a tap on the words shows the bar
+  const tap = useTapToShow();
 
   // Floating is for the agents' side: there the text fills the row, and
   // an invisible bar beside it used to hold 150px of every line empty,
@@ -125,6 +128,7 @@ function RoomMessage({
   const verbs = (author: string, floating = false) => (
     <MessageActionBar
       className={floating ? "absolute -top-3.5 right-0 z-10" : undefined}
+      open={tap.open}
       message={message}
       author={author}
       onReply={onReply}
@@ -157,8 +161,11 @@ function RoomMessage({
               <span className="text-[11px] tabular-nums text-muted-foreground">{stamp(message.at)}</span>
             </div>
           )}
-          <div className="group relative flex items-center gap-1.5">
-            <div className="min-w-0 rounded-2xl rounded-tl-md bg-muted px-3.5 py-2 text-[14.5px] leading-relaxed text-foreground">
+          <div ref={tap.row} className="group relative flex items-center gap-1.5">
+            <div
+              onPointerUp={tap.onPointerUp}
+              className="min-w-0 rounded-2xl rounded-tl-md bg-muted px-3.5 py-2 text-[14.5px] leading-relaxed text-foreground"
+            >
               {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
               <Markdownish text={message.text ?? ""} mentions={names} />
             </div>
@@ -171,10 +178,13 @@ function RoomMessage({
 
   if (message.role === "user") {
     return (
-      <div className="group flex items-center justify-end gap-1.5">
+      <div ref={tap.row} className="group flex items-center justify-end gap-1.5">
         {verbs("You")}
         <div className="flex max-w-[76%] flex-col items-end">
-          <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[14.5px] leading-relaxed text-primary-foreground">
+          <div
+            onPointerUp={tap.onPointerUp}
+            className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[14.5px] leading-relaxed text-primary-foreground"
+          >
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onDark />}
             {message.text}
           </div>
@@ -249,8 +259,8 @@ function RoomMessage({
           // an agent can need you mid-room; the ask has to be answerable here
           <OptionCard botId={speaker.id} roomId={roomId} message={message} />
         ) : (
-          <div className="group relative flex items-center gap-1.5">
-            <div className="min-w-0 flex-1 text-[14.5px] leading-relaxed text-foreground">
+          <div ref={tap.row} className="group relative flex items-center gap-1.5">
+            <div onPointerUp={tap.onPointerUp} className="min-w-0 flex-1 text-[14.5px] leading-relaxed text-foreground">
               {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
               <Markdownish text={message.text ?? ""} mentions={names} />
               <Reactions

@@ -38,6 +38,7 @@ import {
   MessageActionBar,
   Reactions,
   ReplyContext,
+  useTapToShow,
   type ReplyDraft,
 } from "./MessageActions";
 import { ModelPicker } from "./ModelPicker";
@@ -206,6 +207,8 @@ function Bubble({
     returnTo.current?.focus();
     returnTo.current = null;
   };
+  // where nothing hovers, a tap on the bubble shows the bar
+  const tap = useTapToShow();
 
   return (
     <div
@@ -219,10 +222,11 @@ function Bubble({
       {/* On a phone the bar floats over the bubble, as it does in rooms:
           beside it, an invisible bar held 200px of every row and squeezed
           a message to a few words a line. */}
-      <div className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      <div ref={tap.row} className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
           <MessageActionBar
             className="max-sm:absolute max-sm:-top-8 max-sm:right-0 max-sm:z-10"
+            open={tap.open}
             message={message}
             author={author}
             onReply={onReply}
@@ -242,6 +246,7 @@ function Bubble({
             </div>
           )}
           <div
+            onPointerUp={tap.onPointerUp}
             className={cn(
               "px-3.5 py-2 text-[14.5px] leading-relaxed",
               user
@@ -297,6 +302,7 @@ function Bubble({
         {!user && (
           <MessageActionBar
             className="max-sm:absolute max-sm:-top-8 max-sm:left-0 max-sm:z-10"
+            open={tap.open}
             message={message}
             author={author}
             onReply={onReply}

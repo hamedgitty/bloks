@@ -1,12 +1,13 @@
 // The conversation verbs: reply, forward, copy.
 //
-// One hover pill shared by solo chats and rooms, plus the two pieces
+// One pill shared by solo chats and rooms, shown on hover, or on a tap
+// where nothing hovers (useTapToShow), plus the two pieces
 // that complete the loop: the chip a composer shows while a reply is
 // being written, and the picker a forward opens. Reply carries
 // structured context to the agent and renders as a quoted card on the
 // bubble; forward re-posts the message into another conversation with
 // its origin named.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import CornerUpLeft from "lucide-react/dist/esm/icons/corner-up-left.mjs";
 import Copy from "lucide-react/dist/esm/icons/copy.mjs";
@@ -26,6 +27,37 @@ export type ReplyDraft = { id?: string; author: string; excerpt: string };
 
 export function excerptOf(message: Message): string {
   return (message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
+}
+
+/**
+ * The pill on a touch screen, where nothing hovers and it never showed,
+ * so reply, react, copy and the rest could not be reached from a phone.
+ * A tap on the message shows it and a tap anywhere else puts it away.
+ * Only a finger or a pen gets here: a mouse keeps the hover, and a tap on
+ * a link or a button inside the message still does its own thing.
+ *
+ * `row` holds the message and its pill, so a tap on the pill is not a tap
+ * away; `onPointerUp` goes on the message itself.
+ */
+export function useTapToShow() {
+  const [open, setOpen] = useState(false);
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (!row.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    if ((e.target as Element).closest("a, button, input, textarea, select, audio, [role=button]")) return;
+    // words held down to copy are a selection, not a tap
+    if (window.getSelection()?.toString()) return;
+    setOpen((was) => !was);
+  };
+  return { open, row, onPointerUp };
 }
 
 /** The hover pill. Quiet until the row is hovered, then it rises in
@@ -82,6 +114,7 @@ export function MessageActionBar({
   onEdit,
   onDelete,
   onRewind,
+  open,
   className,
 }: {
   message: Message;
@@ -94,6 +127,8 @@ export function MessageActionBar({
   onDelete?: () => void;
   /** Your own message, in a conversation with one agent. */
   onRewind?: () => void;
+  /** Shown without a hover: the message was tapped (useTapToShow). */
+  open?: boolean;
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
@@ -164,6 +199,7 @@ export function MessageActionBar({
     <div
       className={cn(
         "pointer-events-none relative flex shrink-0 translate-y-1 items-center self-center rounded-full border border-border/70 bg-popover/95 p-[3px] opacity-0 shadow-[0_4px_14px_-6px_rgba(0,0,0,0.25)] backdrop-blur-md transition-[opacity,transform] duration-200 ease-out group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100",
+        open && "pointer-events-auto translate-y-0 opacity-100",
         className,
       )}
     >
