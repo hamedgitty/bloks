@@ -422,7 +422,14 @@ test("a context-error retry keeps the routine origin after folding the earlier c
     assert.ok(await idle(h, bot));
   }
   const { routine } = await h.json("/api/routines", post({ name: "Fold scan", prompt, time: futureTime(), days: [], targetId: bot.id, thread: "General" }));
-  assert.equal((await h.fetch(`/api/routines/${routine.id}/run`, post({}))).status, 202);
+  // A lane can still be settling the last turn a moment after it goes
+  // idle, and Run now says busy until it has; on a loaded machine that
+  // moment is longer, so ask again briefly rather than once.
+  const ran = await waitFor(async () => {
+    const status = (await h.fetch(`/api/routines/${routine.id}/run`, post({}))).status;
+    return status === 409 ? null : status;
+  });
+  assert.equal(ran, 202);
   assert.ok(await waitFor(() => finish), h.logs());
   assert.deepEqual(requests, [expected, expected]);
   assert.equal(summaries, 1);
