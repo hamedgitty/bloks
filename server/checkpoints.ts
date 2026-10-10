@@ -382,7 +382,8 @@ export class Checkpoints {
     dir: string | null | undefined,
     ignore: string[] = [],
     /** A rehearsal: the turn works in this clone of `dir`, and the
-     * difference is taken between `dir` now and the clone after. */
+     * difference is taken between `dir` as the clone was made from it
+     * (baseline) and the clone after. */
     afterDir?: string,
   ): Promise<boolean> {
     this.pending.delete(threadId);
@@ -392,9 +393,42 @@ export class Checkpoints {
     // A rehearsal writes into its own copy, so it neither touches the
     // folder nor sees what others write there.
     if (!afterDir) this.arrive(threadId, botId, dir);
-    const photo = await this.serial(dir, () => this.photograph(dir, ignore));
+    let photo: Photo | null;
+    if (afterDir) {
+      // Every turn in a copy starts from the folder as the copy was made,
+      // never as it is now: whatever you changed there since would read
+      // as the agent changing it back, and Apply would undo your work. A
+      // rehearsal begun before baselines were kept starts its own here.
+      photo = this.readBaseline(afterDir);
+      if (!photo) {
+        photo = await this.serial(dir, () => this.photograph(dir, ignore));
+        if (photo) this.keepBaseline(afterDir, photo);
+      }
+    } else {
+      photo = await this.serial(dir, () => this.photograph(dir, ignore));
+    }
     if (photo) this.pending.set(threadId, { botId, dir, photo, ignore, ...(afterDir ? { afterDir } : {}) });
     return Boolean(photo);
+  }
+
+  /**
+   * A rehearsal's starting point: `dir` photographed before it is cloned
+   * into `copy`, and kept as the before of every turn in that copy until
+   * forgetBaseline. Taken first, never after the clone: a file written in
+   * between is then newer in the copy than in the photograph, and Apply
+   * finds it changed since and leaves it alone, where the other order
+   * would put the older version back over it.
+   */
+  async baseline(dir: string, copy: string, ignore: string[] = []): Promise<boolean> {
+    if (!trackable(dir)) return false;
+    const photo = await this.serial(dir, () => this.photograph(dir, ignore));
+    if (photo) this.keepBaseline(copy, photo);
+    return Boolean(photo);
+  }
+
+  /** A settled rehearsal's starting point, of no use once its copy is gone. */
+  forgetBaseline(copy: string) {
+    rmSync(this.baselineFile(copy), { force: true });
   }
 
   /** Photographs again after the turn, and keeps the difference. Null
@@ -707,6 +741,27 @@ export class Checkpoints {
     return join(this.photos, `${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}.json`);
   }
 
+  /** Beside the photographs, so the sweep keeps what a baseline names
+   * for as long as it does any folder's latest photograph. */
+  private baselineFile(copy: string) {
+    return join(this.photos, `${createHash("sha256").update(resolve(copy)).digest("hex").slice(0, 32)}.before.json`);
+  }
+
+  private keepBaseline(copy: string, photo: Photo) {
+    mkdirSync(this.photos, { recursive: true });
+    const file = this.baselineFile(copy);
+    writeFileSync(`${file}.tmp`, JSON.stringify(Object.fromEntries(photo)));
+    renameSync(`${file}.tmp`, file);
+  }
+
+  private readBaseline(copy: string): Photo | null {
+    try {
+      return new Map(Object.entries(JSON.parse(readFileSync(this.baselineFile(copy), "utf8")) as Record<string, Entry>));
+    } catch {
+      return null;
+    }
+  }
+
   /** The folder as it is now, or null if it is too big to track. */
   /** `ignore` names paths (a file, or a folder ending in /) that are
    * someone else's to track, like an agent's own memory. */
@@ -864,9 +919,10 @@ export class Checkpoints {
     renameSync(temp, this.indexFile);
   }
 
-  /** Drops kept versions nothing points at any more: not a record, and
-   * not the latest photograph of any folder (which the next turn's
-   * comparison and undo both lean on). */
+  /** Drops kept versions nothing points at any more: not a record, not
+   * the latest photograph of any folder (which the next turn's
+   * comparison and undo both lean on), and not a rehearsal's baseline,
+   * which sit among them. */
   private sweep() {
     const wanted = new Set<string>();
     for (const r of this.records) for (const f of r.files) {

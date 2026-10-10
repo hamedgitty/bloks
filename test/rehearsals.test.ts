@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { Checkpoints } from "../server/checkpoints.ts";
+import { Checkpoints, MAX_FILE } from "../server/checkpoints.ts";
 import { cloneFolder, Rehearsals } from "../server/rehearsals.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "bloks-rehearsals-"));
@@ -92,6 +92,39 @@ describe("rehearsals", () => {
     assert.equal(await cp.revert(record!.id), null);
     assert.equal(cp.summary(record!).rehearsal?.state, "discarded");
     assert.equal(readFileSync(join(dir, "a.txt"), "utf8"), "a\n");
+  });
+
+  test("a follow-up is measured from the folder as it was copied, so Apply keeps what you did there since", async () => {
+    const dir = folder("follow-up", { "plan.md": "Thursday\n", "notes.md": "mine\n" });
+    const root = join(scratch, "follow-up-store");
+    const reg = new Rehearsals(join(scratch, "follow-up-registry"));
+    let cp = new Checkpoints(root);
+    const first = cp;
+    const r = await reg.open({ botId: "b", taskId: "lane", dir, text: "move it", photograph: (copy) => first.baseline(dir, copy) });
+
+    // the first turn, in the copy
+    await cp.begin("lane", "b", dir, [], r.copy);
+    writeFileSync(join(r.copy, "plan.md"), "Friday\n");
+    const one = (await cp.finish("lane"))!;
+    assert.deepEqual(one.files.map((f) => f.path), ["plan.md"]);
+
+    // meanwhile, in the real folder: an edit, and a file too big to keep
+    writeFileSync(join(dir, "notes.md"), "mine, edited since\n");
+    writeFileSync(join(dir, "video.bin"), Buffer.alloc(MAX_FILE + 1, 1));
+
+    // a follow-up in the same lane, after a restart for good measure
+    cp.discard(one.id);
+    cp = new Checkpoints(root);
+    await cp.begin("lane", "b", dir, [], r.copy);
+    writeFileSync(join(r.copy, "agenda.md"), "new\n");
+    const two = (await cp.finish("lane"))!;
+    assert.deepEqual(two.files.map((f) => `${f.status} ${f.path}`), ["added agenda.md", "modified plan.md"]);
+
+    const applied = (await cp.apply(two.id))!;
+    assert.deepEqual(applied.restored.sort(), ["agenda.md", "plan.md"]);
+    assert.equal(readFileSync(join(dir, "plan.md"), "utf8"), "Friday\n");
+    assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "mine, edited since\n");
+    assert.ok(existsSync(join(dir, "video.bin")), "a big file Undo could never bring back is still there");
   });
 
   test("the registry keeps attempts in groups, clears clones on settling, and survives a restart", async () => {

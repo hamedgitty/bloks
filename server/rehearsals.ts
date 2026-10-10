@@ -88,23 +88,37 @@ export class Rehearsals {
   private readonly root: string;
   private readonly file: string;
   private list: Rehearsal[] = [];
+  /** Told when an attempt's copy is gone, so what was kept beside it
+   * (its baseline photograph, in checkpoints.ts) can go too. */
+  private readonly onSettled?: (r: Rehearsal) => void;
 
-  constructor(root: string) {
+  constructor(root: string, onSettled?: (r: Rehearsal) => void) {
     this.root = root;
     this.file = join(root, "index.json");
+    this.onSettled = onSettled;
     this.list = readSaved<Rehearsal[]>(this.file, [], Array.isArray);
     // a rehearsal cannot still be running across a restart: its turn died
     for (const r of this.list) if (r.state === "running") r.state = "failed";
     this.save();
   }
 
-  /** A clone of `dir` to rehearse in. The caller photographs `dir` first. */
-  async open(input: { group?: string; botId: string; taskId: string; dir: string; text: string }): Promise<Rehearsal> {
+  /**
+   * A clone of `dir` to rehearse in. `photograph` is handed the copy's
+   * path and runs before the clone is made, so every turn in it can be
+   * compared with the folder as it was copied (Checkpoints.baseline).
+   */
+  async open(input: {
+    group?: string;
+    botId: string;
+    taskId: string;
+    dir: string;
+    text: string;
+    photograph?: (copy: string) => Promise<unknown>;
+  }): Promise<Rehearsal> {
     const id = newId();
     const home = join(this.root, id);
     mkdirSync(home, { recursive: true, mode: 0o700 });
     const copy = join(home, "copy");
-    await cloneFolder(input.dir, copy);
     const rehearsal: Rehearsal = {
       id,
       group: input.group ?? id,
@@ -116,6 +130,15 @@ export class Rehearsals {
       state: "running",
       at: Date.now(),
     };
+    try {
+      await input.photograph?.(copy);
+      await cloneFolder(input.dir, copy);
+    } catch (e) {
+      // nothing of a copy that never was is kept, here or beside it
+      await rm(home, { recursive: true, force: true }).catch(() => {});
+      this.onSettled?.(rehearsal);
+      throw e;
+    }
     this.list.push(rehearsal);
     this.save();
     return rehearsal;
@@ -162,6 +185,7 @@ export class Rehearsals {
     r.settledAt = Date.now();
     this.save();
     await rm(join(this.root, r.id), { recursive: true, force: true }).catch(() => {});
+    this.onSettled?.(r);
   }
 
   /** Clears clones left waiting too long, and forgets the oldest settled. */

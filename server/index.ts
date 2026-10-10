@@ -573,6 +573,12 @@ function rehearsalDir(bot: BotRecord): string | null {
   return dir;
 }
 
+/** An agent working in its own workspace writes its memory there; that
+ * has its own journal, so it is not a change for a card to undo. */
+function memoryPaths(botId: string, dir: string | null | undefined): string[] {
+  return dir === workspace.workspaceDir(botId) ? ["MEMORY.md", "memory/"] : [];
+}
+
 /** A rehearsal's turn is over: its card, or a note that nothing changed. */
 async function settleRehearsalTurn(
   r: Rehearsal,
@@ -792,7 +798,7 @@ async function readinessOf(bot: BotRecord): Promise<{ readiness: Readiness; engi
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
 // An agent doing the work on a clone of its folder, for you to apply or not.
-const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"));
+const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"), (r) => checkpoints.forgetBaseline(r.copy));
 void rehearsals.sweep().catch(() => {});
 /** Rehearsal lanes may go this far past the lane cap. */
 const REHEARSAL_LANES = 3;
@@ -3182,8 +3188,9 @@ async function startClaimedTurn(
   }
 
   // A rehearsal lane keeps rehearsing: a follow-up works on the same copy,
-  // and its card replaces the last one. Once the copy is gone (applied or
-  // discarded), the lane has nowhere to work and says so.
+  // and its card, still measured from the folder as the copy was made,
+  // replaces the last one. Once the copy is gone (applied or discarded),
+  // the lane has nowhere to work and says so.
   const rehearsed = opts.rehearsal ? null : rehearsals.forTask(task.id);
   if (rehearsed) {
     if ((rehearsed.state === "ready" || rehearsed.state === "empty") && rehearsals.exists(rehearsed)) {
@@ -3842,16 +3849,12 @@ async function startClaimedTurn(
 
       // photographed before the agent can touch it, so the turn's card
       // can show what changed and put it back
-      // an agent working in its own workspace writes its memory there;
-      // that has its own journal, so it is not a change to undo here
       if (opts.rehearsal) {
-        const ownDesk = opts.rehearsal.dir === workspace.workspaceDir(bot.id);
         await checkpoints
-          .begin(task.id, bot.id, opts.rehearsal.dir, ownDesk ? ["MEMORY.md", "memory/"] : [], opts.rehearsal.copy)
+          .begin(task.id, bot.id, opts.rehearsal.dir, memoryPaths(bot.id, opts.rehearsal.dir), opts.rehearsal.copy)
           .catch(() => false);
       } else {
-        const ownDesk = turnCwd === workspace.workspaceDir(bot.id);
-        await checkpoints.begin(task.id, bot.id, turnCwd, ownDesk ? ["MEMORY.md", "memory/"] : []).catch(() => {});
+        await checkpoints.begin(task.id, bot.id, turnCwd, memoryPaths(bot.id, turnCwd)).catch(() => {});
       }
       memoryJournal.begin(task.id, bot.id);
 
@@ -4673,7 +4676,17 @@ async function openRehearsals(bots: BotRecord[], text: string, opts: { quiet?: b
     if (b.id !== bots[0].id || opts.quiet) store.setActiveTask(b.id, active);
     let r: Rehearsal;
     try {
-      r = await rehearsals.open({ group, botId: b.id, taskId: task.id, dir, text });
+      r = await rehearsals.open({
+        group,
+        botId: b.id,
+        taskId: task.id,
+        dir,
+        text,
+        // the folder as it is copied, which every turn in the copy is
+        // compared with; a photograph that fails here is tried again as
+        // the turn starts, rather than costing the rehearsal
+        photograph: (copy) => checkpoints.baseline(dir, copy, memoryPaths(b.id, dir)).catch(() => false),
+      });
     } catch (e) {
       store.deleteTask(b.id, task.id);
       throw Object.assign(new Error(`The folder could not be copied: ${(e as Error).message}`), { status: 500 });
