@@ -13822,6 +13822,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const owner = store.bot(checked.value.botId);
       const couldRun = checkAllowed(w, owner?.approvals);
       Object.assign(w, checked.value);
+      // an empty filter, or a watcher that is no longer a page, has none
+      if (!checked.value.mentions) delete w.mentions;
       if (moved) {
         delete w.seen;
         delete w.seenItems;
