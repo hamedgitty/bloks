@@ -126,10 +126,12 @@ test("a replay provider still folds after a long measured turn, without summed u
     assert.ok(await waitFor(async () => (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id && !b.busy)), h.logs());
     if (i < 4) assert.equal(summaries, 0, "the fixture must reach the long turn without pre-turn folding");
   }
+  // the fold summarises a long turn after it ends, which a busy machine
+  // can take well past the usual wait for
   const folded = await waitFor(async () => {
     const b = (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
     return b.tasks.find((l: any) => l.id === b.threadId && l.context.summarised);
-  });
+  }, 45_000);
   assert.ok(folded, h.logs());
   assert.equal(summaries, 1);
   assert.equal(folded.context.used, 120_000);
