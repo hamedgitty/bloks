@@ -11441,7 +11441,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
       // A new agent's settings mean asking the engines which one answers,
       // which takes a moment; only an import that makes one waits for it.
-      const makesAgent = Array.isArray(body.picks) && body.picks.some((pick) => isRecord(pick) && pick.botId === "new");
+      const makesAgent = Array.isArray(body.picks) && body.picks.some((pick: unknown) => isRecord(pick) && pick.botId === "new");
       const outcome = applyImport(detectSetup(), body.picks, setupImportDeps(makesAgent ? await newAgentSettings() : {}), setupRecord);
       for (const id of outcome.created) {
         const made = store.bot(id);
