@@ -496,23 +496,20 @@ export class Checkpoints {
   }
 
   summary(record: CheckpointRecord, listed = 50): ChangesSummary {
+    const own = record.files.filter((f) => !f.shared);
     return {
       ...(record.rehearsal
         ? { rehearsal: { state: record.discardedAt ? ("discarded" as const) : record.appliedAt ? ("applied" as const) : ("pending" as const) } }
         : {}),
       checkpointId: record.id,
-      files: record.files.slice(0, listed).map(({ path, status, big, added, removed, shared }) => ({
+      files: own.slice(0, listed).map(({ path, status, big, added, removed }) => ({
         path,
         status,
         ...(big ? { big } : {}),
         ...(added !== undefined ? { added } : {}),
         ...(removed !== undefined ? { removed } : {}),
-        ...(shared ? { shared } : {}),
       })),
-      total: record.files.length,
-      ...(record.alongside?.length
-        ? { shared: { total: record.files.filter((f) => f.shared).length, alongside: record.alongside } }
-        : {}),
+      total: own.length,
     };
   }
 
@@ -613,6 +610,7 @@ export class Checkpoints {
     return this.serial(record.dir, async () => {
       const result: RevertResult = { restored: [], skipped: [] };
       for (const change of record.files) {
+        if (change.shared) continue;
         const target = join(record.dir, change.path);
         // never outside the folder, whatever a record on disk says, and
         // not through a link: a folder the agent swapped for a symlink
@@ -623,10 +621,6 @@ export class Checkpoints {
         }
         if (change.big) {
           result.skipped.push({ path: change.path, why: "too large to have been kept" });
-          continue;
-        }
-        if (change.shared) {
-          result.skipped.push({ path: change.path, why: "changed while another agent was working here" });
           continue;
         }
         const now = this.hashOf(target);
