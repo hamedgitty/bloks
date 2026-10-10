@@ -18,7 +18,7 @@ import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
-import { createDecipheriv, pbkdf2Sync } from "node:crypto";
+import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 export interface ImportedCookie {
@@ -101,12 +101,22 @@ export function safeStorageKey(browser: string): Promise<string> {
 
 const IV = Buffer.alloc(16, 0x20);
 
+/** From this version of the jar on (Chrome 130), an encrypted value
+ * begins with the SHA-256 of its cookie's host_key. */
+export const HOST_DIGEST_VERSION = 24;
+
 /**
  * Chrome's scheme: PBKDF2 over the keychain passphrase, then AES-CBC
  * with an IV of spaces. A v10 or v11 prefix says the value is encrypted;
  * anything else is already plain.
+ *
+ * `hostKey` is given for a jar at HOST_DIGEST_VERSION or later, whose
+ * values start with that digest, binding each to its own site. It is
+ * checked and dropped: left in, it is 32 bytes of noise in front of the
+ * value that no site accepts, and a value that does not start with it
+ * did not decrypt.
  */
-export function decryptValue(encrypted: Buffer, passphrase: string): string | null {
+export function decryptValue(encrypted: Buffer, passphrase: string, hostKey?: string): string | null {
   if (!encrypted.length) return "";
   const version = encrypted.subarray(0, 3).toString();
   if (version !== "v10" && version !== "v11") return encrypted.toString("utf8");
@@ -119,9 +129,22 @@ export function decryptValue(encrypted: Buffer, passphrase: string): string | nu
     // PKCS#7 unpadded by hand: auto-padding rejects Chrome's own output.
     const pad = plain[plain.length - 1];
     const body = pad > 0 && pad <= 16 ? plain.subarray(0, plain.length - pad) : plain;
-    return body.toString("utf8");
+    if (hostKey === undefined) return body.toString("utf8");
+    const digest = createHash("sha256").update(hostKey).digest();
+    if (body.length < digest.length || !body.subarray(0, digest.length).equals(digest)) return null;
+    return body.subarray(digest.length).toString("utf8");
   } catch {
     return null;
+  }
+}
+
+/** The jar's schema version, from its meta table; 0 when it says none. */
+function jarVersion(db: DatabaseSync): number {
+  try {
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: unknown } | undefined;
+    return Number(row?.value) || 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -154,6 +177,7 @@ export async function readCookies(
   copyFileSync(storePath, copy);
   try {
     const db = new DatabaseSync(copy, { readOnly: true });
+    const digested = jarVersion(db) >= HOST_DIGEST_VERSION;
     const rows = db
       .prepare(
         "SELECT host_key, name, encrypted_value, path, is_secure, is_httponly, expires_utc FROM cookies",
@@ -165,7 +189,7 @@ export async function readCookies(
     for (const row of rows) {
       const domain = String(row.host_key ?? "");
       if (!sites.some((site) => matchesSite(domain, site))) continue;
-      const value = decryptValue(Buffer.from((row.encrypted_value as Uint8Array) ?? []), passphrase);
+      const value = decryptValue(Buffer.from((row.encrypted_value as Uint8Array) ?? []), passphrase, digested ? domain : undefined);
       if (value === null) continue;
       const expires = Number(row.expires_utc ?? 0);
       out.push({
