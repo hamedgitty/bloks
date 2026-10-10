@@ -142,6 +142,6 @@ test("reload keeps the existing row checks while accepting each supported target
   // the lane it used, as the upgrade gives it (GitHub 237)
   assert.deepEqual(
     (await f.h.json("/api/webhooks")).webhooks,
-    valid.map((hook) => (hook.botId ? { ...hook, thread: "Webhooks" } : hook)),
+    valid.map((hook) => ("botId" in hook ? { ...hook, thread: "Webhooks" } : hook)),
   );
 });

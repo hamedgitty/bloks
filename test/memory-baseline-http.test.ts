@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 
 import { startHarness, type Harness } from "./helpers/server.ts";
