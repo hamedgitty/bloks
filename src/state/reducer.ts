@@ -81,8 +81,12 @@ export interface Message {
   deleted?: boolean;
   /** Came in some other way than you typing it here. */
   via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine";
-  /** The routine's name and start mode when this message was written. */
-  routine?: { name?: string; manual: boolean };
+  /** The routine's name and start mode when this message was written,
+   * and whether its agent was told it may answer QUIET. */
+  routine?: { name?: string; manual: boolean; quiet?: boolean };
+  /** Part of a quiet check-in: shown folded into one muted line with the
+   * rest of its run, and never news (server/store.ts). */
+  quiet?: boolean;
   /** Rewound: taken back with everything after it (see the rewind route). */
   rewound?: number;
   /** secret messages: a value asked for via a secure field */

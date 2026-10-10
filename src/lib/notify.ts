@@ -22,6 +22,11 @@
 //
 //   Tool activity, screen frames, artifacts and notices never interrupt.
 //   They are the work, not news about it.
+//
+//   A quiet check-in never interrupts. Its agent answered QUIET because
+//   nothing needed you, and what a check-in says on the way to deciding
+//   that waits for the end of its turn (CheckInHold), so the commentary
+//   of a run that turns out quiet is never news either.
 
 /** The parts of a message this decision actually depends on. */
 const ENGINE_OUT =
@@ -33,6 +38,8 @@ export interface NotifiableMessage {
   text?: string;
   from?: string;
   card?: { requestId?: string; title?: string };
+  /** Part of a quiet check-in (server/store.ts). */
+  quiet?: boolean;
 }
 
 export interface NotifyContext {
@@ -75,7 +82,7 @@ function preview(text: string): string {
  * Null means stay quiet, which is the answer most of the time.
  */
 export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notice | null {
-  if (message.role !== "bot") return null;
+  if (message.role !== "bot" || message.quiet) return null;
 
   const who = ctx.room ? ctx.room.name : (ctx.bot?.name ?? "An agent");
   const target = ctx.room ? ctx.room.id : (ctx.bot?.id ?? ctx.threadId);
@@ -117,4 +124,36 @@ export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notic
   // A one to one reply, if this agent is allowed to interrupt.
   if (ctx.bot?.notifications === false) return null;
   return { title: who, body: preview(message.text), target, urgent: false };
+}
+
+/**
+ * What a check-in says, held until its turn ends.
+ *
+ * The server marks the frames of a quiet routine's turn (`checkIn`), and
+ * only the end of the turn says whether it had anything for you: its
+ * last words are QUIET, already marked quiet, or they are a report. So
+ * each reply is held here rather than announced, the newest replacing
+ * the one before, and the end of the turn lets go of the last of them
+ * unless it was quiet. Only replies are held: an agent stopping to ask
+ * is news the moment it happens, check-in or not.
+ */
+export class CheckInHold<M extends NotifiableMessage = NotifiableMessage> {
+  private held = new Map<string, M>();
+
+  /** Whether this frame's message waits for the end of its turn. */
+  holds(message: M, checkIn: boolean): boolean {
+    return checkIn && message.role === "bot" && message.kind === "text";
+  }
+
+  hold(threadId: string, message: M): void {
+    this.held.set(threadId, message);
+  }
+
+  /** The turn in this thread ended: its last reply, to announce, or
+   * null when there is none or it was quiet. */
+  release(threadId: string): M | null {
+    const last = this.held.get(threadId) ?? null;
+    this.held.delete(threadId);
+    return last && !last.quiet ? last : null;
+  }
 }

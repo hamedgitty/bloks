@@ -11,6 +11,8 @@
 //
 // And the last thing you said: ↑ in an empty composer opens it for
 // editing, the way chat apps have taught everyone to expect.
+//
+// And what is not worth a row each: a run of quiet check-ins is one line.
 import type { Message } from "@/state/reducer";
 
 /** Whether the typing dots are owed. Not busy or already streaming means
@@ -75,6 +77,30 @@ export function lastEditable(messages: readonly Message[]): Message | null {
  * agent said meanwhile (GitHub 170). One taken back while it waited
  * never entered at all, so it shows in neither.
  */
+/**
+ * The run of quiet check-ins a message starts, for showing as one muted
+ * line: every quiet message from here until something that is not, or
+ * null when this one is not quiet or the line was already drawn for the
+ * run at an earlier message. A check-in every half hour would otherwise
+ * be two bubbles every half hour saying nothing between what matters.
+ */
+export function quietRunAt(messages: readonly Message[], at: number): Message[] | null {
+  const quiet = (m: Message | undefined) => Boolean(m?.quiet && !m.deleted);
+  if (!quiet(messages[at]) || quiet(messages[at - 1])) return null;
+  const run: Message[] = [];
+  for (let i = at; i < messages.length && quiet(messages[i]); i++) run.push(messages[i]);
+  return run;
+}
+
+/** "3 quiet check-ins, last at 10:30": how many routine prompts the run
+ * holds, and when the last of it was said, in the reader's own clock
+ * (`time` is the chat's own stamp). */
+export function quietLine(run: readonly Message[], time: (at: number) => string): string {
+  const count = run.filter((m) => m.role === "user").length || 1;
+  const last = run[run.length - 1];
+  return `${count} quiet check-in${count === 1 ? "" : "s"}${last?.at ? `, last at ${time(last.at)}` : ""}`;
+}
+
 export function splitWaiting(messages: readonly Message[]): { said: Message[]; waiting: Message[] } {
   const said: Message[] = [];
   const waiting: Message[] = [];

@@ -1147,9 +1147,10 @@ function clientBot(bot: BotRecord | null) {
       // server/context.ts.
       const fill = laneFill(task.reading, bot.modelSelection);
       const said = store.messagesFor(task.id);
-      // a compaction marker is not something happening in the lane
+      // a compaction marker is not something happening in the lane, and
+      // nor is a quiet check-in
       let last = said.length - 1;
-      while (last >= 0 && said[last].compaction) last--;
+      while (last >= 0 && (said[last].compaction || said[last].quiet)) last--;
       return {
         id: task.id,
         title: task.title,

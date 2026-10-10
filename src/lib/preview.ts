@@ -15,13 +15,15 @@ import type { Message } from "@/state/reducer";
  * went, is not what was last said. Nor is a compaction marker: it is
  * housekeeping, never news, and an idle compaction always leaves one as
  * the newest message, which would hide the reply the row's dot is about.
- * The server reads a lane's time past it the same way. */
-export function lastSaid<M extends { queued?: boolean; unsent?: boolean; compaction?: unknown }>(
+ * Nor is a quiet check-in, for the same reason: one every half hour would
+ * keep the row saying QUIET over whatever was last said to you. The
+ * server reads a lane's time past both the same way. */
+export function lastSaid<M extends { queued?: boolean; unsent?: boolean; compaction?: unknown; quiet?: boolean }>(
   messages: readonly M[],
 ): M | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (!m.queued && !m.unsent && !m.compaction) return m;
+    if (!m.queued && !m.unsent && !m.compaction && !m.quiet) return m;
   }
   return undefined;
 }

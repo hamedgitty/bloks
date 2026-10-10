@@ -99,6 +99,7 @@ test("a check-in that answers QUIET is folded away: no unread, no ledger line, a
   const routine = await file(h, { targetId: bot.id, targetKind: "agent", name: "Inbox", every: 30, activeHours: { from: "09:00", to: "18:00" } });
   await h.fetch(`/api/bots/${bot.id}/tasks/${bot.threadId}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
   p.state.replies.push("Quiet.");
+  const before = await lane(h, bot);
 
   const after = await runIt(h, bot, routine.id);
   // told in the turn, in so many words, and never in the standing prompt
@@ -119,6 +120,7 @@ test("a check-in that answers QUIET is folded away: no unread, no ledger line, a
   assert.equal(answer.quiet, true);
   assert.ok(!(await lane(h, bot)).unread, "a quiet check-in marked the lane unread");
   assert.ok(!(await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id).unread);
+  assert.equal((await lane(h, bot)).lastAt, before.lastAt, "the sidebar's time reads past it");
 
   // the answer's frame was already marked quiet, and held for the end of
   // the check-in, so no client ever had it as news

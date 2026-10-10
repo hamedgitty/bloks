@@ -20,7 +20,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { noticeFor } from "@/lib/notify";
+import { CheckInHold, noticeFor } from "@/lib/notify";
 import { sendBotArchive } from "@/lib/botArchive";
 import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendRoomPatch } from "@/lib/roomPatch";
@@ -41,6 +41,7 @@ import {
   type Action,
   type AppState,
   type Bot,
+  type Message,
   type OptionCardData,
 } from "./reducer";
 
@@ -576,6 +577,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const replayUntil = useRef(0);
   /** When each thread last raised a banner, to keep a chatty turn to one. */
   const lastBanner = useRef(new Map<string, number>());
+  /** A check-in's replies, waiting for its turn to end (CheckInHold). */
+  const checkIns = useRef(new CheckInHold<Message>());
 
   const announce = useCallback((threadId: string, message: unknown) => {
     const bridge = window.bloks;
@@ -604,6 +607,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     lastBanner.current.set(threadId, now);
     if (bot?.avatarAt) notice.avatar = `/api/bots/${bot.id}/avatar?v=${bot.avatarAt}`;
     void bridge.notifyShow(notice).catch(() => {});
+  }, []);
+
+  /** Agents that opted in read their settled replies aloud, even when
+   * their chat is not the one on screen. Never a quiet check-in's: it
+   * said nothing to you. */
+  const speak = useCallback((threadId: string, message: Message | undefined) => {
+    if (message?.role !== "bot" || message.kind !== "text" || !message.text || message.quiet) return;
+    const owner = stateRef.current.bots.find((b) => b.tasks?.some((t) => t.id === threadId));
+    if (owner) maybeAutoSpeak(owner, message.text);
   }, []);
 
   // "Add to Bloks" on the website: a gallery team opens in the hire
@@ -736,18 +748,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "message": {
           rawDispatch({ type: "messageAdded", threadId: frame.threadId, message: frame.message });
-          // agents that opted in read their settled replies aloud, even
-          // when their chat is not the one on screen
           const msg = frame.message;
-          if (msg?.role === "bot" && msg.kind === "text" && msg.text) {
-            const owner = stateRef.current.bots.find((b) =>
-              b.tasks?.some((t) => t.id === frame.threadId),
-            );
-            if (owner) maybeAutoSpeak(owner, msg.text);
+          const news = typeof frame._seq !== "number" || frame._seq > replayUntil.current;
+          // a check-in's replies are spoken and announced when its turn
+          // ends, if it was not quiet (src/lib/notify.ts)
+          if (news && msg && checkIns.current.holds(msg, frame.checkIn === true)) {
+            checkIns.current.hold(frame.threadId, msg);
+            break;
           }
-          if (typeof frame._seq !== "number" || frame._seq > replayUntil.current) {
-            announce(frame.threadId, msg);
-          }
+          speak(frame.threadId, msg);
+          if (news) announce(frame.threadId, msg);
           break;
         }
         case "message.patch":
@@ -796,6 +806,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             rawDispatch({ type: "turnSettled", threadId: event.threadId });
             const threadId = event.threadId;
             setTimeout(() => rawDispatch({ type: "streamClear", threadId, onlyIfSettled: true }), STREAM_LINGER_MS);
+            // a check-in that had something to say says it now
+            const reported = checkIns.current.release(threadId);
+            if (reported) {
+              speak(threadId, reported);
+              announce(threadId, reported);
+            }
           }
           break;
         }

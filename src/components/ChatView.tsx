@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
+import BellOff from "lucide-react/dist/esm/icons/bell-off.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.mjs";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
@@ -15,7 +16,7 @@ import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
-import { lastEditable, shouldLoadEarlier, showTypingDots, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
+import { lastEditable, quietLine, quietRunAt, shouldLoadEarlier, showTypingDots, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
 import { useEarlier } from "@/lib/useEarlier";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
@@ -133,6 +134,39 @@ function Rewound({ messages }: { messages: Message[] }) {
             <div key={m.id} className={cn("flex w-full", m.role === "user" ? "justify-end" : "justify-start")}>
               <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[13px] text-muted-foreground line-through decoration-muted-foreground/50 sm:max-w-[68%]">
                 {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A run of quiet check-ins as one muted line. It opens to show what was
+ * asked and answered, for whoever wants to see that the routine really is
+ * running, and stays out of the way otherwise. */
+function QuietCheckIns({ messages }: { messages: Message[] }) {
+  const [open, setOpen] = useState(false);
+  const words = messages.filter((m) => m.kind === "text" && m.text);
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[12px] text-muted-foreground/80 transition-colors duration-150 hover:bg-accent/60 hover:text-foreground"
+      >
+        <BellOff size={12} className="shrink-0" />
+        <span className="truncate">{quietLine(messages, (at) => stamp(at))}</span>
+        {words.length > 0 && <ChevronDown size={12} className={cn("shrink-0 transition-transform duration-200", open && "rotate-180")} />}
+      </button>
+      {open && words.length > 0 && (
+        <div className="flex w-full animate-fade-in flex-col gap-1">
+          {words.map((m) => (
+            <div key={m.id} className={cn("flex w-full", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[12.5px] text-muted-foreground sm:max-w-[68%]">
+                {m.text}
+                <span className="ml-2 text-[10.5px] text-muted-foreground/70">{stamp(m.at)}</span>
               </div>
             </div>
           ))}
@@ -1021,6 +1055,11 @@ export function ChatView({ bot }: { bot: Bot }) {
               return <Rewound key={m.id} messages={run} />;
             }
             if (m.deleted) return <TakenBack key={m.id} user={m.role === "user"} />;
+            // a run of quiet check-ins shows once, at its first message
+            if (m.quiet) {
+              const run = quietRunAt(visibleMessages, offset);
+              return run ? <QuietCheckIns key={m.id} messages={run} /> : null;
+            }
             // to or from another agent: a compact row, not a bubble that
             // looks like the person's own words
             // A reply the agent wrote in its own chat is never compacted,
@@ -1043,11 +1082,11 @@ export function ChatView({ bot }: { bot: Bot }) {
               case "activity": {
                 // a run of tool calls is one line; it starts at the first
                 const before = visibleMessages[offset - 1];
-                if (before?.kind === "activity" && !before.deleted && !before.agent) return null;
+                if (before?.kind === "activity" && !before.deleted && !before.agent && !before.quiet) return null;
                 const run: Message[] = [];
                 for (let i = offset; i < visibleMessages.length; i++) {
                   const next = visibleMessages[i];
-                  if (next.kind !== "activity" || next.deleted || next.agent) break;
+                  if (next.kind !== "activity" || next.deleted || next.agent || next.quiet) break;
                   run.push(next);
                 }
                 return <ToolRun key={m.id} messages={run} fresh={fresh} />;
@@ -1089,7 +1128,8 @@ export function ChatView({ bot }: { bot: Bot }) {
                   )}
                   <Bubble
                     message={m}
-                    hideTime={timeSaidBelow(m, visibleMessages[offset + 1])}
+                    // a folded check-in below says no time of its own
+                    hideTime={visibleMessages[offset + 1]?.quiet ? false : timeSaidBelow(m, visibleMessages[offset + 1])}
                     fresh={fresh}
                     author={m.role === "user" ? "You" : bot.name}
                     onReply={setReplyTo}
