@@ -261,7 +261,7 @@ import {
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, RoutineStore } from "./routines.ts";
+import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, RoutineStore, scheduleProblem } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -14054,8 +14054,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     // ── routines (see server/routines.ts) ──
     // Scheduled work an agent does without being asked. The schedule is a
-    // time of day plus days of the week, not cron: it has to be readable
-    // at arm's length on a phone.
+    // time of day plus days of the week, or every so many minutes within
+    // hours, not cron: it has to be readable at arm's length on a phone.
     if (method === "GET" && path === "/api/routines") {
       const now = new Date();
       return json(res, 200, {
@@ -14075,6 +14075,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const body = await readBody(req);
       const tooLong = promptTooLong(body?.prompt);
       if (tooLong) return json(res, 400, { error: tooLong });
+      const unscheduled = scheduleProblem(body);
+      if (unscheduled) return json(res, 400, { error: unscheduled });
       const clean = normalizeRoutine(body);
       if (!clean) return json(res, 400, { error: "a routine needs a target, something to say, and a time" });
       // An agent files routines for itself, the same line its changes and
@@ -14110,7 +14112,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (tooLong) return json(res, 400, { error: tooLong });
       // Only the fields a person edits. Never lastRunAt: rewriting when it
       // last ran is how you make a routine fire twice.
-      const merged = normalizeRoutine({
+      // A check-in turned back into a time of day stops being quiet unless
+      // asked to stay so: it was quiet for being a check-in.
+      const leavesCheckIn = existing.every !== undefined && body.every === null;
+      const input = {
         targetId: existing.targetId,
         targetKind: existing.targetKind,
         prompt: body.prompt ?? existing.prompt,
@@ -14123,7 +14128,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         durationMin: body.durationMin ?? existing.durationMin,
         runsOn: body.runsOn === null ? undefined : (body.runsOn ?? existing.runsOn),
         thread: body.thread === null ? undefined : (body.thread ?? existing.thread),
-      });
+        every: body.every === null ? undefined : (body.every ?? existing.every),
+        activeHours: body.activeHours === null ? undefined : (body.activeHours ?? existing.activeHours),
+        quiet: body.quiet ?? (leavesCheckIn ? undefined : existing.quiet),
+      };
+      const unscheduled = scheduleProblem(input);
+      if (unscheduled) return json(res, 400, { error: unscheduled });
+      const merged = normalizeRoutine(input);
       if (!merged) return json(res, 400, { error: "that is not a valid routine" });
       // only a conversation newly named: one named before and since closed
       // must not stop the rest of an edit
