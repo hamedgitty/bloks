@@ -449,6 +449,64 @@ without looking, until the person changes it, runs it, or looks by
 hand. Agents cannot file workflows. A round inside one
 room is also bounded by `MAX_AGENT_HOPS`.
 
+## Goals
+
+A conversation can be given a goal, and then keeps working turn after
+turn without anyone typing "keep going": what done looks like, a command
+that has to exit 0 for it to count (optional), and how many turns it may
+take, twenty unless the person says otherwise and a hundred at most.
+`/goal` in an agent's chat sets one, with `check:` and `turns:` on lines
+of their own; on its own it opens the same dialog as Set a goal in a
+conversation's menu, which is `PUT /api/bots/:id/tasks/:taskId/goal`
+(`PATCH` pauses, resumes or gives it more turns, `DELETE` clears it).
+`/goal` is Bloks' own: the messages route reads it before anything
+else, so it never reaches an engine, where a command of that name would
+run as one. The goal lives on the lane (`TaskRecord.goal`), goes with it
+when the lane is closed or cleared, and `clientBot` ships a summary for
+the chip over the composer.
+
+Each turn in the lane that ends well is judged (`judgeGoal` in
+`server/index.ts`; the rules and words are `server/goals.ts`). The check
+runs first, in the lane's folder, through the shell as a watcher's check
+does (`runCheck`): its own process group, stopped after five minutes,
+the end of its output kept. Then the agent's own engine is asked once,
+through the one-shot call a fold uses (`generateText`), for a verdict as
+JSON: done, continue or blocked, with a reason and a next step. With no
+small model, or an answer that is not a verdict, the check decides, then
+the agent's own last line ("Goal: done", or "Goal: blocked," and what it
+needs), which every goal note asks for. Done needs the check to pass,
+whatever the judge read. Done and out of turns end the goal with a
+notice; blocked hands it back with what it needs and the lane reads as
+waiting on the person; continue queues the next turn.
+
+That turn goes in through the lane's queue (`queueGoalTurn`) as a
+message marked `via: "goal"`: a note from Bloks, never the person's
+words, so it names no skill, runs no engine command, and keeps the chain
+place of the turn it follows (see Agents writing to agents), and the
+chat labels it as Bloks'. It is counted before it is queued and none is
+queued past the budget, so the budget is a hard cap whatever the judge
+says. The person comes first. Whatever waited for the lane goes before
+the goal is judged, and a verdict is acted on only while nothing waits
+and no other turn has started in the lane since the one it judged
+(`laneTurns`). The person's Stop pauses the goal and takes back a next
+turn already queued; their answer to a blocked goal picks it up again
+after the turn that hears it; a turn that fails pauses it. A turn picked
+up after a cut off, handed to a backup or asked again after a fold is
+not over yet, and is judged when it is. A room's turn or an engine
+command in the lane is not the goal's work, but the goal is judged after
+it on the lane's own last reply rather than left with nothing to start
+its next turn. Goals stay out of shared rooms' lanes, the lane for
+unlisted mail and rehearsals. One left active after a restart with
+nothing running or waiting in its lane was between turns when Bloks
+stopped, and is paused rather than judged again unattended.
+
+While a goal runs, its turns' replies raise no banner; where it ended up
+does, blocked as loudly as a question, and blocked also wakes the
+owner's phone. An agent reads its goal with `bloks goal`
+(`GET /api/agent/goal`, which reads the goal of the lane its credential
+was minted for), and nothing on its list reaches the routes that set
+one.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group
