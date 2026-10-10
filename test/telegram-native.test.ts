@@ -1,5 +1,6 @@
-// Telegram that feels like the phone it is on: cards answered with a tap.
-// Every server, engine and Telegram account here is an isolated fixture:
+// Telegram that feels like the phone it is on: cards answered with a tap,
+// and files sent back. Every server, engine and Telegram account here is an
+// isolated fixture:
 // Telegram is a stub on loopback and the engine is a script that speaks
 // Codex's protocol.
 import assert from "node:assert/strict";
@@ -86,11 +87,12 @@ async function telegramStub(t: TestContext) {
 }
 
 /** An engine that speaks Codex's app-server protocol and does what the
- * words of its turn say: ask for approval, or ask a question. */
+ * words of its turn say: ask for approval, ask a question, or save files. */
 function fakeCodex(root: string): string {
   const cli = join(root, "fake-codex.mjs");
   writeFileSync(cli, `#!${process.execPath}
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process.exit(0); }
 if (process.argv[2] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }
@@ -98,6 +100,10 @@ const root = ${JSON.stringify(root)};
 process.stdin.on("end", () => process.exit(0));
 const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
 const log = (m) => appendFileSync(root + "/calls.jsonl", JSON.stringify(m) + "\\n");
+const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+// the agent's deliverables folder, the only one under artifacts here
+const deliverables = () => { const dir = join(root, ".bloks", "artifacts"); return join(dir, readdirSync(dir)[0]); };
+const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
 let thread, turn;
 const waiting = new Map();
 const ask = (id, method, params) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method, params: { threadId: thread, turnId: turn, ...params } }); });
@@ -129,6 +135,20 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (text.includes("FREE")) {
     const result = await ask(902, "item/tool/requestUserInput", { itemId: "q", questions: [{ id: "q1", question: "Which day?" }] });
     return finish("HEARD " + result.answers.q1.answers[0]);
+  }
+  if (text.includes("FILES")) {
+    const dir = deliverables();
+    // apart, so they are told apart by when they were saved
+    writeFileSync(join(dir, "report.pdf"), "%PDF-1.4 a small report"); await nap(15);
+    writeFileSync(join(dir, "chart.png"), PNG); await nap(15);
+    // over Telegram's 50 MB, without writing 50 MB: a sparse file
+    writeFileSync(join(dir, "footage.mov"), ""); truncateSync(join(dir, "footage.mov"), 51 * 1024 * 1024);
+    return finish("Here are your files.");
+  }
+  if (text.includes("MANY")) {
+    const dir = deliverables();
+    for (let i = 1; i <= 7; i++) { writeFileSync(join(dir, "part-" + i + ".txt"), "part " + i); await nap(15); }
+    return finish("Seven parts.");
   }
   finish("ANSWER");
 });
@@ -236,6 +256,42 @@ test("a question with no choices is still answered by typing, and says so once i
   await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "HEARD Saturday"), "the typed answer never reached the agent");
   const edited = f.tg.calls("editMessageText").find((c) => c.body.message_id === card.id);
   assert.equal(edited?.body.text, "Your agent has a question\nWhich day?\n\nAnswered: Saturday");
+});
+
+test("what a Telegram turn saved comes back after its answer: images as photos, the rest as files", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("FILES please");
+  const note = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text.startsWith("Not sent here")), "the files never finished");
+  assert.equal(note.body.text, "Not sent here: footage.mov (over Telegram's 50 MB). It is in the app.");
+  const order = f.tg.state.calls
+    .filter((c) => ["sendMessage", "sendPhoto", "sendDocument"].includes(c.method) && !String(c.body.text ?? "").startsWith("Paired."))
+    .map((c) => c.body.text ?? `${c.method} ${(c.body.photo ?? c.body.document).name}`);
+  assert.deepEqual(order, [
+    "Here are your files.",
+    "sendDocument report.pdf",
+    "sendPhoto chart.png",
+    "Not sent here: footage.mov (over Telegram's 50 MB). It is in the app.",
+  ]);
+  const photo = f.tg.calls("sendPhoto")[0]!.body;
+  assert.equal(photo.chat_id, String(CHAT));
+  assert.deepEqual(photo.photo, { name: "chart.png", type: "image/png", size: 29 });
+  assert.equal(f.tg.calls("sendDocument")[0]!.body.chat_id, String(CHAT));
+});
+
+test("only a few files come back with one answer, and the rest are counted", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("MANY parts");
+  const note = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text.startsWith("Not sent here")), "the files never finished");
+  assert.equal(note.body.text, "Not sent here: 2 more files (only 5 come with an answer). They are in the app.");
+  assert.deepEqual(f.tg.calls("sendDocument").map((c) => c.body.document.name), ["part-1.txt", "part-2.txt", "part-3.txt", "part-4.txt", "part-5.txt"]);
+});
+
+test("files from a turn that did not begin on Telegram stay in the app", async (t) => {
+  const f = await fixture(t);
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "FILES from the desk" });
+  await waitFor(async () => (await f.messages()).some((m) => m.kind === "artifact" && m.artifact.name === "chart.png"), "the turn never saved its files");
+  await sleep(1_000);
+  assert.deepEqual([...f.tg.calls("sendPhoto"), ...f.tg.calls("sendDocument")], []);
 });
 
 test("a button from before a restart says its card has closed, and loses its buttons", async (t) => {

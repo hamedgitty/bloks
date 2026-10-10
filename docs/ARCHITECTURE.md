@@ -487,6 +487,17 @@ answered anywhere else (the app, the phone typing, an engine giving up)
 is rewritten the same way from `request.resolved`, and the chat's next
 line is a message again rather than an answer to it.
 
+What a Telegram turn leaves behind follows its answer to the chat
+(`deliverablesIn`, `telegramFiles`): files it saved to its deliverables
+folder (see `sweepArtifacts`) and the last look at its screen. Images go
+as photos (`sendPhoto`) so they show in the chat, anything else as a file
+(`sendDocument`), each a multipart upload read from disk only as it goes.
+Five at most come with one answer, and Telegram takes 50 MB from a bot,
+so the rest and anything bigger are named in one line saying they are in
+the app. A request held through a restart gets its files after its answer
+the same way (`TelegramReturns`), and only once that answer has arrived.
+Turns that did not begin on Telegram send nothing there.
+
 ## Teams as files
 
 `server/team-file.ts` reads and writes a team as one Markdown file: a

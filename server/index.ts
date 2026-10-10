@@ -3,7 +3,7 @@
 // The one rule the whole shape follows: clients hold no transports. The
 // React app dispatches typed commands over HTTP and folds one SSE event
 // stream, and every provider process runs here.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, openAsBlob, readdirSync, readFileSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -6939,6 +6939,11 @@ const telegramReturns = new TelegramReturns(
     const message = store.appendMessage(threadId, { role: "bot", kind: "notice", text });
     broadcast({ kind: "message", threadId, message });
   },
+  // a request held through a restart gets its files back too
+  async (laneId, chatId, said) => {
+    const owner = store.bots.find((b) => b.tasks.some((t) => t.id === laneId));
+    if (owner) await telegramFiles(chatId, deliverablesIn(owner.id, said));
+  },
 );
 /** Cards forwarded to a chat and not yet answered, by chat. */
 const telegramAsks = new Map<
@@ -7085,9 +7090,10 @@ const telegramInbox = new telegram.Inbox({
         // The reply goes back to the chat that asked, and the exchange lands
         // in the agent's own thread like any other conversation.
         const answer = await answerOverTelegram(bot.id, text, chatId).catch(
-          (error: unknown) => `Could not answer: ${(error as Error).message}`,
+          (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${(error as Error).message}`, files: [] }),
         );
-        await telegramSay(chatId, answer, true);
+        await telegramSay(chatId, answer.text, true);
+        await telegramFiles(chatId, answer.files);
       });
       telegramTurns.set(chatId, turn);
       void turn.finally(() => {
@@ -7129,9 +7135,9 @@ async function telegramRound(): Promise<void> {
  * started on a phone is the same conversation when you open the Mac.
  * The reply is whatever it said that was not already there, which is
  * how a turn that ran tools and then answered comes back as the answer
- * rather than as the running commentary.
+ * rather than as the running commentary, with whatever files it left.
  */
-async function answerOverTelegram(botId: string, text: string, chatId: number): Promise<string> {
+async function answerOverTelegram(botId: string, text: string, chatId: number): Promise<TelegramAnswer> {
   const bot = store.bot(botId);
   if (!bot) throw new Error("that agent is gone");
   const laneId = activeLaneOf(bot);
@@ -7144,7 +7150,10 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   if (drain.on) {
     telegramLive.delete(botId);
     queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId) });
-    return "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.";
+    return {
+      text: "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.",
+      files: [],
+    };
   }
   // The phone shows "typing" for as long as the turn runs, the way the
   // app shows "working…", except while a card forwarded to this chat
@@ -7169,7 +7178,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
       await answeredAfter(botId, laneId, sent.id, 20 * 60_000);
       const list = store.messagesFor(laneId);
       const from = list.findIndex((m) => m.id === sent.id);
-      return saidIn(from >= 0 ? list.slice(from + 1) : []);
+      return replyIn(botId, from >= 0 ? list.slice(from + 1) : []);
     } finally {
       telegramLive.delete(botId);
       telegramAsks.delete(chatId);
@@ -7189,7 +7198,60 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
     await typing.stop();
   }
-  return saidIn(store.messagesFor(laneId).slice(before));
+  return replyIn(botId, store.messagesFor(laneId).slice(before));
+}
+
+/** A Telegram turn's reply: what the agent said, and what it left. */
+interface TelegramAnswer {
+  text: string;
+  files: telegram.Deliverable[];
+}
+
+function replyIn(botId: string, messages: readonly Message[]): TelegramAnswer {
+  return { text: saidIn(messages), files: deliverablesIn(botId, messages) };
+}
+
+/**
+ * The files a turn left in these messages, for a phone: whatever it saved
+ * to its deliverables folder, and the last look at its screen. Each is
+ * read only when it is sent, as it is then; one saved twice goes once.
+ */
+function deliverablesIn(botId: string, messages: readonly Message[]): telegram.Deliverable[] {
+  const files = new Map<string, telegram.Deliverable>();
+  const keep = (file: telegram.Deliverable) => {
+    files.delete(file.name);
+    files.set(file.name, file);
+  };
+  for (const message of messages) {
+    if (message.deleted) continue;
+    if (message.kind === "artifact" && message.artifact) {
+      const { name } = message.artifact;
+      const path = artifacts.artifactPath(botId, name);
+      if (!path) continue;
+      let size: number;
+      try {
+        size = statSync(path).size;
+      } catch {
+        continue;
+      }
+      const mime = artifacts.mimeOf(name);
+      keep({ name, mime, size, blob: () => openAsBlob(path, { type: mime }) });
+    } else if (message.kind === "screen" && message.png) {
+      const bytes = Buffer.from(message.png, "base64");
+      const mime = message.mime || "image/png";
+      keep({ name: mime === "image/jpeg" ? "screen.jpg" : "screen.png", mime, size: bytes.length, blob: async () => new Blob([bytes], { type: mime }) });
+    }
+  }
+  return [...files.values()];
+}
+
+/** What a turn left, sent after its answer, to the chat that asked. The
+ * pairing is asked again here, since a turn can outlast it. */
+async function telegramFiles(chatId: number, files: telegram.Deliverable[]): Promise<void> {
+  const state = cfg.telegram;
+  if (!files.length || !state?.token || !state.chatIds?.includes(chatId)) return;
+  const note = await telegram.sendFiles(state.token, chatId, files).catch(() => "");
+  if (note) await telegramSay(chatId, note);
 }
 
 /** What the agent said in these messages, as one reply for a phone. */

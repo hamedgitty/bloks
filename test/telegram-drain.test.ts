@@ -570,3 +570,42 @@ test("a synchronous fake engine speaks before carryOn moves its input: all turn 
   returns.finish("lane");
   assert.equal(bodies.length, 1);
 });
+
+test("a held request's files follow its answer, and only an answer that arrived", async (t) => {
+  const rows = () => [
+    { id: "request", role: "user", kind: "text", text: "ASK", queued: true, telegramReply: { chatId: CHAT, state: "queued" } },
+  ] as Message[];
+  const memoryOf = (list: Message[]) => ({
+    bots: [{ tasks: [{ id: "lane" }] }],
+    messagesFor: () => list,
+    patchMessages: (_lane: string, ids: string[], patch: (m: Message) => Partial<Message>) => list.filter((m) => ids.includes(m.id)).map((m) => Object.assign(m, patch(m))),
+  } as unknown as Store);
+  let refuse = false;
+  t.mock.method(globalThis, "fetch", async () => refuse
+    ? new Response(JSON.stringify({ ok: false }), { status: 403 })
+    : new Response(JSON.stringify({ ok: true, result: { message_id: 1 } })));
+  const handed: { chatId: number; said: string[] }[] = [];
+  const state = () => ({ enabled: true, token: "TEST", chatIds: [CHAT] });
+  const files = async (_lane: string, chatId: number, said: Message[]) => void handed.push({ chatId, said: said.map((m) => m.id) });
+
+  const answered = rows();
+  const returns = new TelegramReturns(memoryOf(answered), state, () => {}, () => {}, files);
+  returns.bind("lane", ["request"], true);
+  answered.push(
+    { id: "answer", at: 1, role: "bot", kind: "text", text: "Here it is." } as Message,
+    { id: "file", at: 2, role: "bot", kind: "artifact", artifact: { name: "report.pdf", mime: "application/pdf", size: 9 } } as Message,
+  );
+  returns.finish("lane");
+  assert.ok(await waitFor(() => handed.length === 1));
+  assert.deepEqual(handed, [{ chatId: CHAT, said: ["answer", "file"] }]);
+
+  refuse = true;
+  const lost = rows();
+  const failing = new TelegramReturns(memoryOf(lost), state, () => {}, () => {}, files);
+  failing.bind("lane", ["request"], true);
+  lost.push({ id: "file", at: 2, role: "bot", kind: "artifact", artifact: { name: "report.pdf", mime: "application/pdf", size: 9 } } as Message);
+  failing.finish("lane");
+  assert.ok(await waitFor(() => lost[0]!.telegramReply?.state === "failed"));
+  await sleep(50);
+  assert.equal(handed.length, 1, "no files after an answer that did not arrive");
+});

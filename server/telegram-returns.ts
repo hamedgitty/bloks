@@ -19,18 +19,24 @@ export class TelegramReturns {
   private state: () => TelegramState;
   private changed: (laneId: string, message: Message) => void;
   private notice: (laneId: string, text: string) => void;
+  private files?: (laneId: string, chatId: number, said: Message[]) => Promise<void>;
   private sends = new Set<Promise<void>>();
 
+  /** `files` sends what the turn left after its answer has gone. Only
+   * then: an answer that did not arrive should not be followed by files
+   * with nothing to say what they are. */
   constructor(
     store: Store,
     state: () => TelegramState,
     changed: (laneId: string, message: Message) => void,
     notice: (laneId: string, text: string) => void,
+    files?: (laneId: string, chatId: number, said: Message[]) => Promise<void>,
   ) {
     this.store = store;
     this.state = state;
     this.changed = changed;
     this.notice = notice;
+    this.files = files;
   }
 
   get busy() { return this.sends.size > 0; }
@@ -94,11 +100,12 @@ export class TelegramReturns {
       const group = requests.filter((m) => m.telegramReply!.chatId === chatId);
       const after = group[0].telegramReply!.after;
       const boundary = after ? transcript.findIndex((m) => m.id === after) : -1;
-      const text = failure ?? (transcript.slice(boundary + 1)
+      const said = failure ? [] : transcript.slice(boundary + 1);
+      const text = failure ?? (said
         .filter((m) => m.role === "bot" && m.kind === "text" && m.text && !m.deleted)
         .map((m) => m.text).join("\n\n").trim() || "(the agent finished without saying anything)");
       // The text is captured before another turn can move the transcript.
-      const run = this.say(laneId, group, chatId, text);
+      const run = this.say(laneId, group, chatId, text, said);
       this.sends.add(run);
       void run.finally(() => this.sends.delete(run)).catch((error) => {
         console.error("[bloks] Telegram return could not be recorded:", error);
@@ -106,7 +113,7 @@ export class TelegramReturns {
     }
   }
 
-  private async say(laneId: string, requests: Message[], chatId: number, text: string) {
+  private async say(laneId: string, requests: Message[], chatId: number, text: string, said: Message[]) {
     const change = (patch: Partial<TelegramReply>) => {
       this.patch(laneId, requests, patch);
     };
@@ -127,6 +134,8 @@ export class TelegramReturns {
       change({ state: uncertain ? "uncertain" : "failed", parts });
       const partly = parts > 0 ? " It was partly delivered." : uncertain ? " It may have been delivered." : "";
       this.notice(laneId, `The answer ${uncertain ? "may not have reached" : "was not fully sent to"} Telegram.${partly} It has not been sent again. The answer is in the app.`);
+      return;
     }
+    if (said.length) await this.files?.(laneId, chatId, said).catch(() => {});
   }
 }

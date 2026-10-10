@@ -419,6 +419,89 @@ export async function send(token: string, chatId: number, text: string, markdown
   }
 }
 
+// ── files going the other way ──────────────────────────────────────────
+
+/** The most Telegram takes from a bot in one file. */
+export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+/** The most it takes as a photo; a bigger image still goes, as a file. */
+const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+/** Images a phone shows in the chat rather than as a file to open. */
+const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
+/** How many files come back with one answer. A turn that saved twenty
+ * should not bury the chat; the rest are a tap away in the app. */
+export const FILES_PER_TURN = 5;
+
+/** A file to send: what it is called, what it is, how big, and its bytes
+ * when asked for, so nothing is read that is not going to be sent. */
+export interface Deliverable {
+  name: string;
+  mime: string;
+  size: number;
+  blob(): Promise<Blob>;
+}
+
+/** One file, as a form: Telegram takes uploads no other way. A big file
+ * on a slow line takes a while, so the wait is a couple of minutes. */
+async function upload(token: string, method: string, field: string, chatId: number, file: Deliverable): Promise<void> {
+  await patiently(async () => {
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set(field, await file.blob(), file.name);
+    const response = await fetch(`${API}/bot${token}/${method}`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) throw await refusal(response);
+  });
+}
+
+/** A photo when it can be one, so it shows in the chat; a file when not,
+ * or when Telegram will not take it as a photo (too tall, say). */
+export async function sendFile(token: string, chatId: number, file: Deliverable): Promise<void> {
+  const photo = PHOTO_MIMES.has(file.mime) && file.size <= PHOTO_MAX_BYTES;
+  if (!photo) return upload(token, "sendDocument", "document", chatId, file);
+  try {
+    await upload(token, "sendPhoto", "photo", chatId, file);
+  } catch (error) {
+    if (!(error instanceof TelegramError) || error.status !== 400) throw error;
+    await upload(token, "sendDocument", "document", chatId, file);
+  }
+}
+
+/**
+ * What a turn produced, sent to the chat, a few at most, one after
+ * another so they arrive in order. Returns a line for the person about
+ * whatever did not come (too big, past the few, or refused), or "" when
+ * everything did: a file that silently never arrives reads as one the
+ * agent never made.
+ */
+export async function sendFiles(token: string, chatId: number, files: Deliverable[], max = FILES_PER_TURN): Promise<string> {
+  const missing: string[] = [];
+  let sent = 0;
+  let over = 0;
+  for (const file of files) {
+    if (file.size > UPLOAD_MAX_BYTES) {
+      missing.push(`${file.name} (over Telegram's 50 MB)`);
+      continue;
+    }
+    if (sent >= max) {
+      over++;
+      continue;
+    }
+    try {
+      await sendFile(token, chatId, file);
+      sent++;
+    } catch (error) {
+      missing.push(`${file.name} (${reason(error)})`);
+    }
+  }
+  const left = missing.length + over;
+  if (over) missing.push(`${over} more ${over === 1 ? "file" : "files"} (only ${max} come with an answer)`);
+  if (!left) return "";
+  return `Not sent here: ${missing.join("; ")}. ${left === 1 ? "It is" : "They are"} in the app.`;
+}
+
 /** "typing" under the bot's name. Telegram shows it for five seconds
  * at most, and clears it the moment the bot sends a message. */
 export async function chatAction(token: string, chatId: number): Promise<void> {

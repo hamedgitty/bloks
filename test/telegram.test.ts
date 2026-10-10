@@ -8,9 +8,11 @@ import {
   answerPress,
   chatAction,
   decide,
+  type Deliverable,
   describeCard,
   download,
   edit,
+  FILES_PER_TURN,
   Inbox,
   type InboxHooks,
   type Incoming,
@@ -23,6 +25,7 @@ import {
   poll,
   post,
   type Press,
+  sendFiles,
   type TelegramState,
   unbutton,
 } from "../server/telegram.ts";
@@ -828,6 +831,82 @@ describe("typing while the agent works", () => {
     });
     await chatAction("T", 42);
     assert.deepEqual(bodies, [{ chat_id: 42, action: "typing" }]);
+  });
+});
+
+describe("files back to the phone", () => {
+  type Upload = { method: string; chat: string | null; field: string; name: string; type: string };
+  /** Every upload, read back from its form. `refuse` answers a method
+   * with that status instead of taking it. */
+  function uploads(t: { mock: { method: (...args: any[]) => unknown } }, refuse: Record<string, number> = {}) {
+    const seen: Upload[] = [];
+    t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      const method = url.split("/").pop()!;
+      if (refuse[method]) return Response.json({ ok: false }, { status: refuse[method] });
+      const form = init.body as FormData;
+      const field = form.has("photo") ? "photo" : "document";
+      const file = form.get(field) as File;
+      seen.push({ method, chat: form.get("chat_id") as string | null, field, name: file.name, type: file.type });
+      return Response.json({ ok: true, result: { message_id: 1 } });
+    });
+    return seen;
+  }
+  const file = (name: string, mime: string, size = 10, read?: () => void): Deliverable => ({
+    name,
+    mime,
+    size,
+    blob: async () => {
+      read?.();
+      return new Blob(["bytes"], { type: mime });
+    },
+  });
+
+  test("an image shows as a photo, anything else as a file, in the order they came", async (t) => {
+    const seen = uploads(t);
+    assert.equal(await sendFiles("T", 42, [file("chart.png", "image/png"), file("report.pdf", "application/pdf")]), "");
+    assert.deepEqual(seen, [
+      { method: "sendPhoto", chat: "42", field: "photo", name: "chart.png", type: "image/png" },
+      { method: "sendDocument", chat: "42", field: "document", name: "report.pdf", type: "application/pdf" },
+    ]);
+  });
+
+  test("an image too big for a photo, or one Telegram will not take as one, still goes as a file", async (t) => {
+    const big = uploads(t);
+    await sendFiles("T", 42, [file("scan.jpg", "image/jpeg", 11 * 1024 * 1024)]);
+    assert.deepEqual(big.map((u) => u.method), ["sendDocument"]);
+    t.mock.restoreAll();
+    const refused = uploads(t, { sendPhoto: 400 });
+    assert.equal(await sendFiles("T", 42, [file("tall.png", "image/png")]), "");
+    assert.deepEqual(refused.map((u) => u.method), ["sendDocument"]);
+  });
+
+  test("a file over Telegram's 50 MB is never read, and the person is told it is in the app", async (t) => {
+    const seen = uploads(t);
+    let read = false;
+    const note = await sendFiles("T", 42, [file("footage.mov", "video/quicktime", 51 * 1024 * 1024, () => (read = true)), file("a.txt", "text/plain")]);
+    assert.equal(read, false);
+    assert.deepEqual(seen.map((u) => u.name), ["a.txt"]);
+    assert.equal(note, "Not sent here: footage.mov (over Telegram's 50 MB). It is in the app.");
+  });
+
+  test("only a few come with an answer, and the rest are counted", async (t) => {
+    const seen = uploads(t);
+    const many = Array.from({ length: 7 }, (_, i) => file(`part-${i + 1}.txt`, "text/plain"));
+    const note = await sendFiles("T", 42, many);
+    assert.equal(FILES_PER_TURN, 5);
+    assert.deepEqual(seen.map((u) => u.name), ["part-1.txt", "part-2.txt", "part-3.txt", "part-4.txt", "part-5.txt"]);
+    assert.equal(note, "Not sent here: 2 more files (only 5 come with an answer). They are in the app.");
+  });
+
+  test("a file Telegram refuses is named, and the rest still go", async (t) => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return calls === 1 ? Response.json({ ok: false }, { status: 413 }) : Response.json({ ok: true, result: {} });
+    });
+    const note = await sendFiles("T", 42, [file("huge.zip", "application/zip"), file("b.txt", "text/plain")]);
+    assert.equal(calls, 2);
+    assert.equal(note, "Not sent here: huge.zip (Telegram answered HTTP 413). It is in the app.");
   });
 });
 
