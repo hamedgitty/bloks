@@ -120,6 +120,7 @@ const COMMANDS = {
       "act when a folder, a web page or a feed changes, or when a cheap check you wrote finds something: " +
       "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
       "Unless you may run commands without asking, the person approves the command before it runs. " +
+      "The instruction (--do) and folder, page or feed target can each be up to 1,000 characters; a check command can be up to 500. Longer text is refused, not cut. " +
       "Its turns come to your first conversation, where the person talks to you; --thread sends them to another, by its title (made if missing) or its id",
     run: async (args) => {
       const flags = parseFlags(args);
