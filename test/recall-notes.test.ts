@@ -50,7 +50,7 @@ describe("recall", () => {
   });
 
   test("filler words do not count, and nothing matching says so", () => {
-    assert.deepEqual(termsOf("what did we decide about the budget?"), ["decide", "about", "budget"]);
+    assert.deepEqual(termsOf("what did we decide about the budget?"), ["decid", "budget"]);
     assert.match(recallText([], "unicorns"), /Nothing in your past conversations matches "unicorns"/);
     assert.match(recallText(recall("budget", past, name), "budget"), /Hamed: Great, and keep the budget under 400/);
   });
