@@ -93,12 +93,12 @@ describe("parseUpdates", () => {
         { kind: "voice", fileId: "v", bytes: 900 },
         { kind: "image", fileId: "big", bytes: 90_000, mime: "image/jpeg" },
         { kind: "image", fileId: "d", bytes: 0, mime: "image/png" },
-        { kind: "other", what: "files" },
-        { kind: "other", what: "stickers" },
-        { kind: "other", what: "videos" },
-        { kind: "other", what: "video messages" },
-        { kind: "other", what: "GIFs" },
-        { kind: "other", what: "HEIC images" },
+        { kind: "file", what: "files", fileId: "p", bytes: 0, mime: "application/pdf" },
+        { kind: "other", what: "stickers", bytes: 0 },
+        { kind: "file", what: "videos", fileId: "m", bytes: 0, mime: "" },
+        { kind: "file", what: "video messages", fileId: "n", bytes: 0, mime: "" },
+        { kind: "file", what: "GIFs", fileId: "g", bytes: 0, mime: "" },
+        { kind: "other", what: "HEIC images", bytes: 0 },
       ],
     );
     assert.equal(out[1].text, "look", "a caption is the photo's text");
@@ -350,6 +350,7 @@ function inbox(over: Partial<InboxHooks> = {}, card?: { options: string[]; permi
       return `/home/me/.bloks/attachments/${seen.downloads.length}.png`;
     },
     saveVoice: () => "/home/me/.bloks/attachments/v.ogg",
+    saveFile: (_bytes, ext) => `/home/me/.bloks/attachments/f.${ext}`,
     waiting: () => waiting,
     answer: async (_chatId, read) => {
       seen.answers.push(read);
@@ -415,10 +416,10 @@ describe("the inbox", () => {
     assert.deepEqual(seen.sent, []);
   });
 
-  test("with no speech key a voice message is answered, not delivered", async () => {
+  test("with no speech key a voice message gets a refusal note", async () => {
     const { box, seen } = inbox({ transcriber: () => null });
     await box.take(voice());
-    assert.deepEqual(seen.delivered, []);
+    assert.deepEqual(seen.delivered, ["[A voice message (6 bytes) did not arrive (there is no speech key to transcribe it).]"]);
     assert.deepEqual(seen.downloads, [], "nothing to hear it with, so nothing is fetched");
     assert.match(seen.sent[0], /did not reach your agent\. Add a speech key in Bloks Settings, or type it/);
   });
@@ -430,7 +431,7 @@ describe("the inbox", () => {
       },
     });
     await box.take(voice());
-    assert.deepEqual(seen.delivered, []);
+    assert.match(seen.delivered[0], /could not be transcribed: OpenAI answered 401/);
     assert.match(seen.sent[0], /couldn't transcribe that voice message \(OpenAI answered 401\), so it did not reach your agent/);
   });
 
@@ -442,7 +443,8 @@ describe("the inbox", () => {
     });
     await box.take(voice());
     await box.take(photo("p1"));
-    assert.deepEqual(seen.delivered, []);
+    assert.equal(seen.delivered.length, 2);
+    for (const note of seen.delivered) assert.match(note, /Telegram answered HTTP 400/);
     assert.equal(seen.sent.length, 2);
     for (const said of seen.sent) assert.match(said, /Telegram answered HTTP 400.*did not reach your agent/);
   });
@@ -450,7 +452,7 @@ describe("the inbox", () => {
   test("silence is not sent on as an empty message", async () => {
     const { box, seen } = inbox({ transcriber: () => async () => "  " });
     await box.take(voice());
-    assert.deepEqual(seen.delivered, []);
+    assert.match(seen.delivered[0], /no words could be made out/);
     assert.match(seen.sent[0], /couldn't make out any words/);
   });
 
@@ -467,14 +469,14 @@ describe("the inbox", () => {
     const { box, seen } = inbox();
     await box.take(photo("p1", { media: { kind: "image", fileId: "p1", bytes: 11 * 1024 * 1024, mime: "image/png" } }));
     assert.deepEqual(seen.downloads, []);
-    assert.deepEqual(seen.delivered, []);
+    assert.match(seen.delivered[0], /over 10 MB/);
     assert.match(seen.sent[0], /over 10 MB/);
   });
 
   test("something that is not really an image is refused, not saved", async () => {
     const { box, seen } = inbox({ download: async () => OGG });
     await box.take(photo("p1"));
-    assert.deepEqual(seen.delivered, []);
+    assert.match(seen.delivered[0], /only png, jpeg, gif and webp/);
     assert.match(seen.sent[0], /only png, jpeg, gif and webp/);
   });
 
@@ -501,7 +503,7 @@ describe("the inbox", () => {
     assert.equal(seen.delivered.length, 1);
   });
 
-  test("an album with a video in it delivers the photos and says what was left out", async () => {
+  test("an album with a refused part delivers the photos and says what was left out", async () => {
     const { box, seen } = inbox();
     await box.take(photo("p1", { album: "g" }));
     await box.take({ ...message(), text: "", album: "g", media: { kind: "other", what: "videos" } });
@@ -510,12 +512,12 @@ describe("the inbox", () => {
     assert.match(seen.sent[0], /1 of those 2 did not reach your agent \(I can't take videos\)/);
   });
 
-  test("stickers, videos and other files get a reply and go nowhere", async () => {
+  test("refused media gets a reply and a note without downloading", async () => {
     const { box, seen } = inbox();
     for (const what of ["stickers", "videos", "video messages", "files"]) {
       await box.take({ ...message(), text: "", media: { kind: "other", what } });
     }
-    assert.deepEqual(seen.delivered, []);
+    assert.equal(seen.delivered.length, 4);
     assert.deepEqual(seen.downloads, []);
     assert.equal(seen.sent.length, 4);
     assert.match(seen.sent[0], /can't take stickers here, so that did not reach your agent/);
@@ -525,7 +527,7 @@ describe("the inbox", () => {
     const { box, seen } = inbox();
     await box.take({ ...message(), text: "what is wrong with this hinge?", media: { kind: "other", what: "videos" } });
     assert.deepEqual(seen.delivered, [
-      "what is wrong with this hinge?\n\n[Something came with this that did not arrive (Bloks can't take videos from Telegram).]",
+      "what is wrong with this hinge?\n\n[A video came with this and did not arrive (Bloks can't take videos from Telegram).]",
     ]);
     assert.deepEqual(seen.sent, ["I can't take videos here. Your caption went to your agent without it."]);
   });
@@ -584,14 +586,14 @@ describe("the inbox", () => {
     assert.equal(seen.delivered.length, 1);
   });
 
-  test("an uncaptioned photo that cannot be taken is answered as before", async () => {
+  test("an uncaptioned photo failure sends a note and keeps the same reply", async () => {
     const { box, seen } = inbox({
       download: async () => {
         throw new Error("timed out");
       },
     });
     await box.take(photo("p1"));
-    assert.deepEqual(seen.delivered, []);
+    assert.deepEqual(seen.delivered, ["[A photo (7 bytes) did not arrive (timed out).]"]);
     assert.deepEqual(seen.sent, ["I couldn't take that photo (timed out), so it did not reach your agent."]);
   });
 

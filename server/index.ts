@@ -7582,6 +7582,7 @@ const telegramInbox = new telegram.Inbox({
     speech.transcriptionVendor(cfg) ? (audio) => speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg") : null,
   saveImage: (bytes) => attachments.saveImage(bytes),
   saveVoice: (bytes) => attachments.saveBytes(bytes, "ogg"),
+  saveFile: (bytes, extension) => attachments.saveBytes(bytes, extension),
   waiting: (chatId) => telegramAsks.get(chatId),
   async answer(chatId, read) {
     const waiting = telegramAsks.get(chatId);

@@ -11,6 +11,7 @@ import { startHarness } from "./helpers/server.ts";
 import { agentOn, idle, messagesOf, PICKUP, waitFor } from "./helpers/turns.ts";
 import { TelegramReturns } from "../server/telegram-returns.ts";
 import type { Message, Store } from "../server/store.ts";
+import { splitAttachments } from "../src/lib/attachments.ts";
 
 const CHAT = 10101;
 const OTHER_CHAT = 20202;
@@ -31,8 +32,10 @@ async function telegramStub(t: TestContext) {
     answerParts: 0,
     held: false,
     release: [] as (() => void)[],
+    getFiles: 0,
   };
   const server = createServer((req, res) => {
+    if (req.url?.startsWith("/file/bot")) return void res.end(Buffer.from([1, 2, 3, 4, 5]));
     let raw = "";
     req.on("data", (chunk) => raw += chunk);
     req.on("end", () => {
@@ -40,6 +43,7 @@ async function telegramStub(t: TestContext) {
       res.setHeader("content-type", "application/json");
       const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
       if (req.url?.endsWith("/getMe")) return reply({ username: "offline_test_bot" });
+      if (req.url?.endsWith("/getFile")) { state.getFiles++; return reply({ file_path: "files/clip.mp4", file_size: 5 }); }
       if (req.url?.endsWith("/getUpdates")) return void setTimeout(() =>
         reply(state.updates.filter((u) => u.update_id >= body.offset)), 50);
       if (req.url?.endsWith("/sendMessage")) {
@@ -64,6 +68,10 @@ async function telegramStub(t: TestContext) {
     url: `http://127.0.0.1:${(server.address() as any).port}`,
     push(text: string, chatId = CHAT) {
       state.updates.push({ update_id: state.next++, message: { chat: { id: chatId }, from: { first_name: "Test" }, text } });
+    },
+    pushFile(chatId = CHAT) {
+      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId }, caption: "FILE_REQUEST",
+        video: { file_id: "test-clip", file_size: 5, mime_type: "video/mp4" } } });
     },
     answers: () => state.accepted.filter((m) => !saved(m.text) && !m.text.startsWith("Paired.")),
   };
@@ -160,6 +168,35 @@ setTimeout(() => process.exit(0), 50);
     },
   };
 }
+
+test("a Telegram file is saved by real wiring, queued through drain and returned to its chat", async (t) => {
+  const f = await fixture(t);
+  f.tg.pushFile(OTHER_CHAT);
+  f.tg.pushFile(OTHER_CHAT);
+  assert.ok(await waitFor(() => f.tg.state.accepted.some((m) => m.text === "This bot is not paired with you.")));
+  await sleep(200);
+  assert.equal(f.tg.state.accepted.filter((m) => m.text === "This bot is not paired with you.").length, 1);
+  assert.equal(f.tg.state.getFiles, 0, "unpaired files are never downloaded");
+  await f.h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 60 }) });
+  f.tg.pushFile();
+  const request = await waitFor(async () => (await messagesOf(f.h, f.bot)).find((m) => m.role === "user" && m.text.includes("FILE_REQUEST")));
+  assert.ok(request, "the real Inbox did not queue the file");
+  assert.equal(request.queued, true);
+  assert.equal(request.telegramReply.chatId, CHAT);
+  assert.equal(f.tg.state.getFiles, 1);
+  assert.equal(f.engine.state.calls.length, 0);
+  const { display, files } = splitAttachments(request.text);
+  assert.equal(display, "FILE_REQUEST");
+  assert.equal(files.length, 1);
+  assert.ok(files[0]!.startsWith(join(f.dataRoot, ".bloks", "attachments") + "/"));
+  assert.ok(files[0]!.endsWith(".mp4"));
+  assert.deepEqual([...readFileSync(files[0]!)], [1, 2, 3, 4, 5]);
+  f.engine.state.immediate = true;
+  await f.reboot();
+  assert.ok(await waitFor(() => f.tg.state.accepted.some((m) => m.chat_id === CHAT && m.text === "ANSWER")));
+  assert.ok(f.engine.state.calls.some((call) => call.includes("FILE_REQUEST") && call.includes(files[0]!)), "the engine did not receive the file path");
+  assert.equal((await messagesOf(f.h, f.bot)).find((m) => m.id === request.id).telegramReply.state, "sent");
+});
 
 test("drain intake keeps its chat and task through restart, returns once, and never subscribes to later turns", async (t) => {
   const f = await fixture(t);
