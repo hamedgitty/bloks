@@ -7,7 +7,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { describeComponent, lastSaid, plainText, previewLine } from "../src/lib/preview.ts";
+import { agentPreview, describeComponent, lastHeardAt, lastSaid, plainText, previewLine } from "../src/lib/preview.ts";
 import type { Message } from "../src/state/reducer.ts";
 
 const msg = (over: Partial<Message>): Message =>
@@ -123,5 +123,45 @@ describe("the row's last message (#206)", () => {
     const waiting = msg({ id: "q", role: "user", text: "and then?", at: 2, queued: true });
     assert.equal(lastSaid([reply, waiting])?.id, "r");
     assert.equal(lastSaid([waiting]), undefined);
+  });
+});
+
+describe("an agent whose words did not come along", () => {
+  const agent = (over: Record<string, unknown> = {}) => ({
+    title: "Research lead",
+    threadId: "t-1",
+    messages: [] as Message[],
+    tasks: [{ id: "t-1", createdAt: 100, lastAt: 100 }],
+    ...over,
+  });
+
+  test("through Bloks Cloud, trimmed to nothing, it reads as who it is and when it last spoke", () => {
+    // One long message can be more than the relay carries, so an agent can
+    // arrive with no messages and a count of those left behind. Its row
+    // said "New agent", about an agent with a whole history.
+    const trimmed = agent({ olderMessages: 12, tasks: [{ id: "t-1", createdAt: 100, lastAt: 900 }] });
+    assert.equal(agentPreview(trimmed), "Research lead");
+    assert.equal(lastHeardAt(trimmed), 900);
+    assert.equal(agentPreview({ ...trimmed, title: "" }), "Open to see what was said");
+  });
+
+  test("its open conversation's own time says it has history, even without the count", () => {
+    // a conversation opened on another device, still on its way here
+    assert.equal(agentPreview(agent({ tasks: [{ id: "t-1", createdAt: 100, lastAt: 500 }] })), "Research lead");
+  });
+
+  test("an agent that really has said nothing is still a new agent", () => {
+    assert.equal(agentPreview(agent()), "New agent");
+    assert.equal(lastHeardAt(agent()), undefined);
+    assert.equal(
+      agentPreview(agent({ tasks: [{ id: "t-1", createdAt: 100, lastAt: 100 }, { id: "t-2", createdAt: 50, lastAt: 80 }] })),
+      "New conversation",
+    );
+  });
+
+  test("words that are here are still what it shows", () => {
+    const said = agent({ olderMessages: 3, messages: [msg({ text: "Found three papers.", at: 700 })] });
+    assert.equal(agentPreview(said), "Found three papers.");
+    assert.equal(lastHeardAt(said), 700);
   });
 });

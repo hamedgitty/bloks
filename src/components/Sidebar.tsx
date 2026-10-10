@@ -31,7 +31,7 @@ import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/pageVisible";
-import { lastSaid, previewLine } from "@/lib/preview";
+import { agentPreview, lastHeardAt, lastSaid, previewLine } from "@/lib/preview";
 import {
   acceptsRow,
   landingOver,
@@ -68,16 +68,6 @@ import { plural } from "@/lib/plural";
 
 const isElectron = navigator.userAgent.includes("Electron");
 
-function preview(bot: Bot): string {
-  // a lane waiting on a human outranks everything: that is the row the
-  // user should open next
-  if (bot.tasks?.some((t) => t.state === "needs-you")) return "Waiting for you…";
-  if (bot.busy) return "Working…";
-  // an empty lane on an agent that has others is a fresh conversation,
-  // not a fresh agent, which is what the shared wording would say
-  if (!bot.messages.length && (bot.tasks?.length ?? 0) > 1) return "New conversation";
-  return previewLine(lastSaid(bot.messages));
-}
 
 interface MenuState {
   kind: "agent" | "room";
@@ -397,7 +387,7 @@ function BotListItem({
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
-  const last = lastSaid(bot.messages);
+  const heardAt = lastHeardAt(bot);
   const drag = rowDrag(filingOf("agent", bot), onDrag);
   if (rail) {
     // the collapsed sidebar: just the face, with the unread dot riding
@@ -508,9 +498,9 @@ function BotListItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="min-w-0 truncate text-[14px] font-semibold text-foreground">{bot.name}</span>
-          {last && (
+          {heardAt !== undefined && (
             <span className="shrink-0 text-[11.5px] tabular-nums text-muted-foreground">
-              {formatWhen(last.at)}
+              {formatWhen(heardAt)}
             </span>
           )}
         </div>
@@ -521,7 +511,7 @@ function BotListItem({
               bot.unread ? "font-medium text-foreground" : "text-muted-foreground",
             )}
           >
-            {preview(bot)}
+            {agentPreview(bot)}
           </span>
           {bot.busy && !bot.tasks?.some((t) => t.state === "needs-you") ? (
             <Loader2 size={13} className="shrink-0 animate-spin text-brand motion-reduce:animate-none" aria-label="working" />

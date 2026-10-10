@@ -101,3 +101,51 @@ export function changedLine(total: number, shared = 0): string {
   if (!total) return `${files(shared)} changed while others were working here`;
   return `Changed ${files(total)}, ${shared} more while others were working here`;
 }
+
+/** An agent as its row in the list needs it. `messages` are its open
+ * conversation's, and `tasks` its conversations' summaries, which the
+ * server sends whether or not the messages came too. */
+interface RowAgent {
+  title?: string;
+  busy?: boolean;
+  messages: Message[];
+  olderMessages?: number;
+  threadId: string;
+  activeTaskId?: string;
+  tasks?: Array<{ id: string; state?: string; lastAt?: number; createdAt: number }>;
+}
+
+/** Whether an agent has said things that are not here: through Bloks
+ * Cloud its transcript can arrive trimmed to nothing, since one long
+ * message can be more than the relay carries, and a conversation opened
+ * on another device arrives empty until its messages are fetched. Its
+ * open conversation's summary still says something was said there. */
+export function unseenHistory(bot: RowAgent): boolean {
+  if (lastSaid(bot.messages)) return false;
+  if ((bot.olderMessages ?? 0) > 0) return true;
+  const open = bot.tasks?.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
+  return open?.lastAt !== undefined && open.lastAt > open.createdAt;
+}
+
+/** When the row says the agent was last heard from: its newest message,
+ * or, when that is not here, its open conversation's own time. */
+export function lastHeardAt(bot: RowAgent): number | undefined {
+  const last = lastSaid(bot.messages);
+  if (last) return last.at;
+  return unseenHistory(bot) ? bot.tasks?.find((t) => t.id === (bot.activeTaskId ?? bot.threadId))?.lastAt : undefined;
+}
+
+/** The line under an agent's name in the list. An agent whose words did
+ * not come along is not a new one, which is what an empty transcript used
+ * to say: it reads as who it is until its words arrive. */
+export function agentPreview(bot: RowAgent): string {
+  // a lane waiting on a human outranks everything: that is the row the
+  // user should open next
+  if (bot.tasks?.some((t) => t.state === "needs-you")) return "Waiting for you…";
+  if (bot.busy) return "Working…";
+  if (unseenHistory(bot)) return bot.title?.trim() || "Open to see what was said";
+  // an empty lane on an agent that has others is a fresh conversation,
+  // not a fresh agent, which is what the shared wording would say
+  if (!bot.messages.length && (bot.tasks?.length ?? 0) > 1) return "New conversation";
+  return previewLine(lastSaid(bot.messages));
+}
