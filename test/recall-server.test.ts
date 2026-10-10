@@ -19,7 +19,7 @@ test("memory files are searched too, named by file, and a link is never read thr
 
   await h.fetch(`/api/bots/${bot.id}/memory`, {
     method: "PUT",
-    body: JSON.stringify({ text: "# Memory\n\n## Vendors\n- Sticker Mule prints our stickers, net 30.\n" }),
+    body: JSON.stringify({ text: "# Memory\n\n## Vendors\n- Paperwren prints our stickers, net 30.\n" }),
   });
   const topics = join(h.home, ".bloks", "workspaces", bot.id, "memory");
   mkdirSync(topics, { recursive: true });
@@ -28,10 +28,10 @@ test("memory files are searched too, named by file, and a link is never read thr
   writeFileSync(outside, "Plutonium inventory, not for agents.");
   symlinkSync(outside, join(topics, "secret.md"));
 
-  const [vendor] = await recall("sticker mule");
+  const [vendor] = await recall("paperwren stickers");
   assert.equal(vendor?.memory, "MEMORY.md");
   assert.equal(vendor.where, "your memory file MEMORY.md");
-  assert.match(vendor.text, /^Vendors - Sticker Mule/, "a piece keeps its heading, without the marks");
+  assert.match(vendor.text, /^Vendors - Paperwren/, "a piece keeps its heading, without the marks");
 
   const [party] = await recall("zanzibar party");
   assert.equal(party?.where, "your memory file memory/launch.md");

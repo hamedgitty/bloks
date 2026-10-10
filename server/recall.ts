@@ -111,7 +111,7 @@ const PIECE = 600;
  * A memory file as the pieces a hit can be: a section under its heading,
  * cut at blank lines (or, for one long paragraph, at line ends) so no
  * piece runs much past PIECE characters. Each piece keeps its heading,
- * since "- Sticker Mule, net 30" means little without "Vendors" above it,
+ * since "- Paperwren, net 30" means little without "Vendors" above it,
  * though not the marks in front, which read as noise once a piece is cut
  * into one line for a turn or a note under the person's message.
  */

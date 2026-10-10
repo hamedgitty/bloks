@@ -89,10 +89,10 @@ describe("ranking", () => {
 
   test("newer wins among equals, and a strong old match still beats a weak new one", () => {
     const index = new TermIndex();
-    index.add("old", NOW - 300 * DAY, "Invoice from Acme for the kiosk build");
-    index.add("new", NOW - DAY, "Invoice from Acme for the kiosk build");
+    index.add("old", NOW - 300 * DAY, "Invoice from Brightfold for the kiosk build");
+    index.add("new", NOW - DAY, "Invoice from Brightfold for the kiosk build");
     for (let i = 0; i < 20; i++) index.add(`f${i}`, NOW - 50 * DAY, `Invoice ${i} paid on time.`);
-    let hits = rank("acme kiosk", [index], { now: NOW });
+    let hits = rank("brightfold kiosk", [index], { now: NOW });
     assert.deepEqual(hits.map((h) => h.doc.id).slice(0, 2), ["new", "old"]);
 
     hits = rank("invoice kiosk", [index], { now: NOW, limit: 3 });
@@ -100,10 +100,10 @@ describe("ranking", () => {
   });
 
   test("a hit is cut around the words, not from its start", () => {
-    const text = `${"Background that nobody asked about. ".repeat(40)}The answer: Sticker Mule, delivered Friday.`;
+    const text = `${"Background that nobody asked about. ".repeat(40)}The answer: Paperwren Prints, delivered Friday.`;
     const past = [lane("dm", [...filler(5), [text, 2]])];
-    const [hit] = recall("sticker mule friday", past, speaker);
-    assert.match(hit.text, /Sticker Mule, delivered Friday/);
+    const [hit] = recall("paperwren prints friday", past, speaker);
+    assert.match(hit.text, /Paperwren Prints, delivered Friday/);
     assert.ok(hit.text.startsWith("…"));
     assert.ok(hit.text.length <= 600);
     assert.equal(hit.clipped, true);
@@ -129,8 +129,8 @@ describe("memory files", () => {
       "# Memory",
       "",
       "## Vendors",
-      "- Sticker Mule for stickers, net 30.",
-      "- Moo for business cards.",
+      "- Paperwren for stickers, net 30.",
+      "- Cardloft for business cards.",
       "",
       "## People",
       "Dana runs finance.",
@@ -138,18 +138,18 @@ describe("memory files", () => {
       `${"A long note about the launch. ".repeat(40)}`,
     ].join("\n");
     const pieces = memoryPieces(text);
-    assert.ok(pieces.some((p) => p.startsWith("Vendors\n- Sticker Mule")));
+    assert.ok(pieces.some((p) => p.startsWith("Vendors\n- Paperwren")));
     assert.ok(pieces.filter((p) => p.startsWith("People\n")).length >= 2, "a long section is cut, each piece under its heading");
     assert.ok(!pieces.some((p) => p.startsWith("Memory")), "a heading alone is not a piece");
     const index = indexMemory(text, NOW);
     const [hit] = rank("sticker vendor", [index], { now: NOW });
-    assert.match(hit.doc.text, /Sticker Mule/);
+    assert.match(hit.doc.text, /Paperwren/);
   });
 });
 
 describe("the index", () => {
   test("growing one in place ranks as building it whole does", () => {
-    const texts = ["Launch moved to Friday", "Vendor is Sticker Mule", "Budget stays under 400", "Friday launch party at noon"];
+    const texts = ["Launch moved to Friday", "Vendor is Paperwren", "Budget stays under 400", "Friday launch party at noon"];
     const whole = new TermIndex();
     texts.forEach((t, i) => whole.add(`m${i}`, NOW - i, t));
     const grown = new TermIndex();
@@ -167,13 +167,13 @@ describe("the index", () => {
 
   test("new words are added, the same words only move, an edit asks to be rebuilt", () => {
     const index = new TermIndex();
-    const text = "Vendor is Sticker Mule";
+    const text = "Vendor is Paperwren";
     index.add("m1", 1, text);
     assert.equal(index.update("m1", 5, text), true);
     assert.equal(index.docs[0].at, 5);
     assert.equal(index.update("m2", 6, "Launch on Friday"), true);
     assert.equal(rank("friday", [index])[0].doc.id, "m2");
-    assert.equal(index.update("m1", 5, "Vendor is Moo"), false);
+    assert.equal(index.update("m1", 5, "Vendor is Cardloft"), false);
     assert.equal(index.update("m1", 5, null), false, "taken back");
   });
 

@@ -26,8 +26,8 @@ function seedLaunch(home: string, threadId: string) {
     messages.push({ id: `standup-${i}`, at, role: "user", kind: "text", text: `Standup ${i}: the printer queue is fine and lunch is at noon.` });
     messages.push({ id: `standup-${i}-reply`, at: at + 1000, role: "bot", kind: "text", text: `Thanks, noted for standup ${i}.` });
   }
-  messages.push({ id: "decided", at: Date.now() - 3 * day, role: "user", kind: "text", text: "For the launch we picked Sticker Mule as the sticker vendor, with delivery on Friday." });
-  messages.push({ id: "decided-reply", at: Date.now() - 3 * day + 1000, role: "bot", kind: "text", text: "Got it: Sticker Mule prints the launch stickers, delivered Friday." });
+  messages.push({ id: "decided", at: Date.now() - 3 * day, role: "user", kind: "text", text: "For the launch we picked Paperwren as the sticker vendor, with delivery on Friday." });
+  messages.push({ id: "decided-reply", at: Date.now() - 3 * day + 1000, role: "bot", kind: "text", text: "Got it: Paperwren prints the launch stickers, delivered Friday." });
   writeFileSync(join(home, ".bloks", `messages-${threadId}.json`), JSON.stringify(messages));
 }
 
@@ -53,7 +53,7 @@ test("the person's turn is told what was said elsewhere, in its words, once, and
   seedLaunch(home, launch.id);
   const topics = join(home, ".bloks", "workspaces", bot.id, "memory");
   mkdirSync(topics, { recursive: true });
-  writeFileSync(join(topics, "vendors.md"), "## Vendors\n- Sticker Mule: launch stickers, net 30 invoices.\n");
+  writeFileSync(join(topics, "vendors.md"), "## Vendors\n- Paperwren: launch stickers, net 30 invoices.\n");
 
   h = await startHarness({ HOME: home });
   t.after(() => h.stop());
@@ -84,9 +84,9 @@ test("the person's turn is told what was said elsewhere, in its words, once, and
   assert.ok(turn.text.includes(MARK), `nothing was recalled: ${turn.text}`);
   assert.ok(turn.text.endsWith(QUESTION), "the person's words come last");
   assert.match(turn.text, /your conversation "Launch plan", Hamed|your conversation "Launch plan", the person/);
-  assert.match(turn.text, /Sticker Mule as the sticker vendor/);
+  assert.match(turn.text, /Paperwren as the sticker vendor/);
   assert.match(turn.text, /ignore the rest/);
-  assert.ok(!turn.system.includes(MARK) && !turn.system.includes("Sticker Mule as the sticker vendor"), "recall reached the system prompt");
+  assert.ok(!turn.system.includes(MARK) && !turn.system.includes("Paperwren as the sticker vendor"), "recall reached the system prompt");
   const block = turn.text.slice(0, turn.text.indexOf(QUESTION));
   assert.ok(block.length < 2_200, `the notes ran to ${block.length} characters`);
   assert.ok(!/Standup \d+/.test(block), "a standup that only shares a word was recalled");
@@ -99,7 +99,7 @@ test("the person's turn is told what was said elsewhere, in its words, once, and
     { kind: decided.kind, threadId: decided.threadId, where: decided.where, who: decided.who },
     { kind: "conversation", threadId: launch.id, where: "Launch plan", who: "You" },
   );
-  assert.match(decided.text, /Sticker Mule/);
+  assert.match(decided.text, /Paperwren/);
   assert.ok(notes.every((note) => note.memory !== "MEMORY.md"), "MEMORY.md is already in the prompt");
 
   // asked again, nothing it was just given comes back
@@ -197,8 +197,8 @@ let input = "";
   assert.ok(await waitFor(() => seen().length > before), "the turn never ran");
   assert.ok(await idle(h, scout));
   const turn = seen()[before];
-  assert.ok(turn.text.includes(MARK) && turn.text.includes("Sticker Mule"), `nothing was recalled: ${turn.text}`);
-  assert.ok(!turn.system.includes(MARK) && !turn.system.includes("Sticker Mule"), "recall reached the standing prompt");
+  assert.ok(turn.text.includes(MARK) && turn.text.includes("Paperwren"), `nothing was recalled: ${turn.text}`);
+  assert.ok(!turn.system.includes(MARK) && !turn.system.includes("Paperwren"), "recall reached the standing prompt");
   const mine = (await messagesOf(h, scout)).find((m) => m.text === QUESTION);
   assert.ok(mine.recalled?.length, "the person's message does not say what was recalled");
 
