@@ -549,6 +549,112 @@ export function keepTyping(
   };
 }
 
+/** Take back a message the bot sent. */
+export async function remove(token: string, chatId: number, messageId: number): Promise<void> {
+  await call(token, "deleteMessage", { chat_id: chatId, message_id: messageId }, 5_000);
+}
+
+/** How long a turn runs before the chat is told what it is doing. Most
+ * answers come sooner, and a status line for those would be noise. */
+export const PROGRESS_AFTER_MS = 20_000;
+/** The most often that line is rewritten, however quickly tools change:
+ * Telegram slows a bot that edits fast, and nobody reads that fast. */
+export const PROGRESS_EVERY_MS = 4_000;
+
+/** A tool's name as a person reads it: without the server a connector's
+ * tool is filed under, on one line, and short. */
+export function toolLabel(name: string): string {
+  const line = (name.replace(/^mcp__.+?__/, "").split("\n")[0] ?? "").trim();
+  return line.length > 60 ? `${line.slice(0, 57)}...` : line;
+}
+
+export interface ProgressHooks {
+  /** Says it, and returns the message id it became. */
+  post(text: string): Promise<number | undefined>;
+  edit(messageId: number, text: string): Promise<void>;
+  remove(messageId: number): Promise<void>;
+}
+
+/**
+ * One line saying what a long turn is doing, kept up to date.
+ *
+ * "typing" says something is happening and not what, which is fine for
+ * a few seconds and not for a few minutes. So a turn still running after
+ * `afterMs` posts one message naming the tool it is on, edits that same
+ * message as the tool changes (no more often than `everyMs`), and takes
+ * it away when the turn ends, before the answer arrives: the answer is a
+ * new message, so the phone still says there is one. While a card waits
+ * nothing is posted or changed, because the agent is waiting on the
+ * person then, not working. Every call is made one after another, so an
+ * edit cannot land after the delete, and a failure is let pass.
+ */
+export class Progress {
+  private hooks: ProgressHooks;
+  private paused: () => boolean;
+  private everyMs: number;
+  private tool = "";
+  /** What the message says, or is about to. */
+  private shown?: string;
+  private messageId?: number;
+  /** The turn has run long enough to be talked about. */
+  private due = false;
+  private lastAt = 0;
+  private timer?: ReturnType<typeof setTimeout>;
+  private stopped = false;
+  private calls: Promise<void> = Promise.resolve();
+
+  constructor(hooks: ProgressHooks, paused: () => boolean, afterMs = PROGRESS_AFTER_MS, everyMs = PROGRESS_EVERY_MS) {
+    this.hooks = hooks;
+    this.paused = paused;
+    this.everyMs = everyMs;
+    this.wait(afterMs, () => {
+      this.due = true;
+      this.tick();
+    });
+  }
+
+  /** A tool started. */
+  using(name: string): void {
+    this.tool = toolLabel(name);
+    if (!this.due || this.timer || this.stopped) return;
+    this.wait(Math.max(0, this.lastAt + this.everyMs - Date.now()), () => this.tick());
+  }
+
+  /** The turn is over. Resolves once the line is gone, so the answer
+   * that follows cannot arrive above it. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    clearTimeout(this.timer);
+    await this.calls;
+    if (this.messageId !== undefined) await this.hooks.remove(this.messageId).catch(() => {});
+  }
+
+  private wait(ms: number, then: () => void): void {
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      then();
+    }, ms);
+    // Nothing should keep the process alive just to say what it is doing.
+    this.timer.unref?.();
+  }
+
+  private tick(): void {
+    if (this.stopped) return;
+    if (this.paused()) return this.wait(this.everyMs, () => this.tick());
+    const text = this.tool ? `Working: ${this.tool}...` : "Working...";
+    if (text === this.shown) return;
+    this.shown = text;
+    this.lastAt = Date.now();
+    this.calls = this.calls
+      .then(async () => {
+        if (this.stopped) return;
+        if (this.messageId === undefined) this.messageId = await this.hooks.post(text);
+        else await this.hooks.edit(this.messageId, text);
+      })
+      .catch(() => {});
+  }
+}
+
 /**
  * The bytes of a file somebody sent the bot.
  *

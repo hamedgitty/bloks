@@ -1725,6 +1725,8 @@ bus.subscribe((event: RuntimeEvent) => {
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
         // named on disk, so a turn cut off mid-call can say which call
         cutOff.tool(event.threadId, event.title ?? "tool");
+        // and on a phone waiting on this lane, once the turn is a long one
+        telegramWorking.get(event.threadId)?.using(event.title ?? "tool");
         // The browser is watched from its first use in a turn, not from the
         // turn's start: a turn that never touches it should not end with
         // a picture of whatever page an earlier one left open. Cheap to
@@ -6955,6 +6957,23 @@ const telegramAsks = new Map<
 const telegramCards = new CardButtons();
 /** "typing" in each chat whose message an agent is working on. */
 const telegramTyping = new Map<number, { now(): void; stop(): Promise<void> }>();
+/** The line saying what a long Telegram turn is doing, by lane, since
+ * that is what a tool starting names. */
+const telegramWorking = new Map<string, telegram.Progress>();
+
+/** A status line in this chat, which keeps quiet while a card there
+ * waits on the person. */
+function telegramProgress(chatId: number): telegram.Progress {
+  const token = () => cfg.telegram?.token ?? "";
+  return new telegram.Progress(
+    {
+      post: (text) => telegram.post(token(), chatId, text),
+      edit: (messageId, text) => telegram.edit(token(), chatId, messageId, text),
+      remove: (messageId) => telegram.remove(token(), chatId, messageId),
+    },
+    () => telegramAsks.has(chatId),
+  );
+}
 
 /** Turns started from each chat, one after another. Kept off the polling
  * loop so a turn that is running does not stop the next message being
@@ -7163,6 +7182,18 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     () => telegramAsks.has(chatId),
   );
   telegramTyping.set(chatId, typing);
+  // and past twenty seconds or so, a line saying what it is doing
+  const progress = telegramProgress(chatId);
+  telegramWorking.set(laneId, progress);
+  const settled = async () => {
+    telegramLive.delete(botId);
+    telegramAsks.delete(chatId);
+    // However the turn ended, nothing is working on this chat now.
+    if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
+    if (telegramWorking.get(laneId) === progress) telegramWorking.delete(laneId);
+    await typing.stop();
+    await progress.stop();
+  };
   // Busy with a turn that did not start here: the words go into it if
   // its engine can take them, and wait in the lane like any queued
   // message if not. Either way the answer comes back here. Turning them
@@ -7180,10 +7211,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
       const from = list.findIndex((m) => m.id === sent.id);
       return replyIn(botId, from >= 0 ? list.slice(from + 1) : []);
     } finally {
-      telegramLive.delete(botId);
-      telegramAsks.delete(chatId);
-      if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
-      await typing.stop();
+      await settled();
     }
   }
   try {
@@ -7192,11 +7220,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     // phone is answered on the phone's schedule, not the app's.
     await waitForIdle(botId, 20 * 60_000);
   } finally {
-    telegramLive.delete(botId);
-    telegramAsks.delete(chatId);
-    // However the turn ended, nothing is working on this chat now.
-    if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
-    await typing.stop();
+    await settled();
   }
   return replyIn(botId, store.messagesFor(laneId).slice(before));
 }

@@ -498,6 +498,16 @@ the app. A request held through a restart gets its files after its answer
 the same way (`TelegramReturns`), and only once that answer has arrived.
 Turns that did not begin on Telegram send nothing there.
 
+While a Telegram turn runs the chat shows "typing" (`keepTyping`), and a
+turn still running after about twenty seconds also posts one line saying
+what it is doing, "Working: <tool>..." (`telegram.Progress`, fed from
+`item.started` through `telegramWorking`, keyed by lane). The same
+message is edited as the tool changes, no more than once every four
+seconds, and deleted when the turn ends, before the answer is sent: the
+answer is a new message, so the phone still announces it. While a card
+waits on the person neither "typing" nor the line changes, since the
+agent is waiting then, not working.
+
 ## Teams as files
 
 `server/team-file.ts` reads and writes a team as one Markdown file: a

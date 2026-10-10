@@ -25,8 +25,10 @@ import {
   poll,
   post,
   type Press,
+  Progress,
   sendFiles,
   type TelegramState,
+  toolLabel,
   unbutton,
 } from "../server/telegram.ts";
 import { splitAttachments } from "../src/lib/attachments.ts";
@@ -831,6 +833,104 @@ describe("typing while the agent works", () => {
     });
     await chatAction("T", 42);
     assert.deepEqual(bodies, [{ chat_id: 42, action: "typing" }]);
+  });
+});
+
+describe("a line on what a long turn is doing", () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const until = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i++) await wait(10); };
+  /** A status line whose calls are written down. `posting` holds the
+   * post until the test lets it go. */
+  function line(paused = () => false, afterMs = 30, everyMs = 60) {
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    const hold = { on: false };
+    const progress = new Progress(
+      {
+        post: async (text) => {
+          if (hold.on) await new Promise<void>((resolve) => (release = resolve));
+          calls.push(`post ${text}`);
+          return 7;
+        },
+        edit: async (id, text) => void calls.push(`edit ${id} ${text}`),
+        remove: async (id) => void calls.push(`remove ${id}`),
+      },
+      paused,
+      afterMs,
+      everyMs,
+    );
+    return { progress, calls, hold, release: () => release?.() };
+  }
+
+  test("a quick turn says nothing at all", async () => {
+    const { progress, calls } = line();
+    progress.using("npm test");
+    await progress.stop();
+    await wait(50);
+    assert.deepEqual(calls, []);
+  });
+
+  test("a long one posts the tool it is on, once, and takes it away at the end", async () => {
+    const { progress, calls } = line();
+    progress.using("mcp__bloks_connectors__GMAIL_SEARCH");
+    await until(() => calls.length > 0);
+    await wait(30);
+    assert.deepEqual(calls, ["post Working: GMAIL_SEARCH..."]);
+    await progress.stop();
+    assert.deepEqual(calls, ["post Working: GMAIL_SEARCH...", "remove 7"]);
+  });
+
+  test("with no tool yet it says only that it is working", async () => {
+    const { progress, calls } = line();
+    await until(() => calls.length > 0);
+    assert.deepEqual(calls, ["post Working..."]);
+    await progress.stop();
+  });
+
+  test("tools changing quickly rewrite the line once, with the latest", async () => {
+    const { progress, calls } = line(() => false, 10, 300);
+    progress.using("npm test");
+    await until(() => calls.length > 0);
+    progress.using("npm run build");
+    progress.using("npm run lint");
+    await wait(40);
+    assert.equal(calls.length, 1, "not before the wait between rewrites is up");
+    await until(() => calls.length > 1);
+    await wait(350);
+    assert.deepEqual(calls, ["post Working: npm test...", "edit 7 Working: npm run lint..."]);
+    // the same tool again is not a change worth a call
+    progress.using("npm run lint");
+    await wait(350);
+    assert.equal(calls.length, 2);
+    await progress.stop();
+  });
+
+  test("nothing is posted while a card waits on the person, and it comes once the card is answered", async () => {
+    let waiting = true;
+    const { progress, calls } = line(() => waiting, 10, 30);
+    progress.using("npm test");
+    await wait(80);
+    assert.deepEqual(calls, [], "the agent is waiting on them, not working");
+    waiting = false;
+    await until(() => calls.length > 0);
+    assert.deepEqual(calls, ["post Working: npm test..."]);
+    await progress.stop();
+  });
+
+  test("a line still being posted when the turn ends is taken away once it lands", async () => {
+    const { progress, calls, hold, release } = line(() => false, 10);
+    hold.on = true;
+    await wait(40);
+    const stopped = progress.stop();
+    release();
+    await stopped;
+    assert.deepEqual(calls, ["post Working...", "remove 7"]);
+  });
+
+  test("a tool's name reads as a person would read it", () => {
+    assert.equal(toolLabel("mcp__bloks__ask_user"), "ask_user");
+    assert.equal(toolLabel("npm test\n--watch"), "npm test");
+    assert.equal(toolLabel("x".repeat(100)), `${"x".repeat(57)}...`);
   });
 });
 

@@ -1,6 +1,6 @@
 // Telegram that feels like the phone it is on: cards answered with a tap,
-// and files sent back. Every server, engine and Telegram account here is an
-// isolated fixture:
+// files sent back, and a word on what a long turn is doing. Every server,
+// engine and Telegram account here is an isolated fixture:
 // Telegram is a stub on loopback and the engine is a script that speaks
 // Codex's protocol.
 import assert from "node:assert/strict";
@@ -87,7 +87,8 @@ async function telegramStub(t: TestContext) {
 }
 
 /** An engine that speaks Codex's app-server protocol and does what the
- * words of its turn say: ask for approval, ask a question, or save files. */
+ * words of its turn say: ask for approval, ask a question, save files, or
+ * work slowly through a few commands. */
 function fakeCodex(root: string): string {
   const cli = join(root, "fake-codex.mjs");
   writeFileSync(cli, `#!${process.execPath}
@@ -107,6 +108,7 @@ const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000
 let thread, turn;
 const waiting = new Map();
 const ask = (id, method, params) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method, params: { threadId: thread, turnId: turn, ...params } }); });
+const tool = (id, command) => out({ method: "item/started", params: { threadId: thread, turnId: turn, item: { type: "commandExecution", id, command } } });
 const finish = (text) => {
   out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "answer", text } } });
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
@@ -149,6 +151,15 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     const dir = deliverables();
     for (let i = 1; i <= 7; i++) { writeFileSync(join(dir, "part-" + i + ".txt"), "part " + i); await nap(15); }
     return finish("Seven parts.");
+  }
+  if (text.includes("SLOW")) {
+    tool("t1", "npm test");
+    await nap(21_000);
+    tool("t2", "npm run build");
+    await nap(300);
+    tool("t3", "npm run lint");
+    await nap(5_000);
+    return finish("SLOW DONE");
   }
   finish("ANSWER");
 });
@@ -292,6 +303,30 @@ test("files from a turn that did not begin on Telegram stay in the app", async (
   await waitFor(async () => (await f.messages()).some((m) => m.kind === "artifact" && m.artifact.name === "chart.png"), "the turn never saved its files");
   await sleep(1_000);
   assert.deepEqual([...f.tg.calls("sendPhoto"), ...f.tg.calls("sendDocument")], []);
+});
+
+test("a long turn posts what it is working on, rewrites it as tools change, and takes it away for the answer", async (t) => {
+  const f = await fixture(t);
+  const asked = Date.now();
+  f.tg.say("SLOW work");
+  const status = await waitFor(() => f.tg.sent().find((m) => m.body.text?.startsWith("Working")), "no status line was posted", 40_000);
+  assert.equal(status.body.text, "Working: npm test...");
+  assert.ok(status.at - asked >= 19_000, `posted after ${status.at - asked} ms, not about twenty seconds`);
+  const answer = await waitFor(() => f.tg.state.calls.find((c) => c.method === "sendMessage" && c.body.text === "SLOW DONE"), "the answer never came", 40_000);
+  // one rewrite for two quick tools, naming the later
+  const edits = f.tg.calls("editMessageText");
+  assert.deepEqual(edits.map((c) => [c.body.message_id, c.body.text]), [[status.id, "Working: npm run lint..."]]);
+  const removed = f.tg.calls("deleteMessage");
+  assert.deepEqual(removed.map((c) => c.body), [{ chat_id: CHAT, message_id: status.id }]);
+  assert.ok(removed[0]!.at <= answer.at, "the line is gone before the answer arrives");
+});
+
+test("a quick turn posts no status line", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("hello");
+  await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "ANSWER"), "the answer never came");
+  assert.equal(f.tg.sent().filter((m) => m.body.text?.startsWith("Working")).length, 0);
+  assert.equal(f.tg.calls("deleteMessage").length, 0);
 });
 
 test("a button from before a restart says its card has closed, and loses its buttons", async (t) => {
