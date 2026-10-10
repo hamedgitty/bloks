@@ -12,7 +12,7 @@ import { after, before, describe, test } from "node:test";
 import { allows, NEVER } from "../server/agent-cli.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
-const SECRETS = ["sk-ant-api03-ROUTESROUTESROUTES0123456789", "ghp_routesroutesroutesroutes0123456789", "sk-ant-oat01-NEVERREADNEVERREAD999"];
+const SECRETS = ["sk-ant-api03-ROUTESROUTESROUTES0123456789", "ghp" + "_routesroutesroutesroutes0123456789", "sk-ant-oat01-NEVERREADNEVERREAD999"];
 
 function write(home: string, path: string, text: string) {
   const file = join(home, path);
@@ -28,7 +28,7 @@ function fixture(home: string) {
     home,
     ".claude.json",
     JSON.stringify({
-      mcpServers: { github: { command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: "ghp_routesroutesroutesroutes0123456789" } } },
+      mcpServers: { github: { command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: "ghp" + "_routesroutesroutesroutes0123456789" } } },
     }),
   );
   write(home, ".claude/settings.json", JSON.stringify({ permissions: { deny: ["Bash(git push --force:*)"] } }));

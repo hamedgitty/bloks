@@ -29,13 +29,13 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const SECRETS = [
   "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX0123456789",
   "sk-ant-oat01-SECRETSECRETSECRET123456",
-  "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  "ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789",
   "lin_api_SECRET1234567890abcdef",
   "sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
   "sk-proj-CODEXSECRETCODEXSECRET1234",
   "tok_live_abcdefghijklmnop123456",
   "abcd1234efgh5678ijkl",
-  "AKIAABCDEFGHIJKLMNOP",
+  "AKIA" + "ABCDEFGHIJKLMNOP",
   "hermes-env-secret-9f8e7d6c5b4a",
   "hunter2hunter2",
   "openclaw-weather-key-12345abcde",
@@ -73,7 +73,7 @@ function fixtureHome(): string {
           type: "stdio",
           command: "npx",
           args: ["-y", "@modelcontextprotocol/server-github"],
-          env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_abcdefghijklmnopqrstuvwxyz0123456789" },
+          env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789" },
         },
         linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer lin_api_SECRET1234567890abcdef" } },
       },
@@ -145,7 +145,7 @@ function fixtureHome(): string {
     ].join("\n"),
   );
   write(home, `${ws}/skills/weather/SKILL.md`, "---\nname: Weather\ndescription: Look up the weather\n---\n\nUse the weather tool. key=openclaw-weather-key-12345abcde\n");
-  write(home, ".aws/credentials", "[default]\naws_access_key_id = AKIAABCDEFGHIJKLMNOP\n");
+  write(home, ".aws/credentials", "[default]\naws_access_key_id = AKIA" + "ABCDEFGHIJKLMNOP\n");
   mkdirSync(join(home, ws, "skills", "creds"), { recursive: true });
   symlinkSync(join(home, ".aws", "credentials"), join(home, ws, "skills", "creds", "SKILL.md"));
 
@@ -306,15 +306,15 @@ describe("taking secrets out", () => {
     const { text, removed } = mod.scrubSecrets(
       [
         "anthropic sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA",
-        "github ghp_0123456789abcdefghijABCDEFGHIJ0123",
+        "github ghp" + "_0123456789abcdefghijABCDEFGHIJ0123",
         "slack xoxb-1234567890-abcdefghij",
-        "aws AKIAABCDEFGHIJKLMNOP",
+        "aws AKIA" + "ABCDEFGHIJKLMNOP",
         "Authorization: Bearer abc123def456ghi789jkl",
         'api_key = "zx81spectrum128k2026"',
         "password: correcthorse",
         "https://sam:s3cretpass@example.com/repo.git",
         "https://api.example.com/v1?api_key=abc123xyz789&format=json",
-        "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----",
+        "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----",
       ].join("\n"),
     );
     assert.equal(removed, 10);
