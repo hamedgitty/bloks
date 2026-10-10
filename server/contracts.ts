@@ -115,6 +115,12 @@ export type RuntimeEvent = RuntimeEventBase &
         /** This call may write files it does not name: a shell command, or
          * any call on an engine that never says which files it wrote. */
         mayWrite?: boolean;
+        /** The tool and its arguments, normalised and hashed
+         * (callSignature in server/repeats.ts), when the engine reports
+         * the arguments. Two calls with one signature asked for the same
+         * thing, which is how a turn going round in circles is noticed.
+         * A hash rather than the arguments, which can carry a key. */
+        signature?: string;
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | { type: "item.completed"; itemType: "tool"; ok: boolean }

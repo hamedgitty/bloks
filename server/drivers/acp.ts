@@ -40,6 +40,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { outReason } from "../failover.ts";
 import { attachRpc } from "../harness/jsonrpc-stdio.ts";
 import { killTree, launchSpec, onPath, widenPath } from "../path.ts";
+import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
@@ -190,6 +191,19 @@ function toolTitle(update: any): string {
   const title = typeof update?.title === "string" ? update.title : null;
   if (title) return title.slice(0, 100);
   return typeof update?.kind === "string" ? update.kind : "tool";
+}
+
+/**
+ * What a call asked for, as a signature (server/repeats.ts), when the
+ * agent sends its arguments with the call. Some agents send an empty
+ * rawInput first and the arguments in a later update; read as given,
+ * every call of one tool would look like the same call, so an empty one
+ * gives no signature at all.
+ */
+export function acpSignature(update: any): string | undefined {
+  const raw = update?.rawInput;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Object.keys(raw).length) return undefined;
+  return callSignature(`${typeof update.kind === "string" ? update.kind : ""}:${toolTitle(update)}`, raw);
 }
 
 /** The session's model choice as an ACP config option, if the agent
@@ -689,6 +703,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             case "tool_call": {
               state.tools++;
               const paths = writesOf(update);
+              const signature = acpSignature(update);
               emit({
                 ...base(threadId, turnId),
                 type: "item.started",
@@ -698,6 +713,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 ...(paths.length ? { paths } : {}),
                 // a command writes what it writes, and says nothing of it
                 ...(update.kind === "execute" ? { mayWrite: true } : {}),
+                ...(signature ? { signature } : {}),
               });
               break;
             }

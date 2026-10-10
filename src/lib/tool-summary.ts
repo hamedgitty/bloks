@@ -62,3 +62,11 @@ export function summarize(tools: ToolLike[]): string {
 export function running(tools: ToolLike[]): boolean {
   return tools.some((tool) => tool.ok === undefined && !tool.stopped);
 }
+
+/** The chip a run carries: the highest "same call repeated" mark among
+ * its rows, or 0. The server keeps one marked row a turn, but a run of
+ * two turns' rows side by side can hold two, and the higher is the one
+ * worth saying. */
+export function repeatedIn(rows: Array<{ repeated?: number }>): number {
+  return rows.reduce((top, row) => (typeof row.repeated === "number" && row.repeated > top ? row.repeated : top), 0);
+}

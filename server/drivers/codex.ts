@@ -34,6 +34,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { codexPlanUsage } from "../plan-usage.ts";
+import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
@@ -309,6 +310,24 @@ function toolLabel(item: any): string | null {
 }
 
 const TOOL_ITEM_TYPES = new Set(["commandExecution", "fileChange", "mcpToolCall"]);
+
+/** What an item asked for, as a signature (server/repeats.ts). Only the
+ * request's own fields: an item also carries its id, its status and, once
+ * it has run, its output, none of which make two calls different asks. */
+export function codexSignature(item: any): string | undefined {
+  switch (item?.type) {
+    case "commandExecution":
+      return callSignature(item.type, { command: item.command, cwd: item.cwd });
+    case "fileChange":
+      return callSignature(item.type, { changes: item.changes });
+    case "mcpToolCall":
+      return callSignature(item.type, { server: item.server, tool: item.tool ?? item.name, arguments: item.arguments });
+    case "webSearch":
+      return callSignature(item.type, { query: item.query });
+    default:
+      return undefined;
+  }
+}
 
 /** The connectors bridge ships as TypeScript in development and compiled
  * JavaScript in the packaged app; resolve whichever is actually there. */
@@ -657,6 +676,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 : [];
             // kept for the approval the change may ask for next
             if (paths.length && typeof item.id === "string") itemPaths.set(item.id, paths);
+            const signature = codexSignature(item);
             emit({
               ...envelope(threadId, turnId),
               type: "item.started",
@@ -666,6 +686,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               ...(paths.length ? { paths } : {}),
               // a command writes what it writes, and says nothing of it
               ...(item.type === "commandExecution" ? { mayWrite: true } : {}),
+              ...(signature ? { signature } : {}),
             });
             break;
           }

@@ -568,6 +568,33 @@ owner's phone. An agent reads its goal with `bloks goal`
 was minted for), and nothing on its list reaches the routes that set
 one.
 
+## The same call, again and again
+
+An agent that has lost the thread can call one tool with the same
+arguments over and over, and every call sends the whole session to the
+model again. A driver that hears a call's arguments puts a `signature` on
+its `item.started`: the tool and the arguments, normalised (keys in
+order, runs of spaces made one) and hashed (`callSignature` in
+`server/repeats.ts`), so the arguments, which can carry a key, ride on no
+event. Claude Code gives `block.input`, Codex the item's own request
+fields (a command and its folder, a patch's changes, an MCP call's server,
+tool and arguments, a search's query), an ACP agent its `rawInput` when it
+is not empty, and an API model the arguments it wrote. Antigravity and the
+cloud computer name the tool and nothing more, so their calls are not
+counted.
+
+`RepeatWatch` counts each running turn's calls by signature, from nothing
+at every `startTurn` and forgotten at its end. When a call reaches 5, 10
+or 20 and that is higher than the turn's chip, its activity row gets
+`repeated` and the row that had it loses it (a `message.patch`), so a turn
+shows one chip, "Same call repeated 10 times", on the run of tool calls
+it sits in (`src/components/ToolRun.tsx`). The first call to reach 20 also
+posts one notice saying the turn may be stuck and can be stopped. Nothing
+is stopped for the person. The notice does not name the call, since a
+shared room's members may see only a tool's kind. Memory is bounded: a
+turn keeps 256 distinct calls, forgetting the one used longest ago (never
+the loop, which is the call it keeps making), and 512 turns at most.
+
 ## Chat platforms
 
 A shared room can be carried into Slack, Discord or a WhatsApp group

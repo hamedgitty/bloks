@@ -27,6 +27,7 @@ import { newEventId, newId } from "../contracts.ts";
 import type { ProviderSpec } from "../providers.ts";
 import { appendNative } from "./native.ts";
 import { BOAT_API } from "../boat.ts";
+import { callSignature } from "../repeats.ts";
 
 export interface CompatConfig {
   url: string;
@@ -674,11 +675,13 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
           for (const call of calls) {
             const name = call.function?.name ?? "tool";
             let args: any = {};
+            let parsed = true;
             try {
               args = JSON.parse(call.function?.arguments || "{}");
             } catch {
               // a malformed call is the model's mistake to hear about, not
               // a crash for the person watching
+              parsed = false;
             }
 
             emit({
@@ -687,6 +690,8 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
               itemType: "tool",
               itemId: call.id,
               title: name === "ask_user" ? "ask_user" : `${name}: ${String(args.command ?? args.url ?? args.query ?? args.fact ?? "").slice(0, 60)}`,
+              // the same malformed text twice is the same call twice
+              signature: callSignature(name, parsed ? args : String(call.function?.arguments ?? "")),
             });
 
             let result: string;

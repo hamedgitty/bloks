@@ -335,6 +335,7 @@ import {
 import { MemoryJournal, readMemoryText } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
+import { RepeatWatch } from "./repeats.ts";
 import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
 import {
   AUTO_KEEP,
@@ -1665,6 +1666,9 @@ function previewOf(frame: unknown): WakePreview | null {
 // transcript can be rebuilt after the fact and why no client is ever asked
 // to reconstruct state it missed.
 const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
+/** Each running turn's calls, counted by what they asked for, so a turn
+ * making the same call again and again is said on the turn (repeats.ts). */
+const repeats = new RepeatWatch();
 
 // Nothing is running when the server starts, so a call still marked as
 // running was cut off by the last quit or crash. Settled once, here,
@@ -1808,8 +1812,33 @@ bus.subscribe((event: RuntimeEvent) => {
         // it may have written files it did not name
         if (event.paths?.length) checkpoints.noteEdits(event.threadId, event.paths);
         if (event.mayWrite) checkpoints.noteUnnamedWrites(event.threadId);
-        const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
+        // The same call made again and again is said as a chip on this
+        // row, and the row that had the turn's chip gives it up. Nothing
+        // is stopped: a loop is a guess, and stopping is the person's.
+        const mark = event.signature ? repeats.note(event.threadId, event.signature) : null;
+        const message = pushMessage({
+          role: "bot",
+          kind: "activity",
+          tool: { name: event.title ?? "tool" },
+          ...(mark ? { repeated: mark.count } : {}),
+        });
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
+        if (mark) {
+          repeats.chipAt(event.threadId, { threadId: roomId, messageId: message.id }, mark.count);
+          if (mark.moveFrom) {
+            const before = store.patchMessage(mark.moveFrom.threadId, mark.moveFrom.messageId, { repeated: undefined });
+            if (before) broadcast({ kind: "message.patch", threadId: mark.moveFrom.threadId, message: before });
+          }
+          // Once a turn. Not the call's name: a shared room's members may
+          // see only the kind of a tool, and this line reaches them whole.
+          if (mark.notice) {
+            pushMessage({
+              role: "bot",
+              kind: "notice",
+              text: `${bot.name} has made the same call ${mark.count} times in this turn, which usually means it is stuck. Nothing has been stopped. If it is not getting anywhere, stop the turn.`,
+            });
+          }
+        }
         // named on disk, so a turn cut off mid-call can say which call
         cutOff.tool(event.threadId, event.title ?? "tool");
         // and on a phone waiting on this lane, once the turn is a long one;
@@ -2366,6 +2395,7 @@ bus.subscribe((event: RuntimeEvent) => {
       });
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
+      repeats.end(event.threadId);
       cutOff.end(event.threadId);
       // a call the turn never heard back from will not report now
       for (const settled of store.settleOpenTools(roomId, inRoom ? bot.id : undefined)) {
@@ -3760,6 +3790,8 @@ async function startClaimedTurn(
   // the busy flag holds the lane from here
   if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
   turnStarted.set(task.id, Date.now());
+  // every turn counts its calls from nothing, a backup's or a retry's too
+  repeats.begin(task.id);
   // on disk before the engine hears a word, so from here on a crash
   // leaves this turn to be picked up when Bloks starts again
   const replaced = cutOff.begin({
@@ -3820,6 +3852,7 @@ async function startClaimedTurn(
     // a Telegram request this turn took is answered with why it did not run
     telegramReturns.finish(task.id, failure);
     turnStarted.delete(task.id);
+    repeats.end(task.id);
     cutOff.end(task.id);
     // and so is whatever registered to hear how it ended
     settleOwners(bot, task.id, { ok: false, why: failure ?? null, unsent: true });

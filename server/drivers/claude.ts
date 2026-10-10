@@ -29,6 +29,7 @@ import { DATA_DIR } from "../config.ts";
 import { lineSplitter } from "../ndjson.ts";
 import { outReason } from "../failover.ts";
 import { claudePlanUsage } from "../plan-usage.ts";
+import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
@@ -768,6 +769,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 ...(paths.length ? { paths } : {}),
                 // a command writes what it writes, and says nothing of it
                 ...(block.name === "Bash" ? { mayWrite: true } : {}),
+                signature: callSignature(block.name, block.input),
               });
             }
             if (message.usage) {
