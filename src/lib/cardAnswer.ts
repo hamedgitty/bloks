@@ -16,6 +16,9 @@ export interface CardAnswer {
   messageId: string;
   answer: string;
   roomId?: string;
+  /** The agent's lane the card is in (typedLane). Without it the server
+   * puts the answer in whichever lane it last heard was open. */
+  taskId?: string;
 }
 
 export function sendCardAnswer(
@@ -62,7 +65,7 @@ export function sendCardAnswer(
   }
   return api(`/api/bots/${ref.botId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ text: ref.answer }),
+    body: JSON.stringify({ text: ref.answer, ...(ref.taskId ? { taskId: ref.taskId } : {}) }),
   }).then(
     // Remembering that a card was dealt with is a nicety, not a
     // correctness requirement, so a failure here is allowed to pass.

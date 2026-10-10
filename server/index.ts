@@ -1158,6 +1158,10 @@ function clientBot(bot: BotRecord | null) {
         // when this lane last had anything in it, for the sidebar's times
         lastAt: said[last]?.at ?? task.createdAt,
         createdAt: task.createdAt,
+        // The lane mail from unlisted senders is answered in. The person's
+        // own words never land there (activeLaneOf), so the app says so in
+        // it rather than letting what is typed seem to vanish.
+        ...(task.guestMail ? { guestMail: true } : {}),
         usage: task.usage,
         context: {
           used: fill.used,

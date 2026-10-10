@@ -326,6 +326,24 @@ function Bubble({
 /** Something the agent did, as one quiet line. Spinning while it runs,
  * then a tick or a cross. */
 /**
+ * The lane mail from senders the person has not listed is answered in.
+ * It looks like any other conversation, but the person's own words never
+ * run beside those mails: what is typed here goes to the first
+ * conversation (typedLane), and this says so before anything is typed.
+ */
+function GuestMailLine({ bot }: { bot: Bot }) {
+  const open = bot.activeTaskId ?? bot.threadId;
+  if (!bot.tasks?.some((t) => t.id === open && t.guestMail)) return null;
+  const first = bot.tasks.find((t) => !t.guestMail);
+  return (
+    <p className="mx-auto w-full max-w-[760px] px-4 pb-1 text-center text-[12px] leading-snug text-muted-foreground md:px-6">
+      Mail from senders you have not listed is answered here, in conversation only. What you write goes to{" "}
+      {first ? `"${first.title}"` : "the first conversation"}.
+    </p>
+  );
+}
+
+/**
  * Another of this agent's conversations stopped on a question or an
  * approval. The card lives in that conversation's transcript, so from this
  * one it could be listed as waiting and still not be anywhere on screen.
@@ -1181,6 +1199,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         onSendAgain={sendAgain}
         editAsk={editAsk}
       />
+      <GuestMailLine bot={bot} />
       <Composer
         key={`${bot.id}:${bot.activeTaskId ?? bot.threadId}`}
         bot={bot}

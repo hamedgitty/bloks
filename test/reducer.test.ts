@@ -7,7 +7,7 @@ import { settleUnanswered, withoutEdits } from "../src/state/reducer.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { configFromFrame, initialState, openLaneWorking, reducer, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
+import { configFromFrame, initialState, openLaneWorking, reducer, typedLane, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
 
 const bot = (id: string, over: Partial<Bot> = {}): Bot => ({
   id,
@@ -370,6 +370,24 @@ test("only the conversation on screen reads as working, not every one of the age
   assert.equal(openLaneWorking({ threadId: "t-b", activeTaskId: "t-b", busy: true, tasks: lanes }), true);
   // a harness too old to report lanes keeps the agent-wide flag
   assert.equal(openLaneWorking({ threadId: "t-a", busy: true }), true);
+});
+
+test("words go to the conversation on screen, except the one strangers' mail is answered in", () => {
+  // Sent without a lane, they went wherever the server last heard was
+  // open. In the lane mail from unlisted senders is answered in, that put
+  // them in General with nothing on screen to say so, and they seemed to
+  // vanish. That lane is left unnamed on purpose, since the server keeps
+  // the person's words out of it; the store follows them to where they went.
+  const lanes = [
+    { id: "t-general", createdAt: 1 },
+    { id: "t-plans", createdAt: 2 },
+    { id: "t-mail", createdAt: 3, guestMail: true },
+  ];
+  assert.equal(typedLane({ threadId: "t-plans", activeTaskId: "t-plans", tasks: lanes }), "t-plans");
+  assert.equal(typedLane({ threadId: "t-general", tasks: lanes }), "t-general");
+  assert.equal(typedLane({ threadId: "t-mail", activeTaskId: "t-mail", tasks: lanes }), undefined);
+  // a harness that does not mark the lane: the one on screen, as ever
+  assert.equal(typedLane({ threadId: "t-mail", activeTaskId: "t-mail" }), "t-mail");
 });
 
 test("a placement lands on the agents and rooms it names, and nowhere else", () => {

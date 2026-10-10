@@ -184,6 +184,9 @@ export interface TaskSummary {
   /** How full this lane's conversation is, and whether its earlier part
    * has been summarised. See server/context.ts. */
   context?: LaneContext;
+  /** Where mail from senders the person has not listed is answered. The
+   * person's own words go to the first conversation instead (typedLane). */
+  guestMail?: boolean;
 }
 
 export interface Bot {
@@ -356,6 +359,18 @@ export function openLaneWorking(bot: LanedBot & { busy?: boolean }): boolean {
   const open = bot.activeTaskId ?? bot.threadId;
   const lane = bot.tasks?.find((t) => t.id === open);
   return lane?.state ? lane.state === "working" : Boolean(bot.busy);
+}
+
+/** The conversation words typed to this agent are sent to: the one on
+ * screen, named, because left unnamed the server puts them in whichever
+ * lane it last heard was open, and another device may have opened a
+ * different one a moment ago. Undefined in the lane strangers' mail is
+ * answered in, which the server keeps the person's own words out of on
+ * purpose (activeLaneOf): those go to the first conversation, and the
+ * screen follows them there (store.tsx, "send"). */
+export function typedLane(bot: { activeTaskId?: string; threadId: string; tasks?: Array<{ id: string; guestMail?: boolean }> }): string | undefined {
+  const open = bot.activeTaskId ?? bot.threadId;
+  return bot.tasks?.some((t) => t.id === open && t.guestMail) ? undefined : open;
 }
 
 /** A `config` frame is the whole status plus the stream's own fields.

@@ -319,3 +319,16 @@ test("the lane 2.5.36 answered strangers' mail in, known then by its title, is m
   const named = await routine(w, "into strangers", made);
   assert.equal(named.status, 400);
 });
+
+test("the app is told which lane strangers' mail is answered in, so it can say so there", async (t) => {
+  // The person's own words never land in that lane (activeLaneOf). With
+  // nothing on screen saying so, what they typed there went to General
+  // and seemed to vanish.
+  const w = await workspace(t);
+  const made = (await (await w.post(`/api/bots/${w.botId}/tasks`, { title: "Unlisted email" })).json()).bot.tasks
+    .find((task: any) => task.title === "Unlisted email").id;
+  await w.restart();
+  const tasks = (await w.me()).tasks;
+  assert.equal(tasks.find((task: any) => task.id === made)?.guestMail, true, "the lane was not marked for the app");
+  assert.ok(tasks.filter((task: any) => task.id !== made).every((task: any) => !task.guestMail), "another lane said it held strangers' mail");
+});

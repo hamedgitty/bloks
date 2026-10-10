@@ -36,6 +36,7 @@ import {
   initialState,
   reducer,
   settleUnanswered,
+  typedLane,
   withoutEdits,
   type Action,
   type AppState,
@@ -202,24 +203,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const wrapped: React.Dispatch<Action> = (action) => {
       rawDispatch(action);
       switch (action.type) {
-        case "send":
+        case "send": {
+          const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+          const typedIn = bot ? (bot.activeTaskId ?? bot.threadId) : undefined;
+          const taskId = bot ? typedLane(bot) : undefined;
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text, replyTo: action.replyTo }),
-          }).catch((e) => {
-            showError(e);
-            action.onFailed?.();
-          });
+            body: JSON.stringify({ text: action.text, replyTo: action.replyTo, ...(taskId ? { taskId } : {}) }),
+          }).then(
+            (r) => {
+              // Typed in the lane strangers' mail is answered in, the words
+              // went to the first conversation, so the screen goes there
+              // too, while it is still on the lane they were typed in.
+              // Left where it was, they seemed to vanish.
+              if (taskId || typeof r?.taskId !== "string" || r.taskId === typedIn) return;
+              const now = stateRef.current.bots.find((b) => b.id === action.botId);
+              if (stateRef.current.selectedId !== action.botId || !now || (now.activeTaskId ?? now.threadId) !== typedIn) return;
+              wrapped({ type: "selectTask", botId: action.botId, taskId: r.taskId });
+            },
+            (e) => {
+              showError(e);
+              action.onFailed?.();
+            },
+          );
           break;
-        case "answerCard":
+        }
+        case "answerCard": {
+          // An answer typed into a card is words to the agent like any
+          // other, so it goes to the lane the card is in, by the same rule.
+          const bot = action.roomId ? undefined : stateRef.current.bots.find((b) => b.id === action.botId);
           void sendCardAnswer(
             api,
-            action,
+            { ...action, taskId: bot ? typedLane(bot) : undefined },
             findCard(stateRef.current, action),
             () => rawDispatch({ type: "cardReopened", botId: action.botId, messageId: action.messageId, roomId: action.roomId }),
             showError,
           );
           break;
+        }
         // connecting an engine reloads the fleet server-side, so the model
         // picker has to be refetched alongside the provider list
         case "connectProvider":

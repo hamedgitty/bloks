@@ -67,6 +67,21 @@ test("an answer that went is then remembered on the card, in that order", async 
   ]);
 });
 
+test("a typed answer goes to the lane the card is in, not whichever one the server has open", async () => {
+  // Unnamed, it landed in whichever lane the server last heard was open,
+  // and another device may have opened a different one since the card was
+  // shown. The store names the lane on screen (typedLane); this sends it.
+  const calls: string[] = [];
+  await sendCardAnswer(
+    async (path, init) => (calls.push(`${init?.method} ${path} ${init?.body}`), {}),
+    { botId: "a", messageId: "c1", answer: "Thursday works", taskId: "t-plans" },
+    undefined,
+    () => assert.fail("nothing to put back"),
+    () => assert.fail("nothing went wrong"),
+  );
+  assert.equal(calls[0], 'POST /api/bots/a/messages {"text":"Thursday works","taskId":"t-plans"}');
+});
+
 test("a permission answer that did not reach the agent puts the card back", async () => {
   let state = reducer(withCard({ requestId: "r1" }), { type: "answerCard", botId: "a", messageId: "c1", answer: "Allow" });
   const errors: unknown[] = [];
