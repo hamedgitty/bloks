@@ -728,6 +728,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // a server that could not resume may have restarted and begun
             // counting again, so its sequences say nothing about ours
             botSeq.current.clear();
+            // and what was streaming then will never hear its end
+            rawDispatch({ type: "streamRestarted" });
             loadAll();
           }
           break;

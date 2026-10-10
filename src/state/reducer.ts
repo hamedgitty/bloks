@@ -661,6 +661,9 @@ export type Action =
   | { type: "streamClear"; threadId: string; onlyIfSettled?: boolean }
   | { type: "turnStarted"; threadId: string }
   | { type: "turnSettled"; threadId: string }
+  /** The event stream came back without the frames it missed (hello
+   * with resumed: false), so what it was in the middle of is stale. */
+  | { type: "streamRestarted" }
   | { type: "screenFrame"; botId: string; png: string; mime: string; source?: "browser" }
   | { type: "provisioning"; botId: string; on: boolean }
   | { type: "setModel"; botId: string; selection: ModelSelection }
@@ -1101,6 +1104,14 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "turnSettled":
       return { ...state, settledTurns: { ...state.settledTurns, [action.threadId]: true } };
+    case "streamRestarted":
+      // Whatever was streaming when the line dropped finished or moved on
+      // unseen, and the messages that say so are coming in the reload. A
+      // partial kept from before showed under the finished reply, and the
+      // next turn's words were added to the end of it. A computer being
+      // set up may have finished unseen too. Cleared here rather than in
+      // hydrate, which also follows an archive, mid-turn for everyone else.
+      return { ...state, streaming: {}, settledTurns: {}, provisioning: {} };
     case "screenFrame":
       return {
         ...state,

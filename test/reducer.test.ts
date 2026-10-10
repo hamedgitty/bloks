@@ -205,6 +205,24 @@ test("a finished turn's text stays until its message lands, and a late delta can
   assert.equal(state.streaming["t-a"], "Next");
 });
 
+test("a stream that comes back without what it missed drops the half-said reply", () => {
+  // The turn ended while the line was down and the server could not
+  // replay it. The reload brings the finished reply, but the partial from
+  // before stayed under it, and the next turn's words were added to it.
+  let state = withState({ bots: [bot("a")] });
+  state = reducer(state, { type: "turnStarted", threadId: "t-a" });
+  state = reducer(state, { type: "streamDelta", threadId: "t-a", delta: "Half a rep" });
+  state = reducer(state, { type: "turnSettled", threadId: "t-b" });
+  state = reducer(state, { type: "provisioning", botId: "a", on: true });
+  state = reducer(state, { type: "streamRestarted" });
+  assert.deepEqual(state.streaming, {}, "a partial from before the drop was kept");
+  assert.deepEqual(state.settledTurns, {});
+  assert.equal(state.provisioning.a, undefined, "a computer still read as being set up");
+  state = reducer(state, { type: "hydrate", bots: [bot("a", { messages: [msg("m1", { text: "Half a reply, finished." })] })] });
+  state = reducer(state, { type: "streamDelta", threadId: "t-a", delta: "Next" });
+  assert.equal(state.streaming["t-a"], "Next", "the next turn's words joined the old partial");
+});
+
 test("the reducer never mutates the state it was given", () => {
   const before = withState({ bots: [bot("a")] });
   const snapshot = JSON.stringify(before);
