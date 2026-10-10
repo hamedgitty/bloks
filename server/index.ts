@@ -1725,8 +1725,9 @@ bus.subscribe((event: RuntimeEvent) => {
         if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
         // named on disk, so a turn cut off mid-call can say which call
         cutOff.tool(event.threadId, event.title ?? "tool");
-        // and on a phone waiting on this lane, once the turn is a long one
-        telegramWorking.get(event.threadId)?.using(event.title ?? "tool");
+        // and on a phone waiting on this lane, once the turn is a long one;
+        // a command line can carry a key, and this one leaves the machine
+        telegramWorking.get(event.threadId)?.using(redactSecrets(event.title ?? "tool"));
         // The browser is watched from its first use in a turn, not from the
         // turn's start: a turn that never touches it should not end with
         // a picture of whatever page an earlier one left open. Cheap to

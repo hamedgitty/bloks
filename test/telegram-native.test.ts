@@ -157,7 +157,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     await nap(21_000);
     tool("t2", "npm run build");
     await nap(300);
-    tool("t3", "npm run lint");
+    tool("t3", "curl -u sk-test_abcdefghijklmnop api.invalid");
     await nap(5_000);
     return finish("SLOW DONE");
   }
@@ -313,9 +313,10 @@ test("a long turn posts what it is working on, rewrites it as tools change, and 
   assert.equal(status.body.text, "Working: npm test...");
   assert.ok(status.at - asked >= 19_000, `posted after ${status.at - asked} ms, not about twenty seconds`);
   const answer = await waitFor(() => f.tg.state.calls.find((c) => c.method === "sendMessage" && c.body.text === "SLOW DONE"), "the answer never came", 40_000);
-  // one rewrite for two quick tools, naming the later
+  // one rewrite for two quick tools, naming the later, without the key
+  // its command carried
   const edits = f.tg.calls("editMessageText");
-  assert.deepEqual(edits.map((c) => [c.body.message_id, c.body.text]), [[status.id, "Working: npm run lint..."]]);
+  assert.deepEqual(edits.map((c) => [c.body.message_id, c.body.text]), [[status.id, "Working: curl -u [redacted] api.invalid..."]]);
   const removed = f.tg.calls("deleteMessage");
   assert.deepEqual(removed.map((c) => c.body), [{ chat_id: CHAT, message_id: status.id }]);
   assert.ok(removed[0]!.at <= answer.at, "the line is gone before the answer arrives");
