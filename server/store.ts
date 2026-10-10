@@ -107,8 +107,14 @@ export interface Message {
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
   via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine";
-  /** The routine's name and start mode when this message was written. */
-  routine?: { name?: string; manual: boolean };
+  /** The routine's name and start mode when this message was written,
+   * and `quiet` when its agent was told it may answer QUIET. */
+  routine?: { name?: string; manual: boolean; quiet?: boolean };
+  /** Part of a quiet check-in: a routine's prompt that the agent answered
+   * with QUIET, that answer, and what the turn did in between. Nothing in
+   * it needed the person, so it marked nothing unread, notified nobody,
+   * and the chat folds a run of them into one muted line. */
+  quiet?: boolean;
   /** The user's selection on a decision component; distinct from the agent's recommendation. */
   decisionChoice?: number;
   id: string;

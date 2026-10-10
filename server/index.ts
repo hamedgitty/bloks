@@ -261,7 +261,7 @@ import {
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { describe as describeRoutine, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, RoutineStore, scheduleProblem } from "./routines.ts";
+import { describe as describeRoutine, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
 import { engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -1649,7 +1649,10 @@ bus.subscribe((event: RuntimeEvent) => {
 
   const pushMessage = (m: Omit<Message, "id" | "at">) => {
     const message = store.appendMessage(roomId, inRoom ? { ...m, from: bot.id } : m);
-    broadcast({ kind: "message", threadId: roomId, message });
+    // What a check-in says is news only once it has ended and was not
+    // quiet, so the app holds its banner until then (src/lib/notify.ts).
+    const checkIn = !inRoom && checkInTurns.has(event.threadId);
+    broadcast({ kind: "message", threadId: roomId, message, ...(checkIn ? { checkIn: true } : {}) });
     return message;
   };
 
@@ -1680,12 +1683,17 @@ bus.subscribe((event: RuntimeEvent) => {
         const { components, text } = extractComponents(afterPlan);
         const answering = inRoom ? undefined : replyingTo.get(event.threadId);
         if (answering && text) spokeInTurn.add(event.threadId);
+        // A check-in's QUIET is marked the moment it is said, so the frame
+        // that carries it already says it is not news, to every client
+        // that reads it, before the turn has even ended.
+        const quiet = !inRoom && checkInTurns.has(event.threadId) && isQuietReply(text);
         if (text) {
           pushMessage({
             role: "bot",
             kind: "text",
             text: houseStyle(text),
             ...(answering ? { afterAgent: answering } : {}),
+            ...(quiet ? { quiet: true } : {}),
           });
         }
         for (const component of components) {
@@ -2304,7 +2312,14 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
       }
-      settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null });
+      // A check-in that answered QUIET, with nobody else's words in it, is
+      // folded away and announces nothing. One the person spoke into is
+      // theirs now, and one that failed is something they should see.
+      const quietRun =
+        checkInTurns.has(event.threadId) && !inRoom && event.ok !== false && !handedOver &&
+        !turnsForYou.has(event.threadId) && foldQuietRun(event.threadId);
+      checkInTurns.delete(event.threadId);
+      settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
@@ -2313,7 +2328,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const quietAgentTurn =
         replyingTo.has(event.threadId) && event.ok !== false && !spokeInTurn.has(event.threadId);
       spokeInTurn.delete(event.threadId);
-      if (quietAgentTurn) {
+      if (quietAgentTurn || quietRun) {
         // nothing new here
       } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
       else store.patchBot(bot.id, { unread: true });
@@ -2467,6 +2482,13 @@ const activeRoom = new Map<string, string>(); // taskId -> blokId
  * folded, waking after the Mac slept) is still answering them, and the
  * next turn that starts afresh says whose it is. */
 const turnsForYou = new Set<string>();
+
+/** Lanes running a quiet routine's turn (server/routines.ts, isQuiet),
+ * from its start to its end. What such a turn says is held back from the
+ * person's attention until it ends: its banner waits (the frame carries
+ * `checkIn`), and an answer of QUIET is marked quiet the moment it is
+ * said, so nothing ever announces it. */
+const checkInTurns = new Set<string>();
 
 /** An agent or a room just had something to do with the person, which
  * moves it up the sidebar. Never backwards, so an older moment arriving
@@ -3369,6 +3391,12 @@ async function startClaimedTurn(
   const forYouBefore = turnsForYou.has(task.id);
   if (opts.byYou) turnsForYou.add(task.id);
   else turnsForYou.delete(task.id);
+  // A quiet routine's turn, in the agent's own lane. Never a room's turn
+  // or a command, where there is nobody to be quiet for, or nothing to
+  // answer QUIET with.
+  const checkIn = Boolean(opts.routine?.quiet) && !blok && !command;
+  if (checkIn) checkInTurns.add(task.id);
+  else checkInTurns.delete(task.id);
 
   // In a room the prompt already carries the labelled history, and the
   // triggering message is already on the record; only a solo chat writes
@@ -3397,7 +3425,7 @@ async function startClaimedTurn(
     : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
   const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
   if (opts.from) text = fromAgentPrompt(opts.from, text);
-  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text);
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id));
 
   // ── the transcript for API-backed drivers ──
   //
@@ -3545,6 +3573,7 @@ async function startClaimedTurn(
     replyingTo.delete(task.id);
     if (forYouBefore) turnsForYou.add(task.id);
     else turnsForYou.delete(task.id);
+    checkInTurns.delete(task.id);
   };
   const stillHeld = wheel.heldBy(bot.id);
   if (stillHeld) {
@@ -3604,7 +3633,11 @@ async function startClaimedTurn(
   if (replaced?.waiting) retireCarryOn(replaced);
   telegramReturns.bind(task.id, opts.telegramMessages, Boolean(opts.carriedOn || opts.fallback || opts.retry));
   notesThisTurn.delete(task.id);
-  store.markLane(bot.id, task.id, false);
+  // A check-in leaves the dot as it found it: one every quarter of an
+  // hour would otherwise read the lane for the person each time, and a
+  // reply they have not seen yet would lose its dot to a run that, being
+  // quiet, puts none back.
+  if (!checkIn) store.markLane(bot.id, task.id, false);
   artifactBaseline.set(task.id, artifacts.snapshot(bot.id));
   turnTokens.delete(task.id);
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -3629,6 +3662,7 @@ async function startClaimedTurn(
   // was never going to come.
   const settleUnsent = (failure?: string) => {
     commandTurns.delete(task.id);
+    checkInTurns.delete(task.id);
     activeRoom.delete(task.id);
     laneRequester.delete(task.id);
     replyingTo.delete(task.id);
@@ -4159,8 +4193,8 @@ function unsendable(botId: string): string | null {
  * or `unsent` from a start that failed before reaching its engine, which
  * otherwise left each of them waiting on an end that never came.
  */
-function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean }) {
-  const { ok, why, unsent } = outcome;
+function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean; quiet?: boolean }) {
+  const { ok, why, unsent, quiet } = outcome;
   // what the agent actually said; a turn that never ran said nothing,
   // and the last reply in its lane belongs to an earlier one
   const said = unsent ? "" : lastSaid(laneId);
@@ -4179,6 +4213,7 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
       ok,
       summary: said || undefined,
       error: ok ? undefined : (why ?? "The turn did not finish."),
+      ...(quiet ? { quiet: true } : {}),
     });
   }
   // A workflow's ask step ends where its turn does, and what the
@@ -6425,7 +6460,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
   return true;
 }
 
-function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string }) {
+function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string; quiet?: boolean }) {
   const open = openRuns.get(threadId);
   if (!open) return;
   openRuns.delete(threadId);
@@ -6433,10 +6468,18 @@ function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; er
     state: outcome.ok ? "ok" : "failed",
     summary: outcome.summary,
     error: outcome.error,
+    ...(outcome.quiet ? { quiet: true } : {}),
   });
   // Work that happened without anyone asking for it, which is exactly the
   // kind a person wants an account of afterwards.
   const routine = routines.get(open.routineId);
+  // Not a quiet check-in: it found nothing, and one every quarter of an
+  // hour would push everything else out of the record's recent view. Its
+  // run history has it, and any approval it needed is recorded on its own.
+  if (outcome.ok && outcome.quiet) {
+    broadcast({ kind: "routines" });
+    return;
+  }
   record({
     at: Date.now(),
     kind: "routine.ran",
@@ -6540,6 +6583,32 @@ function saidAfter(threadId: string, messageId: string): string {
 /** The last thing an agent actually said in a lane, which is what a step
  * hands on to the next one. A row that only says "ok" answers half the
  * question people are asking. */
+/**
+ * Folds away a check-in that ended quiet, and says whether it did: the
+ * routine's prompt, the QUIET answer, and what the turn did in between
+ * are marked `quiet`, which the chat shows as one muted line. Only a turn
+ * that left nothing to look at counts: its words, its tool calls, the
+ * screen it ended on and a compaction marker. A card, a file or a chart
+ * is something for the person, and so is any answer but QUIET at the end.
+ */
+function foldQuietRun(laneId: string): boolean {
+  const list = store.messagesFor(laneId);
+  // what is still waiting is not part of this turn, and joins after it
+  const said = list.filter((m) => !m.queued && !m.unsent);
+  let at = said.length - 1;
+  while (at >= 0 && said[at].role !== "user") at--;
+  const prompt = said[at];
+  if (!prompt || prompt.deleted || prompt.via !== "routine" || !prompt.routine?.quiet) return false;
+  const turn = said.slice(at + 1);
+  const quietKind = (m: Message) =>
+    m.role === "bot" && !m.deleted && (m.kind === "text" || m.kind === "activity" || m.kind === "screen" || (m.kind === "notice" && Boolean(m.compaction)));
+  const answer = [...turn].reverse().find((m) => m.kind === "text");
+  if (!answer || !isQuietReply(answer.text) || !turn.every(quietKind)) return false;
+  const folded = store.patchMessages(laneId, [prompt.id, ...turn.map((m) => m.id)], () => ({ quiet: true }));
+  for (const message of folded) broadcast({ kind: "message.patch", threadId: laneId, message });
+  return true;
+}
+
 function lastSaid(threadId: string): string {
   const said = [...store.messagesFor(threadId)]
     .reverse()
@@ -6927,7 +6996,7 @@ async function runDueRoutines() {
       await startTurn(routine.targetId, routine.prompt, {
         taskId: laneId,
         computerOverride: routine.runsOn,
-        routine: { name: routine.name, manual: false },
+        routine: routineMark(routine, false),
         ...(routine.chain ? { chain: routine.chain } : {}),
       }).catch((e) => {
         // it never even started; that is a finished run, not a hung one
@@ -8171,13 +8240,33 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
   return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`.)\n\n${text}`;
 }
 
-/** Name the source without claiming whether the person is here. */
-function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string) {
+/** Name the source without claiming whether the person is here. A quiet
+ * routine also says it may answer QUIET, here in the turn and never in
+ * the system prompt, which a resumed session keeps byte for byte. `last`
+ * is what the routine reported last time (lastReportNote), said only in
+ * the turn as it goes: a replayed transcript has that answer in it
+ * already. */
+function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string, last?: string | null) {
   const quoted = routine.name ? JSON.stringify(routine.name).replace(/[\u0085\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : "";
   const name = quoted ? ` ${quoted}` : "";
   const started = routine.manual ? "was run by hand." : "started this turn on its schedule.";
-  return `(Your routine${name} ${started})\n\n${text}`;
+  const quiet = routine.quiet ? ` ${QUIET_ASK}` : "";
+  return `(Your routine${name} ${started}${quiet})\n\n${last ? `${last}\n\n` : ""}${text}`;
+}
+
+/** How a routine's prompt is marked in the transcript: its name, whether
+ * the person ran it by hand, and whether it may answer QUIET, kept on
+ * the message so a replayed or retried turn is framed the same way. */
+function routineMark(routine: Routine, manual: boolean): NonNullable<Message["routine"]> {
+  return { name: routine.name, manual, ...(quietRoutine(routine) ? { quiet: true } : {}) };
+}
+
+/** What a routine run in this lane said last time it said anything, as
+ * the note its next turn carries, or null when it has not yet. */
+function lastReportFor(laneId: string): string | null {
+  const open = openRuns.get(laneId);
+  return open ? lastReportNote(routines.get(open.routineId)?.lastReport) : null;
 }
 
 /** Stored words stay unchanged; engines hear who started the message. */
@@ -14192,7 +14281,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           await startTurn(routine.targetId, routine.prompt, {
             taskId: laneId,
             computerOverride: routine.runsOn,
-            routine: { name: routine.name, manual: true },
+            routine: routineMark(routine, true),
           });
         } catch (e) {
           closeRun(laneId, {
