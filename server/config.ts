@@ -325,6 +325,19 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
   return withEnvironment(disk as AppConfig);
 }
 
+/** Forgets one saved secret, by its name. Deleted rather than merged
+ * away: saveConfig merges, and a merged `undefined` would leave the name
+ * in the live settings, handed to every turn with no value. Null when
+ * there was no such secret. */
+export function forgetSecret(name: string): AppConfig | null {
+  const p = join(DATA_DIR, "config.json");
+  const disk = readSaved<Record<string, any> | null>(p, null, isRecord);
+  if (!disk || !isRecord(disk.secrets) || !Object.prototype.hasOwnProperty.call(disk.secrets, name)) return null;
+  delete disk.secrets[name];
+  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  return withEnvironment(disk);
+}
+
 /** Forgets a provider's credential entirely, rather than blanking it. */
 export function disconnectProvider(kind: string): AppConfig {
   const p = join(DATA_DIR, "config.json");

@@ -37,6 +37,7 @@ import {
   customInstanceId,
   disconnectProvider,
   ensureDirs,
+  forgetSecret,
   instanceConfigs,
   loadConfig,
   saveConfig,
@@ -85,7 +86,9 @@ import {
   createPairLink,
   pairLinkSecret,
   claimPairLink,
+  memberDevices,
 } from "./pairing.ts";
+import { checkup, filePermissions, tightenPermissions, type SecurityFacts } from "./security.ts";
 import {
   clamp,
   clampList,
@@ -4482,6 +4485,75 @@ function sharedSafe(driverKind: string): boolean {
  */
 function ownerToolsSafe(bot: BotRecord): boolean {
   return registry.get(bot.modelSelection.instanceId)?.driverKind === "claudeAgent";
+}
+
+/**
+ * The facts the security checkup reads (server/security.ts), gathered
+ * from what is already stored. Names and counts only: no key, no secret's
+ * value, no device token, no webhook address. Engines are asked through
+ * the half minute cache, so opening the page runs no CLI it just ran.
+ */
+async function securityReport() {
+  const live = store.bots.filter((b) => !b.archivedAt);
+  // this machine is reachable only once its own computer-use bridge is set up
+  const machineBridge = Boolean(readCuaConnection());
+  const driverOf = (selection: ModelSelection) => registry.get(selection.instanceId)?.driverKind;
+  const used = new Map<string, number>();
+  for (const bot of live) {
+    for (const selection of [bot.modelSelection, bot.backupSelection]) {
+      if (selection?.instanceId) used.set(selection.instanceId, (used.get(selection.instanceId) ?? 0) + 1);
+    }
+  }
+  const signedOut: SecurityFacts["signedOut"] = [];
+  for (const [instanceId, agents] of used) {
+    const instance = registry.get(instanceId);
+    if (!instance || instance.enabled === false) continue;
+    const rest = cooldowns.of(instanceId);
+    const readiness = engineReadiness({ present: true, rest, snapshot: rest ? null : await recentSnapshot(instance) });
+    if (readiness.state === "signedOut") signedOut.push({ id: instanceId, name: instance.displayName ?? instance.driverKind, agents });
+  }
+  const toolsOf = (tools: RoomSharing["ownerTools"]) =>
+    [
+      tools?.connectors && "your apps",
+      tools?.mcp?.length && "your MCP servers",
+      tools?.browser && "a browser",
+      tools?.computer && "your computer",
+    ].filter((t): t is string => typeof t === "string");
+  const facts: SecurityFacts = {
+    agents: live.map((bot) => {
+      const kind = driverOf(bot.modelSelection);
+      return {
+        id: bot.id,
+        name: bot.name,
+        approvals: bot.approvals ?? "ask",
+        browser: bot.browser === true,
+        // "local", or left to decide for itself, which falls back to this
+        // machine whenever the agent has no cloud computer of its own
+        thisMachine: machineBridge && (bot.computer === "local" || bot.computer == null),
+        refusesUnlistedMail: Boolean(kind) && !sharedSafe(kind!),
+      };
+    }),
+    remote: {
+      // read from disk, where pairing keeps its devices
+      enabled: remoteEnabled(),
+      relay: Boolean(cfg.relay?.enabled),
+      devices: pairingStatus().devices.length,
+      memberDevices: memberDevices().length,
+    },
+    email: { enabled: Boolean(cfg.chat?.email?.enabled && cfg.chat.email.id), allowFrom: mailAllowList().length },
+    rooms: bloks.bloks.filter((b) => b.sharing).map((b) => ({ id: b.id, name: b.name, ownerTools: toolsOf(b.sharing!.ownerTools) })),
+    secrets: Object.keys(cfg.secrets ?? {}).sort(),
+    files: process.platform === "win32" ? null : filePermissions(DATA_DIR),
+    webhooks: webhooks.hooks.filter((h) => h.enabled).length,
+    signedOut,
+  };
+  const findings = checkup(facts);
+  return {
+    findings,
+    risky: findings.filter((f) => f.level === "risky").length,
+    look: findings.filter((f) => f.level === "look").length,
+    checkedAt: Date.now(),
+  };
 }
 
 /** Whether collaborators may answer approvals in this room right now.
@@ -12479,6 +12551,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (latest) usage[instance.instanceId] = latest;
       }
       return json(res, 200, { usage });
+    }
+
+    // The security checkup (server/security.ts). This machine only, and
+    // never an agent: it names what can reach the person's keys, accounts
+    // and screen, which is a map for whoever holds a phone or a turn, and
+    // its fixes change file modes and forget secrets.
+    if (path === "/api/security" || path.startsWith("/api/security/")) {
+      if (!local || asAgent) return json(res, 403, { error: "not from here" });
+      if (method === "GET" && path === "/api/security") return json(res, 200, await securityReport());
+      if (method === "POST" && path === "/api/security/permissions") {
+        const { fixed, failed } = tightenPermissions(DATA_DIR);
+        return json(res, 200, { fixed, failed, ...(await securityReport()) });
+      }
+      // a secret's name is an environment variable's, so nothing to decode
+      m = path.match(/^\/api\/security\/secrets\/([A-Za-z_][A-Za-z0-9_]{0,127})$/);
+      if (m && method === "DELETE") {
+        const saved = forgetSecret(m[1]);
+        if (!saved) return json(res, 404, { error: "no secret by that name" });
+        // the next turn reads secrets fresh (see startTurn), so nothing reloads
+        Object.assign(cfg, saved);
+        return json(res, 200, await securityReport());
+      }
+      return json(res, 404, { error: "not found" });
     }
 
     // Setting an engine up from the app (server/engine-setup.ts). This
