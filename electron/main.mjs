@@ -41,6 +41,7 @@ import { appMenuTemplate } from "./app-menu.mjs";
 import { drainWait } from "./drain-wait.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
 import { sameAppOrigin } from "./navigation.mjs";
+import { linkInArgv, teamLink } from "./links.mjs";
 import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
@@ -119,20 +120,10 @@ if (!app.requestSingleInstanceLock()) {
 // point the app at an arbitrary address, and what it opens is the same
 // review a person sees when importing by hand, so nothing is created
 // until they choose the seats. macOS hands links over with open-url, the
-// others as an argument to a second launch.
+// others as an argument, to a second launch or to the one the link
+// started (electron/links.mjs).
 app.setAsDefaultProtocolClient("bloks");
 let pendingLink = null;
-/** A link worth passing on, or null. */
-function teamLink(raw) {
-  try {
-    const url = new URL(String(raw));
-    if (url.protocol !== "bloks:" || url.hostname !== "team") return null;
-    const slug = url.pathname.replace(/^\/+|\/+$/g, "");
-    return /^[a-z0-9-]{1,60}$/.test(slug) ? { kind: "team", slug } : null;
-  } catch {
-    return null;
-  }
-}
 function deliverLink(raw) {
   const link = teamLink(raw);
   if (!link) return;
@@ -181,7 +172,7 @@ handle("menu:pending", () => {
 });
 
 app.on("second-instance", (_event, argv = []) => {
-  const link = argv.find((arg) => typeof arg === "string" && arg.startsWith("bloks://"));
+  const link = linkInArgv(argv);
   if (link) deliverLink(link);
   const main = BrowserWindow.getAllWindows().find((w) => w !== quickWin && !w.isDestroyed());
   if (!main) return;
@@ -1165,6 +1156,11 @@ app.whenReady().then(async () => {
     if (!remote && serverStarted) keeper.watch(serverProcess);
   }
   createWindow();
+  // On Windows and Linux a link that opened Bloks is one of its own
+  // arguments, and only a second launch's were ever read. It waits for
+  // the window to ask, like any link that arrives while the page loads.
+  const opening = linkInArgv(process.argv);
+  if (opening) deliverLink(opening);
 
   // Update check, after the window exists so a prompt has somewhere to
   // land. Packaged builds only: a dev checkout updating itself from
