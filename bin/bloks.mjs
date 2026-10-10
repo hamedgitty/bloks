@@ -317,21 +317,32 @@ const COMMANDS = {
         for: r.targetId,
         when: r.summary,
         ...(r.repeat === "once" ? { once: r.date } : {}),
+        ...(r.quiet ? { quiet: true } : {}),
         next: r.nextRunAt ? localStamp(new Date(r.nextRunAt)) : null,
         enabled: r.enabled,
       }));
     },
   },
   routine: {
-    use: 'routine --prompt <text> --time HH:MM [--date YYYY-MM-DD | --days "1,2,3"] [--name <name>] [--thread <conversation>]',
+    use: 'routine --prompt <text> (--time HH:MM [--date YYYY-MM-DD] [--quiet] | --every 30m [--between 09:00-18:00]) [--days "1,2,3"] [--name <name>] [--thread <conversation>]',
     about:
-      "file a routine for yourself: weekly on --days (0 is Sunday, 6 is Saturday), or once on --date to come back to something later. " +
-      "Leave out --days and it runs every day. The prompt can be up to 4,000 characters. " +
+      "file a routine for yourself: at a --time on --days (0 is Sunday, 6 is Saturday), once on --date to come back to something later, " +
+      "or a check-in --every 15m to 24h, optionally --between two times. Leave out --days and it runs every day. " +
+      "A check-in's turn may answer QUIET when nothing needs the person, and then they are not told; --quiet lets a --time routine do the same. " +
+      "The prompt can be up to 4,000 characters. " +
       "It runs in your first conversation, where the person talks to you; --thread runs it in another, by its title (made if missing) or its id",
     run: async (args) => {
       const flags = parseFlags(args);
       if (!flags.prompt) throw new Error("a routine needs a --prompt");
-      if (!/^\d{1,2}:\d{2}$/.test(flags.time ?? "")) throw new Error("a routine needs a --time like 09:00");
+      const every = flags.every !== undefined ? interval(flags.every) : null;
+      if (every === null && flags.between !== undefined) throw new Error("--between is for a check-in; give it --every too");
+      if (every !== null) {
+        if (flags.time !== undefined || flags.date !== undefined) {
+          throw new Error("a check-in runs --every so often, not at a --time or on a --date");
+        }
+      } else if (!/^\d{1,2}:\d{2}$/.test(flags.time ?? "")) {
+        throw new Error("a routine needs a --time like 09:00, or --every like 30m for a check-in");
+      }
       let once = null;
       let days = [];
       if (flags.date !== undefined) {
@@ -340,13 +351,15 @@ const COMMANDS = {
       } else if (flags.days !== undefined) {
         days = weekdays(flags.days);
       }
+      const between = flags.between !== undefined ? hours(flags.between) : null;
       const me = await request("GET", "/api/agent/whoami");
       return request("POST", "/api/routines", {
         targetId: me.botId,
         targetKind: "agent",
         name: flags.name,
         prompt: flags.prompt,
-        time: flags.time,
+        ...(every !== null ? { every, ...(between ? { activeHours: between } : {}) } : { time: flags.time }),
+        ...(flags.quiet === "true" && every === null ? { quiet: true } : {}),
         // another conversation, so it does not share context with the rest
         ...(flags.thread ? { thread: flags.thread } : {}),
         ...(once
@@ -521,6 +534,31 @@ function weekdays(raw) {
     }
     return Number(day.trim());
   });
+}
+
+/** How often a check-in runs, in minutes, from the ways somebody writes
+ * it: 30m, 30, 90min, 2h, 1h30m. Checked here against the same bounds
+ * the workspace keeps, so a typo is an error now and not a check-in at
+ * a pace nobody asked for. */
+function interval(raw) {
+  const text = String(raw ?? "").trim().toLowerCase();
+  const match = /^(?:(\d+)\s*h(?:ours?|rs?)?)?\s*(?:(\d+)\s*(?:m|mins?|minutes?)?)?$/.exec(text);
+  const minutes = match && (match[1] || match[2]) ? Number(match[1] ?? 0) * 60 + Number(match[2] ?? 0) : NaN;
+  if (!Number.isInteger(minutes) || minutes < 15 || minutes > 1440) {
+    throw new Error(`--every is how often, 15m to 24h, like 30m or 2h, and "${raw}" is not one`);
+  }
+  return minutes;
+}
+
+/** A check-in's hours, "09:00-18:00", both ends real times on one day. */
+function hours(raw) {
+  const match = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(raw ?? "").trim());
+  const minutes = match ? [Number(match[1]) * 60 + Number(match[2]), Number(match[3]) * 60 + Number(match[4])] : null;
+  if (!match || Number(match[1]) > 23 || Number(match[3]) > 23 || Number(match[2]) > 59 || Number(match[4]) > 59 || minutes[0] >= minutes[1]) {
+    throw new Error(`--between is two times on one day, the earlier first, like 09:00-18:00, and "${raw}" is not that`);
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return { from: `${pad(match[1])}:${match[2]}`, to: `${pad(match[3])}:${match[4]}` };
 }
 
 /** A moment in this Mac's own time, the way routines are written. */

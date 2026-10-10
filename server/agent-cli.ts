@@ -109,7 +109,7 @@ export const RULES: Rule[] = [
 
   // Work that repeats, and work nobody has been named for.
   { method: "GET", path: "/api/routines", why: "see what is scheduled" },
-  { method: "POST", path: "/api/routines", why: "file a routine" },
+  { method: "POST", path: "/api/routines", why: "file a routine: at a time of day, or a check-in every so often that may answer QUIET" },
   { method: "PATCH", path: "/api/routines/:id", why: "change a routine" },
   { method: "DELETE", path: "/api/routines/:id", why: "drop a routine" },
   { method: "GET", path: "/api/watchers", why: "see its own watchers" },
