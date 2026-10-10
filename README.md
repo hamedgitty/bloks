@@ -38,6 +38,47 @@ Underneath, every agent is a real provider session. Agents stream their
 replies, show you the tools they are running, and stop to ask before
 doing anything that needs your say-so.
 
+## 📣 New in 2.6
+
+**Agents that keep going.** Type `/goal` and say what done looks like, and
+the agent keeps working turn after turn until it is done, stuck, or out of
+turns, without you typing "keep going". Add a check like `pnpm test` and it
+only counts as done when the check passes. A chip above the composer shows
+the turn it is on, with Pause and Clear.
+
+**Check-ins that stay quiet.** A routine can run every 30 minutes or every
+few hours, only within the hours and days you choose. When nothing needs
+you, the agent answers quietly: no badge, no notification, and a run of
+quiet check-ins folds into one line. Each run remembers what the last real
+one reported.
+
+**Memory that carries across conversations.** Before your turn, an agent
+looks through its other conversations and its memory files for what is
+relevant and brings up a few short notes. "Recalled 2 notes" under your
+message shows exactly what it was given, and search across your
+conversations is ranked the same way.
+
+**Backups.** Your whole workspace is backed up every day. Back up any time,
+seal a backup with a passphrase, check it, and restore it from Settings or
+`bloks-server restore`. A restore takes a fresh backup first and never
+deletes what it replaces, and keys only ever go into a sealed backup.
+
+**Bring your setup.** Already using Claude Code, Codex, OpenClaw or Hermes?
+Bring their instructions, skills and tool servers into Bloks, reviewing each
+item first. Nothing leaves your Mac and no keys or passwords are copied.
+
+**Telegram that feels native.** Approve or answer a card with a tap, get the
+files a turn made sent back to the chat, and see what a long turn is
+working on.
+
+**A security checkup.** One page in Settings shows what can reach your keys,
+your screen and your agents, with a fix for each, and a turn that keeps
+making the same call is flagged so a stuck agent is easy to spot.
+
+Plus dozens of reliability fixes, from Undo and rehearsals to the desktop
+app restarting its own server if it ever stops. The full list is in the
+[release notes](https://github.com/hamedgitty/bloks/releases).
+
 ## What makes it different
 
 **Agents work together, with a chain of command.** Put several in a room
