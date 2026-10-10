@@ -20,6 +20,7 @@ import { AGENT_TEMPLATES } from "@/lib/agentTemplates";
 import { ThisComputer, thisComputer } from "@/lib/thisComputer";
 import { ApprovalsChooser, confirmWidening, type ApprovalMode } from "./ApprovalsChooser";
 import { EngineSetupActions } from "./EngineSetup";
+import { SetupPrivacyLine, SetupReviewList, useSetupReview } from "./BringYourSetup";
 
 type InstanceRow = {
   instanceId: string;
@@ -146,6 +147,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [approvals, setApprovals] = useState<ApprovalMode>("ask");
   const [approvalsNote, setApprovalsNote] = useState<string | null>(null);
   const [savingApprovals, setSavingApprovals] = useState(false);
+  /** What the person's other agent tools already know. The step that
+   * offers it is only shown when there is something new to offer. */
+  const setup = useSetupReview();
+  const [broughtAgents, setBroughtAgents] = useState(0);
+  const [brought, setBrought] = useState(false);
+  const offerSetup = (setup.review?.fresh ?? 0) > 0;
+  const afterSetup = () => (isElectron ? setStep(4) : finish());
 
   /** Where every agent starts, the one already here included. */
   const chooseApprovals = async () => {
@@ -246,7 +254,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   }, []);
 
   useEffect(() => {
-    track("setup_step", { step });
+    // Reaching the setup step would say another tool was found here, and
+    // that screen promises nothing about the person's setup leaves.
+    if (step !== 5) track("setup_step", { step });
     if (step === 0) {
       void checkEngines();
       // the user may install a CLI in another window and come back
@@ -295,10 +305,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     // chat with a stranger. Choosing a role is what teaches that agents
     // have jobs, and it is the one idea the rest of the product rests on.
     // Skipping is fine: Nova is seeded on the server and already waiting.
-    // Somebody who took a recommendation already has an agent with a job.
-    // Opening the picker on top of that would read as though the choice
-    // they just made had not counted.
-    if (hired.length === 0) {
+    // Somebody who took a recommendation, or brought an agent over from
+    // another tool, already has an agent with a job. Opening the picker on
+    // top of that would read as though the choice they just made had not
+    // counted.
+    if (hired.length === 0 && broughtAgents === 0) {
       dispatch({ type: "toggleNewAgent", open: true, firstRun: true });
     }
   };
@@ -370,7 +381,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4">
       <BlockField />
-      <div className="relative flex w-full max-w-[440px] animate-pop-in flex-col rounded-2xl border bg-popover p-6 shadow-2xl shadow-(color:--shadow-color) sm:p-8">
+      <div
+        className={cn(
+          "relative flex w-full animate-pop-in flex-col rounded-2xl border bg-popover p-6 shadow-2xl shadow-(color:--shadow-color) sm:p-8",
+          // the review needs room for a preview and a destination on one line
+          step === 5 ? "max-h-full max-w-[560px] overflow-y-auto" : "max-w-[440px]",
+        )}
+      >
         {/* A first boot seeds one agent that says hello, so "is anything
             here" would greet every new install with "welcome back". What
             marks a real workspace is that somebody has spoken in it, or
@@ -604,9 +621,46 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 );
               })}
             </div>
-            <Button size="lg" className="mt-5 w-full" onClick={() => (isElectron ? setStep(4) : finish())}>
+            <Button size="lg" className="mt-5 w-full" onClick={() => (offerSetup ? setStep(5) : afterSetup())}>
               {hired.length ? "Continue" : "Skip for now"}
             </Button>
+          </div>
+        )}
+
+        {step === 5 && setup.review && (
+          // Optional, and only here when another agent tool left something
+          // worth bringing. Last of the agent steps so the agents just
+          // hired can be chosen as a destination.
+          <div className="flex min-h-0 flex-col">
+            <h1 className="text-[17px] font-semibold tracking-tight text-foreground">Bring your setup</h1>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              Found in {setup.review.sources.map((s) => s.name).join(", ")}. Tick what to bring over. You can
+              do this later from Settings too.
+            </p>
+            <SetupPrivacyLine className="mt-4" />
+            <div className="mt-4 min-h-0">
+              <SetupReviewList
+                review={setup.review}
+                onReview={setup.set}
+                compact
+                onImported={({ brought: count, created }) => {
+                  if (count) setBrought(true);
+                  setBroughtAgents((n) => n + created);
+                }}
+              />
+            </div>
+            {brought ? (
+              <Button size="lg" onClick={afterSetup} className="mt-3 w-full">
+                Continue
+              </Button>
+            ) : (
+              <button
+                onClick={afterSetup}
+                className="mt-3 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Skip for now
+              </button>
+            )}
           </div>
         )}
 

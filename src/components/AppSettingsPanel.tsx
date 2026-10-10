@@ -36,6 +36,7 @@ import { thisComputer } from "@/lib/thisComputer";
 import { UseFromOtherApps } from "./UseFromOtherApps";
 import { SecurityCheckup } from "./SecurityCheckup";
 import { riskyCount, useSecurityCheckup } from "@/lib/securityCheckup";
+import { BringYourSetupPage } from "./BringYourSetup";
 import { BoxSleep } from "./BoxSleep";
 import { AgentDefaults } from "./AgentDefaults";
 import { SettingRow, SettingsGroup, SettingsPageHeader } from "./SettingsLayout";
@@ -57,6 +58,7 @@ import SlidersHorizontal from "lucide-react/dist/esm/icons/sliders-horizontal.mj
 import Smartphone from "lucide-react/dist/esm/icons/smartphone.mjs";
 import UserIcon from "lucide-react/dist/esm/icons/user.mjs";
 import UserPlus from "lucide-react/dist/esm/icons/user-plus.mjs";
+import Luggage from "lucide-react/dist/esm/icons/luggage.mjs";
 import { useEscape } from "@/lib/useEscape";
 import { APPROVAL_MODES, ApprovalsChooser, confirmWidening, useWorkspaceApprovals, type ApprovalMode } from "./ApprovalsChooser";
 
@@ -648,6 +650,13 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         description: "Context every agent gets, so you do not have to repeat yourself.",
         keywords: "profile context personal instructions",
       },
+      {
+        id: "bring-setup",
+        label: "Bring your setup",
+        icon: Luggage,
+        description: "Instructions, skills and tool servers from the agent tools you already use, without their keys.",
+        keywords: "import migrate claude code codex openclaw hermes claude.md agents.md skills mcp memory rules move switch",
+      },
     ],
   },
   {
@@ -867,6 +876,8 @@ function PageBody({ id }: { id: string }) {
       return <GeneralPage />;
     case "about-you":
       return <AboutYou />;
+    case "bring-setup":
+      return <BringYourSetupPage />;
     case "engines":
       return <EnginesPanel />;
     case "new-agents":
