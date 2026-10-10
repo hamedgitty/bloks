@@ -158,6 +158,7 @@ export function ModelPicker({
         }}
         className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-[0.98]"
         title={active ? `${active.displayName} · ${modelLabel(active, effectiveModel(active, selection.model))}` : selection.model}
+        aria-label={`Engine: ${active ? `${active.displayName} · ${modelLabel(active, effectiveModel(active, selection.model))}` : selection.model}`}
       >
         {active && (
           <span className="relative flex">
@@ -170,7 +171,9 @@ export function ModelPicker({
             )}
           </span>
         )}
-        <span className="max-w-[140px] truncate">
+        {/* on a phone the agent's name, beside it, needs the room more:
+            the engine's mark says enough, and the menu says the rest */}
+        <span className="hidden max-w-[140px] truncate sm:inline">
           {active || !custom ? modelLabel(active, effectiveModel(active, selection.model)) : (noneLabel ?? "None")}
         </span>
         <ChevronDown size={13} className="opacity-60" />

@@ -181,7 +181,7 @@ export function TaskStrip({
   const needsYou = tasks.filter((t) => t.state === "needs-you").length;
 
   return (
-    <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-background/95 px-3 py-2.5 md:px-4">
+    <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-background/95 px-3 py-2.5 max-md:[scrollbar-width:none] md:px-4 max-md:[&::-webkit-scrollbar]:hidden">
       {tasks.map((task, index) => {
         const active = task.id === activeId;
         // General, the first, is cleared rather than closed

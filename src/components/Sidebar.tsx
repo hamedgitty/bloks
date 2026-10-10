@@ -1043,7 +1043,7 @@ export function Sidebar() {
             </DropdownMenuTrigger>
             {newMenuItems}
           </DropdownMenu>
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {layoutRows(layout).map((row) =>
               row.kind === "room" ? (
                 <RoomListItem key={row.id} blok={row.room} rail />

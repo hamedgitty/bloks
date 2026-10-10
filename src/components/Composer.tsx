@@ -74,11 +74,16 @@ function useAutoSize(value: string) {
     // the height comes off entirely rather than being measured. An empty
     // textarea does not report the scrollHeight of one line, which is how
     // the composer came to stand at its ceiling whenever it was empty.
+    // A placeholder longer than the line (a long agent name on a phone)
+    // wraps onto a second row the one-row box hides, and the box grows a
+    // scrollbar for it. Empty, there is nothing to scroll to.
     if (!value) {
       el.style.height = "";
+      el.style.overflowY = "hidden";
       shadeEdges(el);
       return;
     }
+    el.style.overflowY = "";
     const style = getComputedStyle(el);
     const ceiling = composerCeiling(
       parseFloat(style.lineHeight),
@@ -829,7 +834,7 @@ export function Composer({
                 ? `${bot.name} is working. Enter sends, ${modKey()}Enter stops it first.`
                 : `Message ${bot.name}`
           }
-          className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+          className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:truncate placeholder:text-muted-foreground placeholder-shown:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)]"
         />
         </div>
         <button

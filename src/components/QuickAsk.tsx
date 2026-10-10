@@ -164,7 +164,7 @@ export function QuickAsk() {
               />
             </div>
             <div className="flex items-center gap-1.5 border-t px-3 py-1.5">
-              <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+              <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {bots.slice(0, 8).map((b) => (
                   <button
                     key={b.id}

@@ -45,6 +45,7 @@ import { EngineSetupActions } from "./EngineSetup";
 import { Markdownish, withHighlight } from "./Markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { useStickToBottom } from "@/lib/useStickToBottom";
 
 /**
  * A user bubble's text with its attachment tags lifted out: images come
@@ -751,14 +752,18 @@ export function ChatView({ bot }: { bot: Bot }) {
 
   // follow the tail only while the reader is actually at the tail
   const pinned = useRef(true);
+  useStickToBottom(scrollRef, pinned);
   const scrolledTo = useRef(0);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     // scrolling up near the top brings the next page in without a press
     const lastTop = scrolledTo.current;
     scrolledTo.current = el.scrollTop;
+    // Only the reader scrolling up lets go of the end. Content that grew
+    // under a reader who was there (a font, a card laying out) reaches
+    // this as a scroll too, and used to leave them short of the last line.
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 || (pinned.current && el.scrollTop >= lastTop);
     if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
   };
 

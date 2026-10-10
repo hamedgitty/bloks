@@ -54,6 +54,7 @@ import { replyCounts, replyLabel } from "@/lib/threads";
 import { boxFor, carryFocus, keepDraft, readDraft, showBox, takeBack, takeFocus, type Draft } from "@/lib/drafts";
 import { queuedLine, stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
+import { useStickToBottom } from "@/lib/useStickToBottom";
 
 /** A reaction in a room is the cheapest thing anyone can say, and often
  * the right thing: agreeing with a plan should not wake six agents. */
@@ -411,14 +412,18 @@ export function RoomView({ blok }: { blok: Blok }) {
   const visibleMessages = said.slice(start);
 
   const pinned = useRef(true);
+  useStickToBottom(scrollRef, pinned);
   const scrolledTo = useRef(0);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     // scrolling up near the top brings the next page in without a press
     const lastTop = scrolledTo.current;
     scrolledTo.current = el.scrollTop;
+    // Only the reader scrolling up lets go of the end. Content that grew
+    // under a reader who was there (a font, a card laying out) reaches
+    // this as a scroll too, and used to leave them short of the last line.
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 || (pinned.current && el.scrollTop >= lastTop);
     if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
   };
 
@@ -449,6 +454,12 @@ export function RoomView({ blok }: { blok: Blok }) {
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
+    // Empty is one row (rows=1): measured, a placeholder too long for the
+    // line wraps and stands the box two rows tall before anything is typed.
+    if (!text) {
+      el.style.height = "";
+      return;
+    }
     el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [text]);
@@ -831,7 +842,7 @@ export function RoomView({ blok }: { blok: Blok }) {
             placeholder={
               replyTo ? `Reply to ${replyTo.author}…` : `Message ${blok.name}, or @name someone`
             }
-            className="w-full min-w-0 resize-none self-center bg-transparent py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+            className="w-full min-w-0 resize-none self-center bg-transparent py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:truncate placeholder:text-muted-foreground placeholder-shown:overflow-hidden placeholder-shown:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)]"
           />
           <button
             onClick={send}
