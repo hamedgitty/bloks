@@ -4,7 +4,7 @@
 // origin, which includes the port, so the port has to be one it can keep.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { createServer as createHttpServer, request as httpRequest, type ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,5 +84,62 @@ test("a page from elsewhere is turned away, and the window's own page is pinned 
     assert.notEqual(own.status, 403);
   } finally {
     proxy.stop();
+  }
+});
+
+/** A relay whose event stream does what `line` says with each dial, and
+ * which notes when each dial came. */
+async function relay(line: (res: ServerResponse) => void) {
+  const dials: number[] = [];
+  const server = createHttpServer((req, res) => {
+    if (req.url !== "/space/client/stream") return void res.writeHead(404).end();
+    dials.push(Date.now());
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    line(res);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return {
+    dials,
+    profile: { ...profile, relayUrl: url },
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
+const until = async (check: () => boolean, ms: number) => {
+  for (const end = Date.now() + ms; Date.now() < end && !check(); ) await new Promise((r) => setTimeout(r, 20));
+  return check();
+};
+
+// The wait between dials went back to a second on any answer at all, so
+// a relay that answered and dropped the line at once was dialled every
+// second, forever, while the window still said connected.
+test("a relay that drops the line before saying hello is dialled less and less often", async () => {
+  const r = await relay((res) => res.end());
+  const proxy = await startRemoteProxy(r.profile, { staticDir: ui });
+  try {
+    assert.ok(await until(() => r.dials.length >= 3, 8_000), `only ${r.dials.length} dials`);
+    const [first, second, third] = r.dials;
+    assert.ok(second - first >= 800, `the second dial came ${second - first} ms after the first`);
+    assert.ok(third - second >= 1_800, `the third dial came ${third - second} ms after the second, no later than the one before`);
+  } finally {
+    proxy.stop();
+    r.close();
+  }
+});
+
+test("a line the relay ends cleanly is reported gone, not left showing connected", async () => {
+  const r = await relay((res) => res.end(`data: ${JSON.stringify({ kind: "hello", online: true })}\n\n`));
+  const states: Array<Record<string, unknown>> = [];
+  const proxy = await startRemoteProxy(r.profile, { staticDir: ui, onState: (state) => states.push(state) });
+  try {
+    assert.ok(await until(() => states.length >= 2, 900), `heard only ${JSON.stringify(states)}`);
+    assert.deepEqual(states.slice(0, 2), [{ connected: true }, { connected: false }]);
+  } finally {
+    proxy.stop();
+    r.close();
   }
 });

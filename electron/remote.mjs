@@ -266,7 +266,6 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
           return;
         }
         if (res.status !== 200 || !res.body) throw new Error(String(res.status));
-        delay = 1_000;
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buffer = "";
@@ -286,6 +285,11 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
               continue;
             }
             if (outer.kind === "hello") {
+              // The wait between tries starts over only once the relay has
+              // said hello, as server/relay-link.ts does: a relay that
+              // answers and drops the line at once would otherwise be
+              // dialled every second, forever.
+              delay = 1_000;
               onState({ connected: outer.online !== false });
               // the window starts over rather than resuming: frames the
               // relay did not carry cannot be replayed from here
@@ -300,6 +304,10 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
             for (const s of streams) s.write(text);
           }
         }
+        if (stopped) return;
+        // a line the relay ended cleanly is gone all the same, and the
+        // window should not say connected while this dials it again
+        throw new Error("the relay closed the line");
       } catch {
         onState({ connected: false });
       }
