@@ -244,6 +244,35 @@ function ProposeSkills() {
   );
 }
 
+/**
+ * Whether agents are reminded of their other conversations before your
+ * turn. On, unlike the switches above that spend money: it costs no call,
+ * only a few hundred words in a turn when something matches closely, and
+ * each agent can still turn it off for itself.
+ */
+function RecallBeforeTurn() {
+  const { state, dispatch } = useStore();
+  const on = state.config?.recall?.beforeTurn ?? true;
+  const [saving, setSaving] = useState(false);
+
+  const set = (beforeTurn: boolean) => {
+    setSaving(true);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ recall: { beforeTurn } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingRow
+      label="Bring up other conversations"
+      info="When you write to an agent, Bloks looks through its other conversations and its topic notes for what matches your message. Only a close match counts, and at most three short notes go with your words for that turn, never into the agent's standing instructions. Each says where and when it was said, the agent is told it may ignore them, and your message shows what was added. Rooms and email from people you have not listed never get them."
+      description="Give an agent what it said elsewhere that matches your message, before it answers."
+      control={<Switch aria-label="Bring up other conversations" checked={on} disabled={saving} onCheckedChange={set} />}
+    />
+  );
+}
+
 /** Shared context every agent receives. Optional, never asked for up
  * front: it lives here for whenever you feel like writing it. */
 /**
@@ -607,7 +636,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest",
+        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations",
       },
       {
         id: "about-you",
@@ -753,6 +782,7 @@ function GeneralPage() {
       <SettingsGroup title="Working with agents">
         <QuickAskShortcut />
         <ProposeSkills />
+        <RecallBeforeTurn />
         <Compaction />
         <IdleCompaction />
         <BeforeTurnCompaction />

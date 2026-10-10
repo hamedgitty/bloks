@@ -217,6 +217,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "browser"
         | "backupSelection"
         | "engineHooks"
+        | "recallBeforeTurn"
       >
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
@@ -620,6 +621,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         <BrowserCard bot={bot} patch={patch} />
           <McpAttachCard bot={bot} />
           <MemoryCard bot={bot} />
+          <RecallCard bot={bot} patch={patch} />
           <AnswersCard bot={bot} patch={patch} />
           <IdentityCard bot={bot} />
           <TakeItWithYouCard bot={bot} />
@@ -1069,6 +1071,34 @@ function TakeItWithYouCard({ bot }: { bot: Bot }) {
         Conversations stay here. The file is the agent, not the history, and it
         carries no keys: whoever opens it uses their own.
       </div>
+    </div>
+  );
+}
+
+/**
+ * Whether this agent is reminded of its other conversations before your
+ * turn. On by default; the workspace switch in Settings, General, turns
+ * it off for every agent, and then this one says so instead of pretending.
+ */
+function RecallCard({ bot, patch }: { bot: Bot; patch: (p: { recallBeforeTurn: boolean }) => void }) {
+  const { state } = useStore();
+  const everywhere = state.config?.recall?.beforeTurn !== false;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-4 rounded-2xl border bg-card p-4">
+      <div>
+        <div className="text-[13.5px] font-semibold text-foreground">Bring up other conversations</div>
+        <div className="mt-0.5 text-[12.5px] text-muted-foreground">
+          {everywhere
+            ? `Before your turn, give ${bot.name} what it said elsewhere, or keeps in its topic notes, that matches your message. Only a close match, at most three short notes, shown under your message.`
+            : "Off for every agent in Settings, General."}
+        </div>
+      </div>
+      <Switch
+        checked={everywhere && bot.recallBeforeTurn !== false}
+        disabled={!everywhere}
+        onCheckedChange={(on: boolean) => patch({ recallBeforeTurn: on })}
+        aria-label="Bring up other conversations"
+      />
     </div>
   );
 }

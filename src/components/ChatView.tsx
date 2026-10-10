@@ -33,6 +33,7 @@ import { ConnectorCard } from "./ConnectorCard";
 import { SecretCard } from "./SecretCard";
 import { ChangesCard } from "./ChangesCard";
 import { ToolRun } from "./ToolRun";
+import { RecalledNotes } from "./RecalledNotes";
 import { MeetingPanel } from "./MeetingPanel";
 import AudioLines from "lucide-react/dist/esm/icons/audio-lines.mjs";
 import Mic from "lucide-react/dist/esm/icons/mic.mjs";
@@ -338,6 +339,8 @@ function Bubble({
             onToggle={(emoji: string) => onReact?.(message.id, emoji)}
             nameOf={nameOf ?? ((id) => (id === "user" ? "You" : author))}
           />
+          {/* what recall put ahead of these words for the agent */}
+          {user && message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
         </div>
         {!user && (
           <MessageActionBar

@@ -51,6 +51,20 @@ export interface AgentNote {
   status?: "sent" | "queued" | "failed";
 }
 
+/** One note recall added to the turn a message started (server/store.ts). */
+export interface RecalledNote {
+  kind: "conversation" | "room" | "memory";
+  threadId?: string;
+  messageId?: string;
+  /** A memory file, by name, for a note from one. */
+  memory?: string;
+  /** A conversation's title, a room's name, or a memory file's name. */
+  where: string;
+  at: number;
+  who?: string;
+  text: string;
+}
+
 export interface Message {
   /** Between two agents rather than with the person. */
   agent?: AgentNote;
@@ -77,6 +91,8 @@ export interface Message {
   reactions?: Record<string, string[]>;
   /** When this message was last edited. Absent means never. */
   editedAt?: number;
+  /** What recall found elsewhere and added to the turn this started. */
+  recalled?: RecalledNote[];
   /** Taken back: the row stays, the words are gone. */
   deleted?: boolean;
   /** Came in some other way than you typing it here. "goal" is Bloks
@@ -276,6 +292,8 @@ export interface Bot {
   speakReplies?: boolean;
   /** False: Claude Code runs this agent's turns without hooks. */
   engineHooks?: boolean;
+  /** False: no notes from its other conversations before your turns. */
+  recallBeforeTurn?: boolean;
   /** The public half of this agent's key, hex. What its signatures in
    * the record are checked against. */
   fingerprint?: string;
@@ -325,6 +343,9 @@ export interface ConfigStatus {
   compaction?: { micro: boolean; idle?: boolean; beforeTurn?: number };
   /** Whether finished sessions are read back for something worth keeping. */
   skills?: { propose: boolean };
+  /** Whether agents are reminded of their other conversations before
+   * your turn. On unless turned off. */
+  recall?: { beforeTurn: boolean };
   /** How long a silent tool call may hold a turn, in minutes; 0 is never. */
   turns?: { stallMinutes: number };
   /** Where a new agent starts, applied before its first turn. Absent on
