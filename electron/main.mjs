@@ -50,7 +50,7 @@ import electronUpdater from "./vendor/electron-updater.cjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { nativeHelper } from "./native-helper.mjs";
 import { USUAL_PORTS, anyFreePort, failurePage, parseLsof, portFree, portOrder } from "./ports.mjs";
-import { keepServerUp } from "./server-life.mjs";
+import { keepServerUp, stopServer } from "./server-life.mjs";
 import { startMeeting, startSpeech, stopMeeting, stopSpeech } from "./speech.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1357,6 +1357,10 @@ handle("remote:connect", async (event, link) => {
   } catch (error) {
     return { error: error?.message ?? String(error) };
   }
+  // exit skips before-quit, so the server is stopped here, or on Windows
+  // it would be ended outright and leave its lock behind
+  quitting = true;
+  await stopServer(serverProcess);
   app.relaunch();
   app.exit(0);
   return { ok: true };
@@ -1380,18 +1384,15 @@ app.on("window-all-closed", () => {
 
 // The embedded daemon cleans up asynchronously, and none of that can run
 // once the host process is gone. So the first quit is deferred until it
-// finishes, then allowed through.
+// finishes, then allowed through. The server is asked to stop before it
+// is killed, so it ends its engines and gives up the data folder itself
+// (electron/server-life.mjs).
 let daemonStopped = false;
 app.on("before-quit", (event) => {
   quitting = true;
   if (daemonStopped) return;
   event.preventDefault();
-  try {
-    serverProcess?.kill();
-  } catch {
-    /* already down */
-  }
-  stopCua().finally(() => {
+  Promise.allSettled([stopServer(serverProcess), stopCua()]).finally(() => {
     daemonStopped = true;
     app.quit();
   });

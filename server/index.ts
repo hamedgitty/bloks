@@ -14489,15 +14489,27 @@ process.on("uncaughtException", (error) => {
   console.error("[bloks] uncaught exception:", redactSecrets(error?.stack ?? String(error)));
 });
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => {
-    // What is running stays on the list as it is: the engines shut down
-    // below end their turns, and that is this stop, not them finishing.
-    cutOff.close();
-    // shells first: they are children of this process and would otherwise
-    // outlive it, still holding the folder open
-    terminals.closeAll();
-    mcp.closeAll();
-    void registry.disposeAll().finally(() => process.exit(0));
-  });
-}
+let shuttingDown = false;
+const shutDown = () => {
+  // once, however many ways it is asked
+  if (shuttingDown) return;
+  shuttingDown = true;
+  // What is running stays on the list as it is: the engines shut down
+  // below end their turns, and that is this stop, not them finishing.
+  cutOff.close();
+  // shells first: they are children of this process and would otherwise
+  // outlive it, still holding the folder open
+  terminals.closeAll();
+  mcp.closeAll();
+  void registry.disposeAll().finally(() => process.exit(0));
+};
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutDown);
+// The desktop app asks this way before it kills the server
+// (electron/server-life.mjs). On Windows killing it ends it outright, with
+// none of the above: its engines kept running, and its lock on the data
+// folder stayed behind for the next start to trip on. A message reaches
+// it the same way everywhere. Only Electron gives a process this port.
+type ParentPort = { on(event: "message", listener: (message: { data?: { kind?: unknown } }) => void): void };
+(process as NodeJS.Process & { parentPort?: ParentPort }).parentPort?.on("message", (message) => {
+  if (message?.data?.kind === "stop") shutDown();
+});

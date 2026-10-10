@@ -3,19 +3,38 @@
 // A server that died after starting was never started again: the window
 // kept calling a port nobody answered on, and one opened from the Dock
 // showed "connection refused", until Bloks was quit and opened again.
+// And quitting killed it outright, which on Windows runs none of its own
+// shutdown: its engines kept running and its lock stayed behind.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 
-import { keepServerUp, RESTART_DELAYS, STEADY_MS } from "../electron/server-life.mjs";
+import { keepServerUp, RESTART_DELAYS, STEADY_MS, stopServer } from "../electron/server-life.mjs";
 
-/** A stand-in for Electron's UtilityProcess: an exit, and a kill. */
+/** A stand-in for Electron's UtilityProcess: a pid until it exits, a
+ * message port, and a kill. `stopsWhenAsked` decides whether a message to
+ * stop is heeded. */
 class FakeServer extends EventEmitter {
+  pid: number | undefined = 4242;
+  asked: unknown[] = [];
   killed = 0;
+  stopsWhenAsked: boolean;
+  constructor(stopsWhenAsked = true) {
+    super();
+    this.stopsWhenAsked = stopsWhenAsked;
+  }
+  postMessage(message: unknown) {
+    this.asked.push(message);
+    if (this.stopsWhenAsked) setImmediate(() => this.die(0));
+  }
   kill() {
     this.killed++;
+    setImmediate(() => this.die(0));
   }
   die(code = 1) {
+    if (this.pid === undefined) return;
+    // Electron clears the pid before it says the process exited
+    this.pid = undefined;
     this.emit("exit", code);
   }
 }
@@ -142,7 +161,34 @@ test("a server that comes up as Bloks quits is stopped, not adopted", async () =
   const first = new FakeServer();
   k.watch(first);
   first.die();
-  for (let i = 0; i < 50 && !late.killed; i++) await new Promise((r) => setImmediate(r));
-  assert.equal(late.killed, 1);
+  for (let i = 0; i < 50 && late.pid !== undefined; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(late.asked, [{ kind: "stop" }]);
+  assert.equal(late.pid, undefined);
   assert.deepEqual(said, []);
+});
+
+test("a server is asked to stop first, and one that does is never killed", async () => {
+  const server = new FakeServer();
+  await stopServer(server, { wait: 5_000 });
+  assert.deepEqual(server.asked, [{ kind: "stop" }]);
+  assert.equal(server.killed, 0);
+  assert.equal(server.pid, undefined);
+});
+
+test("a server that does not stop when asked is killed once the wait is over", async () => {
+  const server = new FakeServer(false);
+  const began = Date.now();
+  await stopServer(server, { wait: 50 });
+  assert.ok(Date.now() - began >= 40, "it was killed without the wait");
+  assert.deepEqual(server.asked, [{ kind: "stop" }]);
+  assert.equal(server.killed, 1);
+});
+
+test("a server already gone, or never started, is left alone", async () => {
+  const gone = new FakeServer();
+  gone.die();
+  await stopServer(gone);
+  assert.deepEqual(gone.asked, []);
+  assert.equal(gone.killed, 0);
+  await stopServer(null);
 });
