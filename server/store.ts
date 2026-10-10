@@ -198,6 +198,9 @@ export interface Message {
   /** When it was queued. Written since 2.5.19; a queued message without
    * it predates recovery after a restart and is never run by it. */
   queuedAt?: number;
+  /** The server queued the person's words while finishing up to restart.
+   * Cleared when delivered; never accepted from a client body. */
+  waitsFor?: "restart";
   /** Server-only return address for a Telegram request queued during
    * drain. Preserved on edits, never accepted from a client body. */
   telegramReply?: TelegramReply;
