@@ -17,10 +17,11 @@
 // The file is small and rewritten whole, through a temporary file and a
 // rename, so a crash mid-write leaves the old list rather than half of a
 // new one.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { MAX_QUEUED_RECOVERY_MS, MAX_SESSION_REF_CHARS, MAX_TITLE_CHARS, MAX_TURNS_IN_FLIGHT } from "./limits.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export interface TurnInFlight {
   /** The lane the turn runs in, which is also what keys its engine session. */
@@ -106,16 +107,10 @@ export class TurnsInFlight {
 
   constructor(file: string) {
     this.file = file;
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(parsed)) {
-        for (const raw of parsed.slice(0, MAX_TURNS_IN_FLIGHT)) {
-          const turn = sanitize(raw);
-          if (turn) this.turns.set(turn.laneId, turn);
-        }
-      }
-    } catch {
-      /* nothing was running */
+    const parsed = readSaved<unknown[]>(file, [], Array.isArray);
+    for (const raw of parsed.slice(0, MAX_TURNS_IN_FLIGHT)) {
+      const turn = sanitize(raw);
+      if (turn) this.turns.set(turn.laneId, turn);
     }
   }
 

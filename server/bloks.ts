@@ -10,10 +10,10 @@
 // conversation, so what it heard in a group is still in its memory when
 // you message it alone. Rooms decide what enters that conversation; they
 // do not fragment it.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { ChatLink } from "./chat-bridge.ts";
@@ -157,12 +157,7 @@ export class BlokStore {
 
   constructor() {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    try {
-      this.bloks = JSON.parse(readFileSync(BLOKS_FILE, "utf8"));
-    } catch (error) {
-      setAside(BLOKS_FILE, error);
-      this.bloks = [];
-    }
+    this.bloks = readSaved<BlokRecord[]>(BLOKS_FILE, [], Array.isArray);
   }
 
   private save() {

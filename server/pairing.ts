@@ -19,11 +19,12 @@
 //   Only a SHA-256 of each token is stored, so a stolen config file
 //   cannot be replayed as a paired device.
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 
-import { DATA_DIR, loadConfig, saveConfig } from "./config.ts";
+import { DATA_DIR, loadConfig, saveConfig, type AppConfig } from "./config.ts";
+import { readSaved } from "./atomic-write.ts";
 
 /** A device that completed pairing. The token itself is shown exactly
  * once, at claim time, and only its digest is kept. */
@@ -152,29 +153,30 @@ export function revokePerson(personId: string): number {
   return list.length - left.length;
 }
 
-function devices(): PairedDevice[] {
-  const list = loadConfig().remote?.devices;
+function devices(config: AppConfig = loadConfig()): PairedDevice[] {
+  const list = config.remote?.devices;
   return Array.isArray(list) ? list.filter(isDevice) : [];
 }
 
-function putDevices(list: PairedDevice[]): void {
-  saveConfig({ remote: { ...loadConfig().remote, devices: list } });
+function putDevices(list: PairedDevice[], beforeWrite?: () => void): AppConfig {
+  return saveConfig({ remote: { ...loadConfig().remote, devices: list } }, beforeWrite);
 }
 
-export function remoteEnabled(): boolean {
+export function remoteEnabled(config?: AppConfig): boolean {
   // bloks-server: no screen to flip the switch on, and nothing but the
   // relay can reach it (bindHost below keeps it on loopback), so the
   // remote surface is on and the relay is its only door
   if (process.env.BLOKS_LOOPBACK_ONLY === "1") return true;
-  return loadConfig().remote?.enabled === true;
+  return (config ?? loadConfig()).remote?.enabled === true;
 }
 
-export function setRemoteEnabled(on: boolean): void {
-  saveConfig({ remote: { ...loadConfig().remote, enabled: on } });
+export function setRemoteEnabled(on: boolean): AppConfig {
+  const saved = saveConfig({ remote: { ...loadConfig().remote, enabled: on } });
   // Turning it off should mean off right now, not at the next restart.
   // The bind cannot narrow without one, so drop the pending code and let
   // the guard refuse everything remote in the meantime.
   if (!on) pending = null;
+  return saved;
 }
 
 /** Which interface to bind. Read once, at startup, by design. */
@@ -227,6 +229,7 @@ function cleanName(value: unknown): string {
 export function claimPairing(
   code: unknown,
   name: unknown,
+  onSaved?: (config: AppConfig) => void,
 ): { token: string; device: Omit<PairedDevice, "hash"> } | null {
   if (!pending || Date.now() > pending.expires) {
     pending = null;
@@ -243,7 +246,6 @@ export function claimPairing(
     (offered.length === pending.token.length && sameSecret(offered, pending.token));
   if (!matches) return null;
 
-  pending = null; // single use, spent on success
   const token = randomBytes(32).toString("base64url");
   const device: PairedDevice = {
     id: randomBytes(8).toString("hex"),
@@ -254,7 +256,8 @@ export function claimPairing(
   // Oldest out first. An unbounded list is a config file that grows
   // forever and a revoke screen nobody can read.
   const list = [...devices(), device].slice(-MAX_DEVICES);
-  putDevices(list);
+  const saved = putDevices(list, () => { pending = null; }); // single use, spent after the reads
+  onSaved?.(saved);
   const { hash: _hash, ...safe } = device;
   return { token, device: safe };
 }
@@ -292,20 +295,22 @@ export function noteClient(deviceId: string, label: unknown): void {
   clients.set(deviceId, clean);
 }
 
-export function revokeDevice(id: string): boolean {
+export function revokeDevice(id: string, onSaved?: (config: AppConfig) => void): boolean {
   const list = devices();
   const left = list.filter((d) => d.id !== id);
   if (left.length === list.length) return false;
-  putDevices(left);
+  const saved = putDevices(left);
   seen.delete(id);
   clients.delete(id);
+  onSaved?.(saved);
   return true;
 }
 
-export function revokeAll(): void {
-  putDevices([]);
+export function revokeAll(): AppConfig {
+  const saved = putDevices([]);
   seen.clear();
   clients.clear();
+  return saved;
 }
 
 /** Addresses on this machine a phone could actually reach: IPv4, not
@@ -322,14 +327,14 @@ export function lanAddresses(): string[] {
   return out;
 }
 
-export function pairingStatus(): PairingStatus {
-  const enabled = remoteEnabled();
+export function pairingStatus(config: AppConfig = loadConfig()): PairingStatus {
+  const enabled = remoteEnabled(config);
   return {
     enabled,
     listening: boundToNetwork ? "network" : "loopback",
     restartRequired: enabled !== boundToNetwork,
     pending: pairingPending(),
-    devices: devices().map((d) => ({
+    devices: devices(config).map((d) => ({
       id: d.id,
       name: d.name,
       pairedAt: d.pairedAt,
@@ -371,15 +376,9 @@ const linksFile = () => join(DATA_DIR, "pair-links.json");
 
 /** The unexpired links, from disk. A missing or broken file is none. */
 function readLinks(): PairLink[] {
-  try {
-    const list = JSON.parse(readFileSync(linksFile(), "utf8"));
-    const now = Date.now();
-    return Array.isArray(list)
-      ? list.filter((l) => typeof l?.id === "string" && typeof l?.secretHash === "string" && l.expiresAt > now)
-      : [];
-  } catch {
-    return [];
-  }
+  const list = readSaved<PairLink[]>(linksFile(), [], Array.isArray);
+  const now = Date.now();
+  return list.filter((l) => typeof l?.id === "string" && typeof l?.secretHash === "string" && l.expiresAt > now);
 }
 
 function writeLinks(list: PairLink[]) {
@@ -413,18 +412,20 @@ export function pairLinkSecret(id: string): string | null {
 /** Spends a link on the device that opened it. The device made its own
  * token and sends only that token's digest, so nothing that could be
  * replayed crosses the relay. */
-export function claimPairLink(id: string, name: unknown, tokenHash: unknown): Omit<PairedDevice, "hash"> | null {
-  if (!pairLinkSecret(id)) return null;
+export function claimPairLink(id: string, name: unknown, tokenHash: unknown, onSaved?: (config: AppConfig) => void): Omit<PairedDevice, "hash"> | null {
+  const links = readLinks();
+  if (!links.some((l) => l.id === id)) return null;
   if (typeof tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(tokenHash)) return null;
-  // spent here, so no other process sharing this folder can spend it too
-  writeLinks(readLinks().filter((l) => l.id !== id));
   const device: PairedDevice = {
     id: randomBytes(8).toString("hex"),
     name: cleanName(name),
     hash: tokenHash,
     pairedAt: Date.now(),
   };
-  putDevices([...devices(), device].slice(-MAX_DEVICES));
+  // Read both stores before either write. Still spend the link before
+  // saving the device, as before, after the config read has succeeded.
+  const saved = putDevices([...devices(), device].slice(-MAX_DEVICES), () => writeLinks(links.filter((l) => l.id !== id)));
+  onSaved?.(saved);
   const { hash: _hash, ...safe } = device;
   return safe;
 }

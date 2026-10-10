@@ -15,9 +15,10 @@
 // stopped at that moment, because they are not who the owner is looking
 // at.
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.ts";
+import { readSaved, isRecord } from "./atomic-write.ts";
 
 export type MemberRole = "collaborator" | "viewer";
 
@@ -102,22 +103,13 @@ let cache: PeopleFile | null = null;
 
 function load(): PeopleFile {
   if (cache) return cache;
-  try {
-    if (existsSync(FILE())) {
-      const raw = JSON.parse(readFileSync(FILE(), "utf8")) as Partial<PeopleFile>;
-      cache = {
-        people: Array.isArray(raw.people) ? raw.people : [],
-        memberships: Array.isArray(raw.memberships) ? raw.memberships : [],
-        invites: Array.isArray(raw.invites) ? raw.invites : [],
-        knocks: Array.isArray(raw.knocks) ? raw.knocks : [],
-      };
-      return cache;
-    }
-  } catch {
-    // a torn file is treated as empty rather than fatal; the owner's own
-    // access never depended on it
-  }
-  cache = { people: [], memberships: [], invites: [], knocks: [] };
+  const raw = readSaved<Partial<PeopleFile>>(FILE(), {}, isRecord);
+  cache = {
+    people: Array.isArray(raw.people) ? raw.people : [],
+    memberships: Array.isArray(raw.memberships) ? raw.memberships : [],
+    invites: Array.isArray(raw.invites) ? raw.invites : [],
+    knocks: Array.isArray(raw.knocks) ? raw.knocks : [],
+  };
   return cache;
 }
 
@@ -188,12 +180,13 @@ export function setRole(personId: string, roomId: string, role: MemberRole): boo
  * room at all, which is when the caller should revoke their devices and
  * their relay token: a person with no rooms has nothing left to reach.
  */
-export function removeFromRoom(personId: string, roomId: string): { removed: boolean; roomless: boolean } {
+export function removeFromRoom(personId: string, roomId: string, beforeRemove?: (roomless: boolean) => void): { removed: boolean; roomless: boolean } {
   const data = load();
-  const before = data.memberships.length;
-  data.memberships = data.memberships.filter((m) => !(m.personId === personId && m.roomId === roomId));
-  const removed = data.memberships.length !== before;
-  const roomless = !data.memberships.some((m) => m.personId === personId);
+  const left = data.memberships.filter((m) => !(m.personId === personId && m.roomId === roomId));
+  const removed = left.length !== data.memberships.length;
+  const roomless = !left.some((m) => m.personId === personId);
+  if (removed) beforeRemove?.(roomless);
+  data.memberships = left;
   if (roomless) data.people = data.people.filter((p) => p.id !== personId);
   if (removed || roomless) save();
   return { removed, roomless };
@@ -282,7 +275,7 @@ export function claimInvite(
  * caller registers the device (server/pairing.ts) and records its id here
  * so the joiner's next poll can find out who they now are.
  */
-export function approveInvite(id: string): { invite: Invite; person: Person } | null {
+export function approveInvite(id: string, beforeApprove?: (person: Person) => void): { invite: Invite; person: Person } | null {
   const inv = invite(id);
   if (!live(inv) || inv.status !== "claimed" || !inv.claim) return null;
   const data = load();
@@ -292,6 +285,9 @@ export function approveInvite(id: string): { invite: Invite; person: Person } | 
     createdAt: Date.now(),
     ...(inv.relayTokenHash ? { relayTokenHash: inv.relayTokenHash } : {}),
   };
+  // Registering the device reads another saved file. Do it before the
+  // membership is changed, so a refused read leaves the invite retryable.
+  beforeApprove?.(p);
   data.people.push(p);
   data.memberships.push({
     personId: p.id,

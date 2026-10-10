@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, isRecord, writeFileAtomic } from "./atomic-write.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { usableSecrets } from "./env-names.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
@@ -224,14 +224,12 @@ export function ensureDirs() {
 }
 
 export function loadConfig(): AppConfig {
-  let cfg: AppConfig = {};
-  try {
-    cfg = JSON.parse(readFileSync(join(DATA_DIR, "config.json"), "utf8"));
-  } catch (error) {
-    // First run, env fallbacks below. A file that is there and will not
-    // parse is kept aside first, or the next save would write over it.
-    setAside(join(DATA_DIR, "config.json"), error);
-  }
+  return withEnvironment(readSaved<AppConfig>(join(DATA_DIR, "config.json"), {}, isRecord));
+}
+
+/** Also used on the result of a save: a successful write must not be
+ * followed by another fallible read just to refresh the live settings. */
+function withEnvironment(cfg: AppConfig): AppConfig {
   cfg.xai = { key: process.env.XAI_API_KEY, ...cfg.xai };
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
@@ -267,19 +265,9 @@ export function connectedProviders(cfg: AppConfig): string[] {
 /** Merge changes into the config file, preserving whatever else is in
  * it. Nothing written here is ever sent back to a client: the API answers
  * questions about credentials with yes or no, never with the value. */
-export function saveConfig(patch: Partial<AppConfig>): void {
+export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void): AppConfig {
   const p = join(DATA_DIR, "config.json");
-  let disk: Record<string, unknown> = {};
-  try {
-    disk = JSON.parse(readFileSync(p, "utf8"));
-  } catch (error) {
-    // First write. Or a file cut short: starting from nothing over that
-    // would wipe every key for good, so it goes aside first. Refusing to
-    // save would leave every later save failing as well, the Telegram
-    // offset's included, and the copy aside already keeps whatever there
-    // was to recover.
-    setAside(p, error);
-  }
+  const disk = readSaved<Record<string, unknown>>(p, {}, isRecord);
   // An allowlist, not a spread: this file holds credentials and a request
   // body is not a config file. A section missing from here is a section
   // that silently will not save, which is what happened the first time
@@ -323,22 +311,21 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   // this file holds API keys in plaintext, never leave it group/world
   // readable; every save is a new file made 0600, whatever the old one was
+  beforeWrite?.();
   writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  return withEnvironment(disk as AppConfig);
 }
 
 /** Forgets a provider's credential entirely, rather than blanking it. */
-export function disconnectProvider(kind: string): void {
+export function disconnectProvider(kind: string): AppConfig {
   const p = join(DATA_DIR, "config.json");
-  let disk: Record<string, any> = {};
-  try {
-    disk = JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return;
-  }
+  const disk = readSaved<Record<string, any> | null>(p, null, isRecord);
+  if (!disk) return withEnvironment({});
   if (disk.providers) delete disk.providers[kind];
   // the legacy slot is the same credential under an older name
   if (kind === "grok") delete disk.xai;
   writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  return withEnvironment(disk);
 }
 
 // Default fleet: the CLI agents and the box, plus an instance for every

@@ -31,10 +31,10 @@
 //   is nothing that can run away. A regex is the single operator that
 //   would have brought that problem back, and "contains" covers what
 //   people actually write.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -532,15 +532,7 @@ export class WorkflowStore {
   workflows: Workflow[] = [];
 
   constructor() {
-    try {
-      const parsed = JSON.parse(readFileSync(WORKFLOWS_FILE, "utf8"));
-      if (Array.isArray(parsed)) {
-        this.workflows = parsed.filter((w) => w?.id && typeof w.name === "string" && Array.isArray(w.steps));
-      }
-    } catch (error) {
-      // none yet, or a file that will not parse and is kept aside
-      setAside(WORKFLOWS_FILE, error);
-    }
+    this.workflows = readSaved<Workflow[]>(WORKFLOWS_FILE, [], Array.isArray).filter((w) => w?.id && typeof w.name === "string" && Array.isArray(w.steps));
   }
 
   private save() {

@@ -21,10 +21,10 @@
 //
 // The pure half is here. Reading the disk and running turns is the
 // caller's problem.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { BlokColor, BlokShape } from "./store.ts";
@@ -163,15 +163,7 @@ export class ProjectStore {
   projects: Project[] = [];
 
   constructor() {
-    try {
-      const parsed = JSON.parse(readFileSync(PROJECTS_FILE, "utf8"));
-      if (Array.isArray(parsed)) {
-        this.projects = parsed.filter((p) => p?.id && typeof p.name === "string");
-      }
-    } catch (error) {
-      // no projects yet, or a file that will not parse and is kept aside
-      setAside(PROJECTS_FILE, error);
-    }
+    this.projects = readSaved<Project[]>(PROJECTS_FILE, [], Array.isArray).filter((p) => p?.id && typeof p.name === "string");
   }
 
   private save() {

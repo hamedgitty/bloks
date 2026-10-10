@@ -23,10 +23,11 @@
 // rehearsal as anywhere; the agent is told so, and approvals still ask.
 import { execFile } from "node:child_process";
 import { cp, rm } from "node:fs/promises";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export type RehearsalState = "running" | "ready" | "empty" | "applied" | "discarded" | "failed";
 
@@ -91,12 +92,7 @@ export class Rehearsals {
   constructor(root: string) {
     this.root = root;
     this.file = join(root, "index.json");
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8"));
-      if (Array.isArray(parsed)) this.list = parsed;
-    } catch {
-      /* none yet */
-    }
+    this.list = readSaved<Rehearsal[]>(this.file, [], Array.isArray);
     // a rehearsal cannot still be running across a restart: its turn died
     for (const r of this.list) if (r.state === "running") r.state = "failed";
     this.save();

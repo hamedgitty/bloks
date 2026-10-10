@@ -15,11 +15,11 @@
 // far as the harness is: loopback always, the local network when pairing
 // is on. Local tooling and LAN services today; the internet arrives with
 // the relay.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -62,16 +62,8 @@ export class WebhookStore {
 
   constructor() {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    try {
-      const raw = JSON.parse(readFileSync(FILE, "utf8"));
-      // hand-editable file: keep only rows that still look like ours
-      this.hooks = Array.isArray(raw) ? raw.filter(valid) : [];
-    } catch (error) {
-      // none yet, or one that will not parse, kept aside rather than
-      // written over by the next save
-      setAside(FILE, error);
-      this.hooks = [];
-    }
+    // hand-editable file: keep only rows that still look like ours
+    this.hooks = readSaved<WebhookRecord[]>(FILE, [], Array.isArray).filter(valid);
   }
 
   private save() {

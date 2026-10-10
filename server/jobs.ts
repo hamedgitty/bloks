@@ -16,10 +16,10 @@
 // cannot fail: an offer is a proposal the agent gets to refuse, so the
 // consequence of ranking badly is one wasted turn rather than a wrong
 // answer.
-import { readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 
@@ -214,13 +214,7 @@ export class JobStore {
   jobs: Job[] = [];
 
   constructor() {
-    try {
-      const parsed = JSON.parse(readFileSync(JOBS_FILE, "utf8"));
-      if (Array.isArray(parsed)) this.jobs = parsed.filter((job) => job?.id && job?.title);
-    } catch (error) {
-      // no board yet, or one that will not parse and is kept aside
-      setAside(JOBS_FILE, error);
-    }
+    this.jobs = readSaved<Job[]>(JOBS_FILE, [], Array.isArray).filter((job) => job?.id && job?.title);
     // Work that was running when the app stopped did not carry on
     // running. Saying so beats a job that claims to be in progress
     // forever with nobody doing it.

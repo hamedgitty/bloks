@@ -21,10 +21,11 @@
 //   briefed from then on, so hiring a new one does not mean teaching it
 //   from scratch. It stays out of rooms shared with other people, like
 //   the rest of your private context.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export interface ProfileNote {
   id: string;
@@ -60,12 +61,7 @@ export class ProfileNotes {
 
   constructor(file: string) {
     this.file = file;
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(parsed)) this.notes = parsed.filter((n) => n?.id && typeof n.text === "string");
-    } catch {
-      /* none yet */
-    }
+    this.notes = readSaved<ProfileNote[]>(file, [], Array.isArray).filter((n) => n?.id && typeof n.text === "string");
   }
 
   private save() {

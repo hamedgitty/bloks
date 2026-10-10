@@ -16,10 +16,11 @@
  * message has (MAX_QUEUED_RECOVERY_MS), for the same reason: waiting is
  * not standing permission to act.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { MAX_LINES_PER_WAIT, MAX_MESSAGE_CHARS, MAX_QUEUED_RECOVERY_MS, MAX_WAITING_ROOM_LINES } from "./limits.ts";
+import { readSaved } from "./atomic-write.ts";
 
 export interface WaitingLines {
   roomId: string;
@@ -43,30 +44,25 @@ export class RoomTagQueues {
   constructor(file?: string, now = Date.now()) {
     this.file = file;
     if (!file) return;
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (!Array.isArray(parsed)) return;
-      for (const raw of parsed.slice(0, MAX_WAITING_ROOM_LINES)) {
-        const r = (raw ?? {}) as Record<string, unknown>;
-        const botId = clean(r.botId, 64);
-        const roomId = clean(r.roomId, 64);
-        const requester = clean(r.requester, 64);
-        const at = typeof r.at === "number" ? r.at : NaN;
-        if (!botId || !roomId || !requester || !(now - at <= MAX_QUEUED_RECOVERY_MS && at <= now)) continue;
-        const texts = (Array.isArray(r.texts) ? r.texts : [])
-          .map((text) => clean(text, MAX_MESSAGE_CHARS))
-          .filter((text): text is string => Boolean(text))
-          .slice(0, MAX_LINES_PER_WAIT);
-        if (!texts.length) continue;
-        const hops = typeof r.hops === "number" && r.hops >= 0 ? Math.floor(r.hops) : 0;
-        const lines = this.byAgent.get(botId) ?? new Map<string, WaitingLines>();
-        const key = JSON.stringify([roomId, requester]);
-        lines.set(key, { roomId, requester, texts, hops });
-        this.byAgent.set(botId, lines);
-        this.since.set(JSON.stringify([botId, key]), at);
-      }
-    } catch {
-      /* nothing was waiting */
+    const parsed = readSaved<unknown[]>(file, [], Array.isArray);
+    for (const raw of parsed.slice(0, MAX_WAITING_ROOM_LINES)) {
+      const r = (raw ?? {}) as Record<string, unknown>;
+      const botId = clean(r.botId, 64);
+      const roomId = clean(r.roomId, 64);
+      const requester = clean(r.requester, 64);
+      const at = typeof r.at === "number" ? r.at : NaN;
+      if (!botId || !roomId || !requester || !(now - at <= MAX_QUEUED_RECOVERY_MS && at <= now)) continue;
+      const texts = (Array.isArray(r.texts) ? r.texts : [])
+        .map((text) => clean(text, MAX_MESSAGE_CHARS))
+        .filter((text): text is string => Boolean(text))
+        .slice(0, MAX_LINES_PER_WAIT);
+      if (!texts.length) continue;
+      const hops = typeof r.hops === "number" && r.hops >= 0 ? Math.floor(r.hops) : 0;
+      const lines = this.byAgent.get(botId) ?? new Map<string, WaitingLines>();
+      const key = JSON.stringify([roomId, requester]);
+      lines.set(key, { roomId, requester, texts, hops });
+      this.byAgent.set(botId, lines);
+      this.since.set(JSON.stringify([botId, key]), at);
     }
   }
 

@@ -2,12 +2,12 @@
 // thread to instance binding and per-instance resume cursors: persist
 // that binding from day one, because retrofitting it is painful).
 // messages-<threadId>.json holds the folded transcript.
-import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
-import { setAside, writeFileAtomic } from "./atomic-write.ts";
+import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { compactedNotice, readingFor, type Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
@@ -489,14 +489,7 @@ export class Store {
   constructor(defaultSelection: () => ModelSelection) {
     this.defaultSelection = defaultSelection;
     mkdirSync(DATA_DIR, { recursive: true });
-    try {
-      this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
-    } catch (error) {
-      // Kept aside rather than lost: the first save after this would
-      // otherwise write no agents over every agent there was.
-      setAside(BOTS_FILE, error);
-      this.bots = [];
-    }
+    this.bots = readSaved<BotRecord[]>(BOTS_FILE, [], Array.isArray);
     // busy never survives a restart, no turn does either
     for (const b of this.bots) {
       b.busy = false;
@@ -528,12 +521,7 @@ export class Store {
   messagesFor(threadId: string): Message[] {
     let list = this.messages.get(threadId);
     if (!list) {
-      try {
-        list = JSON.parse(readFileSync(messagesFile(threadId), "utf8"));
-      } catch (error) {
-        setAside(messagesFile(threadId), error);
-        list = [];
-      }
+      list = readSaved<Message[]>(messagesFile(threadId), [], Array.isArray);
       this.messages.set(threadId, list!);
     }
     return list!;

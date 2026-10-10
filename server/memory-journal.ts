@@ -15,12 +15,13 @@
 // Undo follows the same rule as a turn's undo (server/checkpoints.ts): a
 // file goes back only if it is still exactly what that change left. If
 // anything changed it since, the undo says so and touches nothing.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { diffLines, type DiffLine } from "./checkpoints.ts";
 import { isLink } from "./workspace.ts";
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 /** Entries kept per agent; the oldest go first. */
 const MAX_ENTRIES = 300;
@@ -113,10 +114,14 @@ export class MemoryJournal {
   }
 
   /** A change made through Bloks itself (the editor, or an undo). */
-  record(botId: string, file: string, by: MemoryAuthor, before: string | null, after: string | null, undoes?: string): MemoryEntry | null {
+  record(botId: string, file: string, by: MemoryAuthor, before: string | null, after: string | null, undoes?: string, write?: () => void): MemoryEntry | null {
+    // The editor's write happens only after its existing history can be
+    // read. Do not read again after the write and turn it into a refusal.
+    const entries = this.load(botId);
+    write?.();
     if (before === after) return null;
     const entry = { ...this.entry(file, by, before, after), ...(undoes ? { undoes } : {}) };
-    this.append(botId, [entry]);
+    this.save(botId, [...entries, entry]);
     return entry;
   }
 
@@ -207,13 +212,7 @@ export class MemoryJournal {
 
   private load(botId: string): MemoryEntry[] {
     const file = this.fileOf(botId);
-    if (!existsSync(file)) return [];
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    return readSaved<MemoryEntry[]>(file, [], Array.isArray);
   }
 
   private append(botId: string, entries: MemoryEntry[]) {

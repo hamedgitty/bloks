@@ -9,11 +9,12 @@
 // Comments live beside the artifacts rather than inside them: rewriting
 // somebody's spreadsheet to store a note about the spreadsheet would
 // corrupt the thing being discussed.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
+import { readSaved } from "./atomic-write.ts";
 
 /** Where in the artifact a note is pinned. */
 export interface Anchor {
@@ -84,12 +85,7 @@ export class ArtifactCommentStore {
 
   constructor() {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    try {
-      const raw = JSON.parse(readFileSync(FILE, "utf8"));
-      this.comments = Array.isArray(raw) ? raw.filter(valid) : [];
-    } catch {
-      this.comments = [];
-    }
+    this.comments = readSaved<ArtifactComment[]>(FILE, [], Array.isArray).filter(valid);
   }
 
   private save() {

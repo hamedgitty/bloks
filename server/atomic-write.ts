@@ -6,15 +6,12 @@
 // text goes to a file beside it, is flushed to the disk, and only then is
 // renamed over the old one, which the filesystem does in one step.
 //
-// The other half is what a loader does with a file that will not parse.
-// Most of them take it as nothing saved yet, which is right on a first
-// run and a disaster after a bad write: the next save puts the empty
-// state over the only copy there was. config.json is the worst of them,
-// since it holds every key and is rewritten each time the Telegram offset
-// moves. setAside moves such a file out of the way first, so what was in
-// it is still on disk for somebody to recover by hand.
-import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+// A missing saved file starts empty. A file that cannot be read must
+// never do so: the next save would overwrite the only copy there was.
+// Invalid saved data is kept aside before starting a new file.
+import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /** Replaces `file` with `data` in one step. With a mode, the new file has
  * exactly that mode from the moment it exists, so a key in it is never
@@ -81,24 +78,59 @@ const RENAME_TRIES = 5;
 /** Something to wait on, for a short synchronous pause between tries. */
 const PAUSE = new Int32Array(new SharedArrayBuffer(4));
 
-/** Moves a file that could not be read out of the way, to
- * `<name>.corrupt-<time>` beside it, so the next save starts a new file
- * instead of writing over this one. A file that is simply not there yet
- * is left alone. Returns where the file went, or null. */
-export function setAside(file: string, error: unknown): string | null {
-  // Only a file that was read and is not JSON. A file that could not be
-  // read this once (too many open files, a permission blip) may be fine,
-  // and moving it would hide a good conversation behind a bad moment.
-  if (!(error instanceof SyntaxError)) return null;
-  const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+/** Reads replacement state only after a successful read and top-level
+ * check. Per-entry filtering remains with the store. A failed read is
+ * never an empty value, and a later call can retry the original file.
+ * The decoder also covers saved keys, which are PEM rather than JSON. */
+export function readSaved<T>(
+  file: string,
+  empty: T,
+  valid: (value: T) => boolean,
+  decode: (text: string) => T = JSON.parse,
+): T {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
+    throw savedFileError(file, "read", error);
+  }
+  let value: T;
+  try {
+    value = decode(text);
+    if (!valid(value)) throw new Error("invalid saved shape");
+  } catch {
+    // Decode errors may quote secrets. Neither the error nor the text
+    // goes into a warning, a cause, or the refusal if preservation fails.
+    setAside(file);
+    return empty;
+  }
+  return value;
+}
+
+/** The top level of object stores, excluding null and arrays. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function savedFileError(file: string, operation: string, error: unknown): Error {
+  const raw = (error as NodeJS.ErrnoException)?.code;
+  const code = typeof raw === "string" && /^[A-Z0-9_]+$/.test(raw) ? raw : "IO_ERROR";
+  return Object.assign(new Error(
+    `[bloks] Cannot ${operation} ${basename(file)} (${code}). Restore file access and retry; saved data was left unchanged.`,
+  ), { code });
+}
+
+/** Called only after a successful read rejected the saved data. If the
+ * move fails, no caller may install empty state over the original. */
+function setAside(file: string): void {
+  const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
   try {
     renameSync(file, aside);
-  } catch {
-    // gone already, or it cannot be moved; there is nothing more to try
-    return null;
+  } catch (error) {
+    throw savedFileError(file, "preserve invalid data in", error);
   }
   // Never the parse error's message: V8 quotes the text around the fault,
   // and in config.json that text can be part of a key.
-  console.warn(`[bloks] ${basename(file)} could not be read (it is not valid JSON). It was kept as ${aside}, and a new one starts empty.`);
-  return aside;
+  console.warn(`[bloks] ${basename(file)} could not be read (invalid saved data). It was kept as ${aside}, and a new one starts empty.`);
 }
