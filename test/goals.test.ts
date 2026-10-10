@@ -20,6 +20,7 @@ import {
   selfReport,
   type GoalCheck,
 } from "../server/goals.ts";
+import { allows } from "../server/agent-cli.ts";
 import { MAX_GOAL_TURNS } from "../server/limits.ts";
 
 const failing: GoalCheck = { command: "pnpm test", code: 1, timedOut: false, output: "1 failing\nexpected 2 got 3" };
@@ -165,4 +166,12 @@ test("a goal note says it is from Bloks, which turn it is, and how to say done",
   assert.match(next, /Keep going toward your goal:\nthe tests pass/);
   assert.match(next, /Next: Fix the parser\./);
   assert.match(next, /Check result: `pnpm test` failed \(exit 1\)/);
+});
+
+test("an agent may read its goal, and no route that sets one is open to it", () => {
+  assert.equal(allows("bot-1", "GET", "/api/agent/goal").ok, true);
+  for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(allows("bot-1", method, "/api/bots/bot-1/tasks/lane-1/goal").ok, false, `${method} on its own goal was allowed`);
+  }
+  assert.equal(allows("bot-1", "POST", "/api/agent/goal").ok, false);
 });

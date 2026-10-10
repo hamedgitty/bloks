@@ -85,6 +85,11 @@ export const RULES: Rule[] = [
   // list like everything else, because the guard runs before any route
   // does and a route nobody listed is a route nobody reaches.
   { method: "GET", path: "/api/agent/whoami", why: "find out who this credential says you are" },
+  // The goal the person set for the conversation this turn runs in, if
+  // any. Reading only: a goal starts turns unattended and can run a
+  // command on the person's computer, so setting one is theirs alone,
+  // and no rule here reaches the routes that do.
+  { method: "GET", path: "/api/agent/goal", why: "read the goal the person set for this conversation, if there is one" },
 
   // Who is here, so an agent can address someone by name rather than
   // guessing. Names, roles and skills only: the roster route already

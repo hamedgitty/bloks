@@ -31,6 +31,15 @@ const COMMANDS = {
     about: "who this credential says you are",
     run: () => request("GET", "/api/agent/whoami"),
   },
+  goal: {
+    use: "goal",
+    about:
+      "the goal the person set for this conversation, if any: what done looks like, which turn this is of how many, " +
+      "and the check that has to pass. Only the person sets or changes a goal",
+    // nothing to pass: the credential already names the conversation, and
+    // a goal is read here, never set
+    run: () => request("GET", "/api/agent/goal"),
+  },
   agents: {
     use: "agents",
     about:
