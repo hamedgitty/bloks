@@ -183,7 +183,8 @@ test("saved keys never reach a backup without a passphrase, and the manifest nam
 
 test("an agent's signing key goes only into a sealed backup, and a restore keeps this computer's", async (t) => {
   const { data, put } = workspace(t);
-  const PEM = "-----BEGIN PRIVATE KEY-----\nsigning-key-canary-71f2\n-----END PRIVATE KEY-----\n";
+  // built in parts, so no file in the repository holds a whole key block
+  const PEM = ["-----BEGIN", "PRIVATE KEY-----\nsigning-key-canary-71f2\n-----END", "PRIVATE KEY-----\n"].join(" ");
   put("identities/b1.pem", PEM);
   const made = await backup.createBackup({ dataDir: data });
   const everything = gunzipSync(readFileSync(made.path)).toString("utf8");

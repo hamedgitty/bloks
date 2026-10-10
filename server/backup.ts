@@ -70,6 +70,7 @@ import { pipeline } from "node:stream/promises";
 import { constants as zlib, createGunzip, createGzip, gunzipSync } from "node:zlib";
 
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
+import { OWN_GROUP } from "./no-console.ts";
 import { APP_VERSION, DATA_DIR } from "./config.ts";
 import { holderOf } from "./data-lock.ts";
 
@@ -1383,7 +1384,7 @@ export function revealCommand(file: string, platform: NodeJS.Platform = process.
 export function revealBackup(file: string): boolean {
   const { command, args } = revealCommand(file);
   try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    const child = spawn(command, args, { stdio: "ignore", detached: OWN_GROUP, windowsHide: true });
     child.on("error", () => {});
     child.unref();
     return true;
