@@ -204,12 +204,13 @@ test("a failed config read cannot spend a pairing link before registering its de
   const real = fs.readFileSync;
   let reads = 0;
   t.mock.method(fs, "readFileSync", (path: any, ...args: any[]) => {
-    if (path === file && ++reads === 2) throw Object.assign(new Error("planted-secret"), { code: "EMFILE" });
+    // one that does not pass on its own: a passing one is read again
+    if (path === file && ++reads === 2) throw Object.assign(new Error("planted-secret"), { code: "EIO" });
     return (real as any)(path, ...args);
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.throws(() => pairing.claimPairLink(link.id, "fixture", "a".repeat(64)), /EMFILE/);
+  assert.throws(() => pairing.claimPairLink(link.id, "fixture", "a".repeat(64)), /EIO/);
   assert.equal(readFileSync(linksFile, "utf8"), original);
   assert.equal(readFileSync(file, "utf8"), "{}");
 });

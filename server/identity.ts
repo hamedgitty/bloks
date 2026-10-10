@@ -17,8 +17,8 @@
 // key protects attribution inside a workspace, not the workspace itself,
 // which is already only as private as the account it lives in.
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { basename, join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { readSaved } from "./atomic-write.ts";
@@ -133,6 +133,19 @@ export function fingerprintFor(botId: string): string | undefined {
   }
 }
 
+/** The fingerprint of a key this agent already has, never making one:
+ * for the record of an agent being deleted, whose key is about to go. */
+export function existingFingerprint(botId: string): string | undefined {
+  const known = cache.get(botId);
+  if (known) return known.fingerprint;
+  try {
+    const pem = readFileSync(fileFor(botId), "utf8");
+    return rawPublic(createPublicKey(createPrivateKey(pem)));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Sign a statement as this agent. Null when the key cannot be read,
  * because an unsigned entry is better than no entry. */
 export function signAs(botId: string, statement: string): string | null {
@@ -173,9 +186,20 @@ export function verifyStatement(fingerprint: string, statement: string, signatur
  * record rather than against a key on disk. */
 export function forget(botId: string) {
   cache.delete(botId);
+  const file = fileFor(botId);
+  // and any copy of it kept aside as unreadable: the record says the key
+  // was destroyed, and a private key left beside it would make that false
+  let aside: string[] = [];
   try {
-    unlinkSync(fileFor(botId));
+    aside = readdirSync(IDENTITIES).filter((name) => name.startsWith(`${basename(file)}.corrupt-`));
   } catch {
-    /* never had one */
+    /* no keys folder */
+  }
+  for (const path of [file, ...aside.map((name) => join(IDENTITIES, name))]) {
+    try {
+      unlinkSync(path);
+    } catch {
+      /* never had one */
+    }
   }
 }

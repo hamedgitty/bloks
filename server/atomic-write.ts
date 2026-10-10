@@ -10,7 +10,7 @@
 // never do so: the next save would overwrite the only copy there was.
 // Invalid saved data is kept aside before starting a new file.
 import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 /** Replaces `file` with `data` in one step. With a mode, the new file has
@@ -89,11 +89,22 @@ export function readSaved<T>(
   decode: (text: string) => T = JSON.parse,
 ): T {
   let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
-    throw savedFileError(file, "read", error);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      text = readFileSync(file, "utf8");
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return empty;
+      // A scanner or a backup holding the file, or too many open at once
+      // for a moment: gone again by the time it is asked twice, and not a
+      // reason to refuse to start.
+      if (PASSING.has(code ?? "") && attempt < RENAME_TRIES) {
+        Atomics.wait(PAUSE, 0, 0, 20 * (attempt + 1));
+        continue;
+      }
+      throw savedFileError(file, "read", error);
+    }
   }
   let value: T;
   try {
@@ -113,11 +124,21 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Errors that pass on their own, worth a second look before refusing. */
+const PASSING = new Set(["EBUSY", "EMFILE", "ENFILE", "EAGAIN", "EINTR"]);
+
+/** Where a file is, as a person would find it: under ~ rather than the
+ * whole path, and never a bare name that several stores share. */
+function shown(file: string): string {
+  const home = homedir();
+  return home && file.startsWith(`${home}/`) ? `~${file.slice(home.length)}` : file;
+}
+
 function savedFileError(file: string, operation: string, error: unknown): Error {
   const raw = (error as NodeJS.ErrnoException)?.code;
   const code = typeof raw === "string" && /^[A-Z0-9_]+$/.test(raw) ? raw : "IO_ERROR";
   return Object.assign(new Error(
-    `[bloks] Cannot ${operation} ${basename(file)} (${code}). Restore file access and retry; saved data was left unchanged.`,
+    `[bloks] Cannot ${operation} ${shown(file)} (${code}). Make sure it is a file Bloks can read and write, then try again; nothing saved was changed.`,
   ), { code });
 }
 
@@ -125,12 +146,21 @@ function savedFileError(file: string, operation: string, error: unknown): Error 
  * move fails, no caller may install empty state over the original. */
 function setAside(file: string): void {
   const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
-  try {
-    renameSync(file, aside);
-  } catch (error) {
-    throw savedFileError(file, "preserve invalid data in", error);
+  // a busy file on Windows, tried again as a save's rename is
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(file, aside);
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < RENAME_TRIES) {
+        Atomics.wait(PAUSE, 0, 0, 20 * (attempt + 1));
+        continue;
+      }
+      throw savedFileError(file, "keep aside the unreadable data in", error);
+    }
   }
   // Never the parse error's message: V8 quotes the text around the fault,
   // and in config.json that text can be part of a key.
-  console.warn(`[bloks] ${basename(file)} could not be read (invalid saved data). It was kept as ${aside}, and a new one starts empty.`);
+  console.warn(`[bloks] ${shown(file)} could not be read (invalid saved data). It was kept as ${shown(aside)}, and a new one starts empty.`);
 }

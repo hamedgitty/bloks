@@ -101,7 +101,7 @@ test("startup refuses unreadable stores with one useful private-content-free err
       const diagnostic = result.err.split("\n").filter((line) => line.startsWith("Error: [bloks]"));
       assert.equal(diagnostic.length, 1, result.err);
       assert.ok(diagnostic[0].includes(name));
-      assert.match(diagnostic[0], /EMFILE.*Restore file access and retry/);
+      assert.match(diagnostic[0], /EMFILE.*Make sure it is a file Bloks can read and write/);
       assert.doesNotMatch(result.err, /planted-secret/);
       assert.equal(readFileSync(file, "utf8"), original);
       f.restore();
@@ -185,7 +185,7 @@ test("memory edits and deletion refuse a failed history read before changing the
     ] as const) {
       const reply = await h.fetch(`/api/bots/first/${route}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
       assert.equal(reply.status, 500);
-      assert.match((await reply.json()).error, /EIO.*Restore file access and retry/);
+      assert.match((await reply.json()).error, /EIO.*Make sure it is a file Bloks can read and write/);
       assert.equal(readFileSync(main, "utf8"), "old");
       assert.equal(readFileSync(topic, "utf8"), "old topic");
       assert.equal(readFileSync(file, "utf8"), original);
@@ -251,6 +251,9 @@ test("an unreadable device list cannot turn an already saved message into a fail
   const port = (relay.address() as { port: number }).port;
   const original = JSON.stringify({ remote: { enabled: true }, relay: { url: `http://127.0.0.1:${port}`, agentToken: "fixture-token", enabled: true } });
   const file = f.write("config.json", original);
+  // a workspace already past the one conversation upgrade, which would
+  // otherwise note itself in config.json at start (GitHub 237)
+  f.write("one-conversation", "1\n");
   const h = await startHarness(f.env);
   try {
     const until = Date.now() + 10_000;
@@ -262,7 +265,7 @@ test("an unreadable device list cannot turn an already saved message into a fail
     const rows = JSON.parse(readFileSync(join(f.data, "messages-lane_first.json"), "utf8"));
     assert.equal(rows.filter((m: any) => m.role === "user" && m.text === "saved once with relay").length, 1);
     assert.equal(readFileSync(file, "utf8"), original);
-    assert.match(h.logs(), /config\.json \(EIO\).*Restore file access and retry/);
+    assert.match(h.logs(), /config\.json \(EIO\).*Make sure it is a file Bloks can read and write/);
     assert.doesNotMatch(h.logs(), /planted-secret/);
   } finally {
     f.restore();
@@ -291,7 +294,7 @@ test("a finished turn settles even when its memory history cannot be read", asyn
     assert.ok(await idle(h, { id: "first" }), "the completed turn left its lane busy");
     assert.equal(readFileSync(journal, "utf8"), original);
     assert.equal(readFileSync(memoryFile, "utf8"), "changed during the turn");
-    assert.match(h.logs(), /first\.json \(EIO\).*Restore file access and retry/);
+    assert.match(h.logs(), /first\.json \(EIO\).*Make sure it is a file Bloks can read and write/);
     f.restore();
     provider.state.answerAtOnce = true;
     const again = await h.fetch("/api/bots/first/messages", { method: "POST", body: JSON.stringify({ text: "ordinary next turn" }) });

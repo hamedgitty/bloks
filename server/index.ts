@@ -149,7 +149,7 @@ import {
   type Turn,
 } from "./context.ts";
 import { JobStore, nextFor, offerText, readClaim, type Candidate, type Job } from "./jobs.ts";
-import { identityFor, fingerprintFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
+import { identityFor, existingFingerprint, fingerprintFor, forget as forgetIdentity, signAs, statementOf } from "./identity.ts";
 import { assemble as assembleActivity, blockedOn, lastWithYou, towardYou } from "./activity.ts";
 import { splitArgs } from "./argv.ts";
 import { draftPrompt, parseDraft } from "./draft.ts";
@@ -4587,7 +4587,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
  * which leaves a lane a watcher names alone.
  */
 // Noted twice: in config.json, and in a file of its own that outlives a
-// config.json set aside as unreadable. Done again after that, it would
+// config.json set aside as invalid. Done again after that, it would
 // send everything filed since the update back to the old lanes.
 // Bloks 2.5.36 knew the lane strangers' mail is answered in by its title
 // alone. An agent with no marked lane has its lane of that title marked,
@@ -6947,9 +6947,13 @@ async function telegramRound(): Promise<void> {
   const offset = telegram.nextOffset(state.offset ?? 0, messages);
   if (offset !== (state.offset ?? 0)) {
     // Saved before anything is acted on. A crash mid-turn should lose
-    // the reply, not replay the message on every restart forever.
-    cfg.telegram = { ...state, offset };
-    saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
+    // the reply, not replay the message on every restart forever. And
+    // only then kept: a save refused (an unreadable config.json) throws
+    // with the old offset still in place, so the next poll asks for the
+    // same messages again rather than acknowledging ones never handled.
+    const next = { ...state, offset };
+    saveConfig({ telegram: next } as Partial<AppConfig>);
+    cfg.telegram = next;
   }
   // The rules (who is paired, what answers a card, what happens to a
   // voice message or a photo) are in server/telegram.ts.
@@ -8440,8 +8444,8 @@ function customCatalog() {
 
 async function persistCustom(next: CustomEndpoint[]) {
   Object.assign(cfg, saveConfig({ custom: next } as Partial<AppConfig>));
-  // Keep the in-memory list aligned with
-  // what we just wrote so a follow-up in this request sees it.
+  // Keep the in-memory list aligned with what was just written, so a
+  // follow-up in this request sees it.
   cfg.custom = next;
   await reloadProviders();
   broadcast({ kind: "providers", ...(await providerCatalog()) });
@@ -8772,7 +8776,19 @@ function readBody(req: IncomingMessage): Promise<any> {
   });
 }
 
-const server = createServer(async (req, res) => {
+// A saved file that cannot be read now (server/atomic-write.ts) refuses
+// rather than reading as empty. The checks ahead of a route's own error
+// handling read some of them, so a refusal there is answered here: an
+// unanswered request hangs the phone that asked, and a 401 would tell it
+// it is no longer paired.
+const server = createServer((req, res) => {
+  void handleRequest(req, res).catch((e) => {
+    if (res.headersSent) return void res.end();
+    json(res, (e as { status?: number })?.status ?? 503, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
+  });
+});
+
+async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -9572,7 +9588,9 @@ const server = createServer(async (req, res) => {
       // The fingerprint is read before the key is burned, because it is
       // the only checkable handle the record keeps on an identity that
       // no longer exists.
-      const fingerprint = fingerprintFor(bot.id);
+      // Never one made just to be read: a key it does not have is not one
+      // to create and then destroy.
+      const fingerprint = existingFingerprint(bot.id);
       record({
         at: Date.now(),
         kind: "agent.deleted",
@@ -14379,7 +14397,7 @@ const server = createServer(async (req, res) => {
     const status = (e as any)?.status ?? 500;
     return json(res, status, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
   }
-});
+}
 
 /** Provider and connector errors sometimes quote the credential that
  * failed. Never hand one back to the UI (or into a log) verbatim. */

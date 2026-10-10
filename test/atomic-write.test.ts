@@ -86,7 +86,7 @@ test("a file that could not be read this once refuses empty state and can be ret
     });
     syncBuiltinESMExports();
     t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-    assert.throws(() => readSaved(file, [], Array.isArray), /EMFILE.*Restore file access and retry/);
+    assert.throws(() => readSaved(file, [], Array.isArray), /EMFILE.*Make sure it is a file Bloks can read and write/);
     t.mock.restoreAll();
     syncBuiltinESMExports();
     assert.equal(readFileSync(file, "utf8"), '[{"id":"m1"}]');
@@ -110,7 +110,7 @@ test("a refused preservation never returns empty or quotes the invalid text", (t
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   assert.throws(() => readSaved(file, {}, (value) => Boolean(value)), (error: any) => {
-    assert.match(error.message, /config\.json \(EACCES\).*Restore file access and retry/);
+    assert.match(error.message, /config\.json \(EACCES\).*Make sure it is a file Bloks can read and write/);
     assert.doesNotMatch(String(error.stack), /planted-secret/);
     assert.equal(error.cause, undefined);
     return true;
