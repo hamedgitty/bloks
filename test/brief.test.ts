@@ -124,4 +124,43 @@ describe("what counts", () => {
     assert.equal(brief.parts.filter((p) => p.botId).length, 0);
     assert.match(brief.parts[brief.parts.length - 1].script, /2 notes about you ready for a look/);
   });
+
+  test("quiet check-ins are a count at the end of an agent's part, not work and not a list", () => {
+    const now = Date.now();
+    const checkIn = (at: number) => [
+      { at, role: "user" as const, kind: "text", text: "Anything urgent?", quiet: true },
+      { at: at + 1, role: "bot" as const, kind: "activity", quiet: true },
+      { at: at + 2, role: "bot" as const, kind: "text", text: "QUIET", quiet: true },
+    ];
+    const base = { since: now - 12 * 3_600_000, now, waiting: [], spend: { turns: 0, cost: 0, costKnown: false } };
+    const worked = composeBrief(
+      {
+        ...base,
+        agents: [{
+          id: "s",
+          name: "Sentry",
+          lanes: [
+            { threadId: "inbox", title: "General", messages: [...checkIn(now - 9_000_000), ...checkIn(now - 7_000_000), ...checkIn(now - 5_000_000)] },
+            { threadId: "ops", title: "Ops", messages: [
+              { at: now - 4_000_000, role: "user", kind: "text", text: "Anything urgent?" },
+              { at: now - 3_999_000, role: "bot", kind: "text", text: "Acme wants the invoice split. Worth a reply today." },
+            ] },
+          ],
+        }],
+      },
+      "b",
+    );
+    assert.equal(worked.headline, "1 agent worked on 1 thing, nothing waiting on you.", "the check-ins are not things");
+    const part = worked.parts.find((p) => p.botId === "s")!;
+    assert.deepEqual(part.items.map((i) => i.text), ["Ops: Acme wants the invoice split. Worth a reply today.", "3 quiet check-ins, nothing needed you."]);
+    assert.equal(part.items[1].threadId, "inbox");
+    assert.equal(part.script, "Sentry here. Ops: Acme wants the invoice split. Worth a reply today. 3 quiet check-ins, nothing needed you.");
+    assert.ok(!part.items.some((i) => /QUIET/.test(i.text)), "a quiet answer is never quoted");
+
+    // a night of nothing but check-ins is still a quiet night
+    const quiet = composeBrief({ ...base, agents: [{ id: "s", name: "Sentry", lanes: [{ threadId: "inbox", title: "General", messages: checkIn(now - 9_000_000) }] }] }, "b");
+    assert.equal(quiet.quiet, true);
+    assert.match(quiet.headline, /quiet night/);
+    assert.deepEqual(quiet.parts.find((p) => p.botId === "s")?.items.map((i) => i.text), ["1 quiet check-in, nothing needed you."]);
+  });
 });

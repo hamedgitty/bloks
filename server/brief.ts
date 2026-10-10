@@ -16,7 +16,7 @@
 export interface BriefLane {
   threadId: string;
   title: string;
-  messages: Array<{ at: number; role: "user" | "bot"; kind?: string; text?: string; deleted?: boolean; changes?: { total?: number } }>;
+  messages: Array<{ at: number; role: "user" | "bot"; kind?: string; text?: string; deleted?: boolean; changes?: { total?: number }; quiet?: boolean }>;
 }
 
 export interface BriefAgent {
@@ -102,11 +102,23 @@ function timeOfDay(now: number): string {
   return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 }
 
-/** What one agent did in the window, lane by lane, newest last. */
-function agentPart(agent: BriefAgent, since: number, now: number): BriefPart | null {
+/** What one agent did in the window, lane by lane, newest last, and how
+ * many of the things in it are work (`work`): a count of quiet check-ins
+ * rides along at the end, said once as a number rather than listed, since
+ * "nothing needed you" twelve times over is not twelve pieces of news. */
+function agentPart(agent: BriefAgent, since: number, now: number): { part: BriefPart; work: number } | null {
   const items: BriefItem[] = [];
+  let checkIns = 0;
+  let checkedIn = "";
   for (const lane of agent.lanes) {
-    const recent = lane.messages.filter((m) => m.at >= since && m.at <= now && !m.deleted);
+    const inTime = lane.messages.filter((m) => m.at >= since && m.at <= now && !m.deleted);
+    // one prompt per quiet check-in, so the prompts are the count
+    const quiet = inTime.filter((m) => m.quiet && m.role === "user").length;
+    if (quiet) {
+      checkIns += quiet;
+      checkedIn = lane.threadId;
+    }
+    const recent = inTime.filter((m) => !m.quiet);
     // only work that answered something: a greeting on the day an agent
     // was made is not an agent having worked
     const asked = recent.some((m) => m.role === "user");
@@ -119,23 +131,30 @@ function agentPart(agent: BriefAgent, since: number, now: number): BriefPart | n
     const touched = files ? ` (${plural(files, "file")} changed)` : "";
     if (said || touched) items.push({ text: `${where}${said || "Worked in the folder."}${touched}`, threadId: lane.threadId });
   }
-  if (!items.length) return null;
+  if (!items.length && !checkIns) return null;
   const shown = items.slice(-4);
-  const spoken = shown.map((item) => item.text.replace(/ \(\d+ files? changed\)$/, "")).join(" ");
+  const quietly = checkIns ? { text: `${plural(checkIns, "quiet check-in")}, nothing needed you.`, threadId: checkedIn } : null;
+  const spoken = [...shown, ...(quietly ? [quietly] : [])].map((item) => item.text.replace(/ \(\d+ files? changed\)$/, "")).join(" ");
   return {
-    botId: agent.id,
-    name: agent.name,
-    items: shown,
-    script: `${agent.name} here. ${spoken}`,
+    part: {
+      botId: agent.id,
+      name: agent.name,
+      items: [...shown, ...(quietly ? [quietly] : [])],
+      script: `${agent.name} here. ${spoken}`,
+    },
+    work: shown.length,
   };
 }
 
 export function composeBrief(input: BriefInput, id: string): Brief {
-  const parts = input.agents
+  const said = input.agents
     .map((agent) => agentPart(agent, input.since, input.now))
-    .filter((p): p is BriefPart => p !== null);
-  const worked = parts.length;
-  const things = parts.reduce((n, p) => n + p.items.length, 0);
+    .filter((p): p is { part: BriefPart; work: number } => p !== null);
+  const parts = said.map((p) => p.part);
+  // quiet check-ins are not work, and a night of nothing but them is
+  // still a quiet night: no headline about them, and no phone woken
+  const worked = said.filter((p) => p.work > 0).length;
+  const things = said.reduce((n, p) => n + p.work, 0);
   const waiting = input.waiting.slice(0, 20);
   const ready = (input.ready ?? []).filter((r) => r.count > 0);
   const quiet = worked === 0 && waiting.length === 0;
