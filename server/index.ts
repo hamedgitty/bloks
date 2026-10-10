@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
-import { readSaved, writeFileAtomic } from "./atomic-write.ts";
+import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engine-setup.ts";
@@ -97,6 +97,7 @@ import {
   MAX_CUSTOM_KEYS,
   MAX_DESCRIPTION_CHARS,
   MAX_KEY_CHARS,
+  MAX_MCP_SERVERS,
   MAX_MESSAGE_CHARS,
   MAX_WEBHOOK_QUEUE_BYTES,
   MAX_WEBHOOK_QUEUE_ITEMS,
@@ -11374,6 +11375,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               ? (server.url ?? "").replace(/^(https?:\/\/[^\/]+).*$/, "$1")
               : (server.command ?? "").split("/").pop(),
           hasHeaders: Boolean(Object.keys(server.headers ?? {}).length),
+          // names still waiting for a value, never the values themselves
+          needs: unfilled(server),
         })),
       });
     }
@@ -11382,8 +11385,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const name = clamp(body.name, 40);
       const transport = body.transport === "http" ? ("http" as const) : ("stdio" as const);
       if (!name) return json(res, 400, { error: "a server needs a name" });
-      if ((cfg.mcpServers ?? []).length >= 16) {
-        return json(res, 507, { error: "at most 16 MCP servers" });
+      if ((cfg.mcpServers ?? []).length >= MAX_MCP_SERVERS) {
+        return json(res, 507, { error: `at most ${MAX_MCP_SERVERS} MCP servers` });
       }
       const entry: NonNullable<AppConfig["mcpServers"]>[number] = {
         id: randomBytes(8).toString("hex"),
@@ -11426,6 +11429,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 201, { id: entry.id });
     }
     m = path.match(/^\/api\/mcp-servers\/([\w-]+)$/);
+    // Filling in what a server is waiting for: an environment value or a
+    // header a brought-over server came without. Only names it already
+    // has; a new name is a different server, added the usual way.
+    if (m && method === "PATCH") {
+      const server = (cfg.mcpServers ?? []).find((s) => s.id === m![1]);
+      if (!server) return json(res, 404, { error: "no such server" });
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const fill = (given: unknown, had: Record<string, string> | undefined) => {
+        if (!had) return undefined;
+        const out = { ...had };
+        if (!isRecord(given)) return out;
+        for (const [name, value] of Object.entries(given)) {
+          if (Object.hasOwn(had, name) && typeof value === "string") out[name] = value.trim().slice(0, MAX_KEY_CHARS * 5);
+        }
+        return out;
+      };
+      const next = {
+        ...server,
+        ...(server.env ? { env: fill(body.env, server.env) } : {}),
+        ...(server.headers ? { headers: fill(body.headers, server.headers) } : {}),
+      };
+      mcp.close(server.id);
+      Object.assign(cfg, saveConfig({ mcpServers: (cfg.mcpServers ?? []).map((s) => (s.id === server.id ? next : s)) } as Partial<AppConfig>));
+      return json(res, 200, { ok: true, needs: unfilled(next) });
+    }
     if (m && method === "DELETE") {
       mcp.close(m[1]);
       const remaining = (cfg.mcpServers ?? []).filter((server) => server.id !== m![1]);
@@ -15803,6 +15831,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const status = (e as any)?.status ?? 500;
     return json(res, status, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
   }
+}
+
+/** The environment and header names an MCP server has no value for yet. */
+function unfilled(server: { env?: Record<string, string>; headers?: Record<string, string> }): string[] {
+  return [...Object.entries(server.env ?? {}), ...Object.entries(server.headers ?? {})].filter(([, value]) => !value).map(([name]) => name);
 }
 
 /** Provider and connector errors sometimes quote the credential that

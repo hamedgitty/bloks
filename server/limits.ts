@@ -62,6 +62,11 @@ export const MAX_CUSTOM_KEYS = 8;
 export const MAX_KEY_CHARS = 400;
 export const MAX_URL_CHARS = 400;
 
+/** MCP servers a person registers, from Settings or brought over from
+ * another tool. Each one is a process or a connection an agent's turn
+ * opens, so the list stays short enough to read. */
+export const MAX_MCP_SERVERS = 16;
+
 /** A model id kept in the defaults for new agents. Real ids are short. */
 export const MAX_MODEL_ID_CHARS = 200;
 

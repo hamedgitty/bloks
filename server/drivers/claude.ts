@@ -407,10 +407,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // collide with the harness's bloks/composio mounts
         const slug = "u_" + server.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 40);
         if (slug === "u_" || mcpServers[slug]) continue;
+        // A name with no value is one the person has not filled in yet
+        // (a server brought over from another tool arrives that way). An
+        // empty Authorization header or API key would only turn a clear
+        // "missing key" from the server into a confusing one.
+        const filled = (map?: Record<string, string>) => {
+          const entries = Object.entries(map ?? {}).filter(([, value]) => value);
+          return entries.length ? Object.fromEntries(entries) : undefined;
+        };
+        const headers = filled(server.headers);
+        const env = filled(server.env);
         mcpServers[slug] =
           server.transport === "http"
-            ? { type: "http", url: server.url, ...(server.headers ? { headers: server.headers } : {}) }
-            : { command: server.command, args: server.args ?? [] };
+            ? { type: "http", url: server.url, ...(headers ? { headers } : {}) }
+            : { command: server.command, args: server.args ?? [], ...(env ? { env } : {}) };
         allowed.push(`mcp__${slug}`);
       }
 

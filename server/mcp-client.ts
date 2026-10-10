@@ -24,6 +24,14 @@ export interface McpServerConfig {
   args?: string[];
   url?: string;
   headers?: Record<string, string>;
+  /** A stdio server's own environment. */
+  env?: Record<string, string>;
+}
+
+/** Only the names that have a value. One with none is waiting for the
+ * person to fill it in, and sending it empty would hide that. */
+function filled(map: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(map ?? {}).filter(([, value]) => value));
 }
 
 export interface McpTool {
@@ -74,7 +82,7 @@ function connectStdio(config: McpServerConfig): McpConnection {
   if (!config.command) throw new Error("that server has no command to run");
   const child = spawn(config.command, config.args ?? [], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+    env: { ...process.env, ...filled(config.env) },
     windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 
@@ -167,7 +175,7 @@ function connectHttp(config: McpServerConfig): McpConnection {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
           ...(session ? { "mcp-session-id": session } : {}),
-          ...(config.headers ?? {}),
+          ...filled(config.headers),
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
         signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
@@ -187,7 +195,7 @@ function connectHttp(config: McpServerConfig): McpConnection {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
           ...(session ? { "mcp-session-id": session } : {}),
-          ...(config.headers ?? {}),
+          ...filled(config.headers),
         },
         body: JSON.stringify({ jsonrpc: "2.0", method, params }),
         signal: AbortSignal.timeout(CALL_TIMEOUT_MS),

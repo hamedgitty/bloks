@@ -112,7 +112,9 @@ export interface AppConfig {
     enabled?: boolean;
   };
   /** User-registered MCP servers, attachable per agent. Headers and
-   * commands live here because this file is already the secrets file. */
+   * commands live here because this file is already the secrets file.
+   * `env` is a stdio server's own environment; a name with an empty value
+   * is one the person has yet to fill in, and is not passed on. */
   mcpServers?: Array<{
     id: string;
     name: string;
@@ -121,6 +123,7 @@ export interface AppConfig {
     args?: string[];
     url?: string;
     headers?: Record<string, string>;
+    env?: Record<string, string>;
   }>;
   /** Values agents asked for via secret cards, injected into engine
    * environments under their env-var names. Never echoed to clients. */

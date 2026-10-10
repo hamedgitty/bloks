@@ -222,6 +222,9 @@ export interface SendTurnInput {
       args?: string[];
       url?: string;
       headers?: Record<string, string>;
+      /** A stdio server's own environment. Empty values are names still
+       * waiting for the person, and a driver leaves them out. */
+      env?: Record<string, string>;
     }>;
   };
   /**

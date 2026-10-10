@@ -13,12 +13,10 @@ import { startHarness } from "./helpers/server.ts";
 const KEY = "ck_argv_canary_7f3a";
 const TOKEN = "Bearer header_canary_91c2";
 
-test("a Claude turn gets its MCP config as a private file, never as an argument", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "bloks-mcp-file-"));
-  const seen = join(home, "seen.json");
+/** A stand-in for Claude Code that records how it was started and what
+ * the two files it was handed held, while the turn is still running. */
+function fakeClaude(home: string, seen: string): string {
   const cli = join(home, "fake-claude.mjs");
-  // a stand-in for Claude Code that records how it was started and what
-  // the two files it was handed held, while the turn is still running
   writeFileSync(
     cli,
     `#!${process.execPath}
@@ -45,6 +43,13 @@ process.stdin.resume();
 `,
     { mode: 0o755 },
   );
+  return cli;
+}
+
+test("a Claude turn gets its MCP config as a private file, never as an argument", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "bloks-mcp-file-"));
+  const seen = join(home, "seen.json");
+  const cli = fakeClaude(home, seen);
   mkdirSync(join(home, ".bloks"), { recursive: true });
   writeFileSync(
     join(home, ".bloks", "config.json"),
@@ -97,4 +102,43 @@ process.stdin.resume();
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.ok(!existsSync(dirname(mcpFile)), "the private folder outlived the turn");
+});
+
+// A server brought over from another tool arrives with the names of its
+// keys and no values. Until the person fills one in, it is left out of
+// what the engine is handed, and what has been filled in goes along.
+test("a server's environment reaches Claude Code, without the names still waiting for a value", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "bloks-mcp-env-"));
+  const seen = join(home, "seen.json");
+  const cli = fakeClaude(home, seen);
+  mkdirSync(join(home, ".bloks"), { recursive: true });
+  writeFileSync(
+    join(home, ".bloks", "config.json"),
+    JSON.stringify({
+      instances: { claude: { driver: "claudeAgent", config: { cli } } },
+      mcpServers: [
+        { id: "local1", name: "Local tool", transport: "stdio", command: "npx", args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d", WAITING_KEY: "" } },
+        { id: "remote1", name: "Remote tool", transport: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "", "X-Team": "blue" } },
+      ],
+    }),
+  );
+  const h = await startHarness({ HOME: home });
+  t.after(async () => {
+    await h.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Connected" }) });
+  await h.fetch(`/api/bots/${bot.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ mcpServers: ["local1", "remote1"], modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }),
+  });
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Use the tools." }) });
+  for (let i = 0; i < 200 && !existsSync(seen); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(existsSync(seen), `the turn never ran: ${h.logs().slice(-800)}`);
+  const { args, mcp } = JSON.parse(readFileSync(seen, "utf8"));
+
+  assert.deepEqual(mcp.mcpServers.u_local_tool, { command: "npx", args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d" } });
+  assert.deepEqual(mcp.mcpServers.u_remote_tool, { type: "http", url: "https://mcp.example.com/mcp", headers: { "X-Team": "blue" } });
+  assert.ok(!args.some((arg: string) => arg.includes("env_canary")), "a filled value is in argv");
 });
