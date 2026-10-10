@@ -50,6 +50,7 @@ import electronUpdater from "./vendor/electron-updater.cjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { nativeHelper } from "./native-helper.mjs";
 import { USUAL_PORTS, anyFreePort, failurePage, parseLsof, portFree, portOrder } from "./ports.mjs";
+import { keepServerUp } from "./server-life.mjs";
 import { startMeeting, startSpeech, stopMeeting, stopSpeech } from "./speech.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +99,12 @@ async function adoptLoginShellPath() {
 let serverProcess = null;
 let serverPort = CANDIDATE_PORTS[0];
 let serverStarted = true;
+/** What the running server has said on stderr lately, for the page shown
+ * if it dies and will not come back. */
+let serverLastWords = () => "";
+/** Set once Bloks starts quitting: the server going away is expected from
+ * then on, and is not brought back. */
+let quitting = false;
 
 // One Bloks per user. A second launch would fork a second harness onto a
 // fallback port and quietly split the workspace in two, so the loser
@@ -247,7 +254,7 @@ async function startServerOn(port) {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (response.ok) {
         const body = await response.json().catch(() => null);
-        if (body?.app === "bloks" && body.pid === child.pid && body.static) return { child };
+        if (body?.app === "bloks" && body.pid === child.pid && body.static) return { child, lastWords: () => stderr };
         why = "other-server";
         break; // someone else answers here; try the next port
       }
@@ -304,7 +311,9 @@ function dataFolderHolder(stderr) {
 /** What the window shows when no server came up. Set by startServer. */
 let startupFailure = null;
 
-async function startServer() {
+/** Starts the server, trying each port in turn. `prefer` goes first, and
+ * `rounds` is how many sweeps of the ports it gets. */
+async function startServer({ prefer = null, rounds = 2 } = {}) {
   const attempts = [];
   let crash = "";
   // Another Bloks server already using ~/.bloks, as the server reports it
@@ -315,21 +324,22 @@ async function startServer() {
   // whole sweep is tried twice before giving up; a folder still held is
   // given a few more rounds, since that is most often the last instance
   // on its way out.
-  for (let round = 0; round < (inUse ? 5 : 2); round++) {
+  for (let round = 0; round < (inUse ? 5 : rounds); round++) {
     inUse = null;
-    const ports = portOrder({ env: process.env.BLOKS_PORT, configured: readConfiguredPort(), last: readLastPort() });
+    const ports = portOrder({ prefer, env: process.env.BLOKS_PORT, configured: readConfiguredPort(), last: readLastPort() });
     // every usual port busy is not the end: any free port will do
     const spare = await anyFreePort();
     if (spare) ports.push(spare);
     for (const port of ports) {
       if (!(await portFree(port))) {
-        if (round === 1) attempts.push({ port, why: "busy", holder: await portHolder(port) });
+        if (round === rounds - 1) attempts.push({ port, why: "busy", holder: await portHolder(port) });
         continue;
       }
       const started = await startServerOn(port);
       if (started.child) {
         serverProcess = started.child;
         serverPort = port;
+        serverLastWords = started.lastWords;
         try {
           fs.writeFileSync(LAST_PORT_FILE(), JSON.stringify({ port }));
         } catch {
@@ -340,7 +350,7 @@ async function startServer() {
       if (started.why === "exited" && started.stderr) crash = started.stderr;
       inUse = dataFolderHolder(started.stderr);
       if (inUse) break;
-      if (round === 1) attempts.push({ port, why: started.why, holder: null });
+      if (round === rounds - 1) attempts.push({ port, why: started.why, holder: null });
     }
     await pause(2500);
   }
@@ -355,6 +365,32 @@ async function startServer() {
 }
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A server that dies after it started is brought back, on the port it
+// had when that is free; see electron/server-life.mjs. Each try is one
+// sweep of the ports, and a server that keeps dying ends on the failure
+// page instead of a window calling a port nobody answers on.
+const keeper = keepServerUp({
+  quitting: () => quitting,
+  start: async () => {
+    startupFailure = null;
+    return (await startServer({ prefer: serverPort, rounds: 1 })) ? serverProcess : null;
+  },
+  onBack: () => pointWindows(),
+  onGaveUp: () => {
+    // the last try that failed to start already says why; otherwise the
+    // last one started and died like the rest
+    startupFailure ??= failurePage({
+      attempts: [],
+      crash: serverLastWords(),
+      stopped: true,
+      backdrop: DARK_BACKDROP,
+      machine: process.platform === "darwin" ? "Mac" : "computer",
+    });
+    serverStarted = false;
+    pointWindows();
+  },
+});
 
 // ── the window ─────────────────────────────────────────────────────────
 
@@ -548,6 +584,19 @@ function appUrl(query = "") {
       : startupFailure
     : DEV_URL;
   return query ? `${base}${base.includes("?") ? "&" : "?"}${query}` : base;
+}
+
+/** Every window at the app again, after the server came back (perhaps on
+ * another port), or at the failure page once it will not. The app keeps
+ * nothing in its address, so loading it afresh loses nothing a reload
+ * would keep. */
+function pointWindows() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    // a server that died again at once fails the load, and the next try
+    // or the failure page points the window again
+    win.loadURL(win === quickWin && serverStarted ? appUrl("quick=1") : appUrl()).catch(() => {});
+  }
 }
 
 function quickWindow() {
@@ -1113,6 +1162,7 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     const remote = readRemoteProfile();
     serverStarted = remote ? await startRemote(remote) : await startServer();
+    if (!remote && serverStarted) keeper.watch(serverProcess);
   }
   createWindow();
 
@@ -1333,6 +1383,7 @@ app.on("window-all-closed", () => {
 // finishes, then allowed through.
 let daemonStopped = false;
 app.on("before-quit", (event) => {
+  quitting = true;
   if (daemonStopped) return;
   event.preventDefault();
   try {

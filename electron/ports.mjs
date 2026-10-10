@@ -17,9 +17,11 @@ import net from "node:net";
 
 export const USUAL_PORTS = [8799, 18799, 28799];
 
-/** Ports to try, in order, without repeats or nonsense. */
-export function portOrder({ env, configured, last, usual = USUAL_PORTS }) {
-  const wanted = [Number(env), Number(configured), Number(last), ...usual];
+/** Ports to try, in order, without repeats or nonsense. `prefer` goes
+ * before all of them: bringing a server back that died, the port it had,
+ * so the window's origin and the storage that belongs to it survive. */
+export function portOrder({ prefer, env, configured, last, usual = USUAL_PORTS }) {
+  const wanted = [Number(prefer), Number(env), Number(configured), Number(last), ...usual];
   const out = [];
   for (const port of wanted) {
     if (Number.isInteger(port) && port > 0 && port < 65536 && !out.includes(port)) out.push(port);
@@ -79,18 +81,28 @@ export function describeAttempt(attempt) {
  * The page shown when no port worked. A server that crashed is not a
  * port problem, so its own last words lead when there are any; otherwise
  * the ports and what held them, and the way to pick one yourself.
+ * `stopped` is a server that did start, and kept dying each time it was
+ * brought back (electron/server-life.mjs), which is not a port problem
+ * either.
  */
-export function failurePage({ attempts, crash, backdrop, machine, inUse = null }) {
-  const crashed = !inUse && attempts.some((a) => a.why === "exited") && crash;
+export function failurePage({ attempts, crash, backdrop, machine, inUse = null, stopped = false }) {
+  const crashed = !inUse && (stopped || attempts.some((a) => a.why === "exited")) && crash;
   const title = inUse
     ? "Bloks is already running on this " + machine
-    : crashed
-      ? "The Bloks server stopped while starting"
-      : "Couldn't find a free port for Bloks";
+    : stopped
+      ? "The Bloks server keeps stopping"
+      : crashed
+        ? "The Bloks server stopped while starting"
+        : "Couldn't find a free port for Bloks";
   const lead = inUse
     ? `Another Bloks server (process ${inUse.pid}) is using your Bloks data in ~/.bloks, at http://127.0.0.1:${inUse.port}. ` +
       "Two servers on one data folder overwrite each other's changes, so this window does not start a second one. " +
       "Open that address in a browser to use it, or stop that server and reopen Bloks."
+    : stopped
+    ? "It stopped after it had started, and again each time Bloks brought it back, so Bloks has stopped trying. " +
+      (crash
+        ? "Its last words are below; quit and reopen Bloks, and if it happens again, please include them in a bug report."
+        : "Quit and reopen Bloks, and if it happens again, please report it.")
     : crashed
     ? "This is not about ports. Its last words are below; quit and reopen Bloks, and if it happens again, please include them in a bug report."
     : `Every port Bloks tried was taken. Quit whatever is using them, or choose a port by adding "port": 9123 to ~/.bloks/config.json, then reopen Bloks. If it keeps happening, restart your ${machine}.`;
