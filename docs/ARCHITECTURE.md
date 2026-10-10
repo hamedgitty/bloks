@@ -737,10 +737,35 @@ turn in its Meetings lane with `notesPrompt`, and `actionItems` reads
 
 ## Recall and notes about the person
 
-`server/recall.ts` searches an agent's own lanes and the rooms it is in
-(only the room itself, from a lane of a shared room), words in any
-order, with the message before each hit. Agents reach it with the CLI's
-`recall` and chat engines with the `search_history` tool.
+`server/recall.ts` searches an agent's own lanes, the rooms it is in and
+its memory files (MEMORY.md and `memory/*.md`, each cut into pieces under
+their headings and named by file), words in any order, with the message
+before each hit. From a lane of a shared room it reaches only that room,
+and no memory; the lane that answers mail from anyone reaches nothing,
+and no other lane reaches it. Agents reach it with the CLI's `recall` and
+chat engines with the `search_history` tool.
+
+Ranking is BM25 in plain TypeScript (`server/recall-index.ts`): a word
+counts for more the rarer it is in this agent's own past (its lanes,
+rooms and memory together are the corpus), saying it again counts for
+less each time, and a long message does not win by length. A gentle
+recency edge (at most 15%, halving every 30 days) and a bonus for words in
+the order asked or within eight words of each other come on top. Words
+are folded before they meet (plurals, -ing and -ed, a silent e), small
+words are left out, and a file name or a hyphenated word is matched whole
+and by its parts. An agent's own search wants most of the words, as
+before, and a hit's text is cut around where they sit.
+
+Each conversation has an index in memory, built the first time it is
+searched and kept in step by two hooks on the store: `onAppend` adds a
+message to an index already built, and `onRewrite` hears every patch, move
+and dropped transcript. The same words at another time (a reaction, a
+queued message going) keep the index, and an edit, a deletion or a closed
+lane drops it to be built again. A memory file's index is rebuilt when its
+size or time moves, and a link is never read through. `IndexCache` holds
+them all to a budget of three million postings, a few bytes each, letting
+the least recently searched go first; a test indexes 30,000 messages and
+answers in well under a second.
 `server/profile-notes.ts` holds suggested and kept notes about the
 person; agents suggest with `note` or `note_about_person` (three a turn),
 only kept notes reach the prompt, and never in a shared room.

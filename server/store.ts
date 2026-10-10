@@ -499,6 +499,11 @@ export class Store {
    * forty-odd doors, and something that cares about all of them (who the
    * person has been with, in server/index.ts) watches this one instead. */
   onAppend?: (threadId: string, message: Message) => void;
+  /** Told when messages already written change or move (`changed`, as
+   * they are now), or a whole transcript goes (null), so anything built
+   * from the transcripts (the recall index in server/index.ts) can check
+   * what it holds rather than be rebuilt on every write. */
+  onRewrite?: (threadId: string, changed: readonly Message[] | null) => void;
 
   constructor(defaultSelection: () => ModelSelection) {
     this.defaultSelection = defaultSelection;
@@ -602,6 +607,7 @@ export class Store {
     const card = "card" in patch ? patch.card : list[idx].card;
     list[idx] = { ...list[idx], ...patch, card };
     writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+    this.onRewrite?.(threadId, [list[idx]]);
     return list[idx];
   }
 
@@ -625,6 +631,7 @@ export class Store {
     if (!moved.length) return [];
     list.push(...moved);
     writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+    this.onRewrite?.(threadId, moved);
     return moved;
   }
 
@@ -638,7 +645,10 @@ export class Store {
       list[i] = { ...list[i], ...patch(list[i]) };
       changed.push(list[i]);
     }
-    if (changed.length) writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+    if (changed.length) {
+      writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+      this.onRewrite?.(threadId, changed);
+    }
     return changed;
   }
 
@@ -754,12 +764,7 @@ export class Store {
     const bot = this.bot(id);
     if (!bot) return false;
     this.bots = this.bots.filter((b) => b.id !== id);
-    for (const task of bot.tasks) {
-      this.messages.delete(task.id);
-      try {
-        unlinkSync(messagesFile(task.id));
-      } catch {}
-    }
+    for (const task of bot.tasks) this.dropTranscript(task.id);
     this.saveBots();
     return true;
   }
@@ -882,6 +887,7 @@ export class Store {
     try {
       unlinkSync(messagesFile(taskId));
     } catch {}
+    this.onRewrite?.(taskId, null);
   }
 
   /** Read or unread, one lane at a time, with the agent's flag following

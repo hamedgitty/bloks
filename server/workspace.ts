@@ -10,7 +10,7 @@
 //
 // Permissions are tight (0700 dir, 0600 files): memories carry
 // personal detail and have no business being world-readable.
-import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -127,6 +127,50 @@ export function readMemoryTopic(botId: string, name: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** How much of one memory file recall reads. Topic files are the agent's
+ * to write and nothing else bounds them. */
+export const MEMORY_RECALL_BYTES = 256 * 1024;
+
+/**
+ * The memory files recall searches, MEMORY.md and then each topic file,
+ * with what tells a changed one apart (its size and time) and a reader
+ * for its words. A link is left out, so recall never reads through one to
+ * wherever it points, and so is the untouched seed, which is instructions
+ * rather than memory.
+ */
+export function memoryFiles(botId: string): Array<{ name: string; stamp: string; mtimeMs: number; read: () => string }> {
+  const dir = workspaceDir(botId);
+  const names = ["MEMORY.md", ...listMemoryTopics(botId).map((topic) => `memory/${topic.name}`)];
+  return names.flatMap((name) => {
+    const path = join(dir, name);
+    try {
+      const stat = lstatSync(path);
+      if (!stat.isFile() || (name !== "MEMORY.md" && isLink(join(dir, "memory")))) return [];
+      return [
+        {
+          name,
+          stamp: `${stat.mtimeMs}:${stat.size}`,
+          mtimeMs: Math.floor(stat.mtimeMs),
+          read: () => {
+            const fd = openSync(path, "r");
+            try {
+              const buffer = Buffer.alloc(Math.min(stat.size, MEMORY_RECALL_BYTES));
+              const got = readSync(fd, buffer, 0, buffer.length, 0);
+              // a character cut in half at the end decodes as U+FFFD; drop it
+              const text = buffer.subarray(0, got).toString("utf8").replace(/\uFFFD+$/, "");
+              return text === SEED ? "" : text;
+            } finally {
+              closeSync(fd);
+            }
+          },
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /** The standing prompt block: where memory lives and how to keep it. */

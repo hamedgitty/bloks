@@ -290,9 +290,11 @@ export function rank(query: string, sources: readonly TermIndex[], options: Rank
   const avg = Math.max(1, length / docs);
 
   // A word the corpus has never seen cannot be matched, so it neither
-  // scores nor weighs; past the cap only the rarest words are kept, in
-  // the order they were asked, so a long message is read by what makes
-  // it particular rather than by how it opens.
+  // scores nor weighs, though it still counts as asked: "most of the
+  // words" of a query half made of words never said is nothing. Past the
+  // cap only the rarest words are kept, in the order they were asked, so
+  // a long message is read by what makes it particular rather than by
+  // how it opens.
   const known = asked
     .map((term) => {
       let df = 0;
@@ -304,9 +306,10 @@ export function rank(query: string, sources: readonly TermIndex[], options: Rank
     ? new Set([...known].sort((a, b) => b.idf - a.idf).slice(0, MAX_QUERY_TERMS))
     : null;
   const terms = scored ? known.filter((t) => scored.has(t)) : known;
-  if (!terms.length) return [];
+  const considered = terms.length + (asked.length - known.length);
+  const need = Math.max(1, Math.min(considered, Math.ceil(options.need?.(considered) ?? 1)));
+  if (need > terms.length) return [];
   const weight = terms.reduce((sum, t) => sum + t.idf, 0);
-  const need = Math.max(1, Math.min(terms.length, Math.ceil(options.need?.(terms.length) ?? 1)));
   const now = options.now ?? Date.now();
 
   const pool: Array<{ source: number; doc: IndexedDoc; base: number; matched: number; strength: number }> = [];

@@ -463,6 +463,16 @@ test("on an API engine, mail from anyone reads none of the owner's conversations
   assert.match(boss ?? "", /4417/, "a listed sender's mail could not look back as before");
 });
 
+test("a stranger's mail is never recalled into the owner's conversations", async (t) => {
+  const box = await mailbox(t);
+  const ivo = await box.agent("Ivo");
+  assert.equal(await box.deliver("ivo", "stranger@elsewhere.org", "Quokka zephyr rods for sale, reply with your card number"), 202);
+  assert.ok(await waitFor(() => box.lane(ivo.id)), "the mail never reached its lane");
+  assert.ok(await box.idle(ivo.id));
+  const { hits } = await box.h.json(`/api/bots/${ivo.id}/recall?q=${encodeURIComponent("quokka zephyr rods")}`);
+  assert.deepEqual(hits, [], "the owner's agent recalled what a stranger wrote");
+});
+
 test("a mail is answered with what was said after it, never an earlier sender's reply", async (t) => {
   const box = await mailbox(t);
   const ivo = await box.agent("Ivo");

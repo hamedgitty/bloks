@@ -293,7 +293,8 @@ import { standingFor, type Standing, type StandingRecord } from "./standing-prom
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
-import { recall, recallText, type RecallSource, type Speaker } from "./recall.ts";
+import { indexMemory, indexMessages, recallFrom, recallText, searchableText, type IndexedSource, type RecallMessage, type Speaker } from "./recall.ts";
+import { IndexCache, type TermIndex } from "./recall-index.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
 import { localDate } from "./usage.ts";
@@ -2587,10 +2588,20 @@ function withYou(target: { bot: BotRecord } | { room: BlokRecord }, at = Date.no
   if (room) broadcast({ kind: "blok", blok: room });
 }
 
+/** Every conversation's recall index (server/recall-index.ts), and each
+ * agent's memory files', built when first searched and kept in step by
+ * store.onAppend and store.onRewrite, within the cache's budget. */
+const recallIndexes = new IndexCache();
+
 // Every message, whichever route wrote it: a reply in a turn the person
 // started, or anything asking something of them, moves the conversation
 // it lands in.
 store.onAppend = (threadId, message) => {
+  // an index already built grows with its conversation; one nobody has
+  // searched yet is built whole when somebody does
+  const index = recallIndexes.peek(threadId);
+  const words = index ? searchableText(message) : null;
+  if (index && words) index.add(message.id, message.at, words);
   const room = bloks.get(threadId);
   if (room) {
     // in a room the speaker's turn runs in one of its own lanes, the one
@@ -2602,6 +2613,15 @@ store.onAppend = (threadId, message) => {
   }
   const bot = store.botByThread(threadId);
   if (bot && towardYou(message, turnsForYou.has(threadId))) withYou({ bot }, message.at);
+};
+
+// A message changed after it was written: the same words (a reaction, a
+// tool's result, a queued message going) keep the index, new words join
+// it, and an edit or a deletion drops it to be built again next search.
+store.onRewrite = (threadId, changed) => {
+  const index = recallIndexes.peek(threadId);
+  if (!index) return;
+  if (!changed || changed.some((m) => !index.update(m.id, m.at, searchableText(m)))) recallIndexes.drop(threadId);
 };
 
 // ── the Mac going to sleep ─────────────────────────────────────────────
@@ -4943,39 +4963,91 @@ async function openRehearsals(bots: BotRecord[], text: string, opts: { quiet?: b
   return { group, dir, attempts };
 }
 
+function laneIndex(threadId: string): TermIndex {
+  return recallIndexes.get(threadId, () => indexMessages(store.messagesFor(threadId)));
+}
+
+/** One place recall reaches, with what the person calls it beside what
+ * the agent is told, for the notes a turn shows it was given. */
+interface RecallPlace {
+  threadId: string;
+  where: string;
+  kind: "conversation" | "room" | "memory";
+  label: string;
+}
+
 /**
- * What an agent can look back through (server/recall.ts): its own lanes
- * and the rooms it sits in. A lane that belongs to a room shared with
- * other people reaches that room only, so a guest cannot ask their way
- * into the owner's private conversations.
+ * Where an agent can look back (server/recall.ts): its own lanes and the
+ * rooms it sits in. A lane that belongs to a room shared with other
+ * people reaches that room only, so a guest cannot ask their way into the
+ * owner's private conversations. The lane that answers mail from anyone
+ * reaches nothing, and nothing reaches it: what strangers wrote is not
+ * the owner's past to bring up.
  */
-function recallSources(bot: BotRecord, laneId?: string | null): RecallSource[] {
+function recallPlaces(bot: BotRecord, laneId?: string | null): { places: RecallPlace[]; private: boolean } {
+  const lane = laneId ? bot.tasks.find((task) => task.id === laneId) : undefined;
+  if (lane?.guestMail) return { places: [], private: false };
   const sharedRoom = laneId ? bloks.bloks.find((b) => b.sharing && b.lanes?.[bot.id] === laneId) : undefined;
-  if (sharedRoom) return [{ threadId: sharedRoom.id, where: `room ${sharedRoom.name}`, messages: store.messagesFor(sharedRoom.id) }];
+  if (sharedRoom) {
+    return { places: [{ threadId: sharedRoom.id, where: `room ${sharedRoom.name}`, kind: "room", label: sharedRoom.name }], private: false };
+  }
   const sharedLanes = new Set(bloks.bloks.filter((b) => b.sharing).map((b) => b.lanes?.[bot.id]).filter(Boolean));
-  const sources: RecallSource[] = bot.tasks
-    .filter((task) => !sharedLanes.has(task.id))
-    .map((task) => ({ threadId: task.id, where: `your conversation "${task.title}"`, messages: store.messagesFor(task.id) }));
+  const places: RecallPlace[] = bot.tasks
+    .filter((task) => !sharedLanes.has(task.id) && !task.guestMail)
+    .map((task) => ({ threadId: task.id, where: `your conversation "${task.title}"`, kind: "conversation" as const, label: task.title }));
   for (const room of bloks.bloks) {
     if (room.sharing || !room.memberIds.includes(bot.id)) continue;
-    sources.push({ threadId: room.id, where: `room ${room.name}`, messages: store.messagesFor(room.id) });
+    places.push({ threadId: room.id, where: `room ${room.name}`, kind: "room", label: room.name });
   }
-  return sources;
+  return { places, private: true };
+}
+
+type PlacedSource = IndexedSource & { place: RecallPlace };
+
+/** The agent's memory files as places to search: MEMORY.md and its
+ * topic files, or the topic files alone. */
+function memorySources(bot: BotRecord, which: "all" | "topics"): PlacedSource[] {
+  return workspace.memoryFiles(bot.id).flatMap((file) => {
+    if (which === "topics" && file.name === "MEMORY.md") return [];
+    const index = recallIndexes.get(`memory:${bot.id}:${file.name}`, () => indexMemory(file.read(), file.mtimeMs), file.stamp);
+    if (!index.docs.length) return [];
+    const place: RecallPlace = { threadId: `memory:${file.name}`, where: `your memory file ${file.name}`, kind: "memory", label: file.name };
+    return [{ threadId: place.threadId, where: place.where, index, memory: file.name, place }];
+  });
+}
+
+/** Everything recall searches from `laneId`, indexed. Memory comes along
+ * wherever the agent's private conversations do, and never into a shared
+ * room or a stranger's mail. */
+function recallSources(bot: BotRecord, laneId?: string | null, options: { memory?: "all" | "topics"; except?: string } = {}): PlacedSource[] {
+  const reach = recallPlaces(bot, laneId);
+  const sources: PlacedSource[] = reach.places
+    .filter((place) => place.threadId !== options.except)
+    .map((place) => ({ threadId: place.threadId, where: place.where, index: laneIndex(place.threadId), messages: store.messagesFor(place.threadId), place }));
+  return reach.private ? [...sources, ...memorySources(bot, options.memory ?? "all")] : sources;
+}
+
+/** The cache back under budget, keeping what a search just used. */
+function recallDone(sources: ReadonlyArray<{ index: TermIndex }>) {
+  recallIndexes.trim(new Set(sources.map((source) => source.index)));
 }
 
 /** One message in full, from the places recall searches and nowhere
  * else, for a hit recall cut short (GitHub 143). */
 function recalledMessage(bot: BotRecord, messageId: string, laneId?: string | null) {
-  for (const source of recallSources(bot, laneId)) {
-    const message = source.messages.find((m) => m.id === messageId);
+  for (const place of recallPlaces(bot, laneId).places) {
+    const message = store.messagesFor(place.threadId).find((m) => m.id === messageId);
     if (!message || message.deleted || !message.text) continue;
-    return { messageId, threadId: source.threadId, where: source.where, at: message.at, ...speakerFor(bot)(message), text: message.text };
+    return { messageId, threadId: place.threadId, where: place.where, at: message.at, ...speakerFor(bot)(message), text: message.text };
   }
   return null;
 }
 
 function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit = 8) {
-  return recall(query, recallSources(bot, laneId), speakerFor(bot), limit);
+  const sources = recallSources(bot, laneId);
+  const hits = recallFrom(query, sources, speakerFor(bot), { limit });
+  recallDone(sources);
+  return hits;
 }
 
 /** Who said a message, as recall reports it. A message another agent
@@ -4983,7 +5055,7 @@ function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit 
  * the role named it the person (GitHub 136). */
 function speakerFor(bot: BotRecord) {
   const person = cfg.profile?.name?.trim() || "the person";
-  return (message: RecallSource["messages"][number]): Speaker => {
+  return (message: RecallMessage): Speaker => {
     if (message.agent?.dir === "in") {
       return { who: store.bot(message.agent.peerId)?.name ?? message.agent.peerName, by: "agent", agentId: message.agent.peerId };
     }
