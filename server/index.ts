@@ -350,6 +350,7 @@ import {
   pendingRestore,
   pruneAutomatic,
   revealBackup,
+  shownPath,
   stageRestore,
   verifyBackup,
   type BackupInfo,
@@ -9570,17 +9571,20 @@ async function autoBackup() {
 }
 setInterval(() => void autoBackup(), AUTO_BACKUP_LOOK_MS).unref?.();
 
+/** Folders as a person would look for them (~/.bloks-backups); each
+ * backup still carries its whole path. */
 function backupsStatus() {
   const pending = pendingRestore();
+  const last = lastRestore();
   return {
-    folder: backupsDirFor(),
+    folder: shownPath(backupsDirFor()),
     auto: cfg.backups?.auto !== false,
     keep: AUTO_KEEP,
     backups: listBackups(),
     running: backupRunning,
     restore: restoring,
-    pending: pending ? { from: pending.from, at: pending.at, aside: pending.aside } : null,
-    lastRestore: lastRestore(),
+    pending: pending ? { from: pending.from, at: pending.at, aside: shownPath(pending.aside) } : null,
+    lastRestore: last ? { ...last, aside: last.aside && shownPath(last.aside) } : null,
   };
 }
 

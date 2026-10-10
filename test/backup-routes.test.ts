@@ -40,7 +40,7 @@ test("backups answer this computer only: not a paired phone, not another site, n
   const h = await startHarness();
   t.after(() => h.stop());
   const status = await h.json("/api/backups");
-  assert.equal(status.folder, join(h.home, ".bloks-backups"));
+  assert.equal(status.folder, "~/.bloks-backups", "the folder is said the way a person would look for it");
   assert.equal(status.auto, true, "the daily backup is on unless turned off");
 
   assert.equal((await h.fetchAs("https://example.com", "/api/backups")).status, 403);

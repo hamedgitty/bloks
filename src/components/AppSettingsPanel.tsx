@@ -17,6 +17,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import type { UpdateState } from "@/types/bridge";
 import { drainingLine } from "./UpdateCard";
 import { RecordPanel } from "./RecordPanel";
+import { BackupsSection } from "./BackupsSection";
 import { RulesPanel } from "./RulesPanel";
 import { ApiKeyRow } from "./ApiKeys";
 import { McpServersCard } from "./McpServers";
@@ -39,6 +40,7 @@ import { SettingRow, SettingsGroup, SettingsPageHeader } from "./SettingsLayout"
 import { Segmented } from "@/components/ui/segmented";
 import { useConversationsView } from "@/lib/conversationsView";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
+import Archive from "lucide-react/dist/esm/icons/archive.mjs";
 import CloudIcon from "lucide-react/dist/esm/icons/cloud.mjs";
 import Cpu from "lucide-react/dist/esm/icons/cpu.mjs";
 import History from "lucide-react/dist/esm/icons/history.mjs";
@@ -700,6 +702,13 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         keywords: "ledger audit history log",
       },
       {
+        id: "backups",
+        label: "Backups",
+        icon: Archive,
+        description: "Copies of your whole workspace, made every day or when you ask, and putting one back.",
+        keywords: "backup restore archive copy export move new computer undo history passphrase encrypt seal daily automatic",
+      },
+      {
         id: "about",
         label: "About and updates",
         icon: Info,
@@ -900,6 +909,8 @@ function PageBody({ id }: { id: string }) {
       return <LocalVmSection />;
     case "record":
       return <RecordPanel />;
+    case "backups":
+      return <BackupsSection />;
     case "about":
       return <AboutCard />;
     default:

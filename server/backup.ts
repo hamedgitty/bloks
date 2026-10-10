@@ -62,6 +62,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { mkdir, open, readdir, utimes } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -197,6 +198,12 @@ export function backupsDirFor(dataDir = DATA_DIR): string {
 }
 
 const markerFor = (dataDir: string) => `${dataDir}.restore-pending.json`;
+
+/** A path as a person would find it: under ~ rather than spelled out. */
+export function shownPath(path: string): string {
+  const home = homedir();
+  return home && (path === home || path.startsWith(home + sep)) ? `~${path.slice(home.length)}` : path;
+}
 
 /** The folder a rename really moves: through a link, so a data folder
  * kept on another disk stays there after a restore. */
