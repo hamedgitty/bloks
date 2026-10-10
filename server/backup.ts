@@ -45,6 +45,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { spawn } from "node:child_process";
 import {
   closeSync,
+  copyFileSync,
   createReadStream,
   createWriteStream,
   existsSync,
@@ -1134,6 +1135,12 @@ async function* archive(dataDir: string, plan: Plan, summary: BackupSummary): As
       leftOut.push(`${rel} (an old copy of config.json, which may hold keys)`);
       continue;
     }
+    // An agent's private signing key is a key like any other: whoever holds
+    // a copy can sign as that agent. It goes only into a sealed backup.
+    if (!summary.secrets && rel.startsWith("identities/")) {
+      if (!secretsLeftOut.includes("identities/ (agents' signing keys)")) secretsLeftOut.push("identities/ (agents' signing keys)");
+      continue;
+    }
     if (rel === "config.json") {
       const config = configForBackup(abs, summary.secrets);
       if (!config) {
@@ -1424,6 +1431,23 @@ function keepTheseKeys(dataDir: string, staging: string) {
   if (!isRecord(restored)) return;
   carrySecrets(current, restored);
   writeFileAtomic(file, JSON.stringify(restored, null, 2), 0o600);
+  // and its agents' signing keys, which a backup without keys left out:
+  // an agent that keeps its key keeps signing as itself
+  const keys = join(dataDir, "identities");
+  const restoredKeys = join(staging, "identities");
+  let names: string[] = [];
+  try {
+    names = readdirSync(keys).filter((name) => name.endsWith(".pem"));
+  } catch {
+    /* no agent has signed anything yet */
+  }
+  for (const name of names) {
+    const into = join(restoredKeys, name);
+    if (existsSync(into)) continue;
+    mkdirSync(restoredKeys, { recursive: true, mode: 0o700 });
+    copyFileSync(join(keys, name), into);
+    chmodSync(into, 0o600);
+  }
 }
 
 /**

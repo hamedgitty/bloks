@@ -181,6 +181,23 @@ test("saved keys never reach a backup without a passphrase, and the manifest nam
   await assert.rejects(backup.createBackup({ dataDir: data, secrets: true }), (e: unknown) => e instanceof BackupError && e.code === "passphrase");
 });
 
+test("an agent's signing key goes only into a sealed backup, and a restore keeps this computer's", async (t) => {
+  const { data, put } = workspace(t);
+  const PEM = "-----BEGIN PRIVATE KEY-----\nsigning-key-canary-71f2\n-----END PRIVATE KEY-----\n";
+  put("identities/b1.pem", PEM);
+  const made = await backup.createBackup({ dataDir: data });
+  const everything = gunzipSync(readFileSync(made.path)).toString("utf8");
+  assert.ok(!everything.includes("signing-key-canary-71f2"), "a private signing key is in a backup without a passphrase");
+  const manifest = JSON.parse(tarRead(made.path, "manifest.json"));
+  assert.ok(manifest.secretsLeftOut.some((w: string) => w.startsWith("identities/")), "the manifest does not say the signing keys were left out");
+
+  const { pending } = await backup.restoreBackup(made.path, { dataDir: data });
+  assert.equal(pending.keys, "kept");
+  assert.ok(backup.applyPendingRestore({ dataDir: data, log: () => {} }));
+  assert.equal(readFileSync(join(data, "identities", "b1.pem"), "utf8"), PEM, "the agent lost its signing key in the restore");
+  assert.equal(statSync(join(data, "identities", "b1.pem")).mode & 0o777, 0o600);
+});
+
 test("a sealed backup is noise without its passphrase and whole with it", async (t) => {
   const { data } = workspace(t);
   await assert.rejects(backup.createBackup({ dataDir: data, passphrase: "short" }), /at least 8 characters/);
