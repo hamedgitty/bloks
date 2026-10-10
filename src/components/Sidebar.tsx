@@ -25,6 +25,7 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import Target from "lucide-react/dist/esm/icons/target.mjs";
 import { api, sidebarRows, useStore, formatWhen, workingInRoom, type Action, type Blok, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { AgentAvatar } from "./Avatar";
@@ -270,7 +271,7 @@ function RowMenu({
   const general = bot?.tasks?.[0];
 
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - (bot ? 340 : 100));
+  const top = Math.min(menu.y, window.innerHeight - (bot ? 372 : 100));
   const left = Math.min(menu.x, window.innerWidth - 220);
 
   const item = (
@@ -344,6 +345,13 @@ function RowMenu({
           dispatch({ type: "select", id: bot.id });
           dispatch({ type: "newTask", botId: bot.id });
         }),
+        // a goal for General, which is the conversation this row stands for
+        general &&
+          !general.noGoals &&
+          item(<Target size={15} className="text-muted-foreground" />, general.goal ? "Set a new goal" : "Set a goal", () => {
+            dispatch({ type: "select", id: bot.id, lane: general.id });
+            dispatch({ type: "openGoal", botId: bot.id, taskId: general.id });
+          }),
         // General is cleared, never closed; not while it is working
         general &&
           general.state !== "working" &&

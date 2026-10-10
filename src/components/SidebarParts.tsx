@@ -25,6 +25,7 @@ import Puzzle from "lucide-react/dist/esm/icons/puzzle.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
 import Sunrise from "lucide-react/dist/esm/icons/sunrise.mjs";
+import Target from "lucide-react/dist/esm/icons/target.mjs";
 import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import { formatWhen, useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -106,7 +107,7 @@ function LaneMenu({
   }, [onClose]);
   const lane = bot.tasks?.find((t) => t.id === menu.laneId);
   if (!lane) return null;
-  const top = Math.min(menu.y, window.innerHeight - 190);
+  const top = Math.min(menu.y, window.innerHeight - 222);
   const left = Math.min(menu.x, window.innerWidth - 220);
   const item = (icon: React.ReactNode, label: string, run: () => void, danger = false) => (
     <button
@@ -139,6 +140,12 @@ function LaneMenu({
       {item(<ClipboardCopy size={15} className="text-muted-foreground" />, "Copy conversation ID", () => {
         void navigator.clipboard?.writeText(lane.id);
       })}
+      {/* opened in this conversation, so the goal it sets is plainly its own */}
+      {!lane.noGoals &&
+        item(<Target size={15} className="text-muted-foreground" />, lane.goal ? "Set a new goal" : "Set a goal", () => {
+          dispatch({ type: "select", id: bot.id, lane: lane.id });
+          dispatch({ type: "openGoal", botId: bot.id, taskId: lane.id });
+        })}
       <div className="mx-2 my-1 h-px bg-border" />
       {busy ? (
         <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground">Stop it before closing</div>

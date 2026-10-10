@@ -596,6 +596,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       ...(room ? { room: { id: room.id, name: room.name } } : {}),
       // a room line that named you is the one worth hearing about
       mentionsUser: /(^|\s)@(you|me)\b/i.test(text),
+      goalRunning: bot?.tasks?.find((t) => t.id === threadId)?.goal?.status === "active",
     });
     if (!notice) return;
     // A single turn can settle several messages. The first one is the

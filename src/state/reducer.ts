@@ -79,14 +79,17 @@ export interface Message {
   editedAt?: number;
   /** Taken back: the row stays, the words are gone. */
   deleted?: boolean;
-  /** Came in some other way than you typing it here. */
-  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine";
+  /** Came in some other way than you typing it here. "goal" is Bloks
+   * starting the next turn toward the conversation's goal. */
+  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine" | "goal";
   /** The routine's name and start mode when this message was written,
    * and whether its agent was told it may answer QUIET. */
   routine?: { name?: string; manual: boolean; quiet?: boolean };
   /** Part of a quiet check-in: shown folded into one muted line with the
    * rest of its run, and never news (server/store.ts). */
   quiet?: boolean;
+  /** A notice about the conversation's goal: set, or where it ended up. */
+  goal?: "set" | "done" | "blocked" | "out" | "paused";
   /** Rewound: taken back with everything after it (see the rewind route). */
   rewound?: number;
   /** secret messages: a value asked for via a secure field */
@@ -193,6 +196,25 @@ export interface TaskSummary {
   guestMail?: boolean;
   /** The room this lane's turn is speaking in, while it runs. */
   room?: string;
+  /** What this lane keeps working toward, turn after turn (server/goals.ts). */
+  goal?: LaneGoal;
+  /** A lane that never takes a goal: a shared room's, a rehearsal, or
+   * the one that answers mail from people not listed. */
+  noGoals?: boolean;
+}
+
+/** A lane's goal as the server ships it (goalSummary in server/goals.ts). */
+export interface LaneGoal {
+  text: string;
+  check?: string;
+  budget: number;
+  /** Turns Bloks has started toward it, the first included. */
+  turns: number;
+  status: "active" | "paused" | "done" | "blocked" | "out";
+  startedAt: number;
+  lastReason?: string;
+  /** Between two turns, while Bloks checks whether it is done. */
+  judging?: boolean;
 }
 
 export interface Bot {
@@ -549,6 +571,8 @@ export interface AppState {
   briefOpen: boolean;
   /** The agent taking meeting notes, while its panel is open. */
   meetingFor: string | null;
+  /** The conversation whose "Set a goal" dialog is open (GoalDialog). */
+  goalFor: { botId: string; taskId: string } | null;
   rehearsalsTick: number;
   /** Bumped when the server says a kind of thing changed (notes about
    * you, briefs, watchers, meetings), so whatever shows it re-reads. */
@@ -700,6 +724,8 @@ export type Action =
   | { type: "tick"; key: string }
   | { type: "toggleBrief"; open?: boolean }
   | { type: "openMeeting"; botId: string | null }
+  | { type: "openGoal"; botId: string; taskId: string }
+  | { type: "closeGoal" }
   | { type: "openProject"; id: string | null }
   | {
       type: "updateBot";
@@ -871,6 +897,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, rehearsalsTick: state.rehearsalsTick + 1 };
     case "openMeeting":
       return { ...state, meetingFor: action.botId };
+    case "openGoal":
+      return { ...state, goalFor: { botId: action.botId, taskId: action.taskId } };
+    case "closeGoal":
+      return { ...state, goalFor: null };
     case "toggleBrief":
       return { ...state, briefOpen: action.open ?? !state.briefOpen };
     case "tick":
@@ -1274,6 +1304,7 @@ export const initialState: AppState = {
   rehearsalsOpen: false,
   briefOpen: false,
   meetingFor: null,
+  goalFor: null,
   rehearsalsTick: 0,
   ticks: {},
   teamLink: null,

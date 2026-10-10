@@ -6,9 +6,36 @@ export interface Command {
   id: string;
   name: string;
   description: string;
-  source: "library" | "engine";
+  /** "bloks" is Bloks' own: the server answers it, and no engine hears it. */
+  source: "library" | "engine" | "bloks";
   kind?: "skill" | "command";
   prefix?: "$";
+}
+
+/** Bloks' own commands, offered in every agent conversation that takes
+ * them. A command, so only at the start of a message, which is the only
+ * place the server reads one (isGoalCommand in server/goals.ts). */
+export const BLOKS_COMMANDS: Command[] = [
+  {
+    id: "goal",
+    name: "goal",
+    description: "Keep working until this is done",
+    source: "bloks",
+    kind: "command",
+  },
+];
+
+/**
+ * The list for one conversation: Bloks' own first, then what the agent
+ * and its engine offer. An engine command or skill of the same name gives
+ * way, because typing it reaches Bloks, never the engine. A conversation
+ * that takes no goal (a rehearsal, a shared room's, the unlisted mail
+ * one) is offered none.
+ */
+export function withBloksCommands(commands: Command[], lane: { noGoals?: boolean } | undefined): Command[] {
+  const own = lane?.noGoals ? [] : BLOKS_COMMANDS;
+  const taken = new Set(own.map((c) => c.id));
+  return [...own, ...commands.filter((c) => c.prefix || !taken.has(c.id))];
 }
 
 /**
@@ -53,13 +80,15 @@ function inOrder(field: string, q: string): boolean {
   return at === q.length;
 }
 
-/** Matching commands, best first, library skills ahead of engine ones on a tie. */
+/** Matching commands, best first: on a tie Bloks' own lead, then library
+ * skills, then the engine's. */
 export function matches(commands: Command[], query: string, limit = 8, atStart = true): Command[] {
+  const rank = { bloks: 0, library: 1, engine: 2 } as const;
   return commands
     .filter((c) => atStart || c.kind !== "command")
     .map((c) => ({ c, s: score(c, query) }))
     .filter((x) => x.s >= 0)
-    .sort((a, b) => b.s - a.s || (a.c.source === b.c.source ? 0 : a.c.source === "library" ? -1 : 1) || a.c.id.localeCompare(b.c.id))
+    .sort((a, b) => b.s - a.s || rank[a.c.source] - rank[b.c.source] || a.c.id.localeCompare(b.c.id))
     .slice(0, limit)
     .map((x) => x.c);
 }

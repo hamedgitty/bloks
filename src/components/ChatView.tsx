@@ -8,6 +8,7 @@ import History from "lucide-react/dist/esm/icons/history.mjs";
 import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
+import Target from "lucide-react/dist/esm/icons/target.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { api, useStore, laneHasMessages, openLaneWorking, type Bot, type Message } from "@/state/store";
 import { CarryOn } from "@/components/CarryOn";
@@ -24,6 +25,7 @@ import { dayLine, queuedLine, stamp, timeSaidBelow } from "@/lib/when";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { TaskStrip } from "./TaskStrip";
 import { WaitingStrip } from "./WaitingStrip";
+import { GoalChip, GoalDialog } from "./Goal";
 import { AfterAgentLink, AgentExchangeDialog, AgentExchangeRow } from "./AgentExchange";
 import { CallButton } from "./Voice";
 import { ArtifactCard } from "./Artifacts";
@@ -266,7 +268,7 @@ function Bubble({
             onReply={onReply}
             onForward={onForward}
             onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-            onEdit={user && onEdit ? startEditing : undefined}
+            onEdit={user && onEdit && message.via !== "goal" ? startEditing : undefined}
             onDelete={onDelete ? () => onDelete(message.id) : undefined}
             onRewind={onRewind ? () => onRewind(message.id) : undefined}
           />
@@ -274,9 +276,9 @@ function Bubble({
         {/* A column, so reactions hang under the bubble they belong to
             rather than beside it where they would push the text around. */}
         <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
-          {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine") && (
+          {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine" || message.via === "goal") && (
             <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
-              {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : "By email"}
+              {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : message.via === "goal" ? "From Bloks, toward your goal" : "By email"}
             </div>
           )}
           <div
@@ -284,7 +286,11 @@ function Bubble({
             className={cn(
               "px-3.5 py-2 text-[14.5px] leading-relaxed",
               user
-                ? "whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary text-primary-foreground"
+                ? message.via === "goal"
+                  ? // Bloks keeping a goal going, not the person: a quieter
+                    // bubble on their side, so it never reads as their words
+                    "whitespace-pre-wrap rounded-2xl rounded-br-md border border-brand/25 bg-brand-soft text-foreground"
+                  : "whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary text-primary-foreground"
                 : "rounded-2xl rounded-bl-md bg-muted text-foreground",
               // the hit you are standing on, so n and N feel like movement
               isHit && "ring-2 ring-warning/70",
@@ -354,7 +360,9 @@ function Bubble({
           dateTime={new Date(message.at).toISOString()}
           className="mt-0.5 px-1 text-[11px] leading-4 tabular-nums text-muted-foreground"
         >
-          {message.deliveredAt
+          {/* a goal's note goes through the queue only to wait its turn;
+              nobody queued it, so it says when it went, once */}
+          {message.deliveredAt && message.via !== "goal"
             ? queuedLine(message.queuedAt ?? message.at, message.deliveredAt)
             : stamp(message.at)}
         </time>
@@ -540,6 +548,28 @@ function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
   // a compaction is a fact about the conversation, marked like a date line
   if (message.compaction) {
     return <div className="py-1 text-center text-[12px] text-muted-foreground">{message.text}</div>;
+  }
+  // The goal's own news. Set and done are not warnings, so they do not
+  // wear one; where it stopped short (blocked, out, paused) still does.
+  if (message.goal) {
+    const short = message.goal === "blocked" || message.goal === "out" || message.goal === "paused";
+    return (
+      <div className={cn("flex justify-start", fresh && "animate-receive-in")}>
+        <div
+          className={cn(
+            "flex max-w-[560px] gap-2.5 rounded-2xl border px-3.5 py-2.5",
+            short ? "border-warning/30 bg-warning/5" : message.goal === "done" ? "border-success/30 bg-success/5" : "bg-card",
+          )}
+        >
+          <Target
+            size={15}
+            className={cn("mt-0.5 shrink-0", short ? "text-warning" : message.goal === "done" ? "text-success" : "text-brand")}
+            aria-hidden
+          />
+          <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-foreground">{message.text}</div>
+        </div>
+      </div>
+    );
   }
   return (
     <div className={cn("flex justify-start", fresh && "animate-receive-in")}>
@@ -1242,7 +1272,9 @@ export function ChatView({ bot }: { bot: Bot }) {
                 ? "a webhook"
                 : m.via === "email"
                   ? "email"
-                  : m.via === "routine"
+                  : m.via === "goal"
+                    ? "your goal"
+                    : m.via === "routine"
                     ? `your routine${m.routine?.name ? ` ${m.routine.name}` : ""}`
                     : null
         }
@@ -1255,6 +1287,8 @@ export function ChatView({ bot }: { bot: Bot }) {
         editAsk={editAsk}
       />
       <GuestMailLine bot={bot} />
+      <GoalChip bot={bot} />
+      <GoalDialog />
       <Composer
         key={`${bot.id}:${bot.activeTaskId ?? bot.threadId}`}
         bot={bot}

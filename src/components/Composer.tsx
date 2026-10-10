@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
 import { boxFor, carryFocus, keepDraft, readDraft, showBox, takeBack, takeFocus, type Draft } from "@/lib/drafts";
-import { insert as insertCommand, matches as matchCommands, segments, slashAt, type Command } from "@/lib/slashCommands";
+import { insert as insertCommand, matches as matchCommands, segments, slashAt, withBloksCommands, type Command } from "@/lib/slashCommands";
 
 /** Fade whichever edges have more text beyond them (see edgeMask). */
 function shadeEdges(el: HTMLTextAreaElement) {
@@ -244,9 +244,13 @@ export function Composer({
       live = false;
     };
   }, [bot.id, skillKey, laneId, bot.modelSelection.instanceId, bot.cwd, bot.busy, commandTick, commandEngine]);
-  const commandIds = new Set(commands.filter((c) => !c.prefix).map((c) => c.id));
-  const dollarIds = new Set(commands.filter((c) => c.prefix === "$").map((c) => c.id));
-  const offered = slash ? matchCommands(commands, slash.query, 8, slash.start === 0) : [];
+  // Bloks' own (`/goal`) ride along with the agent's, except while
+  // rehearsing, where the message becomes a rehearsal and not a turn
+  const lane = bot.tasks?.find((t) => t.id === laneId);
+  const listed = rehearse ? commands : withBloksCommands(commands, lane);
+  const commandIds = new Set(listed.filter((c) => !c.prefix).map((c) => c.id));
+  const dollarIds = new Set(listed.filter((c) => c.prefix === "$").map((c) => c.id));
+  const offered = slash ? matchCommands(listed, slash.query, 8, slash.start === 0) : [];
   const readSlash = (el: HTMLTextAreaElement) => {
     setSlash(slashAt(el.value, el.selectionStart ?? el.value.length));
     setPick(0);
@@ -322,6 +326,15 @@ export function Composer({
   const send = () => {
     if (rehearse) return void startRehearsal();
     if (!text.trim() && !attachments.length) return;
+    // `/goal` alone has nothing to aim at yet, so it opens the dialog
+    // that asks, rather than sending a goal the server would refuse
+    if (/^\s*\/goal\s*$/.test(text) && !attachments.length && !lane?.noGoals) {
+      dispatch({ type: "openGoal", botId: bot.id, taskId: laneId });
+      setText("");
+      setSlash(null);
+      latest.current = { text: "", attachments: [] };
+      return;
+    }
     const sent = { text, attachments };
     dispatch({
       type: "send",
@@ -660,7 +673,7 @@ export function Composer({
           </button>
         </div>
       )}
-      {slash && (offered.length > 0 || (commands.length === 0 && slash.query === "")) && (
+      {slash && (offered.length > 0 || (listed.length === 0 && slash.query === "")) && (
         <div className="mx-auto mb-1.5 max-w-[760px]">
           <div
             role="listbox"
@@ -693,7 +706,7 @@ export function Composer({
                     {c.description || c.name}
                   </span>
                   <span className="shrink-0 text-[11px] text-muted-foreground/70">
-                    {c.source === "library" ? "Agent skill" : c.kind === "command" ? "Engine command" : "Engine skill"}
+                    {c.source === "bloks" ? "Bloks" : c.source === "library" ? "Agent skill" : c.kind === "command" ? "Engine command" : "Engine skill"}
                   </span>
                 </button>
               ))

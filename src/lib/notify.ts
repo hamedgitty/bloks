@@ -21,7 +21,10 @@
 //   a message already on your screen is noise with extra steps.
 //
 //   Tool activity, screen frames, artifacts and notices never interrupt.
-//   They are the work, not news about it.
+//   They are the work, not news about it. The one notice that is news is
+//   where a goal ended up, and while a conversation works toward one,
+//   its turns' replies are the work too: the goal's end is said once,
+//   when it comes, rather than twenty times on the way.
 //
 //   A quiet check-in never interrupts. Its agent answered QUIET because
 //   nothing needed you, and what a check-in says on the way to deciding
@@ -40,6 +43,8 @@ export interface NotifiableMessage {
   card?: { requestId?: string; title?: string };
   /** Part of a quiet check-in (server/store.ts). */
   quiet?: boolean;
+  /** A notice about the conversation's goal (server/goals.ts). */
+  goal?: string;
 }
 
 export interface NotifyContext {
@@ -55,6 +60,8 @@ export interface NotifyContext {
   room?: { id: string; name: string };
   /** The user's own name, for deciding whether a room line named them. */
   mentionsUser?: boolean;
+  /** The conversation it landed in is working toward a goal right now. */
+  goalRunning?: boolean;
 }
 
 export interface Notice {
@@ -102,6 +109,21 @@ export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notic
     };
   }
 
+  // Where a goal ended up. Blocked has stopped the work until the person
+  // answers, the same as a question; done or out of turns is news the
+  // way a finished reply is, from an agent allowed to interrupt. Set and
+  // paused are the person's own doing, or said by something louder.
+  if (message.kind === "notice" && message.goal) {
+    if (watching) return null;
+    if (message.goal === "blocked") {
+      return { title: `${who} needs you`, body: preview(message.text || "A goal is waiting on you."), target, urgent: true };
+    }
+    if ((message.goal === "done" || message.goal === "out") && ctx.bot?.notifications !== false) {
+      return { title: who, body: preview(message.text ?? ""), target, urgent: false };
+    }
+    return null;
+  }
+
   // An agent that could not answer because its engine is out: credits, a
   // plan limit, a sign-in. Its work is stopped until the person acts, the
   // same as a question, so it is said even when the agent is otherwise
@@ -121,8 +143,9 @@ export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notic
     return { title: `${who}`, body: preview(message.text), target, urgent: false };
   }
 
-  // A one to one reply, if this agent is allowed to interrupt.
-  if (ctx.bot?.notifications === false) return null;
+  // A one to one reply, if this agent is allowed to interrupt, and not
+  // one on the way to a goal, whose end is said when it comes.
+  if (ctx.bot?.notifications === false || ctx.goalRunning) return null;
   return { title: who, body: preview(message.text), target, urgent: false };
 }
 
