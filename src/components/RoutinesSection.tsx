@@ -8,8 +8,9 @@
 // are read on open and after every write, and nothing else in the app needs
 // them in state.
 //
-// The schedule is a time plus days of the week, not cron, for the same
-// reason as on the phone: it has to be readable without being decoded.
+// The schedule is a time plus days of the week, or every so often within
+// hours, not cron, for the same reason as on the phone: it has to be
+// readable without being decoded.
 // Creation happens in the shared RoutinesDialog, pinned to this agent.
 import { useCallback, useEffect, useState } from "react";
 import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock.mjs";
@@ -30,6 +31,8 @@ export interface RoutineRun {
   summary?: string;
   error?: string;
   threadId?: string;
+  /** It ran, and the agent answered QUIET: nothing needed the person. */
+  quiet?: boolean;
 }
 
 export interface Routine {
@@ -38,17 +41,26 @@ export interface Routine {
   targetKind: "agent" | "room";
   name?: string;
   prompt: string;
+  /** For a check-in, its first slot of the day. */
   time: string;
   days: number[];
   repeat?: "weekly" | "once";
   date?: string;
   durationMin?: number;
   runsOn?: "cloud" | "local" | "off";
+  /** A check-in: every this many minutes, instead of at a time of day. */
+  every?: number;
+  /** The hours a check-in keeps to; absent is the whole day. */
+  activeHours?: { from: string; to: string };
+  /** Its agent may answer QUIET, and a quiet run is not announced. */
+  quiet?: boolean;
   enabled: boolean;
   lastRunAt?: number;
   summary?: string;
   nextRunAt?: number | null;
   runs?: RoutineRun[];
+  /** What its last run that was not quiet said. */
+  lastReport?: { at: number; summary: string };
   /** On, but its agent is archived, so it does not run until restored. */
   suspended?: "archived";
 }

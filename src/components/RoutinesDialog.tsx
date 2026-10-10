@@ -5,7 +5,9 @@
 // same dialog pinned to its own target. Two views inside one dialog:
 // the list of everything scheduled, and a create form. The form is a
 // picker plus prose plus a clock, not a cron string: a routine should
-// read like a sentence about the week.
+// read like a sentence about the week. "Every 30 minutes, between nine
+// and six" is the one other sentence it can say: a check-in, which is
+// quiet unless something needs the person.
 //
 // Self-fetching like RoutinesSection: routines are read on open and
 // after every write; nothing else in the app holds them in state.
@@ -23,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { ThisComputer, thisComputer } from "@/lib/thisComputer";
+import { checkInProblem, everyMinutes } from "@/lib/checkIns";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -180,8 +183,10 @@ export function RoutinesDialog({
                             >
                               {target?.name ?? "Unknown target"}
                             </span>
-                            <span className="shrink-0 text-[11.5px] text-muted-foreground">
-                              {describeDays(routine.days)} at {routine.time}
+                            <span className={cn("text-[11.5px] text-muted-foreground", routine.every ? "min-w-0 truncate" : "shrink-0")}>
+                              {routine.every
+                                ? (routine.summary ?? `Every ${routine.every} min`)
+                                : `${describeDays(routine.days)} at ${routine.time}`}
                             </span>
                           </div>
                           <div className="mt-0.5 line-clamp-2 text-[12.5px] text-muted-foreground">
@@ -257,6 +262,79 @@ const DURATIONS: Array<[number, string]> = [
   [240, "4 hours"],
 ];
 
+/** Two or three choices side by side, the way the form chooses between
+ * schedules. */
+function Segmented<K extends string>({
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  value: K;
+  options: Array<[K, string]>;
+  onChange: (key: K) => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex w-fit gap-1 rounded-lg bg-muted p-0.5", className)}>
+      {options.map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => onChange(key)}
+          aria-pressed={value === key}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[12px] transition-colors duration-150",
+            value === key ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The days of the week, one button each. None chosen is every day. */
+function DayPicker({ days, onToggle, className }: { days: number[]; onToggle: (day: number) => void; className?: string }) {
+  return (
+    <div className={cn("flex gap-1", className)}>
+      {DAY_LABELS.map((label, day) => (
+        <button
+          key={day}
+          onClick={() => onToggle(day)}
+          title={DAY_NAMES[day]}
+          aria-label={DAY_NAMES[day]}
+          aria-pressed={days.includes(day)}
+          className={cn(
+            "size-7 rounded-md text-[11.5px] font-semibold transition-colors duration-150",
+            days.includes(day) ? "bg-brand-ink text-brand-foreground" : "bg-muted text-muted-foreground hover:bg-accent",
+          )}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The usual sets of days in one press, and the schedule read back. */
+function DayShortcuts({ onPick, children }: { onPick: (days: number[]) => void; children: React.ReactNode }) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px]">
+      <button className="text-brand-ink hover:underline" onClick={() => onPick([])}>
+        Every day
+      </button>
+      <button className="text-brand-ink hover:underline" onClick={() => onPick(WEEKDAYS)}>
+        Weekdays
+      </button>
+      <button className="text-brand-ink hover:underline" onClick={() => onPick(WEEKEND)}>
+        Weekends
+      </button>
+      <span className="text-muted-foreground">{children}</span>
+    </div>
+  );
+}
+
 /** Local date as the input[type=date] value, no UTC surprises. */
 function localDateValue(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -278,13 +356,16 @@ function CreateForm({
     targetKind: "agent" | "room";
     name?: string;
     prompt: string;
-    time: string;
+    time?: string;
     days: number[];
     repeat?: "once";
     date?: string;
-    durationMin: number;
+    durationMin?: number;
     runsOn?: "cloud" | "local" | "off";
     thread?: string;
+    every?: number;
+    activeHours?: { from: string; to: string };
+    quiet?: boolean;
   }) => void;
 }) {
   const [targetId, setTargetId] = useState(pinnedTargetId ?? targets[0]?.id ?? "");
@@ -297,7 +378,22 @@ function CreateForm({
   const [durationMin, setDurationMin] = useState(30);
   const [runsOn, setRunsOn] = useState<"" | "cloud" | "local" | "off">("");
   const [thread, setThread] = useState("");
+  // at a time of day, or a check-in every so often (server/routines.ts)
+  const [schedule, setSchedule] = useState<"time" | "every">("time");
+  const [everyCount, setEveryCount] = useState("30");
+  const [everyUnit, setEveryUnit] = useState<"min" | "hour">("min");
+  const [keepsHours, setKeepsHours] = useState(true);
+  const [from, setFrom] = useState("09:00");
+  const [to, setTo] = useState("18:00");
+  const [quiet, setQuiet] = useState(false);
   const target = targets.find((t) => t.id === targetId);
+  // A room's routine keeps to a time of day and speaks every time:
+  // several agents answer it, and a channel may be reading along.
+  const forAgent = target?.kind === "agent";
+  const checkIn = schedule === "every" && forAgent;
+  const every = everyMinutes(everyCount, everyUnit);
+  const hours = keepsHours ? { from, to } : null;
+  const checkInWrong = checkIn ? checkInProblem(every, hours) : null;
 
   const toggle = (day: number) =>
     setDays((current) =>
@@ -370,92 +466,139 @@ function CreateForm({
       />
 
       <div className="mb-1.5 mt-4 text-[12.5px] font-medium text-muted-foreground">When</div>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex gap-1 rounded-lg bg-muted p-0.5">
-          {(
-            [
-              ["weekly", "Repeats"],
-              ["once", "Once"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setRepeat(key)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-[12px] transition-colors duration-150",
-                repeat === key
-                  ? "bg-background font-medium text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <input
-          type="time"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
+      {forAgent && (
+        <Segmented
+          value={schedule}
+          options={[
+            ["time", "At a time"],
+            ["every", "Every"],
+          ]}
+          onChange={setSchedule}
+          className="mb-2.5"
         />
-        {repeat === "once" ? (
-          <input
-            type="date"
-            value={date}
-            min={localDateValue(new Date())}
-            onChange={(e) => setDate(e.target.value)}
-            className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
-          />
-        ) : (
-          <div className="flex gap-1">
-            {DAY_LABELS.map((label, day) => (
-              <button
-                key={day}
-                onClick={() => toggle(day)}
-                title={DAY_NAMES[day]}
-                className={cn(
-                  "size-7 rounded-md text-[11.5px] font-semibold transition-colors duration-150",
-                  days.includes(day)
-                    ? "bg-brand-ink text-brand-foreground"
-                    : "bg-muted text-muted-foreground hover:bg-accent",
-                )}
-              >
-                {label}
-              </button>
-            ))}
+      )}
+      {checkIn ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px] text-foreground">Every</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={everyUnit === "hour" ? 1 : 15}
+              max={everyUnit === "hour" ? 24 : 1440}
+              value={everyCount}
+              onChange={(e) => setEveryCount(e.target.value)}
+              aria-label="How often"
+              className="w-[72px] rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] tabular-nums text-foreground outline-none focus:border-ring/60"
+            />
+            <select
+              value={everyUnit}
+              onChange={(e) => setEveryUnit(e.target.value as "min" | "hour")}
+              aria-label="Minutes or hours"
+              className="rounded-lg border border-input bg-background px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
+            >
+              <option value="min">minutes</option>
+              <option value="hour">hours</option>
+            </select>
           </div>
-        )}
-      </div>
-      {repeat === "weekly" && (
-        <div className="mt-2 flex items-center gap-2 text-[11.5px]">
-          <button className="text-brand-ink hover:underline" onClick={() => setDays([])}>
-            Every day
-          </button>
-          <button className="text-brand-ink hover:underline" onClick={() => setDays(WEEKDAYS)}>
-            Weekdays
-          </button>
-          <button className="text-brand-ink hover:underline" onClick={() => setDays(WEEKEND)}>
-            Weekends
-          </button>
-          <span className="text-muted-foreground">
-            {describeDays(days)} at {time}
-          </span>
-        </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <Switch aria-label="Only between two times" checked={keepsHours} onCheckedChange={setKeepsHours} />
+            <span className="text-[12.5px] text-foreground">Only between</span>
+            <input
+              type="time"
+              value={from}
+              disabled={!keepsHours}
+              onChange={(e) => setFrom(e.target.value)}
+              aria-label="From"
+              className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60 disabled:opacity-50"
+            />
+            <span className="text-[12.5px] text-muted-foreground">and</span>
+            <input
+              type="time"
+              value={to}
+              disabled={!keepsHours}
+              onChange={(e) => setTo(e.target.value)}
+              aria-label="To"
+              className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60 disabled:opacity-50"
+            />
+          </div>
+          <DayPicker days={days} onToggle={toggle} className="mt-2.5" />
+          <DayShortcuts onPick={setDays}>
+            {describeDays(days)}
+            {keepsHours ? `, ${from} to ${to}` : ", all day"}
+          </DayShortcuts>
+          {checkInWrong ? (
+            <div className="mt-2 text-[11.5px] text-destructive">{checkInWrong}</div>
+          ) : (
+            <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+              Check-ins are quiet: when nothing needs you, {target?.name ?? "the agent"} answers QUIET and
+              you are not told. The chat folds them into one line.
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <Segmented
+              value={repeat}
+              options={[
+                ["weekly", "Repeats"],
+                ["once", "Once"],
+              ]}
+              onChange={setRepeat}
+            />
+            <input
+              type="time"
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+              className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
+            />
+            {repeat === "once" ? (
+              <input
+                type="date"
+                value={date}
+                min={localDateValue(new Date())}
+                onChange={(e) => setDate(e.target.value)}
+                className="rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
+              />
+            ) : (
+              <DayPicker days={days} onToggle={toggle} />
+            )}
+          </div>
+          {repeat === "weekly" && (
+            <DayShortcuts onPick={setDays}>
+              {describeDays(days)} at {time}
+            </DayShortcuts>
+          )}
+          {forAgent && (
+            <label className="mt-3 flex items-start gap-2.5">
+              <Switch aria-label="Only speak up when something needs you" checked={quiet} onCheckedChange={setQuiet} className="mt-0.5" />
+              <span className="min-w-0">
+                <span className="block text-[12.5px] text-foreground">Only speak up when something needs me</span>
+                <span className="block text-[11.5px] leading-relaxed text-muted-foreground">
+                  {target?.name ?? "The agent"} may answer QUIET, and a quiet run is not announced.
+                </span>
+              </span>
+            </label>
+          )}
+        </>
       )}
 
       <div className="mt-4 flex flex-wrap gap-5">
-        <label className="block">
-          <div className="mb-1.5 text-[12.5px] font-medium text-muted-foreground">Duration</div>
-          <select
-            value={durationMin}
-            onChange={(e) => setDurationMin(Number(e.target.value))}
-            className="rounded-lg border border-input bg-background px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
-          >
-            {DURATIONS.map(([min, label]) => (
-              <option key={min} value={min}>{label}</option>
-            ))}
-          </select>
-        </label>
+        {!checkIn && (
+          <label className="block">
+            <div className="mb-1.5 text-[12.5px] font-medium text-muted-foreground">Duration</div>
+            <select
+              value={durationMin}
+              onChange={(e) => setDurationMin(Number(e.target.value))}
+              className="rounded-lg border border-input bg-background px-2.5 py-1.5 text-[13px] text-foreground outline-none focus:border-ring/60"
+            >
+              {DURATIONS.map(([min, label]) => (
+                <option key={min} value={min}>{label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {target?.kind === "agent" && (
           <label className="block">
             <div className="mb-1.5 text-[12.5px] font-medium text-muted-foreground">Runs on</div>
@@ -492,7 +635,9 @@ function CreateForm({
 
       <div className="mt-5 flex gap-2">
         <Button
-          disabled={!prompt.trim() || !target || !time || (repeat === "once" && !date)}
+          disabled={
+            !prompt.trim() || !target || (checkIn ? Boolean(checkInWrong) : !time || (repeat === "once" && !date))
+          }
           onClick={() =>
             target &&
             onSave({
@@ -500,10 +645,15 @@ function CreateForm({
               targetKind: target.kind,
               ...(name.trim() ? { name: name.trim() } : {}),
               prompt: prompt.trim(),
-              time,
               days,
-              ...(repeat === "once" ? { repeat, date } : {}),
-              durationMin,
+              ...(checkIn && every !== null
+                ? { every, ...(hours ? { activeHours: hours } : {}) }
+                : {
+                    time,
+                    ...(repeat === "once" ? { repeat, date } : {}),
+                    durationMin,
+                    ...(forAgent && quiet ? { quiet: true } : {}),
+                  }),
               ...(runsOn ? { runsOn } : {}),
               ...(target.kind === "agent" && thread.trim() ? { thread: thread.trim() } : {}),
             })
