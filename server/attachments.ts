@@ -7,11 +7,15 @@
 // the same file back by name when it draws the thumbnail.
 //
 // Voice messages from Telegram land here too, so the transcript of one
-// can be played back next to what it was heard as.
+// can be played back next to what it was heard as, and so do the videos,
+// audio and documents sent there, for the agent to open by path.
 //
-// Names are minted here and only here: a uuid plus an extension derived
-// from the mime type. Nothing the client sends becomes part of the name,
-// which is what makes the serving route safe to expose.
+// Names are minted here and only here: a uuid plus an extension. The
+// app's own uploads take theirs from the mime type. A Telegram file may
+// take a short one from its own name (server/telegram.ts), letters and
+// digits only, so it never names a folder. The serving route answers
+// only the image and voice names (SAFE_NAME), so nothing a sender chose
+// is ever served back, which is what makes that route safe to expose.
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
