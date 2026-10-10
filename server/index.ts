@@ -337,6 +337,7 @@ import {
   type Watcher,
 } from "./watchers.ts";
 import { MemoryJournal, readMemoryText } from "./memory-journal.ts";
+import { applyImport, detectSetup, ImportRecord, reviewOf, type ImportDeps, type McpEntry } from "./setup-import.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
 import { RepeatWatch } from "./repeats.ts";
@@ -879,6 +880,71 @@ async function readinessOf(bot: BotRecord): Promise<{ readiness: Readiness; engi
 }
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
+// What was brought over from other agent tools, and where it went, so a
+// second import updates the first (server/setup-import.ts).
+const setupRecord = new ImportRecord(join(DATA_DIR, "setup-import.json"));
+
+/**
+ * The import's way into the rest of the workspace. Every write goes the
+ * way the person's own edit would: instructions through the agent record,
+ * memory through the journal so each change can be undone, skills into
+ * the library unattached, servers into the registry on no agent, rules
+ * through the policy's own checks, and facts as suggestions.
+ *
+ * `settings` are a new agent's starting settings, worked out once before
+ * the import because finding the default engine has to wait on the
+ * registry and the import itself does not.
+ */
+function setupImportDeps(settings: Partial<BotRecord> = {}): ImportDeps {
+  return {
+    agent(id) {
+      const bot = store.bot(id);
+      if (!bot || bot.archivedAt) return null;
+      return { id: bot.id, name: bot.name, description: bot.description ?? "", busy: bot.tasks.some((t) => t.busy) };
+    },
+    createAgent({ name, title }) {
+      const bot = store.createBot({ name: name.slice(0, MAX_NAME_CHARS), title: title.slice(0, MAX_TITLE_CHARS) });
+      store.patchBot(bot.id, { ...settings, activeWithYouAt: Date.now() });
+      record({
+        at: Date.now(),
+        kind: "agent.created",
+        actor: "you",
+        summary: `Made ${bot.name}, ${bot.title}`,
+        detail: { agent: bot.name },
+      });
+      return bot.id;
+    },
+    setInstructions(botId, text) {
+      store.patchBot(botId, { description: text.slice(0, MAX_DESCRIPTION_CHARS) });
+    },
+    readMemory(botId, file) {
+      const path = memoryJournal.pathOf(botId, file);
+      if (!path) throw new Error("not a memory file");
+      return readMemoryText(path, file);
+    },
+    writeMemory(botId, file, before, after) {
+      memoryJournal.record(botId, file, "you", before, after, undefined, () => {
+        const written =
+          file === "MEMORY.md" ? workspace.writeMemoryFile(botId, after) : workspace.writeMemoryTopic(botId, file.slice("memory/".length), after);
+        if (!written) throw new Error(`${file} is a link to somewhere else now, so it was not written. Look at the agent's workspace.`);
+      });
+    },
+    skills: () => listSkills().map((skill) => ({ id: skill.id, source: skill.source })),
+    installSkill: (input) => installSkill(input).id,
+    mcpServers: () => (cfg.mcpServers ?? []) as McpEntry[],
+    saveMcpServers(list) {
+      // a connection the app holds open was made with the old settings
+      const before = new Map((cfg.mcpServers ?? []).map((server) => [server.id, JSON.stringify(server)]));
+      for (const server of list) if (before.has(server.id) && before.get(server.id) !== JSON.stringify(server)) mcp.close(server.id);
+      Object.assign(cfg, saveConfig({ mcpServers: list } as Partial<AppConfig>));
+    },
+    newId: () => randomBytes(8).toString("hex"),
+    rules: () => policy.list(),
+    addRule: (rule) => policy.add(rule, Date.now()),
+    notes: () => profileNotes.list(),
+    suggestNote: (text, by) => profileNotes.suggest(text, by),
+  };
+}
 // An agent doing the work on a clone of its folder, for you to apply or not.
 const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"), (r) => {
   checkpoints.forgetBaseline(r.copy);
@@ -11360,6 +11426,46 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           error: redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200),
         });
       }
+    }
+
+    // ── bring your setup: what other agent tools already know ──
+    // Reading another tool's files is for the person at this computer to
+    // start. Not an agent, which would be reading the person's home on
+    // its own initiative, and not a phone or a remote window, which would
+    // carry the person's instructions and skills off this machine. The
+    // look and the import both read the files fresh; the import takes from
+    // the window only which items, and where.
+    if (path === "/api/setup-import" && (method === "GET" || method === "POST")) {
+      if (!local || asAgent) return json(res, 403, { error: "only Bloks on this computer can bring a setup over" });
+      if (method === "GET") return json(res, 200, reviewOf(detectSetup(), setupRecord, setupImportDeps()));
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const outcome = applyImport(detectSetup(), body.picks, setupImportDeps(await newAgentSettings()), setupRecord);
+      for (const id of outcome.created) {
+        const made = store.bot(id);
+        if (made) broadcast({ kind: "bot", bot: { ...clientBot(made)!, messages: store.messagesFor(made.threadId) } });
+      }
+      for (const id of outcome.touched.agents) {
+        if (!outcome.created.includes(id)) broadcast({ kind: "bot", bot: clientBot(store.bot(id)) });
+      }
+      for (const id of outcome.touched.memory) broadcast({ kind: "memory.changed", botId: id, changes: 1 });
+      if (outcome.touched.skills) broadcast({ kind: "skills" });
+      if (outcome.touched.rules) broadcast({ kind: "rules" });
+      if (outcome.touched.notes) broadcast({ kind: "profile" });
+      const brought = outcome.results.filter((r) => r.ok && r.did !== "unchanged").length;
+      if (brought) {
+        record({
+          at: Date.now(),
+          kind: "setup.imported",
+          actor: "you",
+          summary: `Brought over ${brought} ${brought === 1 ? "item" : "items"} from other agent tools`,
+          detail: { items: brought },
+        });
+      }
+      return json(res, 200, {
+        results: outcome.results,
+        created: outcome.created,
+        review: reviewOf(detectSetup(), setupRecord, setupImportDeps()),
+      });
     }
 
     // ── user MCP servers: bring your own tools ──

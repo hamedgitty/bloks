@@ -173,6 +173,8 @@ export const NEVER = [
   "/api/engines",
   "/api/pair",
   "/api/mcp-servers",
+  // reading the person's other tools out of their home folder
+  "/api/setup-import",
   "/api/ledger",
   "/api/relay",
   "/api/calls",

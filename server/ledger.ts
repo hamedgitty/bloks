@@ -52,7 +52,8 @@ export type LedgerKind =
   | "policy.changed"
   | "control.taken"
   | "control.released"
-  | "conversation.rewound";
+  | "conversation.rewound"
+  | "setup.imported";
 
 export interface LedgerEntry {
   /** Counts from zero, one per entry, no gaps. */

@@ -55,6 +55,7 @@ const LABEL: Record<string, string> = {
   "control.taken": "You took over",
   "control.released": "You handed back",
   "conversation.rewound": "Rewound",
+  "setup.imported": "Setup brought over",
 };
 
 function when(at: number): string {
