@@ -156,6 +156,15 @@ export function claimDataFolder(dir: string, port: number): { ok: true } | { ok:
   throw new Error(`could not claim ${dir}: its lock file keeps changing`);
 }
 
+/** The live Bloks server holding `dir`, when it is another process.
+ * Only reads: for work that must not happen under a running server's
+ * feet but has no business taking the folder itself, such as a restore
+ * swapping the folder before this server claims it. */
+export function holderOf(dir: string): LockHolder | null {
+  const holder = read(join(dir, "server.lock"));
+  return holder && holder.pid !== process.pid && alive(holder.pid) && looksLikeBloks(holder.pid) ? holder : null;
+}
+
 /** The words a person reads when a second server is turned away. */
 export function inUseMessage(dir: string, holder: LockHolder): string {
   return (
