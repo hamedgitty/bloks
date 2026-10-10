@@ -648,14 +648,16 @@ describe("the inbox", () => {
     await box.take(voice({ text: "go ahead" }));
     assert.deepEqual(seen.delivered, []);
     assert.deepEqual(seen.answers, []);
-    assert.match(seen.sent[0]!, /typed answer/);
+    assert.equal(seen.sent[0], "That one needs a tap or a typed answer. Tap a button on the card, or reply yes / no.");
   });
 
-  test("typed text still answers a card, and still asks again on an unclear approval", async () => {
+  test("typed text still answers a card, and an unclear approval points at its buttons", async () => {
     const { box, seen } = inbox({}, { options: ["Allow", "Deny"], permission: true });
     await box.take(message({ text: "hmm, what does it do?" }));
     assert.deepEqual(seen.answers, []);
-    assert.deepEqual(seen.sent, ["Reply 1 or 2, or yes / no."]);
+    // the card no longer numbers its choices: they are buttons on it
+    assert.deepEqual(seen.sent, ["Tap a button on the card, or reply yes / no."]);
+    // a number still answers, for anyone who types one
     await box.take(message({ text: "2" }));
     assert.deepEqual(seen.answers, [{ option: "Deny" }]);
   });

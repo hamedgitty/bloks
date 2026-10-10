@@ -850,6 +850,9 @@ export interface InboxHooks {
 
 const reason = (error: unknown) => (error instanceof Error && error.message) || "something went wrong";
 
+/** Said when an approval's answer was unclear. */
+const ASK_AGAIN = "Tap a button on the card, or reply yes / no.";
+
 /**
  * Where each message from Telegram goes, and what the person is told
  * when it cannot go anywhere.
@@ -898,10 +901,12 @@ export class Inbox {
 
   /** Text, typed or heard, read as the answer to a card. Free text
    * answers a question; an approval needs one of its options, so
-   * anything else asks again rather than guessing. */
+   * anything else asks again rather than guessing. An approval always
+   * goes with its buttons, so that is where the person is pointed; a
+   * number still works for anyone who types one. */
   private async answer(chatId: number, waiting: { options: string[]; permission: boolean }, text: string) {
     const read = interpretAnswer(text, waiting.options);
-    if (waiting.permission && !read.option) return this.hooks.send(chatId, "Reply 1 or 2, or yes / no.");
+    if (waiting.permission && !read.option) return this.hooks.send(chatId, ASK_AGAIN);
     await this.hooks.answer(chatId, read);
     await this.hooks.send(chatId, "Sent.");
   }
@@ -923,7 +928,7 @@ export class Inbox {
     // A misheard "no" is a "yes" to something that runs on this machine,
     // so an approval is answered by typing. Asked before the audio goes
     // anywhere, and again after, in case a card arrived meanwhile.
-    const typed = "That one needs a typed answer. Reply 1 or 2, or yes / no.";
+    const typed = `That one needs a tap or a typed answer. ${ASK_AGAIN}`;
     if (hooks.waiting(chatId)?.permission) return hooks.send(chatId, typed);
     const lost = (why: string, alone: string, captioned: string) =>
       this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned);
