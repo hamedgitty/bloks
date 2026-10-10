@@ -377,14 +377,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         argv.push("--strict-mcp-config");
       }
 
-      // The persona travels as a file, never as an argument. argv is
-      // readable by every process on the machine through ps, and the
-      // system prompt carries whatever the user wrote about themselves
-      // in settings. A private file read only by the CLI is not.
-      let personaDir: string | null = null;
+      // The persona and the MCP config travel as files, never as
+      // arguments. argv is readable by every process on the machine
+      // through ps: the system prompt carries whatever the user wrote
+      // about themselves in settings, and the MCP config carries the
+      // Composio key and any header or token a server needs. A private
+      // file, in a folder of this turn's own, read only by the CLI, is not.
+      let privateDir: string | null = null;
       const privateFile = (name: string, content: string) => {
-        personaDir ??= mkdtempSync(join(tmpdir(), "bloks-persona-"));
-        const file = join(personaDir, name);
+        privateDir ??= mkdtempSync(join(tmpdir(), "bloks-turn-"));
+        const file = join(privateDir, name);
         writeFileSync(file, content, { mode: 0o600 });
         return file;
       };
@@ -585,9 +587,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         } else {
           broker?.close();
         }
-        if (personaDir) {
+        if (privateDir) {
           try {
-            rmSync(personaDir, { recursive: true, force: true });
+            rmSync(privateDir, { recursive: true, force: true });
           } catch {
             /* tmpdir cleanup owns stragglers */
           }
