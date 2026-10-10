@@ -216,6 +216,9 @@ export const CHECK_TIMEOUT_MS = 30_000;
 export const CHECK_MAX_BYTES = 64_000;
 export const CHECK_SHOWN_CHARS = 4_000;
 export const MAX_CHECK_COMMAND = 500;
+/** The existing saved-text caps, counted as JavaScript string lengths. */
+export const MAX_WATCHER_INSTRUCTION = 1_000;
+export const MAX_WATCHER_TARGET = 1_000;
 
 export interface CheckResult {
   code: number | null;
@@ -403,6 +406,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   const botId = typeof raw.botId === "string" ? raw.botId : "";
   if (!botExists(botId)) return { ok: false, error: "no such agent" };
   const target = String(raw.target ?? "").trim();
+  if (kind !== "check" && target.length > MAX_WATCHER_TARGET) return { ok: false, error: "a watcher target is at most 1,000 characters" };
   if (kind === "check") {
     if (!target) return { ok: false, error: "a check is the command to run" };
     // one line: a longer script belongs in a file the check runs
@@ -413,8 +417,9 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   } else if (!/^https?:\/\/[^\s]+$/i.test(target)) {
     return { ok: false, error: "a page or feed is an http or https address" };
   }
-  const instruction = String(raw.instruction ?? "").trim().slice(0, 1_000);
+  const instruction = String(raw.instruction ?? "").trim();
   if (!instruction) return { ok: false, error: "say what the agent should do when it changes" };
+  if (instruction.length > MAX_WATCHER_INSTRUCTION) return { ok: false, error: "a watcher instruction is at most 1,000 characters" };
   const every = Math.min(MAX_EVERY, Math.max(MIN_EVERY, Math.round(Number(raw.every) || 30)));
   const mentions = String(raw.mentions ?? "").trim().slice(0, 120);
   // a lane title or id: one line, as short as any other lane's
@@ -424,7 +429,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
     value: {
       botId,
       kind,
-      target: target.slice(0, 1_000),
+      target,
       name: (String(raw.name ?? "").trim() || (kind === "check" ? target.split(/\s+/).slice(0, 3).join(" ") : target.split(/[\\/]/).filter(Boolean).pop()) || kind).slice(0, 60),
       instruction,
       ...(mentions && kind === "page" ? { mentions } : {}),
