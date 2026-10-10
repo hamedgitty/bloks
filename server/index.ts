@@ -11439,7 +11439,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!local || asAgent) return json(res, 403, { error: "only Bloks on this computer can bring a setup over" });
       if (method === "GET") return json(res, 200, reviewOf(detectSetup(), setupRecord, setupImportDeps()));
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
-      const outcome = applyImport(detectSetup(), body.picks, setupImportDeps(await newAgentSettings()), setupRecord);
+      // A new agent's settings mean asking the engines which one answers,
+      // which takes a moment; only an import that makes one waits for it.
+      const makesAgent = Array.isArray(body.picks) && body.picks.some((pick) => isRecord(pick) && pick.botId === "new");
+      const outcome = applyImport(detectSetup(), body.picks, setupImportDeps(makesAgent ? await newAgentSettings() : {}), setupRecord);
       for (const id of outcome.created) {
         const made = store.bot(id);
         if (made) broadcast({ kind: "bot", bot: { ...clientBot(made)!, messages: store.messagesFor(made.threadId) } });
