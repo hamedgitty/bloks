@@ -224,13 +224,28 @@ export interface CheckResult {
   timedOut: boolean;
 }
 
-/** Runs one check: its own process group, killed whole on timeout. */
-export function runCheck(command: string, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = CHECK_TIMEOUT_MS): Promise<CheckResult> {
+/** Runs one check: its own process group, killed whole on timeout.
+ * `tail` keeps the end of what it prints rather than the start, for a
+ * check like a test run that says what went wrong last (a goal's check,
+ * server/goals.ts). */
+export function runCheck(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = CHECK_TIMEOUT_MS,
+  options: { tail?: boolean } = {},
+): Promise<CheckResult> {
   return new Promise((resolve) => {
     const windows = process.platform === "win32";
     let output = "";
     let errors = "";
     let timedOut = false;
+    const keep = (kept: string, chunk: Buffer, max: number) =>
+      options.tail
+        ? (kept + chunk.toString("utf8")).slice(-max)
+        : kept.length < max
+          ? kept + chunk.toString("utf8").slice(0, max - kept.length)
+          : kept;
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, { cwd, env, shell: true, detached: !windows, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -251,10 +266,10 @@ export function runCheck(command: string, cwd: string, env: NodeJS.ProcessEnv, t
       kill();
     }, timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (output.length < CHECK_MAX_BYTES) output += chunk.toString("utf8").slice(0, CHECK_MAX_BYTES - output.length);
+      output = keep(output, chunk, CHECK_MAX_BYTES);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (errors.length < 4_000) errors += chunk.toString("utf8").slice(0, 4_000 - errors.length);
+      errors = keep(errors, chunk, 4_000);
     });
     child.on("error", (e) => {
       errors ||= e.message;

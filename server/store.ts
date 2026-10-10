@@ -11,6 +11,7 @@ import { readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { DATA_DIR } from "./config.ts";
 import { compactedNotice, readingFor, type Reading } from "./context.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
+import { readGoal, type Goal } from "./goals.ts";
 
 export type BlokColor =
   | "green"
@@ -106,7 +107,7 @@ export interface Message {
   afterAgent?: { peerId: string; peerName: string };
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
-  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine";
+  via?: "slack" | "discord" | "whatsapp" | "watcher" | "email" | "webhook" | "routine" | "goal";
   /** The routine's name and start mode when this message was written,
    * and `quiet` when its agent was told it may answer QUIET. */
   routine?: { name?: string; manual: boolean; quiet?: boolean };
@@ -125,6 +126,9 @@ export interface Message {
   /** A notice that is something happening in the room (someone joined,
    * someone left) rather than something going wrong. */
   event?: boolean;
+  /** A notice about the lane's goal (server/goals.ts): set, or where it
+   * ended up. Done is news like a finished reply, blocked like a question. */
+  goal?: "set" | "done" | "blocked" | "out" | "paused";
   /** A notice marking where the engine compacted its own session, and by
    * how much. A line in the conversation, not a warning, and never news:
    * it marks nothing unread and is not carried into a linked channel. */
@@ -300,6 +304,10 @@ export interface TaskRecord {
    * server/index.ts). Marked rather than known by its title, which the
    * person may change. */
   guestMail?: boolean;
+  /** What this lane keeps working toward, turn after turn, until it is
+   * done, blocked or out of turns (server/goals.ts). Goes with the lane:
+   * closed or cleared, the goal is gone too. */
+  goal?: Goal;
 }
 
 /** How many lanes an agent keeps open. Once three, which ran out as soon
@@ -512,7 +520,16 @@ export class Store {
         ];
         b.activeTaskId = b.threadId;
       }
-      for (const t of b.tasks) t.busy = false;
+      for (const t of b.tasks) {
+        t.busy = false;
+        // a goal is read back as one or not at all: what drives turns
+        // unattended is not something to guess the shape of
+        if (t.goal !== undefined) {
+          const goal = readGoal(t.goal);
+          if (goal) t.goal = goal;
+          else delete t.goal;
+        }
+      }
       if (!b.activeTaskId || !b.tasks.some((t) => t.id === b.activeTaskId)) {
         b.activeTaskId = b.tasks[0].id;
         b.threadId = b.tasks[0].id;
@@ -1033,6 +1050,16 @@ export class Store {
     const compaction = { ...marker.compaction, after: Math.round(used!) };
     const message = this.patchMessage(pending.threadId, pending.messageId, { compaction, text: compactedNotice(compaction) });
     return message ? { threadId: pending.threadId, message } : null;
+  }
+
+  /** A lane's goal, set, moved on or cleared (undefined). */
+  setTaskGoal(threadId: string, goal: Goal | undefined): Goal | undefined {
+    const found = this.taskByThread(threadId);
+    if (!found) return undefined;
+    if (goal) found.task.goal = goal;
+    else delete found.task.goal;
+    this.saveBots();
+    return found.task.goal;
   }
 
   /** Record what a lane's earlier messages were folded into. */

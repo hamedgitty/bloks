@@ -160,6 +160,28 @@ import { CardButtons, outcomeOf, settledText, type ForwardedCard } from "./teleg
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
 import { agentCommands, engineCommand, type ClaudeCatalog } from "./agent-commands.ts";
+import {
+  decide as decideGoal,
+  fallbackVerdict,
+  finalReply,
+  firstGoalNote,
+  GOAL_CHECK_TIMEOUT_MS,
+  goalBlockedNotice,
+  goalDoneNotice,
+  goalInput,
+  goalOutNotice,
+  goalPausedNotice,
+  goalSetNotice,
+  goalSummary,
+  judgePrompt,
+  nextGoalNote,
+  parseGoalCommand,
+  parseVerdict,
+  type Goal,
+  type GoalCheck,
+  type GoalInput,
+  type Verdict,
+} from "./goals.ts";
 import { codexSkillNames } from "./codex-skills.ts";
 import { reservedEnvName, usableSecrets } from "./env-names.ts";
 import * as discord from "./discord.ts";
@@ -1110,6 +1132,14 @@ function fitTranscripts(lists: Message[][], tail = RELAY_TAIL): Array<{ messages
   }
 }
 
+/** How many turns each lane has started since Bloks did. A goal's verdict
+ * is acted on only while no other turn has started in its lane since the
+ * one it judged (judgeGoal), so a judge that took a minute never starts a
+ * turn behind the person's back, or on a reply no longer the latest. */
+const laneTurns = new Map<string, number>();
+/** Lanes whose goal is being judged right now, for the chip to say so. */
+const goalJudging = new Set<string>();
+
 function clientBot(bot: BotRecord | null) {
   if (!bot) return bot;
   const { resumeCursors: _cursors, tasks, ...visible } = bot;
@@ -1136,11 +1166,15 @@ function clientBot(bot: BotRecord | null) {
       // reading as idle in one place and blocked in another, which is
       // exactly what a workflow gate used to do: it parks on a card with
       // no request behind it, so the old test here called it idle.
+      // A goal that is blocked waits on the person as much as a card
+      // does: nothing moves in that lane until they say something.
       const state = blockedOn(store.messagesFor(task.id), liveCards())
         ? "needs-you"
         : task.busy
           ? "working"
-          : "idle";
+          : task.goal?.status === "blocked"
+            ? "needs-you"
+            : "idle";
       // How full this lane is: the engine's own reading of its latest
       // request against the window it reported, where the engine the
       // agent is on now made one, and the table's limit otherwise. See
@@ -1178,6 +1212,10 @@ function clientBot(bot: BotRecord | null) {
           window: fill.window,
           summarised: Boolean(task.context),
         },
+        // what the lane keeps working toward, for the chip over the box
+        ...(task.goal ? { goal: goalSummary(task.goal, goalJudging.has(task.id)) } : {}),
+        // where a goal cannot be set at all, so no screen offers one
+        ...(laneGoalRefusal(task) ? { noGoals: true } : {}),
       };
     }),
   };
@@ -1518,6 +1556,12 @@ function wakeFor(payload: unknown): Wake | undefined {
   const owner = ownerClientDigest();
   const blok = p.threadId ? bloks.get(p.threadId) : null;
   const shared = blok?.sharing ? blok : null;
+
+  // a goal blocked on the person is as stopped as a question: the owner's,
+  // since goals are only ever set in the owner's own conversations
+  if (message.kind === "notice" && message.goal === "blocked") {
+    return owner ? { reason: "needs-you", clients: [owner], preview: true } : { reason: "needs-you", preview: true };
+  }
 
   if (message.kind === "options" && message.card?.requestId) {
     if (!owner) return { reason: "needs-you", preview: true };
@@ -2194,6 +2238,9 @@ bus.subscribe((event: RuntimeEvent) => {
     }
     case "turn.completed": {
       const command = commandTurns.has(event.threadId);
+      // a turn that failed on its length is asked again once it is folded
+      // (runtime.error above), so it is not over yet as far as a goal goes
+      const refolding = retriedForContext.has(event.threadId);
       usage.recordTurn(bot.id, event.providerInstanceId ?? event.provider, event.cost ?? null, undefined, event.ok !== false);
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
@@ -2371,6 +2418,15 @@ bus.subscribe((event: RuntimeEvent) => {
       freshIfAsked(event.threadId);
       drainSteer(event.threadId);
       closeIfAsked(event.threadId);
+      // after what waited has had its chance to go, since it goes first
+      goalTurnEnded(bot, event.threadId, {
+        ok: event.ok !== false,
+        stopReason: event.stopReason ?? null,
+        goesOn: pickingUp || handedOver || refolding,
+        inRoom,
+        command,
+        out: Boolean(loggedTurn.out),
+      });
       replyingTo.delete(event.threadId);
       // an agent that named someone else hands the room over to them, and
       // the person who started the chain is still the one who asked
@@ -2696,6 +2752,8 @@ function recoverCutOff(now = Date.now()) {
   telegramReturns.recover((laneId) => pickingUp.has(laneId));
   recoverQueued(now, pickingUp);
   for (const turn of picked) carryOn(turn, "restart");
+  // after both, so a goal whose turn or next note is going on is left be
+  pauseStrandedGoals();
   // room lines that were waiting, for an agent mid-turn or for a drain,
   // go once the agent is free (after its pickup, when it has one)
   for (const botId of roomTags.agents()) drainRoomTags(botId);
@@ -3614,6 +3672,8 @@ async function startClaimedTurn(
   // HTTP request must never be the thing holding that open.
   if (command) commandTurns.add(task.id);
   store.setTaskBusy(task.id, true);
+  // a goal judged before this turn began is not judging this one
+  laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
   // the busy flag holds the lane from here
   if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
   turnStarted.set(task.id, Date.now());
@@ -8061,7 +8121,8 @@ function queueOnLane(
   options: {
     replyTo?: ReplyRef;
     from?: { botId: string; name: string };
-    via?: "webhook" | "watcher";
+    /** Not the person: a webhook, a watcher, or Bloks keeping a goal going. */
+    via?: "webhook" | "watcher" | "goal";
     routine?: Message["routine"];
     telegramReply?: TelegramReply;
     personal?: boolean;
@@ -8322,6 +8383,13 @@ async function sendUserMessage(
   // waiting behind a turn or not, it was said to this agent now
   const yours = Boolean(options.yours && !options.from);
   if (yours) withYou({ bot });
+  // A goal blocked on the person is waiting for exactly this: their
+  // answer. It goes on once the turn that hears it ends, judged as any
+  // turn is. One they paused stays paused; that was their decision.
+  if (yours && lane.goal?.status === "blocked") {
+    const { lastReason: _answered, ...goal } = lane.goal;
+    putGoal(bot.id, lane.id, { ...goal, status: "active" });
+  }
   if (laneWaits(lane)) {
     if (yours && options.steer) {
       const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo, personal: options.personal });
@@ -8433,6 +8501,10 @@ function drainSteer(threadId: string) {
       });
       broadcast({ kind: "message", threadId, message: notice });
     }
+    // a goal whose next turn was among them has nothing to go on with
+    if (waiting.some((id) => store.messagesFor(threadId).find((m) => m.id === id)?.via === "goal")) {
+      pauseGoal(bot.id, threadId, goalPausedNotice("unstarted", why), "its next turn could not start");
+    }
     drainRoomTags(entry.botId);
     closeIfAsked(threadId);
     return;
@@ -8482,7 +8554,270 @@ function drainSteer(threadId: string) {
       text: `Your queued message could not start a turn: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200)}`,
     });
     broadcast({ kind: "message", threadId, message: failure });
+    // nor does one whose next turn was refused
+    if (said.some((m) => m?.via === "goal")) {
+      pauseGoal(entry.botId, threadId, goalPausedNotice("unstarted", redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200)), "its next turn could not start");
+    }
   }).finally(() => { queueStarts.delete(threadId); drainSteer(threadId); });
+}
+
+// ── goals ──────────────────────────────────────────────────────────────
+// A lane can keep working toward a goal the person set, turn after turn,
+// until it is done, blocked or out of turns (server/goals.ts has the
+// rules and the words). This is where that meets the turns. When a turn
+// ends well the goal is judged, and the next turn goes in through the
+// lane's queue as a note from Bloks, so it waits behind anything already
+// waiting there, for a change card, a drain or an open editor, exactly as
+// anything else said to the lane would, and nothing here has to know
+// about any of those.
+
+/** Longest the judge's one question may take. The engines' own one-shot
+ * calls have shorter limits of their own; this is for one that has none. */
+const GOAL_JUDGE_MS = 2 * 60_000;
+
+/** Why a goal cannot be set in this lane, or null when it can. A goal
+ * runs turns as the owner's own, so never where somebody else's words
+ * are answered (a shared room's lane, strangers' mail), and never in a
+ * rehearsal, whose copy is applied or discarded as one piece of work. */
+function goalRefusal(bot: BotRecord, lane: TaskRecord): string | null {
+  if (bot.archivedAt) return archivedRefusal(bot).message;
+  const hold = wheel.heldBy(bot.id);
+  if (hold) return heldRefusal(hold, bot.name);
+  return laneGoalRefusal(lane);
+}
+
+/** The part of goalRefusal that is about the lane itself and never
+ * changes, which every screen is told so none offers a goal there. */
+function laneGoalRefusal(lane: TaskRecord): string | null {
+  if (lane.guestMail) return "This conversation answers mail from people you have not listed, so it does not take goals.";
+  if (isSharedLane(lane.id)) return "This conversation belongs to a shared room, so it does not take goals.";
+  if (rehearsals.forTask(lane.id)) return "A rehearsal does not take goals. Set one in an ordinary conversation.";
+  return null;
+}
+
+/** Where a goal's check runs: the folder the lane's turns run in. */
+function laneFolder(bot: BotRecord, lane: TaskRecord): string {
+  const project = projects.forAgent(bot.id);
+  const folder = lane.cwd ?? bot.cwd ?? (project ? workingFolder(standingOf(project)) : null);
+  return folder && existsSync(folder) ? folder : workspace.ensureWorkspace(bot.id);
+}
+
+/** A lane's goal, changed, and every screen told. */
+function putGoal(botId: string, laneId: string, goal: Goal | undefined) {
+  store.setTaskGoal(laneId, goal);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
+}
+
+/** Something about the goal, said in its lane for the person to read. */
+function goalNotice(laneId: string, text: string, goal: NonNullable<Message["goal"]>) {
+  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, goal });
+  broadcast({ kind: "message", threadId: laneId, message: notice });
+}
+
+/** Sets a lane's goal, replacing any it had, and queues its first turn,
+ * which goes after a turn already running there as anything said to the
+ * lane would. */
+function startGoal(bot: BotRecord, lane: TaskRecord, input: GoalInput): Goal {
+  const refused = goalRefusal(bot, lane);
+  if (refused) throw Object.assign(new Error(refused), { status: 409 });
+  const goal: Goal = {
+    text: input.text,
+    ...(input.check ? { check: input.check } : {}),
+    budget: input.budget,
+    turns: 0,
+    status: "active",
+    startedAt: Date.now(),
+  };
+  putGoal(bot.id, lane.id, goal);
+  goalNotice(lane.id, goalSetNotice(goal), "set");
+  queueGoalTurn(bot.id, lane.id, firstGoalNote(goal));
+  return store.taskByThread(lane.id)?.task.goal ?? goal;
+}
+
+/**
+ * The next turn toward a lane's goal. Counted before it is queued, so the
+ * budget holds whatever becomes of the turn, and never once it is spent.
+ * Written into the lane as a note from Bloks (`via: "goal"`), never as
+ * the person's words: it names no skill, runs no engine command, and a
+ * chain of agents' messages keeps the place of the turn it follows, so a
+ * goal cannot carry one past its cap.
+ */
+function queueGoalTurn(botId: string, laneId: string, note: string | ((goal: Goal) => string)) {
+  const goal = store.taskByThread(laneId)?.task.goal;
+  if (!goal || goal.status !== "active" || goal.turns >= goal.budget) return;
+  const counted: Goal = { ...goal, turns: goal.turns + 1 };
+  putGoal(botId, laneId, counted);
+  const chain = agentChain.get(laneId);
+  queueOnLane(botId, laneId, typeof note === "string" ? note : note(counted), { via: "goal", ...(chain ? { chain } : {}) });
+  drainSteer(laneId);
+}
+
+/** Takes back a goal's next turn that has not gone yet (waiting for a
+ * change card, say) when the person pauses, replaces or clears the goal:
+ * a turn toward a goal they just stopped is the pause not working. The
+ * turn it was counted as is given back. */
+function withdrawGoalNotes(botId: string, laneId: string) {
+  let taken = 0;
+  for (const m of store.messagesFor(laneId)) {
+    if (m.via !== "goal" || !m.queued || m.deleted) continue;
+    const patched = store.patchMessage(laneId, m.id, { deleted: true, text: "" });
+    if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+    taken++;
+  }
+  const goal = store.taskByThread(laneId)?.task.goal;
+  if (taken && goal) putGoal(botId, laneId, { ...goal, turns: Math.max(0, goal.turns - taken) });
+}
+
+/** The goal stops going on by itself until the person resumes it, and a
+ * next turn already queued for it is taken back with it. */
+function pauseGoal(botId: string, laneId: string, notice: string, reason: string) {
+  if (store.taskByThread(laneId)?.task.goal?.status !== "active") return;
+  withdrawGoalNotes(botId, laneId);
+  const goal = store.taskByThread(laneId)?.task.goal;
+  if (!goal) return;
+  putGoal(botId, laneId, { ...goal, status: "paused", lastReason: reason });
+  goalNotice(laneId, notice, "paused");
+}
+
+/**
+ * The person resumes a goal: paused, blocked, or out of turns once they
+ * have given it more. Its next turn is queued straight away, told that
+ * the person resumed it, since whatever stopped it may be sorted now and
+ * judging the old reply again would only stop it on the same words.
+ */
+function resumeGoal(bot: BotRecord, lane: TaskRecord, budget?: number): Goal {
+  const goal = lane.goal;
+  if (!goal) throw Object.assign(new Error("this conversation has no goal"), { status: 404 });
+  const refused = goalRefusal(bot, lane);
+  if (refused) throw Object.assign(new Error(refused), { status: 409 });
+  if (goal.status === "done") throw Object.assign(new Error("this goal is done. Set a new one to keep going."), { status: 409 });
+  const next: Goal = { ...goal, ...(budget ? { budget } : {}) };
+  if (next.turns >= next.budget) {
+    throw Object.assign(new Error(`this goal has used its ${next.budget} turns. Give it more to keep going.`), { status: 409 });
+  }
+  const wasActive = goal.status === "active";
+  delete next.lastReason;
+  putGoal(bot.id, lane.id, { ...next, status: "active" });
+  if (!wasActive) queueGoalTurn(bot.id, lane.id, (g) => nextGoalNote(g, "Pick up where you left off.", null, true));
+  return store.taskByThread(lane.id)?.task.goal ?? next;
+}
+
+/**
+ * A turn ended in a lane: whether its goal goes on. A turn that will be
+ * picked up again, handed to a backup or asked again after a fold is not
+ * over yet. One of the goal's own lane that was stopped or failed pauses
+ * it. Otherwise the goal is judged, unless something else waits for the
+ * lane, which goes first and is judged when it ends: the person's words
+ * never wait for a goal. A room's turn in the lane, or an engine command,
+ * is not the goal's work, and how it went says nothing about the goal;
+ * but it took the lane between two of the goal's turns, so the goal is
+ * judged after it, on the lane's own last reply, rather than left with
+ * nothing to start its next turn.
+ */
+function goalTurnEnded(
+  bot: BotRecord,
+  laneId: string,
+  ended: { ok: boolean; stopReason: string | null; goesOn: boolean; inRoom: boolean; command: boolean; out: boolean },
+) {
+  const goal = store.taskByThread(laneId)?.task.goal;
+  if (!goal || goal.status !== "active" || ended.goesOn) return;
+  if (!ended.ok && !ended.inRoom && !ended.command) {
+    if (ended.stopReason === "interrupted") pauseGoal(bot.id, laneId, goalPausedNotice("stopped"), "the turn was stopped");
+    else pauseGoal(bot.id, laneId, goalPausedNotice("failed", ended.out ? "its engine is out" : undefined), "the last turn did not finish");
+    return;
+  }
+  if (steerQueues.has(laneId) || queueStarts.has(laneId) || claimedLanes.has(laneId)) return;
+  void judgeGoal(bot.id, laneId).catch((e) => console.error(`[bloks] a goal could not be judged: ${e instanceof Error ? e.message : String(e)}`));
+}
+
+/**
+ * Whether a lane's goal is met, and what follows. The check runs first,
+ * in the lane's folder, then the agent's own engine is asked once, with
+ * the goal, the turn's last reply and what the check said; with no small
+ * model, or an answer that is not a verdict, the check and the agent's
+ * own last line decide (fallbackVerdict). Whatever comes back is acted
+ * on only if it is still the same goal, still active, and the lane is
+ * quiet: anything that started or waits meanwhile is judged when it ends.
+ */
+async function judgeGoal(botId: string, laneId: string): Promise<void> {
+  const found = store.taskByThread(laneId);
+  const goal = found?.task.goal;
+  if (!found || !goal || goal.status !== "active" || goalJudging.has(laneId)) return;
+  const seq = laneTurns.get(laneId) ?? 0;
+  const reply = finalReply(store.messagesFor(laneId));
+  goalJudging.add(laneId);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
+  let check: GoalCheck | null = null;
+  let verdict: Verdict | null = null;
+  try {
+    if (goal.check) {
+      // the person's own command, so a shell, as a watcher's check runs:
+      // its own process group, stopped whole at the limit, output capped
+      const ran = await runCheck(goal.check, laneFolder(found.bot, found.task), checkEnv(), GOAL_CHECK_TIMEOUT_MS, { tail: true });
+      check = {
+        command: goal.check,
+        code: ran.code,
+        timedOut: ran.timedOut,
+        output: [ran.output, ran.errors].filter((part) => part.trim()).join("\n"),
+      };
+    }
+    // the engine the agent is on, as a fold uses: what the turn said
+    // goes nowhere it was not already going
+    const instance = registry.get(found.bot.modelSelection.instanceId);
+    if (instance?.generateText) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<string>((done) => {
+        timer = setTimeout(() => done(""), GOAL_JUDGE_MS);
+        timer.unref?.();
+      });
+      const answer = await Promise.race([instance.generateText(judgePrompt(goal, reply, check)).catch(() => ""), late]);
+      clearTimeout(timer);
+      verdict = parseVerdict(answer);
+    }
+  } finally {
+    goalJudging.delete(laneId);
+  }
+  const now = store.taskByThread(laneId);
+  const current = now?.task.goal;
+  const same = Boolean(current && current.status === "active" && current.startedAt === goal.startedAt);
+  const quiet = Boolean(
+    now && !now.task.busy && (laneTurns.get(laneId) ?? 0) === seq &&
+      !claimedLanes.has(laneId) && !queueStarts.has(laneId) && !steerQueues.has(laneId) &&
+      !steerAttempts.has(laneId) && !beingEdited.has(laneId),
+  );
+  if (!current || !same || !quiet) {
+    broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
+    return;
+  }
+  const step = decideGoal(current, verdict ?? fallbackVerdict(reply, check), check);
+  if (step.kind === "continue") {
+    putGoal(botId, laneId, { ...current, ...(step.reason ? { lastReason: step.reason } : {}) });
+    queueGoalTurn(botId, laneId, (counted) => nextGoalNote(counted, step.next, check));
+    return;
+  }
+  putGoal(botId, laneId, { ...current, status: step.kind, lastReason: step.reason });
+  if (step.kind === "done") goalNotice(laneId, goalDoneNotice(step.reason, current.turns), "done");
+  else if (step.kind === "blocked") goalNotice(laneId, goalBlockedNotice(step.reason), "blocked");
+  else goalNotice(laneId, goalOutNotice(current, step.reason), "out");
+  // where it ended up is news in the lane, whichever one is on screen
+  store.markLane(botId, laneId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });
+}
+
+/**
+ * After a restart, a goal still active with nothing running or waiting in
+ * its lane was between turns when Bloks stopped: the judge that would
+ * have started the next one did not survive. It is paused rather than
+ * judged again unattended, and says so. One whose turn is being picked
+ * up, or whose next note waited on disk, goes on by itself.
+ */
+function pauseStrandedGoals() {
+  for (const bot of store.bots) {
+    for (const lane of bot.tasks) {
+      if (lane.goal?.status !== "active" || laneWaits(lane)) continue;
+      pauseGoal(bot.id, lane.id, goalPausedNotice("restart"), "Bloks restarted between its turns");
+    }
+  }
 }
 
 /** Per-agent hop depth for the current chain of agent-to-agent turns. */
@@ -10153,6 +10488,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const to = store.bot(m[1]);
         if (to) taskId = mainLaneOf(to).id;
       }
+      // `/goal` is Bloks' own, not the engine's: it sets the lane's goal
+      // and never reaches an engine, where a command of the same name
+      // would run as one. Only the person's: an agent may read its goal
+      // but not set one, and its words to another are only words.
+      const asked = asAgent ? null : parseGoalCommand(text);
+      if (asked) {
+        if ("error" in asked) return json(res, 400, { error: asked.error });
+        const bot = store.bot(m[1]);
+        if (!bot) return json(res, 404, { error: "no such agent" });
+        const lane = bot.tasks.find((t) => t.id === (taskId ?? activeLaneOf(bot)));
+        if (!lane) return json(res, 404, { error: "no such task" });
+        withYou({ bot });
+        const goal = startGoal(bot, lane, asked);
+        return json(res, 202, { ok: true, goal: goalSummary(goal), taskId: lane.id, lane: lane.title });
+      }
       // Another agent writing: the recipient's chat says who it was from,
       // and the sender's own conversation keeps a record of sending it,
       // with whether it went, waited, or was refused.
@@ -11398,6 +11748,55 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, { ok: true, fresh: "now" });
     }
 
+    // A conversation's goal (server/goals.ts): set, paused, resumed, given
+    // more turns, or cleared. The person's alone: an agent reads its own
+    // with GET /api/agent/goal and never sets one, since a goal starts
+    // turns unattended and can run a command on this computer.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/goal$/);
+    if (m && (method === "GET" || method === "PUT" || method === "PATCH" || method === "DELETE")) {
+      if (asAgent) return json(res, 403, { error: "a goal is the person's to set. Read your own with `bloks goal`." });
+      const bot = store.bot(m[1]);
+      const lane = bot?.tasks.find((t) => t.id === m![2]);
+      if (!bot || !lane) return json(res, 404, { error: "no such task" });
+      if (method === "GET") return json(res, 200, { goal: lane.goal ? goalSummary(lane.goal, goalJudging.has(lane.id)) : null });
+      if (method === "DELETE") {
+        withdrawGoalNotes(bot.id, lane.id);
+        putGoal(bot.id, lane.id, undefined);
+        return json(res, 200, { ok: true, goal: null });
+      }
+      const body = await readBody(req);
+      if (method === "PUT") {
+        const input = goalInput(body);
+        if ("error" in input) return json(res, 400, { error: input.error });
+        withdrawGoalNotes(bot.id, lane.id);
+        const goal = startGoal(bot, lane, input);
+        return json(res, 200, { ok: true, goal: goalSummary(goal) });
+      }
+      // PATCH: pause, resume, or a new number of turns
+      if (!lane.goal) return json(res, 404, { error: "this conversation has no goal" });
+      let budget: number | undefined;
+      if (body.budget !== undefined) {
+        const read = goalInput({ text: lane.goal.text, budget: body.budget });
+        if ("error" in read) return json(res, 400, { error: read.error });
+        budget = read.budget;
+      }
+      if (body.status === "paused") {
+        if (lane.goal.status !== "active") return json(res, 409, { error: "only a goal that is going can be paused" });
+        if (budget) putGoal(bot.id, lane.id, { ...lane.goal, budget });
+        pauseGoal(bot.id, lane.id, goalPausedNotice("you"), "you paused it");
+      } else if (body.status === "active") {
+        resumeGoal(bot, lane, budget);
+      } else if (body.status !== undefined) {
+        return json(res, 400, { error: 'status is "paused" or "active"' });
+      } else if (budget) {
+        putGoal(bot.id, lane.id, { ...lane.goal, budget });
+      } else {
+        return json(res, 400, { error: "say what to change: status or budget" });
+      }
+      const goal = store.taskByThread(lane.id)?.task.goal;
+      return json(res, 200, { ok: true, goal: goal ? goalSummary(goal, goalJudging.has(lane.id)) : null });
+    }
+
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/clear$/);
     if (m && method === "POST") {
       const outcome = store.clearTask(m[1], m[2]);
@@ -11586,6 +11985,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           ? body.taskId
           : bot.threadId;
       cutOff.stop(laneId);
+      // The person stopping a lane's turn stops its goal too, whichever
+      // turn it was: a goal that started the next one as soon as this
+      // ended would be the Stop not working. Before the interrupt, so
+      // the turn's end finds it paused and says nothing more.
+      if (store.taskByThread(laneId)?.task.goal?.status === "active" && store.taskByThread(laneId)?.task.busy) {
+        pauseGoal(bot.id, laneId, goalPausedNotice("stopped"), "you stopped the turn");
+      }
       await laneInstance(bot, laneId)?.adapter.interruptTurn(laneId);
       return json(res, 200, { ok: true });
     }
@@ -13222,6 +13628,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         taskId: asAgent.taskId,
         fingerprint: fingerprintFor(asAgent.botId),
         can: capabilities(),
+      });
+    }
+    // The goal of the conversation this turn runs in, for `bloks goal`.
+    // Read only: the credential names its lane, so there is nothing to
+    // ask for but this, and setting one is the person's (see the goal
+    // routes above). The check is said as what counts as done, the way
+    // every goal note says it.
+    if (method === "GET" && path === "/api/agent/goal") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const goal = store.taskByThread(asAgent.taskId)?.task.goal;
+      if (!goal) return json(res, 200, { goal: null, note: "This conversation has no goal. Only the person sets one." });
+      return json(res, 200, {
+        goal: {
+          text: goal.text,
+          status: goal.status,
+          turn: goal.turns,
+          budget: goal.budget,
+          ...(goal.check ? { doneWhen: `\`${goal.check}\` exits 0 in this folder` } : {}),
+          ...(goal.lastReason ? { lastReason: goal.lastReason } : {}),
+        },
       });
     }
 
