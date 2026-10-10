@@ -44,6 +44,7 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
+import { EngineProcesses } from "./engine-processes.ts";
 
 export interface AcpSpec {
   kind: string;
@@ -387,6 +388,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         asks: Map<string, (behavior: string, message?: string) => void>;
       }
       const active = new Map<string, Turn>();
+      /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
+      const engines = new EngineProcesses();
 
       // replaced the first time an agent tells us what it serves
       const models: ModelCatalog = { default: spec.models.default, options: [...spec.models.options] };
@@ -466,6 +469,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           windowsHide: true,
           windowsVerbatimArguments: launch.windowsVerbatimArguments,
         });
+        engines.add(child);
 
         // `banner` is pi-acp's startup listing, which it also sends as an
         // ordinary agent message (see handleUpdate).
@@ -1063,6 +1067,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         dispose: async () => {
           for (const { stop } of active.values()) stop();
           listeners.clear();
+          await engines.end();
         },
       };
     },

@@ -72,6 +72,7 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
+import { EngineProcesses } from "./engine-processes.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
 const sessionCosts = new SessionCosts();
@@ -291,6 +292,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * next turn's (which has never heard of it). Each is closed when its
      * process exits. */
     const afterTurn = new Map<string, Set<AskBroker>>();
+    /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
+    const engines = new EngineProcesses();
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -549,6 +552,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         detached: OWN_GROUP,
         windowsHide: true,
       });
+      engines.add(child);
 
       let finished = false;
       let exited = false;
@@ -1134,6 +1138,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       dispose: async () => {
         for (const turn of running.values()) turn.abort();
         listeners.clear();
+        await engines.end();
       },
     };
   },

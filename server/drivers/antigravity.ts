@@ -36,6 +36,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { OWN_GROUP } from "../no-console.ts";
+import { EngineProcesses } from "./engine-processes.ts";
 
 const DRIVER_KIND = "antigravity";
 
@@ -117,6 +118,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
     const running = new Map<string, { turnId: string; abort: () => void }>();
+    /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
+    const engines = new EngineProcesses();
 
     // Whether this agy takes its prompt on stdin (1.1.15 and later), asked
     // of the CLI once. A version it does not print plainly is taken to be
@@ -190,6 +193,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         detached: OWN_GROUP,
         windowsHide: true,
       });
+      engines.add(child);
       // The turn as one line, then the end of input: agy answers it and
       // exits. An older agy reads nothing here and gets the end at once.
       // A process that died at once closes its end first; its exit says why.
@@ -397,6 +401,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       dispose: async () => {
         for (const turn of running.values()) turn.abort();
         listeners.clear();
+        await engines.end();
       },
     };
   },

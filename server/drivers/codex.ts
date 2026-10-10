@@ -38,6 +38,7 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
+import { EngineProcesses } from "./engine-processes.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -345,6 +346,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       asks: Map<string, Answer>;
     }
     const running = new Map<string, RunningTurn>();
+    /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
+    const engines = new EngineProcesses();
     // Busy transitions and several open windows share a short menu
     // read. A different folder or engine never borrows another's rows.
     const skillCatalogs = new Map<string, { at: number; result: Promise<CodexSkill[] | null> }>();
@@ -416,6 +419,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         detached: OWN_GROUP,
         windowsHide: true,
       });
+      engines.add(child);
 
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
@@ -1119,6 +1123,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         skillCatalogs.clear();
         for (const turn of running.values()) turn.abort();
         listeners.clear();
+        await engines.end();
       },
     };
   },
