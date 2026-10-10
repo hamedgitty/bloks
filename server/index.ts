@@ -4543,6 +4543,8 @@ async function securityReport() {
     email: { enabled: Boolean(cfg.chat?.email?.enabled && cfg.chat.email.id), allowFrom: mailAllowList().length },
     rooms: bloks.bloks.filter((b) => b.sharing).map((b) => ({ id: b.id, name: b.name, ownerTools: toolsOf(b.sharing!.ownerTools) })),
     secrets: Object.keys(cfg.secrets ?? {}).sort(),
+    // the daily backup (server/backup.ts), which is on unless switched off
+    backups: { auto: cfg.backups?.auto !== false },
     files: process.platform === "win32" ? null : filePermissions(DATA_DIR),
     webhooks: webhooks.hooks.filter((h) => h.enabled).length,
     signedOut,

@@ -278,6 +278,16 @@ process.stdin.on("data", async function take(c) {
     return { h, home, runsSoFar };
   }
 
+  test("switching the daily backup off is a finding, and on again clears it", async (t) => {
+    const { h } = await fixture(t);
+    const backups = async () => (await h.json("/api/security")).findings.find((f: any) => f.id === "backups");
+    assert.equal((await backups())?.level ?? "ok", "ok");
+    assert.equal((await h.fetch("/api/backups/settings", { method: "PUT", body: JSON.stringify({ auto: false }) })).status, 200);
+    assert.equal((await backups())?.level, "look", "automatic backups switched off went unmentioned");
+    await h.fetch("/api/backups/settings", { method: "PUT", body: JSON.stringify({ auto: true }) });
+    assert.equal((await backups())?.level ?? "ok", "ok");
+  });
+
   test("the checkup reads this workspace, and its fixes work", async (t) => {
     const { h, home } = await fixture(t);
     const report = async () => {
