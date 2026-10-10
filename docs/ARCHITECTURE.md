@@ -766,6 +766,34 @@ size or time moves, and a link is never read through. `IndexCache` holds
 them all to a budget of three million postings, a few bytes each, letting
 the least recently searched go first; a test indexes 30,000 messages and
 answers in well under a second.
+
+Recall also runs before the person's own turn in one of an agent's
+conversations (`recallAhead` in `server/index.ts`): never in a room,
+shared or not, nor for a stranger's mail, another agent, a routine, a
+watcher, a native command, a rehearsal, or a turn going on with an earlier
+one (a pickup, a backup engine, a retry). It searches the agent's other
+conversations and its memory topic files with the person's words; not
+MEMORY.md, which the standing prompt carries, and not the conversation it
+is in. A hit has to share at least two of the words, hold at least 45% of
+what makes them particular (their words, each weighted by how rare it is)
+and score at least 4.5, which is about two telling words in a history of
+any size; a message of fewer than two words worth matching is not looked
+up at all. Up to three excerpts of about 500 characters each, each with
+where and when it was said and by whom, go ahead of the person's words in
+the turn's text, in a block that says they were found by matching words
+and may be ignored. Never in the system prompt, so a resumed Claude Code
+session keeps reading its cache (see Compactions). Nothing the
+conversation's last forty messages were already given, or already say, is
+given again. The person's message keeps what was added as `recalled`
+(where, when, who, the excerpt), which the chat shows as "Recalled 2
+notes" under it; GET `/api/bots` leaves it out for an agent's credential,
+since it came from the agent's other conversations. Words that waited for
+a turn are looked up together and the last of them keeps the notes. An
+engine that is told the transcript each turn hears the notes once, with
+the message they came with, since the transcript replays what was said.
+It is on unless turned off, for one agent (`recallBeforeTurn`, in its
+settings under Memory) or for the workspace (`recall.beforeTurn`, Settings,
+General).
 `server/profile-notes.ts` holds suggested and kept notes about the
 person; agents suggest with `note` or `note_about_person` (three a turn),
 only kept notes reach the prompt, and never in a shared room.

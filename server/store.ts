@@ -97,6 +97,24 @@ export interface AgentNote {
   status?: "sent" | "queued" | "failed";
 }
 
+/** One note recall added to a turn (Message.recalled). */
+export interface RecalledNote {
+  kind: "conversation" | "room" | "memory";
+  /** The conversation or room it came from, and the message. A memory
+   * note names its file instead. */
+  threadId?: string;
+  messageId?: string;
+  memory?: string;
+  /** Where, as the person calls it: a conversation's title, a room's
+   * name, a memory file's name. */
+  where: string;
+  at: number;
+  /** Who said it, for a note from a conversation. */
+  who?: string;
+  /** The excerpt, as the agent was given it. */
+  text: string;
+}
+
 export interface Message {
   /** Between two agents rather than with the person; see AgentNote. */
   agent?: AgentNote;
@@ -201,6 +219,11 @@ export interface Message {
   carryOn?: { laneId: string; done?: boolean };
   /** When this message was last edited. Absent means never. */
   editedAt?: number;
+  /** What recall found in the agent's other conversations and memory
+   * files and added to the turn this message started, in the turn's own
+   * words and never its standing prompt. Only on the person's own message
+   * in an agent's conversation, and never shown to another agent. */
+  recalled?: RecalledNote[];
   /** Taken back. The row stays so replies pointing at it still make
    * sense and the transcript keeps its shape, but the words are gone
    * and no engine sees it again. */
@@ -382,6 +405,9 @@ export interface BotRecord {
    * agent's turns: a plugin's session-start text otherwise arrives in the
    * agent's context, where it reads like an injected instruction. */
   engineHooks?: boolean;
+  /** False stops recall before this agent's turns (the workspace switch
+   * is `recall.beforeTurn` in config.json). Unset is on. */
+  recallBeforeTurn?: boolean;
   /** Components this agent may not answer with. By exclusion rather than
    * by grant: withholding one from one agent should not touch anybody
    * else, and a list of everything permitted goes stale as the gallery

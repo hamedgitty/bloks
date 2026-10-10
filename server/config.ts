@@ -165,6 +165,10 @@ export interface AppConfig {
    * Bloks stops the turn, in minutes; 0 is never. Unset is the default
    * in server/drivers/stall.ts. */
   turns?: { stallMinutes?: number };
+  /** Whether an agent is reminded, before the person's turn, of what it
+   * said elsewhere that matches. Unset is on; each agent can also turn it
+   * off for itself (BotRecord.recallBeforeTurn). */
+  recall?: { beforeTurn?: boolean };
   /** What every new agent starts with, whoever hires it. Without this an
    * agent's first chat pins to its own workspace before anybody can
    * point it elsewhere. A missing key keeps the built-in start: its own
@@ -289,6 +293,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
     "compaction",
     "skills",
     "turns",
+    "recall",
     "telegram",
     "chat",
     "brief",

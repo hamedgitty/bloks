@@ -59,7 +59,7 @@ import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.t
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile, type TaskRecord } from "./store.ts";
+import { MAX_TASKS, Store, type AgentNote, type BotRecord, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
 import { addressees, BlokStore, currentSpend, MAX_MEMBERS, type BlokRecord, type RoomSharing } from "./bloks.ts";
 import { cleanSectionOrder, placeAt, SidebarStore, sidebarView, upgradePlaces, type Placed } from "./sidebar.ts";
 import { extractTeamPlan, MAX_HIRES, normalizePlan, TEAM_PROTOCOL, type TeamPlan } from "./teams.ts";
@@ -293,7 +293,7 @@ import { standingFor, type Standing, type StandingRecord } from "./standing-prom
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
-import { indexMemory, indexMessages, recallFrom, recallText, searchableText, type IndexedSource, type RecallMessage, type Speaker } from "./recall.ts";
+import { indexMemory, indexMessages, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
 import { IndexCache, type TermIndex } from "./recall-index.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
 import { briefDue, composeBrief, parseBriefTime, type Brief, type BriefWaiting } from "./brief.ts";
@@ -3502,6 +3502,43 @@ async function startClaimedTurn(
   if (checkIn) checkInTurns.add(task.id);
   else checkInTurns.delete(task.id);
 
+  // What the agent said elsewhere that bears on what the person just
+  // said (recallAhead), found before their words are written so the
+  // message carries the notes it was given. Only the person's own turn in
+  // one of the agent's own conversations: not a room, shared or not, not
+  // a stranger's mail, another agent, a routine, a native command or a
+  // rehearsal, and not a turn going on with an earlier one, which already
+  // had its chance.
+  const recallWanted =
+    opts.byYou === true &&
+    opts.personal !== false &&
+    !opts.from &&
+    !opts.routine &&
+    !opts.rehearsal &&
+    !opts.carriedOn &&
+    !opts.fallback &&
+    !opts.retry &&
+    !command &&
+    !blok &&
+    !sharing &&
+    !guestMail &&
+    !task.guestMail &&
+    (opts.requester ?? "owner") === "owner" &&
+    cfg.recall?.beforeTurn !== false &&
+    bot.recallBeforeTurn !== false;
+  // Words that waited for a turn are already written; the person's own
+  // among them are what is looked for, and the last of them keeps the notes.
+  const waited = recallWanted && opts.presetMessage
+    ? store.messagesFor(task.id).filter((m) => opts.personalMessages?.includes(m.id) && m.role === "user" && m.kind === "text" && !m.deleted && !m.agent && !m.via)
+    : [];
+  const recalledAhead = recallWanted
+    ? recallAhead(bot, task.id, opts.presetMessage ? waited.map((m) => m.text ?? "").join("\n") : text)
+    : null;
+  if (recalledAhead && waited.length) {
+    const patched = store.patchMessage(task.id, waited[waited.length - 1].id, { recalled: recalledAhead.notes });
+    if (patched) broadcast({ kind: "message.patch", threadId: task.id, message: patched });
+  }
+
   // In a room the prompt already carries the labelled history, and the
   // triggering message is already on the record; only a solo chat writes
   // the user turn here.
@@ -3510,6 +3547,7 @@ async function startClaimedTurn(
       role: "user",
       kind: "text",
       text,
+      ...(recalledAhead ? { recalled: recalledAhead.notes } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
       ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
@@ -3961,6 +3999,10 @@ async function startClaimedTurn(
       let turnText = !command && opts.replyTo
         ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
         : text;
+      // In the turn's words, ahead of the person's, and never in the
+      // system prompt, which a resumed session keeps byte for byte for
+      // its cache (server/standing-prompt.ts).
+      if (recalledAhead) turnText = `${recalledAhead.block}\n\n${turnText}`;
 
       // The story a new session is told is bounded, by the window of the
       // engine about to hear it (its own word when it has measured this
@@ -5048,6 +5090,67 @@ function recallFor(bot: BotRecord, query: string, laneId?: string | null, limit 
   const hits = recallFrom(query, sources, speakerFor(bot), { limit });
   recallDone(sources);
   return hits;
+}
+
+/** What recall before a turn may add at most: three excerpts of about
+ * five hundred characters each, about 1,500 in all, found by a hit that
+ * shares at least two of the person's words and holds at least this
+ * share of what makes them particular (their words, each weighted by how
+ * rare it is in the agent's past), and scores at least this much. */
+const RECALL_AHEAD = { notes: 3, chars: 500, recent: 40, strength: 0.45, score: 4.5 };
+
+const flatWords = (text: string) => text.replace(/[…\s]+/g, " ").trim().toLowerCase();
+
+/**
+ * Before the person's own turn in one of an agent's conversations, the
+ * best of what was said in the agent's other conversations, or kept in
+ * its memory topic files, that matches what the person just said. Not
+ * MEMORY.md, which the standing prompt already carries, and not this
+ * conversation, which the agent already has.
+ *
+ * Conservative on purpose: a note that is beside the point costs the
+ * agent attention and the person trust, so nothing comes back unless it
+ * clears the bar in RECALL_AHEAD, and nothing the agent was given in this
+ * conversation's recent messages, or that those messages already say,
+ * is given again.
+ */
+function recallAhead(bot: BotRecord, laneId: string, words: string): { notes: RecalledNote[]; block: string } | null {
+  if (termsOf(words).length < 2) return null;
+  const sources = recallSources(bot, laneId, { memory: "topics", except: laneId });
+  if (!sources.length) return null;
+  const recent = store.messagesFor(laneId).slice(-RECALL_AHEAD.recent);
+  const told = new Set(recent.flatMap((m) => (m.recalled ?? []).flatMap((note) => [`${note.threadId ?? note.memory}/${note.messageId}`, flatWords(note.text)])));
+  const said = [...recent.filter((m) => !m.deleted && m.text).map((m) => flatWords(m.text!)), flatWords(words)];
+  const hits = recallFrom(words, sources, speakerFor(bot), {
+    limit: RECALL_AHEAD.notes * 2,
+    need: () => 2,
+    minStrength: RECALL_AHEAD.strength,
+    minScore: RECALL_AHEAD.score,
+    excerpt: RECALL_AHEAD.chars,
+    skip: (source, doc) => told.has(`${source.memory ?? source.threadId}/${doc.id}`),
+  })
+    .filter((hit) => {
+      const core = flatWords(hit.text);
+      return !told.has(core) && !said.some((line) => line.includes(core));
+    })
+    .slice(0, RECALL_AHEAD.notes);
+  recallDone(sources);
+  if (!hits.length) return null;
+  const places = new Map(sources.map((source) => [source.threadId, source.place]));
+  const notes = hits.map((hit): RecalledNote => {
+    const place = places.get(hit.threadId)!;
+    return hit.memory
+      ? { kind: "memory", memory: hit.memory, messageId: hit.messageId, where: place.label, at: hit.at, text: hit.text }
+      : { kind: place.kind, threadId: hit.threadId, messageId: hit.messageId, where: place.label, at: hit.at, who: noteWho(bot, hit), text: hit.text };
+  });
+  return { notes, block: recallBlock(hits) };
+}
+
+/** Who said a recalled line, as the person reads it under their message. */
+function noteWho(bot: BotRecord, hit: RecallHit): string {
+  if (hit.by === "person") return "You";
+  if (hit.by === "self") return bot.name;
+  return hit.who;
 }
 
 /** Who said a message, as recall reports it. A message another agent
@@ -8949,6 +9052,9 @@ function configStatus() {
     // off unless asked for: reading a session back spends tokens on work
     // nobody requested, and what it finds is staged rather than installed
     skills: { propose: Boolean(cfg.skills?.propose) },
+    // on unless turned off: notes from an agent's other conversations
+    // ahead of the person's turn (recallAhead)
+    recall: { beforeTurn: cfg.recall?.beforeTurn !== false },
     // how long a silent tool call may hold a turn, in minutes; 0 is never
     turns: { stallMinutes: stallLimitMs() / 60_000 },
     // not a secret: a folder, a mode and a model, for the settings form
@@ -10077,7 +10183,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const zero = tail >= 0 && tail < 1;
       const trim = (list: Message[]) =>
         Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
-      const lists = store.bots.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)));
+      // What recall gave an agent came from its other conversations, which
+      // another agent reading this one's chat has no business seeing.
+      const lists = store.bots.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)))
+        .map((list) => asAgent ? list.map(({ recalled: _recalled, ...message }) => message) : list);
       // Through Bloks Cloud the cut is made from the whole conversation, so
       // what stayed behind counts every older message, not only those past
       // a list already trimmed to the tail; a client pages back by it.
@@ -10432,6 +10541,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           return json(res, 400, { error: "engineHooks must be true or false" });
         }
         patch.engineHooks = body.engineHooks;
+      }
+      if (body.recallBeforeTurn !== undefined) {
+        if (typeof body.recallBeforeTurn !== "boolean") {
+          return json(res, 400, { error: "recallBeforeTurn must be true or false" });
+        }
+        patch.recallBeforeTurn = body.recallBeforeTurn;
       }
       if (body.speakReplies !== undefined) {
         if (typeof body.speakReplies !== "boolean") {
@@ -15204,6 +15319,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             return json(res, 400, { error: `stallMinutes is one of ${STALL_CHOICES.join(", ")} (0 is never)` });
           }
           Object.assign(cfg, saveConfig({ turns: { stallMinutes: minutes as number } }));
+          wroteSomething = true;
+        }
+      }
+      if (body.recall && typeof body.recall === "object" && !Array.isArray(body.recall)) {
+        const beforeTurn = (body.recall as Record<string, unknown>).beforeTurn;
+        if (typeof beforeTurn === "boolean") {
+          Object.assign(cfg, saveConfig({ recall: { beforeTurn } }));
           wroteSomething = true;
         }
       }
