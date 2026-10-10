@@ -100,6 +100,9 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `events/`, `native/` | Canonical events, and raw provider traffic |
 | `checkpoints/` | Content-addressed file versions, one photograph per folder, and the undo records |
 
+Backups of all of it go beside it, never in it: `~/.bloks-backups`, one
+file each (see Backups and restore).
+
 A store writes its whole file on every change. Where losing that file
 would hurt (agents, transcripts, rooms, config and the like) the write
 goes through `server/atomic-write.ts`: to a file beside it, flushed, then
@@ -363,6 +366,64 @@ workflow gates are left exactly as they are. A drain lives in memory,
 so a restart ends it, and calling it off lets everything held go at once.
 One whose restart never comes ends itself the same way, ten minutes past
 its deadline.
+
+## Backups and restore
+
+`server/backup.ts` writes the whole data folder to one file in
+`~/.bloks-backups` (0700), named with the local date and time, the
+version, and `-auto` or `-before-restore` for those kinds. It is a
+gzipped tar, so any archive tool opens it: `bloks-backup.json` first (the
+format, version, time, kind, and whether the Undo history and saved keys
+are inside), the workspace under `bloks/`, and `manifest.json` last, with
+every file's size, mode, time and SHA-256, written last so each file is
+read once and hashed on the way through. A file is read from an open
+handle up to the size it had when opened, which is one whole version of
+a store (stores replace their files by rename) and a clean prefix of a
+log being appended to. Left out, and named in the manifest: `native/`,
+browser profiles, rehearsal copies (their `index.json` stays), caches,
+dependency folders anywhere (`node_modules` and friends, never `.git`),
+temp files, sockets and links, the server's `server.lock` and `port`,
+and `checkpoints/` unless the Undo history is asked for.
+
+With a passphrase the archive is sealed: scrypt (N 2^17, r 8, p 1) gives
+an AES-256-GCM key, and the archive goes in pieces of a megabyte, each
+with its own nonce and bound to the header, its number and whether it is
+the last, so a piece changed, moved or cut off fails to open. The header
+stays readable, with the summary and an HMAC of the key, so a list needs
+no passphrase and a wrong passphrase is told apart from a changed file.
+Saved keys in `config.json` (the paths in `SECRET_PATHS`, paired device
+digests included, since the relay's keys come from them) go only into a
+sealed backup; otherwise they are taken out of the copy and the manifest
+lists where, and old copies such as `config.json.corrupt-*` stay out too.
+Verifying reads a backup end to end and holds each file to the manifest.
+
+The daily backup is looked for every ten minutes and made when nothing is
+running (the drain's own idle test), no drain or other backup is under
+way, and the newest automatic one is a day old. The newest seven are
+kept; manual backups and the ones taken before a restore are never
+pruned. It is on unless `backups.auto` is false, and never holds keys.
+
+A running server holds every store in memory and writes it back on each
+change, so a restore never swaps the folder under it. The routes
+(`/api/backups`, this computer only, never a paired device or an agent's
+credential) take it in steps: open the backup far enough to know it is
+one and the passphrase is right, drain (ten minutes unless asked), back
+up the workspace as it is (`-before-restore`), unpack the archive into
+`~/.bloks.restoring-<time>` beside the data folder and check every file,
+then write `~/.bloks.restore-pending.json` and stop the server the way a
+quit does. `server/pending-restore.ts` is the first import of
+`server/index.ts`, so on the next start, before any module reads the
+folder, it renames `~/.bloks` to `~/.bloks.before-restore-<time>` and the
+unpacked copy into its place; it waits while another live Bloks holds the
+folder, and a swap that cannot finish puts back what it moved. A backup
+without keys gets this computer's keys carried into its `config.json`.
+Paths in an archive must stay under `bloks/` with no `..`, links and
+devices are refused, and nothing is written for an entry that fails. The
+desktop page relaunches the app when the server says it is restarting,
+and a browser waits for a new pid. `bloks-server backup` writes from its
+own process, and `bloks-server restore FILE` does the whole thing with
+Bloks stopped, or copies the file into the backups folder and hands it to
+the running server.
 
 ## Queued messages
 
