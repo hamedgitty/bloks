@@ -51,6 +51,13 @@ import { Markdownish, withHighlight } from "./Markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useStickToBottom } from "@/lib/useStickToBottom";
+import { goalNoteForPerson } from "@/lib/goalNote";
+
+/** The line over a goal turn: from Bloks, and which turn of how many. */
+function goalLabel(text: string): string {
+  const { turn } = goalNoteForPerson(text);
+  return turn ? `From Bloks, toward your goal · turn ${turn.of} of ${turn.budget}` : "From Bloks, toward your goal";
+}
 
 /**
  * A user bubble's text with its attachment tags lifted out: images come
@@ -279,7 +286,7 @@ function Bubble({
         <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
           {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine" || message.via === "goal") && (
             <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
-              {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : message.via === "goal" ? "From Bloks, toward your goal" : "By email"}
+              {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : message.via === "goal" ? goalLabel(message.text ?? "") : "By email"}
             </div>
           )}
           <div
@@ -326,7 +333,7 @@ function Bubble({
                 </div>
               </div>
             ) : user ? (
-              <UserText text={message.text ?? ""} highlight={highlight} />
+              <UserText text={message.via === "goal" ? goalNoteForPerson(message.text ?? "").body : (message.text ?? "")} highlight={highlight} />
             ) : (
               <Markdownish text={message.text ?? ""} highlight={highlight} />
             )}
