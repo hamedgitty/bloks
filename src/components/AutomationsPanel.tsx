@@ -31,7 +31,7 @@ import Webhook from "lucide-react/dist/esm/icons/webhook.mjs";
 import Briefcase from "lucide-react/dist/esm/icons/briefcase.mjs";
 import Workflow from "lucide-react/dist/esm/icons/workflow.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
-import { useStore, type Bot } from "@/state/store";
+import { useStore, type AutomationsTab, type Bot } from "@/state/store";
 import { AgentAvatar, BlokAvatar } from "./Avatar";
 import { type Routine, type RoutineRun } from "./RoutinesSection";
 import { RoutinesDialog } from "./RoutinesDialog";
@@ -98,7 +98,8 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
   // a page like Settings, and closed the same way; the routine dialog on
   // top of it registers after this and so takes Escape first
   useEscape(onClose);
-  const [tab, setTab] = useState<"schedules" | "watchers" | "workflows" | "webhooks" | "jobs">("schedules");
+  // a link from elsewhere (the security checkup's webhooks) opens its tab
+  const [tab, setTab] = useState<AutomationsTab>(state.routinesTab ?? "schedules");
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [mode, setMode] = useState<"day" | "week" | "month">("week");
   const [anchor, setAnchor] = useState(() => startOfDay(new Date()));

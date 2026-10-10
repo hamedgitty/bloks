@@ -985,6 +985,39 @@ anything in that mode. A shared room never gets `fullAccess`, and nor
 does an email from anyone (see Email your agent): a turn somebody other
 than the owner asked for is held to the owner's yes, whatever the mode.
 
+## Security checkup
+
+Settings has a Security checkup page (`src/components/SecurityCheckup.tsx`)
+that lists everything letting an agent, a device or a stranger reach
+further than the person may remember choosing, each as "ok", "worth a
+look" or "risky", with one sentence on why it matters and the way to
+narrow it. `securityReport` in `server/index.ts` gathers names and counts
+from what is stored (never a key, a secret's value, a device token or a
+webhook address), and `checkup` in `server/security.ts` decides what to
+say: agents in full access (risky), pairing on and how many devices,
+email open to anyone and which agents' engines would refuse unlisted
+mail, shared rooms opening the owner's tools, agents with a browser or
+the use of this machine, saved secrets by name, the modes of `~/.bloks`
+and its key files (`config.json`, `webhooks.json`, `pair-links.json`,
+`people.json`, `identities/`; anything but 0700 and 0600 is risky),
+webhooks switched on, engines an agent uses that are signed out, and
+automatic backups when the build has them. Engines are asked through
+the half minute snapshot cache.
+
+Most fixes are links to where the setting already lives. The page does
+three things itself: it moves an agent from full access to Auto (the
+ordinary `PATCH /api/bots/:id`, since narrowing never needs asking
+twice), puts file modes back (`POST /api/security/permissions`, which
+leaves a link inside the folder alone, since changing its mode changes
+whatever it points at), and forgets a saved secret
+(`DELETE /api/security/secrets/:name`). All three routes and
+`GET /api/security` answer only this machine: never a phone, a paired
+browser, a remote window or an agent's credential, and `/api/security`
+is on the agents' never list too. When something is risky, Settings
+wears a red dot in the sidebar and the page a count in its list
+(`src/lib/securityCheckup.ts` holds the one shared report); worth a look
+waits on the page.
+
 ## Boundaries worth knowing
 
 - `server/http-guard.ts` checks `Origin` and `Host` on every request.

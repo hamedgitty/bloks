@@ -353,6 +353,8 @@ export interface FooterCounts {
   rehearsalsReady: number;
   skillsSuggested: number;
   notesWaiting: number;
+  /** Findings of the security checkup that are risky (server/security.ts). */
+  securityRisky: number;
 }
 
 function Count({ n, tone = "muted" }: { n: number; tone?: "muted" | "warning" | "brand" }) {
@@ -383,11 +385,11 @@ export function SidebarFooter({ rail, counts }: { rail: boolean; counts: FooterC
     "relative flex items-center justify-center rounded-lg text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground",
     rail ? "size-10" : "min-w-0 flex-1 flex-col gap-0.5 py-1.5 text-[11px] font-medium",
   );
-  const dot = (tone: "brand" | "warning") => (
+  const dot = (tone: "brand" | "warning" | "destructive") => (
     <span
       className={cn(
         "absolute size-1.5 rounded-full ring-2 ring-sidebar",
-        tone === "warning" ? "bg-warning" : "bg-brand",
+        tone === "destructive" ? "bg-destructive" : tone === "warning" ? "bg-warning" : "bg-brand",
         rail ? "right-2 top-2" : "right-[calc(50%-13px)] top-1",
       )}
     />
@@ -472,11 +474,12 @@ export function SidebarFooter({ rail, counts }: { rail: boolean; counts: FooterC
         data-state={state.appSettingsOpen ? "open" : "closed"}
         aria-current={state.appSettingsOpen ? "page" : undefined}
         className={tab}
-        title="Settings"
-        aria-label="Settings"
+        title={counts.securityRisky > 0 ? "Settings: the security checkup found something risky" : "Settings"}
+        aria-label={counts.securityRisky > 0 ? "Settings, security checkup found something risky" : "Settings"}
       >
         <SettingsIcon size={17} />
         {!rail && "Settings"}
+        {counts.securityRisky > 0 && dot("destructive")}
       </button>
     </div>
   );

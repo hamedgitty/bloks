@@ -53,6 +53,7 @@ import {
   type Place,
 } from "@/lib/sections";
 import { useProfileNotes } from "./AboutYou";
+import { refreshCheckup, riskyCount, useSecurityCheckup } from "@/lib/securityCheckup";
 import { useBriefs } from "./BriefPanel";
 import { ConversationRows, LaneRing, SidebarFooter, WaitingRow } from "./SidebarParts";
 import { UpdateCard } from "./UpdateCard";
@@ -679,6 +680,35 @@ function useActivityCount(): { running: number; waiting: number; suggested: numb
   return count;
 }
 
+/**
+ * How many security checkup findings are risky, for the dot on Settings.
+ * Asked again every ten minutes while the window shows, when Settings
+ * closes (where most fixes are made), and when an agent goes into or out
+ * of full access from its own settings, the commonest risky finding.
+ */
+function useSecurityRisky(): number {
+  const { state } = useStore();
+  const { report } = useSecurityCheckup();
+  const visible = usePageVisible();
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setInterval(() => void refreshCheckup(), 10 * 60_000);
+    return () => clearInterval(timer);
+  }, [visible]);
+  const settingsOpen = state.appSettingsOpen;
+  const fullAccess = state.bots
+    .filter((b) => b.approvals === "full")
+    .map((b) => b.id)
+    .join(",");
+  const seen = useRef({ settingsOpen, fullAccess });
+  useEffect(() => {
+    const before = seen.current;
+    seen.current = { settingsOpen, fullAccess };
+    if ((before.settingsOpen && !settingsOpen) || before.fullAccess !== fullAccess) void refreshCheckup();
+  }, [settingsOpen, fullAccess]);
+  return riskyCount(report);
+}
+
 export function Sidebar() {
   const { state, dispatch } = useStore();
   const [conversations, setConversations] = useConversationsView();
@@ -687,6 +717,7 @@ export function Sidebar() {
   const activity = useActivityCount();
   const rehearsalsReady = useRehearsalsReady();
   const notesWaiting = (useProfileNotes().notes ?? []).filter((n) => n.state === "suggested").length;
+  const securityRisky = useSecurityRisky();
   const latestBrief = useBriefs().data?.briefs[0];
   const briefNew = Boolean(latestBrief && !latestBrief.readAt && !latestBrief.quiet);
   const [showArchived, setShowArchived] = useState(false);
@@ -1054,9 +1085,11 @@ export function Sidebar() {
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
             title="Settings"
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+            aria-label={securityRisky > 0 ? "Settings, security checkup found something risky" : "Settings"}
+            className="relative rounded-lg p-1.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
           >
             <SettingsIcon size={16} />
+            {securityRisky > 0 && <span className="absolute right-1 top-1 size-1.5 rounded-full bg-destructive ring-2 ring-sidebar" />}
           </button>
         </header>
         {menu && <RowMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
@@ -1408,6 +1441,7 @@ export function Sidebar() {
           rehearsalsReady,
           skillsSuggested: activity.suggested,
           notesWaiting,
+          securityRisky,
         }}
       />
 

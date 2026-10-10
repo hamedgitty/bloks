@@ -566,6 +566,9 @@ export interface Skill {
   source: "builtin" | "user";
 }
 
+/** The tabs of the Automations page (src/components/AutomationsPanel.tsx). */
+export type AutomationsTab = "schedules" | "watchers" | "workflows" | "webhooks" | "jobs";
+
 export interface AppState {
   bots: Bot[];
   bloks: Blok[];
@@ -604,6 +607,8 @@ export interface AppState {
   /** A gallery team a bloks:// link asked to open, until the dialog takes it. */
   teamLink: string | null;
   routinesOpen: boolean;
+  /** The tab Automations opens on, when something linked to one. */
+  routinesTab: AutomationsTab | null;
   newRoomOpen: boolean;
   projectsOpen: boolean;
   /** The one place that says what is running and what wants you. */
@@ -702,7 +707,8 @@ export type Action =
   | { type: "newBot"; profile?: NewAgentProfile }
   | { type: "toggleNewAgent"; open?: boolean; firstRun?: boolean }
   | { type: "toggleSkills"; open?: boolean }
-  | { type: "toggleRoutines"; open?: boolean }
+  /** `tab` opens Automations on that tab, for a link from elsewhere. */
+  | { type: "toggleRoutines"; open?: boolean; tab?: AutomationsTab }
   | { type: "toggleActivity"; open?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "newTask"; botId: string }
@@ -1000,7 +1006,12 @@ export function reducer(state: AppState, action: Action): AppState {
     case "toggleRoutines":
       {
         const open = action.open ?? !state.routinesOpen;
-        return { ...state, routinesOpen: open, appSettingsOpen: open ? false : state.appSettingsOpen };
+        return {
+          ...state,
+          routinesOpen: open,
+          routinesTab: open ? (action.tab ?? null) : null,
+          appSettingsOpen: open ? false : state.appSettingsOpen,
+        };
       }
     case "toggleActivity":
       return { ...state, activityOpen: action.open ?? !state.activityOpen };
@@ -1333,6 +1344,7 @@ export const initialState: AppState = {
   ticks: {},
   teamLink: null,
   routinesOpen: false,
+  routinesTab: null,
   newRoomOpen: false,
   projectsOpen: false,
   activityOpen: false,

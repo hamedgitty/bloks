@@ -34,6 +34,8 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { thisComputer } from "@/lib/thisComputer";
 import { UseFromOtherApps } from "./UseFromOtherApps";
+import { SecurityCheckup } from "./SecurityCheckup";
+import { riskyCount, useSecurityCheckup } from "@/lib/securityCheckup";
 import { BoxSleep } from "./BoxSleep";
 import { AgentDefaults } from "./AgentDefaults";
 import { SettingRow, SettingsGroup, SettingsPageHeader } from "./SettingsLayout";
@@ -49,6 +51,7 @@ import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid.mjs";
 import MessageCircle from "lucide-react/dist/esm/icons/message-circle.mjs";
 import Mic from "lucide-react/dist/esm/icons/mic.mjs";
 import SearchIcon from "lucide-react/dist/esm/icons/search.mjs";
+import ShieldAlert from "lucide-react/dist/esm/icons/shield-alert.mjs";
 import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.mjs";
 import SlidersHorizontal from "lucide-react/dist/esm/icons/sliders-horizontal.mjs";
 import Smartphone from "lucide-react/dist/esm/icons/smartphone.mjs";
@@ -672,6 +675,13 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         keywords: "deny allow permissions safety approval gate full access auto ask conservative",
       },
       {
+        id: "security",
+        label: "Security checkup",
+        icon: ShieldAlert,
+        description: "What can reach your keys, accounts and computer, and how to narrow it.",
+        keywords: "security checkup audit risk full access pairing devices email webhooks secrets browser computer file permissions signed out",
+      },
+      {
         id: "voices",
         label: "Voices",
         icon: Mic,
@@ -868,6 +878,8 @@ function PageBody({ id }: { id: string }) {
           <RulesPanel />
         </>
       );
+    case "security":
+      return <SecurityCheckup />;
     case "voices":
       return (
         <SettingsGroup title="Keys">
@@ -969,6 +981,8 @@ export function AppSettingsPanel() {
   const matches = (p: SettingsPage) =>
     words.every((w) => `${p.label} ${p.description} ${p.keywords}`.toLowerCase().includes(w));
   const groups = SETTINGS_PAGES.map((g) => ({ ...g, pages: g.pages.filter(matches) })).filter((g) => g.pages.length);
+  // only what is risky earns a number in the list; worth a look waits on the page
+  const risky = riskyCount(useSecurityCheckup().report);
 
   return (
     <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background md:flex-row">
@@ -1031,6 +1045,14 @@ export function AppSettingsPanel() {
                   >
                     <Icon size={16} className={on ? "text-foreground" : "text-muted-foreground"} />
                     {p.label}
+                    {p.id === "security" && risky > 0 && (
+                      <span
+                        aria-label={`${risky} risky`}
+                        className="ml-auto rounded-md bg-destructive/10 px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums text-destructive"
+                      >
+                        {risky}
+                      </span>
+                    )}
                   </button>
                 );
               })}

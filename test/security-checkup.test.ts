@@ -11,6 +11,8 @@ import { describe, test, type TestContext } from "node:test";
 
 import { allows } from "../server/agent-cli.ts";
 import { checkup, filePermissions, names, tightenPermissions, type SecurityFacts } from "../server/security.ts";
+import { riskyCount } from "../src/lib/securityCheckup.ts";
+import { initialState, reducer } from "../src/state/reducer.ts";
 import { startHarness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
 
@@ -161,6 +163,24 @@ describe("what the checkup says", () => {
     assert.equal(names(["Ada", "Linus"]), "Ada and Linus");
     assert.equal(names(["Ada", "Linus", "Kat"]), "Ada, Linus and Kat");
     assert.equal(names(["Ada", "Linus", "Kat", "Grace", "Alan"]), "Ada, Linus and 3 more");
+  });
+
+  test("the badge counts only what is risky, and nothing without a report", () => {
+    const facts = quiet();
+    facts.agents[0].approvals = "full";
+    facts.webhooks = 1;
+    const findings = checkup(facts);
+    assert.equal(riskyCount({ findings, risky: 1, look: 1, checkedAt: 0 }), 1);
+    assert.equal(riskyCount(null), 0);
+  });
+
+  test("the webhooks link opens Automations on its tab", () => {
+    const opened = reducer({ ...initialState, appSettingsOpen: true }, { type: "toggleRoutines", open: true, tab: "webhooks" });
+    assert.equal(opened.routinesOpen, true);
+    assert.equal(opened.routinesTab, "webhooks");
+    assert.equal(opened.appSettingsOpen, false);
+    assert.equal(reducer(opened, { type: "toggleRoutines", open: false }).routinesTab, null);
+    assert.equal(reducer(initialState, { type: "toggleRoutines", open: true }).routinesTab, null, "an ordinary open starts where it always did");
   });
 });
 
