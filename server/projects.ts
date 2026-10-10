@@ -185,7 +185,19 @@ export class ProjectStore {
     return this.projects.find((p) => p.id === id) ?? null;
   }
 
-  create(input: NewProject, now: number): Project {
+  /**
+   * A new project, or null when there are MAX_PROJECTS already and none
+   * of them is archived. Room is made by forgetting the one archived
+   * longest ago, never a project still in use: dropping the oldest one
+   * whatever it was could take the project you were working in.
+   */
+  create(input: NewProject, now: number): Project | null {
+    while (this.projects.length >= MAX_PROJECTS) {
+      const finished = this.projects.filter((p) => p.archivedAt);
+      if (!finished.length) return null;
+      const oldest = finished.reduce((a, b) => (b.archivedAt! < a.archivedAt! ? b : a));
+      this.projects = this.projects.filter((p) => p !== oldest);
+    }
     const clean = cleanInput(input);
     const project: Project = {
       id: newId(),
@@ -199,7 +211,6 @@ export class ProjectStore {
       createdAt: now,
     };
     this.projects.unshift(project);
-    if (this.projects.length > MAX_PROJECTS) this.projects.length = MAX_PROJECTS;
     this.save();
     return project;
   }

@@ -201,6 +201,7 @@ import {
   worthReviewing,
 } from "./proposals.ts";
 import {
+  MAX_PROJECTS,
   ProjectStore,
   briefFor,
   missingFolderMessage,
@@ -12917,6 +12918,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (method === "POST" && path === "/api/projects") {
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
       const project = projects.create(body, Date.now());
+      if (!project) {
+        return json(res, 409, {
+          error: `There are already ${MAX_PROJECTS} projects, the most Bloks keeps, and all of them are in use. Archive one you have finished with to make room.`,
+        });
+      }
       broadcast({ kind: "projects" });
       return json(res, 201, { project: standingOf(project) });
     }
