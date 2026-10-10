@@ -373,6 +373,16 @@ export function typedLane(bot: { activeTaskId?: string; threadId: string; tasks?
   return bot.tasks?.some((t) => t.id === open && t.guestMail) ? undefined : open;
 }
 
+/** Whether closing this lane would delete anything. The server dates a
+ * lane by its last message, or by its making when it has none, so a later
+ * time means something was said. A lane that cannot say (a harness too
+ * old to send the time) counts as having messages: asking once too often
+ * costs a tap, and not asking costs a conversation. */
+export function laneHasMessages(lane: { lastAt?: number; createdAt: number; usage?: { turns: number } } | undefined): boolean {
+  if (!lane || lane.lastAt === undefined) return true;
+  return lane.lastAt > lane.createdAt || (lane.usage?.turns ?? 0) > 0;
+}
+
 /** A `config` frame is the whole status plus the stream's own fields.
  * Picking fields out of it by name drops whatever was added later, and
  * the card reading a dropped field vanishes until the next reload. */

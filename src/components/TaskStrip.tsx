@@ -235,6 +235,9 @@ export function TaskStrip({
                 </span>
               ) : null;
             })()}
+            {/* Quiet until the chip is hovered, which a touch screen never
+                does: there the X was invisible and still took a tap, so it
+                shows, a little larger, wherever the pointer is a finger. */}
             <span
               role="button"
               tabIndex={-1}
@@ -245,7 +248,7 @@ export function TaskStrip({
                 (isGeneral ? onClear : onClose)(task.id);
               }}
               className={cn(
-                "flex size-4 items-center justify-center rounded-full opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100",
+                "flex size-4 items-center justify-center rounded-full opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100 pointer-coarse:size-5 pointer-coarse:opacity-100",
                 active ? "hover:bg-background/20" : "hover:bg-accent",
               )}
             >

@@ -8,7 +8,7 @@ import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import SquareTerminal from "lucide-react/dist/esm/icons/square-terminal.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
-import { api, useStore, openLaneWorking, type Bot, type Message } from "@/state/store";
+import { api, useStore, laneHasMessages, openLaneWorking, type Bot, type Message } from "@/state/store";
 import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { OptionCard } from "./OptionCard";
@@ -899,7 +899,16 @@ export function ChatView({ bot }: { bot: Bot }) {
         activeId={bot.activeTaskId ?? bot.threadId}
         onSelect={(taskId) => taskId !== bot.activeTaskId && dispatch({ type: "selectTask", botId: bot.id, taskId })}
         onNew={() => dispatch({ type: "newTask", botId: bot.id })}
-        onClose={(taskId) => dispatch({ type: "closeTask", botId: bot.id, taskId })}
+        onClose={(taskId) => {
+          // Closing deletes the transcript, and on a phone the X sits right
+          // where a thumb lands, so a lane with anything in it asks first,
+          // in the words the sidebar's Close uses. An empty one just goes.
+          const lane = bot.tasks?.find((t) => t.id === taskId);
+          const open = taskId === (bot.activeTaskId ?? bot.threadId);
+          const said = laneHasMessages(lane) || (open && bot.messages.length > 0);
+          if (said && !window.confirm(`Close "${lane?.title ?? "this conversation"}"? Its messages are deleted.`)) return;
+          dispatch({ type: "closeTask", botId: bot.id, taskId });
+        }}
         onClear={(taskId) => {
           if (window.confirm("Clear this conversation? Its messages are deleted.")) {
             dispatch({ type: "clearTask", botId: bot.id, taskId });

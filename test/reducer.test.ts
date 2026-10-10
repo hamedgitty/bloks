@@ -7,7 +7,7 @@ import { settleUnanswered, withoutEdits } from "../src/state/reducer.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { configFromFrame, initialState, openLaneWorking, reducer, typedLane, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
+import { configFromFrame, initialState, laneHasMessages, openLaneWorking, reducer, typedLane, type AppState, type Bot, type Message } from "../src/state/reducer.ts";
 
 const bot = (id: string, over: Partial<Bot> = {}): Bot => ({
   id,
@@ -388,6 +388,17 @@ test("words go to the conversation on screen, except the one strangers' mail is 
   assert.equal(typedLane({ threadId: "t-mail", activeTaskId: "t-mail", tasks: lanes }), undefined);
   // a harness that does not mark the lane: the one on screen, as ever
   assert.equal(typedLane({ threadId: "t-mail", activeTaskId: "t-mail" }), "t-mail");
+});
+
+test("closing a lane asks first when it has anything in it, and only then", () => {
+  // The strip's X closed a lane, transcript and all, with no question,
+  // and on a phone it was invisible but still under the thumb.
+  assert.equal(laneHasMessages({ createdAt: 5, lastAt: 5 }), false, "an empty lane asked to be closed");
+  assert.equal(laneHasMessages({ createdAt: 5, lastAt: 9 }), true);
+  assert.equal(laneHasMessages({ createdAt: 5, lastAt: 5, usage: { turns: 1 } }), true);
+  // nothing to tell by: ask, since not asking is what loses a conversation
+  assert.equal(laneHasMessages({ createdAt: 5 }), true);
+  assert.equal(laneHasMessages(undefined), true);
 });
 
 test("a placement lands on the agents and rooms it names, and nowhere else", () => {
