@@ -65,6 +65,15 @@ export const MAX_URL_CHARS = 400;
 /** A model id kept in the defaults for new agents. Real ids are short. */
 export const MAX_MODEL_ID_CHARS = 200;
 
+/** A lane's goal (server/goals.ts): what done looks like, the one-line
+ * command that has to pass for it to count, and how many turns it may
+ * take. The goal is said to the agent every turn and the judge reads it,
+ * so it stays a paragraph; the turns are a hard cap on what one goal can
+ * spend without the person. */
+export const MAX_GOAL_CHARS = 2_000;
+export const MAX_GOAL_CHECK_CHARS = 500;
+export const MAX_GOAL_TURNS = 100;
+
 /** Trims a value to a cap, returning undefined when there is nothing
  * left. Callers decide whether absent means "skip" or "reject". */
 export function clamp(value: unknown, max: number): string | undefined {
