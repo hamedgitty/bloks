@@ -156,6 +156,7 @@ import { draftPrompt, parseDraft } from "./draft.ts";
 import { OLLAMA_URL, probeOllama, shouldAdopt } from "./local-models.ts";
 import { cookieStores, readCookies } from "./cookie-import.ts";
 import * as telegram from "./telegram.ts";
+import { CardButtons, outcomeOf, settledText, type ForwardedCard } from "./telegram-cards.ts";
 import { TelegramReturns, queuedTelegramReply, type TelegramReply } from "./telegram-returns.ts";
 import * as slack from "./slack.ts";
 import { agentCommands, engineCommand, type ClaudeCatalog } from "./agent-commands.ts";
@@ -1996,19 +1997,31 @@ bus.subscribe((event: RuntimeEvent) => {
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
         // A turn that began on a phone should not stall on a card the
-        // person cannot see. The card goes to the chat it came from, and
-        // the next message from that chat is read as the answer.
+        // person cannot see. The card goes to the chat it came from, with
+        // its choices as buttons, and the next message from that chat is
+        // read as the answer too, for a question with no choices to tap.
         // Not a mail's: that turn began in nobody's chat, and the person's
         // next line there would be emailed to whoever wrote.
         const chatId = byMail ? undefined : telegramLive.get(bot.id);
-        if (chatId !== undefined && cfg.telegram?.token) {
+        const token = cfg.telegram?.token;
+        if (chatId !== undefined && token) {
+          const requestId = event.requestId;
           telegramAsks.set(chatId, {
-            requestId: event.requestId,
+            requestId,
             botId: bot.id,
             options: message.card?.options ?? [],
             permission,
           });
-          void telegram.send(cfg.telegram.token, chatId, telegram.describeCard(message.card ?? {})).catch(() => {});
+          const { title, subtitle, options } = message.card ?? {};
+          const forwarded = telegramCards.forward({ title, subtitle, options, requestId, botId: bot.id, chatId, permission });
+          void telegram
+            .post(token, chatId, forwarded.text, forwarded.keyboard)
+            .then((messageId) => {
+              // answered before Telegram said which message it is
+              const late = messageId === undefined ? undefined : telegramCards.sent(requestId, messageId);
+              if (late) rewriteTelegramCard(late);
+            })
+            .catch(() => {});
         }
       }
       // the chip turns amber the moment a lane needs a human
@@ -2016,6 +2029,11 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "request.resolved": {
+      // Answered anywhere, or closed: a card forwarded to a phone says so
+      // there too, and stops offering its buttons.
+      if (event.requestId) {
+        settleTelegramCard(event.requestId, (card) => outcomeOf(card, event.behavior, event.source));
+      }
       const messageId = event.requestId ? askMessageByRequest.get(event.requestId) : null;
       if (messageId) {
         const existing = store.messagesFor(roomId).find((m) => m.id === messageId);
@@ -6927,6 +6945,9 @@ const telegramAsks = new Map<
   number,
   { requestId: string; botId: string; options: string[]; permission: boolean }
 >();
+/** Every card forwarded to a chat, by request, with the buttons it was
+ * sent with (server/telegram-cards.ts). */
+const telegramCards = new CardButtons();
 /** "typing" in each chat whose message an agent is working on. */
 const telegramTyping = new Map<number, { now(): void; stop(): Promise<void> }>();
 
@@ -6945,6 +6966,50 @@ const telegramIntake = new Map<number, Promise<void>>();
 async function telegramSay(chatId: number, text: string, markdown = false): Promise<void> {
   const token = cfg.telegram?.token;
   if (token) await telegram.send(token, chatId, text, markdown).catch(() => {});
+}
+
+/**
+ * Hand an answer given on a phone, typed or tapped, to the ask it is for.
+ * False when nothing was waiting on it any more: the turn ended, or its
+ * engine went. An approval is allowed only by its first choice.
+ */
+async function answerTelegramAsk(
+  ask: { requestId: string; botId: string; options: string[]; permission: boolean },
+  read: { option?: string; free?: string },
+): Promise<boolean> {
+  const asked = store.bot(ask.botId);
+  const askThread = askThreadByRequest.get(ask.requestId) ?? asked?.threadId ?? "";
+  const instance = asked ? laneInstance(asked, askThread) : null;
+  const behavior = ask.permission ? (read.option === ask.options[0] ? "allow" : "deny") : "answer";
+  const message = ask.permission ? undefined : (read.option ?? read.free);
+  telegramCards.expect(ask.requestId, message);
+  if (!instance) return false;
+  return instance.adapter.respondToRequest(askThread, ask.requestId, { behavior, message }).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** A forwarded card's message, rewritten to say how it was answered and
+ * without its buttons. Only a nicety: the answer itself has already gone
+ * where it was going, so a failure here is let pass. */
+function rewriteTelegramCard(card: ForwardedCard): void {
+  const token = cfg.telegram?.token;
+  if (!token || card.messageId === undefined) return;
+  void telegram.edit(token, card.chatId, card.messageId, settledText(card)).catch(() => {});
+}
+
+/** A card answered or closed anywhere. The chat it went to is told, and
+ * its next line is a message again rather than an answer to it. */
+function settleTelegramCard(requestId: string, outcome: (card: ForwardedCard) => string): void {
+  const card = telegramCards.settle(requestId, outcome);
+  if (card) rewriteTelegramCard(card);
+  for (const [chatId, waiting] of telegramAsks) {
+    if (waiting.requestId !== requestId) continue;
+    telegramAsks.delete(chatId);
+    // the agent is working again, so the chat says so at once
+    telegramTyping.get(chatId)?.now();
+  }
 }
 
 const telegramInbox = new telegram.Inbox({
@@ -6972,20 +7037,29 @@ const telegramInbox = new telegram.Inbox({
     const waiting = telegramAsks.get(chatId);
     if (!waiting) return;
     telegramAsks.delete(chatId);
-    const asked = store.bot(waiting.botId);
-    const askThread = askThreadByRequest.get(waiting.requestId) ?? asked?.threadId ?? "";
-    const instance = asked ? laneInstance(asked, askThread) : null;
-    const behavior = waiting.permission
-      ? read.option === waiting.options[0] ? "allow" : "deny"
-      : "answer";
-    await instance?.adapter
-      .respondToRequest(askThread, waiting.requestId, {
-        behavior,
-        message: waiting.permission ? undefined : (read.option ?? read.free),
-      })
-      .catch(() => {});
+    await answerTelegramAsk(waiting, read);
     // The turn goes on, so the chat says so again without waiting for
     // the next tick.
+    telegramTyping.get(chatId)?.now();
+  },
+  async press(chatId, press) {
+    const token = cfg.telegram?.token;
+    if (!token) return;
+    const found = telegramCards.press(chatId, press.messageId, press.data);
+    if (!found || "settled" in found) {
+      // Answered already, by this button or some other way, or a card
+      // from before a restart, which nothing is waiting on any more.
+      await telegram.answerPress(token, press.id, found ? found.settled : "That card has already closed.").catch(() => {});
+      if (!found) await telegram.unbutton(token, chatId, press.messageId).catch(() => {});
+      return;
+    }
+    const { card, option } = found;
+    if (telegramAsks.get(chatId)?.requestId === card.requestId) telegramAsks.delete(chatId);
+    if (!(await answerTelegramAsk(card, { option }))) {
+      telegramCards.reword(card, "That card had already closed, so nothing was done.");
+    }
+    await telegram.answerPress(token, press.id, card.settled).catch(() => {});
+    rewriteTelegramCard(card);
     telegramTyping.get(chatId)?.now();
   },
   deliver(chatId, text) {
@@ -11234,6 +11308,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!instance) return json(res, 409, { error: "provider unavailable" });
       try {
         if (!live) throw new Error("not a live ask");
+        // so a copy of the card on a phone can say what was chosen here
+        if (body.behavior === "answer" && typeof body.message === "string") telegramCards.expect(requestId, body.message);
         await instance.adapter.respondToRequest(askThread, requestId, {
           behavior: body.behavior,
           message: body.message,
@@ -11251,6 +11327,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const messageId = askMessageByRequest.get(requestId);
         // where the card is, which in a room is not the lane that asked
         const cardThread = askCardThread.get(requestId) ?? askThread;
+        settleTelegramCard(requestId, () => "Closed without an answer.");
         if (messageId) {
           const existing = store.messagesFor(cardThread).find((msg) => msg.id === messageId);
           if (existing?.card && !existing.card.answered) {

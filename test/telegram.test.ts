@@ -5,10 +5,12 @@ import { describe, test } from "node:test";
 import { sniffImage } from "../server/attachments.ts";
 import { transcribe } from "../server/speech.ts";
 import {
+  answerPress,
   chatAction,
   decide,
   describeCard,
   download,
+  edit,
   Inbox,
   type InboxHooks,
   type Incoming,
@@ -18,7 +20,11 @@ import {
   notDelivered,
   pairingWord,
   parseUpdates,
+  poll,
+  post,
+  type Press,
   type TelegramState,
+  unbutton,
 } from "../server/telegram.ts";
 import { splitAttachments } from "../src/lib/attachments.ts";
 
@@ -119,6 +125,36 @@ describe("parseUpdates", () => {
     }
   });
 
+  test("a pressed button comes through as a press, with who pressed it and where", () => {
+    const out = parseUpdates({
+      result: [
+        {
+          update_id: 12,
+          callback_query: {
+            id: "press-1",
+            from: { id: 77, first_name: "Hamed" },
+            message: { message_id: 5, chat: { id: 42 } },
+            data: "abcdEFGH:1",
+          },
+        },
+      ],
+    });
+    assert.deepEqual(out, [
+      { chatId: 42, updateId: 12, text: "", from: "Hamed", press: { id: "press-1", data: "abcdEFGH:1", messageId: 5, fromId: 77 } },
+    ]);
+  });
+
+  test("a press that cannot say what it carried, or who made it, is nothing", () => {
+    const out = parseUpdates({
+      result: [
+        { update_id: 1, callback_query: { id: "p", from: { id: 1 }, message: { message_id: 5, chat: { id: 1 } } } },
+        { update_id: 2, callback_query: { id: "p", message: { message_id: 5, chat: { id: 1 } }, data: "x" } },
+        { update_id: 3, callback_query: { id: "p", from: { id: 1 }, inline_message_id: "i", data: "x" } },
+      ],
+    });
+    assert.deepEqual(out, []);
+  });
+
   test("a very long message is cut", () => {
     const out = parseUpdates({
       result: [{ update_id: 1, message: { chat: { id: 1 }, text: "x".repeat(9000) } }],
@@ -169,6 +205,30 @@ describe("decide", () => {
   test("an allowed chat does not need the word once paired", () => {
     const state: TelegramState = { pairing: "abc123xy", chatIds: [42] };
     assert.equal(decide(state, message({ text: "anything" })).kind, "deliver");
+  });
+
+  const press = (chatId: number, fromId: number) => ({
+    ...message({ chatId, text: "" }),
+    press: { id: "p", data: "abcdEFGH:0", messageId: 5, fromId },
+  });
+
+  test("a button pressed by the paired person, in their chat, is a press", () => {
+    assert.deepEqual(decide({ chatIds: [42] }, press(42, 42)), {
+      kind: "press",
+      chatId: 42,
+      press: { id: "p", data: "abcdEFGH:0", messageId: 5, fromId: 42 },
+    });
+  });
+
+  test("a button pressed by anyone else in a paired chat is ignored, not answered", () => {
+    // a group the bot was paired in shows its buttons to every member
+    assert.deepEqual(decide({ chatIds: [-100] }, press(-100, 7)), { kind: "ignore" });
+  });
+
+  test("a button pressed in a chat that is not paired is ignored, without a refusal", () => {
+    assert.deepEqual(decide({ chatIds: [42] }, press(9, 9)), { kind: "ignore" });
+    // not even the pairing word is read from a press
+    assert.deepEqual(decide({ chatIds: [], pairing: "abc123xy" }, { ...press(9, 9), text: "abc123xy" }), { kind: "ignore" });
   });
 });
 
@@ -223,6 +283,12 @@ describe("answering a card from a phone", () => {
     assert.match(text, /^Approval needed\nrm -rf build\n\n1\. Allow\n2\. Deny/);
     assert.match(text, /yes \/ no/);
   });
+
+  test("a card sent with buttons is only what it asks, since the choices are under it", () => {
+    assert.equal(describeCard({ title: "Approval needed", subtitle: "rm -rf build", options }, true), "Approval needed\nrm -rf build");
+    // a question with nothing to tap still asks to be typed
+    assert.match(describeCard({ title: "Your agent has a question", subtitle: "Which day?" }, true), /Reply with your answer\.$/);
+  });
 });
 
 describe("what the bot cannot pass on", () => {
@@ -258,6 +324,7 @@ function inbox(over: Partial<InboxHooks> = {}, card?: { options: string[]; permi
     heard: 0,
     answers: [] as { option?: string; free?: string }[],
     refused: 0,
+    presses: [] as Press[],
   };
   let waiting = card;
   const hooks: InboxHooks = {
@@ -284,6 +351,7 @@ function inbox(over: Partial<InboxHooks> = {}, card?: { options: string[]; permi
       waiting = undefined;
     },
     deliver: (_chatId, text) => void seen.delivered.push(text),
+    press: async (_chatId, press) => void seen.presses.push(press),
     ...over,
   };
   return { box: new Inbox(hooks, 5), seen };
@@ -303,6 +371,17 @@ const photo = (fileId: string, over: Partial<Incoming> = {}): Incoming => ({
 });
 
 describe("the inbox", () => {
+  test("a press from the paired person goes to the card it is for, and a stranger's goes nowhere", async () => {
+    const { box, seen } = inbox();
+    const pressed = { id: "p1", data: "abcdEFGH:0", messageId: 5, fromId: 42 };
+    await box.take({ ...message({ text: "" }), press: pressed });
+    assert.deepEqual(seen.presses, [pressed]);
+    await box.take({ ...message({ chatId: 9, text: "" }), press: { ...pressed, fromId: 9 } });
+    assert.equal(seen.presses.length, 1);
+    assert.equal(seen.refused, 0, "a stranger's press is not even refused");
+    assert.deepEqual(seen.delivered, [], "and a press is never a message to the agent");
+  });
+
   test("a stranger's voice and photos are never downloaded or heard", async () => {
     const { box, seen } = inbox({ state: () => ({ chatIds: [7] }) });
     await box.take(voice());
@@ -749,5 +828,42 @@ describe("typing while the agent works", () => {
     });
     await chatAction("T", 42);
     assert.deepEqual(bodies, [{ chat_id: 42, action: "typing" }]);
+  });
+});
+
+describe("buttons over the wire", () => {
+  /** Every call made, by method, with its body. */
+  function wire(t: { mock: { method: (...args: any[]) => unknown } }, result: unknown = true) {
+    const calls: { method: string; body: any }[] = [];
+    t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      calls.push({ method: url.split("/").pop()!, body: JSON.parse(String(init.body)) });
+      return Response.json({ ok: true, result });
+    });
+    return calls;
+  }
+
+  test("polling asks for presses as well as messages", async (t) => {
+    const calls = wire(t, []);
+    await poll("T", 3);
+    assert.deepEqual(calls[0].body.allowed_updates, ["message", "callback_query"]);
+  });
+
+  test("a card goes with its buttons, and comes back with the id of the message it became", async (t) => {
+    const calls = wire(t, { message_id: 81 });
+    const keyboard = { inline_keyboard: [[{ text: "Allow", callback_data: "abcdEFGH:0" }]] };
+    assert.equal(await post("T", 42, "Approval needed", keyboard), 81);
+    assert.deepEqual(calls[0], { method: "sendMessage", body: { chat_id: 42, text: "Approval needed", reply_markup: keyboard } });
+  });
+
+  test("an answered card is rewritten without its buttons, and the press is answered", async (t) => {
+    const calls = wire(t);
+    await edit("T", 42, 81, "Approval needed\n\nAllowed");
+    await answerPress("T", "press-1", "Allowed");
+    await unbutton("T", 42, 82);
+    assert.deepEqual(calls, [
+      { method: "editMessageText", body: { chat_id: 42, message_id: 81, text: "Approval needed\n\nAllowed", reply_markup: { inline_keyboard: [] } } },
+      { method: "answerCallbackQuery", body: { callback_query_id: "press-1", text: "Allowed" } },
+      { method: "editMessageReplyMarkup", body: { chat_id: 42, message_id: 82, reply_markup: { inline_keyboard: [] } } },
+    ]);
   });
 });

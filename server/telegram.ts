@@ -52,6 +52,26 @@ export interface Incoming {
   media?: Media;
   /** Photos sent together arrive as separate updates sharing this. */
   album?: string;
+  /** A button pressed under one of the bot's own messages, instead of
+   * anything said. */
+  press?: Press;
+}
+
+/**
+ * A tap on a button the bot sent.
+ *
+ * Who pressed it is kept apart from where, because they can differ: a
+ * group the bot sits in shows every member the same buttons.
+ */
+export interface Press {
+  /** Telegram's id for the press, which the answer to it names. */
+  id: string;
+  /** What the bot put on the button, never more than 64 bytes. */
+  data: string;
+  /** The message the button is under. */
+  messageId: number;
+  /** The person who pressed it. */
+  fromId: number;
 }
 
 /**
@@ -130,6 +150,11 @@ export function parseUpdates(payload: unknown): Incoming[] {
     // should cost that entry, not the whole batch.
     if (!raw || typeof raw !== "object") continue;
     const update = raw as Record<string, any>;
+    const press = pressOf(update);
+    if (press) {
+      out.push(press);
+      continue;
+    }
     const message = update.message ?? update.edited_message;
     const chatId = Number(message?.chat?.id);
     const said = typeof message?.text === "string" ? message.text : message?.caption;
@@ -153,6 +178,27 @@ export function parseUpdates(payload: unknown): Incoming[] {
   return out;
 }
 
+/** A button press, when that is what the update is. Every part of it is
+ * required: a press that cannot say where it was, who made it or what it
+ * carried cannot be checked, and is nothing to act on. */
+function pressOf(update: Record<string, any>): Incoming | null {
+  const query = update.callback_query;
+  if (!query || typeof query !== "object") return null;
+  const chatId = Number(query.message?.chat?.id);
+  const messageId = Number(query.message?.message_id);
+  const fromId = Number(query.from?.id);
+  const updateId = Number(update.update_id);
+  if (![chatId, messageId, fromId, updateId].every(Number.isFinite)) return null;
+  if (typeof query.id !== "string" || typeof query.data !== "string") return null;
+  return {
+    chatId,
+    updateId,
+    text: "",
+    from: String(query.from?.first_name ?? "someone").slice(0, 60),
+    press: { id: query.id.slice(0, 100), data: query.data.slice(0, 64), messageId, fromId },
+  };
+}
+
 /**
  * What to do with one message, decided without touching anything.
  *
@@ -162,11 +208,22 @@ export function parseUpdates(payload: unknown): Incoming[] {
 export type Decision =
   | { kind: "pair"; chatId: number }
   | { kind: "deliver"; chatId: number; text: string; media?: Media; album?: string }
+  | { kind: "press"; chatId: number; press: Press }
   | { kind: "refuse"; chatId: number }
   | { kind: "ignore" };
 
 export function decide(state: TelegramState, message: Incoming): Decision {
   const allowed = state.chatIds ?? [];
+  if (message.press) {
+    // A button answers a card, and a card can allow a command on this
+    // machine, so it counts only from a paired chat and from the person
+    // it was paired with: in a chat with one person the two ids are the
+    // same. Anyone else who can see it, in a group, gets nothing back at
+    // all, not even the refusal: there is nothing here for them.
+    const { fromId } = message.press;
+    const paired = allowed.includes(message.chatId) && (fromId === message.chatId || allowed.includes(fromId));
+    return paired ? { kind: "press", chatId: message.chatId, press: message.press } : { kind: "ignore" };
+  }
   if (allowed.includes(message.chatId)) {
     return {
       kind: "deliver",
@@ -253,11 +310,26 @@ async function call(token: string, method: string, body: unknown, timeoutMs = 15
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) {
-    const said = (await response.json().catch(() => null)) as { parameters?: { retry_after?: number } } | null;
-    throw new TelegramError(response.status, Number(said?.parameters?.retry_after) || 0);
-  }
+  if (!response.ok) throw await refusal(response);
   return response.json();
+}
+
+async function refusal(response: Response): Promise<TelegramError> {
+  const said = (await response.json().catch(() => null)) as { parameters?: { retry_after?: number } } | null;
+  return new TelegramError(response.status, Number(said?.parameters?.retry_after) || 0);
+}
+
+/** Telegram slows a bot that sends quickly by asking it to wait. Waiting
+ * once, when the wait is short, keeps a reply or a file from being lost
+ * to it; a long wait is an error like any other. */
+async function patiently<T>(attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!(error instanceof TelegramError) || error.status !== 429 || error.retryAfter > 30) throw error;
+    await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
+    return attempt();
+  }
 }
 
 /** Who this token belongs to, and proof that it works. */
@@ -268,17 +340,56 @@ export async function whoAmI(token: string): Promise<{ username: string }> {
   return { username };
 }
 
-/** One message. A long reply is several in a row, and Telegram slows a
- * bot that sends quickly by asking it to wait; waiting once, when the
- * wait is short, keeps the reply whole instead of losing its tail. */
-async function sendOne(token: string, body: Record<string, unknown>): Promise<void> {
-  try {
-    await call(token, "sendMessage", body);
-  } catch (error) {
-    if (!(error instanceof TelegramError) || error.status !== 429 || error.retryAfter > 30) throw error;
-    await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
-    await call(token, "sendMessage", body);
-  }
+/** One message. A long reply is several in a row, and being asked to
+ * wait between them should not cost the reply its tail. */
+function sendOne(token: string, body: Record<string, unknown>): Promise<unknown> {
+  return patiently(() => call(token, "sendMessage", body));
+}
+
+/** Buttons under a message, in rows. */
+export interface Keyboard {
+  inline_keyboard: { text: string; callback_data: string }[][];
+}
+
+/** No buttons at all, which is how a message loses the ones it had. */
+const NO_BUTTONS: Keyboard = { inline_keyboard: [] };
+
+/**
+ * One plain message, with buttons under it when given, and the id
+ * Telegram gave it: a later edit or delete names the message by it.
+ * Undefined when Telegram took the message without saying.
+ */
+export async function post(token: string, chatId: number, text: string, keyboard?: Keyboard): Promise<number | undefined> {
+  const body = (await sendOne(token, {
+    chat_id: chatId,
+    text: text.slice(0, 4_000),
+    ...(keyboard ? { reply_markup: keyboard } : {}),
+  })) as { result?: { message_id?: unknown } } | null;
+  const id = Number(body?.result?.message_id);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
+/** Say something else in a message the bot sent, and take its buttons
+ * away: a card that has been answered should not offer to be again. */
+export async function edit(token: string, chatId: number, messageId: number, text: string): Promise<void> {
+  await call(token, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text: text.slice(0, 4_000),
+    reply_markup: NO_BUTTONS,
+  });
+}
+
+/** Only the buttons gone, for a message whose words are still true but
+ * whose card nothing is waiting on any more. */
+export async function unbutton(token: string, chatId: number, messageId: number): Promise<void> {
+  await call(token, "editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: NO_BUTTONS });
+}
+
+/** Ends the little spinner a phone shows on a pressed button, with a few
+ * words about what the press did. Telegram expects one for every press. */
+export async function answerPress(token: string, pressId: string, text?: string): Promise<void> {
+  await call(token, "answerCallbackQuery", { callback_query_id: pressId, ...(text ? { text: text.slice(0, 190) } : {}) }, 5_000);
 }
 
 /**
@@ -418,7 +529,8 @@ export async function poll(token: string, offset: number): Promise<Incoming[]> {
   const body = await call(
     token,
     "getUpdates",
-    { offset, timeout: 20, allowed_updates: ["message"] },
+    // Presses as well as messages: a card is answered with a tap.
+    { offset, timeout: 20, allowed_updates: ["message", "callback_query"] },
     30_000,
   );
   return parseUpdates(body);
@@ -456,11 +568,19 @@ export function interpretAnswer(text: string, options: string[]): { option?: str
   return { free: said };
 }
 
-/** The card, as a message a phone can answer. */
-export function describeCard(card: { title?: string; subtitle?: string; options?: string[] }): string {
-  const lines = [card.title || "Your agent needs you"];
-  if (card.subtitle) lines.push(card.subtitle.slice(0, 600));
+/** What a card asks, without how to answer it: all that is still true of
+ * it once it has been answered. */
+export function cardAsks(card: { title?: string; subtitle?: string }): string {
+  return [card.title || "Your agent needs you", ...(card.subtitle ? [card.subtitle.slice(0, 600)] : [])].join("\n");
+}
+
+/** The card, as a message a phone can answer. With buttons its choices
+ * are under it to tap, so the words are only what it asks; without, they
+ * are numbered to type. Typing a number or yes / no works either way. */
+export function describeCard(card: { title?: string; subtitle?: string; options?: string[] }, buttons = false): string {
+  const lines = [cardAsks(card)];
   const options = card.options ?? [];
+  if (buttons && options.length) return lines.join("\n");
   if (options.length) {
     lines.push("");
     options.forEach((o, i) => lines.push(`${i + 1}. ${o}`));
@@ -533,6 +653,8 @@ export interface InboxHooks {
   /** A card forwarded to this chat and not yet answered. */
   waiting(chatId: number): { options: string[]; permission: boolean } | undefined;
   answer(chatId: number, read: { option?: string; free?: string }): Promise<void>;
+  /** A button pressed in a paired chat, by the person it is paired with. */
+  press(chatId: number, press: Press): Promise<void>;
   /** Start a turn with this text. Returns at once; the reply follows. */
   deliver(chatId: number, text: string): void;
 }
@@ -562,6 +684,7 @@ export class Inbox {
     const decision = decide(hooks.state(), message);
     if (decision.kind === "pair") return hooks.pair(decision.chatId);
     if (decision.kind === "refuse") return hooks.refuse(decision.chatId);
+    if (decision.kind === "press") return hooks.press(decision.chatId, decision.press);
     if (decision.kind !== "deliver") return;
     const { chatId, media } = decision;
     if (media && message.album) return this.hold(message);

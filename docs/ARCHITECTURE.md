@@ -459,6 +459,34 @@ and hands every call over the relay line as an ask; the call arrives
 readable, because Meta sends it that way, and is believed only if Meta's
 signature checks out against the app secret, which stays here.
 
+## Telegram
+
+The person can reach their agents from a Telegram bot of their own
+(`server/telegram.ts` holds the rules, the Telegram parts of
+`server/index.ts` the plumbing). The machine long-polls Telegram, so
+nothing listens on a port. Everything hangs on the pairing: the first
+chat to send the single-use pairing word is the owner's, a chat that is
+not paired is refused once and never reaches an agent, and nothing below
+happens anywhere else. Guest mail and shared rooms never come this way.
+
+A card a Telegram turn raises goes to the chat it came from
+(`telegramCards`, `server/telegram-cards.ts`). An approval comes with
+Allow and Deny to tap, a question with one button per choice; a question
+with no choices, or more than eight, is answered by typing, and typing a
+number or yes / no still works on any card. A button carries a short
+random token and the choice's place, never the request id: Telegram
+allows it 64 bytes, and a token that means nothing outside this process
+cannot be replayed. Tokens live in memory for a day at most, so a button
+from before a restart answers that its card has closed. A press counts
+only from a paired chat, under the message the card became, from the
+person it is paired with (`decide`); anyone else's is ignored without a
+reply. The press is answered (`answerCallbackQuery`), the ask is
+resolved like a typed answer, and the card's message is rewritten to say
+how ("Allowed", "Denied", "Answered: ...") with its buttons gone. A card
+answered anywhere else (the app, the phone typing, an engine giving up)
+is rewritten the same way from `request.resolved`, and the chat's next
+line is a message again rather than an answer to it.
+
 ## Teams as files
 
 `server/team-file.ts` reads and writes a team as one Markdown file: a
