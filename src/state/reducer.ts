@@ -80,6 +80,8 @@ export interface Message {
   /** When it was queued, and when it stopped waiting and went to the
    * agent. Together they are how long it waited. */
   queuedAt?: number;
+  /** The server says this message waits for a restart, rather than a turn. */
+  waitsFor?: "restart";
   deliveredAt?: number;
   /** Queued, but still waiting when Bloks restarted and too old to send
    * on its own (server/index.ts, recoverQueued). */
