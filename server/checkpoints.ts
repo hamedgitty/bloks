@@ -74,6 +74,10 @@ export const MAX_FILES = 20_000;
 const MAX_NEW_BYTES = 256 * 1024 * 1024;
 /** Records kept; older ones lose their undo, never their card. */
 const MAX_RECORDS = 300;
+/** How far past MAX_RECORDS the records go before the oldest are let go
+ * together and the store swept once. A sweep reads every photograph and
+ * lists every kept version, which is too much to do after every turn. */
+const SWEEP_EVERY = 50;
 /** A text diff past this many lines on either side is summarised. */
 const MAX_DIFF_LINES = 4_000;
 
@@ -365,6 +369,11 @@ export class Checkpoints {
   /** Running turns that did something which may write files it does not
    * name (noteUnnamedWrites). */
   private unnamed = new Set<string>();
+  /** Photographs, comparisons, applies and undos under way. Until one is
+   * done, the versions it just kept, or is about to read, may be named by
+   * no record and no photograph on disk, so a sweep waits until none is. */
+  private busy = 0;
+  private sweepDue = false;
 
   constructor(root: string) {
     this.root = root;
@@ -393,22 +402,24 @@ export class Checkpoints {
     // A rehearsal writes into its own copy, so it neither touches the
     // folder nor sees what others write there.
     if (!afterDir) this.arrive(threadId, botId, dir);
-    let photo: Photo | null;
-    if (afterDir) {
-      // Every turn in a copy starts from the folder as the copy was made,
-      // never as it is now: whatever you changed there since would read
-      // as the agent changing it back, and Apply would undo your work. A
-      // rehearsal begun before baselines were kept starts its own here.
-      photo = this.readBaseline(afterDir);
-      if (!photo) {
+    return this.working(async () => {
+      let photo: Photo | null;
+      if (afterDir) {
+        // Every turn in a copy starts from the folder as the copy was made,
+        // never as it is now: whatever you changed there since would read
+        // as the agent changing it back, and Apply would undo your work. A
+        // rehearsal begun before baselines were kept starts its own here.
+        photo = this.readBaseline(afterDir);
+        if (!photo) {
+          photo = await this.serial(dir, () => this.photograph(dir, ignore));
+          if (photo) this.keepBaseline(afterDir, photo);
+        }
+      } else {
         photo = await this.serial(dir, () => this.photograph(dir, ignore));
-        if (photo) this.keepBaseline(afterDir, photo);
       }
-    } else {
-      photo = await this.serial(dir, () => this.photograph(dir, ignore));
-    }
-    if (photo) this.pending.set(threadId, { botId, dir, photo, ignore, ...(afterDir ? { afterDir } : {}) });
-    return Boolean(photo);
+      if (photo) this.pending.set(threadId, { botId, dir, photo, ignore, ...(afterDir ? { afterDir } : {}) });
+      return Boolean(photo);
+    });
   }
 
   /**
@@ -421,9 +432,11 @@ export class Checkpoints {
    */
   async baseline(dir: string, copy: string, ignore: string[] = []): Promise<boolean> {
     if (!trackable(dir)) return false;
-    const photo = await this.serial(dir, () => this.photograph(dir, ignore));
-    if (photo) this.keepBaseline(copy, photo);
-    return Boolean(photo);
+    return this.working(async () => {
+      const photo = await this.serial(dir, () => this.photograph(dir, ignore));
+      if (photo) this.keepBaseline(copy, photo);
+      return Boolean(photo);
+    });
   }
 
   /** A settled rehearsal's starting point, of no use once its copy is gone. */
@@ -442,34 +455,36 @@ export class Checkpoints {
     this.edited.delete(threadId);
     const unnamed = this.unnamed.delete(threadId);
     if (!before) return null;
-    const where = before.afterDir ?? before.dir;
-    const after = await this.serial(where, () => this.photograph(where, before.ignore, before.afterDir ? before.photo : undefined));
-    if (before.afterDir) this.forgetPhoto(before.afterDir);
-    if (!after) return null;
-    const compared = this.compare(before.photo, after);
-    if (compared.length === 0) return null;
-    const alongside = turn ? [...new Set(turn.alongside.values())] : [];
-    if (alongside.length) for (const change of compared) if (!edited.has(change.path)) change.shared = true;
-    // this turn's own first, so the card leads with what it is sure of
-    const files = [...compared.filter((f) => !f.shared), ...compared.filter((f) => f.shared)];
-    const record: CheckpointRecord = {
-      id: newId(),
-      threadId,
-      botId: before.botId,
-      dir: before.dir,
-      at: Date.now(),
-      files,
-      ...(alongside.length ? { alongside } : {}),
-      ...(alongside.length && unnamed ? { unnamedWrites: true } : {}),
-      ...(before.afterDir ? { rehearsal: { copy: before.afterDir } } : {}),
-    };
-    this.records.push(record);
-    if (this.records.length > MAX_RECORDS) {
-      this.records.splice(0, this.records.length - MAX_RECORDS);
-      this.sweep();
-    }
-    this.save();
-    return record;
+    return this.working(async () => {
+      const where = before.afterDir ?? before.dir;
+      const after = await this.serial(where, () => this.photograph(where, before.ignore, before.afterDir ? before.photo : undefined));
+      if (before.afterDir) this.forgetPhoto(before.afterDir);
+      if (!after) return null;
+      const compared = this.compare(before.photo, after);
+      if (compared.length === 0) return null;
+      const alongside = turn ? [...new Set(turn.alongside.values())] : [];
+      if (alongside.length) for (const change of compared) if (!edited.has(change.path)) change.shared = true;
+      // this turn's own first, so the card leads with what it is sure of
+      const files = [...compared.filter((f) => !f.shared), ...compared.filter((f) => f.shared)];
+      const record: CheckpointRecord = {
+        id: newId(),
+        threadId,
+        botId: before.botId,
+        dir: before.dir,
+        at: Date.now(),
+        files,
+        ...(alongside.length ? { alongside } : {}),
+        ...(alongside.length && unnamed ? { unnamedWrites: true } : {}),
+        ...(before.afterDir ? { rehearsal: { copy: before.afterDir } } : {}),
+      };
+      this.records.push(record);
+      if (this.records.length > MAX_RECORDS + SWEEP_EVERY) {
+        this.records.splice(0, this.records.length - MAX_RECORDS);
+        this.sweepDue = true;
+      }
+      this.save();
+      return record;
+    });
   }
 
   /** Forgets a turn that never ran. */
@@ -613,7 +628,7 @@ export class Checkpoints {
   async apply(id: string): Promise<RevertResult | null> {
     const record = this.get(id);
     if (!record?.rehearsal || record.appliedAt || record.discardedAt) return null;
-    return this.serial(record.dir, async () => {
+    return this.working(() => this.serial(record.dir, async () => {
       const result: RevertResult = { restored: [], skipped: [] };
       for (const change of record.files) {
         const target = join(record.dir, change.path);
@@ -663,7 +678,7 @@ export class Checkpoints {
       record.appliedAt = Date.now();
       this.save();
       return result;
-    });
+    }));
   }
 
   /** A rehearsal left unapplied: its card says so, and it cannot be undone. */
@@ -680,7 +695,7 @@ export class Checkpoints {
     if (!record) return null;
     // a rehearsal that never reached the folder has nothing there to undo
     if (record.rehearsal && !record.appliedAt) return null;
-    return this.serial(record.dir, async () => {
+    return this.working(() => this.serial(record.dir, async () => {
       const result: RevertResult = { restored: [], skipped: [] };
       for (const change of record.files) {
         if (change.shared) continue;
@@ -717,10 +732,24 @@ export class Checkpoints {
       record.revertedAt = Date.now();
       this.save();
       return result;
-    });
+    }));
   }
 
   // ── the photographs ────────────────────────────────────────────────
+
+  /** Counts `work` as under way (busy), and sweeps once nothing is, if a
+   * sweep came due meanwhile. */
+  private async working<T>(work: () => Promise<T>): Promise<T> {
+    this.busy++;
+    try {
+      return await work();
+    } finally {
+      if (--this.busy === 0 && this.sweepDue) {
+        this.sweepDue = false;
+        this.sweep();
+      }
+    }
+  }
 
   private serial<T>(dir: string, work: () => Promise<T> | T): Promise<T> {
     const prior = this.queues.get(dir) ?? Promise.resolve();
@@ -929,6 +958,10 @@ export class Checkpoints {
       if (f.before) wanted.add(f.before);
       if (f.after) wanted.add(f.after);
     }
+    // A running turn's before is held here until it finishes. A later
+    // photograph of the same folder replaces the one on disk, so what it
+    // names may be nowhere else, and its Undo needs every bit of it.
+    for (const { photo } of this.pending.values()) for (const entry of photo.values()) if (entry.hash) wanted.add(entry.hash);
     try {
       for (const name of readdirSync(this.photos)) {
         const photo = JSON.parse(readFileSync(join(this.photos, name), "utf8")) as Record<string, Entry>;

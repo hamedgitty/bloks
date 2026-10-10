@@ -1,6 +1,6 @@
 // What a turn changed, and undoing it without losing anything done since.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -397,5 +397,82 @@ describe("turns that share a folder", () => {
     const real = (await cp.finish("real"))!;
     assert.ok(real.files.every((f) => !f.shared));
     cp.cancel("rehearsal");
+  });
+});
+
+// The store is swept of versions nothing names any more, and a sweep
+// must never take one that a turn under way, or still running, needs.
+describe("sweeping the store", () => {
+  /** A store already at `count` records, as a busy one is. */
+  function seeded(name: string, count: number) {
+    const root = join(scratch, name);
+    mkdirSync(root, { recursive: true });
+    const records = Array.from({ length: count }, (_, i) => ({ id: `old-${i}`, threadId: "old", botId: "bot", dir: "/nowhere", at: i, files: [] }));
+    writeFileSync(join(root, "index.json"), JSON.stringify(records));
+    return root;
+  }
+
+  function blobCount(root: string) {
+    if (!existsSync(join(root, "blobs"))) return 0;
+    return readdirSync(join(root, "blobs")).reduce((n, shard) => n + readdirSync(join(root, "blobs", shard)).length, 0);
+  }
+
+  test("a sweep waits for a photograph under way, so that turn can still be undone", async () => {
+    const root = seeded("store-sweep-busy", 400);
+    const cp = new Checkpoints(root);
+    const quick = folder("sweep-quick", { "q.md": "q\n" });
+    const files = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`f${i}.txt`, `version one of ${i}\n`]));
+    const slow = folder("sweep-slow", files);
+    await cp.begin("quick", "bot", quick);
+    writeFileSync(join(quick, "q.md"), "q2\n");
+
+    // the quick turn ends, past the record limit, while the slow folder is
+    // part way through its first photograph
+    const kept = blobCount(root);
+    const photographing = cp.begin("slow", "bot", slow);
+    while (blobCount(root) < kept + 20) await new Promise((done) => setImmediate(done));
+    await cp.finish("quick");
+    await photographing;
+
+    for (const name of Object.keys(files)) writeFileSync(join(slow, name), "version two\n");
+    const record = (await cp.finish("slow"))!;
+    const undo = (await cp.revert(record.id))!;
+    assert.deepEqual(undo.skipped, []);
+    assert.equal(undo.restored.length, 1000);
+    assert.equal(readFileSync(join(slow, "f0.txt"), "utf8"), "version one of 0\n");
+  });
+
+  test("a running turn's before photograph keeps what it names, after another replaced it on disk", async () => {
+    const cp = new Checkpoints(seeded("store-sweep-pending", 400));
+    const dir = folder("sweep-pending", { "x.md": "first\n" });
+    await cp.begin("a", "ada", dir);
+    cp.noteEdits("a", ["x.md"]);
+    writeFileSync(join(dir, "x.md"), "second\n");
+    // another lane photographs the folder again, and ends past the record
+    // limit while the first is still running
+    await cp.begin("b", "linus", dir);
+    cp.noteEdits("b", ["y.md"]);
+    writeFileSync(join(dir, "y.md"), "y\n");
+    await cp.finish("b");
+    const a = (await cp.finish("a"))!;
+    assert.deepEqual(await cp.revert(a.id), { restored: ["x.md"], skipped: [] });
+    assert.equal(readFileSync(join(dir, "x.md"), "utf8"), "first\n");
+  });
+
+  test("the store is swept now and then, not after every turn", async () => {
+    const root = seeded("store-sweep-batch", 300);
+    const stray = join(root, "blobs", "ab", `ab${"0".repeat(62)}`);
+    mkdirSync(join(stray, ".."), { recursive: true });
+    writeFileSync(stray, "nothing names this");
+    const cp = new Checkpoints(root);
+    const dir = folder("sweep-batch", { "n.md": "0\n" });
+    for (let turn = 1; turn <= 51; turn++) {
+      await cp.begin("lane", "bot", dir);
+      writeFileSync(join(dir, "n.md"), `${turn}\n`);
+      await cp.finish("lane");
+      if (turn === 1) assert.ok(existsSync(stray), "one turn past the limit is not worth a sweep");
+    }
+    assert.equal(existsSync(stray), false, "fifty past it are");
+    assert.equal(cp.get("old-0"), undefined, "and the oldest records went together");
   });
 });
