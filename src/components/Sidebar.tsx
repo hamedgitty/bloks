@@ -25,7 +25,7 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings-2.mjs";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles.mjs";
 import Users from "lucide-react/dist/esm/icons/users.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
-import { api, sidebarRows, useStore, formatWhen, type Action, type Blok, type Bot } from "@/state/store";
+import { api, sidebarRows, useStore, formatWhen, workingInRoom, type Action, type Blok, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { AgentAvatar } from "./Avatar";
 import { BloksLogo, BloksMark } from "./Brand";
@@ -552,7 +552,8 @@ function RoomListItem({
     .map((id) => state.bots.find((b) => b.id === id))
     .filter(Boolean) as Bot[];
   const last = lastSaid(blok.messages);
-  const working = members.filter((m) => m.busy);
+  // working in this room, as the room itself shows it (workingInRoom)
+  const working = members.filter((m) => workingInRoom(m, blok.id));
 
   if (rail) {
     return (

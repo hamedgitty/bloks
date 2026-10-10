@@ -17,7 +17,7 @@ import Users from "lucide-react/dist/esm/icons/users.mjs";
 import UserPlus from "lucide-react/dist/esm/icons/user-plus.mjs";
 import type { RoomPerson } from "@/state/reducer";
 import { SharePanel } from "./SharePanel";
-import { api, useStore, type Blok, type Bot, type Message } from "@/state/store";
+import { api, useStore, workingInRoom, type Blok, type Bot, type Message } from "@/state/store";
 import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
@@ -394,7 +394,9 @@ export function RoomView({ blok }: { blok: Blok }) {
     (best, m) => (!best || seniorityOf(m) > seniorityOf(best) ? m : best),
     null,
   );
-  const working = members.filter((m) => m.busy);
+  // thinking here, not just busy: a member at work in another
+  // conversation is not about to answer this room
+  const working = members.filter((m) => workingInRoom(m, blok.id));
 
   const [boundary, setBoundary] = useState<number | null>(null);
   const preExpand = useRef<number | null>(null);

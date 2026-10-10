@@ -1162,6 +1162,10 @@ function clientBot(bot: BotRecord | null) {
         // own words never land there (activeLaneOf), so the app says so in
         // it rather than letting what is typed seem to vanish.
         ...(task.guestMail ? { guestMail: true } : {}),
+        // The room this lane's turn is speaking in, while it runs. A room
+        // shows who is thinking from this, not from the agent's own flag,
+        // which is up whenever any of its lanes works, here or not.
+        ...(task.busy && (activeRoom.get(task.id) ?? task.id) !== task.id ? { room: activeRoom.get(task.id) } : {}),
         usage: task.usage,
         context: {
           used: fill.used,

@@ -187,6 +187,8 @@ export interface TaskSummary {
   /** Where mail from senders the person has not listed is answered. The
    * person's own words go to the first conversation instead (typedLane). */
   guestMail?: boolean;
+  /** The room this lane's turn is speaking in, while it runs. */
+  room?: string;
 }
 
 export interface Bot {
@@ -359,6 +361,15 @@ export function openLaneWorking(bot: LanedBot & { busy?: boolean }): boolean {
   const open = bot.activeTaskId ?? bot.threadId;
   const lane = bot.tasks?.find((t) => t.id === open);
   return lane?.state ? lane.state === "working" : Boolean(bot.busy);
+}
+
+/** Whether this agent is taking a turn in this room right now. Its own
+ * busy flag is up while any of its lanes works, so a room reading it said
+ * a member was thinking there while it worked on something else. Each
+ * lane says which room its running turn speaks in; a harness too old to
+ * report lanes falls back to the agent's flag. */
+export function workingInRoom(bot: { busy?: boolean; tasks?: Array<{ room?: string }> }, roomId: string): boolean {
+  return bot.tasks ? bot.tasks.some((t) => t.room === roomId) : Boolean(bot.busy);
 }
 
 /** The conversation words typed to this agent are sent to: the one on
