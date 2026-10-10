@@ -826,8 +826,16 @@ async function readinessOf(bot: BotRecord): Promise<{ readiness: Readiness; engi
 // What each agent remembered, and when, with a way back per change.
 const memoryJournal = new MemoryJournal(join(DATA_DIR, "memory-journal"), workspace.workspaceDir);
 // An agent doing the work on a clone of its folder, for you to apply or not.
-const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"), (r) => checkpoints.forgetBaseline(r.copy));
-void rehearsals.sweep().catch(() => {});
+const rehearsals = new Rehearsals(join(DATA_DIR, "rehearsals"), (r) => {
+  checkpoints.forgetBaseline(r.copy);
+  // Settled any way but applied, its card stops offering Apply: with the
+  // copy gone, an Apply would bring in what the store kept and quietly
+  // skip the rest.
+  if (r.state !== "applied" && r.checkpointId && checkpoints.discard(r.checkpointId)) {
+    const record = checkpoints.get(r.checkpointId);
+    if (record) patchChangesCard(record);
+  }
+});
 /** Rehearsal lanes may go this far past the lane cap. */
 const REHEARSAL_LANES = 3;
 /** Lanes whose last changes were undone since the agent last spoke: its
@@ -3051,7 +3059,18 @@ const claimedLanes = new Map<string, LaneClaim>();
 /** store.deleteTask, counting a lane still getting a turn ready as busy:
  * closed then, the turn would start in a lane that no longer exists. */
 function deleteLane(botId: string, laneId: string): ReturnType<typeof store.deleteTask> {
-  return claimedLanes.has(laneId) ? "busy" : store.deleteTask(botId, laneId);
+  if (claimedLanes.has(laneId)) return "busy";
+  const outcome = store.deleteTask(botId, laneId);
+  // A rehearsal's lane is the only way to its copy: closed, nothing can
+  // follow up on it or apply it, so the copy goes now rather than in a week.
+  const rehearsed = outcome === "ok" ? rehearsals.forTask(laneId) : undefined;
+  if (rehearsed && !rehearsed.settledAt) {
+    void rehearsals
+      .settle(rehearsed.id, "discarded")
+      .then(() => broadcast({ kind: "rehearsals" }))
+      .catch(() => {});
+  }
+  return outcome;
 }
 
 /** Starts a turn (startClaimedTurn). A start that gives up before
@@ -4660,6 +4679,17 @@ for (const w of watchers) armWatcher(w);
 for (const bot of store.bots) {
   for (const id of orphanWatcherLanes(bot.tasks, watchers, personSpokeIn)) deleteLane(bot.id, id);
 }
+// Rehearsal copies nobody applied or discarded are cleared now, and then
+// every hour while Bloks runs: a Mac that is never restarted would keep
+// them all. Not before this point, past the last wait of startup, since
+// settling one redraws its card and that is broadcast.
+const sweepRehearsals = () =>
+  void rehearsals
+    .sweep()
+    .then((changed) => changed && broadcast({ kind: "rehearsals" }))
+    .catch(() => {});
+sweepRehearsals();
+setInterval(sweepRehearsals, 60 * 60_000).unref?.();
 // Pages and feeds on their own schedules; folders as a fallback.
 setInterval(() => {
   const now = Date.now();

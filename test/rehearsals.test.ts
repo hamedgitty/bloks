@@ -127,6 +127,20 @@ describe("rehearsals", () => {
     assert.ok(existsSync(join(dir, "video.bin")), "a big file Undo could never bring back is still there");
   });
 
+  test("a copy left waiting a week is cleared by a sweep, and what was kept beside it is let go", async () => {
+    const dir = folder("stale", { "a.txt": "a\n" });
+    const told: string[] = [];
+    const reg = new Rehearsals(join(scratch, "stale-registry"), (r) => told.push(r.id));
+    const r = await reg.open({ botId: "b", taskId: "lane", dir, text: "later" });
+    reg.update(r.id, { state: "ready" });
+    assert.equal(await reg.sweep(), false, "a fresh one is left waiting");
+    assert.ok(existsSync(r.copy));
+    assert.equal(await reg.sweep(Date.now() + 8 * 24 * 60 * 60 * 1000), true);
+    assert.equal(reg.get(r.id)?.state, "discarded");
+    assert.equal(existsSync(r.copy), false);
+    assert.deepEqual(told, [r.id]);
+  });
+
   test("the registry keeps attempts in groups, clears clones on settling, and survives a restart", async () => {
     const dir = folder("five", { "a.txt": "a\n" });
     const root = join(scratch, "registry");

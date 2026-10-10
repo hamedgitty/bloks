@@ -188,19 +188,25 @@ export class Rehearsals {
     this.onSettled?.(r);
   }
 
-  /** Clears clones left waiting too long, and forgets the oldest settled. */
-  async sweep(now = Date.now()): Promise<void> {
+  /** Clears clones left waiting too long, and forgets the oldest settled.
+   * True when it settled or forgot any. */
+  async sweep(now = Date.now()): Promise<boolean> {
+    let changed = false;
     for (const r of this.list) {
       if ((r.state === "ready" || r.state === "empty") && now - r.at > STALE_MS) await this.settle(r.id, "discarded");
       // cut off by a restart: nothing will ever come of its copy
       else if (r.state === "failed" && !r.settledAt) await this.settle(r.id, "failed");
+      else continue;
+      changed = true;
     }
     const settled = this.list.filter((r) => r.settledAt);
     if (settled.length > MAX_KEPT) {
       const drop = new Set(settled.slice(0, settled.length - MAX_KEPT).map((r) => r.id));
       this.list = this.list.filter((r) => !drop.has(r.id));
       this.save();
+      changed = true;
     }
+    return changed;
   }
 
   private save() {
