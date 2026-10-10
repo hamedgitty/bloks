@@ -152,6 +152,42 @@ const COMMANDS = {
     about: "your watchers, and when each last fired",
     run: async () => (await request("GET", "/api/watchers")).watchers,
   },
+  "edit-watch": {
+    use: 'edit-watch <watcher-id> [--do "<what to do>"] [--folder <path> | --page <url> | --feed <url> | --check "<command>"] [--name <name>] [--every <minutes>] [--mentions <text>] [--thread <conversation>]',
+    about:
+      "change supplied fields of one of your watchers, keeping its id and fire history; leave out a flag to keep that field. " +
+      "Use --mentions= or --thread= to clear those fields. The same text limits as watch apply. " +
+      "A changed check command needs approval again unless you already run commands without asking",
+    run: async (args) => {
+      const [id, ...rest] = args;
+      if (!id || id.startsWith("--")) throw new Error("edit-watch needs a watcher id");
+      const fields = { do: "instruction", name: "name", every: "every", mentions: "mentions", thread: "thread" };
+      const kinds = ["folder", "page", "feed", "check"];
+      for (let i = 0; i < rest.length; i++) {
+        const arg = rest[i];
+        const key = arg.split("=")[0].slice(2);
+        if (!arg.startsWith("--") || (!Object.hasOwn(fields, key) && !kinds.includes(key))) throw new Error(`edit-watch does not understand ${arg}`);
+        if (!arg.includes("=")) {
+          if (rest[i + 1] === undefined || rest[i + 1].startsWith("--")) throw new Error(`--${key} needs a value`);
+          i++;
+        }
+      }
+      const flags = parseFlags(rest);
+      const targets = kinds.filter((kind) => Object.hasOwn(flags, kind));
+      if (targets.length > 1) throw new Error("edit-watch takes only one of --folder, --page, --feed or --check");
+      const body = {};
+      for (const [flag, field] of Object.entries(fields)) {
+        if (Object.hasOwn(flags, flag)) body[field] = flag === "every" ? Number(flags[flag]) : flags[flag];
+      }
+      if (targets.length) Object.assign(body, { kind: targets[0], target: flags[targets[0]] });
+      if (!Object.keys(body).length) throw new Error("edit-watch needs at least one field to change");
+      if (Object.hasOwn(body, "every") && !Number.isFinite(body.every)) throw new Error("--every needs a number of minutes");
+      const edited = await request("PATCH", `/api/watchers/${encodeURIComponent(id)}`, body);
+      const every = edited.watcher?.every;
+      if (edited.watcher?.kind === "folder" || !Number.isFinite(body.every) || typeof every !== "number" || Math.round(body.every) === every) return edited;
+      return { ...edited, note: `Checks every ${every} minutes (the ${every > body.every ? "minimum" : "maximum"}; you asked for ${body.every}).` };
+    },
+  },
   unwatch: {
     use: "unwatch <watcher-id>",
     about: "stop one of your watchers",
