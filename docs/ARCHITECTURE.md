@@ -496,7 +496,8 @@ Five at most come with one answer, and Telegram takes 50 MB from a bot,
 so the rest and anything bigger are named in one line saying they are in
 the app. A request held through a restart gets its files after its answer
 the same way (`TelegramReturns`), and only once that answer has arrived.
-Turns that did not begin on Telegram send nothing there.
+Files go only with an answer that goes to the chat: a turn started in
+the app, a routine or a mail sends nothing there.
 
 While a Telegram turn runs the chat shows "typing" (`keepTyping`), and a
 turn still running after about twenty seconds also posts one line saying
