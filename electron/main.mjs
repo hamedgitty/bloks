@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeBadgeCount, resolveWindowState } from "./window-state.mjs";
 import { appMenuTemplate } from "./app-menu.mjs";
 import { drainWait } from "./drain-wait.mjs";
+import { mayLookAgain, newestBeforeInstall, updateFrame } from "./update-check.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
 import { sameAppOrigin } from "./navigation.mjs";
 import { linkInArgv, teamLink } from "./links.mjs";
@@ -1004,11 +1005,23 @@ async function drainBeforeRestart() {
   return outcome;
 }
 
-handle("update:install", async (event) => {
-  if (!app.isPackaged || drainWaiting) return;
-  if ((await drainBeforeRestart()) === "cancel") return;
-  // same teardown as a normal quit, then the installer takes over
-  electronUpdater.autoUpdater.quitAndInstall();
+/** A restart asked for and on its way, through its last look and the
+ * drain, so a second press does not start another. */
+let installing = false;
+
+handle("update:install", async () => {
+  if (!app.isPackaged || drainWaiting || installing) return;
+  installing = true;
+  try {
+    // a newer release than the one downloaded is the one to restart into
+    // (electron/update-check.mjs)
+    await newestBeforeInstall(electronUpdater.autoUpdater);
+    if ((await drainBeforeRestart()) === "cancel") return;
+    // same teardown as a normal quit, then the installer takes over
+    electronUpdater.autoUpdater.quitAndInstall();
+  } finally {
+    installing = false;
+  }
 });
 handle("update:restart-now", () => drainWaiting?.stop("now"));
 handle("update:later", () => drainWaiting?.stop("cancel"));
@@ -1174,14 +1187,19 @@ app.whenReady().then(async () => {
     // Every updater event folds into one state frame the renderer can
     // draw: the About card shows checking, downloading, ready or quiet,
     // and never has to know the updater's own event vocabulary.
-    const tellWindows = (state, detail = {}) => showUpdate({ state, ...detail });
+    // One waiting to be installed goes on saying so through a look past
+    // it (electron/update-check.mjs).
+    const tellWindows = (event, detail) => {
+      const next = updateFrame(updaterState, event, detail);
+      if (next) showUpdate(next);
+    };
     autoUpdater.on("checking-for-update", () => tellWindows("checking"));
-    autoUpdater.on("update-available", (info) => tellWindows("downloading", { version: info?.version }));
-    autoUpdater.on("update-not-available", () => tellWindows("current"));
+    autoUpdater.on("update-available", (info) => tellWindows("available", { version: info?.version }));
+    autoUpdater.on("update-not-available", () => tellWindows("not-available"));
     autoUpdater.on("download-progress", (progress) =>
-      tellWindows("downloading", { percent: Math.round(progress?.percent ?? 0) }),
+      tellWindows("progress", { percent: Math.round(progress?.percent ?? 0) }),
     );
-    autoUpdater.on("update-downloaded", (info) => tellWindows("ready", { version: info?.version }));
+    autoUpdater.on("update-downloaded", (info) => tellWindows("downloaded", { version: info?.version }));
     // A Finder launch sends stdout to /dev/null, so the updater writes its
     // own log. Without it a failed update leaves nothing to read afterwards.
     autoUpdater.logger = updaterLogger();
@@ -1194,10 +1212,11 @@ app.whenReady().then(async () => {
     autoUpdater.checkForUpdatesAndNotify().catch(() => {});
     // Again every few hours. Most people leave Bloks open for days, and a
     // check only at launch meant they never heard about a release until
-    // they happened to quit. Not while one is already downloading or
-    // waiting to be installed: there is nothing newer to find then.
+    // they happened to quit. Not while one is already downloading. One
+    // waiting to be installed is looked past: a release since it came
+    // down is the one to install (GitHub 247).
     setInterval(() => {
-      if (updaterState.state === "downloading" || updaterState.state === "ready") return;
+      if (!mayLookAgain(updaterState)) return;
       autoUpdater.checkForUpdates().catch(() => {});
     }, RECHECK_UPDATES_MS).unref?.();
   }
