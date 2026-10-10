@@ -462,7 +462,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           env: {
             ...RUN_AS_NODE,
             BLOKS_BROWSER_PROFILE: turn.integrations.browser.profileDir,
-            BLOKS_BROWSER_PORT: String(turn.integrations.browser.port),
           },
         };
         allowed.push("mcp__browser");

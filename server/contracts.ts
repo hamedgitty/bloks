@@ -204,8 +204,9 @@ export interface SendTurnInput {
     sandbox?: { runtime: string; name: string };
     /** A real browser, driven through its debugging protocol rather than
      * through pixels. Separate from `computer` on purpose: the web will
-     * describe itself if asked, and a native app will not. */
-    browser?: { profileDir: string; port: number };
+     * describe itself if asked, and a native app will not. Its port is
+     * the profile's own browser's, found from the profile (cdp.ts). */
+    browser?: { profileDir: string };
     /** User-registered MCP servers this agent may use, already resolved
      * to their full spawn/connect shape by the harness. */
     mcpServers?: Array<{

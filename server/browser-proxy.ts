@@ -17,7 +17,13 @@ import { DEFAULT_PORT, launch, listTargets, Session } from "./cdp.ts";
 import { clickScript, focusScript, formatSnapshot, READ, SCAN } from "./page-script.ts";
 
 const PROFILE = process.env.BLOKS_BROWSER_PROFILE ?? "";
-const PORT = Number(process.env.BLOKS_BROWSER_PORT || DEFAULT_PORT);
+/** Without a profile of ours, a browser somebody started by hand. */
+const HAND_PORT = Number(process.env.BLOKS_BROWSER_PORT || DEFAULT_PORT);
+
+/** The port of this agent's own browser, started first if it is not
+ * running. Asked each time: the browser may have been closed, and a new
+ * one listens somewhere else. */
+const browserPort = () => (PROFILE ? launch(PROFILE) : Promise.resolve(HAND_PORT));
 
 const emit = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -34,8 +40,7 @@ async function page(): Promise<Session> {
   if (session && attachedTo && session.attached) return session;
   // the page went away since the last call: start over from the list
   if (session) drop();
-  if (PROFILE) await launch(PROFILE, PORT);
-  const targets = await listTargets(PORT);
+  const targets = await listTargets(await browserPort());
   if (!targets.length) throw new Error("no page open. Use open with a URL first");
   const target = targets[targets.length - 1];
   const next = new Session(target.webSocketDebuggerUrl);
@@ -171,7 +176,7 @@ async function invoke(id: unknown, name: string, args: Record<string, any>) {
     case "browser_open": {
       const url = String(args.url ?? "").trim();
       if (!/^https?:\/\//i.test(url)) return say(id, "open needs an http or https URL", true);
-      if (PROFILE) await launch(PROFILE, PORT);
+      await browserPort();
       // A fresh navigation invalidates every ref, so the old attachment
       // goes with it rather than being reused against a different page.
       drop();

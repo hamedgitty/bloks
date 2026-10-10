@@ -3,7 +3,7 @@
 // The one rule the whole shape follows: clients hold no transports. The
 // React app dispatches typed commands over HTTP and folds one SSE event
 // stream, and every provider process runs here.
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -164,7 +164,7 @@ import { reservedEnvName, usableSecrets } from "./env-names.ts";
 import * as discord from "./discord.ts";
 import * as whatsapp from "./whatsapp.ts";
 import { CHAT_PLATFORMS, decide as decideChat, knockReply, outbound, PLATFORM_NAME, TurnBrake, type ChatMessage, type ChatPlatform } from "./chat-bridge.ts";
-import { launch, listTargets, Session as CdpSession } from "./cdp.ts";
+import { closeBrowser, launch, listTargets, profilePort, Session as CdpSession } from "./cdp.ts";
 import { attribution, clamped, Ledger } from "./ledger.ts";
 import {
   KINDS as COMPONENT_KINDS,
@@ -527,9 +527,36 @@ const CLI_COMMAND = process.platform === "win32" ? `node "${AGENT_CLI}"` : `node
 /** Bloks as an MCP server for other AI apps (bin/bloks-mcp.mjs). */
 const MCP_CLI = fileURLToPath(new URL("../bin/bloks-mcp.mjs", import.meta.url));
 
-/** The agent browser's debugging port. One browser serves every agent
- * that has one; profiles keep their sessions apart. */
-const BROWSER_PORT = Number(process.env.BLOKS_BROWSER_PORT || 9222);
+/** The browser profile each agent's latest turn was handed: its own, or
+ * a shared room's, which is never signed in as the owner. Each profile is
+ * a browser on a port of its own (cdp.ts), and this is the one the
+ * preview shows and the chat's clicks reach. */
+const browserProfiles = new Map<string, string>();
+
+function browserProfile(botId: string): string {
+  return browserProfiles.get(botId) ?? join(DATA_DIR, "browser", botId);
+}
+
+/** The port of the browser an agent is using, which is only known once
+ * that browser is running. */
+async function browserPortOf(botId: string): Promise<number> {
+  const port = await profilePort(browserProfile(botId));
+  if (!port) throw new Error("the agent's browser is not open");
+  return port;
+}
+
+/** Every agent and room browser still open, closed as Bloks quits: one
+ * per profile is too many to leave behind. Their sign-ins stay in the
+ * profiles for next time. */
+async function closeBrowsers(): Promise<void> {
+  let names: string[];
+  try {
+    names = readdirSync(join(DATA_DIR, "browser"));
+  } catch {
+    return;
+  }
+  await Promise.allSettled(names.map((name) => closeBrowser(join(DATA_DIR, "browser", name))));
+}
 
 /**
  * The skill catalog, fetched and kept for a while.
@@ -1693,7 +1720,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // a picture of whatever page an earlier one left open. Cheap to
         // photograph locally, so it refreshes faster than a cloud box.
         if (bot.browser === true && /browser/i.test(event.title ?? "")) {
-          startScreenPoller(bot.id, async () => ({ ...(await captureFrame(BROWSER_PORT)), source: "browser" }), 1500);
+          startScreenPoller(bot.id, async () => ({ ...(await captureFrame(await browserPortOf(bot.id))), source: "browser" }), 1500);
         }
       }
       break;
@@ -3664,11 +3691,10 @@ async function startClaimedTurn(
       // the one to hand it. Off unless asked for, because a browser
       // starts a real process.
       if ((!othersTurn || roomTools?.browser) && bot.browser === true) {
-        integrations.browser = {
-          // a shared room's browser is its own, never signed in as the owner
-          profileDir: join(DATA_DIR, "browser", sharing ? `room-${sharedRoom!.id}` : bot.id),
-          port: BROWSER_PORT,
-        };
+        // a shared room's browser is its own, never signed in as the owner
+        const profileDir = join(DATA_DIR, "browser", sharing ? `room-${sharedRoom!.id}` : bot.id);
+        browserProfiles.set(bot.id, profileDir);
+        integrations.browser = { profileDir };
       }
 
       // A lane keeps the folder its first turn ran in: engines key
@@ -4831,6 +4857,9 @@ async function windDown(bot: BotRecord) {
   );
   stopScreenPoller(bot.id);
   terminals.close(bot.id);
+  // its browser goes the way its shells do; the profile, and its
+  // sign-ins, stay for a Restore
+  void closeBrowser(join(DATA_DIR, "browser", bot.id)).catch(() => {});
   // A hold naming an agent that cannot act would sit in the activity
   // panel forever.
   wheel.release(bot.id);
@@ -4982,6 +5011,8 @@ async function stopSharing(roomId: string) {
   const blok = bloks.unshare(roomId);
   if (blok) broadcast({ kind: "blok", blok });
   roomPeopleFrame(roomId);
+  // the room's own browser has nobody left to serve
+  void closeBrowser(join(DATA_DIR, "browser", `room-${roomId}`)).catch(() => {});
 }
 
 /** The link an invite travels as. Everything after the # stays in the
@@ -9468,6 +9499,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (Object.keys(placing.ask).length) arrange("agent", m[1], placing.ask, m[1]);
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such agent" });
+      // a browser taken away is closed, not left open for nobody
+      if (patch.browser === false) void closeBrowser(join(DATA_DIR, "browser", bot.id)).catch(() => {});
       broadcast({ kind: "bot", bot: clientBot(bot) });
       return json(res, 200, { bot: clientBot(bot) });
     }
@@ -10563,10 +10596,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) {
             return json(res, 400, { error: "x and y are fractions of the page" });
           }
-          await clickAt(BROWSER_PORT, fx, fy);
+          await clickAt(await browserPortOf(bot.id), fx, fy);
         } else {
           const text = typeof body.text === "string" ? body.text.slice(0, 2_000) : "";
-          await typeText(BROWSER_PORT, text, body.enter === true);
+          await typeText(await browserPortOf(bot.id), text, body.enter === true);
         }
       } catch (e) {
         return json(res, 409, { error: e instanceof Error ? e.message : String(e) });
@@ -13600,8 +13633,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (!cookies.length) {
           return json(res, 200, { imported: 0, note: `no cookies for those sites in ${source.browser}` });
         }
-        await launch(join(DATA_DIR, "browser", bot.id), BROWSER_PORT);
-        const targets = await listTargets(BROWSER_PORT);
+        // its own profile's browser, never a room's
+        const targets = await listTargets(await launch(join(DATA_DIR, "browser", bot.id)));
         if (!targets.length) return json(res, 503, { error: "the agent's browser is not open" });
         const page = new CdpSession(targets[targets.length - 1].webSocketDebuggerUrl);
         await page.open();
@@ -14514,7 +14547,7 @@ const shutDown = () => {
   // outlive it, still holding the folder open
   terminals.closeAll();
   mcp.closeAll();
-  void registry.disposeAll().finally(() => process.exit(0));
+  void Promise.allSettled([registry.disposeAll(), closeBrowsers()]).finally(() => process.exit(0));
 };
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutDown);
 // The desktop app asks this way before it kills the server
