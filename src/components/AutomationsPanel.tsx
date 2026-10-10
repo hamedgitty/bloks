@@ -38,6 +38,7 @@ import { cn } from "@/lib/cn";
 import { WatchersTab } from "./WatchersTab";
 import Eye from "lucide-react/dist/esm/icons/eye.mjs";
 import { thisComputer } from "@/lib/thisComputer";
+import { gridHours } from "@/lib/dayGrid";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -61,8 +62,6 @@ interface WebhookRow {
 }
 
 const HOUR_PX = 52;
-const DAY_START = 6; // the gutter starts at 6am; earlier hours are rare
-const DAY_END = 23;
 
 const dayKey = (d: Date) => d.toDateString();
 
@@ -116,13 +115,13 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
     for (const [index, { el }] of columnRects.current) {
       const rect = el.getBoundingClientRect();
       if (clientX >= rect.left && clientX <= rect.right) {
-        const raw = ((clientY - rect.top) / HOUR_PX) * 60 + DAY_START * 60;
+        const raw = ((clientY - rect.top) / HOUR_PX) * 60 + hours.start * 60;
         const snapped = Math.round(raw / 15) * 15;
         // clamp into the hours the grid actually draws, so a drop can
         // never send a chip somewhere the calendar cannot show it
         return {
           dayIndex: index,
-          minutes: Math.max(DAY_START * 60, Math.min(DAY_END * 60 - 15, snapped)),
+          minutes: Math.max(hours.start * 60, Math.min(hours.end * 60 - 15, snapped)),
         };
       }
     }
@@ -238,6 +237,9 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
         .sort((a, b) => a.minutes - b.minutes),
     [visible],
   );
+  // the hours the Day and Week grids draw: wide enough for every routine
+  // on the days in view, a 3 AM one included
+  const hours = gridHours(days.flatMap((day) => occurrences(day).map((slot) => slot.minutes)));
 
   const paused = visible.filter((r) => !r.enabled);
   const monthLabel = (mode === "month" ? anchor : days[0]).toLocaleDateString([], { month: "long", year: "numeric" });
@@ -385,10 +387,10 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
               <div className="flex min-w-[640px]">
                 {/* time gutter */}
                 <div className="sticky left-0 z-10 w-14 shrink-0 border-r bg-background pt-[34px]">
-                  {Array.from({ length: DAY_END - DAY_START }, (_, i) => (
+                  {Array.from({ length: hours.end - hours.start }, (_, i) => (
                     <div key={i} className="relative" style={{ height: HOUR_PX }}>
                       <span className="absolute -top-2 right-2 text-[10.5px] tabular-nums text-muted-foreground/70">
-                        {(DAY_START + i) % 12 || 12} {DAY_START + i < 12 ? "AM" : "PM"}
+                        {(hours.start + i) % 12 || 12} {hours.start + i < 12 ? "AM" : "PM"}
                       </span>
                     </div>
                   ))}
@@ -422,7 +424,7 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
                           else columnRects.current.delete(dayIndex);
                         }}
                         className="relative"
-                        style={{ height: (DAY_END - DAY_START) * HOUR_PX }}
+                        style={{ height: (hours.end - hours.start) * HOUR_PX }}
                         onClick={(e) => {
                           // the click that ends a drag lands here too (the
                           // click target is the columns' common ancestor);
@@ -433,7 +435,7 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
                           }
                           // clicking empty grid starts a routine at that hour
                           const rect = e.currentTarget.getBoundingClientRect();
-                          const minutes = ((e.clientY - rect.top) / HOUR_PX + DAY_START) * 60;
+                          const minutes = ((e.clientY - rect.top) / HOUR_PX + hours.start) * 60;
                           const hour = Math.max(0, Math.min(23, Math.floor(minutes / 60)));
                           setCreating({
                             time: `${String(hour).padStart(2, "0")}:00`,
@@ -443,7 +445,7 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
                         }}
                       >
                         {/* hour lines */}
-                        {Array.from({ length: DAY_END - DAY_START }, (_, i) => (
+                        {Array.from({ length: hours.end - hours.start }, (_, i) => (
                           <div
                             key={i}
                             className="absolute inset-x-0 border-t border-border/60"
@@ -451,12 +453,11 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
                           />
                         ))}
                         {/* the moment it is right now */}
-                        {isToday && <NowLine />}
+                        {isToday && <NowLine start={hours.start} end={hours.end} />}
 
                         {slots.map(({ routine, minutes }) => {
                           const target = targetOf(routine.targetId);
-                          const top = ((minutes - DAY_START * 60) / 60) * HOUR_PX;
-                          if (top < -HOUR_PX) return null;
+                          const top = ((minutes - hours.start * 60) / 60) * HOUR_PX;
                           return (
                             <button
                               key={routine.id}
@@ -572,16 +573,17 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** The red line of the present moment, updated each minute. */
-function NowLine() {
+/** The red line of the present moment, updated each minute, on a grid
+ * that draws the hours from `start` to `end`. */
+function NowLine({ start, end }: { start: number; end: number }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(t);
   }, []);
   const minutes = now.getHours() * 60 + now.getMinutes();
-  const top = ((minutes - DAY_START * 60) / 60) * HOUR_PX;
-  if (top < 0 || top > (DAY_END - DAY_START) * HOUR_PX) return null;
+  const top = ((minutes - start * 60) / 60) * HOUR_PX;
+  if (top < 0 || top > (end - start) * HOUR_PX) return null;
   return (
     <div className="pointer-events-none absolute inset-x-0 z-10" style={{ top }}>
       <div className="h-px bg-destructive" />
