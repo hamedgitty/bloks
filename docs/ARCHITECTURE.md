@@ -97,6 +97,7 @@ Plain JSON under `~/.bloks`, written synchronously. No database.
 | `messages-<id>.json` | One transcript per agent or room, same key space |
 | `config.json` | Connected providers and keys, `0600` |
 | `skills/*.md` | Installed skills |
+| `setup-import.json` | What was brought over from other agent tools, by item: a digest, where it went, and the exact text added |
 | `events/`, `native/` | Canonical events, and raw provider traffic |
 | `checkpoints/` | Content-addressed file versions, one photograph per folder, and the undo records |
 
@@ -837,6 +838,57 @@ General).
 `server/profile-notes.ts` holds suggested and kept notes about the
 person; agents suggest with `note` or `note_about_person` (three a turn),
 only kept notes reach the prompt, and never in a shared room.
+
+## Bringing a setup over
+
+`server/setup-import.ts` reads what a person already taught other agent
+tools, from a short list of known places under their home: Claude Code
+(`~/.claude/CLAUDE.md`, `~/.claude/skills/*/SKILL.md`, the top level
+`mcpServers` of `~/.claude.json`, and the allow and deny rules in
+`~/.claude/settings.json`), Codex (`~/.codex/AGENTS.md` and the
+`[mcp_servers.*]` tables of `~/.codex/config.toml`, read by a small TOML
+reader of its own), OpenClaw (`SOUL.md`, `IDENTITY.md`, `MEMORY.md`,
+`memory/*.md`, `USER.md` and `skills/*/SKILL.md` in
+`~/.openclaw/workspace`) and Hermes (`SOUL.md`, the memories folder and
+skills a few folders down in `~/.hermes`, each looked for rather than
+assumed). Nothing is searched for and nothing there is written.
+
+No credential is read or copied. A file named like one (`auth.json`,
+`.credentials.json`, `.env`, tokens, keys, keychains) is never opened,
+and a link is followed only to see where it goes, so a `SKILL.md` that
+points at a credentials file is named as left out. Every file is capped
+by size. Text is scrubbed of anything key-shaped (provider key prefixes,
+bearer tokens, `name = value` pairs whose value looks generated,
+passwords in addresses, private key blocks) and the item says how many
+were taken out. An MCP server's environment and header values are
+dropped whole, never scrubbed: the names come across with empty values,
+and the server waits for the person to fill them in under Apps and keys
+(`PATCH /api/mcp-servers/:id`, names it already has only). A name with
+no value is never handed to an engine. Names that change how programs
+start (`PATH`, `NODE_OPTIONS` and the rest of `server/env-names.ts`) are
+not carried.
+
+`GET /api/setup-import` is the review: every item by source, with a
+preview, where it would go and whether it was brought over before.
+`POST` imports the items the window names, and only those. It reads the
+files again and takes from the window only which items and where, so an
+item whose digest no longer matches the review is refused. Instructions
+become an agent's instructions (if they fit) or a block in its
+`MEMORY.md`, written through the memory journal so the Memory panel can
+undo it; `memory/*.md` files become topic files. A new agent is made once
+per source per import. Skills go to the library under a free id, never
+over somebody's skill, and no agent has them until the person attaches
+them. Servers go to the registry on no agent. Rules go through the
+policy's own checks and wait for the person to tick them: a Bloks rule
+looks at one thing, so a translation may be broader than the original
+only when it denies, and an allow that would let agents do more is left
+out with the reason. `USER.md` lines become suggestions in About you.
+`setup-import.json` keeps each item's digest, destination and the exact
+text it added, so importing again replaces that text in place, or says
+nothing changed, rather than adding a second copy. Both routes answer
+only Bloks on this computer, never an agent's credential, a paired phone
+or a remote window. The first run offers the review as an optional step
+when something new was found, and Settings has it as a page.
 
 ## Engine scout
 
