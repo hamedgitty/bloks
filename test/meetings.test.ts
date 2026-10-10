@@ -57,16 +57,26 @@ describe("through the server", () => {
   let h: Harness;
   let close = () => {};
   const asked: string[] = [];
+  /** Write-ups the engine refuses before it starts answering them. */
+  let refuseWriteUps = 0;
   before(async () => {
     h = await startHarness();
     const engine = createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
-        res.writeHead(200, { "content-type": "application/json" });
-        if (req.url?.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "m-1" }] }));
+        if (req.url?.endsWith("/models")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ data: [{ id: "m-1" }] }));
+        }
         const messages = JSON.parse(body).messages ?? [];
         const last = String(messages[messages.length - 1]?.content ?? "");
+        if (refuseWriteUps > 0 && /You took notes in a meeting/.test(last)) {
+          refuseWriteUps--;
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "the model refused this request" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
         asked.push(last);
         const reply = /You took notes in a meeting/.test(last)
           ? "## Summary\n- Launch moves to Friday\n## Decisions\n- Friday\n## Action items\n- Scout: update the launch plan\n- Hamed: tell the board"
@@ -111,5 +121,32 @@ describe("through the server", () => {
     assert.equal(sent.status, 200);
     assert.equal((await h.fetch(`/api/meetings/${meeting.id}/items/0/send`, { method: "POST" })).status, 409, "once");
     assert.equal((await h.fetch(`/api/meetings/${meeting.id}/end`, { method: "POST" })).status, 409);
+  });
+
+  test("a write-up that failed can be asked for again", async () => {
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Juno" }) });
+    await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "grok", model: "m-1" } }) });
+    const { meeting } = await h.json("/api/meetings", { method: "POST", body: JSON.stringify({ botId: bot.id, title: "Retro", system: false }) });
+    await h.json(`/api/meetings/${meeting.id}/segments`, { method: "POST", body: JSON.stringify({ segments: [{ who: "you", text: "Ship it Friday." }] }) });
+    const find = async () => ((await h.json("/api/meetings")).meetings as any[]).find((m) => m.id === meeting.id);
+
+    refuseWriteUps = 1;
+    const first = await h.json(`/api/meetings/${meeting.id}/end`, { method: "POST" });
+    assert.ok(first.laneId);
+    let released = false;
+    for (let i = 0; i < 150 && !released; i++) {
+      released = !(await find())?.laneId;
+      if (!released) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(released, "the failed write-up let go of the meeting");
+
+    const again = await h.fetch(`/api/meetings/${meeting.id}/end`, { method: "POST" });
+    assert.equal(again.status, 200, "and it can be written up again");
+    let items: any[] | null = null;
+    for (let i = 0; i < 150 && !items; i++) {
+      items = (await find())?.items ?? null;
+      if (!items) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(items, "the second write-up brought its items back");
   });
 });

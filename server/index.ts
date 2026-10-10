@@ -4348,12 +4348,25 @@ function saveMeetings() {
 /** Lanes writing up a meeting, so the end of the turn collects the items. */
 const meetingLanes = new Map<string, string>();
 
+/** A write-up that failed, or never started, leaves its meeting to be
+ * written up again. Still marked with the lane, it would read as written
+ * up, and ending it again would be refused for good. Only while the lane
+ * is still this write-up's: a later try has a lane of its own. */
+function releaseMeeting(id: string, laneId: string) {
+  const meeting = meetings.find((m) => m.id === id);
+  if (!meeting || meeting.laneId !== laneId) return;
+  delete meeting.laneId;
+  saveMeetings();
+  broadcast({ kind: "meetings" });
+}
+
 function collectMeetingItems(laneId: string, ok: boolean) {
   const id = meetingLanes.get(laneId);
   if (!id) return;
   meetingLanes.delete(laneId);
   const meeting = meetings.find((m) => m.id === id);
-  if (!meeting || !ok) return;
+  if (!meeting) return;
+  if (!ok) return releaseMeeting(meeting.id, laneId);
   meeting.items = actionItems(lastSaid(laneId), store.bots.filter((b) => !b.archivedAt).map((b) => ({ id: b.id, name: b.name })));
   saveMeetings();
   broadcast({ kind: "meetings" });
@@ -12274,6 +12287,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         withYou({ bot }, shown.at);
         void startTurn(bot.id, notesPrompt(meeting, transcript, team, person), { taskId: laneId, presetMessage: true, byYou: true }).catch((e) => {
           meetingLanes.delete(laneId);
+          releaseMeeting(meeting.id, laneId);
           const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: `The notes could not be written: ${(e as Error).message}` });
           broadcast({ kind: "message", threadId: laneId, message: notice });
         });
