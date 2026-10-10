@@ -295,6 +295,20 @@ describe("the store's housekeeping", () => {
     assert.equal(store.get("bot-6"), null);
   });
 
+  test("a session opened and never watched is swept as well", () => {
+    const store = new TerminalStore();
+    const dir = mkdtempSync(join(tmpdir(), "bloks-term-"));
+    store.open({ botId: "bot-8", cwd: dir, cols: 80, rows: 24, now: 1_000 });
+    try {
+      store.sweep(1_000 + 60 * 60 * 1000);
+      assert.ok(store.get("bot-8"), "not before its time");
+      store.sweep(1_000 + 9 * 60 * 60 * 1000);
+      assert.equal(store.get("bot-8"), null);
+    } finally {
+      store.closeAll();
+    }
+  });
+
   test("a session somebody is watching is left alone", () => {
     const store = new TerminalStore();
     const dir = mkdtempSync(join(tmpdir(), "bloks-term-"));

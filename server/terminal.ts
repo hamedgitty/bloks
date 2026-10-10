@@ -282,8 +282,9 @@ export class TerminalSession {
   rows: number;
   exitedAt?: number;
   exitCode?: number | null;
-  /** When the last client detached. Zero while somebody is watching. */
-  idleSince = 0;
+  /** When the last client detached, or when it opened if nobody has
+   * attached yet. Zero while somebody is watching. */
+  idleSince: number;
 
   private child: ChildProcessWithoutNullStreams | null = null;
   private scrollback = new Scrollback();
@@ -296,6 +297,9 @@ export class TerminalSession {
     this.cols = clampCols(input.cols);
     this.rows = clampRows(input.rows);
     this.startedAt = input.now;
+    // nobody watching from the start: a shell opened for a panel that
+    // never attached would otherwise count as watched, and never be swept
+    this.idleSince = input.now;
     this.shell = shellFor(process.platform, process.env);
 
     const plan = spawnPlan(process.platform, this.shell, this.cols, this.rows);
