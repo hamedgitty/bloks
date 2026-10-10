@@ -303,7 +303,7 @@ import {
   WATCHING,
   type Watcher,
 } from "./watchers.ts";
-import { MemoryJournal } from "./memory-journal.ts";
+import { MemoryJournal, readMemoryText } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
 import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
@@ -622,16 +622,6 @@ async function discardSiblings(r: Rehearsal) {
       if (record) patchChangesCard(record);
     }
     await rehearsals.settle(other.id, "discarded");
-  }
-}
-
-/** A file's text, or null when it is not there. */
-function readRaw(path: string | null): string | null {
-  if (!path) return null;
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return null;
   }
 }
 
@@ -10781,7 +10771,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           error: "memory is capped at 256KB. Move long notes into memory/<topic>.md files",
         });
       }
-      const was = readRaw(memoryJournal.pathOf(m[1], "MEMORY.md"));
+      // an unreadable file is not a missing one: recorded as made, Undo
+      // would delete it
+      let was: string | null;
+      try {
+        was = readMemoryText(memoryJournal.pathOf(m[1], "MEMORY.md")!, "MEMORY.md");
+      } catch (error) {
+        return json(res, 409, { error: (error as Error).message });
+      }
       if (memoryJournal.record(m[1], "MEMORY.md", "you", was, body.text, undefined, () => {
         if (!workspace.writeMemoryFile(m![1], body.text)) {
           throw Object.assign(new Error("MEMORY.md is a link to somewhere else now, so it was not saved. Look at the agent's workspace."), { status: 409 });
@@ -10835,7 +10832,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const file = `memory/${name}`;
       const target = memoryJournal.pathOf(m[1], file);
       if (!target) return json(res, 400, { error: "a topic is a name ending in .md" });
-      const was = readRaw(target);
+      let was: string | null;
+      try {
+        was = readMemoryText(target, file);
+      } catch (error) {
+        return json(res, 409, { error: (error as Error).message });
+      }
       if (method === "DELETE") {
         if (was === null) return json(res, 404, { error: "no such topic" });
         memoryJournal.record(m[1], file, "you", was, null, undefined, () => rmSync(target, { force: true }));
