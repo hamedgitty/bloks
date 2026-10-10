@@ -143,6 +143,9 @@ export interface AppConfig {
   /** The morning brief (server/brief.ts): on unless turned off, at 08:00
    * unless another time is chosen. */
   brief?: { enabled?: boolean; time?: string };
+  /** The daily backup (server/backup.ts): on unless turned off. It never
+   * holds saved keys, since nobody is there to give it a passphrase. */
+  backups?: { auto?: boolean };
   /** How a lane is kept inside the model's window. Off means the fold
    * happens once at a threshold; on means one message is absorbed after
    * each turn instead. See the note in server/context.ts for what that
@@ -289,6 +292,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
     "telegram",
     "chat",
     "brief",
+    "backups",
   ] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };

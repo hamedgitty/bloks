@@ -3,6 +3,10 @@
 // The one rule the whole shape follows: clients hold no transports. The
 // React app dispatches typed commands over HTTP and folds one SSE event
 // stream, and every provider process runs here.
+
+// First, before any module below reads the data folder: a restore waiting
+// for this start is put in place (server/pending-restore.ts).
+import "./pending-restore.ts";
 import { existsSync, mkdirSync, openAsBlob, readdirSync, readFileSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -331,6 +335,26 @@ import { MemoryJournal, readMemoryText } from "./memory-journal.ts";
 import { Rehearsals, type Rehearsal } from "./rehearsals.ts";
 import { RoomTagQueues } from "./room-tags.ts";
 import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
+import {
+  AUTO_KEEP,
+  autoBackupDue,
+  BackupError,
+  backupPath,
+  backupsDirFor,
+  checkBackup,
+  createBackup,
+  deleteBackup,
+  lastRestore,
+  listBackups,
+  newestAutomatic,
+  pendingRestore,
+  pruneAutomatic,
+  revealBackup,
+  stageRestore,
+  verifyBackup,
+  type BackupInfo,
+  type CreateOptions,
+} from "./backup.ts";
 import { summarize, UsageStore } from "./usage.ts";
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, parseTeamFile, TeamFileError, teamFromManifest, writeTeamFile, type GalleryTeam } from "./team-file.ts";
@@ -9470,6 +9494,209 @@ function readBody(req: IncomingMessage): Promise<any> {
   });
 }
 
+// ── backups of the whole workspace (server/backup.ts) ──
+
+/** The backup being written now. One at a time: two would read the same
+ * folder twice as slowly, and the daily one must not start beside one
+ * the person asked for. */
+let backupRunning: { kind: NonNullable<CreateOptions["kind"]>; startedAt: number } | null = null;
+
+interface RestoreProgress {
+  phase: "draining" | "backing-up" | "staging" | "restarting" | "failed" | "cancelled";
+  from: string;
+  startedAt: number;
+  /** Turns still running, while it waits for them. */
+  running?: number;
+  deadline?: number;
+  /** The backup taken of the workspace just before, by name. */
+  safety?: string;
+  /** Where the workspace it replaces goes at the next start. */
+  aside?: string;
+  keys?: "restored" | "kept";
+  error?: string;
+}
+
+/** The restore under way, or the last one that stopped short. In memory:
+ * one that finishes ends this process, and the next start reads what it
+ * did from the backups folder (lastRestore). */
+let restoring: RestoreProgress | null = null;
+const restoreUnderWay = () => Boolean(restoring && restoring.phase !== "failed" && restoring.phase !== "cancelled");
+
+/** How long a restore waits for running turns before it goes ahead. A
+ * person is watching, so shorter than an update's wait; what is still
+ * running is cut off, and its conversation stays in the folder moved
+ * aside. */
+const RESTORE_DRAIN_MS = 10 * 60_000;
+
+/** The daily backup is looked for this often. Tests shorten it through
+ * the environment. */
+const AUTO_BACKUP_LOOK_MS = Number(process.env.BLOKS_AUTO_BACKUP_MS) || 10 * 60_000;
+/** A daily backup that failed (a full disk, a folder it cannot write)
+ * is not tried again on every look. */
+let autoBackupFailedAt = 0;
+
+async function makeBackup(opts: CreateOptions): Promise<BackupInfo> {
+  if (backupRunning || restoreUnderWay()) {
+    throw new BackupError("A backup or a restore is already under way. Try again once it is done.", 409);
+  }
+  backupRunning = { kind: opts.kind ?? "manual", startedAt: Date.now() };
+  try {
+    return await createBackup(opts);
+  } finally {
+    backupRunning = null;
+  }
+}
+
+/** Made when Bloks is quiet: nothing running, no drain, no other backup,
+ * and none made in the last day. The newest seven are kept. */
+async function autoBackup() {
+  if (backupRunning || restoreUnderWay() || drain.on) return;
+  if (Date.now() - autoBackupFailedAt < 60 * 60_000) return;
+  const due = autoBackupDue({
+    enabled: cfg.backups?.auto !== false,
+    idle: drainStatus().idle,
+    newestAt: newestAutomatic(),
+    now: Date.now(),
+  });
+  if (!due) return;
+  try {
+    const made = await makeBackup({ kind: "automatic" });
+    const gone = pruneAutomatic();
+    console.log(`[bloks] daily backup: ${made.name}${gone.length ? `, ${gone.length} older removed` : ""}`);
+  } catch (e) {
+    autoBackupFailedAt = Date.now();
+    console.error(`[bloks] the daily backup did not finish: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+  }
+}
+setInterval(() => void autoBackup(), AUTO_BACKUP_LOOK_MS).unref?.();
+
+function backupsStatus() {
+  const pending = pendingRestore();
+  return {
+    folder: backupsDirFor(),
+    auto: cfg.backups?.auto !== false,
+    keep: AUTO_KEEP,
+    backups: listBackups(),
+    running: backupRunning,
+    restore: restoring,
+    pending: pending ? { from: pending.from, at: pending.at, aside: pending.aside } : null,
+    lastRestore: lastRestore(),
+  };
+}
+
+const passphraseIn = (body: Record<string, unknown>) =>
+  typeof body.passphrase === "string" && body.passphrase ? body.passphrase : undefined;
+
+/**
+ * A restore, from the drain to the stop. Nothing new starts while it
+ * waits for what is running; then the workspace is backed up as it is,
+ * the archive is unpacked beside it and checked, and this process stops
+ * so the next start can swap the folders before any store reads one
+ * (server/pending-restore.ts). The desktop app relaunches when the page
+ * sees it stopping, and a server under a supervisor comes back by itself.
+ * Anything that goes wrong before the stop calls the drain off and
+ * leaves the workspace as it was.
+ */
+async function runRestore(file: string, passphrase: string | undefined, drainMs: number) {
+  const progress = restoring!;
+  try {
+    drain.start(drainMs);
+    armDrainLapse();
+    for (;;) {
+      if (progress.phase === "cancelled") return;
+      const status = drainStatus();
+      progress.running = status.running.length;
+      progress.deadline = status.deadline;
+      if (status.done) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    progress.phase = "backing-up";
+    const safety = existsSync(DATA_DIR) ? await createBackup({ kind: "before-restore" }) : null;
+    progress.safety = safety?.name;
+    progress.phase = "staging";
+    const pending = await stageRestore(file, { passphrase, safety: safety?.name });
+    progress.aside = pending.aside;
+    progress.keys = pending.keys;
+    progress.phase = "restarting";
+    console.log(`[bloks] restoring ${pending.from}: stopping so the next start puts it in place`);
+    // a moment for the page to read that it is restarting
+    setTimeout(shutDown, 1_500);
+  } catch (e) {
+    progress.phase = "failed";
+    progress.error = e instanceof BackupError ? e.message : redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300);
+    endDrain();
+  }
+}
+
+async function serveBackups(req: IncomingMessage, res: ServerResponse, method: string, path: string) {
+  try {
+    if (method === "GET" && path === "/api/backups") return json(res, 200, backupsStatus());
+    if (method === "POST" && path === "/api/backups") {
+      const body = await readBody(req);
+      const backup = await makeBackup({
+        kind: "manual",
+        undo: body.undo === true,
+        passphrase: passphraseIn(body),
+        ...(typeof body.secrets === "boolean" ? { secrets: body.secrets } : {}),
+      });
+      return json(res, 200, { backup });
+    }
+    if (method === "PUT" && path === "/api/backups/settings") {
+      const body = await readBody(req);
+      if (typeof body.auto !== "boolean") return json(res, 400, { error: "auto is true or false" });
+      Object.assign(cfg, saveConfig({ backups: { auto: body.auto } }));
+      return json(res, 200, backupsStatus());
+    }
+    if (path === "/api/backups/restore" && method === "GET") return json(res, 200, { restore: restoring });
+    if (path === "/api/backups/restore" && method === "DELETE") {
+      if (!restoring || restoring.phase !== "draining") {
+        return json(res, 409, { error: "Only a restore still waiting for running work can be called off." });
+      }
+      restoring.phase = "cancelled";
+      endDrain();
+      return json(res, 200, { restore: restoring });
+    }
+    const m = path.match(/^\/api\/backups\/([^/]+)(?:\/(verify|reveal|restore))?$/);
+    if (m) {
+      const name = decodeURIComponent(m[1]);
+      const file = backupPath(name);
+      if (method === "DELETE" && !m[2]) {
+        if (restoreUnderWay() && restoring?.from === name) return json(res, 409, { error: "That backup is being restored." });
+        deleteBackup(name);
+        return json(res, 200, { deleted: name });
+      }
+      if (method === "POST" && m[2] === "verify") {
+        const body = await readBody(req);
+        return json(res, 200, await verifyBackup(file, passphraseIn(body)));
+      }
+      if (method === "POST" && m[2] === "reveal") return json(res, 200, { path: file, shown: revealBackup(file) });
+      if (method === "POST" && m[2] === "restore") {
+        if (backupRunning || restoreUnderWay()) {
+          return json(res, 409, { error: "A backup or a restore is already under way. Try again once it is done." });
+        }
+        const body = await readBody(req);
+        const passphrase = passphraseIn(body);
+        // said now, before anything stops: a wrong passphrase or a file
+        // that is not a backup should cost nothing
+        await checkBackup(file, passphrase);
+        const drainMs = body.drainSeconds === undefined ? RESTORE_DRAIN_MS : drainWindow(body.drainSeconds);
+        restoring = { phase: "draining", from: name, startedAt: Date.now() };
+        void runRestore(file, passphrase, drainMs);
+        return json(res, 202, { restore: restoring });
+      }
+    }
+    return json(res, 404, { error: "not found" });
+  } catch (e) {
+    if (e instanceof BackupError) {
+      return json(res, e.status, { error: e.message, ...(e.code === "passphrase" ? { needsPassphrase: true } : {}) });
+    }
+    if (e instanceof URIError) return json(res, 400, { error: "That is not the name of a backup." });
+    return json(res, (e as { status?: number }).status ?? 500, {
+      error: redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300),
+    });
+  }
+}
+
 // A saved file that cannot be read now (server/atomic-write.ts) refuses
 // rather than reading as empty. The checks ahead of a route's own error
 // handling read some of them, so a refusal there is answered here: an
@@ -14204,6 +14431,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, drainStatus());
     }
 
+    // ── backups of the whole workspace (server/backup.ts) ──
+    // This computer only, and never an agent's credential: a backup is
+    // the whole workspace, sealed ones with every key in it, and a
+    // restore replaces the workspace. A paired phone or a page from
+    // another origin gets nothing here either.
+    if (path === "/api/backups" || path.startsWith("/api/backups/")) {
+      if (!local || asAgent) return json(res, 403, { error: "not from here" });
+      return serveBackups(req, res, method, path);
+    }
+
     // ── Slack and Discord, for shared rooms ──
     if (method === "GET" && path === "/api/chat") return json(res, 200, chatSettings());
     if (method === "POST" && path === "/api/chat") {
@@ -15298,6 +15535,8 @@ process.on("uncaughtException", (error) => {
 });
 
 let shuttingDown = false;
+/** Stops the way a quit does. Also how a restore ends this process, so
+ * the next start can put the restored folder in place. */
 const shutDown = () => {
   // once, however many ways it is asked
   if (shuttingDown) return;

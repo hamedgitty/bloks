@@ -179,6 +179,8 @@ export const NEVER = [
   "/api/terminal",
   "/api/usage",
   "/api/profile",
+  // a backup is the whole workspace, and a restore replaces it
+  "/api/backups",
 ];
 
 const PATH_PART = /^[\w.-]+$/;

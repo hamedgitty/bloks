@@ -162,7 +162,7 @@ export function claimDataFolder(dir: string, port: number): { ok: true } | { ok:
  * swapping the folder before this server claims it. */
 export function holderOf(dir: string): LockHolder | null {
   const holder = read(join(dir, "server.lock"));
-  return holder && holder.pid !== process.pid && alive(holder.pid) && looksLikeBloks(holder.pid) ? holder : null;
+  return holder && holder.pid !== process.pid && alive(holder.pid) && looksLikeBloks(holder) ? holder : null;
 }
 
 /** The words a person reads when a second server is turned away. */
