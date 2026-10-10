@@ -331,6 +331,15 @@ describe("the relay link", () => {
       return open(openKey, peek(got!.payload)!) as { status: number; body: any };
     };
 
+    const zero = await ask("zero-list", "/api/bots?messages=0");
+    assert.equal(zero.status, 200);
+    for (const b of zero.body.bots) {
+      assert.deepEqual(b.messages, []);
+      assert.equal(b.olderMessages, 0);
+    }
+    const metadata = ({ messages: _messages, olderMessages: _older, ...fields }: any) => fields;
+    assert.deepEqual(zero.body.bots.map(metadata), local.bots.map(metadata));
+
     const list = await ask("big-list", "/api/bots");
     assert.equal(list.status, 200);
     const trimmed = list.body.bots.find((b: any) => b.id === bot.id);

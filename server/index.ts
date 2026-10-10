@@ -9054,10 +9054,13 @@ const server = createServer(async (req, res) => {
       // with a page and fetch history if someone actually scrolls.
       // Through Bloks Cloud the list is also held to what the relay can
       // carry, and each agent says how many older messages stayed behind.
-      const tail = Number(url.searchParams.get("messages") ?? NaN);
+      const tail = Number(url.searchParams.get("messages") || NaN);
+      // slice truncates fractional counts; below one means no messages,
+      // rather than slice(-0), which returns the entire conversation.
+      const zero = tail >= 0 && tail < 1;
       const trim = (list: Message[]) =>
         Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
-      const lists = store.bots.map((b) => trim(store.messagesFor(b.threadId)));
+      const lists = store.bots.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)));
       const fitted = viaRelay ? fitTranscripts(lists, Number.isFinite(tail) && tail >= 0 ? tail : RELAY_TAIL) : null;
       // Another agent reads whether each one can answer now (GitHub 239);
       // the person's app has its banner, and asks the engines itself.
