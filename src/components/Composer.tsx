@@ -844,7 +844,7 @@ export function Composer({
                   ? "Describe the task for each of them to rehearse…"
                   : `Describe the task for ${bot.name} to rehearse…`
                 : openLaneWorking(bot)
-                ? `${bot.name} is working. Enter sends, ${modKey()}Enter stops it first.`
+                ? `${bot.name} is working. Enter tells it without stopping, ${modKey()}Enter stops it first.`
                 : `Message ${bot.name}`
           }
           className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-[14.5px] leading-relaxed text-foreground outline-none placeholder:truncate placeholder:text-muted-foreground placeholder-shown:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)]"

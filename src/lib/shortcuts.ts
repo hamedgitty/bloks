@@ -108,7 +108,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: "interrupt",
     group: "composer",
     keys: [["Mod", "Enter"]],
-    does: "Stop the agent and send now",
+    does: "Stop the agent, then send",
     when: "while it is working",
   },
   {
