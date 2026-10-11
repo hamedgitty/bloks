@@ -172,6 +172,9 @@ export interface AppConfig {
    * said elsewhere that matches. Unset is on; each agent can also turn it
    * off for itself (BotRecord.recallBeforeTurn). */
   recall?: { beforeTurn?: boolean };
+  /** Show a card for files changed during an overlapping turn even when
+   * none are named as its own. On unless turned off; own-file cards stay. */
+  changes?: { showShared?: boolean };
   /** What every new agent starts with, whoever hires it. Without this an
    * agent's first chat pins to its own workspace before anybody can
    * point it elsewhere. A missing key keeps the built-in start: its own
@@ -297,6 +300,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
     "skills",
     "turns",
     "recall",
+    "changes",
     "telegram",
     "chat",
     "brief",

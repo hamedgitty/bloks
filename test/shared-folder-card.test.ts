@@ -18,7 +18,7 @@ async function waitFor<T>(read: () => T | Promise<T>): Promise<NonNullable<T>> {
   assert.fail("the fixture did not finish within its bound");
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, showShared?: boolean) {
   const home = mkdtempSync(join(tmpdir(), "bloks-shared-card-"));
   const desk = join(home, "desk");
   mkdirSync(desk);
@@ -44,7 +44,7 @@ const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : und
     writeFileSync(${JSON.stringify(next)}, readFileSync(${JSON.stringify(index)}, "utf8"));
   } else {
     const ada = text.includes("ADA"), command = text.includes("COMMAND"), edit = !text.includes("NONE");
-    const file = join(${JSON.stringify(desk)}, ada ? "notes.md" : "log.md");
+    const file = join(process.cwd(), ada ? "notes.md" : "log.md");
     if (edit) {
       out({ type: "assistant", message: { content: [{ type: "tool_use", id: "tool-1", name: command ? "Bash" : ada ? "Edit" : "Write", input: command ? { command: "write notes.md" } : { file_path: file } }] } });
       writeFileSync(file, ada ? "notes, by Ada\\n" : "log, by Linus\\n");
@@ -74,6 +74,7 @@ const value = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : und
   mkdirSync(join(home, ".bloks"));
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({
     instances: { claude: { driver: "claudeAgent", config: { cli, permissionMode: "bypassPermissions" } } },
+    ...(showShared !== undefined ? { changes: { showShared } } : {}),
   }));
   let h = await startHarness({ HOME: home });
   t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });
@@ -213,6 +214,72 @@ test("an overlapping turn that ran a command still counts what changed, without 
   assert.equal(card.changes.shared.total, done.record.files.length);
   assert.ok(card.changes.files.every((p: any) => p.shared), "a shared file was offered as this turn's own");
   assert.deepEqual(done.linus.messages.find((m: any) => m.kind === "changes").changes.files.map((p: any) => p.path), ["log.md"]);
+});
+
+test("turning shared-file cards off keeps a command-only checkpoint without a card", async (t) => {
+  const f = await fixture(t, false), done = await f.run("ADA COMMAND");
+  assert.ok(done.record.unnamedWrites);
+  assert.ok(done.record.files.length > 0);
+  assert.ok(done.record.files.every((p: any) => p.shared));
+  assert.equal(done.record.card, undefined);
+  assert.equal(done.ada.messages.some((m: any) => m.kind === "changes"), false);
+  assert.equal(previewLine(lastSaid(done.ada.messages)), "Done.");
+  assert.deepEqual(done.linus.messages.find((m: any) => m.kind === "changes").changes.files.map((p: any) => p.path), ["log.md"]);
+});
+
+test("with shared-file cards off the checkpoint finishes before a queued turn", async (t) => {
+  const f = await fixture(t, false);
+  await f.run("ADA COMMAND QUEUE");
+  assert.equal(JSON.parse(readFileSync(join(f.home, "queued.json"), "utf8")).status, 202);
+  await waitFor(async () => existsSync(f.next) && !(await f.bot(f.ada.id)).busy);
+  const first = JSON.parse(readFileSync(f.next, "utf8")).find((r: any) => r.threadId === f.ada.threadId);
+  assert.ok(first, "the queued turn started before its checkpoint finished");
+  assert.equal(first.card, undefined);
+  assert.ok(first.files.length > 0);
+  assert.equal((await f.bot(f.ada.id)).messages.some((m: any) => m.kind === "changes"), false);
+});
+
+test("turning shared-file cards off keeps own-file cards and Undo", async (t) => {
+  const f = await fixture(t, false), done = await f.run("ADA tidy the notes");
+  const card = done.ada.messages.find((m: any) => m.kind === "changes");
+  assert.deepEqual(card.changes.files.map((p: any) => p.path), ["notes.md"]);
+  assert.equal(card.changes.total, 1);
+  assert.equal(Object.hasOwn(card.changes, "shared"), false);
+  const result = await f.h.json(`/api/checkpoints/${done.record.id}/revert`, { method: "POST" });
+  assert.deepEqual(result, { restored: ["notes.md"], skipped: [] });
+  assert.equal(readFileSync(join(f.desk, "notes.md"), "utf8"), "notes\n");
+  assert.equal(readFileSync(join(f.desk, "log.md"), "utf8"), "log, by Linus\n");
+});
+
+test("turning shared-file cards off keeps solo command cards", async (t) => {
+  const f = await fixture(t, false), done = await f.run("ADA COMMAND SOLO", true);
+  const card = done.ada.messages.find((m: any) => m.kind === "changes");
+  assert.deepEqual(card.changes.files.map((p: any) => p.path), ["notes.md"]);
+  assert.equal(card.changes.total, 1);
+  assert.equal(Object.hasOwn(card.changes, "shared"), false);
+});
+
+test("turning shared-file cards off keeps rehearsal cards in their copy", async (t) => {
+  const f = await fixture(t, false);
+  const started = await f.h.json("/api/rehearsals", { method: "POST", body: JSON.stringify({ botId: f.ada.id, text: "ADA COMMAND SOLO" }) });
+  const [attempt] = started.attempts;
+  await waitFor(async () => (await f.h.json("/api/rehearsals")).rehearsals.find((r: any) => r.id === attempt.id)?.state === "ready");
+  const record = f.readRecords().find((r: any) => r.threadId === attempt.taskId);
+  assert.ok(record.rehearsal);
+  assert.ok(record.card);
+  const messages = JSON.parse(readFileSync(join(f.home, ".bloks", `messages-${attempt.taskId}.json`), "utf8"));
+  const card = messages.find((m: any) => m.id === record.card.messageId);
+  assert.equal(card.changes.rehearsal.state, "pending");
+  assert.deepEqual(card.changes.files.map((p: any) => p.path), ["notes.md"]);
+  assert.equal(readFileSync(join(f.desk, "notes.md"), "utf8"), "notes\n");
+});
+
+test("explicitly enabling shared-file cards keeps the count-only card", async (t) => {
+  const f = await fixture(t, true), done = await f.run("ADA COMMAND");
+  const card = done.ada.messages.find((m: any) => m.kind === "changes");
+  assert.ok(card);
+  assert.equal(card.changes.total, done.record.files.length);
+  assert.equal(card.changes.shared.total, done.record.files.length);
 });
 
 test("a cardless checkpoint finishes before the next queued turn starts", async (t) => {

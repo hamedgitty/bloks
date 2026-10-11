@@ -2453,6 +2453,7 @@ bus.subscribe((event: RuntimeEvent) => {
             return;
           }
           if (!record) return;
+          if (cfg.changes?.showShared === false && record.files.every((file) => file.shared)) return;
           const changes = checkpoints.summary(record);
           if (!changes.total) return;
           const card = pushMessage({ role: "bot", kind: "changes", changes });
@@ -9259,6 +9260,7 @@ function configStatus() {
     // on unless turned off: notes from an agent's other conversations
     // ahead of the person's turn (recallAhead)
     recall: { beforeTurn: cfg.recall?.beforeTurn !== false },
+    changes: { showShared: cfg.changes?.showShared !== false },
     // how long a silent tool call may hold a turn, in minutes; 0 is never
     turns: { stallMinutes: stallLimitMs() / 60_000 },
     // not a secret: a folder, a mode and a model, for the settings form
@@ -15598,6 +15600,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
+      if (body.changes !== undefined && (
+        !body.changes || typeof body.changes !== "object" || Array.isArray(body.changes) ||
+        typeof (body.changes as Record<string, unknown>).showShared !== "boolean"
+      )) {
+        return json(res, 400, { error: "changes.showShared must be true or false" });
+      }
       // Only known string fields, each length-capped. Without this the
       // whole config file is an arbitrary write target.
       const FIELDS: Record<string, { keys: string[]; max: number }> = {
@@ -15663,6 +15671,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           Object.assign(cfg, saveConfig({ skills: { propose } }));
           wroteSomething = true;
         }
+      }
+      if (body.changes) {
+        Object.assign(cfg, saveConfig({ changes: { showShared: (body.changes as { showShared: boolean }).showShared } }));
+        wroteSomething = true;
       }
       // A hotkey is not a credential, so it gets its own shape check
       // rather than a slot in the string table: it must look like an

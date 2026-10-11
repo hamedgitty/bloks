@@ -134,6 +134,28 @@ const BEFORE_TURN_CEILINGS = [
   { value: "400000", label: "400k" },
 ] as const;
 
+function SharedChanges() {
+  const { state, dispatch } = useStore();
+  const on = state.config?.changes?.showShared ?? true;
+  const [saving, setSaving] = useState(false);
+
+  const set = (showShared: boolean) => {
+    setSaving(true);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ changes: { showShared } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch(() => {})
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingRow
+      label="Show files changed beside a turn"
+      description="Show a card for files changed while a turn was working, even when it lists no files of its own. Cards for its own files still appear."
+      control={<Switch aria-label="Show files changed beside a turn" checked={on} disabled={saving} onCheckedChange={set} />}
+    />
+  );
+}
+
 /**
  * How big a Claude Code, Codex or Pi conversation may get before its
  * next message compacts it first (GitHub 222, 223). On by default, unlike
@@ -641,7 +663,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations",
+        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations files changes cards shared folder",
       },
       {
         id: "about-you",
@@ -802,6 +824,7 @@ function GeneralPage() {
         <QuickAskShortcut />
         <ProposeSkills />
         <RecallBeforeTurn />
+        <SharedChanges />
         <Compaction />
         <IdleCompaction />
         <BeforeTurnCompaction />
