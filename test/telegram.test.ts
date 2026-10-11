@@ -26,6 +26,7 @@ import {
   post,
   type Press,
   Progress,
+  send,
   sendFiles,
   type TelegramState,
   toolLabel,
@@ -1036,6 +1037,16 @@ describe("buttons over the wire", () => {
     const keyboard = { inline_keyboard: [[{ text: "Allow", callback_data: "abcdEFGH:0" }]] };
     assert.equal(await post("T", 42, "Approval needed", keyboard), 81);
     assert.deepEqual(calls[0], { method: "sendMessage", body: { chat_id: 42, text: "Approval needed", reply_markup: keyboard } });
+  });
+
+  test("a status line is silent, but the answer still notifies", async (t) => {
+    const calls = wire(t, { message_id: 81 });
+    assert.equal(await post("T", 42, "Working...", undefined, true), 81);
+    await send("T", 42, "Here is the answer.");
+    assert.deepEqual(calls, [
+      { method: "sendMessage", body: { chat_id: 42, text: "Working...", disable_notification: true } },
+      { method: "sendMessage", body: { chat_id: 42, text: "Here is the answer." } },
+    ]);
   });
 
   test("an answered card is rewritten without its buttons, and the press is answered", async (t) => {

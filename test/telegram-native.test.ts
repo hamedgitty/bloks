@@ -201,6 +201,7 @@ test("an approval arrives with Allow and Deny to tap, and only the paired person
   f.tg.say("APPROVE this");
   const card = await cardIn(f, "Approval needed");
   assert.equal(card.body.text, "Approval needed\nrm -rf build");
+  assert.equal("disable_notification" in card.body, false);
   const rows = card.body.reply_markup.inline_keyboard;
   assert.deepEqual(rows.map((row: any[]) => row.map((b) => b.text)), [["Allow", "Deny"]]);
   const requestId = (await f.messages()).find((m) => m.kind === "options").card.requestId;
@@ -287,6 +288,8 @@ test("what a Telegram turn saved comes back after its answer: images as photos, 
   assert.equal(photo.chat_id, String(CHAT));
   assert.deepEqual(photo.photo, { name: "chart.png", type: "image/png", size: 29 });
   assert.equal(f.tg.calls("sendDocument")[0]!.body.chat_id, String(CHAT));
+  assert.equal("disable_notification" in photo, false);
+  assert.equal("disable_notification" in f.tg.calls("sendDocument")[0]!.body, false);
 });
 
 test("only a few files come back with one answer, and the rest are counted", async (t) => {
@@ -311,8 +314,10 @@ test("a long turn posts what it is working on, rewrites it as tools change, and 
   f.tg.say("SLOW work");
   const status = await waitFor(() => f.tg.sent().find((m) => m.body.text?.startsWith("Working")), "no status line was posted", 40_000);
   assert.equal(status.body.text, "Working: npm test...");
+  assert.equal(status.body.disable_notification, true);
   assert.ok(status.at - asked >= 19_000, `posted after ${status.at - asked} ms, not about twenty seconds`);
   const answer = await waitFor(() => f.tg.state.calls.find((c) => c.method === "sendMessage" && c.body.text === "SLOW DONE"), "the answer never came", 40_000);
+  assert.equal("disable_notification" in answer.body, false);
   // one rewrite for two quick tools, naming the later, without the key
   // its command carried
   const edits = f.tg.calls("editMessageText");

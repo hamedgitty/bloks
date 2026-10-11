@@ -7522,7 +7522,7 @@ function telegramProgress(chatId: number): telegram.Progress {
   const token = () => cfg.telegram?.token ?? "";
   return new telegram.Progress(
     {
-      post: (text) => telegram.post(token(), chatId, text),
+      post: (text) => telegram.post(token(), chatId, text, undefined, true),
       edit: (messageId, text) => telegram.edit(token(), chatId, messageId, text),
       remove: (messageId) => telegram.remove(token(), chatId, messageId),
     },

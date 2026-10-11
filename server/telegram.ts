@@ -393,12 +393,14 @@ const NO_BUTTONS: Keyboard = { inline_keyboard: [] };
  * One plain message, with buttons under it when given, and the id
  * Telegram gave it: a later edit or delete names the message by it.
  * Undefined when Telegram took the message without saying.
+ * With silent, a status line leaves the next sound for an answer.
  */
-export async function post(token: string, chatId: number, text: string, keyboard?: Keyboard): Promise<number | undefined> {
+export async function post(token: string, chatId: number, text: string, keyboard?: Keyboard, silent = false): Promise<number | undefined> {
   const body = (await sendOne(token, {
     chat_id: chatId,
     text: text.slice(0, 4_000),
     ...(keyboard ? { reply_markup: keyboard } : {}),
+    ...(silent ? { disable_notification: true } : {}),
   })) as { result?: { message_id?: unknown } } | null;
   const id = Number(body?.result?.message_id);
   return Number.isSafeInteger(id) ? id : undefined;
