@@ -1,11 +1,13 @@
-// A conversation's goal, on screen: the chip over the composer while one
-// exists, and the dialog that sets one (server/goals.ts has the rules).
+// A conversation's goal, on screen: the chip over the composer until it
+// is done, and the dialog that sets one (server/goals.ts has the rules).
 //
 // The chip is the goal's whole state in one line, because a goal works
 // while nobody is watching and the first thing anyone wants on coming
-// back is where it got to: which turn of how many, or how it ended and
-// why. Its buttons are the two decisions that are the person's alone,
-// whether it goes on and whether it exists at all.
+// back is where it got to: which turn of how many, or why it is blocked
+// or out of turns. Its buttons are the two decisions that are the
+// person's alone, whether it goes on and whether it exists at all.
+// A done goal cannot go on and costs nothing while it stays, and its
+// notice in the chat says how it ended, so it has no chip.
 import { useEffect, useState } from "react";
 import Target from "lucide-react/dist/esm/icons/target.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
@@ -21,7 +23,7 @@ function goalPath(botId: string, taskId: string) {
   return `/api/bots/${botId}/tasks/${taskId}/goal`;
 }
 
-/** The chip over the composer, while the open conversation has a goal. */
+/** The chip over the composer, until the open conversation's goal is done. */
 export function GoalChip({ bot }: { bot: Bot }) {
   const laneId = bot.activeTaskId ?? bot.threadId;
   const goal = bot.tasks?.find((t) => t.id === laneId)?.goal;
@@ -30,7 +32,7 @@ export function GoalChip({ bot }: { bot: Bot }) {
   // a different goal, or the same one moving on, clears what the last
   // press said
   useEffect(() => setError(null), [goal?.startedAt, goal?.status]);
-  if (!goal) return null;
+  if (!goal || goal.status === "done") return null;
 
   const change = (init: RequestInit) => {
     setBusy(true);
@@ -42,11 +44,9 @@ export function GoalChip({ bot }: { bot: Bot }) {
   const tone =
     goal.status === "active"
       ? "text-brand"
-      : goal.status === "done"
-        ? "text-success"
-        : goal.status === "blocked" || goal.status === "out"
-          ? "text-warning"
-          : "text-muted-foreground";
+      : goal.status === "blocked" || goal.status === "out"
+        ? "text-warning"
+        : "text-muted-foreground";
   const action = goalAction(goal);
 
   return (
