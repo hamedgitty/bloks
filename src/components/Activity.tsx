@@ -150,7 +150,7 @@ export function ActivityPanel() {
     load();
     const timer = setInterval(load, 3_000);
     return () => clearInterval(timer);
-  }, [load, visible]);
+  }, [load, visible, state.config]);
 
   // Elapsed times tick on their own, or a row would sit at "2m" for as
   // long as the panel is open and read as frozen. A hidden panel has no

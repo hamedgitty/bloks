@@ -333,9 +333,10 @@ describe("a Codex lane with a long context and two dozen tool calls a turn", () 
     // the latest request, not the twenty-four summed
     const last = 170_000 + (TOOL_CALLS - 1) * 100;
     assert.equal(lane.context.used, last);
-    assert.equal(lane.context.limit, WINDOW, "the window is Codex's own, not the table's");
+    assert.equal(lane.context.modelLimit, WINDOW, "the window is Codex's own, not the table's");
+    assert.equal(lane.context.limit, beforeTurnLine({ window: WINDOW, ceiling: BEFORE_TURN_CEILING }));
     assert.equal(lane.context.window, "engine");
-    assert.ok(lane.context.fraction < 0.7, `read ${lane.context.fraction} full`);
+    assert.equal(lane.context.fraction, Math.min(1, last / lane.context.limit));
     // what the turn spent is still every request, which is the real cost
     // of a long context in a tool loop, and is not how full it is
     const spent = Array.from({ length: TOOL_CALLS }, (_, i) => 170_000 + i * 100).reduce((a, b) => a + b, 0);
@@ -510,9 +511,10 @@ describe("a Claude Code lane with a long context and many tool calls a turn", ()
 
     await turn(h, bot.id, "Look into the failing build.");
     const lane = (await botOf(h, bot.id)).tasks.find((l: any) => l.id === bot.threadId);
-    // the last request's whole prompt, against the window the CLI named
+    // the last request's whole prompt, and the window the CLI named
     assert.equal(lane.context.used, 5 + 230_000 + 22 * 1_000 + 100);
-    assert.equal(lane.context.limit, 1_000_000, "the table's 200k was used instead of Claude Code's window");
+    assert.equal(lane.context.modelLimit, 1_000_000, "the table's 200k was used instead of Claude Code's window");
+    assert.equal(lane.context.limit, BEFORE_TURN_CEILING);
     assert.equal(lane.context.window, "engine");
 
     // over the 200k ceiling: /compact goes into the same session first
@@ -604,7 +606,8 @@ describe("a Pi lane", () => {
     await turn(h, bot.id, "Sort the inbox.");
     const lane = (await botOf(h, bot.id)).tasks.find((l: any) => l.id === bot.threadId);
     assert.equal(lane.context.used, 150_000 + 19 * 500);
-    assert.equal(lane.context.limit, 200_000);
+    assert.equal(lane.context.modelLimit, 200_000);
+    assert.equal(lane.context.limit, beforeTurnLine({ window: 200_000, ceiling: BEFORE_TURN_CEILING }));
 
     await turn(h, bot.id, "Archive the rest.");
     const asked = prompts().map((p) => p.text);

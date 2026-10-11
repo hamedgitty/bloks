@@ -1273,10 +1273,10 @@ function clientBot(bot: BotRecord | null) {
             ? "needs-you"
             : "idle";
       // How full this lane is: the engine's own reading of its latest
-      // request against the window it reported, where the engine the
-      // agent is on now made one, and the table's limit otherwise. See
-      // server/context.ts.
-      const fill = laneFill(task.reading, bot.modelSelection);
+      // request against its before-turn line, or the window when off.
+      // Keep the engine's window when given and the table's otherwise;
+      // only a reading from its current engine counts. See context.ts.
+      const fill = laneContext(bot, task);
       const said = store.messagesFor(task.id);
       // a compaction marker is not something happening in the lane, and
       // nor is a quiet check-in
@@ -1307,6 +1307,8 @@ function clientBot(bot: BotRecord | null) {
           // "engine" when the window is the engine's own word, "table"
           // when it is the guess by model name
           window: fill.window,
+          ...(fill.modelLimit !== undefined ? { modelLimit: fill.modelLimit } : {}),
+          ...(fill.limitApproximate !== undefined ? { limitApproximate: fill.limitApproximate } : {}),
           summarised: Boolean(task.context),
         },
         // what the lane keeps working toward, for the chip over the box
@@ -6472,6 +6474,15 @@ function beforeTurnSettings(): { ceiling: number; at: number | undefined } {
     ceiling: typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling >= 0 ? ceiling : BEFORE_TURN_CEILING,
     at: cfg.compaction?.beforeTurnAt,
   };
+}
+
+/** The line is a budget only for a session Bloks can compact before a
+ * turn. Replay engines, missing cursors and guest mail keep the window. */
+function laneContext(bot: BotRecord, task: TaskRecord) {
+  const instance = registry.get(bot.modelSelection.instanceId);
+  const canCompact = instance && !instance.adapter.capabilities.replaysNatively &&
+    typeof task.resumeCursors[bot.modelSelection.instanceId] === "string" && !task.guestMail;
+  return laneFill(task.reading, bot.modelSelection, canCompact ? beforeTurnSettings() : undefined);
 }
 
 /** The reading's window: the engine's, or the table's when the model is
@@ -14795,7 +14806,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // The search route and the job board already draw the same line.
       for (const bot of store.bots.filter((b) => !b.archivedAt)) {
         for (const task of bot.tasks) {
-          const fill = laneFill(task.reading, bot.modelSelection);
+          const fill = laneContext(bot, task);
           lanes.push({
             threadId: task.id,
             botId: bot.id,
@@ -14803,7 +14814,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             laneTitle: task.title,
             busy: Boolean(task.busy),
             since: turnStarted.get(task.id),
-            context: { used: fill.used, limit: fill.limit, fraction: fill.fraction, measured: fill.measured, window: fill.window },
+            context: fill,
             blocked: blockedOn(store.messagesFor(task.id), live, { includingPutAside: true }),
           });
         }
@@ -15613,6 +15624,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       /** Sections that save themselves, so the empty-patch guard below
        * does not mistake a real write for an empty request. */
       let wroteSomething = false;
+      let compactionLineChanged = false;
       if (body.speech && typeof body.speech === "object" && !Array.isArray(body.speech)) {
         const consent = (body.speech as Record<string, unknown>).useDiscoveredOpenAI;
         if (typeof consent === "boolean") consentPatch = { useDiscoveredOpenAI: consent };
@@ -15629,6 +15641,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             : undefined;
         const share = typeof beforeTurnAt === "number" && beforeTurnAt >= 0.2 && beforeTurnAt < 1 ? beforeTurnAt : undefined;
         if (typeof micro === "boolean" || typeof idle === "boolean" || ceiling !== undefined || share !== undefined) {
+          const previous = beforeTurnSettings();
           Object.assign(cfg, saveConfig({
             compaction: {
               ...(typeof micro === "boolean" ? { micro } : {}),
@@ -15637,6 +15650,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               ...(share !== undefined ? { beforeTurnAt: share } : {}),
             },
           }));
+          const next = beforeTurnSettings();
+          compactionLineChanged = previous.ceiling !== next.ceiling || previous.at !== next.at;
           wroteSomething = true;
         }
       }
@@ -15773,6 +15788,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (patch.xai || patch.box) await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
+      // A saved reading has a new denominator even with no new request.
+      if (compactionLineChanged) {
+        for (const bot of store.bots) broadcast({ kind: "bot", bot: clientBot(bot) });
+      }
       return json(res, 200, status);
     }
 

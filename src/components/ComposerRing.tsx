@@ -9,8 +9,9 @@
 // of its own and one ring could not say whose.
 //
 // Hover on a Mac, or a tap, opens a small card with the numbers, and,
-// where the engine reports them, what its plan has left. Every number is
-// the engine's own. No ring rather than a guess: without a reading from
+// where the engine reports them, what its plan has left. The person's
+// compaction line is the budget; the window stays visible on the card.
+// No ring rather than a guess: without a reading from
 // the engine and model the conversation is on now, there is nothing
 // here (src/lib/contextCard.ts).
 import { useEffect, useState } from "react";
@@ -91,6 +92,7 @@ export function ComposerRing({ bot }: { bot: Bot }) {
           </div>
           <Bar fill={context.fraction} />
           <div className="mt-1.5 tabular-nums text-muted-foreground">{card.tokens}</div>
+          {card.compaction && <p className="mt-1.5 leading-snug text-muted-foreground">{card.compaction}</p>}
           {card.summarised && <p className="mt-1.5 leading-snug text-muted-foreground">{card.summarised}</p>}
           {rows.length > 0 && (
             <div className="mt-3 border-t pt-2.5">

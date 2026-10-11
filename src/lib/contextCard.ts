@@ -3,8 +3,9 @@
 // sidebar rows and Activity (GitHub 224).
 //
 // Kept apart from the components so the wording and the arithmetic can
-// be tested without a DOM. Every number here is the engine's own, sent
-// by the server (server/context.ts, server/plan-usage.ts); this only
+// be tested without a DOM. The engine's readings and window, and the
+// person's compaction line, come from the server (server/context.ts,
+// server/plan-usage.ts); this only
 // decides how to say it, and when there is nothing honest to say.
 
 /** How full a lane is, as the server sends it with each lane and with
@@ -19,6 +20,11 @@ export interface Fill {
   /** "engine" when the window is the engine's own word, "table" when it
    * is Bloks' guess from the model's name. */
   window?: "engine" | "table";
+  /** The full model window when limit is the lower before-turn line. */
+  modelLimit?: number;
+  /** The line is approximate only when a table window's share set it.
+   * A ceiling in tokens is exact even when the model window is guessed. */
+  limitApproximate?: boolean;
 }
 
 /** A lane's fill, and whether Bloks has summarised its earlier part. */
@@ -82,34 +88,52 @@ export function percent(fraction: number): string {
 
 const SUMMARISED = "Bloks summarised the earlier part of this conversation.";
 
+/** Text keeps the real share; the wire and drawn ring are capped at one. */
+export function contextShare(context: Fill): number {
+  return context.limit > 0 ? context.used / context.limit : 0;
+}
+
+function contextPercent(context: Fill): string {
+  const share = contextShare(context);
+  // Whole-percent rounding must not hide a crossing just past the line.
+  return share > 1 && Math.round(share * 100) === 100 ? "over 100%" : percent(share);
+}
+
+function approximateLimit(context: Fill): boolean {
+  return context.modelLimit !== undefined ? context.limitApproximate === true : context.window === "table";
+}
+
 /** What the card says about the window: how full, in what, and whether
  * the earlier part was summarised. "About" when the window is a guess. */
-export function contextCard(context: LaneContext): { share: string; tokens: string; summarised: string | null } {
-  const about = context.window === "table";
+export function contextCard(context: LaneContext): { share: string; tokens: string; summarised: string | null; compaction: string | null } {
+  const about = approximateLimit(context);
   return {
-    share: `${about ? "About " : ""}${percent(context.fraction)} full`,
+    share: `${about ? "About " : ""}${contextPercent(context)} full`,
     tokens: `${shortTokens(context.used)} of ${about ? "about " : ""}${shortTokens(context.limit)} tokens`,
     summarised: context.summarised ? SUMMARISED : null,
+    compaction: context.modelLimit !== undefined
+      ? `Compacts before the next turn at ${about ? "about " : ""}${shortTokens(context.limit)}; the model's window is ${context.window === "table" ? "about " : ""}${shortTokens(context.modelLimit)}`
+      : null,
   };
 }
 
 /** The ring's name for a screen reader, which cannot see the ring. */
 export function ringLabel(context: LaneContext): string {
-  return `Context window ${context.window === "table" ? "about " : ""}${percent(context.fraction)} full`;
+  return `${context.modelLimit !== undefined ? "Before-turn compaction" : "Context window"} ${approximateLimit(context) ? "about " : ""}${contextPercent(context)} full`;
 }
 
 /** What a chip or a sidebar row says on hover. */
 export function contextTitle(context: LaneContext): string {
   if (!measuredContext(context)) return "The earlier part has been summarised";
-  return `${context.window === "table" ? "About " : ""}${percent(context.fraction)} of what this model will take` +
+  return `${approximateLimit(context) ? "About " : ""}${contextPercent(context)} of ${context.modelLimit !== undefined ? "the before-turn compaction line" : "what this model will take"}` +
     (context.summarised ? ", and the earlier part has been summarised" : "");
 }
 
 /** What Activity adds to a running lane's line once it is half full, or
  * null when it is not, or nothing measured it. */
 export function activityContext(context: Fill | null | undefined): string | null {
-  if (!context || !measuredContext(context) || context.fraction < 0.5) return null;
-  return `${context.window === "table" ? "about " : ""}${percent(context.fraction)} of the window`;
+  if (!context || !measuredContext(context) || contextShare(context) < 0.5) return null;
+  return `${approximateLimit(context) ? "about " : ""}${contextPercent(context)} of ${context.modelLimit !== undefined ? "the before-turn compaction line" : "the window"}`;
 }
 
 // ── the plan ───────────────────────────────────────────────────────────

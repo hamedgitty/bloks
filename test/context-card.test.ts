@@ -22,13 +22,13 @@ import {
 const codex: LaneContext = { used: 141_000, limit: 258_400, fraction: 141_000 / 258_400, measured: true, window: "engine", summarised: false };
 
 test("the card says how full, in tokens and as a share", () => {
-  assert.deepEqual(contextCard(codex), { share: "55% full", tokens: "141k of 258k tokens", summarised: null });
+  assert.deepEqual(contextCard(codex), { share: "55% full", tokens: "141k of 258k tokens", summarised: null, compaction: null });
   assert.equal(ringLabel(codex), "Context window 55% full");
 });
 
 test("a window that is the table's guess is said to be about that", () => {
   const guessed = { ...codex, window: "table" as const, limit: 272_000, fraction: 141_000 / 272_000 };
-  assert.deepEqual(contextCard(guessed), { share: "About 52% full", tokens: "141k of about 272k tokens", summarised: null });
+  assert.deepEqual(contextCard(guessed), { share: "About 52% full", tokens: "141k of about 272k tokens", summarised: null, compaction: null });
   assert.equal(ringLabel(guessed), "Context window about 52% full");
   assert.equal(contextTitle(guessed), "About 52% of what this model will take");
 });
@@ -62,7 +62,7 @@ test("chips, rows and Activity read the same numbers, with their own thresholds"
   assert.equal(contextTitle({ used: 0, limit: 0, fraction: 0, measured: false, summarised: true }), "The earlier part has been summarised");
   assert.equal(activityContext(codex), "55% of the window");
   assert.equal(activityContext({ ...codex, window: "table" }), "about 55% of the window");
-  assert.equal(activityContext({ ...codex, fraction: 0.49 }), null);
+  assert.equal(activityContext({ ...codex, used: codex.limit * 0.49, fraction: 0.49 }), null);
   assert.equal(activityContext({ ...codex, measured: false }), null);
 });
 
