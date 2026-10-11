@@ -10,6 +10,7 @@ import { splitBlocks, type CodeBlock, type TableBlock } from "@/lib/markdownTabl
 import { parseInline, type InlineToken } from "@/lib/inlineMarkdown";
 import { cn } from "@/lib/cn";
 import { splitHighlight } from "@/lib/find";
+import { TableScroll } from "./TableScroll";
 
 /** Wraps every occurrence of the query in the plain-text parts of an
  * already-rendered line. Elements are left alone: breaking a code span
@@ -109,7 +110,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
     return a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left";
   };
   return (
-    <div className="my-1.5 max-w-full overflow-x-auto rounded-xl border">
+    <TableScroll className="my-1.5 rounded-xl border">
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr className="border-b bg-foreground/[0.04]">
@@ -135,7 +136,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
           ))}
         </tbody>
       </table>
-    </div>
+    </TableScroll>
   );
 }
 

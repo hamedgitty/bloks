@@ -91,6 +91,12 @@ process.stdin.on("data", (chunk) => (input += chunk));
   return { h, bot, post, remember, calls, settle, turn };
 }
 
+test("a fresh turn receives short-cell and longer-note guidance for tables", async (t) => {
+  const s = await setup(t);
+  const first = await s.turn("Compare the options.");
+  assert.match(first.persona, /- table, for .*Keep cells to short values and put longer notes after the table/);
+});
+
 test("a memory change between resumed turns leaves the system prompt alone and is told in the message", async (t) => {
   const s = await setup(t);
   s.remember("- OLD_MEMORY_LINE\n");

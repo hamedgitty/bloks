@@ -43,7 +43,7 @@ export const CATALOG: Array<{ kind: ComponentKind; takes: string; when: string }
   {
     kind: "table",
     takes: `{"title": "…", "columns": ["…"], "rows": [["…", "[Bright loft](https://…)"]], "note": "…"}`,
-    when: "rows and columns, instead of pipes and dashes. A cell can hold a link",
+    when: "rows and columns, instead of pipes and dashes. A cell can hold a link. Keep cells to short values and put longer notes after the table",
   },
   {
     kind: "decision",

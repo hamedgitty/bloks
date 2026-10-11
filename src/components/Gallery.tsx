@@ -17,6 +17,7 @@ import Quote from "lucide-react/dist/esm/icons/quote.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { cn } from "@/lib/cn";
 import { InlineMarkdown } from "./Markdown";
+import { TableScroll } from "./TableScroll";
 import { useRef, useState } from "react";
 import { api, useStore, type Message } from "@/state/store";
 
@@ -170,7 +171,7 @@ function Table({ component }: { component: Extract<Component, { kind: "table" }>
           Every column keeps a readable width, set on the table as well as
           on the cells, so too many columns scroll instead of squeezing to
           a letter a line. */}
-      <div className="overflow-x-auto">
+      <TableScroll>
         <table
           className="w-full border-collapse text-[12.5px]"
           style={{ minWidth: component.columns.length * 110 }}
@@ -199,7 +200,7 @@ function Table({ component }: { component: Extract<Component, { kind: "table" }>
             ))}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
     </Frame>
   );
 }
