@@ -244,6 +244,16 @@ async function dispatch(message: any) {
         });
       }
 
+      // The schema describes a required question, but a tool call can
+      // still omit it. Refuse before opening a card or waiting on it.
+      if (isQuestion && (typeof args.question !== "string" || !args.question.trim())) {
+        return writeFrame({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { isError: true, content: [{ type: "text", text: "Bloks: ask_user requires a non-empty question" }] },
+        });
+      }
+
       const reply = await askHuman(
         isSecret
           ? {
