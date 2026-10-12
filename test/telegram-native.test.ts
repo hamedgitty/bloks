@@ -235,7 +235,7 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
     HOME: root, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
   };
-  let h;
+  let h: Awaited<ReturnType<typeof startHarness>>;
   try { h = await startHarness(env); }
   catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
   t.after(async () => { await h.crash(); rmSync(root, { recursive: true, force: true }); });
