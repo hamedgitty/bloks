@@ -206,7 +206,7 @@ test("a paired person's Telegram words store the restart reason and clear it bef
       const method = req.url!.split("/").pop()!, body = JSON.parse(text || "{}");
       calls.push({ method, body });
       const result = method === "getUpdates" ? updates.filter((u) => u.update_id >= body.offset)
-        : method === "getMe" ? { username: "drain_fixture_bot" }
+        : method === "getMe" ? { id: 12345, is_bot: true, username: "PlanningBot" }
         : method === "sendMessage" ? { message_id: calls.length } : true;
       const reply = () => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true, result })); };
       if (method === "getUpdates") setTimeout(reply, 30); else reply();
@@ -219,9 +219,9 @@ test("a paired person's Telegram words store the restart reason and clear it bef
   const preload = new URL("./helpers/telegram-fetch.mjs", import.meta.url).href;
   const h = await startHarness({ NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: `http://127.0.0.1:${(telegram.address() as any).port}` });
   t.after(() => h.stop());
-  const bot = await agentOn(h, fake.port, "Ivy");
+  const bot = await agentOn(h, fake.port, "Planning");
   const paired = await h.json("/api/telegram", { method: "POST", body: JSON.stringify({ token: "12345:TEST_ONLY_TOKEN", enabled: true, botId: bot.id, pair: true }) });
-  const say = (text: string) => { const id = updates.length + 1; updates.push({ update_id: id, message: { message_id: id, chat: { id: 4242 }, from: { id: 4242, first_name: "Test" }, text } }); };
+  const say = (text: string) => { const id = updates.length + 1; updates.push({ update_id: id, message: { message_id: id, chat: { id: 4242, type: "private" }, from: { id: 4242, is_bot: false, first_name: "Sam" }, text } }); };
   assert.ok(paired.pairing);
   say(paired.pairing);
   assert.ok(await waitFor(() => calls.some((c) => c.method === "sendMessage" && c.body.text.startsWith("Paired."))));
