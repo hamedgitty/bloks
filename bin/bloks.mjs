@@ -66,7 +66,7 @@ const COMMANDS = {
     use: "rooms",
     about: "the rooms that exist, and who is in them",
     run: async () => {
-      const { bloks } = await request("GET", "/api/bloks");
+      const { bloks } = await request("GET", "/api/bloks?messages=0");
       // an archived room is out of the sidebar, so it stays out of this list too
       return (bloks ?? []).filter((room) => !room.archived).map((room) => ({ id: room.id, name: room.name, members: room.memberIds }));
     },

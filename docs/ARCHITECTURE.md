@@ -160,6 +160,13 @@ this machine or the same network are not cut. An answer that would still be
 too big is replaced with a short 413, so the phone hears why instead of
 waiting out the relay's timeout.
 
+Both list routes accept `?messages=N` to keep only the newest N messages
+of each conversation, including zero for names and rosters alone. The CLI
+and MCP room discovery use zero; their history reads use the separate room
+messages route. Missing or invalid counts keep the full local transcript,
+so app hydration still has its history. Through Cloud, `olderMessages`
+counts everything omitted, including when the requested tail is zero.
+
 ## Rehearsals
 
 `server/rehearsals.ts` clones the agent's folder (copy-on-write with

@@ -13467,16 +13467,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     // ── rooms (bloks with more than one agent) ──
     if (method === "GET" && path === "/api/bloks") {
+      // The same transcript tail as the agent list; discovery needs none.
+      const tail = Number(url.searchParams.get("messages") || NaN);
+      const zero = tail >= 0 && tail < 1;
+      const trim = (list: Message[]) =>
+        Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
       // The person sees every room and everything said in it. An agent
       // sees the transcripts of the rooms it is in, and no more than the
       // name and roster of the rest: enough to ask to be added to one,
       // which is the only reason it needs to know they exist.
       return json(res, 200, {
         bloks: (() => {
-          const fitted = viaRelay ? fitTranscripts(bloks.bloks.map((b) => store.messagesFor(b.id))) : null;
+          // Fit the whole history so olderMessages counts everything omitted.
+          const fitted = viaRelay
+            ? fitTranscripts(bloks.bloks.map((b) => store.messagesFor(b.id)), Number.isFinite(tail) && tail >= 0 ? Math.floor(tail) : RELAY_TAIL)
+            : null;
           return bloks.bloks.map((b, i) =>
             !asAgent || b.memberIds.includes(asAgent.botId)
-              ? { ...b, ...(fitted ? fitted[i] : { messages: store.messagesFor(b.id) }) }
+              ? { ...b, ...(fitted ? fitted[i] : { messages: zero ? [] : trim(store.messagesFor(b.id)) }) }
               : { id: b.id, name: b.name, memberIds: b.memberIds, archived: b.archived, messages: [] },
           );
         })(),

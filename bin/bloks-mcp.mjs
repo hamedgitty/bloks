@@ -78,7 +78,7 @@ async function agentNamed(who) {
 
 async function roomNamed(which) {
   const want = String(which ?? "").trim().toLowerCase();
-  const { bloks } = await call("GET", "/api/bloks");
+  const { bloks } = await call("GET", "/api/bloks?messages=0");
   const found = (bloks ?? []).find((r) => r.id === which) ?? (bloks ?? []).find((r) => r.name.toLowerCase() === want);
   if (!found) throw new Error(`No room called "${which}". Rooms: ${(bloks ?? []).map((r) => r.name).join(", ") || "none"}.`);
   return found;
@@ -144,7 +144,7 @@ const TOOLS = [
     description: "The rooms in the Bloks workspace and who is in each.",
     inputSchema: { type: "object", properties: {} },
     run: async () => {
-      const [{ bloks }, all] = await Promise.all([call("GET", "/api/bloks"), agents()]);
+      const [{ bloks }, all] = await Promise.all([call("GET", "/api/bloks?messages=0"), agents()]);
       const name = (id) => all.find((b) => b.id === id)?.name ?? "someone";
       // an archived room is out of the sidebar, so it stays out of this list too
       return (bloks ?? []).filter((r) => !r.archived).map((r) => `- ${r.name}: ${(r.memberIds ?? []).map(name).join(", ")}`).join("\n") || "No rooms yet.";
