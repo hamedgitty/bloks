@@ -16,6 +16,8 @@ import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
+import { isPrivateTelegramHuman, knockTelegram, migrateTelegramPeople, telegramSender, telegramSenderCurrent, TELEGRAM_PEOPLE_UPGRADE, type TelegramPerson, type TelegramSender } from "./telegram-people.ts";
+import { personReplyText } from "./person-turn.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
@@ -130,7 +132,7 @@ import {
   updateCount,
   type RegistryEntry,
 } from "./skill-registry.ts";
-import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint } from "./agent-cli.ts";
+import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint, type AgentToken } from "./agent-cli.ts";
 import {
   CACHE_LIFETIME_MS,
   COMPACT_AT,
@@ -483,22 +485,21 @@ let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 // requests so a failed first read cannot make a saved action look failed.
 people.people();
 const store = new Store(() => bootSelection);
-const migratedTelegram = migrateTelegram(cfg.telegram, store.bots);
+const oldTelegram = cfg.telegram;
+const migratedTelegram = migrateTelegramPeople(migrateTelegram(cfg.telegram, store.bots));
 if (migratedTelegram !== cfg.telegram) {
   // With no bot configured there is nothing to migrate on disk. An
   // unrelated startup must not rewrite the workspace's config.
   if (cfg.telegram?.token || Object.keys(cfg.telegram?.bots ?? {}).length) saveConfig({ telegram: migratedTelegram });
   cfg.telegram = migratedTelegram;
-  const id = migratedTelegram.migratedBotId;
-  const generation = id ? migratedTelegram.bots?.[id]?.generation : undefined;
-  if (id && generation) for (const lane of store.bot(id)?.tasks ?? []) {
+  if (oldTelegram && oldTelegram.version !== 2) for (const bot of store.bots) for (const lane of bot.tasks) {
+    let retired = false;
     for (const message of store.messagesFor(lane.id)) {
       if (!message.queued || (!message.fromTelegram && !message.telegramReply)) continue;
-      store.patchMessage(lane.id, message.id, {
-        telegramBinding: { botId: id, generation },
-        ...(message.telegramReply ? { telegramReply: { ...message.telegramReply, botId: id, generation } } : {}),
-      });
+      store.patchMessage(lane.id, message.id, { queued: false, unsent: true, ...(message.telegramReply ? { telegramReply: { ...message.telegramReply, state: "failed" } } : {}) });
+      retired = true;
     }
+    if (retired) store.appendMessage(lane.id, { role: "bot", kind: "notice", text: "Telegram needs the pairing word again. Old queued messages have no verified sender and remain unsent; they were not run as the owner." });
   }
 }
 const bloks = new BlokStore();
@@ -1890,7 +1891,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
-        store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
+        if (!laneTelegramPerson.has(event.threadId)) store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
         cutOff.session(event.threadId, event.providerInstanceId, event.sessionId);
       }
       break;
@@ -1901,7 +1902,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // from a stranger's mail, which would be writing the agents the
         // owner hires and the brief they start on.
         const { plan, text: afterPlan } =
-          laneRequester.get(event.threadId) === MAIL_FROM_ANYONE ? { plan: null, text: event.text } : extractTeamPlan(event.text);
+          laneRequester.get(event.threadId) === MAIL_FROM_ANYONE || laneTelegramPerson.has(event.threadId) ? { plan: null, text: event.text } : extractTeamPlan(event.text);
         // Components an engine wrote into its own answer. The CLI is the
         // route for engines with a shell; this is the one for the rest,
         // so an API model can answer with a chart like anybody else.
@@ -2115,7 +2116,8 @@ bus.subscribe((event: RuntimeEvent) => {
       const byMember = requester !== undefined && requester !== "owner";
       const byMail = requester === MAIL_FROM_ANYONE;
       const mailFrom = byMail ? mailAnswering.get(event.threadId)?.mail.from : undefined;
-      const askedBy = byMail ? `an email from ${mailFrom || "someone not on your list"}` : byMember ? people.person(requester!)?.name : undefined;
+      const telegramPerson = laneTelegramPerson.get(event.threadId);
+      const askedBy = telegramPerson?.name ?? (byMail ? `an email from ${mailFrom || "someone not on your list"}` : byMember ? people.person(requester!)?.name : undefined);
 
       // A decision made here (the wheel, a rule, a mode) that could not
       // reach the agent allowed nothing: the ask it answered is gone. Say
@@ -2253,7 +2255,7 @@ bus.subscribe((event: RuntimeEvent) => {
           title: asking ? "Your agent has a question" : "Approval needed",
           // a question for a stranger's mail says so too: its answer is
           // emailed to them
-          subtitle: askedBy && (!asking || byMail) ? `${event.summary ?? ""} (${asking ? "for" : "asked for by"} ${askedBy})`.trim() : event.summary,
+          subtitle: askedBy && (telegramPerson || !asking || byMail) ? `${event.summary ?? ""} (${asking ? "for" : "asked for by"} ${askedBy})`.trim() : event.summary,
           options: event.choices?.length ? event.choices : asking ? [] : ["Allow", "Deny"],
           requestId: event.requestId,
           // a person, who may not then approve what they asked for
@@ -2278,7 +2280,8 @@ bus.subscribe((event: RuntimeEvent) => {
         // next line there would be emailed to whoever wrote.
         const runtime = liveTelegram(bot.id);
         const address = telegramLive.get(bot.id);
-        const chatId = byMail || !runtime || address?.generation !== runtime.generation ? undefined : address.chatId;
+        const ownerChat = telegramBinding(bot.id)?.ownerChatId;
+        const chatId = !runtime || ownerChat === undefined ? undefined : telegramPerson ? ownerChat : byMail || address?.generation !== runtime.generation || address.chatId !== ownerChat ? undefined : ownerChat;
         if (chatId !== undefined && runtime) {
           const requestId = event.requestId;
           // Allow or Deny only for what is really an approval. A question
@@ -2291,12 +2294,15 @@ bus.subscribe((event: RuntimeEvent) => {
             botId: bot.id,
             options: message.card?.options ?? [],
             permission: yesOrNo,
+            ...(telegramPerson ? { explicit: true } : {}),
           });
           const { title, subtitle, options } = message.card ?? {};
           const forwarded = telegramCards.forward({ title, subtitle, options, requestId, botId: bot.id, generation: runtime.generation, chatId, permission: yesOrNo });
           void telegram
-            .post(runtime.token, chatId, forwarded.text, forwarded.keyboard, false, () => Boolean(currentTelegram(runtime)))
+            .post(runtime.token, chatId, telegramPerson ? forwarded.text.replace("Reply with your answer.", "Reply to this card with your answer, or answer it in the app.") + (options?.length ? "\n\nTap a button, or reply to this card. Ordinary messages stay in your conversation." : "") : forwarded.text, forwarded.keyboard, false, () => Boolean(currentTelegram(runtime)))
             .then((messageId) => {
+              const waiting = runtime.asks.get(chatId);
+              if (waiting?.requestId === requestId) waiting.messageId = messageId;
               // answered before Telegram said which message it is
               const late = messageId === undefined ? undefined : telegramCards.sent(requestId, messageId);
               if (late) rewriteTelegramCard(late);
@@ -2376,7 +2382,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "context.reading": {
-      noteLaneReading(event, event);
+      if (!laneTelegramPerson.has(event.threadId)) noteLaneReading(event, event);
       break;
     }
     case "context.compacted": {
@@ -2391,6 +2397,8 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "runtime.error": {
+      const person = laneTelegramPerson.get(event.threadId);
+      if (person) tellTelegramPersonHeld(person, event.message);
       // kept for the end of the turn, which decides whether the engine
       // ran out (server/failover.ts)
       const said = turnErrors.get(event.threadId) ?? [];
@@ -2406,7 +2414,7 @@ bus.subscribe((event: RuntimeEvent) => {
         !commandTurns.has(event.threadId) &&
         isContextError(event.message) &&
         !retriedForContext.has(event.threadId) &&
-        laneRequester.get(event.threadId) !== MAIL_FROM_ANYONE
+        laneRequester.get(event.threadId) !== MAIL_FROM_ANYONE && !person
       ) {
         retriedForContext.add(event.threadId);
         // what this turn was asked, not words still waiting for the next one
@@ -2438,7 +2446,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // is said once, in plain words, when the backup takes over. The
       // raw error waits: if the backup cannot take it after all, it is
       // shown then (see fallBackIfOut).
-      if (!inRoom && outReason(event.message) && engineUsable(bot.backupSelection) && !fellBack.has(event.threadId)) {
+      if (!person && !inRoom && outReason(event.message) && engineUsable(bot.backupSelection) && !fellBack.has(event.threadId)) {
         heldErrors.set(event.threadId, event.message.slice(0, 600));
         break;
       }
@@ -2576,10 +2584,12 @@ bus.subscribe((event: RuntimeEvent) => {
         const said = turnErrors.get(event.threadId)?.at(-1);
         if (said) stalledSince.set(event.threadId, said);
       }
-      const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
+      const handedOver = !laneTelegramPerson.has(event.threadId) && fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
       if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
+        const person = laneTelegramPerson.get(event.threadId);
+        if (person) tellTelegramPersonHeld(person, failedTurnNotice(event.stopReason));
       }
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
@@ -2614,12 +2624,14 @@ bus.subscribe((event: RuntimeEvent) => {
       // leaves no session behind: the lane's next turn may be the owner's,
       // and none of what the mail said may reach it as context.
       const guestEnded = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE;
+      const personEnded = laneTelegramPerson.has(event.threadId);
+      if (!personEnded && event.ok && laneRequester.get(event.threadId) === "owner") store.setTelegramExchangePending(event.threadId, false);
       if (guestEnded) store.startFreshSession(event.threadId);
       if (guestEnded) {
         // nothing of the owner's to keep from this turn
-      } else if (!command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
+      } else if (!personEnded && !command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
         void foldAfterTurn(bot.id, event.threadId);
-      } else if (!command) {
+      } else if (!personEnded && !command) {
         // Otherwise absorb one message into the running summary, if this
         // workspace asked for that. Deliberately in the else: a lane that
         // is already over the threshold wants the whole fold, not one
@@ -2633,14 +2645,17 @@ bus.subscribe((event: RuntimeEvent) => {
       // the owner's to turn into the agent's standing skills.
       // Nor the lane strangers' mail is answered in, whoever's turn this was.
       const guestLane = guestEnded || Boolean(settledLane?.guestMail);
-      if (!command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+      if (!personEnded && !command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+      const requester = laneRequester.get(event.threadId);
+      laneRequester.delete(event.threadId);
+      laneTelegramPerson.delete(event.threadId);
       drainRoomTags(bot.id);
       // before anything queued starts the next turn on the old session
       freshIfAsked(event.threadId);
       drainSteer(event.threadId);
       closeIfAsked(event.threadId);
       // after what waited has had its chance to go, since it goes first
-      goalTurnEnded(bot, event.threadId, {
+      if (!personEnded) goalTurnEnded(bot, event.threadId, {
         ok: event.ok !== false,
         stopReason: event.stopReason ?? null,
         goesOn: pickingUp || handedOver || refolding,
@@ -2651,8 +2666,6 @@ bus.subscribe((event: RuntimeEvent) => {
       replyingTo.delete(event.threadId);
       // an agent that named someone else hands the room over to them, and
       // the person who started the chain is still the one who asked
-      const requester = laneRequester.get(event.threadId);
-      laneRequester.delete(event.threadId);
       if (inRoom) {
         const said = store.messagesFor(roomId);
         const last = [...said].reverse().find((m) => m.from === bot.id && m.kind === "text");
@@ -2870,7 +2883,7 @@ function carryOn(
   const guest = turn.requester === MAIL_FROM_ANYONE;
   // claimed now, before a settle can drain it into a turn of its own
   const queued = guest ? undefined : steerQueues.get(turn.laneId);
-  const segment = queuedSegment(turn.laneId, queued?.items ?? [], true);
+  const segment = queuedSegment(turn.laneId, queued?.items ?? [], true, turn.requester);
   const waiting = segment.items.length ? { botId: turn.botId, items: segment.items } : undefined;
   if (!guest) {
     if (segment.rest.length) steerQueues.set(turn.laneId, { botId: turn.botId, items: segment.rest });
@@ -2880,7 +2893,7 @@ function carryOn(
     // A waiting word may have been edited into a command during the
     // sleep delay. Re-read before pickup; it still needs its own turn.
     if (waiting) {
-      const current = queuedSegment(turn.laneId, waiting.items, true);
+      const current = queuedSegment(turn.laneId, waiting.items, true, turn.requester);
       waiting.items = current.items;
       if (current.rest.length) {
         const since = steerQueues.get(turn.laneId)?.items ?? [];
@@ -3395,10 +3408,14 @@ function queuedCommand(laneId: string, item: { messageId?: string }): string | u
   return accepted && commandFor(m.text, accepted) ? accepted : undefined;
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
-function queuedSegment<T extends { messageId?: string; text?: string }>(laneId: string, items: T[], continuation = false) {
+function queuedSegment<T extends { messageId?: string; text?: string; requester?: string; telegramPerson?: TelegramSender }>(laneId: string, items: T[], continuation = false, requester?: string) {
   const alive = items.filter((item) => steerWords(laneId, item) !== null);
-  const first = alive.findIndex((item) => queuedCommand(laneId, item));
-  const size = first < 0 ? alive.length : first === 0 && !continuation ? 1 : first;
+  const trust = (item: T) => item.telegramPerson?.requester ?? item.requester ?? (item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId)?.telegramPerson?.requester : undefined) ?? "owner";
+  const wanted = continuation ? requester ?? "owner" : alive[0] ? trust(alive[0]) : "owner";
+  const split = alive.findIndex((item) => trust(item) !== wanted);
+  const prefix = split < 0 ? alive : alive.slice(0, split);
+  const first = prefix.findIndex((item) => queuedCommand(laneId, item));
+  const size = first < 0 ? prefix.length : first === 0 && !continuation ? 1 : first;
   return { items: alive.slice(0, size), rest: alive.slice(size) };
 }
 
@@ -3496,6 +3513,7 @@ async function startClaimedTurn(
     /** The person said this from Telegram (Message.fromTelegram). */
     fromTelegram?: boolean;
     telegramBinding?: Message["telegramBinding"];
+    telegramPerson?: TelegramSender;
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
     /** This turn asks again what the lane's last turn was asked, after
@@ -3518,6 +3536,15 @@ async function startClaimedTurn(
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
   if (opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding)) throw new Error("This agent's Telegram connection changed before the message could start.");
+  const personRequester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(opts.taskId ?? bot.threadId) : undefined);
+  const personSource = opts.telegramPerson ?? (personRequester?.startsWith("telegram:") ? senderForRequester(personRequester, opts.taskId ?? bot.threadId) : undefined);
+  if (opts.carriedOn && !personSource) {
+    const last = [...store.messagesFor(opts.taskId ?? bot.threadId)].reverse().find((m) => m.role === "user" && !m.deleted && !m.queued);
+    if (last?.telegramPerson || (last?.fromTelegram && (!last.telegramBinding || !telegramConnectionCurrent(last.telegramBinding)))) throw new Error("The old Telegram turn has no current verified sender. It was not recovered as the owner.");
+  }
+  if (personRequester?.startsWith("telegram:") && !personSource) throw new Error("The Telegram person's identity could not be recovered. This turn was not run as the owner.");
+  if (personSource && (!store.bot(personSource.botId) || personSource.botId !== botId || !telegramSenderCurrent(telegramBinding(botId), personSource))) throw new Error("This Telegram person was removed or their connection changed before the message could start.");
+  if (personSource) opts = { ...opts, telegramPerson: personSource, requester: personSource.requester, personal: false };
 
   // Somebody at the wheel stops the agent, not just its questions.
   //
@@ -3624,7 +3651,7 @@ async function startClaimedTurn(
 
   const own = bot.modelSelection;
   const ownRest = cooldowns.of(own.instanceId);
-  const directCommandInstance = !opts.from && !opts.presetMessage ? acceptingNative(bot, task.id) : undefined;
+  const directCommandInstance = !personSource && !opts.from && !opts.presetMessage ? acceptingNative(bot, task.id) : undefined;
   // Keep Claude's existing room/direct-command behavior. Codex's new
   // command path is for the person's own input in an agent lane.
   const directCommandAllowed = registry.get(directCommandInstance ?? "")?.driverKind === "claudeAgent" || (opts.byYou && opts.personal !== false && !opts.roomId);
@@ -3638,6 +3665,9 @@ async function startClaimedTurn(
   const instance = registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(new Error(unavailableEngineMessage(selection.instanceId)), { status: 409 });
+  }
+  if (personSource && instance.driverKind !== "codex" && instance.driverKind !== "claudeAgent") {
+    throw new Error("This Telegram person's turn is held: choose Claude Code or Codex for this agent. Its current engine cannot wait for owner approvals on person turns.");
   }
   if (sharing && !sharedSafe(instance.driverKind)) {
     throw Object.assign(
@@ -3765,6 +3795,7 @@ async function startClaimedTurn(
       ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
+      ...(personSource ? { telegramPerson: personSource } : {}),
     });
     if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
@@ -3819,7 +3850,7 @@ async function startClaimedTurn(
   // limit would never fire, because trimming is what makes it fit, and
   // the trimming is exactly the silent forgetting this replaces.
   let built = buildTranscript();
-  if (!command && !blok && built.dropped > 0) {
+  if (!personSource && !command && !blok && built.dropped > 0) {
     if (await foldContext(bot.id, task.id).catch(() => false)) built = buildTranscript();
   }
   const transcript = built.turns;
@@ -3841,7 +3872,7 @@ async function startClaimedTurn(
     asksByTool && cfg.composio?.key && bot.composio !== false
       ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
       : null,
-    secretHint(asksByTool ? "tool" : !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
+    secretHint(asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
   ]
     .filter(Boolean)
     .join(" ");
@@ -3872,7 +3903,7 @@ async function startClaimedTurn(
     // not for a guest's mail: what the owner wrote them is the owner's
     !guestMail &&
       skillsPrompt(
-        disclose(attached, runsAProcess(instance.driverKind)),
+        disclose(attached, runsAProcess(instance.driverKind) && !personSource),
         `To read one, run: ${cliCommand} skill <id>`,
       ),
     // The composer offers these by id after a slash (#51), so a message
@@ -3886,7 +3917,7 @@ async function startClaimedTurn(
     // tools can reliably produce.
     galleryPrompt(
       bot.withoutComponents,
-      runsAProcess(instance.driverKind)
+      runsAProcess(instance.driverKind) && !personSource
         ? `To use one, run: ${cliCommand} show <kind> '<json>'`
         : 'To use one, write it as a fenced block on its own:\n```bloks\n{ "kind": "table", ... }\n```',
     ),
@@ -3933,6 +3964,10 @@ async function startClaimedTurn(
     checkInTurns.delete(task.id);
   };
   const stillHeld = wheel.heldBy(bot.id);
+  if (personSource && !telegramSenderCurrent(telegramBinding(botId), personSource)) {
+    unmark();
+    throw new Error("This Telegram person was removed while the turn was being prepared.");
+  }
   if (stillHeld) {
     unmark();
     wheel.noteTurnedAway(bot.id);
@@ -3948,7 +3983,7 @@ async function startClaimedTurn(
   // A backup engine or a retry after a fold goes on with the turn before
   // it, for whoever asked for that one (a pickup is told who, by the
   // record of the turn it picks up).
-  const requester = opts.requester ?? (opts.fallback || opts.retry ? askedLast.get(task.id) : undefined) ?? "owner";
+  const requester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? "owner";
   laneRequester.set(task.id, requester);
   // somebody else's turn in a mail's lane: what it says is not emailed
   if (!opts.answersMail && !opts.carriedOn && !opts.fallback && !opts.retry) mailAnswering.delete(task.id);
@@ -3957,6 +3992,10 @@ async function startClaimedTurn(
   // member of a shared room or an email from anyone did not, and their
   // turn gets none of the owner's standing trust (MAIL_FROM_ANYONE).
   const owners = requester === "owner";
+  if (personSource) {
+    laneTelegramPerson.set(task.id, personSource);
+    store.setTelegramExchangePending(task.id, true);
+  } else laneTelegramPerson.delete(task.id);
   // set before the engine hears a word, so a `bloks say` from this turn
   // reads this turn's place and not the last one's
   const goesOn = opts.carriedOn || opts.fallback || opts.retry;
@@ -4029,6 +4068,7 @@ async function startClaimedTurn(
     checkInTurns.delete(task.id);
     activeRoom.delete(task.id);
     laneRequester.delete(task.id);
+    laneTelegramPerson.delete(task.id);
     replyingTo.delete(task.id);
     // what was got ready for it goes with it: the folder's photograph,
     // the Local VM, and the credential it would have run with
@@ -4079,7 +4119,7 @@ async function startClaimedTurn(
       }
       // cloud | sandbox | local | off | undefined(auto), with a per-turn
       // override taking precedence over the agent's own setting
-      const wants = othersTurn && !roomTools?.computer ? "off" : (opts.computerOverride ?? bot.computer);
+      const wants = personSource || (othersTurn && !roomTools?.computer) ? "off" : (opts.computerOverride ?? bot.computer);
       // "sandbox" is the stored name for the Local VM: a Cua desktop in a
       // container on this machine, shared by all agents one at a time
       let vmTurn = false;
@@ -4208,7 +4248,7 @@ async function startClaimedTurn(
       // turns. Session-cursor engines get the story replayed inline;
       // API engines replay the transcript themselves every turn.
       const instanceId = selection.instanceId;
-      const engineFresh =
+      const engineFresh = Boolean(personSource || task.telegramExchangePending) ||
         !blok &&
         engineIsFresh({
           instanceId,
@@ -4268,7 +4308,7 @@ async function startClaimedTurn(
       const compactInTurn = compactNow && !compactHere && Boolean(instance.adapter.capabilities.compactsFirst);
       const replaceSession = compactNow && !compactHere && !compactInTurn;
       if (!command && engineFresh && !nativeReplay) {
-        const told = await story(true);
+        const told = await story(!personSource);
         turnText = freshTurnText(told.turns, turnText, { left: told.left });
       } else if (replaceSession) {
         const told = await story(true);
@@ -4295,8 +4335,9 @@ async function startClaimedTurn(
       // Nor for a turn someone else asked for, such as mail from an
       // address nobody listed: with it, that turn could file a routine
       // or a watcher for the agent, and those run later as the owner's.
-      const credential =
-        !sharing && owners && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
+      const credential = personSource
+        ? agentTokens.mintReply(bot.id, task.id, Date.now(), personSource, laneTurns.get(task.id) ?? 0)
+        : !sharing && owners && runsAProcess(instance.driverKind) ? agentTokens.mint(bot.id, task.id, Date.now()) : null;
 
       // A session that has run the CLI before may have run it from a copy
       // of Bloks that is no longer where it was. Said once, in the turn
@@ -4392,7 +4433,7 @@ async function startClaimedTurn(
         // its own workspace is always the agent's to edit: memory notes
         // must not queue approval cards behind a custom working folder.
         // Not in a shared room, where those notes are the owner's.
-        ...(onCloud || sharing || guestMail ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
+        ...(onCloud || sharing || guestMail || personSource ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
         ...(sharing ? { shared: { tools: sharing.tools } } : guestMail ? { shared: { tools: "conversation" as const } } : {}),
         // full access takes the engine's own guards off too; never in a
         // shared room, where the approvals protect other people, and
@@ -4400,6 +4441,7 @@ async function startClaimedTurn(
         // come to the owner and so need the guards that raise them
         ...(bot.approvals === "full" && !sharing && owners ? { fullAccess: true } : {}),
         ...(!owners && !sharing ? { untrusted: true } : {}),
+        ...(personSource && credential ? { person: { reply: (input: unknown) => replyToTelegramPerson(credential, input) } } : {}),
         text: turnText,
         ...(command && instance.driverKind === "codex" ? { compactOnly: true } : {}),
         ...(skillNames.length ? { skillNames } : {}),
@@ -4430,7 +4472,8 @@ async function startClaimedTurn(
                 : integrations.sandbox
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : "") +
-          (credential ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
+          (credential && !personSource ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
+          (personSource ? `\n\nThis turn answers ${JSON.stringify(personSource.name)} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +
           (project && !guestMail ? `\n\n${briefFor(project)}` : ""),
         integrations,
       };
@@ -4439,7 +4482,7 @@ async function startClaimedTurn(
       // cache this turn leaves. Not the words, the transcript, or the
       // turn's credential and secrets. Not a shared room's lane, a
       // rehearsal, or a turn on the Local VM, which has to be claimed.
-      if (instance.driverKind === "claudeAgent" && !sharing && !opts.rehearsal && !vmTurn) {
+      if (instance.driverKind === "claudeAgent" && !personSource && !sharing && !opts.rehearsal && !vmTurn) {
         const {
           text: _text,
           transcript: _transcript,
@@ -4493,9 +4536,10 @@ async function startClaimedTurn(
       // and its tools ran (GitHub 220). It is dropped instead, said so,
       // and the lane is left as if it had never been asked.
       const connectionChanged = opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding);
-      const withdrawn = unsendable(bot.id) ?? (connectionChanged ? "This agent's Telegram connection changed before the message could start. The words remain unsent in the app." : null);
+      const senderChanged = personSource && !telegramSenderCurrent(telegramBinding(bot.id), personSource);
+      const withdrawn = unsendable(bot.id) ?? (connectionChanged ? "This agent's Telegram connection changed before the message could start. The words remain unsent in the app." : senderChanged ? "This Telegram person was removed before the message could start. The words remain unsent in the app." : null);
       if (withdrawn) {
-        if (connectionChanged) {
+        if (connectionChanged || senderChanged) {
           for (const id of telegramInputIds) {
             const patch = store.patchMessage(task.id, id, { queued: false, unsent: true });
             if (patch) broadcast({ kind: "message.patch", threadId: task.id, message: patch });
@@ -4524,8 +4568,7 @@ async function startClaimedTurn(
       const failure = store.appendMessage(roomId, {
         role: "bot",
         ...(blok ? { from: bot.id } : {}),
-        kind: "activity",
-        tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
+        ...(personSource ? { kind: "notice" as const, text: `Could not answer: ${message}` } : { kind: "activity" as const, tool: { name: `error: ${message.slice(0, 160)}`, ok: false } }),
       });
       broadcast({ kind: "message", threadId: roomId, message: failure });
       sweepArtifacts(bot.id, task.id, (m) => {
@@ -4533,6 +4576,7 @@ async function startClaimedTurn(
         broadcast({ kind: "message", threadId: roomId, message });
         return message;
       });
+      if (personSource) tellTelegramPersonHeld(personSource, message);
       settleUnsent(`Could not answer: ${message}`);
     }
   })();
@@ -4641,6 +4685,7 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
  * goes to the owner, whatever the owner's standing rules and modes would
  * have done on their own. */
 const laneRequester = new Map<string, string>();
+const laneTelegramPerson = new Map<string, TelegramSender>();
 
 /** Who asked for each lane's latest turn, kept after it ends: a backup
  * engine picking the turn up, or the same words asked again after a
@@ -7680,12 +7725,13 @@ interface TelegramRuntime {
   token: string;
   abort: AbortController;
   inbox: telegram.Inbox;
+  personInboxes: Map<string, telegram.Inbox>;
   /** Chats refused once, remembered for the life of the connection, so
    * somebody who found the bot and keeps typing gets one answer rather
    * than one per message. */
   refused: Set<number>;
   /** Cards forwarded to a chat and not yet answered, by chat. */
-  asks: Map<number, { requestId: string; botId: string; options: string[]; permission: boolean }>;
+  asks: Map<number, { requestId: string; botId: string; options: string[]; permission: boolean; explicit?: boolean; messageId?: number }>;
   /** "typing" in each chat whose message the agent is working on. */
   typing: Map<number, { now(): void; stop(): Promise<void> }>;
   /** Turns started from each chat, one after another. Kept off the
@@ -7733,6 +7779,231 @@ function liveTelegram(botId: string): TelegramRuntime | undefined {
   return runtime && currentTelegram(runtime) ? runtime : undefined;
 }
 
+function senderForRequester(requester: string, laneId: string): TelegramSender | undefined {
+  return laneTelegramPerson.get(laneId)?.requester === requester ? laneTelegramPerson.get(laneId) :
+    [...store.messagesFor(laneId)].reverse().find((m) => m.telegramPerson?.requester === requester && !m.deleted && !m.unsent && !m.queued)?.telegramPerson;
+}
+
+function saveTelegramPerson(botId: string, person: TelegramPerson): void {
+  const state = telegramBinding(botId);
+  if (state) saveTelegramBinding(botId, { ...state, people: { ...state.people, [String(person.userId)]: person } });
+}
+
+async function replyToTelegramPerson(credential: AgentToken, input: unknown): Promise<string> {
+  const text = personReplyText(input);
+  const sender = credential.reply?.sender;
+  const current = () => Boolean(sender && agentTokens.identify(credential.token, Date.now(), turnAlive) === credential &&
+    laneTurns.get(credential.taskId) === credential.reply?.turn && laneRequester.get(credential.taskId) === sender.requester &&
+    store.bot(credential.botId) && telegramSenderCurrent(telegramBinding(credential.botId), sender));
+  if (!sender || !current()) throw new Error("This reply credential is no longer valid for this sender and turn.");
+  const runtime = liveTelegram(credential.botId);
+  if (!runtime) throw new Error("This agent's Telegram connection is unavailable.");
+  const digest = createHash("sha256").update(text).digest("hex");
+  const attempted = credential.reply!.attempted ??= new Set<string>();
+  if (attempted.has(digest)) throw new Error("This turn already attempted this reply. Check its status in the owner's chat; do not send it again automatically.");
+  if (!agentTokens.spend(credential)) throw new Error("This turn has sent as many replies as it may. Finish the turn.");
+  // Spend and record before dispatch. A transport timeout never authorizes
+  // another attempt whose first delivery might already have succeeded.
+  attempted.add(digest);
+  const message = store.appendMessage(credential.taskId, { role: "bot", kind: "text", text, telegramSent: { personId: sender.personId, name: sender.name, state: "sending" } });
+  broadcast({ kind: "message", threadId: credential.taskId, message });
+  try {
+    await telegram.replyText(runtime.token, sender.chatId, text, sender.messageId, current);
+    const patched = store.patchMessage(credential.taskId, message.id, { telegramSent: { ...message.telegramSent!, state: "sent" } });
+    if (patched) broadcast({ kind: "message.patch", threadId: credential.taskId, message: patched });
+    const person = telegramBinding(credential.botId)?.people?.[String(sender.userId)];
+    if (person?.grant === sender.grant && person.holdReported) saveTelegramPerson(credential.botId, { ...person, holdReported: undefined });
+    return "Sent to the person who started this turn.";
+  } catch (error) {
+    const failed = error instanceof telegram.TelegramError && error.status >= 400 && error.status < 500;
+    const patched = store.patchMessage(credential.taskId, message.id, { telegramSent: { ...message.telegramSent!, state: failed ? "failed" : "uncertain" } });
+    if (patched) broadcast({ kind: "message.patch", threadId: credential.taskId, message: patched });
+    throw new Error(`Reply ${failed ? "failed" : "was not confirmed"}. Do not send it again automatically.`);
+  }
+}
+
+/** A neutral service notice is the one exception to explicit agent replies.
+ * It explains a hold without carrying any of the conversation to the sender. */
+function tellTelegramPersonHeld(sender: TelegramSender, why: string): void {
+  const state = telegramBinding(sender.botId);
+  const person = state?.people?.[String(sender.userId)];
+  if (!telegramSenderCurrent(state, sender) || !person || person.holdReported) return;
+  saveTelegramPerson(sender.botId, { ...person, holdReported: why.slice(0, MAX_DESCRIPTION_CHARS) });
+  const runtime = liveTelegram(sender.botId);
+  if (runtime) void telegramSay(runtime, sender.chatId, "This agent cannot answer from Telegram yet. The owner can see why in the agent's chat.");
+}
+
+function telegramAdmissionCard(botId: string, person: TelegramPerson): Message | undefined {
+  const bot = store.bot(botId);
+  if (!bot) return;
+  const requestId = `tg-person:${person.id}`;
+  const existing = store.messagesFor(bot.threadId).find((m) => m.card?.requestId === requestId);
+  if (existing) return existing;
+  const message = store.appendMessage(bot.threadId, { role: "bot", kind: "options", card: {
+    title: `Let ${person.name} in?`, subtitle: `They want to message ${bot.name} on Telegram. Let in only people you trust: what this agent reads can reach them. Actions still ask you.`,
+    options: ["Let in", "Not now"], requestId, ownerOnly: true,
+  } });
+  broadcast({ kind: "message", threadId: bot.threadId, message });
+  store.markLane(bot.id, bot.threadId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  return message;
+}
+
+async function forwardTelegramAdmission(runtime: TelegramRuntime, person: TelegramPerson): Promise<void> {
+  const state = currentTelegram(runtime);
+  if (!state || state.ownerChatId === undefined || person.state !== "pending" || person.cardSend) return;
+  const card = telegramAdmissionCard(runtime.botId, person);
+  if (!card?.card) return;
+  saveTelegramPerson(runtime.botId, { ...person, cardId: card.id, cardSend: "sending" });
+  const data = (action: "a" | "d") => `tp:${action}:${person.id}:${person.grant.slice(0, 12)}`;
+  try {
+    const id = await telegram.post(runtime.token, state.ownerChatId, `${card.card.title}\n${card.card.subtitle}`, { inline_keyboard: [[{ text: "Let in", callback_data: data("a") }, { text: "Not now", callback_data: data("d") }]] }, false, () => Boolean(currentTelegram(runtime)));
+    const after = currentTelegram(runtime)?.people?.[String(person.userId)];
+    if (after?.grant === person.grant) saveTelegramPerson(runtime.botId, { ...after, cardSend: id === undefined ? "uncertain" : "sent", ...(id ? { telegramCardId: id } : {}) });
+  } catch {
+    const after = currentTelegram(runtime)?.people?.[String(person.userId)];
+    if (after?.grant === person.grant) saveTelegramPerson(runtime.botId, { ...after, cardSend: "uncertain" });
+  }
+}
+
+async function decideTelegramAdmission(botId: string, personId: string, action: "allow" | "decline" | "remove"): Promise<boolean> {
+  const state = telegramBinding(botId);
+  const person = Object.values(state?.people ?? {}).find((p) => p.id === personId);
+  if (!state || !person) return false;
+  const wanted = action === "allow" ? "allowed" : action === "decline" ? "declined" : "removed";
+  if (person.state === wanted) return true;
+  const next: TelegramPerson = { ...person, state: wanted, grant: randomUUID(), ...(action !== "allow" ? { first: undefined } : {}) };
+  // Revoke first. Late approvals and reply capabilities see this before I/O.
+  saveTelegramPerson(botId, next);
+  await revokeTelegramPersonTurns(botId, (sender) => sender.personId === person.id, "This Telegram person's access changed.");
+  const bot = store.bot(botId);
+  const card = bot ? store.messagesFor(bot.threadId).find((m) => m.card?.requestId === `tg-person:${person.id}`) : undefined;
+  if (bot && card?.card) {
+    const patched = store.patchMessage(bot.threadId, card.id, { card: { ...card.card, answered: action === "allow" ? "Let in" : action === "decline" ? "Not now" : "Removed", dismissed: false } });
+    if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+  }
+  const runtime = liveTelegram(botId);
+  runtime?.personInboxes.delete(person.id);
+  if (runtime && person.telegramCardId && state.ownerChatId !== undefined) void telegram.edit(runtime.token, state.ownerChatId, person.telegramCardId, `${person.name}: ${wanted}.`).catch(() => {});
+  if (runtime && action === "decline") {
+    saveTelegramPerson(botId, { ...next, notice: "sending" });
+    await telegramSay(runtime, person.chatId, "Not now. The owner has not let you in.");
+    const after = telegramBinding(botId)?.people?.[String(person.userId)];
+    if (after?.grant === next.grant) saveTelegramPerson(botId, { ...after, notice: "sent" });
+  }
+  if (action === "allow") deliverFirstTelegramPerson(botId, next);
+  broadcast({ kind: "config", ...(await configStatus()) });
+  return true;
+}
+
+/** Commit revocation before calling this. Pending words and approvals have
+ * the same sender binding as replies; changing transport revokes them too. */
+async function revokeTelegramPersonTurns(botId: string, matches: (sender: TelegramSender) => boolean, why: string): Promise<void> {
+  const bot = store.bot(botId);
+  for (const lane of bot?.tasks ?? []) {
+    for (const message of store.messagesFor(lane.id)) {
+      if (message.queued && message.telegramPerson && matches(message.telegramPerson)) {
+        const patched = store.patchMessage(lane.id, message.id, { queued: false, unsent: true });
+        if (patched) broadcast({ kind: "message.patch", threadId: lane.id, message: patched });
+      }
+    }
+    const running = laneTelegramPerson.get(lane.id);
+    if (running && matches(running)) {
+      agentTokens.revokeTask(lane.id);
+      for (const [requestId, thread] of askThreadByRequest) {
+        if (thread === lane.id) await askInstance(bot!, lane.id, requestId)?.adapter.respondToRequest(lane.id, requestId, { behavior: "deny", message: why }).catch(() => {});
+      }
+      await registry.get(laneEngine.get(lane.id)?.instanceId ?? bot!.modelSelection.instanceId)?.adapter.interruptTurn(lane.id).catch(() => {});
+    }
+  }
+}
+
+function deliverFirstTelegramPerson(botId: string, person: TelegramPerson): void {
+  const state = telegramBinding(botId);
+  if (!state || state.ownerUserId === undefined || person.state !== "allowed" || !person.first) return;
+  const source = telegramSender(botId, state, person, person.first.messageId);
+  const text = person.first.text || "The person sent media before admission. Ask them to send it again.";
+  saveTelegramPerson(botId, { ...person, first: undefined });
+  deliverTelegramPerson(source, text);
+}
+
+function deliverTelegramPerson(sender: TelegramSender, text: string): void {
+  if (!telegramSenderCurrent(telegramBinding(sender.botId), sender)) return;
+  const bot = store.bot(sender.botId);
+  const lane = bot?.tasks[0];
+  if (!bot || !lane) return;
+  // Serialized with the owner's steer attempts, but never folded into them.
+  const runtime = liveTelegram(bot.id);
+  if (!runtime) return;
+  const intake = (runtime.intake.get(sender.chatId) ?? Promise.resolve()).then(async () => {
+    if (!telegramSenderCurrent(telegramBinding(bot.id), sender)) return;
+    if (lane.busy && laneRequester.get(lane.id) === sender.requester) {
+      if (await steerTelegramPerson(bot, lane, sender, text)) return;
+    }
+    queueOnLane(bot.id, lane.id, text, { telegramPerson: sender, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration }, personal: false });
+    drainSteer(lane.id);
+  });
+  runtime.intake.set(sender.chatId, intake);
+  void intake.finally(() => { if (runtime.intake.get(sender.chatId) === intake) runtime.intake.delete(sender.chatId); }).catch(() => {});
+}
+
+async function steerTelegramPerson(bot: BotRecord, lane: TaskRecord, sender: TelegramSender, text: string): Promise<boolean> {
+  return Boolean(await steerLane(bot, lane, text, { telegramPerson: sender, personal: false, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration } }));
+}
+
+async function takeTelegramIncoming(runtime: TelegramRuntime, message: telegram.Incoming): Promise<void> {
+  const state = currentTelegram(runtime);
+  if (!state) return;
+  const decision = telegram.decide(inboxState(state), message);
+  if (decision.kind === "pair" || decision.kind === "press" || decision.kind === "deliver") return runtime.inbox.take(message);
+  if (!isPrivateTelegramHuman(message)) return;
+  const knock = knockTelegram(state, message);
+  if (knock.capped) {
+    if (!state.admissionFull) {
+      saveTelegramBinding(runtime.botId, { ...state, admissionFull: true });
+      const bot = store.bot(runtime.botId);
+      if (bot) {
+        const notice = store.appendMessage(bot.threadId, { role: "bot", kind: "notice", text: "Telegram admission is full. No new person was let in. Review the people waiting in this agent's Telegram settings." });
+        broadcast({ kind: "message", threadId: bot.threadId, message: notice });
+      }
+    }
+    return;
+  }
+  const person = knock.person;
+  if (!person) return;
+  if (knock.fresh) {
+    const card = telegramAdmissionCard(runtime.botId, person);
+    saveTelegramPerson(runtime.botId, { ...person, ...(card ? { cardId: card.id } : {}), notice: "sending" });
+    await forwardTelegramAdmission(runtime, telegramBinding(runtime.botId)!.people![String(person.userId)]);
+    if (currentTelegram(runtime)?.people?.[String(person.userId)]?.state === "pending") await telegramSay(runtime, person.chatId, "The owner has been asked to let you in. Please wait for their answer.");
+    const after = currentTelegram(runtime)?.people?.[String(person.userId)];
+    if (after?.grant === person.grant) saveTelegramPerson(runtime.botId, { ...after, notice: "sent" });
+    return;
+  }
+  if (person.state !== "allowed") return;
+  const source = telegramSender(runtime.botId, state, person, message.messageId);
+  if (state.ownerUserId === undefined) return tellTelegramPersonHeld(source, "The owner needs to pair this bot first.");
+  let inbox = runtime.personInboxes.get(person.id);
+  if (!inbox) {
+    const active = () => {
+      if (!currentTelegram(runtime) || !telegramSenderCurrent(telegramBinding(runtime.botId), source)) throw new Error("This Telegram person or connection changed.");
+    };
+    inbox = new telegram.Inbox({
+      state: () => ({ chatIds: [person.chatId] }),
+      send: async (chatId, text) => { active(); await telegramSay(runtime, chatId, text); },
+      pair: async () => {}, refuse: async () => {}, waiting: () => undefined, answer: async () => {}, press: async () => {},
+      download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
+      transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
+      saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
+      saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
+      saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
+      deliver: (_chatId, text, origin) => { active(); deliverTelegramPerson({ ...source, ...(origin?.messageId ? { messageId: origin.messageId } : {}) }, text); },
+    });
+    runtime.personInboxes.set(person.id, inbox);
+  }
+  await inbox.take(message);
+}
+
 function saveTelegram(next: TelegramConfig): void {
   saveConfig({ telegram: next });
   cfg.telegram = next;
@@ -7742,7 +8013,7 @@ function saveTelegramBinding(botId: string, state?: AgentTelegram): void {
   const bots = { ...(cfg.telegram?.bots ?? {}) };
   if (state) bots[botId] = state;
   else delete bots[botId];
-  saveTelegram({ ...cfg.telegram, version: 1, bots });
+  saveTelegram({ ...cfg.telegram, version: 2, bots });
 }
 
 function refusedTelegramToken(error: unknown): boolean {
@@ -7829,6 +8100,11 @@ async function answerTelegramAsk(
   ask: { requestId: string; botId: string; options: string[]; permission: boolean },
   read: { option?: string; free?: string },
 ): Promise<boolean> {
+  if (ask.requestId.startsWith("tg-person:")) {
+    const id = ask.requestId.slice(10);
+    if (!Object.values(telegramBinding(ask.botId)?.people ?? {}).some((p) => p.id === id && p.state === "pending")) return false;
+    return decideTelegramAdmission(ask.botId, id, read.option === ask.options[0] ? "allow" : "decline");
+  }
   const asked = store.bot(ask.botId);
   const askThread = askThreadByRequest.get(ask.requestId) ?? asked?.threadId ?? "";
   const instance = asked ? askInstance(asked, askThread, ask.requestId) : null;
@@ -7869,7 +8145,7 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
   const runtime: TelegramRuntime = {
     botId, generation: state.generation, token: state.token!, abort: new AbortController(),
     refused: new Set(), asks: new Map(), typing: new Map(), turns: new Map(), intake: new Map(), working: new Map(),
-    inbox: null as unknown as telegram.Inbox,
+    inbox: null as unknown as telegram.Inbox, personInboxes: new Map(),
   };
   const active = () => {
     const current = currentTelegram(runtime);
@@ -7885,9 +8161,26 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
     async pair(chatId, userId) {
       const current = active();
       if (!Number.isSafeInteger(userId) || userId! <= 0) return;
-      saveTelegramBinding(botId, { ...current, ownerUserId: userId, ownerChatId: chatId, pairing: null });
+      const ownKnock = current.people?.[String(userId)];
+      const people = { ...current.people };
+      delete people[String(userId)];
+      saveTelegramBinding(botId, { ...current, ownerUserId: userId, ownerChatId: chatId, pairing: null, people });
+      if (ownKnock) {
+        await revokeTelegramPersonTurns(botId, (sender) => sender.personId === ownKnock.id, "This sender paired as the owner. Their old person turn was closed.");
+        runtime.personInboxes.delete(ownKnock.id);
+        const bot = store.bot(botId);
+        const card = bot && store.messagesFor(bot.threadId).find((m) => m.card?.requestId === `tg-person:${ownKnock.id}`);
+        if (bot && card?.card) {
+          const closed = store.patchMessage(bot.threadId, card.id, { card: { ...card.card, answered: "Paired as owner" } });
+          if (closed) broadcast({ kind: "message.patch", threadId: bot.threadId, message: closed });
+        }
+      }
       broadcast({ kind: "config", ...(await configStatus()) });
       await telegramSay(runtime, chatId, "Paired. Message me and your agent will answer.");
+      for (const person of Object.values(currentTelegram(runtime)?.people ?? {})) {
+        if (person.state === "allowed") deliverFirstTelegramPerson(botId, person);
+        else if (person.state === "pending") await forwardTelegramAdmission(runtime, person);
+      }
     },
     async refuse(chatId) {
       if (runtime.refused.has(chatId) || runtime.refused.size >= 500) return;
@@ -7899,7 +8192,12 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
     saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
     saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
     saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
-    waiting: (chatId) => runtime.asks.get(chatId),
+    waiting: (chatId, source) => {
+      const ask = runtime.asks.get(chatId);
+      // A colleague's question must not consume the owner's unrelated
+      // next words. Buttons or a reply to that physical card are explicit.
+      return ask?.explicit && (ask.messageId === undefined || source?.replyToMessageId !== ask.messageId) ? undefined : ask;
+    },
     async answer(chatId, read) {
       if (!currentTelegram(runtime)) return;
       const waiting = runtime.asks.get(chatId);
@@ -7912,6 +8210,13 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
     },
     async press(chatId, press) {
       if (!currentTelegram(runtime)) return;
+      if (press.data.startsWith("tp:")) {
+        const [, action, id, grant] = press.data.split(":");
+        const person = Object.values(currentTelegram(runtime)?.people ?? {}).find((p) => p.id === id && p.grant.slice(0, 12) === grant && p.state === "pending" && p.telegramCardId === press.messageId);
+        const changed = person && ["a", "d"].includes(action) ? await decideTelegramAdmission(botId, person.id, action === "a" ? "allow" : "decline") : false;
+        await telegram.answerPress(runtime.token, press.id, changed ? "Answered." : "That card has closed. Use this agent's Telegram settings.").catch(() => {});
+        return;
+      }
       const found = telegramCards.press(chatId, press.messageId, press.data, Date.now(), { botId, generation: runtime.generation });
       if (found && !('settled' in found) && (found.card.botId !== botId || found.card.generation !== runtime.generation)) return;
       if (!found || "settled" in found) {
@@ -8032,6 +8337,19 @@ async function telegramRound(runtime: TelegramRuntime): Promise<void> {
     saveTelegramBinding(runtime.botId, { ...state, telegramId: me.id, username: me.username });
     state = currentTelegram(runtime)!;
   }
+  const pendingNotice = state.upgradeNotices?.find((n) => n.state === "pending");
+  if (pendingNotice) {
+    saveTelegramBinding(runtime.botId, { ...state, upgradeNotices: state.upgradeNotices!.map((n) => n === pendingNotice ? { ...n, state: "sending" } : n) });
+    let result: "sent" | "failed" | "uncertain" = "uncertain";
+    try {
+      const id = await telegram.post(runtime.token, pendingNotice.chatId, TELEGRAM_PEOPLE_UPGRADE, undefined, false, () => Boolean(currentTelegram(runtime)));
+      if (id !== undefined) result = "sent";
+    } catch (error) { if (error instanceof telegram.TelegramError && error.status >= 400 && error.status < 500) result = "failed"; }
+    const after = currentTelegram(runtime);
+    if (!after) return;
+    saveTelegramBinding(runtime.botId, { ...after, upgradeNotices: after.upgradeNotices!.map((n) => n.chatId === pendingNotice.chatId ? { ...n, state: result } : n) });
+    state = currentTelegram(runtime)!;
+  }
   const messages = await telegram.poll(runtime.token, state.offset ?? 0, runtime.abort.signal);
   const current = currentTelegram(runtime);
   if (!current) return;
@@ -8044,7 +8362,7 @@ async function telegramRound(runtime: TelegramRuntime): Promise<void> {
   if (offset !== (current.offset ?? 0)) saveTelegramBinding(runtime.botId, { ...current, offset });
   for (const message of messages) {
     if (!currentTelegram(runtime)) return;
-    await runtime.inbox.take(message);
+    await takeTelegramIncoming(runtime, message);
   }
 }
 
@@ -8081,7 +8399,20 @@ function telegramPause(runtime: TelegramRuntime, ms: number): Promise<void> {
 }
 
 // Reconcile retired queued work even when its whole binding was removed.
-for (const bot of store.bots) startTelegramBot(bot.id);
+for (const bot of store.bots) {
+  const state = telegramBinding(bot.id);
+  if (state) {
+    // A dispatch interrupted by a crash is uncertain, never replayed.
+    let next = { ...state, upgradeNotices: state.upgradeNotices?.map((n) => n.state === "sending" ? { ...n, state: "uncertain" as const } : n),
+      people: Object.fromEntries(Object.entries(state.people ?? {}).map(([id, person]) => [id, { ...person, ...(person.cardSend === "sending" ? { cardSend: "uncertain" as const } : {}), ...(person.notice === "sending" ? { notice: "uncertain" as const } : {}) }])) };
+    if (state.upgradeNotices?.length && !state.upgradeAppNotice) {
+      const message = store.appendMessage(bot.threadId, { role: "bot", kind: "notice", text: TELEGRAM_PEOPLE_UPGRADE });
+      next = { ...next, upgradeAppNotice: message.id };
+    }
+    if (JSON.stringify(next) !== JSON.stringify(state)) saveTelegramBinding(bot.id, next);
+  }
+  startTelegramBot(bot.id);
+}
 
 /**
  * Run a turn for a message that arrived from a phone, and read back what
@@ -8682,6 +9013,7 @@ function plantConnectorCards(
     const message = store.appendMessage(threadId, {
       role: "bot",
       kind: "connector",
+      ...(laneTelegramPerson.get(threadId) ? { telegramPerson: laneTelegramPerson.get(threadId) } : {}),
       connector: { slug, label: connectorLabel(slug), status: "needs-auth", resumeKey: requestId },
     });
     broadcast({ kind: "message", threadId, message });
@@ -8718,6 +9050,7 @@ function plantSecretCard(
   const message = store.appendMessage(threadId, {
     role: "bot",
     kind: "secret",
+    ...(laneTelegramPerson.get(threadId) ? { telegramPerson: laneTelegramPerson.get(threadId) } : {}),
     secret: {
       envName,
       label,
@@ -8728,7 +9061,9 @@ function plantSecretCard(
   });
   broadcast({ kind: "message", threadId, message });
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
-  return `A secure field for "${label}" is now in the chat. Once the user saves it, the value is available to your shell tools as the environment variable ${envName} on your NEXT turn (not this one). End your turn now; the task resumes automatically when it is saved.`;
+  return laneTelegramPerson.has(threadId)
+    ? `A secure field for "${label}" is now in the owner's chat. End this turn; the owner's answer resumes it with the same person's permissions, without standing access to the owner's keys.`
+    : `A secure field for "${label}" is now in the chat. Once the user saves it, the value is available to your shell tools as the environment variable ${envName} on your NEXT turn (not this one). End your turn now; the task resumes automatically when it is saved.`;
 }
 
 /** When the last card of a request connects, the task picks itself up. */
@@ -8750,7 +9085,7 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
   void startTurn(
     botId,
     `${names} ${live.length === 1 ? "is" : "are"} now connected. Continue the task you were working on before asking for the connection.`,
-    { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId) },
+    { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(live[0].telegramPerson ? { telegramPerson: live[0].telegramPerson, requester: live[0].telegramPerson.requester } : {}) },
   ).catch((e) => {
     // The cards are already marked resumed, and this guard only fires
     // once, so a swallowed refusal leaves the task parked on a
@@ -8790,16 +9125,24 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // (agentChain), which a restart forgets along with the rest of memory.
 const steerQueues = new Map<
   string,
-  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number }> }
+  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number; requester?: string; telegramPerson?: TelegramSender }> }
 >();
 
 /** What one waiting item says now, or null for a message that no longer
  * says anything: taken back, rewound, or gone from the lane. A message
  * from another agent is framed the way it would have been when it was
  * queued, with who it is from and how to answer. */
-function steerWords(laneId: string, item: { messageId?: string; text?: string }): string | null {
+function steerWords(laneId: string, item: { messageId?: string; text?: string; telegramPerson?: TelegramSender }): string | null {
+  const m = item.messageId ? store.messagesFor(laneId).find((msg) => msg.id === item.messageId) : undefined;
+  const sender = item.telegramPerson ?? m?.telegramPerson;
+  if (sender && !telegramSenderCurrent(telegramBinding(sender.botId), sender)) {
+    if (m?.queued) {
+      const removed = store.patchMessage(laneId, m.id, { queued: false, unsent: true });
+      if (removed) broadcast({ kind: "message.patch", threadId: laneId, message: removed });
+    }
+    return null;
+  }
   if (!item.messageId) return item.text ?? null;
-  const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
   if (!m || m.deleted || m.unsent || !m.text) return null;
   if (m.telegramBinding && !telegramConnectionCurrent(m.telegramBinding)) return null;
   return storedPrompt(m);
@@ -8897,6 +9240,7 @@ function queueOnLane(
     /** The person said it from Telegram (Message.fromTelegram). */
     fromTelegram?: boolean;
     telegramBinding?: Message["telegramBinding"];
+    telegramPerson?: TelegramSender;
     personal?: boolean;
     waitsFor?: Message["waitsFor"];
     /** An agent sent it: the place in a chain of agents' messages the
@@ -8920,6 +9264,7 @@ function queueOnLane(
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
     ...(options.fromTelegram ? { fromTelegram: true } : {}),
     ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
+    ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance } : {}),
   });
   broadcast({ kind: "message", threadId: laneId, message });
@@ -8962,7 +9307,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -8986,17 +9331,18 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
-  if (commandTurns.has(lane.id) || (!options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
+  if (commandTurns.has(lane.id) || (!options.telegramPerson && !options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
   if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return null;
   // A Redo is stopping this turn to take it back (redoMessage): words
   // that joined it now would be taken back with it, so they wait instead.
   if (claimedLanes.has(lane.id)) return null;
   // Bloks compacting a quiet session is not a turn anybody is talking in
   if (idleCompacting.has(lane.id)) return null;
-  if ((activeRoom.get(lane.id) ?? lane.id) !== lane.id || (laneRequester.get(lane.id) ?? "owner") !== "owner") return null;
+  if ((activeRoom.get(lane.id) ?? lane.id) !== lane.id || (laneRequester.get(lane.id) ?? "owner") !== (options.telegramPerson?.requester ?? "owner")) return null;
+  if (options.telegramPerson && !telegramSenderCurrent(telegramBinding(bot.id), options.telegramPerson)) return null;
   const waiting = steerQueues.get(lane.id)?.items ?? [];
   const yoursWaiting = waiting.some((item) => {
     const m = item.messageId ? store.messagesFor(lane.id).find((msg) => msg.id === item.messageId) : undefined;
@@ -9007,7 +9353,7 @@ async function steerOne(
   if (!adapter?.steerTurn) return null;
   if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   const { from } = options;
-  const words = from ? fromAgentPrompt(from, text) : text;
+  const words = options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : from ? fromAgentPrompt(from, text) : text;
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const took = await (names.length ? adapter.steerTurn(lane.id, words, { skillNames: names }) : adapter.steerTurn(lane.id, words)).catch(() => false);
@@ -9023,11 +9369,12 @@ async function steerOne(
     ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
     ...(options.fromTelegram ? { fromTelegram: true } : {}),
     ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
+    ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
   });
   broadcast({ kind: "message", threadId: lane.id, message });
   // what the turn says from here on is an answer to the person too, and
   // with the person in it, a chain of agents' messages starts over
-  if (!from) {
+  if (!from && !options.telegramPerson) {
     turnsForYou.add(lane.id);
     agentChain.delete(lane.id);
     turnHops.delete(lane.id);
@@ -9119,6 +9466,8 @@ function lastReportFor(laneId: string): string | null {
 
 /** Stored words stay unchanged; engines hear who started the message. */
 function storedPrompt(message: Message): string {
+  if (message.telegramSent) return `(Explicit Telegram reply to ${JSON.stringify(message.telegramSent.name)}, ${message.telegramSent.state}.)\n\n${message.text ?? ""}`;
+  if (message.telegramPerson) return `(Message from ${JSON.stringify(message.telegramPerson.name)} (Telegram). This person is not the owner; only the owner can approve actions.)\n\n${message.text ?? ""}`;
   const text = message.text ?? "";
   if (message.agent?.dir === "in") {
     return fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text);
@@ -9336,12 +9685,15 @@ function drainSteer(threadId: string) {
   // burst of Bloks' own notes (a key saved, say) carries on the turn
   // it resumes, so it answers whoever that one did.
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
-  const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
+  const byYou = said.some((m) => m && !m.telegramPerson && !m.agent && !m.via) || (said.every((m) => !m) && !alive[0].item.telegramPerson && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
   const telegramBinding = said.find((message) => message?.telegramBinding)?.telegramBinding;
+  const telegramPerson = said[0]?.telegramPerson ?? alive[0].item.telegramPerson;
+  const requester = telegramPerson?.requester ?? alive[0].item.requester;
   const chain = burstChain(threadId, alive.map(({ item }) => item));
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, telegramPerson, requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
+    if (telegramPerson) tellTelegramPersonHeld(telegramPerson, (e as Error).message);
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -10757,6 +11109,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
+  // Reply bearers are checked before open webhook routes too. A spent
+  // reply credential never falls through to the loopback owner.
+  const replyBearer = bearerToken(req);
+  if (replyBearer?.startsWith("blr_")) {
+    const credential = agentTokens.identify(replyBearer, Date.now(), turnAlive);
+    if (!isLocalRequest(req) || !credential?.reply) return json(res, 403, { error: "this reply credential is not valid" });
+    if (method !== "POST" || path !== `/api/bots/${credential.botId}/telegram/reply`) return json(res, 403, { error: "this credential can only reply to its turn's Telegram sender" });
+    try {
+      const result = await replyToTelegramPerson(credential, await readBody(req));
+      return json(res, 200, { ok: true, result });
+    } catch (error) { return json(res, 403, { error: (error as Error).message }); }
+  }
 
   // Webhook ingress stands apart from every other boundary: the token in
   // the URL is the whole credential, exactly as webhook senders expect.
@@ -11592,6 +11956,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       usage.forget(bot.id);
       if (telegramBinding(bot.id)) {
         saveTelegramBinding(bot.id);
+        await revokeTelegramPersonTurns(bot.id, () => true, "This agent's Telegram bot was removed.");
         startTelegramBot(bot.id);
       }
       store.deleteBot(bot.id);
@@ -12727,16 +13092,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // including the one the previous card had just resumed.
       patch({ status: "saved", resumed: true });
       const already = card.secret.resumed;
-      const note = `The user saved "${card.secret.label}". It is available to your shell tools as the environment variable ${card.secret.envName}. Continue the task you were working on.`;
+      const note = card.telegramPerson ? `The owner saved "${card.secret.label}". Continue this person's task with the same owner-only approvals and reply scope. No standing owner keys are supplied to this turn.` : `The user saved "${card.secret.label}". It is available to your shell tools as the environment variable ${card.secret.envName}. Continue the task you were working on.`;
       const lane = bot.tasks.find((t) => t.id === threadId);
       if (!already && lane?.busy) {
         // Two cards saved back to back: the first one's resume is still
         // running. This one waits for it rather than being refused.
         const entry = steerQueues.get(threadId) ?? { botId: bot.id, items: [] };
-        entry.items.push({ text: note });
+        entry.items.push({ text: note, ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}) });
         steerQueues.set(threadId, entry);
       } else if (!already) {
-        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId) }).catch((e) => {
+        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}) }).catch((e) => {
           // Same reason as the connector resume: the mark is what stops
           // this firing twice, so leaving it set after a refusal parks
           // the task on a secret that has already been saved.
@@ -13214,6 +13579,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!bot) return json(res, 404, { error: "no such agent" });
       const body = await readBody(req);
       const requestId = String(body.requestId);
+      if (requestId.startsWith("tg-person:")) {
+        const id = requestId.slice(10);
+        const person = Object.values(telegramBinding(bot.id)?.people ?? {}).find((p) => p.id === id);
+        if (person?.state !== "pending") return json(res, 409, { error: "that admission card has closed" });
+        const action = body.behavior === "allow" || body.message === "Let in" ? "allow" : "decline";
+        await decideTelegramAdmission(bot.id, id, action);
+        return json(res, 200, { ok: true });
+      }
       // An ask this run of Bloks never raised is not one anything is
       // waiting on: a card from before a restart, say. A new engine
       // process may number its own requests the same way, so an answer
@@ -15707,11 +16080,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (telegramPath || (method === "POST" && path === "/api/telegram")) {
       if (asAgent) return json(res, 403, { error: "an agent cannot read or change Telegram settings" });
       const body = method === "POST" ? await readBody(req) : {};
+      if (method === "POST" && body.discardPending === true && !telegramPath) {
+        saveTelegram({ ...cfg.telegram, version: 2, pending: undefined, migrationError: undefined });
+        return json(res, 200, { ok: true });
+      }
       const botId = telegramPath?.[1] ?? (typeof body.botId === "string" ? body.botId : cfg.telegram?.migratedBotId);
       if (!botId || !store.bot(botId)) return json(res, 400, { error: "Choose an agent for this Telegram bot." });
       const status = () => ({ ...telegramStatus(telegramBinding(botId)), botId, voiceVendor: speech.transcriptionVendor(cfg) });
       if (method === "GET") return json(res, 200, status());
       if (method !== "POST") return json(res, 405, { error: "method not allowed" });
+      if (typeof body.personId === "string") {
+        if (!["allow", "decline", "remove"].includes(body.action)) return json(res, 400, { error: "choose let in, not now, or remove" });
+        const changed = await decideTelegramAdmission(botId, body.personId, body.action);
+        return json(res, changed ? 200 : 404, changed ? status() : { error: "no such Telegram person" });
+      }
       const pending = cfg.telegram?.pending;
       const movePending = body.migrate === true;
       if (movePending) {
@@ -15720,6 +16102,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       if (body.forget === true) {
         saveTelegramBinding(botId);
+        await revokeTelegramPersonTurns(botId, () => true, "This agent's Telegram bot was removed.");
         startTelegramBot(botId);
         return json(res, 200, status());
       }
@@ -15766,8 +16149,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // Unpairing forgets the owner too, and is a new connection: a turn
       // or a card from before it has nobody left to answer to.
       if (body.unpair === true) next = { ...next, chatIds: [], ownerUserId: undefined, ownerChatId: undefined, pairing: null, generation: randomUUID() };
-      if (adoptsPending) saveTelegram({ ...cfg.telegram, version: 1, bots: { ...cfg.telegram?.bots, [botId]: next }, migratedBotId: botId, pending: undefined, migrationError: undefined });
+      if (adoptsPending) saveTelegram({ ...cfg.telegram, version: 2, bots: { ...cfg.telegram?.bots, [botId]: next }, migratedBotId: botId, pending: undefined, migrationError: undefined });
       else saveTelegramBinding(botId, next);
+      await revokeTelegramPersonTurns(botId, (sender) => !telegramSenderCurrent(telegramBinding(botId), sender), "This agent's Telegram connection changed.");
       startTelegramBot(botId);
       return json(res, 200, status());
     }

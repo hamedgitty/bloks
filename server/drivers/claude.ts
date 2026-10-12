@@ -33,6 +33,7 @@ import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
+import { checkPersonClaudeInit, checkPersonClaudeStatus, personTurnHold } from "../person-turn.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
  * choices list, or AskUserQuestion's nested option objects. */
@@ -312,7 +313,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (running.has(threadId)) throw new Error("a turn is already running on this thread");
 
       const turnId = newId();
-      const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+      const resume = !turn.person && typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       // Tool calls the engine has started and not yet reported back on,
       // whether somebody is being asked something, and when the engine
@@ -331,7 +332,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // No permission is asked when the engine is set to bypass, or when
       // this agent is in full access; a shared room is never either, and
       // nor is a turn the owner did not vouch for, whose asks are theirs.
-      const bypass = !turn.shared && !turn.untrusted && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
+      const bypass = !turn.person && !turn.shared && !turn.untrusted && (config.permissionMode === "bypassPermissions" || Boolean(turn.fullAccess));
       const argv = [
         "-p",
         "--output-format", "stream-json",
@@ -345,7 +346,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         "--permission-mode",
         turn.shared
           ? "acceptEdits"
-          : turn.untrusted
+          : turn.person || turn.untrusted
             ? "default"
             : bypass
               ? "bypassPermissions"
@@ -362,7 +363,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (turn.model) argv.push("--model", turn.model);
       // this agent's owner switched hooks off: a plugin's session-start
       // text would otherwise land in its context as if it were an order
-      if (turn.noHooks) argv.push("--settings", JSON.stringify({ disableAllHooks: true }));
+      if (turn.noHooks || turn.person) argv.push("--settings", JSON.stringify({ disableAllHooks: true }));
+      if (turn.person) argv.push("--setting-sources", "", "--strict-mcp-config", "--no-session-persistence");
       // extra editable folders, chiefly the agent's own workspace: memory
       // updates must not stall on approval cards when cwd points elsewhere
       for (const dir of turn.extraDirs ?? []) argv.push("--add-dir", dir);
@@ -484,9 +486,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // there it publishes only those, and the CLI is never pointed at
       // approve.
       const socketPath = brokerSocket(threadId, turnId);
+      let personReady = !turn.person;
       const broker = createAskBroker({
         socketPath,
+        ...(turn.person ? { onReply: (input: unknown) => {
+          if (!personReady) throw personTurnHold("Claude's startup permissions have not been verified.");
+          return turn.person!.reply(input);
+        } } : {}),
         onAsk: (ask) => {
+          if (!personReady) { broker.answer(ask.id, "deny", "The person's permissions have not been verified."); return; }
           asking++;
           lastSign = Date.now();
           emit({
@@ -516,11 +524,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (!bypass) argv.push("--permission-prompt-tool", "mcp__bloks__approve");
       // request_connection only where there is something to connect
       // with, the same test the prompt uses before mentioning it
-      const askingTools = ["ask_user", "request_secret", ...(turn.integrations?.composio?.key ? ["request_connection"] : [])];
+      const askingTools = ["ask_user", "request_secret", ...(turn.person || turn.integrations?.composio?.key ? ["request_connection"] : [])];
+      const personTools = ["approve", ...askingTools, "reply_to_sender"];
       mcpServers.bloks = {
         command: process.execPath,
         args: [PERMISSION_HELPER, socketPath],
-        env: { ...RUN_AS_NODE, ...(bypass ? { BLOKS_PUBLISH: askingTools.join(",") } : {}) },
+        env: { ...RUN_AS_NODE, ...(turn.person ? { BLOKS_PUBLISH: personTools.join(",") } : bypass ? { BLOKS_PUBLISH: askingTools.join(",") } : {}) },
       };
       allowed.push("mcp__bloks");
 
@@ -532,7 +541,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // call to a connector, the browser or the computer goes through
         // the bridge and becomes an approval, which is the point. The
         // same for a turn the owner did not vouch for.
-        const allowList = turn.shared || turn.untrusted ? allowed.filter((tool) => tool === "mcp__bloks") : allowed;
+        const allowList = turn.person || turn.shared || turn.untrusted ? allowed.filter((tool) => tool === "mcp__bloks") : allowed;
         if (allowList.length) argv.push("--allowedTools", allowList.join(","));
       }
 
@@ -547,6 +556,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
         env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
       }
+      if (turn.person) env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
       // A subscription login gets billed as pay-as-you-go if a key leaks
       // through, and the two CLAUDECODE markers would make the child think
       // it is a nested session of whatever spawned this server.
@@ -660,6 +670,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
 
       const initializeId = newId();
+      const startupReplies = new Map<string, (response: any) => void>();
+      let initialized: (response: any) => void;
+      const personInitialized = new Promise<any>((resolve) => { initialized = resolve; });
       let commands: ClaudeCommandRow[] | null = null;
       let initSkills: unknown;
       let terminalCommands: unknown;
@@ -682,7 +695,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           if (frame.response?.request_id === initializeId && frame.response?.subtype === "success") {
             commands = readClaudeCommands(frame.response.response?.commands);
             reportCommands();
+            initialized(frame.response.response);
           }
+          startupReplies.get(frame.response?.request_id)?.(frame.response);
+          startupReplies.delete(frame.response?.request_id);
           return;
         }
         if (frame.type === "system" && frame.subtype === "commands_changed") {
@@ -695,6 +711,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         switch (frame.type) {
           case "system":
             if (frame.subtype === "init") {
+              if (turn.person) {
+                try { checkPersonClaudeInit(frame, Object.keys(mcpServers)); }
+                catch (error) {
+                  personReady = false;
+                  emit({ ...envelope(threadId, turnId), type: "runtime.error", message: (error as Error).message });
+                  abort(); finish(false, "person_guard"); return;
+                }
+              }
               initSkills = frame.skills;
               terminalCommands = frame.terminal_slash_commands;
               reportCommands();
@@ -1022,7 +1046,35 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const initialize = { type: "control_request", request_id: initializeId, request: { subtype: "initialize" } };
       child.stdin.write(JSON.stringify(initialize) + "\n");
       appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: initialize });
-      say(turn.text);
+      if (turn.person) {
+        void (async () => {
+          const end = Date.now() + 20_000;
+          const withDeadline = <T,>(pending: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(personTurnHold("Claude did not report startup permissions in time.")), Math.max(1, end - Date.now()));
+            pending.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+          });
+          try {
+            const metadata = await withDeadline(personInitialized);
+            for (;;) {
+              if (finished || stopping) return;
+              const id = newId();
+              const response = new Promise<any>((resolve) => startupReplies.set(id, resolve));
+              child.stdin.write(JSON.stringify({ type: "control_request", request_id: id, request: { subtype: "mcp_status" } }) + "\n");
+              const status = await withDeadline(response);
+              if (status.subtype !== "success") throw personTurnHold("Claude did not report its mounted tools.");
+              if (checkPersonClaudeStatus(metadata.current_permission_mode, status.response, Object.keys(mcpServers), personTools)) break;
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            if (finished || stopping) return;
+            personReady = true;
+            say(turn.text);
+          } catch (error) {
+            if (finished) return;
+            emit({ ...envelope(threadId, turnId), type: "runtime.error", message: (error as Error).message });
+            abort(); finish(false, "person_guard");
+          }
+        })();
+      } else say(turn.text);
 
       return { turnId };
     };

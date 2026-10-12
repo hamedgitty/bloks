@@ -24,6 +24,7 @@ import type { Message } from "@/state/reducer";
 /** Who started a turn, when it was not the person. */
 export type Asker =
   | { by: "agent"; peerId: string; peerName: string; message: Message }
+  | { by: "telegram"; name: string }
   | { by: "routine"; name?: string }
   | { by: "watcher" }
   | { by: "webhook" }
@@ -113,6 +114,9 @@ function settledCard(m: Message): boolean {
  */
 function tucks(m: Message): boolean {
   if (m.deleted || m.quiet) return false;
+  // An explicit Telegram reply and its delivery result stay visible,
+  // even when the turn ends with separate words in the owner's chat.
+  if (m.telegramSent) return false;
   if (m.role === "user") return said(m) && !personsWords(m);
   switch (m.kind) {
     case "text":
@@ -132,6 +136,7 @@ function tucks(m: Message): boolean {
 }
 
 function askerOf(m: Message): Asker | null {
+  if (m.telegramPerson) return { by: "telegram", name: m.telegramPerson.name };
   if (m.agent?.dir === "in") return { by: "agent", peerId: m.agent.peerId, peerName: m.agent.peerName, message: m };
   if (m.via === "routine") return { by: "routine", ...(m.routine?.name ? { name: m.routine.name } : {}) };
   if (m.via === "watcher") return { by: "watcher" };
@@ -253,7 +258,7 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
     while (h < b && startsTurn(messages[h])) h++;
     const head = messages.slice(a, h);
     // with the person among them, it is theirs and the line names nobody
-    const first = head.some(personsWords) ? undefined : head.find((m) => !m.deleted);
+    const first = head.some((m) => personsWords(m) && !m.telegramPerson) ? undefined : head.find((m) => !m.deleted);
     const asker = first ? askerOf(first) : null;
     // the result: the last thing the agent said in it
     let reply = -1;
@@ -444,6 +449,8 @@ export function foldWords(fold: TurnFold, kindOf: (name: string) => string): str
  */
 export function askerWords(asker: Asker, o: { name?: string; turn?: { of: number; budget: number } } = {}): string {
   switch (asker.by) {
+    case "telegram":
+      return `Message from ${asker.name} (Telegram)`;
     case "agent":
       return `${o.name ?? asker.peerName} asked`;
     case "routine":

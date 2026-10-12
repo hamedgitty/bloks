@@ -1158,6 +1158,8 @@ export function ChatView({ bot }: { bot: Bot }) {
           const after = folded.named.has(m.id) ? undefined : (m.afterAgent ?? (m.agent?.dir === "reply" ? m.agent : undefined));
           return (
             <div key={m.id} data-msg-index={absolute}>
+            {m.telegramPerson && <div className="mb-1 text-[12px] text-muted-foreground">Message from {m.telegramPerson.name} (Telegram)</div>}
+            {m.telegramSent && <div className="mb-1 text-[12px] text-muted-foreground">To {m.telegramSent.name} (Telegram): {m.telegramSent.state === "sent" ? "sent" : m.telegramSent.state === "sending" ? "sending" : m.telegramSent.state === "failed" ? "failed" : "delivery uncertain"}</div>}
             {after && (
               <AfterAgentLink
                 peerId={after.peerId}
@@ -1170,7 +1172,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               // a folded check-in below says no time of its own
               hideTime={list[offset + 1]?.quiet ? false : timeSaidBelow(m, list[offset + 1])}
               fresh={fresh}
-              author={m.role === "user" ? "You" : bot.name}
+              author={m.telegramPerson?.name ?? (m.role === "user" ? "You" : bot.name)}
               onReply={setReplyTo}
               onForward={(message, author) => setForwarding({ message, author })}
               onReact={(messageId, emoji) => reactTo(bot.threadId, messageId, emoji)}
@@ -1467,7 +1469,9 @@ export function ChatView({ bot }: { bot: Bot }) {
         messages={waiting}
         threadId={bot.threadId}
         senderOf={(m) =>
-          m.agent?.dir === "in"
+          m.telegramPerson
+            ? `${m.telegramPerson.name} (Telegram)`
+            : m.agent?.dir === "in"
             ? m.agent.peerName
             : m.via === "watcher"
               ? "your watcher"

@@ -40,6 +40,8 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
+import { createAskBroker, type AskBroker } from "../harness/ask-broker.ts";
+import { makePersonCodexHome, checkPersonCodexConfig, checkPersonCodexThread, checkPersonCodexTools, personTurnHold, type PrivateCodexHome } from "../person-turn.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -412,12 +414,31 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // silently move the user onto pay-as-you-go billing.
       delete env.OPENAI_API_KEY;
 
+      let personHome: PrivateCodexHome | undefined;
+      let replyBroker: AskBroker | undefined;
+      let personReady = !turn.person;
+      if (turn.person) {
+        const ownerConfig = await probe(config.cli, turn.cwd ?? homedir(), (link) => link.request("config/read", { cwd: turn.cwd ?? homedir(), includeLayers: false }));
+        const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
+        personHome = makePersonCodexHome(ownerConfig, fileURLToPath(new URL(`../permission-proxy.${ext}`, import.meta.url)), process.execPath, turn.cwd ?? homedir());
+        env.CODEX_HOME = personHome.path;
+        replyBroker = createAskBroker({
+          socketPath: personHome.socketPath,
+          onAsk: (ask) => replyBroker?.answer(ask.id, "deny", "This server only replies to the sender."),
+          onResolve: () => {},
+          onReply: (input: unknown) => {
+            if (!personReady) throw personTurnHold("Codex's startup permissions have not been verified.");
+            return turn.person!.reply(input);
+          },
+        });
+      }
+
       // The connectors, over the stdio bridge, because this CLI mounts
       // MCP servers as child processes and nothing else. The key rides
       // the environment and only its *name* appears in argv, so process
       // listings and diagnostics never see it.
       const appServerArgs = ["app-server"];
-      if (turn.integrations?.composio?.key) {
+      if (!turn.person && turn.integrations?.composio?.key) {
         env.BLOKS_COMPOSIO_KEY = turn.integrations.composio.key;
         if (turn.integrations.composio.url) env.BLOKS_COMPOSIO_URL = turn.integrations.composio.url;
         // in the packaged app process.execPath is Electron; this makes it
@@ -439,6 +460,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         windowsHide: true,
       });
       engines.add(child);
+      child.once("close", () => { replyBroker?.close(); personHome?.close(); });
 
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
@@ -502,6 +524,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const finish = (ok: boolean, stopReason: string | null) => {
         if (finished) return;
         finished = true;
+        replyBroker?.close();
         compacting?.(false);
         for (const answer of [...asks.values()]) answer("deny", "Bloks: the turn ended", "turn-ended");
         rpc.failPending(new Error("turn settled"));
@@ -896,7 +919,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           await within(rpc.request("initialize", { clientInfo: { name: "bloks", version: "1" } }), "starting up", "Codex");
           rpc.notify("initialized", {});
 
-          const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+          if (personHome) {
+            checkPersonCodexConfig(await within(rpc.request("config/read", { cwd: turn.cwd ?? homedir(), includeLayers: true }), "checking person permissions", "Codex"), personHome.configFile);
+          }
+
+          const cursor = !turn.person && typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
           if (turn.compactOnly && !cursor) throw new Error("There is no Codex conversation to compact yet.");
           let reportedModel: string | null = null;
           // the words go into the thread the cursor named, not a new one
@@ -905,10 +932,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // Either takes the sandbox off and stops Codex asking. Stated on
           // resume too, so switching an agent's mode takes on its next turn.
           // A turn the owner did not vouch for keeps both, however set.
-          const full = (config.fullAuto && !turn.untrusted) || Boolean(turn.fullAccess);
+          const full = !turn.person && ((config.fullAuto && !turn.untrusted) || Boolean(turn.fullAccess));
           const guard = {
-            sandbox: full ? "danger-full-access" : "workspace-write",
+            sandbox: turn.person ? "read-only" : full ? "danger-full-access" : "workspace-write",
             approvalPolicy: full ? "never" : "on-request",
+            ...(turn.person ? { approvalsReviewer: "user" } : {}),
           };
 
           if (cursor) {
@@ -1019,7 +1047,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               // full access is the user having said so explicitly; the
               // default keeps the agent inside its workspace and asking.
               ...guard,
-              ephemeral: false,
+              ephemeral: Boolean(turn.person),
             };
             if (turn.effort) startParams.reasoningEffort = turn.effort;
             let started: any;
@@ -1034,6 +1062,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             }
             codexThread = started?.thread?.id ?? null;
             reportedModel = started?.model ?? null;
+            if (turn.person) {
+              checkPersonCodexThread(started);
+              checkPersonCodexTools(await within(rpc.request("mcpServerStatus/list", {}), "checking person tools", "Codex"));
+              personReady = true;
+            }
           }
 
           emit({

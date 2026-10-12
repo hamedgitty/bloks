@@ -35,6 +35,7 @@ import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 
 import { readJsonLines } from "./ndjson.ts";
+import { PERSON_REPLY_TOOL, personReplyText } from "./person-turn.ts";
 
 /** What the broker is told when it is not there to be told anything. The
  * wording is aimed at the model, not the user: it should give up on this
@@ -86,6 +87,7 @@ function askHuman(request: object): Promise<any> {
 const writeFrame = (frame: unknown) => process.stdout.write(JSON.stringify(frame) + "\n");
 
 const ALL_TOOLS = [
+  PERSON_REPLY_TOOL,
   {
     name: "approve",
     description: "Ask the Bloks user whether a tool use is allowed",
@@ -152,7 +154,7 @@ const ALL_TOOLS = [
 ];
 
 const only = process.env.BLOKS_PUBLISH?.split(",").filter(Boolean);
-const PUBLISHED_TOOLS = only ? ALL_TOOLS.filter((tool) => only.includes(tool.name)) : ALL_TOOLS;
+const PUBLISHED_TOOLS = only ? ALL_TOOLS.filter((tool) => only.includes(tool.name)) : ALL_TOOLS.filter((tool) => tool.name !== "reply_to_sender");
 
 /** The CLI sometimes proposes permission rules of its own alongside a
  * request. On an "always allow" they are echoed back untouched so it can
@@ -235,6 +237,7 @@ async function dispatch(message: any) {
       const isQuestion = name === "ask_user";
       const isConnection = name === "request_connection";
       const isSecret = name === "request_secret";
+      const isReply = name === "reply_to_sender";
 
       if (!PUBLISHED_TOOLS.some((tool) => tool.name === name)) {
         return writeFrame({
@@ -242,6 +245,19 @@ async function dispatch(message: any) {
           id: message.id,
           result: { isError: true, content: [{ type: "text", text: `Bloks: there is no ${String(name)} tool here` }] },
         });
+      }
+
+      if (isReply) {
+        try {
+          personReplyText(args);
+          const reply = await askHuman({ t: "reply", input: args });
+          return writeFrame({ jsonrpc: "2.0", id: message.id, result: {
+            ...(reply.behavior !== "answer" ? { isError: true } : {}),
+            content: [{ type: "text", text: reply.message || BROKER_GONE }],
+          } });
+        } catch (error) {
+          return writeFrame({ jsonrpc: "2.0", id: message.id, result: { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Reply refused" }] } });
+        }
       }
 
       // The schema describes a required question, but a tool call can

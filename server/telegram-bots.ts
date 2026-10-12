@@ -2,6 +2,7 @@
 // private config, separate from the agent records sent to a client.
 import { randomUUID } from "node:crypto";
 import { pairingWord, type TelegramState } from "./telegram.ts";
+import type { TelegramPerson, TelegramUpgradeNotice } from "./telegram-people.ts";
 
 export interface AgentTelegram extends TelegramState {
   generation: string;
@@ -9,23 +10,27 @@ export interface AgentTelegram extends TelegramState {
   username?: string;
   ownerUserId?: number;
   ownerChatId?: number;
+  people?: Record<string, TelegramPerson>;
+  upgradeNotices?: TelegramUpgradeNotice[];
+  admissionFull?: boolean;
+  upgradeAppNotice?: string;
 }
 
 /** The old fields are read only for migration. Once migrated, no token or
  * chat grant lives at the top level. A missing agent keeps the old record
  * private and stopped until the owner chooses where it belongs. */
 export interface TelegramConfig extends TelegramState {
-  version?: 1;
+  version?: 1 | 2;
   bots?: Record<string, AgentTelegram>;
   migratedBotId?: string;
-  pending?: TelegramState;
+  pending?: TelegramState & { upgradeNotices?: TelegramUpgradeNotice[] };
   migrationError?: string;
 }
 
 type Agent = { id: string; hidden?: boolean };
 
 export function migrateTelegram(before: TelegramConfig | undefined, agents: readonly Agent[]): TelegramConfig {
-  if (before?.version === 1) return before;
+  if (before?.version === 1 || before?.version === 2) return before;
   const bots = { ...(before?.bots ?? {}) };
   if (!before?.token) return { version: 1, bots };
   // An explicit choice is never replaced by the first available agent.
@@ -47,12 +52,13 @@ export function migrateTelegram(before: TelegramConfig | undefined, agents: read
   return { version: 1, bots, migratedBotId: owner.id };
 }
 
-export function legacyBinding(legacy: TelegramState): AgentTelegram {
+export function legacyBinding(legacy: TelegramState & { upgradeNotices?: TelegramUpgradeNotice[] }): AgentTelegram {
   return {
     token: legacy.token, enabled: legacy.enabled === true,
     offset: legacy.offset ?? 0, chatIds: [...(legacy.chatIds ?? [])],
     // A word someone used to pair another chat must not identify the owner.
     pairing: null, generation: randomUUID(),
+    ...(legacy.upgradeNotices ? { upgradeNotices: legacy.upgradeNotices, people: {} } : {}),
   };
 }
 
@@ -60,8 +66,8 @@ export function pairedChats(state: AgentTelegram): number[] {
   return [...new Set([...(state.chatIds ?? []), ...(state.ownerChatId === undefined ? [] : [state.ownerChatId])])];
 }
 
-/** Inbox always uses sender identity for new pairings. Old paired chats
- * retain their old reach until the people/admission release. */
+/** Only the verified private owner reaches this inbox. People have a
+ * separate inbox whose answers can never approve an owner card. */
 export function inboxState(state: AgentTelegram): TelegramState {
   return { ...state, pairOwner: true };
 }
@@ -74,6 +80,9 @@ export function telegramStatus(state: AgentTelegram | undefined) {
     ownerPaired: state?.ownerUserId !== undefined,
     needsOwnerPairing: Boolean(state?.token && state.ownerUserId === undefined),
     pairing: state?.pairing ?? null, username: state?.username ?? null,
+    people: Object.values(state?.people ?? {}).map(({ id, name, state }) => ({ id, name, state })),
+    upgradeNotices: state?.upgradeNotices?.map(({ state }) => ({ state })) ?? [],
+    admissionFull: state?.admissionFull === true,
   };
 }
 

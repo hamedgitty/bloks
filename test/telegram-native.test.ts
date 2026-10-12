@@ -301,7 +301,7 @@ test("a question's choices are one button each, and the tapped one is the answer
   assert.deepEqual(rows.map((row: any[]) => row.map((b) => b.text)), [["Red"], ["Blue"], ["Green"]]);
   f.tg.press(card.id, rows[1][0].callback_data);
   await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "PICKED Blue"), "the choice never reached the agent");
-  const edited = f.tg.calls("editMessageText").find((c) => c.body.message_id === card.id);
+  const edited = await waitFor(() => f.tg.calls("editMessageText").find((c) => c.body.message_id === card.id), "the answered card was not rewritten");
   assert.equal(edited?.body.text, "Your agent has a question\nWhich colour?\n\nAnswered: Blue");
 });
 
@@ -451,12 +451,13 @@ test("two agent bots do not borrow owner pairing or intake when their private ch
   const status = await f.post(`/api/bots/${second.id}/telegram`, { token, enabled: true });
   assert.equal(status.needsOwnerPairing, true);
   f.tg.say("NOT_PAIRED_YET", token);
-  await waitFor(() => f.tg.calls("sendMessage").some((call) => call.token === token && call.body.text === "This bot is not paired with you."), "the second bot borrowed the first bot's pairing");
+  await waitFor(() => f.tg.calls("sendMessage").some((call) => call.token === token && call.body.text.startsWith("The owner has been asked")), "the second bot borrowed the first bot's pairing");
   const list = async (id: string) => (await f.h.json(`/api/bots/${id}/messages?limit=500`)).messages;
   assert.equal((await list(second.id)).some((message: any) => message.text === "NOT_PAIRED_YET"), false);
   const pairing = await f.post(`/api/bots/${second.id}/telegram`, { pair: true });
   f.tg.say(pairing.pairing, token);
   await waitFor(async () => (await f.h.json(`/api/bots/${second.id}/telegram`)).ownerPaired, "the second owner pairing did not complete");
+  assert.deepEqual((await f.h.json(`/api/bots/${second.id}/telegram`)).people, [], "the owner was still offered as a pending person");
   f.tg.say("ONLY_SECOND_BOT", token);
   await waitFor(() => f.tg.calls("sendMessage").some((call) => call.token === token && call.body.text === "ANSWER"), "the second bot's answer did not use its token");
   assert.equal((await list(second.id)).some((message: any) => message.text === "ONLY_SECOND_BOT"), true);
@@ -499,7 +500,7 @@ test("rotation and removal invalidate held old polls before they write into a co
 });
 
 
-test("a real 2.6 config upgrade keeps two chats until people admission, and identifies the owner with a fresh word", async (t) => {
+test("a real 2.6 config upgrade tells both old chats and identifies the owner with a fresh word", async (t) => {
   const f = await fixture(t);
   await f.h.crash();
   const file = join(f.root, ".bloks", "config.json");
@@ -509,27 +510,29 @@ test("a real 2.6 config upgrade keeps two chats until people admission, and iden
   writeFileSync(file, JSON.stringify(config));
   await f.reboot();
   const migrated = JSON.parse(readFileSync(file, "utf8")).telegram;
-  assert.equal(migrated.version, 1);
+  assert.equal(migrated.version, 2);
   assert.equal(migrated.token, undefined);
   assert.equal(migrated.migratedBotId, f.bot.id);
   assert.equal(migrated.bots[f.bot.id].offset, offset);
-  assert.deepEqual(migrated.bots[f.bot.id].chatIds, [CHAT, STRANGER]);
+  assert.deepEqual(migrated.bots[f.bot.id].chatIds, []);
+  assert.deepEqual(migrated.bots[f.bot.id].upgradeNotices.map((n: any) => n.chatId), [CHAT, STRANGER]);
   assert.equal(migrated.bots[f.bot.id].ownerUserId, undefined);
   assert.equal(migrated.bots[f.bot.id].pairing, null);
   const status = await f.h.json(`/api/bots/${f.bot.id}/telegram`);
   assert.equal(status.needsOwnerPairing, true);
-  assert.equal(status.legacyPaired, 2);
+  assert.equal(status.legacyPaired, 0);
   const pairing = await f.post(`/api/bots/${f.bot.id}/telegram`, { pair: true });
   assert.notEqual(pairing.pairing, "old-word");
   f.tg.say(pairing.pairing);
   await waitFor(async () => (await f.h.json(`/api/bots/${f.bot.id}/telegram`)).ownerPaired, "fresh word did not identify owner");
   const paired = JSON.parse(readFileSync(file, "utf8")).telegram.bots[f.bot.id];
   assert.equal(paired.ownerUserId, CHAT);
-  assert.deepEqual(paired.chatIds, [CHAT, STRANGER]);
+  assert.deepEqual(paired.chatIds, []);
   f.tg.say("Sam after upgrade");
   await waitFor(() => f.tg.sent().find((c) => c.body.chat_id === CHAT && c.body.text === "ANSWER"), "owner chat stopped working after upgrade");
   f.tg.say("Lee after upgrade", "12345:TEST_ONLY_TOKEN", STRANGER);
-  await waitFor(() => f.tg.sent().find((c) => c.body.chat_id === STRANGER && c.body.text === "ANSWER"), "second legacy chat lost its way in before PR 2");
+  await waitFor(() => f.tg.sent().find((c) => c.body.chat_id === STRANGER && c.body.text.startsWith("The owner has been asked")), "second legacy chat had no way to knock");
+  assert.equal(f.tg.sent().some((c) => c.body.chat_id === STRANGER && c.body.text === "ANSWER"), false);
 });
 
 
@@ -629,7 +632,7 @@ test("failure to reach an old binding names the saved bot, not a refusal of the 
   const binding = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
   delete binding.telegramId;
   binding.enabled = false;
-  await savedTelegram(f, { version: 1, bots: { [f.bot.id]: binding } });
+  await savedTelegram(f, { version: 2, bots: { [f.bot.id]: binding } });
   f.tg.state.getMeReplies.set(old, { status: 0, body: {} });
   const response = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ token: "22222:VALID_TEST_TOKEN" }) });
   assert.equal(response.status, 502);
@@ -641,7 +644,7 @@ test("failure to reach an old binding names the saved bot, not a refusal of the 
 });
 
 for (const mode of ["same token", "same bot id", "App Settings move"]) {
-  test(`a pending migration through ${mode} keeps both legacy chats and offset`, async (t) => {
+  test(`a pending migration through ${mode} keeps notice jobs and offset without carrying old grants`, async (t) => {
     const f = await fixture(t);
     const token = "12345:TEST_ONLY_TOKEN";
     await savedTelegram(f, { token, enabled: true, botId: "deleted-agent", chatIds: [CHAT, STRANGER], offset: 17 });
@@ -653,13 +656,15 @@ for (const mode of ["same token", "same bot id", "App Settings move"]) {
     assert.equal(config.telegram.pending, undefined);
     assert.equal(config.telegram.migrationError, undefined);
     assert.equal(config.telegram.migratedBotId, f.bot.id);
-    assert.deepEqual(config.telegram.bots[f.bot.id].chatIds, [CHAT, STRANGER]);
+    assert.deepEqual(config.telegram.bots[f.bot.id].chatIds, []);
+    assert.deepEqual(config.telegram.bots[f.bot.id].upgradeNotices.map((n: any) => n.chatId), [CHAT, STRANGER]);
     assert.equal(config.telegram.bots[f.bot.id].offset, 17);
     assert.equal(config.telegram.bots[f.bot.id].ownerUserId, undefined);
     assert.equal((await f.h.json(`/api/bots/${f.bot.id}/telegram`)).needsOwnerPairing, true);
     const activeToken = config.telegram.bots[f.bot.id].token;
     f.tg.say("Lee after pending migration", activeToken, STRANGER);
-    await waitFor(() => f.tg.sent().some((call) => call.token === activeToken && call.body.chat_id === STRANGER && call.body.text === "ANSWER"), "the second legacy chat lost its way in");
+    await waitFor(() => f.tg.sent().some((call) => call.token === activeToken && call.body.chat_id === STRANGER && call.body.text.startsWith("The owner has been asked")), "the second legacy chat had no way to knock");
+    assert.equal(f.tg.sent().some((call) => call.token === activeToken && call.body.chat_id === STRANGER && call.body.text === "ANSWER"), false);
   });
 }
 

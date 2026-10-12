@@ -302,7 +302,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
     if (patch[key] && typeof patch[key] === "object") {
       // The migrated Telegram section is a complete private record. A
       // merge would retain the old workspace token or a removed binding.
-      disk[key] = key === "telegram" && patch.telegram?.version === 1
+      disk[key] = key === "telegram" && (patch.telegram?.version === 1 || patch.telegram?.version === 2)
         ? patch.telegram
         : { ...(disk[key] as object), ...patch[key] };
     }

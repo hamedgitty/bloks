@@ -736,9 +736,50 @@ Everything hangs on the pairing. The owner is the Telegram account that
 sends the single-use pairing word to the bot in a private chat, kept by
 its user id (`ownerUserId`), since a chat id or a display name says
 where a message came from and not who wrote it. The word is made with
-the system's random source and is good once. A chat that is not paired
-is refused once and never reaches an agent, and nothing below happens
-anywhere else. Guest mail and shared rooms never come this way.
+the system's random source and is good once. Another person's first private
+message creates one owner-only admission card and one waiting notice. Let
+in, Not now and Take out are per person and per bot. The first message is
+bounded and media is not downloaded before admission. Declining tells the
+person once; later messages do not create another knock. Group messages
+are not admitted by this version. Guest mail and shared rooms keep their
+own paths.
+
+An admitted person's message is labelled with their name and Telegram,
+and runs in the agent's first conversation with its own requester. It waits
+behind an owner or another person's turn; only the same requester can steer
+its running turn. Each queued segment retains that requester and its grant.
+Taking someone out or retiring a bot transport revokes pending words,
+approvals and reply capabilities before interrupting that person's turn.
+An owner's turn is left alone. Admission is bounded to 100 records and 20
+pending knocks; a full inbox holds new people visibly.
+
+A person turn uses the existing untrusted approval path, including on a
+full-access agent. Claude starts a fresh default-permission session, with
+empty setting sources and hooks disabled. Codex starts a fresh read-only,
+no-network thread with on-request approvals, using a private home with mode 0700,
+disabled apps, plugins and web search, and only the reply MCP server. Both
+drivers check the reported permissions and mounted tools before input and
+hold on a mismatch. Codex supports an existing explicit file login through
+an auth.json link, never a copy; keyring or custom-provider configurations
+hold. A Linux host unable to start the restricted sandbox fails closed.
+Plain owner answers do not save session or exec-policy permissions.
+
+The native `reply_to_sender` tool takes one text field, with no target or
+formatting controls. Its broker callback is bound to the sender, turn and
+transport; its shell credential is reply-only too. Every other Bloks route
+refuses it, including a say to another agent. Replies over 4096 UTF16 units
+are refused, not truncated. The owner chat records sent, failed or uncertain
+delivery. A turn cannot repeat the same attempted text automatically, and
+its final chat text sends nothing without a tool call. The person's native
+session never replaces the owner's cursor; the next owner turn starts from
+the bounded conversation, including the person's exchange.
+
+This tier permits file reads: Codex can read any file the account can read,
+credential files included, and those reads can reach the person through the
+card-free reply. Sandboxed writes fail; escalation and edits ask the owner.
+Owner account MCP servers are not inherited. An owner-approved shell that
+removes its Authorization header can still use the existing loopback-owner
+API fallback. The approval card names the person so the owner can decide.
 
 A connection has a `generation`, renewed whenever its token, its switch
 or its pairing changes. A poll, a card's buttons, the rest of a long
@@ -754,15 +795,23 @@ paired. Deleting an agent removes its bot and token.
 The workspace bot from before 2.8.0 moves to the agent it was set to
 answer as (`migrateTelegram`), with its place and its paired chats, and
 asks for the pairing word once more so it learns its owner's user id.
-Until admission of other people exists, chats paired before the move
-keep the reach they had. When the agent it named is gone, or already
+The people upgrade drops every old chat grant, retains the polling offset
+and a verified owner, and persists one notice job for each previous chat.
+The app also says the pairing word is needed again. A send interrupted by
+a restart is uncertain and is never replayed automatically. When the agent
+it named is gone, or already
 has a bot, nothing is assigned by guesswork: the old bot waits, stopped,
-for the person to choose an agent in Settings. Bot tokens are left out
+for the person to choose an agent in Settings. A revoked pending bot can
+also be removed there. Bot tokens are left out
 of an unsealed backup like every other key (`SECRET_PATHS`), and a
 restore without them keeps this computer's own.
 
-A card a Telegram turn raises goes to the chat it came from
-(`telegramCards`, `server/telegram-cards.ts`). An approval comes with
+A card a Telegram turn raises goes only to the verified owner's private
+chat (`ownerChatId`, `telegramCards`, `server/telegram-cards.ts`), including
+a card raised by an admitted person. That person's next message never
+answers it. For their questions, ordinary owner messages remain the owner's
+messages: a typed answer must reply to that physical card, or the owner can
+answer in the app. An approval comes with
 Allow and Deny to tap, a question with one button per choice; a question
 with no choices, or more than eight, is answered by typing, and typing a
 number or yes / no still works on any card. A button carries a short

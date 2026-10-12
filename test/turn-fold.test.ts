@@ -64,6 +64,22 @@ const page = (rows: TurnRow[]) =>
 const foldsOf = (folded: Folded): TurnFold[] => folded.rows.flatMap((row) => (row.kind === "fold" ? [row.fold] : []));
 const line = (fold: TurnFold) => foldWords(fold, kindOf).join(" · ");
 
+test("a Telegram person's reply and delivery state stay visible after private chat text", () => {
+  fresh();
+  const source = { botId: "planning", bindingGeneration: "one", personId: "lee", userId: 2, name: "Lee", grant: "allowed", chatId: 2, messageId: 3, requester: "telegram:lee" };
+  for (const state of ["sent", "failed", "uncertain"] as const) {
+    const folded = foldTurns([
+      me("in", { telegramPerson: source }),
+      tool("read", "Read"),
+      says("sent", { telegramSent: { personId: "lee", name: "Lee", state } }),
+      says("private"),
+    ], false);
+    assert.deepEqual(page(folded.rows), ["in", "fold(read)", "sent", "private"]);
+    assert.equal(askerWords(foldsOf(folded)[0].asker!), "Message from Lee (Telegram)");
+    assert.equal(foldHolding(folded.rows, 2), null);
+  }
+});
+
 describe("the three shapes", () => {
   test("I asked: my message, the line, the reply", () => {
     fresh();
