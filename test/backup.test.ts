@@ -199,6 +199,71 @@ test("an agent's signing key goes only into a sealed backup, and a restore keeps
   assert.equal(statSync(join(data, "identities", "b1.pem")).mode & 0o777, 0o600);
 });
 
+function agentTelegramWorkspace(t: { after: (fn: () => void) => void }) {
+  const w = workspace(t);
+  const tokens = { planning: "12345:PLANNING_TEST_TOKEN", lee: "22222:LEE_TEST_TOKEN", pending: "33333:PENDING_TEST_TOKEN" };
+  w.put("bots.json", JSON.stringify([{ id: "planning", name: "Planning" }, { id: "lee", name: "Lee" }]));
+  const config = JSON.parse(readFileSync(join(w.data, "config.json"), "utf8"));
+  config.telegram = {
+    version: 1,
+    bots: {
+      planning: { token: tokens.planning, generation: "planning-generation", chatIds: [101], ownerUserId: 101, offset: 7 },
+      lee: { token: tokens.lee, generation: "lee-generation", chatIds: [202], offset: 9 },
+    },
+    pending: { token: tokens.pending, chatIds: [303, 404], offset: 11 },
+  };
+  w.put("config.json", JSON.stringify(config));
+  return { ...w, config, tokens };
+}
+
+test("migrated Telegram tokens stay out of manual and daily unsealed backups", async (t) => {
+  const { data, tokens } = agentTelegramWorkspace(t);
+  for (const kind of ["manual", "automatic"] as const) {
+    const made = await backup.createBackup({ dataDir: data, kind });
+    const everything = gunzipSync(readFileSync(made.path)).toString("utf8");
+    for (const token of Object.values(tokens)) assert.equal(everything.includes(token), false, `${kind} backup holds a Telegram token`);
+    const saved = JSON.parse(tarRead(made.path, "bloks/config.json"));
+    assert.equal(saved.telegram.bots.planning.token, undefined);
+    assert.deepEqual(saved.telegram.bots.planning.chatIds, [101]);
+    assert.equal(saved.telegram.bots.lee.token, undefined);
+    assert.equal(saved.telegram.pending.token, undefined);
+    const manifest = JSON.parse(tarRead(made.path, "manifest.json"));
+    for (const path of ["telegram.bots.planning.token", "telegram.bots.lee.token", "telegram.pending.token"]) {
+      assert.ok(manifest.secretsLeftOut.includes(path), `manifest omits ${path}`);
+    }
+  }
+});
+
+test("a sealed backup keeps migrated and pending Telegram tokens", async (t) => {
+  const { data, put, config } = agentTelegramWorkspace(t);
+  const sealed = await backup.createBackup({ dataDir: data, passphrase: PASS });
+  put("config.json", JSON.stringify({ telegram: { version: 1, bots: {} } }));
+  await backup.restoreBackup(sealed.path, { dataDir: data, passphrase: PASS });
+  assert.ok(backup.applyPendingRestore({ dataDir: data, log: () => {} }));
+  const restored = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.deepEqual(restored.telegram, config.telegram);
+});
+
+test("an unsealed restore carries this computer's Telegram tokens into saved bindings", async (t) => {
+  const { data, put, config } = agentTelegramWorkspace(t);
+  const plain = await backup.createBackup({ dataDir: data });
+  config.telegram.bots.planning.token = "12345:CURRENT_TEST_TOKEN";
+  config.telegram.bots.lee.token = "22222:CURRENT_TEST_TOKEN";
+  config.telegram.pending.token = "33333:CURRENT_TEST_TOKEN";
+  config.telegram.bots.absent = { token: "44444:RESTORED_ONLY_TEST_TOKEN" };
+  put("config.json", JSON.stringify(config));
+  await backup.restoreBackup(plain.path, { dataDir: data });
+  assert.ok(backup.applyPendingRestore({ dataDir: data, log: () => {} }));
+  const restored = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.equal(restored.telegram.bots.planning.token, config.telegram.bots.planning.token);
+  assert.equal(restored.telegram.bots.planning.generation, "planning-generation");
+  assert.deepEqual(restored.telegram.bots.planning.chatIds, [101]);
+  assert.equal(restored.telegram.bots.lee.token, config.telegram.bots.lee.token);
+  assert.equal(restored.telegram.pending.token, config.telegram.pending.token);
+  assert.deepEqual(restored.telegram.pending.chatIds, [303, 404]);
+  assert.deepEqual(restored.telegram.bots.absent, { token: "44444:RESTORED_ONLY_TEST_TOKEN" });
+});
+
 test("a sealed backup is noise without its passphrase and whole with it", async (t) => {
   const { data } = workspace(t);
   await assert.rejects(backup.createBackup({ dataDir: data, passphrase: "short" }), /at least 8 characters/);

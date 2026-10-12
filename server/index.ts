@@ -7690,6 +7690,34 @@ function saveTelegramBinding(botId: string, state?: AgentTelegram): void {
   saveTelegram({ ...cfg.telegram, version: 1, bots });
 }
 
+function refusedTelegramToken(error: unknown): boolean {
+  return (error instanceof telegram.TelegramError && (error.status === 401 || error.status === 403)) ||
+    (error instanceof Error && error.message === "that token was refused");
+}
+
+/** A restored key without its agent is not a connection. Identify only
+ * existing agents, and let a revoked key be replaced. A failed network
+ * check stays distinct from refusal of the new token. */
+async function identifyTelegramBindings(token: string, me: { id: number; username: string }): Promise<void> {
+  for (const [id, other] of Object.entries(cfg.telegram?.bots ?? {})) {
+    if (!store.bot(id) || !other.token || other.telegramId !== undefined) continue;
+    let identified: { id: number; username: string };
+    try { identified = other.token === token ? me : await telegram.whoAmI(other.token); }
+    catch (error) {
+      if (refusedTelegramToken(error)) continue;
+      throw new Error("Could not verify a saved Telegram bot. Try again when Telegram is reachable.");
+    }
+    const current = telegramBinding(id);
+    if (store.bot(id) && current?.token === other.token && current.generation === other.generation) {
+      saveTelegramBinding(id, { ...current, telegramId: identified.id, username: identified.username });
+    }
+  }
+}
+
+function duplicateTelegramBot(botId: string, telegramId: number): boolean {
+  return Object.entries(cfg.telegram?.bots ?? {}).some(([id, other]) => id !== botId && store.bot(id) && other.telegramId === telegramId);
+}
+
 function telegramReturnState(laneId: string, reply: TelegramReply): telegram.TelegramState {
   const bot = store.bots.find((item) => item.tasks.some((lane) => lane.id === laneId));
   if (!bot || (reply.botId && reply.botId !== bot.id)) return {};
@@ -7898,8 +7926,7 @@ async function telegramRound(runtime: TelegramRuntime): Promise<void> {
     const me = await telegram.whoAmI(runtime.token, runtime.abort.signal);
     state = currentTelegram(runtime);
     if (!state) return;
-    const duplicate = Object.entries(cfg.telegram?.bots ?? {}).some(([id, other]) => id !== runtime.botId && other.telegramId === me.id);
-    if (duplicate) throw new Error("This Telegram bot is already used by another agent");
+    if (duplicateTelegramBot(runtime.botId, me.id)) throw new Error("This Telegram bot is already used by another agent");
     saveTelegramBinding(runtime.botId, { ...state, telegramId: me.id, username: me.username });
     state = currentTelegram(runtime)!;
   }
@@ -11447,6 +11474,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       void destroySandbox(bot.id).catch(() => {});
       routines.removeForTarget(bot.id);
       usage.forget(bot.id);
+      if (telegramBinding(bot.id)) {
+        saveTelegramBinding(bot.id);
+        startTelegramBot(bot.id);
+      }
       store.deleteBot(bot.id);
       // Every lane, not just the first: an agent with three lanes used
       // to leave two files behind. The native copy goes with its gzipped
@@ -15556,13 +15587,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const status = () => ({ ...telegramStatus(telegramBinding(botId)), botId, voiceVendor: speech.transcriptionVendor(cfg) });
       if (method === "GET") return json(res, 200, status());
       if (method !== "POST") return json(res, 405, { error: "method not allowed" });
-      if (body.migrate === true) {
-        const legacy = cfg.telegram?.pending;
-        if (!legacy?.token) return json(res, 400, { error: "There is no previous Telegram bot to move." });
+      const pending = cfg.telegram?.pending;
+      const movePending = body.migrate === true;
+      if (movePending) {
+        if (!pending?.token) return json(res, 400, { error: "There is no previous Telegram bot to move." });
         if (telegramBinding(botId)?.token) return json(res, 409, { error: "This agent already has a Telegram bot." });
-        saveTelegram({ ...cfg.telegram, version: 1, bots: { ...cfg.telegram?.bots, [botId]: legacyBinding(legacy) }, migratedBotId: botId, pending: undefined, migrationError: undefined });
-        startTelegramBot(botId);
-        return json(res, 200, status());
       }
       if (body.forget === true) {
         saveTelegramBinding(botId);
@@ -15570,31 +15599,36 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 200, status());
       }
       let validated: { token: string; me: { id: number; username: string } } | undefined;
-      if (body.token !== undefined) {
-        const token = telegram.cleanToken(body.token);
+      let adoptsPending = movePending;
+      if (body.token !== undefined || movePending) {
+        const token = telegram.cleanToken(movePending ? pending!.token : body.token);
         if (!token) return json(res, 400, { error: "a bot token is required" });
+        let me: { id: number; username: string };
+        try { me = await telegram.whoAmI(token); }
+        catch (error) { return json(res, 400, { error: (error as Error).message }); }
         try {
-          const me = await telegram.whoAmI(token);
-          // Old bindings may not yet have run getMe. Check them too rather
-          // than allow two pollers for the same bot under different tokens.
-          for (const [id, other] of Object.entries(cfg.telegram?.bots ?? {})) {
-            if (!other.token || other.telegramId !== undefined) continue;
-            if (other.token === token) saveTelegramBinding(id, { ...other, telegramId: me.id, username: me.username });
+          await identifyTelegramBindings(token, me);
+          if (pending?.token && !movePending) {
+            if (pending.token === token) adoptsPending = true;
             else {
-              const identified = await telegram.whoAmI(other.token);
-              const current = telegramBinding(id);
-              if (current?.token === other.token && current.generation === other.generation) saveTelegramBinding(id, { ...current, telegramId: identified.id, username: identified.username });
+              try { adoptsPending = (await telegram.whoAmI(pending.token)).id === me.id; }
+              catch (error) {
+                if (!refusedTelegramToken(error)) throw new Error("Could not verify the previous Telegram bot. Try again when Telegram is reachable.");
+              }
             }
           }
-          if (Object.entries(cfg.telegram?.bots ?? {}).some(([id, other]) => id !== botId && other.telegramId === me.id)) {
-            return json(res, 409, { error: "This Telegram bot already belongs to another agent. Each agent needs its own bot." });
-          }
-          validated = { token, me };
-        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        } catch (error) { return json(res, 502, { error: (error as Error).message }); }
+        if (!store.bot(botId)) return json(res, 400, { error: "Choose an agent for this Telegram bot." });
+        if (duplicateTelegramBot(botId, me.id)) return json(res, 409, { error: "This Telegram bot already belongs to another agent. Each agent needs its own bot." });
+        if (adoptsPending && cfg.telegram?.pending !== pending) return json(res, 409, { error: "The previous Telegram bot changed while checking it. Choose it again in App Settings." });
+        if (movePending && telegramBinding(botId)?.token) return json(res, 409, { error: "This agent already has a Telegram bot." });
+        validated = { token, me };
       }
       // Read after getMe: another owner request or a poll may have saved
       // its state while validation was in flight.
-      let next = validated ? replaceTelegramToken(telegramBinding(botId), validated.token, validated.me) : { ...(telegramBinding(botId) ?? { generation: randomUUID(), chatIds: [], offset: 0 }) };
+      const before = adoptsPending && pending ? { ...legacyBinding(pending), telegramId: validated!.me.id } : telegramBinding(botId);
+      let next = validated ? replaceTelegramToken(before, validated.token, validated.me) : { ...(before ?? { generation: randomUUID(), chatIds: [], offset: 0 }) };
+      if (movePending) next.enabled = before!.enabled === true;
       if (body.enabled !== undefined) {
         if (body.enabled === true && !next.token) return json(res, 400, { error: "Save a bot token first." });
         if (next.enabled !== (body.enabled === true)) next.generation = randomUUID();
@@ -15605,7 +15639,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         next = ownerPairing(next);
       }
       if (body.unpair === true) next = { ...next, chatIds: [], ownerUserId: undefined, ownerChatId: undefined, pairing: null, generation: randomUUID() };
-      saveTelegramBinding(botId, next);
+      if (adoptsPending) saveTelegram({ ...cfg.telegram, version: 1, bots: { ...cfg.telegram?.bots, [botId]: next }, migratedBotId: botId, pending: undefined, migrationError: undefined });
+      else saveTelegramBinding(botId, next);
       startTelegramBot(botId);
       return json(res, 200, status());
     }

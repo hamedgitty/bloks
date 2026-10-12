@@ -32,7 +32,7 @@ interface Call { method: string; body: any; at: number; token: string }
  * are kept as what they were called, what they said they were and how
  * big they were. */
 async function telegramStub(t: TestContext) {
-  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void> };
+  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void>, pollTokens: [] as string[], getMeReplies: new Map<string, { status?: number; body: unknown }>() };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -51,12 +51,21 @@ async function telegramStub(t: TestContext) {
       res.setHeader("content-type", "application/json");
       const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
       if (method === "getUpdates") {
+        state.pollTokens.push(token);
         const finish = () => reply(state.updates.filter((u) => (u._token ?? "12345:TEST_ONLY_TOKEN") === token && u.update_id >= body.offset));
         if (state.holdToken === token) return void state.heldPolls.push(finish);
         return void setTimeout(finish, 30);
       }
       if (method !== "sendChatAction") state.calls.push({ method, body, at: Date.now(), token });
-      if (method === "getMe") return reply({ id: Number(token.split(":")[0]), is_bot: true, username: "PlanningBot" });
+      if (method === "getMe") {
+        const override = state.getMeReplies.get(token);
+        if (override) {
+          if (override.status === 0) return void req.socket.destroy();
+          res.statusCode = override.status ?? 200;
+          return res.end(JSON.stringify(override.body));
+        }
+        return reply({ id: Number(token.split(":")[0]), is_bot: true, username: "PlanningBot" });
+      }
       if (["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return reply({ message_id: ++state.messageId });
       reply(true);
     });
@@ -95,7 +104,7 @@ async function telegramStub(t: TestContext) {
 function fakeCodex(root: string): string {
   const cli = join(root, "fake-codex.mjs");
   writeFileSync(cli, `#!${process.execPath}
-import { appendFileSync, readFileSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process.exit(0); }
@@ -165,6 +174,11 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     for (let i = 1; i <= 7; i++) { writeFileSync(join(dir, "part-" + i + ".txt"), "part " + i); await nap(15); }
     return finish("Seven parts.");
   }
+  if (text.includes("HOLD_UNPAIR")) {
+    writeFileSync(root + "/unpair-started", "1");
+    for (let i = 0; i < 1000 && !existsSync(root + "/unpair-release"); i++) await nap(20);
+    return finish("OLD_UNPAIRED_ANSWER");
+  }
   if (text.includes("SLOW")) {
     tool("t1", "npm test");
     await nap(21_000);
@@ -221,7 +235,9 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
     HOME: root, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
   };
-  let h = await startHarness(env);
+  let h;
+  try { h = await startHarness(env); }
+  catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
   t.after(async () => { await h.crash(); rmSync(root, { recursive: true, force: true }); });
   const post = (path: string, body: unknown = {}) => h.json(path, { method: "POST", body: JSON.stringify(body) });
   const { bot } = await post("/api/bots", { name: "Planning" });
@@ -525,4 +541,177 @@ test("a real turn credential cannot read bot settings, pair or remove its Telegr
   assert.equal(status.configured, true);
   assert.equal(status.ownerPaired, true);
   assert.equal(status.pairing, null);
+});
+
+async function savedTelegram(f: Awaited<ReturnType<typeof fixture>>, telegram: unknown) {
+  await f.h.crash();
+  const file = join(f.root, ".bloks", "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  config.telegram = telegram;
+  writeFileSync(file, JSON.stringify(config));
+  await f.reboot();
+}
+
+test("deleting an agent removes its token, retires its poller and lets another agent use the bot", async (t) => {
+  const f = await fixture(t);
+  const token = "12345:TEST_ONLY_TOKEN";
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  f.tg.state.holdToken = token;
+  await waitFor(() => f.tg.state.heldPolls.length, "no held poll before deletion");
+  const response = await f.h.fetch(`/api/bots/${f.bot.id}?forget=1`, { method: "DELETE" });
+  assert.equal(response.status, 200);
+  const config = readFileSync(join(f.root, ".bloks", "config.json"), "utf8");
+  assert.equal(JSON.parse(config).telegram.bots[f.bot.id], undefined);
+  assert.equal(config.includes(token), false, "deleted agent token stayed on disk");
+  const polls = f.tg.state.pollTokens.length;
+  for (const release of f.tg.state.heldPolls.splice(0)) release();
+  await sleep(250);
+  assert.equal(f.tg.state.pollTokens.length, polls, "deleted agent's poller kept running");
+  f.tg.state.holdToken = "";
+  const saved = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ token }) });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).needsOwnerPairing, true);
+});
+
+test("bindings without their agent are neither identified, polled nor counted as duplicates", async (t) => {
+  const f = await fixture(t);
+  const orphan = "33333:RESTORED_ONLY_TEST_TOKEN";
+  f.tg.state.getMeReplies.set(orphan, { status: 401, body: { ok: false } });
+  await savedTelegram(f, { version: 1, bots: {
+    absentKnown: { token: "12345:OLD_TEST_TOKEN", telegramId: 12345, generation: "old", enabled: true },
+    absentUnknown: { token: orphan },
+  } });
+  const before = f.tg.calls("getMe").length;
+  const saved = await f.h.fetch(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify({ token: "12345:TEST_ONLY_TOKEN" }) });
+  assert.equal(saved.status, 200);
+  await waitFor(() => f.tg.state.pollTokens.includes("12345:TEST_ONLY_TOKEN"), "restored token blocked the real agent's poller");
+  assert.equal(f.tg.calls("getMe").slice(before).some((call) => call.token === orphan || call.token === "12345:OLD_TEST_TOKEN"), false);
+  assert.equal(f.tg.state.pollTokens.includes(orphan), false);
+  const state = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram;
+  assert.equal(state.bots.absentUnknown.telegramId, undefined);
+  assert.equal(state.bots[f.bot.id].telegramId, 12345);
+});
+
+for (const sameAgent of [true, false]) {
+  test(`a refused unidentified legacy token does not block a valid token on ${sameAgent ? "the same" : "another"} agent`, async (t) => {
+    const f = await fixture(t);
+    const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+    const old = "88888:REVOKED_TEST_TOKEN";
+    f.tg.state.getMeReplies.set(old, sameAgent ? { status: 401, body: { ok: false } } : { body: { ok: false } });
+    await savedTelegram(f, { token: old, enabled: true, botId: f.bot.id, chatIds: [CHAT, STRANGER], offset: 0 });
+    const id = sameAgent ? f.bot.id : second.id;
+    const response = await f.h.fetch(`/api/bots/${id}/telegram`, { method: "POST", body: JSON.stringify({ token: "22222:VALID_TEST_TOKEN" }) });
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    const state = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots;
+    assert.equal(state[id].token, "22222:VALID_TEST_TOKEN");
+    assert.equal(state[id].telegramId, 22222);
+    await waitFor(() => f.tg.state.pollTokens.includes("22222:VALID_TEST_TOKEN"), "new token did not poll");
+  });
+}
+
+test("an unidentified live binding still refuses a different token for the same bot", async (t) => {
+  const f = await fixture(t);
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  const binding = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
+  delete binding.telegramId;
+  binding.enabled = false;
+  await savedTelegram(f, { version: 1, bots: { [f.bot.id]: binding } });
+  const response = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ token: "12345:ROTATED_TEST_TOKEN" }) });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /already belongs/);
+  assert.equal((await f.h.json(`/api/bots/${second.id}/telegram`)).configured, false);
+});
+
+test("failure to reach an old binding names the saved bot, not a refusal of the valid new token", async (t) => {
+  const f = await fixture(t);
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  const old = "12345:TEST_ONLY_TOKEN";
+  const binding = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
+  delete binding.telegramId;
+  binding.enabled = false;
+  await savedTelegram(f, { version: 1, bots: { [f.bot.id]: binding } });
+  f.tg.state.getMeReplies.set(old, { status: 0, body: {} });
+  const response = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ token: "22222:VALID_TEST_TOKEN" }) });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.match(body.error, /verify a saved Telegram bot/);
+  assert.doesNotMatch(body.error, /token was refused/);
+  assert.equal((await f.h.json(`/api/bots/${second.id}/telegram`)).configured, false);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id], binding);
+});
+
+for (const mode of ["same token", "same bot id", "App Settings move"]) {
+  test(`a pending migration through ${mode} keeps both legacy chats and offset`, async (t) => {
+    const f = await fixture(t);
+    const token = "12345:TEST_ONLY_TOKEN";
+    await savedTelegram(f, { token, enabled: true, botId: "deleted-agent", chatIds: [CHAT, STRANGER], offset: 17 });
+    f.tg.state.next = 18;
+    const body = mode === "App Settings move" ? { migrate: true } : { token: mode === "same bot id" ? "12345:ROTATED_TEST_TOKEN" : token };
+    const response = await f.h.fetch(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify(body) });
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    const config = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8"));
+    assert.equal(config.telegram.pending, undefined);
+    assert.equal(config.telegram.migrationError, undefined);
+    assert.equal(config.telegram.migratedBotId, f.bot.id);
+    assert.deepEqual(config.telegram.bots[f.bot.id].chatIds, [CHAT, STRANGER]);
+    assert.equal(config.telegram.bots[f.bot.id].offset, 17);
+    assert.equal(config.telegram.bots[f.bot.id].ownerUserId, undefined);
+    assert.equal((await f.h.json(`/api/bots/${f.bot.id}/telegram`)).needsOwnerPairing, true);
+    const activeToken = config.telegram.bots[f.bot.id].token;
+    f.tg.say("Lee after pending migration", activeToken, STRANGER);
+    await waitFor(() => f.tg.sent().some((call) => call.token === activeToken && call.body.chat_id === STRANGER && call.body.text === "ANSWER"), "the second legacy chat lost its way in");
+  });
+}
+
+test("an App Settings pending move visibly refuses a bot already bound to another agent", async (t) => {
+  const f = await fixture(t);
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  const state = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram;
+  state.pending = { token: "12345:ROTATED_TEST_TOKEN", chatIds: [CHAT, STRANGER], enabled: true, offset: 17 };
+  await savedTelegram(f, state);
+  const response = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ migrate: true }) });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /already belongs/);
+  const config = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8"));
+  assert.deepEqual(config.telegram.pending.chatIds, [CHAT, STRANGER]);
+  assert.equal(config.telegram.bots[second.id], undefined);
+  assert.equal(f.tg.state.pollTokens.includes("12345:ROTATED_TEST_TOKEN"), false);
+});
+
+test("invalid getMe results leave the binding, generation, owner and answering poller unchanged", async (t) => {
+  const f = await fixture(t);
+  const bad = "99999:INVALID_TEST_TOKEN";
+  const good = { id: 99999, is_bot: true, username: "PlanningBot" };
+  const cases = [
+    { status: 401, body: { ok: false } },
+    { body: { ok: false, result: good } },
+    { body: { ok: true, result: { ...good, is_bot: false } } },
+    { body: { ok: true, result: { is_bot: true, username: "PlanningBot" } } },
+    { body: { ok: true, result: { ...good, id: 0 } } },
+    { body: { ok: true, result: { ...good, id: -1 } } },
+  ];
+  for (const [i, denied] of cases.entries()) {
+    const before = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
+    f.tg.state.getMeReplies.set(bad, denied);
+    const response = await f.h.fetch(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify({ token: bad }) });
+    assert.equal(response.status, 400, `invalid getMe case ${i} was accepted`);
+    const after = JSON.parse(readFileSync(join(f.root, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
+    assert.deepEqual(after, before, `invalid getMe case ${i} changed the connection`);
+    const replies = f.tg.sent().filter((call) => call.body.text === "ANSWER").length;
+    f.tg.say(`Sam after refused token ${i}`);
+    await waitFor(() => f.tg.sent().filter((call) => call.body.text === "ANSWER").length > replies, `invalid getMe case ${i} stopped the old poller`);
+  }
+});
+
+test("unpairing without disabling retires an in-flight answer by generation", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("HOLD_UNPAIR");
+  await waitFor(() => existsSync(join(f.root, "unpair-started")), "the old turn did not start");
+  const response = await f.h.fetch(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify({ unpair: true }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).enabled, true);
+  writeFileSync(join(f.root, "unpair-release"), "1");
+  await waitFor(async () => (await f.messages()).some((message) => message.role === "bot" && message.text === "OLD_UNPAIRED_ANSWER"), "the old turn never finished in the app");
+  await sleep(150);
+  assert.equal(f.tg.sent().some((call) => call.body.text === "OLD_UNPAIRED_ANSWER"), false, "the unpaired chat received its retired answer");
 });

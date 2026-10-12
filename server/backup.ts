@@ -265,6 +265,8 @@ export const SECRET_PATHS = [
   "chat.whatsapp.appSecret",
   "chat.whatsapp.verifyToken",
   "telegram.token",
+  "telegram.bots.*.token",
+  "telegram.pending.token",
   "mcpServers[].headers",
   "secrets",
   "relay.agentToken",
