@@ -681,7 +681,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (catalog) emit({ ...envelope(threadId, turnId), type: "commands.updated", cwd: turn.cwd ?? null, catalog });
       };
       const consume = (raw: string) => {
-        if (abandoned) return;
+        // A person leaves no background authority behind: late frames
+        // cannot become the next owner's text, session or approvals.
+        if (abandoned || (turn.person && finished)) return;
         lastSign = Date.now();
         let frame: any;
         try {

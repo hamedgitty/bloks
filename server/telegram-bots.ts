@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { pairingWord, type TelegramState } from "./telegram.ts";
 import type { TelegramPerson, TelegramUpgradeNotice } from "./telegram-people.ts";
+import { MAX_TELEGRAM_PEOPLE, MAX_PENDING_TELEGRAM_PEOPLE } from "./limits.ts";
 
 export interface AgentTelegram extends TelegramState {
   generation: string;
@@ -82,7 +83,8 @@ export function telegramStatus(state: AgentTelegram | undefined) {
     pairing: state?.pairing ?? null, username: state?.username ?? null,
     people: Object.values(state?.people ?? {}).map(({ id, name, state }) => ({ id, name, state })),
     upgradeNotices: state?.upgradeNotices?.map(({ state }) => ({ state })) ?? [],
-    admissionFull: state?.admissionFull === true,
+    admissionFull: Object.values(state?.people ?? {}).length >= MAX_TELEGRAM_PEOPLE ||
+      Object.values(state?.people ?? {}).filter((p) => p.state === "pending").length >= MAX_PENDING_TELEGRAM_PEOPLE,
   };
 }
 

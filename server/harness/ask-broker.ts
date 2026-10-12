@@ -143,7 +143,11 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
             .catch((error) => { if (!connection.destroyed) connection.write(JSON.stringify({ t: "answer", id, behavior: "deny", message: error instanceof Error ? error.message : "Reply failed" }) + "\n"); });
           continue;
         }
-        if (frame.t !== "ask" || retired) continue;
+        if (frame.t !== "ask") continue;
+        if (retired && options.onReply) {
+          connection.write(JSON.stringify({ t: "answer", id: String(frame.id ?? ""), behavior: "deny", message: "This person's turn has ended." }) + "\n");
+          continue;
+        }
 
         const id = String(frame.id ?? randomUUID());
         const kind = frame.kind === "question" ? ("question" as const) : ("permission" as const);

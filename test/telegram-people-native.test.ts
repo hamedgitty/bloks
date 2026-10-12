@@ -180,9 +180,11 @@ test("owner, person, owner keeps the owner's cursor and tells the third turn the
   const before = f.records().find((r) => !r.person);
   assert.equal(before.guard.sandbox, "danger-full-access");
   const stateFile = join(f.root, ".bloks/bots.json");
-  const ownerCursor = JSON.parse(readFileSync(stateFile, "utf8"))[0].tasks[0].resumeCursors.codex;
+  const savedLane = () => JSON.parse(readFileSync(stateFile, "utf8")).find((b: any) => b.id === f.bot.id).tasks[0];
+  const ownerCursor = savedLane().resumeCursors.codex;
+  assert.equal(typeof ownerCursor, "string");
   await f.admit("FAKE_TEXT"); await until(() => f.records().some((r) => r.person), "person turn did not start"); await f.idle();
-  assert.equal(JSON.parse(readFileSync(stateFile, "utf8"))[0].tasks[0].resumeCursors.codex, ownerCursor);
+  assert.equal(savedLane().resumeCursors.codex, ownerCursor);
   await f.post(`/api/bots/${f.bot.id}/messages`, { text: "OWNER_AFTER" }); await f.idle();
   const after = f.records().filter((r) => !r.person).at(-1);
   assert.equal(after.guard.threadId, undefined, "the owner resumed without learning the exchange");
@@ -304,6 +306,22 @@ test("Claude question, secret and connection tools stay in the owner's chat", as
   f.say("SYNTHETIC_VALUE", LEE); await f.flushed(); await f.idle();
   assert.equal((await f.messages()).find((m) => m.secret).secret.status, "needs-value");
   assert.equal(f.sent(LEE).some((m) => m.body.text.includes("Synthetic service key") || m.body.text.includes("Which day?") || m.body.reply_markup), false);
+});
+
+test("a Claude person's late ask stays refused after its turn ends", async (t) => {
+  const f = await personFixture(t, "claude");
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "OWNER_BEFORE" }); await f.idle();
+  const savedLane = () => JSON.parse(readFileSync(join(f.root, ".bloks/bots.json"), "utf8")).find((b: any) => b.id === f.bot.id).tasks[0];
+  const cursor = savedLane().resumeCursors.claude;
+  assert.equal(typeof cursor, "string");
+  await f.admit("FAKE_LATE");
+  const answer = await until(() => f.records().find((r) => r.lateAnswer)?.lateAnswer, "the late person ask was not settled");
+  assert.equal(answer.behavior, "deny");
+  assert.equal(existsSync(join(f.root, "effect")), false);
+  assert.equal((await f.messages()).some((m) => m.card?.title === "Approval needed"), false);
+  assert.equal((await f.messages()).some((m) => m.text === "LATE_PERSON_TEXT"), false);
+  assert.equal(savedLane().resumeCursors.claude, cursor);
+  await f.idle();
 });
 
 for (const removed of [false, true]) {

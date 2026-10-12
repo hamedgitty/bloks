@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { checkPersonClaudeStatus, checkPersonCodexConfig, checkPersonCodexThread, checkPersonCodexTools, makePersonCodexHome, personReplyText } from "../server/person-turn.ts";
 import { knockTelegram, migrateTelegramPeople, telegramSender, telegramSenderCurrent } from "../server/telegram-people.ts";
 import type { AgentTelegram } from "../server/telegram-bots.ts";
+import { telegramStatus } from "../server/telegram-bots.ts";
 
 test("a person reply has only text and never truncates", () => {
   assert.equal(personReplyText({ text: "Hello Lee" }), "Hello Lee");
@@ -93,6 +94,10 @@ test("a knock is bounded and does not change the owner or confer admission", () 
   assert.equal(state.ownerUserId, 101);
   const saved = { ...state, people: { "202": first.person! } };
   assert.equal(knockTelegram(saved, incoming).fresh, false);
+  const full = { ...state, admissionFull: true, people: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [String(i), { ...first.person!, id: String(i) }])) };
+  assert.equal(telegramStatus(full).admissionFull, true);
+  full.people["0"].state = "declined";
+  assert.equal(telegramStatus(full).admissionFull, false, "a closed knock left a stale full warning");
   for (const bad of [{ fromBot: true }, { fromId: undefined }, { anonymous: true }, { chatType: "group" as const }]) assert.equal(knockTelegram(state, { ...incoming, ...bad }).person, undefined);
   const allowed = { ...first.person!, state: "allowed" as const };
   const granted = { ...state, people: { "202": allowed } };

@@ -39,7 +39,7 @@ const out=f=>process.stdout.write(JSON.stringify(f)+'\\n');
 const log=f=>appendFileSync(join(root,'engine.jsonl'),JSON.stringify(f)+'\\n');
 const person=process.env.BLOKS_TOKEN?.startsWith('blr_');
 let thread='fixture-'+process.pid,turn='turn-'+process.pid;
-let guard,working=false;
+let guard,working=false,late=false;
 const pending=new Map();
 const broker=(frame)=>new Promise((resolve,reject)=>{
  let socket;
@@ -52,6 +52,23 @@ const reply=()=>broker({t:'reply',input:{text:'Hello Lee'}});
 async function work(text){
  log({kind,person,text,token:process.env.BLOKS_TOKEN,url:process.env.BLOKS_URL,guard,args});
  const scenario=text.match(/FAKE_([A-Z]+)\\s*$/)?.[1];
+ if(kind==='claude'&&scenario==='LATE'){
+   late=true;
+   const socket=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks.args[1];
+   await new Promise((resolve,reject)=>{
+     const connection=createConnection(socket);connection.on('error',reject);
+     connection.on('connect',()=>{
+       out({type:'result',subtype:'success',is_error:false,result:'Private transcript only.'});
+       setTimeout(()=>{
+         out({type:'system',subtype:'init',session_id:'late-person-session',model:'claude-sonnet-5',permissionMode:'default',mcp_servers:[{name:'bloks',status:'connected'}]});
+         out({type:'assistant',message:{content:[{type:'text',text:'LATE_PERSON_TEXT'}]}});
+         connection.write(JSON.stringify({t:'ask',id:'late-person',tool:'Bash',input:{command:'touch synthetic-marker'}})+'\\n');
+       },400);
+     });
+     connection.once('data',b=>{const answer=JSON.parse(String(b));log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();});
+   });
+   return;
+ }
  if(scenario==='HOLD'){
    writeFileSync(join(root,'held'),'1');
    while(!existsSync(join(root,'release')))await new Promise(r=>setTimeout(r,30));
@@ -121,7 +138,7 @@ createInterface({input:process.stdin}).on('line',async line=>{
  respond({turn:{id:turn}});out({method:'turn/started',params:{threadId:thread,turn:{id:turn}}});
  await work(m.params.input.filter(i=>i.type==='text').map(i=>i.text).join(''));
 });
-process.stdin.on('end',()=>process.exit(0));
+process.stdin.on('end',()=>{if(!late)process.exit(0)});
 `, { mode: 0o755 });
   return file;
 }
