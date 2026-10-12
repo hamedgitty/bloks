@@ -174,20 +174,23 @@ test("an uncertain reply is shown to the owner and cannot be retried by the same
   assert.equal((await send("after the turn")).status, 403);
 });
 
-test("owner, person, owner keeps the owner's cursor and tells the third turn the exchange", async (t) => {
-  const f = await personFixture(t);
+for (const kind of ["codex", "claude"] as const) test(`${kind}: owner, person, owner keeps the owner's cursor and tells the third turn the exchange`, async (t) => {
+  const f = await personFixture(t, kind);
   await f.post(`/api/bots/${f.bot.id}/messages`, { text: "OWNER_BEFORE" }); await f.idle();
   const before = f.records().find((r) => !r.person);
-  assert.equal(before.guard.sandbox, "danger-full-access");
+  if (kind === "codex") assert.equal(before.guard.sandbox, "danger-full-access");
   const stateFile = join(f.root, ".bloks/bots.json");
   const savedLane = () => JSON.parse(readFileSync(stateFile, "utf8")).find((b: any) => b.id === f.bot.id).tasks[0];
-  const ownerCursor = savedLane().resumeCursors.codex;
+  const ownerCursor = savedLane().resumeCursors[kind];
   assert.equal(typeof ownerCursor, "string");
   await f.admit("FAKE_TEXT"); await until(() => f.records().some((r) => r.person), "person turn did not start"); await f.idle();
-  assert.equal(savedLane().resumeCursors.codex, ownerCursor);
+  const person = f.records().find((r) => r.person);
+  if (kind === "claude") assert.equal(person.args.includes("--resume"), false);
+  assert.equal(savedLane().resumeCursors[kind], ownerCursor);
   await f.post(`/api/bots/${f.bot.id}/messages`, { text: "OWNER_AFTER" }); await f.idle();
   const after = f.records().filter((r) => !r.person).at(-1);
-  assert.equal(after.guard.threadId, undefined, "the owner resumed without learning the exchange");
+  if (kind === "codex") assert.equal(after.guard.threadId, undefined, "the owner resumed without learning the exchange");
+  else assert.equal(after.args.includes("--resume"), false, "the owner resumed without learning the exchange");
   assert.match(after.text, /Message from.*Lee.*Telegram/);
   assert.match(after.text, /Private transcript only/);
   assert.match(after.text, /OWNER_AFTER/);

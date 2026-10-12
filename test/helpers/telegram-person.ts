@@ -46,7 +46,7 @@ const broker=(frame)=>new Promise((resolve,reject)=>{
  if(kind==='claude')socket=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks.args[1];
  else socket=JSON.parse(readFileSync(join(process.env.CODEX_HOME,'config.toml'),'utf8').match(/^args = (.+)$/m)[1])[1];
  const connection=createConnection(socket);connection.on('error',reject);connection.on('connect',()=>connection.write(JSON.stringify({...frame,id:'fixture-'+Math.random()})+'\\n'));
- connection.once('data',b=>{connection.end();resolve(JSON.parse(String(b)))});
+ createInterface({input:connection}).once('line',line=>{connection.end();resolve(JSON.parse(line))});
 });
 const reply=()=>broker({t:'reply',input:{text:'Hello Lee'}});
 async function work(text){
@@ -65,7 +65,7 @@ async function work(text){
          connection.write(JSON.stringify({t:'ask',id:'late-person',tool:'Bash',input:{command:'touch synthetic-marker'}})+'\\n');
        },400);
      });
-     connection.once('data',b=>{const answer=JSON.parse(String(b));log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();});
+     createInterface({input:connection}).once('line',line=>{const answer=JSON.parse(line);log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();});
    });
    return;
  }
@@ -193,7 +193,14 @@ export async function personFixture(t: TestContext, kind: "codex" | "claude" = "
   assert.ok(pair.pairing); say(pair.pairing);
   await until(() => calls.some((c) => c.method === "sendMessage" && c.body.text.startsWith("Paired.")), "the owner did not pair");
   const messages = async (): Promise<any[]> => (await ownerJson(`/api/bots/${bot.id}/messages?thread=${bot.threadId}&limit=500`)).messages;
-  const records = (): any[] => existsSync(join(root, "engine.jsonl")) ? readFileSync(join(root, "engine.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  const records = (): any[] => {
+    if (!existsSync(join(root, "engine.jsonl"))) return [];
+    // Another process may still be appending the last frame. Read complete
+    // newline-delimited records only; a malformed completed frame still fails.
+    const lines = readFileSync(join(root, "engine.jsonl"), "utf8").split("\n");
+    lines.pop();
+    return lines.filter(Boolean).map((line) => JSON.parse(line));
+  };
   const status = () => ownerJson(`/api/bots/${bot.id}/telegram`);
   const sent = (chatId: number) => calls.filter((c) => c.method === "sendMessage" && c.body.chat_id === chatId);
   return { root, bot, post, ownerJson, say, messages, records, status, calls, sent, sendFailures, get h() { return h; },
