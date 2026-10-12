@@ -42,7 +42,7 @@ async function telegramStub(t: TestContext) {
       const body = JSON.parse(raw || "{}");
       res.setHeader("content-type", "application/json");
       const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
-      if (req.url?.endsWith("/getMe")) return reply({ username: "offline_test_bot" });
+      if (req.url?.endsWith("/getMe")) return reply({ id: 12345, is_bot: true, username: "PlanningBot" });
       if (req.url?.endsWith("/getFile")) { state.getFiles++; return reply({ file_path: "files/clip.mp4", file_size: 5 }); }
       if (req.url?.endsWith("/getUpdates")) return void setTimeout(() =>
         reply(state.updates.filter((u) => u.update_id >= body.offset)), 50);
@@ -67,10 +67,10 @@ async function telegramStub(t: TestContext) {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
     push(text: string, chatId = CHAT) {
-      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId }, from: { first_name: "Test" }, text } });
+      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: "Sam" }, text } });
     },
     pushFile(chatId = CHAT) {
-      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId }, caption: "FILE_REQUEST",
+      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: "Sam" }, caption: "FILE_REQUEST",
         video: { file_id: "test-clip", file_size: 5, mime_type: "video/mp4" } } });
     },
     answers: () => state.accepted.filter((m) => !saved(m.text) && !m.text.startsWith("Paired.")),
@@ -143,7 +143,7 @@ setTimeout(() => process.exit(0), 50);
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
   };
   let h = await startHarness(env);
-  const bot = await agentOn(h, engine.port, "Answerer");
+  const bot = await agentOn(h, engine.port, "Planning");
   if (nativeScript) await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({
     modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
   }) });
@@ -466,13 +466,18 @@ for (const missing of ["none", "unpaired"] as const) test(`a recovered request w
   const file = join(f.dataRoot, ".bloks", "config.json");
   const cfg = JSON.parse(readFileSync(file, "utf8"));
   if (missing === "none") delete cfg.telegram;
-  else cfg.telegram.chatIds = [];
+  else Object.assign(cfg.telegram.bots[f.bot.id], { chatIds: [], ownerUserId: undefined, ownerChatId: undefined });
   writeFileSync(file, JSON.stringify(cfg));
   f.engine.state.immediate = true;
   await f.reboot();
   const failed = await waitFor(async () => (await messagesOf(f.h, f.bot)).find((m) => m.id === request.id && m.telegramReply.state === "failed"));
   assert.ok(failed);
-  assert.ok((await messagesOf(f.h, f.bot)).some((m) => m.kind === "notice" && m.text.includes("not configured for the chat")));
+  assert.ok((await messagesOf(f.h, f.bot)).some((m) => m.kind === "notice" && m.text.includes(missing === "none" ? "Telegram connection changed" : "not configured for the chat")));
+  if (missing === "none") {
+    assert.equal(failed.queued, false);
+    assert.equal(failed.unsent, true);
+    assert.equal(f.engine.state.calls.length, 0, "a retired connection must not dispatch its recovered queue");
+  }
   assert.equal(f.tg.answers().length, 0);
   await f.reboot(); await sleep(200);
   assert.equal(f.tg.answers().length, 0);
@@ -645,4 +650,65 @@ test("a held request's files follow its answer, and only an answer that arrived"
   assert.ok(await waitFor(() => lost[0]!.telegramReply?.state === "failed"));
   await sleep(50);
   assert.equal(handed.length, 1, "no files after an answer that did not arrive");
+});
+
+
+test("removing an agent bot drops its queued Telegram message before drain releases", async (t) => {
+  const f = await fixture(t);
+  const queued = await f.queue("REMOVED_BOT_REQUEST");
+  f.engine.state.immediate = true;
+  await f.h.json(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify({ forget: true }) });
+  const rows = await messagesOf(f.h, f.bot);
+  const dropped = rows.find((m) => m.id === queued.id)!;
+  assert.equal(dropped.queued, false);
+  assert.equal(dropped.unsent, true);
+  assert.equal(dropped.telegramReply?.state, "failed");
+  assert.ok(rows.some((m) => m.kind === "notice" && m.text?.includes("Telegram connection changed")));
+  await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  await sleep(1_000);
+  assert.equal(f.engine.state.calls.length, 0, "retired queue still dispatched to the engine");
+  assert.equal(f.tg.answers().length, 0, "retired bot sent an answer");
+  // App messages still run in the same lane.
+  await f.h.json(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "APP_STILL_WORKS", taskId: f.bot.threadId }) });
+  assert.ok(await waitFor(() => f.engine.state.calls.length === 1));
+});
+
+
+test("a migrated bot rotation across restart never stamps an old queued request with the new generation", async (t) => {
+  const f = await fixture(t);
+  const request = await f.queue("OLD_TRANSPORT_REQUEST");
+  await f.h.crash();
+  const file = join(f.dataRoot, ".bloks", "config.json");
+  const cfg = JSON.parse(readFileSync(file, "utf8"));
+  cfg.telegram.migratedBotId = f.bot.id;
+  cfg.telegram.bots[f.bot.id].generation = "replacement-generation";
+  writeFileSync(file, JSON.stringify(cfg));
+  f.engine.state.immediate = true;
+  await f.reboot();
+  const old = (await messagesOf(f.h, f.bot)).find((m) => m.id === request.id)!;
+  assert.equal(old.telegramBinding.generation, request.telegramBinding.generation, "startup changed the retired transport generation");
+  assert.equal(old.queued, false);
+  assert.equal(old.unsent, true);
+  assert.equal(old.telegramReply.state, "failed");
+  await sleep(300);
+  assert.equal(f.engine.state.calls.length, 0);
+  assert.equal(f.tg.answers().length, 0);
+});
+
+
+test("requesting an owner pairing word preserves the same bot's queued request", async (t) => {
+  const f = await fixture(t);
+  const request = await f.queue("PAIRING_KEEPS_QUEUE");
+  const before = JSON.parse(readFileSync(join(f.dataRoot, ".bloks", "config.json"), "utf8")).telegram.bots[f.bot.id];
+  const pairing = await f.h.json(`/api/bots/${f.bot.id}/telegram`, { method: "POST", body: JSON.stringify({ pair: true }) });
+  assert.equal(pairing.pairing.length, 8);
+  const same = (await messagesOf(f.h, f.bot)).find((m) => m.id === request.id)!;
+  assert.equal(same.queued, true, "creating a word retired an unchanged connection's queue");
+  assert.notEqual(same.unsent, true);
+  assert.equal(same.telegramBinding.generation, before.generation);
+  f.engine.state.immediate = true;
+  await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => f.tg.answers().length === 1));
+  assert.equal(f.engine.state.calls.length, 1);
+  assert.equal(f.tg.answers()[0].text, "ANSWER");
 });

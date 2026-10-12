@@ -17,7 +17,7 @@ async function fixture(t: TestContext) {
     req.on("end", () => {
       const body = JSON.parse(raw || "{}"); res.setHeader("content-type", "application/json");
       const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
-      if (req.url?.endsWith("getMe")) return reply({ username: "offline_test" });
+      if (req.url?.endsWith("getMe")) return reply({ id: 12345, is_bot: true, username: "PlanningBot" });
       if (req.url?.endsWith("getUpdates")) return void setTimeout(() => reply(updates.filter((u) => u.update_id >= body.offset)), 30);
       if (req.url?.endsWith("sendMessage")) { sends.push(body); return reply({ message_id: sends.length }); }
       return reply(true);
@@ -28,7 +28,7 @@ async function fixture(t: TestContext) {
   const url = `http://127.0.0.1:${(server.address() as any).port}`;
   const env = { NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: url };
   const s = await codexCommands(t, env);
-  const push = (text: string) => updates.push({ update_id: next++, message: { message_id: next, chat: { id: CHAT }, from: { first_name: "Test" }, text } });
+  const push = (text: string) => updates.push({ update_id: next++, message: { message_id: next, chat: { id: CHAT, type: "private" }, from: { id: CHAT, is_bot: false, first_name: "Sam" }, text } });
   const paired = await s.post("/api/telegram", { token: "12345:TEST_ONLY", enabled: true, botId: s.bot.id, pair: true });
   assert.ok(paired.pairing); push(paired.pairing);
   await waitFor(() => sends.some((m) => m.text.startsWith("Paired.")));

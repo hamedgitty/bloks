@@ -21,6 +21,7 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { VoiceCard } from "./Voice";
+import { TelegramSection } from "./TelegramSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -615,6 +616,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           </div>
 
           <VoiceCard bot={bot} />
+          <TelegramSection key={bot.id} botId={bot.id} />
           <ApprovalsCard bot={bot} />
           <WorkingFolderCard bot={bot} />
           <ConnectedAppsCard bot={bot} patch={patch} />

@@ -103,14 +103,7 @@ export interface AppConfig {
   };
   /** Reaching agents from a phone over Telegram. The token is a
    * credential, so it lives here with the rest of them. */
-  telegram?: {
-    token?: string;
-    chatIds?: number[];
-    botId?: string;
-    pairing?: string | null;
-    offset?: number;
-    enabled?: boolean;
-  };
+  telegram?: import("./telegram-bots.ts").TelegramConfig;
   /** User-registered MCP servers, attachable per agent. Headers and
    * commands live here because this file is already the secrets file.
    * `env` is a stdio server's own environment; a name with an empty value
@@ -307,7 +300,11 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
     "backups",
   ] as const) {
     if (patch[key] && typeof patch[key] === "object") {
-      disk[key] = { ...(disk[key] as object), ...patch[key] };
+      // The migrated Telegram section is a complete private record. A
+      // merge would retain the old workspace token or a removed binding.
+      disk[key] = key === "telegram" && patch.telegram?.version === 1
+        ? patch.telegram
+        : { ...(disk[key] as object), ...patch[key] };
     }
   }
   if (Array.isArray((patch as Record<string, unknown>).mcpServers)) {

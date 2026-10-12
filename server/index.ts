@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
@@ -481,6 +482,22 @@ let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 // requests so a failed first read cannot make a saved action look failed.
 people.people();
 const store = new Store(() => bootSelection);
+const migratedTelegram = migrateTelegram(cfg.telegram, store.bots);
+if (migratedTelegram !== cfg.telegram) {
+  saveConfig({ telegram: migratedTelegram });
+  cfg.telegram = migratedTelegram;
+  const id = migratedTelegram.migratedBotId;
+  const generation = id ? migratedTelegram.bots?.[id]?.generation : undefined;
+  if (id && generation) for (const lane of store.bot(id)?.tasks ?? []) {
+    for (const message of store.messagesFor(lane.id)) {
+      if (!message.queued || (!message.fromTelegram && !message.telegramReply)) continue;
+      store.patchMessage(lane.id, message.id, {
+        telegramBinding: { botId: id, generation },
+        ...(message.telegramReply ? { telegramReply: { ...message.telegramReply, botId: id, generation } } : {}),
+      });
+    }
+  }
+}
 const bloks = new BlokStore();
 // the order of the sidebar's headings; pins and activity live on the rows
 const sidebar = new SidebarStore();
@@ -2256,25 +2273,26 @@ bus.subscribe((event: RuntimeEvent) => {
         // read as the answer too, for a question with no choices to tap.
         // Not a mail's: that turn began in nobody's chat, and the person's
         // next line there would be emailed to whoever wrote.
-        const chatId = byMail ? undefined : telegramLive.get(bot.id);
-        const token = cfg.telegram?.token;
-        if (chatId !== undefined && token) {
+        const runtime = liveTelegram(bot.id);
+        const address = telegramLive.get(bot.id);
+        const chatId = byMail || !runtime || address?.generation !== runtime.generation ? undefined : address.chatId;
+        if (chatId !== undefined && runtime) {
           const requestId = event.requestId;
           // Allow or Deny only for what is really an approval. A question
           // the engine labelled a permission has its own choices, and a
           // tap on one is the answer, not a yes to the first and a no to
           // the rest.
           const yesOrNo = !asking;
-          telegramAsks.set(chatId, {
+          runtime.asks.set(chatId, {
             requestId,
             botId: bot.id,
             options: message.card?.options ?? [],
             permission: yesOrNo,
           });
           const { title, subtitle, options } = message.card ?? {};
-          const forwarded = telegramCards.forward({ title, subtitle, options, requestId, botId: bot.id, chatId, permission: yesOrNo });
+          const forwarded = telegramCards.forward({ title, subtitle, options, requestId, botId: bot.id, generation: runtime.generation, chatId, permission: yesOrNo });
           void telegram
-            .post(token, chatId, forwarded.text, forwarded.keyboard)
+            .post(runtime.token, chatId, forwarded.text, forwarded.keyboard, false, () => Boolean(currentTelegram(runtime)))
             .then((messageId) => {
               // answered before Telegram said which message it is
               const late = messageId === undefined ? undefined : telegramCards.sent(requestId, messageId);
@@ -3471,6 +3489,7 @@ async function startClaimedTurn(
     personal?: boolean;
     /** The person said this from Telegram (Message.fromTelegram). */
     fromTelegram?: boolean;
+    telegramBinding?: Message["telegramBinding"];
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
     /** This turn asks again what the lane's last turn was asked, after
@@ -3492,6 +3511,7 @@ async function startClaimedTurn(
 ): Promise<void> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
+  if (opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding)) throw new Error("This agent's Telegram connection changed before the message could start.");
 
   // Somebody at the wheel stops the agent, not just its questions.
   //
@@ -3727,6 +3747,7 @@ async function startClaimedTurn(
   // In a room the prompt already carries the labelled history, and the
   // triggering message is already on the record; only a solo chat writes
   // the user turn here.
+  const telegramInputIds = [...(opts.telegramMessages ?? [])];
   if (!blok && !opts.presetMessage) {
     const userMessage = store.appendMessage(roomId, {
       role: "user",
@@ -3737,7 +3758,9 @@ async function startClaimedTurn(
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
       ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
+      ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
     });
+    if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
   }
   // what this turn says back belongs to that exchange (see AgentNote)
@@ -4460,8 +4483,15 @@ async function startClaimedTurn(
       // turn then went out anyway, to an agent that had been put away,
       // and its tools ran (GitHub 220). It is dropped instead, said so,
       // and the lane is left as if it had never been asked.
-      const withdrawn = unsendable(bot.id);
+      const connectionChanged = opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding);
+      const withdrawn = unsendable(bot.id) ?? (connectionChanged ? "This agent's Telegram connection changed before the message could start. The words remain unsent in the app." : null);
       if (withdrawn) {
+        if (connectionChanged) {
+          for (const id of telegramInputIds) {
+            const patch = store.patchMessage(task.id, id, { queued: false, unsent: true });
+            if (patch) broadcast({ kind: "message.patch", threadId: task.id, message: patch });
+          }
+        }
         // a deleted agent's conversations are gone, and stay gone
         if (store.bot(bot.id)) {
           const notice = store.appendMessage(roomId, {
@@ -6205,11 +6235,11 @@ function unresume(threadId: string, error: unknown): boolean {
 }
 
 /** Resolves once an agent has nothing running in any lane. */
-function waitForIdle(botId: string, timeoutMs = 120_000): Promise<void> {
+function waitForIdle(botId: string, timeoutMs = 120_000, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
-      if (!store.bot(botId)?.busy || Date.now() - started > timeoutMs) return resolve();
+      if (signal?.aborted || !store.bot(botId)?.busy || Date.now() - started > timeoutMs) return resolve();
       setTimeout(tick, 250);
     };
     setTimeout(tick, 250);
@@ -7608,81 +7638,91 @@ async function runDueRoutines() {
 // as it needs to be and cheap enough not to care.
 const routineTimer = setInterval(() => void runDueRoutines().catch(() => {}), 30_000);
 
-// ── messages arriving from Telegram ───────────────────────────────────
-// A loop rather than an interval: long polling already blocks for as
-// long as we want to wait, and a timer on top of it would stack calls
-// whenever Telegram was slow. Chats we have refused once are remembered
-// for the life of the process, so somebody who found the bot and keeps
-// typing gets one answer rather than one per message.
-const telegramRefused = new Set<number>();
-let telegramRunning = false;
-/** Agents currently answering a phone, so a card they raise can follow
- * the conversation there instead of waiting on a screen nobody is at. */
-const telegramLive = new Map<string, number>();
+// ── messages arriving from each agent's Telegram bot ──────────────────
+interface TelegramRuntime {
+  botId: string;
+  generation: string;
+  token: string;
+  abort: AbortController;
+  inbox: telegram.Inbox;
+  refused: Set<number>;
+  asks: Map<number, { requestId: string; botId: string; options: string[]; permission: boolean }>;
+  typing: Map<number, { now(): void; stop(): Promise<void> }>;
+  turns: Map<number, Promise<void>>;
+  intake: Map<number, Promise<void>>;
+  working: Map<string, telegram.Progress>;
+}
+const telegramRuntimes = new Map<string, TelegramRuntime>();
+const telegramLive = new Map<string, { chatId: number; generation: string }>();
+const telegramCards = new CardButtons();
+const telegramWorking = new Map<string, telegram.Progress>();
+
+function telegramConnectionCurrent(binding: NonNullable<Message["telegramBinding"]>): boolean {
+  const state = telegramBinding(binding.botId);
+  return Boolean(store.bot(binding.botId) && state?.token && state.enabled && state.generation === binding.generation);
+}
+
+function telegramBinding(botId: string): AgentTelegram | undefined {
+  return cfg.telegram?.bots?.[botId];
+}
+
+function currentTelegram(runtime: TelegramRuntime): AgentTelegram | undefined {
+  const state = telegramBinding(runtime.botId);
+  return !runtime.abort.signal.aborted && store.bot(runtime.botId) && state?.enabled && state.token === runtime.token && state.generation === runtime.generation ? state : undefined;
+}
+
+function liveTelegram(botId: string): TelegramRuntime | undefined {
+  const runtime = telegramRuntimes.get(botId);
+  return runtime && currentTelegram(runtime) ? runtime : undefined;
+}
+
+function saveTelegram(next: TelegramConfig): void {
+  saveConfig({ telegram: next });
+  cfg.telegram = next;
+}
+
+function saveTelegramBinding(botId: string, state?: AgentTelegram): void {
+  const bots = { ...(cfg.telegram?.bots ?? {}) };
+  if (state) bots[botId] = state;
+  else delete bots[botId];
+  saveTelegram({ ...cfg.telegram, version: 1, bots });
+}
+
+function telegramReturnState(laneId: string, reply: TelegramReply): telegram.TelegramState {
+  const bot = store.bots.find((item) => item.tasks.some((lane) => lane.id === laneId));
+  if (!bot || (reply.botId && reply.botId !== bot.id)) return {};
+  const state = telegramBinding(bot.id);
+  if (!state || (reply.generation ? reply.generation !== state.generation : cfg.telegram?.migratedBotId !== bot.id)) return {};
+  return { ...state, botId: bot.id, chatIds: pairedChats(state) };
+}
+
 const telegramReturns = new TelegramReturns(
-  store,
-  () => cfg.telegram ?? {},
+  store, telegramReturnState,
   (threadId, message) => broadcast({ kind: "message.patch", threadId, message }),
   (threadId, text) => {
     const message = store.appendMessage(threadId, { role: "bot", kind: "notice", text });
     broadcast({ kind: "message", threadId, message });
   },
-  // a request held through a restart gets its files back too
-  async (laneId, chatId, said) => {
-    const owner = store.bots.find((b) => b.tasks.some((t) => t.id === laneId));
-    if (owner) await telegramFiles(chatId, deliverablesIn(owner.id, said));
+  async (laneId, chatId, said, reply) => {
+    const owner = store.bots.find((bot) => bot.tasks.some((lane) => lane.id === laneId));
+    const runtime = owner ? liveTelegram(owner.id) : undefined;
+    if (runtime && telegramReturnState(laneId, reply).token) await telegramFiles(runtime, chatId, deliverablesIn(runtime.botId, said));
   },
 );
-/** Cards forwarded to a chat and not yet answered, by chat. */
-const telegramAsks = new Map<
-  number,
-  { requestId: string; botId: string; options: string[]; permission: boolean }
->();
-/** Every card forwarded to a chat, by request, with the buttons it was
- * sent with (server/telegram-cards.ts). */
-const telegramCards = new CardButtons();
-/** "typing" in each chat whose message an agent is working on. */
-const telegramTyping = new Map<number, { now(): void; stop(): Promise<void> }>();
-/** The line saying what a long Telegram turn is doing, by lane, since
- * that is what a tool starting names. */
-const telegramWorking = new Map<string, telegram.Progress>();
 
-/** A status line in this chat, which keeps quiet while a card there
- * waits on the person. */
-function telegramProgress(chatId: number): telegram.Progress {
-  const token = () => cfg.telegram?.token ?? "";
-  return new telegram.Progress(
-    {
-      post: (text) => telegram.post(token(), chatId, text, undefined, true),
-      edit: (messageId, text) => telegram.edit(token(), chatId, messageId, text),
-      remove: (messageId) => telegram.remove(token(), chatId, messageId),
-    },
-    () => telegramAsks.has(chatId),
-  );
+async function telegramSay(runtime: TelegramRuntime, chatId: number, text: string, markdown = false): Promise<void> {
+  if (currentTelegram(runtime)) await telegram.send(runtime.token, chatId, text, markdown, undefined, () => Boolean(currentTelegram(runtime))).catch(() => {});
 }
 
-/** Turns started from each chat, one after another. Kept off the polling
- * loop so a turn that is running does not stop the next message being
- * read: that next message may be the answer to a card the turn raised,
- * or the rest of an album. */
-const telegramTurns = new Map<number, Promise<void>>();
-/** Each chat's messages, taken in the order they came: asking an engine
- * to take one mid-turn is a round trip, and the next must not pass it. */
-const telegramIntake = new Map<number, Promise<void>>();
-
-/** A reply to a chat. A failed send is not worth a crash. Only what an
- * agent wrote is read as Markdown: the bot's own lines and a card's
- * summary of a command are shown exactly as they are. */
-async function telegramSay(chatId: number, text: string, markdown = false): Promise<void> {
-  const token = cfg.telegram?.token;
-  if (token) await telegram.send(token, chatId, text, markdown).catch(() => {});
+function telegramProgress(runtime: TelegramRuntime, chatId: number): telegram.Progress {
+  return new telegram.Progress({
+    post: (text) => currentTelegram(runtime) ? telegram.post(runtime.token, chatId, text, undefined, true, () => Boolean(currentTelegram(runtime))) : Promise.resolve(undefined),
+    edit: (messageId, text) => currentTelegram(runtime) ? telegram.edit(runtime.token, chatId, messageId, text) : Promise.resolve(),
+    // Cleanup uses the captured old token, never a replacement bot's.
+    remove: (messageId) => telegram.remove(runtime.token, chatId, messageId),
+  }, () => runtime.asks.has(chatId));
 }
 
-/**
- * Hand an answer given on a phone, typed or tapped, to the ask it is for.
- * False when nothing was waiting on it any more: the turn ended, or its
- * engine went. An approval is allowed only by its first choice.
- */
 async function answerTelegramAsk(
   ask: { requestId: string; botId: string; options: string[]; permission: boolean },
   read: { option?: string; free?: string },
@@ -7694,144 +7734,215 @@ async function answerTelegramAsk(
   const message = ask.permission ? undefined : (read.option ?? read.free);
   telegramCards.expect(ask.requestId, message);
   if (!instance) return false;
-  return instance.adapter.respondToRequest(askThread, ask.requestId, { behavior, message }).then(
-    () => true,
-    () => false,
-  );
+  return instance.adapter.respondToRequest(askThread, ask.requestId, { behavior, message }).then(() => true, () => false);
 }
 
-/** A forwarded card's message, rewritten to say how it was answered and
- * without its buttons. Only a nicety: the answer itself has already gone
- * where it was going, so a failure here is let pass. */
 function rewriteTelegramCard(card: ForwardedCard): void {
-  const token = cfg.telegram?.token;
-  if (!token || card.messageId === undefined) return;
-  void telegram.edit(token, card.chatId, card.messageId, settledText(card)).catch(() => {});
+  const runtime = liveTelegram(card.botId);
+  if (!runtime || card.generation !== runtime.generation || card.messageId === undefined) return;
+  void telegram.edit(runtime.token, card.chatId, card.messageId, settledText(card)).catch(() => {});
 }
 
-/** A card answered or closed anywhere. The chat it went to is told, and
- * its next line is a message again rather than an answer to it. */
 function settleTelegramCard(requestId: string, outcome: (card: ForwardedCard) => string): void {
   const card = telegramCards.settle(requestId, outcome);
   if (card) rewriteTelegramCard(card);
-  for (const [chatId, waiting] of telegramAsks) {
+  for (const runtime of telegramRuntimes.values()) for (const [chatId, waiting] of runtime.asks) {
     if (waiting.requestId !== requestId) continue;
-    telegramAsks.delete(chatId);
-    // the agent is working again, so the chat says so at once
-    telegramTyping.get(chatId)?.now();
+    runtime.asks.delete(chatId);
+    runtime.typing.get(chatId)?.now();
   }
 }
 
-const telegramInbox = new telegram.Inbox({
-  state: () => cfg.telegram ?? {},
-  send: telegramSay,
-  async pair(chatId) {
-    const paired = [...(cfg.telegram?.chatIds ?? []), chatId];
-    cfg.telegram = { ...cfg.telegram, chatIds: paired, pairing: null };
-    saveConfig({ telegram: cfg.telegram } as Partial<AppConfig>);
-    broadcast({ kind: "config", ...(await configStatus()) });
-    await telegramSay(chatId, "Paired. Message me and your agent will answer.");
-  },
-  async refuse(chatId) {
-    if (telegramRefused.has(chatId)) return;
-    telegramRefused.add(chatId);
-    await telegramSay(chatId, "This bot is not paired with you.");
-  },
-  download: (fileId, maxBytes) => telegram.download(cfg.telegram?.token ?? "", fileId, maxBytes),
-  transcriber: () =>
-    speech.transcriptionVendor(cfg) ? (audio) => speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg") : null,
-  saveImage: (bytes) => attachments.saveImage(bytes),
-  saveVoice: (bytes) => attachments.saveBytes(bytes, "ogg"),
-  saveFile: (bytes, extension) => attachments.saveBytes(bytes, extension),
-  waiting: (chatId) => telegramAsks.get(chatId),
-  async answer(chatId, read) {
-    const waiting = telegramAsks.get(chatId);
-    if (!waiting) return;
-    telegramAsks.delete(chatId);
-    await answerTelegramAsk(waiting, read);
-    // The turn goes on, so the chat says so again without waiting for
-    // the next tick.
-    telegramTyping.get(chatId)?.now();
-  },
-  async press(chatId, press) {
-    const token = cfg.telegram?.token;
-    if (!token) return;
-    const found = telegramCards.press(chatId, press.messageId, press.data);
-    if (!found || "settled" in found) {
-      // Answered already, by this button or some other way, or a card
-      // from before a restart, which nothing is waiting on any more.
-      await telegram.answerPress(token, press.id, found ? found.settled : "That card has already closed.").catch(() => {});
-      if (!found) await telegram.unbutton(token, chatId, press.messageId).catch(() => {});
-      return;
-    }
-    const { card, option } = found;
-    if (telegramAsks.get(chatId)?.requestId === card.requestId) telegramAsks.delete(chatId);
-    if (!(await answerTelegramAsk(card, { option }))) {
-      telegramCards.reword(card, "That card had already closed, so nothing was done.");
-    }
-    await telegram.answerPress(token, press.id, card.settled).catch(() => {});
-    rewriteTelegramCard(card);
-    telegramTyping.get(chatId)?.now();
-  },
-  deliver(chatId, text) {
-    const intake = (telegramIntake.get(chatId) ?? Promise.resolve()).then(async () => {
-      const bot = store.bot(cfg.telegram?.botId ?? "") ?? store.bots.find((b) => !b.hidden);
-      // A follow-up while this chat waits on an answer goes into the turn
-      // being answered, and that one reply covers it, rather than waiting
-      // for the answer to come back before it is even read (GitHub 213).
-      const lane = bot?.tasks.find((t) => t.id === activeLaneOf(bot));
-      // A drain request recovered its own return address. A follow-up
-      // joins that answer when steered, or gets one for its queued turn.
-      // Neither path starts the normal busy wait and sends a second copy.
-      if (bot && lane?.busy && telegramReturns.answering(lane.id, chatId)) {
-        if (!(await steerLane(bot, lane, text, { fromTelegram: true }).catch(() => null))) {
-          queueOnLane(bot.id, lane.id, text, { telegramReply: queuedTelegramReply(chatId), fromTelegram: true });
-          drainSteer(lane.id);
-        }
+function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRuntime {
+  const runtime: TelegramRuntime = {
+    botId, generation: state.generation, token: state.token!, abort: new AbortController(),
+    refused: new Set(), asks: new Map(), typing: new Map(), turns: new Map(), intake: new Map(), working: new Map(),
+    inbox: null as unknown as telegram.Inbox,
+  };
+  const active = () => {
+    const current = currentTelegram(runtime);
+    if (!current) throw new Error("the Telegram connection changed");
+    return current;
+  };
+  runtime.inbox = new telegram.Inbox({
+    state: () => { const current = currentTelegram(runtime); return current ? inboxState(current) : {}; },
+    send: (chatId, text) => telegramSay(runtime, chatId, text),
+    async pair(chatId, userId) {
+      const current = active();
+      if (!Number.isSafeInteger(userId) || userId! <= 0) return;
+      saveTelegramBinding(botId, { ...current, ownerUserId: userId, ownerChatId: chatId, pairing: null });
+      broadcast({ kind: "config", ...(await configStatus()) });
+      await telegramSay(runtime, chatId, "Paired. Message me and your agent will answer.");
+    },
+    async refuse(chatId) {
+      if (runtime.refused.has(chatId) || runtime.refused.size >= 500) return;
+      runtime.refused.add(chatId);
+      await telegramSay(runtime, chatId, "This bot is not paired with you.");
+    },
+    download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
+    transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
+    saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
+    saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
+    saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
+    waiting: (chatId) => runtime.asks.get(chatId),
+    async answer(chatId, read) {
+      if (!currentTelegram(runtime)) return;
+      const waiting = runtime.asks.get(chatId);
+      if (!waiting) return;
+      runtime.asks.delete(chatId);
+      await answerTelegramAsk(waiting, read);
+      runtime.typing.get(chatId)?.now();
+    },
+    async press(chatId, press) {
+      if (!currentTelegram(runtime)) return;
+      const found = telegramCards.press(chatId, press.messageId, press.data, Date.now(), { botId, generation: runtime.generation });
+      if (found && !('settled' in found) && (found.card.botId !== botId || found.card.generation !== runtime.generation)) return;
+      if (!found || "settled" in found) {
+        await telegram.answerPress(runtime.token, press.id, found ? found.settled : "That card has already closed.").catch(() => {});
+        if (!found) await telegram.unbutton(runtime.token, chatId, press.messageId).catch(() => {});
         return;
       }
-      if (bot && lane && telegramTurns.has(chatId) && (await steerLane(bot, lane, text, { fromTelegram: true }).catch(() => null))) return;
-      const turn = (telegramTurns.get(chatId) ?? Promise.resolve()).then(async () => {
-        if (!bot) return telegramSay(chatId, "There is no agent here to answer yet, so that did not reach anyone.");
-        // The reply goes back to the chat that asked, and the exchange lands
-        // in the agent's own thread like any other conversation.
-        const answer = await answerOverTelegram(bot.id, text, chatId).catch(
-          (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${(error as Error).message}`, files: [] }),
-        );
-        await telegramSay(chatId, answer.text, true);
-        await telegramFiles(chatId, answer.files);
+      const { card, option } = found;
+      if (runtime.asks.get(chatId)?.requestId === card.requestId) runtime.asks.delete(chatId);
+      if (!(await answerTelegramAsk(card, { option }))) telegramCards.reword(card, "That card had already closed, so nothing was done.");
+      await telegram.answerPress(runtime.token, press.id, card.settled).catch(() => {});
+      rewriteTelegramCard(card);
+      runtime.typing.get(chatId)?.now();
+    },
+    deliver(chatId, text) {
+      const intake = (runtime.intake.get(chatId) ?? Promise.resolve()).then(async () => {
+        if (!currentTelegram(runtime)) return;
+        const bot = store.bot(botId);
+        const lane = bot?.tasks.find((task) => task.id === activeLaneOf(bot));
+        const binding = { botId, generation: runtime.generation };
+        if (bot && lane?.busy && telegramReturns.answering(lane.id, chatId, binding)) {
+          if (!(await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null)) && currentTelegram(runtime)) {
+            queueOnLane(bot.id, lane.id, text, { telegramReply: queuedTelegramReply(chatId, binding), fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+            drainSteer(lane.id);
+          }
+          return;
+        }
+        if (bot && lane && runtime.turns.has(chatId) && (await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null))) return;
+        const turn = (runtime.turns.get(chatId) ?? Promise.resolve()).then(async () => {
+          if (!currentTelegram(runtime)) return;
+          if (!bot) return telegramSay(runtime, chatId, "There is no agent here to answer yet, so that did not reach anyone.");
+          const answer = await answerOverTelegram(bot.id, text, chatId, runtime).catch(
+            (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${(error as Error).message}`, files: [] }),
+          );
+          await telegramSay(runtime, chatId, answer.text, true);
+          await telegramFiles(runtime, chatId, answer.files);
+        });
+        runtime.turns.set(chatId, turn);
+        void turn.finally(() => { if (runtime.turns.get(chatId) === turn) runtime.turns.delete(chatId); }).catch(() => {});
       });
-      telegramTurns.set(chatId, turn);
-      void turn.finally(() => {
-        if (telegramTurns.get(chatId) === turn) telegramTurns.delete(chatId);
-      });
-    });
-    telegramIntake.set(chatId, intake);
-    void intake.finally(() => {
-      if (telegramIntake.get(chatId) === intake) telegramIntake.delete(chatId);
-    });
-  },
-});
-
-async function telegramRound(): Promise<void> {
-  const state = cfg.telegram;
-  if (!state?.enabled || !state.token) return;
-  const messages = await telegram.poll(state.token, state.offset ?? 0);
-  const offset = telegram.nextOffset(state.offset ?? 0, messages);
-  if (offset !== (state.offset ?? 0)) {
-    // Saved before anything is acted on. A crash mid-turn should lose
-    // the reply, not replay the message on every restart forever. And
-    // only then kept: a save refused (an unreadable config.json) throws
-    // with the old offset still in place, so the next poll asks for the
-    // same messages again rather than acknowledging ones never handled.
-    const next = { ...state, offset };
-    saveConfig({ telegram: next } as Partial<AppConfig>);
-    cfg.telegram = next;
-  }
-  // The rules (who is paired, what answers a card, what happens to a
-  // voice message or a photo) are in server/telegram.ts.
-  for (const message of messages) await telegramInbox.take(message);
+      runtime.intake.set(chatId, intake);
+      void intake.finally(() => { if (runtime.intake.get(chatId) === intake) runtime.intake.delete(chatId); }).catch(() => {});
+    },
+  });
+  return runtime;
 }
+
+function startTelegramBot(botId: string): void {
+  const previous = telegramRuntimes.get(botId);
+  const configured = telegramBinding(botId);
+  // A restart has no old runtime to retire. Reconcile saved queues too.
+  for (const lane of store.bot(botId)?.tasks ?? []) {
+    for (const message of store.messagesFor(lane.id)) {
+      const binding = message.telegramBinding ?? message.telegramReply;
+      if (message.queued && binding?.generation && (!configured?.token || !configured.enabled || binding.generation !== configured.generation)) dropQueuedTelegram(botId, binding.generation);
+    }
+  }
+  if (previous && currentTelegram(previous)) return;
+  if (previous) {
+    previous.abort.abort();
+    dropQueuedTelegram(botId, previous.generation);
+    for (const typing of previous.typing.values()) void typing.stop().catch(() => {});
+    for (const [laneId, progress] of previous.working) {
+      if (telegramWorking.get(laneId) === progress) telegramWorking.delete(laneId);
+      void progress.stop().catch(() => {});
+    }
+    if (telegramLive.get(botId)?.generation === previous.generation) telegramLive.delete(botId);
+    previous.asks.clear();
+    telegramRuntimes.delete(botId);
+  }
+  const state = telegramBinding(botId);
+  if (!state?.token || !state.enabled || !store.bot(botId)) return;
+  const runtime = makeTelegramRuntime(botId, state);
+  telegramRuntimes.set(botId, runtime);
+  void telegramLoop(runtime);
+}
+
+/** Removal takes queued transport work out at once; it does not stop a
+ * turn already working in the app. Keep the words visible as unsent. */
+function dropQueuedTelegram(botId: string, generation: string): void {
+  for (const lane of store.bot(botId)?.tasks ?? []) {
+    const waiting = store.messagesFor(lane.id).filter((message) => message.queued && !message.deleted &&
+      (message.telegramBinding?.generation === generation || message.telegramReply?.generation === generation));
+    for (const message of waiting) {
+      const patch = store.patchMessage(lane.id, message.id, { queued: false, unsent: true, ...(message.telegramReply ? { telegramReply: { ...message.telegramReply, state: "failed" as const } } : {}) });
+      if (patch) broadcast({ kind: "message.patch", threadId: lane.id, message: patch });
+    }
+    if (waiting.length) {
+      const notice = store.appendMessage(lane.id, { role: "bot", kind: "notice", text: "Queued Telegram messages were not sent because this agent's Telegram connection changed. Their words remain in the app." });
+      broadcast({ kind: "message", threadId: lane.id, message: notice });
+    }
+  }
+}
+
+async function telegramRound(runtime: TelegramRuntime): Promise<void> {
+  let state = currentTelegram(runtime);
+  if (!state) return;
+  if (state.telegramId === undefined) {
+    const me = await telegram.whoAmI(runtime.token, runtime.abort.signal);
+    state = currentTelegram(runtime);
+    if (!state) return;
+    const duplicate = Object.entries(cfg.telegram?.bots ?? {}).some(([id, other]) => id !== runtime.botId && other.telegramId === me.id);
+    if (duplicate) throw new Error("This Telegram bot is already used by another agent");
+    saveTelegramBinding(runtime.botId, { ...state, telegramId: me.id, username: me.username });
+    state = currentTelegram(runtime)!;
+  }
+  const messages = await telegram.poll(runtime.token, state.offset ?? 0, runtime.abort.signal);
+  const current = currentTelegram(runtime);
+  if (!current) return;
+  const offset = telegram.nextOffset(current.offset ?? 0, messages);
+  // Persist before dispatch, as before: a save failure acknowledges nothing.
+  if (offset !== (current.offset ?? 0)) saveTelegramBinding(runtime.botId, { ...current, offset });
+  for (const message of messages) {
+    if (!currentTelegram(runtime)) return;
+    await runtime.inbox.take(message);
+  }
+}
+
+async function telegramLoop(runtime: TelegramRuntime): Promise<void> {
+  try {
+    while (currentTelegram(runtime)) {
+      try { await telegramRound(runtime); }
+      catch { if (currentTelegram(runtime)) await telegramPause(runtime, 15_000); }
+      if (currentTelegram(runtime)) await telegramPause(runtime, 500);
+    }
+  } finally {
+    runtime.abort.abort();
+    if (telegramRuntimes.get(runtime.botId) === runtime) telegramRuntimes.delete(runtime.botId);
+    if (telegramLive.get(runtime.botId)?.generation === runtime.generation) telegramLive.delete(runtime.botId);
+    for (const typing of runtime.typing.values()) void typing.stop().catch(() => {});
+    for (const [laneId, progress] of runtime.working) {
+      if (telegramWorking.get(laneId) === progress) telegramWorking.delete(laneId);
+      void progress.stop().catch(() => {});
+    }
+  }
+}
+
+function telegramPause(runtime: TelegramRuntime, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); runtime.abort.signal.removeEventListener("abort", finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    if (runtime.abort.signal.aborted) finish();
+    else runtime.abort.signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
+// Reconcile retired queued work even when its whole binding was removed.
+for (const bot of store.bots) startTelegramBot(bot.id);
 
 /**
  * Run a turn for a message that arrived from a phone, and read back what
@@ -7843,19 +7954,20 @@ async function telegramRound(): Promise<void> {
  * how a turn that ran tools and then answered comes back as the answer
  * rather than as the running commentary, with whatever files it left.
  */
-async function answerOverTelegram(botId: string, text: string, chatId: number): Promise<TelegramAnswer> {
+async function answerOverTelegram(botId: string, text: string, chatId: number, runtime: TelegramRuntime): Promise<TelegramAnswer> {
   const bot = store.bot(botId);
   if (!bot) throw new Error("that agent is gone");
   const laneId = activeLaneOf(bot);
   const before = store.messagesFor(laneId).length;
-  telegramLive.set(botId, chatId);
+  if (!currentTelegram(runtime)) throw new Error("the Telegram connection changed");
+  telegramLive.set(botId, { chatId, generation: runtime.generation });
   // only chats the person allowed get this far: this is them, on a phone
   withYou({ bot });
   // Bloks is finishing up to restart. The words wait in the lane like any
   // queued message, with the chat that asked saved as its return address.
   if (drain.on) {
-    telegramLive.delete(botId);
-    queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId), waitsFor: "restart", fromTelegram: true });
+    if (telegramLive.get(botId)?.generation === runtime.generation) telegramLive.delete(botId);
+    queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId, { botId, generation: runtime.generation }), waitsFor: "restart", fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     return {
       text: "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.",
       files: [],
@@ -7865,18 +7977,20 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   // app shows "working…", except while a card forwarded to this chat
   // waits: then the agent is waiting on the person, not working.
   const typing = telegram.keepTyping(
-    () => (cfg.telegram?.token ? telegram.chatAction(cfg.telegram.token, chatId) : Promise.resolve()),
-    () => telegramAsks.has(chatId),
+    () => currentTelegram(runtime) ? telegram.chatAction(runtime.token, chatId) : Promise.resolve(),
+    () => runtime.asks.has(chatId),
   );
-  telegramTyping.set(chatId, typing);
+  runtime.typing.set(chatId, typing);
   // and past twenty seconds or so, a line saying what it is doing
-  const progress = telegramProgress(chatId);
+  const progress = telegramProgress(runtime, chatId);
   telegramWorking.set(laneId, progress);
+  runtime.working.set(laneId, progress);
   const settled = async () => {
-    telegramLive.delete(botId);
-    telegramAsks.delete(chatId);
+    if (telegramLive.get(botId)?.generation === runtime.generation) telegramLive.delete(botId);
+    runtime.asks.delete(chatId);
     // However the turn ended, nothing is working on this chat now.
-    if (telegramTyping.get(chatId) === typing) telegramTyping.delete(chatId);
+    if (runtime.typing.get(chatId) === typing) runtime.typing.delete(chatId);
+    runtime.working.delete(laneId);
     if (telegramWorking.get(laneId) === progress) telegramWorking.delete(laneId);
     await typing.stop();
     await progress.stop();
@@ -7889,11 +8003,12 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
   const lane = bot.tasks.find((t) => t.id === laneId);
   if (lane && laneWaits(lane) && !wheel.heldBy(botId) && !bot.archivedAt) {
     try {
-      const steered = await steerLane(bot, lane, text, { fromTelegram: true });
-      const sent = steered ?? queueOnLane(botId, laneId, text, { fromTelegram: true });
+      const steered = await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+      if (!steered && !currentTelegram(runtime)) throw new Error("the Telegram connection changed");
+      const sent = steered ?? queueOnLane(botId, laneId, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       // the turn may have ended while its engine was asked
       if (!steered) drainSteer(laneId);
-      await answeredAfter(botId, laneId, sent.id, 20 * 60_000);
+      await answeredAfter(botId, laneId, sent.id, 20 * 60_000, runtime.abort.signal);
       const list = store.messagesFor(laneId);
       const from = list.findIndex((m) => m.id === sent.id);
       return replyIn(botId, from >= 0 ? list.slice(from + 1) : []);
@@ -7902,10 +8017,10 @@ async function answerOverTelegram(botId: string, text: string, chatId: number): 
     }
   }
   try {
-    await startTurn(botId, text, { byYou: true, fromTelegram: true });
+    await startTurn(botId, text, { byYou: true, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     // Longer than an ordinary wait, because a card forwarded to the
     // phone is answered on the phone's schedule, not the app's.
-    await waitForIdle(botId, 20 * 60_000);
+    await waitForIdle(botId, 20 * 60_000, runtime.abort.signal);
   } finally {
     await settled();
   }
@@ -7958,11 +8073,11 @@ function deliverablesIn(botId: string, messages: readonly Message[]): telegram.D
 
 /** What a turn left, sent after its answer, to the chat that asked. The
  * pairing is asked again here, since a turn can outlast it. */
-async function telegramFiles(chatId: number, files: telegram.Deliverable[]): Promise<void> {
-  const state = cfg.telegram;
-  if (!files.length || !state?.token || !state.chatIds?.includes(chatId)) return;
-  const note = await telegram.sendFiles(state.token, chatId, files).catch(() => "");
-  if (note) await telegramSay(chatId, note);
+async function telegramFiles(runtime: TelegramRuntime, chatId: number, files: telegram.Deliverable[]): Promise<void> {
+  const state = currentTelegram(runtime);
+  if (!files.length || !state || !pairedChats(state).includes(chatId)) return;
+  const note = await telegram.sendFiles(runtime.token, chatId, files, telegram.FILES_PER_TURN, () => Boolean(currentTelegram(runtime))).catch(() => "");
+  if (note) await telegramSay(runtime, chatId, note);
 }
 
 /** What the agent said in these messages, as one reply for a phone. */
@@ -7981,7 +8096,7 @@ function saidIn(messages: readonly Message[]): string {
  * the turn that takes a queued message is started by the drain and
  * nobody hands this its result. Gives up when the message is taken
  * back, and at the deadline. */
-function answeredAfter(botId: string, laneId: string, messageId: string, timeoutMs: number): Promise<void> {
+function answeredAfter(botId: string, laneId: string, messageId: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
     let ran = false;
@@ -7990,7 +8105,7 @@ function answeredAfter(botId: string, laneId: string, messageId: string, timeout
       const list = store.messagesFor(laneId);
       const at = list.findIndex((m) => m.id === messageId);
       const m = list[at];
-      if (!lane || !m || m.deleted || m.unsent || Date.now() - started > timeoutMs) return resolve();
+      if (signal?.aborted || !lane || !m || m.deleted || m.unsent || Date.now() - started > timeoutMs) return resolve();
       if (!m.queued && lane.busy) ran = true;
       // A turn too quick to be seen busy still leaves its words, or a
       // notice that it could not start, after the message.
@@ -8001,27 +8116,6 @@ function answeredAfter(botId: string, laneId: string, messageId: string, timeout
     tick();
   });
 }
-
-async function telegramLoop(): Promise<void> {
-  if (telegramRunning) return;
-  telegramRunning = true;
-  for (;;) {
-    try {
-      await telegramRound();
-    } catch {
-      // Telegram unreachable, a bad token, a laptop that just woke.
-      // Wait before asking again rather than spinning on the failure.
-      await new Promise((resolve) => setTimeout(resolve, 15_000));
-    }
-    if (!cfg.telegram?.enabled) {
-      telegramRunning = false;
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
-if (cfg.telegram?.enabled) void telegramLoop();
 
 // ── shared rooms in Slack and Discord ──────────────────────────────────
 // The rules are in server/chat-bridge.ts and the wire in server/slack.ts
@@ -8568,7 +8662,8 @@ const steerQueues = new Map<
 function steerWords(laneId: string, item: { messageId?: string; text?: string }): string | null {
   if (!item.messageId) return item.text ?? null;
   const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
-  if (!m || m.deleted || !m.text) return null;
+  if (!m || m.deleted || m.unsent || !m.text) return null;
+  if (m.telegramBinding && !telegramConnectionCurrent(m.telegramBinding)) return null;
   return storedPrompt(m);
 }
 
@@ -8663,6 +8758,7 @@ function queueOnLane(
     telegramReply?: TelegramReply;
     /** The person said it from Telegram (Message.fromTelegram). */
     fromTelegram?: boolean;
+    telegramBinding?: Message["telegramBinding"];
     personal?: boolean;
     waitsFor?: Message["waitsFor"];
     /** An agent sent it: the place in a chain of agents' messages the
@@ -8685,6 +8781,7 @@ function queueOnLane(
     ...(options.routine ? { via: "routine" as const, routine: options.routine } : {}),
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
     ...(options.fromTelegram ? { fromTelegram: true } : {}),
+    ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance } : {}),
   });
   broadcast({ kind: "message", threadId: laneId, message });
@@ -8727,7 +8824,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -8751,7 +8848,7 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean } = {},
+  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
   if (commandTurns.has(lane.id) || (!options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
@@ -8770,6 +8867,7 @@ async function steerOne(
   if (yoursWaiting) return null;
   const adapter = laneInstance(bot, lane.id)?.adapter;
   if (!adapter?.steerTurn) return null;
+  if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   const { from } = options;
   const words = from ? fromAgentPrompt(from, text) : text;
   // skills are named only in the person's own words
@@ -8786,6 +8884,7 @@ async function steerOne(
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
     ...(options.fromTelegram ? { fromTelegram: true } : {}),
+    ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
   });
   broadcast({ kind: "message", threadId: lane.id, message });
   // what the turn says from here on is an answer to the person too, and
@@ -9100,9 +9199,10 @@ function drainSteer(threadId: string) {
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
   const byYou = said.some((m) => m && !m.agent && !m.via) || (said.every((m) => !m) && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
+  const telegramBinding = said.find((message) => message?.telegramBinding)?.telegramBinding;
   const chain = burstChain(threadId, alive.map(({ item }) => item));
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -15435,55 +15535,77 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     if (method === "GET" && path === "/api/telegram") {
-      const state = cfg.telegram ?? {};
-      // The token is a credential and never comes back out; what the
-      // screen needs is whether one is set and who is paired.
+      // A pointer for old Settings clients, not a second workspace bot.
+      const botId = cfg.telegram?.migratedBotId ?? null;
       return json(res, 200, {
-        configured: Boolean(state.token),
-        enabled: state.enabled === true,
-        paired: (state.chatIds ?? []).length,
-        pairing: state.pairing ?? null,
-        botId: state.botId ?? null,
-        // where a voice message would go to be heard, said on the screen
+        ...telegramStatus(botId ? telegramBinding(botId) : undefined), botId,
+        migrationError: cfg.telegram?.migrationError ?? null,
+        pendingMigration: Boolean(cfg.telegram?.pending),
+        bots: Object.keys(cfg.telegram?.bots ?? {}).filter((id) => store.bot(id)).map((id) => ({ botId: id, ...telegramStatus(telegramBinding(id)) })),
         voiceVendor: speech.transcriptionVendor(cfg),
       });
     }
-    if (method === "POST" && path === "/api/telegram") {
-      if (asAgent) return json(res, 403, { error: "an agent cannot change this" });
-      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
-      const next = { ...(cfg.telegram ?? {}) };
+    const telegramPath = path.match(/^\/api\/bots\/([\w-]+)\/telegram$/);
+    if (telegramPath || (method === "POST" && path === "/api/telegram")) {
+      if (asAgent) return json(res, 403, { error: "an agent cannot read or change Telegram settings" });
+      const body = method === "POST" ? await readBody(req) : {};
+      const botId = telegramPath?.[1] ?? (typeof body.botId === "string" ? body.botId : cfg.telegram?.migratedBotId);
+      if (!botId || !store.bot(botId)) return json(res, 400, { error: "Choose an agent for this Telegram bot." });
+      const status = () => ({ ...telegramStatus(telegramBinding(botId)), botId, voiceVendor: speech.transcriptionVendor(cfg) });
+      if (method === "GET") return json(res, 200, status());
+      if (method !== "POST") return json(res, 405, { error: "method not allowed" });
+      if (body.migrate === true) {
+        const legacy = cfg.telegram?.pending;
+        if (!legacy?.token) return json(res, 400, { error: "There is no previous Telegram bot to move." });
+        if (telegramBinding(botId)?.token) return json(res, 409, { error: "This agent already has a Telegram bot." });
+        saveTelegram({ ...cfg.telegram, version: 1, bots: { ...cfg.telegram?.bots, [botId]: legacyBinding(legacy) }, migratedBotId: botId, pending: undefined, migrationError: undefined });
+        startTelegramBot(botId);
+        return json(res, 200, status());
+      }
+      if (body.forget === true) {
+        saveTelegramBinding(botId);
+        startTelegramBot(botId);
+        return json(res, 200, status());
+      }
+      let validated: { token: string; me: { id: number; username: string } } | undefined;
       if (body.token !== undefined) {
         const token = telegram.cleanToken(body.token);
         if (!token) return json(res, 400, { error: "a bot token is required" });
         try {
-          await telegram.whoAmI(token);
-        } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
-        }
-        next.token = token;
-        // A new token is a new bot: whoever was paired with the old one
-        // has no business talking to this one.
-        next.chatIds = [];
-        next.offset = 0;
+          const me = await telegram.whoAmI(token);
+          // Old bindings may not yet have run getMe. Check them too rather
+          // than allow two pollers for the same bot under different tokens.
+          for (const [id, other] of Object.entries(cfg.telegram?.bots ?? {})) {
+            if (!other.token || other.telegramId !== undefined) continue;
+            if (other.token === token) saveTelegramBinding(id, { ...other, telegramId: me.id, username: me.username });
+            else {
+              const identified = await telegram.whoAmI(other.token);
+              const current = telegramBinding(id);
+              if (current?.token === other.token && current.generation === other.generation) saveTelegramBinding(id, { ...current, telegramId: identified.id, username: identified.username });
+            }
+          }
+          if (Object.entries(cfg.telegram?.bots ?? {}).some(([id, other]) => id !== botId && other.telegramId === me.id)) {
+            return json(res, 409, { error: "This Telegram bot already belongs to another agent. Each agent needs its own bot." });
+          }
+          validated = { token, me };
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
-      if (typeof body.botId === "string") next.botId = body.botId;
-      if (body.enabled !== undefined) next.enabled = body.enabled === true;
-      if (body.pair === true) next.pairing = telegram.pairingWord();
-      if (body.unpair === true) {
-        next.chatIds = [];
-        next.pairing = null;
+      // Read after getMe: another owner request or a poll may have saved
+      // its state while validation was in flight.
+      let next = validated ? replaceTelegramToken(telegramBinding(botId), validated.token, validated.me) : { ...(telegramBinding(botId) ?? { generation: randomUUID(), chatIds: [], offset: 0 }) };
+      if (body.enabled !== undefined) {
+        if (body.enabled === true && !next.token) return json(res, 400, { error: "Save a bot token first." });
+        if (next.enabled !== (body.enabled === true)) next.generation = randomUUID();
+        next.enabled = body.enabled === true;
       }
-      cfg.telegram = next;
-      saveConfig({ telegram: next } as Partial<AppConfig>);
-      if (next.enabled && next.token) void telegramLoop();
-      return json(res, 200, {
-        configured: Boolean(next.token),
-        enabled: next.enabled === true,
-        paired: (next.chatIds ?? []).length,
-        pairing: next.pairing ?? null,
-        botId: next.botId ?? null,
-        voiceVendor: speech.transcriptionVendor(cfg),
-      });
+      if (body.pair === true) {
+        if (!next.token) return json(res, 400, { error: "Save a bot token first." });
+        next = ownerPairing(next);
+      }
+      if (body.unpair === true) next = { ...next, chatIds: [], ownerUserId: undefined, ownerChatId: undefined, pairing: null, generation: randomUUID() };
+      saveTelegramBinding(botId, next);
+      startTelegramBot(botId);
+      return json(res, 200, status());
     }
 
     // ── borrowing a sign-in for the agent's browser ──

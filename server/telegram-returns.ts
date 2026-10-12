@@ -5,6 +5,8 @@ import { send, TelegramError, type TelegramState } from "./telegram.ts";
 
 export interface TelegramReply {
   chatId: number;
+  botId?: string;
+  generation?: string;
   state: "queued" | "bound" | "sending" | "sent" | "failed" | "uncertain";
   /** Last message at the consuming turn's start. A carryOn notice is
    * stable even when its queued inputs are moved after dispatch. */
@@ -12,14 +14,14 @@ export interface TelegramReply {
   parts?: number;
 }
 
-export const queuedTelegramReply = (chatId: number): TelegramReply => ({ chatId, state: "queued" });
+export const queuedTelegramReply = (chatId: number, binding?: { botId: string; generation: string }): TelegramReply => ({ chatId, state: "queued", ...binding });
 
 export class TelegramReturns {
   private store: Store;
-  private state: () => TelegramState;
+  private state: (laneId: string, reply: TelegramReply) => TelegramState;
   private changed: (laneId: string, message: Message) => void;
   private notice: (laneId: string, text: string) => void;
-  private files?: (laneId: string, chatId: number, said: Message[]) => Promise<void>;
+  private files?: (laneId: string, chatId: number, said: Message[], reply: TelegramReply) => Promise<void>;
   private sends = new Set<Promise<void>>();
 
   /** `files` sends what the turn left after its answer has gone. Only
@@ -27,10 +29,10 @@ export class TelegramReturns {
    * with nothing to say what they are. */
   constructor(
     store: Store,
-    state: () => TelegramState,
+    state: (laneId: string, reply: TelegramReply) => TelegramState,
     changed: (laneId: string, message: Message) => void,
     notice: (laneId: string, text: string) => void,
-    files?: (laneId: string, chatId: number, said: Message[]) => Promise<void>,
+    files?: (laneId: string, chatId: number, said: Message[], reply: TelegramReply) => Promise<void>,
   ) {
     this.store = store;
     this.state = state;
@@ -85,8 +87,9 @@ export class TelegramReturns {
 
   /** A same-chat follow-up can join this turn without starting a second
    * wait that would send an overlapping copy of the answer. */
-  answering(laneId: string, chatId: number) {
-    return this.requests(laneId).some((m) => m.telegramReply!.state === "bound" && m.telegramReply!.chatId === chatId);
+  answering(laneId: string, chatId: number, binding?: { botId: string; generation: string }) {
+    return this.requests(laneId).some((m) => m.telegramReply!.state === "bound" && m.telegramReply!.chatId === chatId &&
+      (!binding || (m.telegramReply!.botId === binding.botId && m.telegramReply!.generation === binding.generation)));
   }
 
   finish(laneId: string, failure?: string, messageIds: string[] = []) {
@@ -94,10 +97,12 @@ export class TelegramReturns {
     const requests = this.requests(laneId).filter((m) =>
       m.telegramReply!.state === "bound" || (m.telegramReply!.state === "queued" && ids.has(m.id)),
     );
-    const chats = new Set(requests.map((m) => m.telegramReply!.chatId));
+    const address = (reply: TelegramReply) => JSON.stringify([reply.botId, reply.generation, reply.chatId]);
+    const chats = new Set(requests.map((m) => address(m.telegramReply!)));
     const transcript = this.store.messagesFor(laneId);
-    for (const chatId of chats) {
-      const group = requests.filter((m) => m.telegramReply!.chatId === chatId);
+    for (const destination of chats) {
+      const group = requests.filter((m) => address(m.telegramReply!) === destination);
+      const chatId = group[0].telegramReply!.chatId;
       const after = group[0].telegramReply!.after;
       const boundary = after ? transcript.findIndex((m) => m.id === after) : -1;
       const said = failure ? [] : transcript.slice(boundary + 1);
@@ -117,7 +122,8 @@ export class TelegramReturns {
     const change = (patch: Partial<TelegramReply>) => {
       this.patch(laneId, requests, patch);
     };
-    const state = this.state();
+    const reply = requests[0].telegramReply!;
+    const state = this.state(laneId, reply);
     if (!state.enabled || !state.token || !Number.isSafeInteger(chatId) || !state.chatIds?.includes(chatId)) {
       change({ state: "failed" });
       this.notice(laneId, "The answer was not sent to Telegram: Telegram is not configured for the chat that asked. The answer is in the app.");
@@ -127,7 +133,14 @@ export class TelegramReturns {
     change({ state: "sending", parts: 0 });
     let parts = 0;
     try {
-      await send(state.token, chatId, text, true, () => change({ parts: ++parts }));
+      await send(state.token, chatId, text, true, () => {
+        change({ parts: ++parts });
+        const current = this.state(laneId, reply);
+        if (!current.enabled || current.token !== state.token || current.generation !== state.generation) throw new Error("the Telegram connection changed during the answer");
+      }, () => {
+        const current = this.state(laneId, reply);
+        return Boolean(current.enabled && current.token === state.token && current.generation === state.generation);
+      });
       change({ state: "sent", parts });
     } catch (error) {
       const uncertain = !(error instanceof TelegramError);
@@ -136,6 +149,6 @@ export class TelegramReturns {
       this.notice(laneId, `The answer ${uncertain ? "may not have reached" : "was not fully sent to"} Telegram.${partly} It has not been sent again. The answer is in the app.`);
       return;
     }
-    if (said.length) await this.files?.(laneId, chatId, said).catch(() => {});
+    if (said.length) await this.files?.(laneId, chatId, said, reply).catch(() => {});
   }
 }

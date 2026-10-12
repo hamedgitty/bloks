@@ -228,6 +228,9 @@ export interface Message {
    * answered went to the chat that asked. A Telegram message written
    * before this was recorded reads as one typed here. */
   fromTelegram?: boolean;
+  /** Server-created transport identity. A removed or replaced bot cannot
+   * start a queued request that belonged to its previous connection. */
+  telegramBinding?: { botId: string; generation: string };
   /** Server-only: the Claude instance that accepted this queued text.
    * Null means it was accepted on another engine; absent is a legacy queue.
    * Derive command dispatch from the current text, including after edits. */

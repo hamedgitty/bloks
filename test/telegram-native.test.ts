@@ -26,19 +26,20 @@ async function waitFor<T>(check: () => T | null | undefined | false | Promise<T 
   throw new Error(why);
 }
 
-interface Call { method: string; body: any; at: number }
+interface Call { method: string; body: any; at: number; token: string }
 
 /** Telegram, as far as this bot ever sees it. Files arrive as forms and
  * are kept as what they were called, what they said they were and how
  * big they were. */
 async function telegramStub(t: TestContext) {
-  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100 };
+  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void> };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", async () => {
       const raw = Buffer.concat(chunks);
       const method = req.url!.split("/").pop()!;
+      const token = req.url!.split("/")[1].slice(3);
       const type = String(req.headers["content-type"] ?? "");
       let body: any = {};
       if (type.startsWith("multipart/form-data")) {
@@ -50,10 +51,12 @@ async function telegramStub(t: TestContext) {
       res.setHeader("content-type", "application/json");
       const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
       if (method === "getUpdates") {
-        return void setTimeout(() => reply(state.updates.filter((u) => u.update_id >= body.offset)), 30);
+        const finish = () => reply(state.updates.filter((u) => (u._token ?? "12345:TEST_ONLY_TOKEN") === token && u.update_id >= body.offset));
+        if (state.holdToken === token) return void state.heldPolls.push(finish);
+        return void setTimeout(finish, 30);
       }
-      if (method !== "sendChatAction") state.calls.push({ method, body, at: Date.now() });
-      if (method === "getMe") return reply({ username: "offline_test_bot" });
+      if (method !== "sendChatAction") state.calls.push({ method, body, at: Date.now(), token });
+      if (method === "getMe") return reply({ id: Number(token.split(":")[0]), is_bot: true, username: "PlanningBot" });
       if (["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return reply({ message_id: ++state.messageId });
       reply(true);
     });
@@ -63,16 +66,16 @@ async function telegramStub(t: TestContext) {
   return {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
-    say(text: string) {
-      state.updates.push({ update_id: state.next++, message: { message_id: state.next, chat: { id: CHAT }, from: { id: CHAT, first_name: "Test" }, text } });
+    say(text: string, token = "12345:TEST_ONLY_TOKEN", chatId = CHAT) {
+      state.updates.push({ _token: token, update_id: state.next++, message: { message_id: state.next, chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: chatId === CHAT ? "Sam" : "Lee" }, text } });
     },
     press(messageId: number, data: string, over: { chat?: number; from?: number } = {}) {
       state.updates.push({
         update_id: state.next++,
         callback_query: {
           id: `press-${state.next}`,
-          from: { id: over.from ?? CHAT, first_name: "Test" },
-          message: { message_id: messageId, chat: { id: over.chat ?? CHAT } },
+          from: { id: over.from ?? CHAT, is_bot: false, first_name: "Sam" },
+          message: { message_id: messageId, chat: { id: over.chat ?? CHAT, type: "private" } },
           data,
         },
       });
@@ -92,7 +95,7 @@ async function telegramStub(t: TestContext) {
 function fakeCodex(root: string): string {
   const cli = join(root, "fake-codex.mjs");
   writeFileSync(cli, `#!${process.execPath}
-import { appendFileSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process.exit(0); }
@@ -126,6 +129,16 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("SETTINGS_GUARD")) {
+    const botId = JSON.parse(readFileSync(root + "/.bloks/bots.json", "utf8")).find((bot) => bot.name === "Planning").id;
+    const attempts = [["GET", "/api/telegram"], ["GET", "/api/bots/" + botId + "/telegram"], ["POST", "/api/bots/" + botId + "/telegram", { pair: true }], ["POST", "/api/bots/" + botId + "/telegram", { forget: true }]];
+    const statuses = [];
+    for (const [method, path, body] of attempts) {
+      const response = await fetch(process.env.BLOKS_URL + path, { method, headers: { Authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      statuses.push(response.status);
+    }
+    return finish("GUARDS " + JSON.stringify(statuses));
+  }
   if (text.includes("APPROVE")) {
     const result = await ask(900, "item/commandExecution/requestApproval", { itemId: "cmd-1", command: "rm -rf build" });
     return finish("DECIDED " + result.decision);
@@ -204,13 +217,14 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
     claude: { driver: "claudeAgent", config: { cli: fakeClaude(root) } },
   } }));
   const tg = await telegramStub(t);
-  const h = await startHarness({
+  const env = {
     HOME: root, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
-  });
+  };
+  let h = await startHarness(env);
   t.after(async () => { await h.crash(); rmSync(root, { recursive: true, force: true }); });
   const post = (path: string, body: unknown = {}) => h.json(path, { method: "POST", body: JSON.stringify(body) });
-  const { bot } = await post("/api/bots", { name: "Rex" });
+  const { bot } = await post("/api/bots", { name: "Planning" });
   const model = engine === "codex" ? "gpt-6.1-sol" : "claude-sonnet-5";
   await h.json(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: engine, model } }) });
   const paired = await post("/api/telegram", { token: "12345:TEST_ONLY_TOKEN", enabled: true, botId: bot.id, pair: true });
@@ -221,7 +235,9 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
     ? readFileSync(join(root, "calls.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.reply)
     : [];
   const messages = async () => (await h.json(`/api/bots/${bot.id}/messages?thread=${bot.threadId}&limit=500`)).messages as any[];
-  return { root, tg, h, bot, post, replies, messages };
+  return { root, tg, get h() { return h; }, bot, post, replies, messages,
+    async reboot() { await h.crash(); h = await startHarness(env); },
+  };
 }
 
 /** The card a turn forwarded, once it has been sent. */
@@ -409,4 +425,104 @@ test("a button from before a restart says its card has closed, and loses its but
   assert.equal(told.body.text, "That card has already closed.");
   const cleared = await waitFor(() => f.tg.calls("editMessageReplyMarkup")[0], "its buttons were left in place");
   assert.deepEqual(cleared.body, { chat_id: CHAT, message_id: 55, reply_markup: { inline_keyboard: [] } });
+});
+
+test("two agent bots do not borrow owner pairing or intake when their private chat id is the same", async (t) => {
+  const f = await fixture(t);
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  await f.h.json(`/api/bots/${second.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+  const token = "22222:SECOND_TEST_TOKEN";
+  const status = await f.post(`/api/bots/${second.id}/telegram`, { token, enabled: true });
+  assert.equal(status.needsOwnerPairing, true);
+  f.tg.say("NOT_PAIRED_YET", token);
+  await waitFor(() => f.tg.calls("sendMessage").some((call) => call.token === token && call.body.text === "This bot is not paired with you."), "the second bot borrowed the first bot's pairing");
+  const list = async (id: string) => (await f.h.json(`/api/bots/${id}/messages?limit=500`)).messages;
+  assert.equal((await list(second.id)).some((message: any) => message.text === "NOT_PAIRED_YET"), false);
+  const pairing = await f.post(`/api/bots/${second.id}/telegram`, { pair: true });
+  f.tg.say(pairing.pairing, token);
+  await waitFor(async () => (await f.h.json(`/api/bots/${second.id}/telegram`)).ownerPaired, "the second owner pairing did not complete");
+  f.tg.say("ONLY_SECOND_BOT", token);
+  await waitFor(() => f.tg.calls("sendMessage").some((call) => call.token === token && call.body.text === "ANSWER"), "the second bot's answer did not use its token");
+  assert.equal((await list(second.id)).some((message: any) => message.text === "ONLY_SECOND_BOT"), true);
+  assert.equal((await f.messages()).some((message) => message.text === "ONLY_SECOND_BOT" || message.text === pairing.pairing), false);
+  f.tg.say("ONLY_FIRST_BOT");
+  await waitFor(async () => (await f.messages()).some((message) => message.text === "ONLY_FIRST_BOT"), "the first bot stopped receiving its chat");
+  assert.equal((await list(second.id)).some((message: any) => message.text === "ONLY_FIRST_BOT"), false);
+  const publicStatus = await f.h.json("/api/telegram");
+  assert.equal(JSON.stringify(publicStatus).includes(token), false);
+});
+
+test("a duplicate Telegram bot is refused even under a different token string", async (t) => {
+  const f = await fixture(t);
+  const { bot: second } = await f.post("/api/bots", { name: "Lee" });
+  const response = await f.h.fetch(`/api/bots/${second.id}/telegram`, { method: "POST", body: JSON.stringify({ token: "12345:ROTATED_TEST_TOKEN" }) });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /already belongs/);
+  assert.equal((await f.h.json(`/api/bots/${second.id}/telegram`)).configured, false);
+  assert.equal((await f.h.json(`/api/bots/${f.bot.id}/telegram`)).ownerPaired, true);
+});
+
+test("rotation and removal invalidate held old polls before they write into a conversation", async (t) => {
+  const f = await fixture(t);
+  const original = "12345:TEST_ONLY_TOKEN";
+  f.tg.state.holdToken = original;
+  await waitFor(() => f.tg.state.heldPolls.length, "the old bot never held a poll");
+  f.tg.say("OLD_ROTATION_MESSAGE", original);
+  const nextToken = "12345:ROTATED_TEST_TOKEN";
+  await f.post(`/api/bots/${f.bot.id}/telegram`, { token: nextToken });
+  f.tg.state.holdToken = nextToken;
+  for (const release of f.tg.state.heldPolls.splice(0)) release();
+  await waitFor(() => f.tg.state.heldPolls.length, "the rotated bot never started its own poll");
+  assert.equal((await f.messages()).some((message) => message.text === "OLD_ROTATION_MESSAGE"), false);
+  f.tg.say("OLD_REMOVAL_MESSAGE", nextToken);
+  await f.post(`/api/bots/${f.bot.id}/telegram`, { forget: true });
+  for (const release of f.tg.state.heldPolls.splice(0)) release();
+  await sleep(150);
+  assert.equal((await f.messages()).some((message) => message.text === "OLD_REMOVAL_MESSAGE"), false);
+  assert.equal((await f.h.json(`/api/bots/${f.bot.id}/telegram`)).configured, false);
+});
+
+
+test("a real 2.6 config upgrade keeps two chats until people admission, and identifies the owner with a fresh word", async (t) => {
+  const f = await fixture(t);
+  await f.h.crash();
+  const file = join(f.root, ".bloks", "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  const offset = config.telegram.bots[f.bot.id].offset;
+  config.telegram = { token: "12345:TEST_ONLY_TOKEN", botId: f.bot.id, enabled: true, chatIds: [CHAT, STRANGER], offset, pairing: "old-word" };
+  writeFileSync(file, JSON.stringify(config));
+  await f.reboot();
+  const migrated = JSON.parse(readFileSync(file, "utf8")).telegram;
+  assert.equal(migrated.version, 1);
+  assert.equal(migrated.token, undefined);
+  assert.equal(migrated.migratedBotId, f.bot.id);
+  assert.equal(migrated.bots[f.bot.id].offset, offset);
+  assert.deepEqual(migrated.bots[f.bot.id].chatIds, [CHAT, STRANGER]);
+  assert.equal(migrated.bots[f.bot.id].ownerUserId, undefined);
+  assert.equal(migrated.bots[f.bot.id].pairing, null);
+  const status = await f.h.json(`/api/bots/${f.bot.id}/telegram`);
+  assert.equal(status.needsOwnerPairing, true);
+  assert.equal(status.legacyPaired, 2);
+  const pairing = await f.post(`/api/bots/${f.bot.id}/telegram`, { pair: true });
+  assert.notEqual(pairing.pairing, "old-word");
+  f.tg.say(pairing.pairing);
+  await waitFor(async () => (await f.h.json(`/api/bots/${f.bot.id}/telegram`)).ownerPaired, "fresh word did not identify owner");
+  const paired = JSON.parse(readFileSync(file, "utf8")).telegram.bots[f.bot.id];
+  assert.equal(paired.ownerUserId, CHAT);
+  assert.deepEqual(paired.chatIds, [CHAT, STRANGER]);
+  f.tg.say("Sam after upgrade");
+  await waitFor(() => f.tg.sent().find((c) => c.body.chat_id === CHAT && c.body.text === "ANSWER"), "owner chat stopped working after upgrade");
+  f.tg.say("Lee after upgrade", "12345:TEST_ONLY_TOKEN", STRANGER);
+  await waitFor(() => f.tg.sent().find((c) => c.body.chat_id === STRANGER && c.body.text === "ANSWER"), "second legacy chat lost its way in before PR 2");
+});
+
+
+test("a real turn credential cannot read bot settings, pair or remove its Telegram bot", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("SETTINGS_GUARD");
+  await waitFor(() => f.tg.sent().some((c) => c.body.text === "GUARDS [403,403,403,403]"), "an agent bearer reached owner-only Telegram settings");
+  const status = await f.h.json(`/api/bots/${f.bot.id}/telegram`);
+  assert.equal(status.configured, true);
+  assert.equal(status.ownerPaired, true);
+  assert.equal(status.pairing, null);
 });

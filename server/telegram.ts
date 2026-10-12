@@ -25,6 +25,7 @@
 import { IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./attachments.ts";
 import { clamp, MAX_MESSAGE_CHARS } from "./limits.ts";
 import { messages } from "./telegram-format.ts";
+import { randomInt } from "node:crypto";
 
 const API = "https://api.telegram.org";
 
@@ -40,6 +41,11 @@ export interface TelegramState {
   /** Where the last poll got to. */
   offset?: number;
   enabled?: boolean;
+  /** New bot bindings learn the owner from a private, single-use word. */
+  pairOwner?: boolean;
+  ownerUserId?: number;
+  ownerChatId?: number;
+  generation?: string;
 }
 
 export interface Incoming {
@@ -48,6 +54,10 @@ export interface Incoming {
   /** What was typed, or the caption under a photo or a file. */
   text: string;
   updateId: number;
+  fromId?: number;
+  fromBot?: boolean;
+  chatType?: "private" | "group" | "supergroup" | "channel";
+  anonymous?: boolean;
   /** Anything that came instead of, or as well as, text. */
   media?: Media;
   /** Photos sent together arrive as separate updates sharing this. */
@@ -206,6 +216,10 @@ export function parseUpdates(payload: unknown): Incoming[] {
       updateId,
       text: text.slice(0, 4_000),
       from: String(message?.from?.first_name ?? "someone").slice(0, 60),
+      ...(Number.isSafeInteger(message.from?.id) && message.from.id > 0 ? { fromId: message.from.id } : {}),
+      ...(typeof message.from?.is_bot === "boolean" ? { fromBot: message.from.is_bot } : {}),
+      ...(["private", "group", "supergroup", "channel"].includes(message.chat?.type) ? { chatType: message.chat.type } : {}),
+      ...(message.sender_chat ? { anonymous: true } : {}),
       ...(media ? { media } : {}),
       ...(album ? { album } : {}),
     });
@@ -230,6 +244,8 @@ function pressOf(update: Record<string, any>): Incoming | null {
     updateId,
     text: "",
     from: String(query.from?.first_name ?? "someone").slice(0, 60),
+    ...(typeof query.from?.is_bot === "boolean" ? { fromBot: query.from.is_bot } : {}),
+    ...(["private", "group", "supergroup", "channel"].includes(query.message?.chat?.type) ? { chatType: query.message.chat.type } : {}),
     press: { id: query.id.slice(0, 100), data: query.data.slice(0, 64), messageId, fromId },
   };
 }
@@ -241,7 +257,7 @@ function pressOf(update: Record<string, any>): Incoming | null {
  * exhaustively, rather than being spread through a polling loop.
  */
 export type Decision =
-  | { kind: "pair"; chatId: number }
+  | { kind: "pair"; chatId: number; userId?: number }
   | { kind: "deliver"; chatId: number; text: string; media?: Media; album?: string }
   | { kind: "press"; chatId: number; press: Press }
   | { kind: "refuse"; chatId: number }
@@ -249,6 +265,14 @@ export type Decision =
 
 export function decide(state: TelegramState, message: Incoming): Decision {
   const allowed = state.chatIds ?? [];
+  const human = message.fromBot === false && !message.anonymous;
+  const sender = message.press?.fromId ?? message.fromId;
+  const privateOwner = human && message.chatType === "private" && sender === state.ownerUserId && message.chatId === state.ownerChatId;
+  if (state.pairOwner && state.pairing && !message.press && !message.media && message.text.trim() === state.pairing) {
+    return human && message.chatType === "private" && Number.isSafeInteger(sender) && sender! > 0 && Number.isSafeInteger(message.chatId) && message.chatId > 0
+      ? { kind: "pair", chatId: message.chatId, userId: sender }
+      : { kind: "ignore" };
+  }
   if (message.press) {
     // A button answers a card, and a card can allow a command on this
     // machine, so it counts only from a paired chat and from the person
@@ -256,10 +280,10 @@ export function decide(state: TelegramState, message: Incoming): Decision {
     // same. Anyone else who can see it, in a group, gets nothing back at
     // all, not even the refusal: there is nothing here for them.
     const { fromId } = message.press;
-    const paired = allowed.includes(message.chatId) && (fromId === message.chatId || allowed.includes(fromId));
+    const paired = privateOwner || (allowed.includes(message.chatId) && (fromId === message.chatId || allowed.includes(fromId)));
     return paired ? { kind: "press", chatId: message.chatId, press: message.press } : { kind: "ignore" };
   }
-  if (allowed.includes(message.chatId)) {
+  if (privateOwner || allowed.includes(message.chatId)) {
     return {
       kind: "deliver",
       chatId: message.chatId,
@@ -270,7 +294,7 @@ export function decide(state: TelegramState, message: Incoming): Decision {
   }
   // A pairing word is single use and compared whole, so a stranger
   // guessing at it gets the same silence as a stranger who does not.
-  if (state.pairing && !message.media && message.text.trim() === state.pairing) {
+  if (!state.pairOwner && state.pairing && !message.media && message.text.trim() === state.pairing) {
     return { kind: "pair", chatId: message.chatId };
   }
   // Refuse once per chat rather than on every message: somebody who
@@ -318,10 +342,10 @@ export function withMissing(caption: string, note: string): string {
 
 /** The word a person sends to claim the bot. Short enough to type on a
  * phone, long enough that guessing it is not a strategy. */
-export function pairingWord(random: () => number = Math.random): string {
+export function pairingWord(random?: () => number): string {
   const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
   let word = "";
-  for (let i = 0; i < 8; i++) word += alphabet[Math.floor(random() * alphabet.length)];
+  for (let i = 0; i < 8; i++) word += alphabet[random ? Math.floor(random() * alphabet.length) : randomInt(alphabet.length)];
   return word;
 }
 
@@ -338,12 +362,12 @@ export class TelegramError extends Error {
   }
 }
 
-async function call(token: string, method: string, body: unknown, timeoutMs = 15_000) {
+async function call(token: string, method: string, body: unknown, timeoutMs = 15_000, signal?: AbortSignal) {
   const response = await fetch(`${API}/bot${token}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw await refusal(response);
   return response.json();
@@ -368,17 +392,21 @@ async function patiently<T>(attempt: () => Promise<T>): Promise<T> {
 }
 
 /** Who this token belongs to, and proof that it works. */
-export async function whoAmI(token: string): Promise<{ username: string }> {
-  const body = (await call(token, "getMe", {})) as { result?: { username?: string } };
+export async function whoAmI(token: string, signal?: AbortSignal): Promise<{ id: number; username: string }> {
+  const body = (await call(token, "getMe", {}, 15_000, signal)) as { ok?: boolean; result?: { id?: number; username?: string; is_bot?: boolean } };
   const username = body?.result?.username;
-  if (!username) throw new Error("that token was refused");
-  return { username };
+  const id = body?.result?.id;
+  if (body.ok !== true || typeof username !== "string" || !username || username.length > 64 || !Number.isSafeInteger(id) || id! <= 0 || body.result?.is_bot !== true) throw new Error("that token was refused");
+  return { id: id!, username };
 }
 
 /** One message. A long reply is several in a row, and being asked to
  * wait between them should not cost the reply its tail. */
-function sendOne(token: string, body: Record<string, unknown>): Promise<unknown> {
-  return patiently(() => call(token, "sendMessage", body));
+function sendOne(token: string, body: Record<string, unknown>, canSend?: () => boolean): Promise<unknown> {
+  return patiently(() => {
+    if (canSend && !canSend()) throw new Error("the Telegram connection changed");
+    return call(token, "sendMessage", body);
+  });
 }
 
 /** Buttons under a message, in rows. */
@@ -395,13 +423,13 @@ const NO_BUTTONS: Keyboard = { inline_keyboard: [] };
  * Undefined when Telegram took the message without saying.
  * With silent, a status line leaves the next sound for an answer.
  */
-export async function post(token: string, chatId: number, text: string, keyboard?: Keyboard, silent = false): Promise<number | undefined> {
+export async function post(token: string, chatId: number, text: string, keyboard?: Keyboard, silent = false, canSend?: () => boolean): Promise<number | undefined> {
   const body = (await sendOne(token, {
     chat_id: chatId,
     text: text.slice(0, 4_000),
     ...(keyboard ? { reply_markup: keyboard } : {}),
     ...(silent ? { disable_notification: true } : {}),
-  })) as { result?: { message_id?: unknown } } | null;
+  }, canSend)) as { result?: { message_id?: unknown } } | null;
   const id = Number(body?.result?.message_id);
   return Number.isSafeInteger(id) ? id : undefined;
 }
@@ -439,18 +467,18 @@ export async function answerPress(token: string, pressId: string, text?: string)
  * one before it, so they arrive in order, and a failure stops the rest
  * rather than leaving a gap nobody can see.
  */
-export async function send(token: string, chatId: number, text: string, markdown = false, accepted?: () => void): Promise<void> {
+export async function send(token: string, chatId: number, text: string, markdown = false, accepted?: () => void, canSend?: () => boolean): Promise<void> {
   for (const chunk of messages(text, markdown)) {
     if (chunk.html === undefined) {
-      await sendOne(token, { chat_id: chatId, text: chunk.plain });
+      await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
       accepted?.();
       continue;
     }
     try {
-      await sendOne(token, { chat_id: chatId, text: chunk.html, parse_mode: "HTML" });
+      await sendOne(token, { chat_id: chatId, text: chunk.html, parse_mode: "HTML" }, canSend);
     } catch (error) {
       if (!(error instanceof TelegramError) || error.status !== 400) throw error;
-      await sendOne(token, { chat_id: chatId, text: chunk.plain });
+      await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
     }
     accepted?.();
   }
@@ -479,11 +507,12 @@ export interface Deliverable {
 
 /** One file, as a form: Telegram takes uploads no other way. A big file
  * on a slow line takes a while, so the wait is a couple of minutes. */
-async function upload(token: string, method: string, field: string, chatId: number, file: Deliverable): Promise<void> {
+async function upload(token: string, method: string, field: string, chatId: number, file: Deliverable, canSend?: () => boolean): Promise<void> {
   await patiently(async () => {
     const form = new FormData();
     form.set("chat_id", String(chatId));
     form.set(field, await file.blob(), file.name);
+    if (canSend && !canSend()) throw new Error("the Telegram connection changed");
     const response = await fetch(`${API}/bot${token}/${method}`, {
       method: "POST",
       body: form,
@@ -495,14 +524,14 @@ async function upload(token: string, method: string, field: string, chatId: numb
 
 /** A photo when it can be one, so it shows in the chat; a file when not,
  * or when Telegram will not take it as a photo (too tall, say). */
-export async function sendFile(token: string, chatId: number, file: Deliverable): Promise<void> {
+export async function sendFile(token: string, chatId: number, file: Deliverable, canSend?: () => boolean): Promise<void> {
   const photo = PHOTO_MIMES.has(file.mime) && file.size <= PHOTO_MAX_BYTES;
-  if (!photo) return upload(token, "sendDocument", "document", chatId, file);
+  if (!photo) return upload(token, "sendDocument", "document", chatId, file, canSend);
   try {
-    await upload(token, "sendPhoto", "photo", chatId, file);
+    await upload(token, "sendPhoto", "photo", chatId, file, canSend);
   } catch (error) {
     if (!(error instanceof TelegramError) || error.status !== 400) throw error;
-    await upload(token, "sendDocument", "document", chatId, file);
+    await upload(token, "sendDocument", "document", chatId, file, canSend);
   }
 }
 
@@ -513,11 +542,12 @@ export async function sendFile(token: string, chatId: number, file: Deliverable)
  * everything did: a file that silently never arrives reads as one the
  * agent never made.
  */
-export async function sendFiles(token: string, chatId: number, files: Deliverable[], max = FILES_PER_TURN): Promise<string> {
+export async function sendFiles(token: string, chatId: number, files: Deliverable[], max = FILES_PER_TURN, canSend?: () => boolean): Promise<string> {
   const missing: string[] = [];
   let sent = 0;
   let over = 0;
   for (const file of files) {
+    if (canSend && !canSend()) break;
     if (file.size > UPLOAD_MAX_BYTES) {
       missing.push(`${file.name} (over Telegram's 50 MB)`);
       continue;
@@ -527,7 +557,7 @@ export async function sendFiles(token: string, chatId: number, files: Deliverabl
       continue;
     }
     try {
-      await sendFile(token, chatId, file);
+      await sendFile(token, chatId, file, canSend);
       sent++;
     } catch (error) {
       missing.push(`${file.name} (${reason(error)})`);
@@ -751,13 +781,14 @@ async function fetchFile(token: string, fileId: string, maxBytes: number): Promi
  * is not hammering Telegram, short enough that quitting the app does not
  * wait half a minute for a socket to close.
  */
-export async function poll(token: string, offset: number): Promise<Incoming[]> {
+export async function poll(token: string, offset: number, signal?: AbortSignal): Promise<Incoming[]> {
   const body = await call(
     token,
     "getUpdates",
     // Presses as well as messages: a card is answered with a tap.
     { offset, timeout: 20, allowed_updates: ["message", "callback_query"] },
     30_000,
+    signal,
   );
   return parseUpdates(body);
 }
@@ -896,7 +927,7 @@ export interface InboxHooks {
   state(): TelegramState;
   /** Never throws: a reply that fails to send is not worth a crash. */
   send(chatId: number, text: string): Promise<void>;
-  pair(chatId: number): Promise<void>;
+  pair(chatId: number, userId?: number): Promise<void>;
   refuse(chatId: number): Promise<void>;
   download(fileId: string, maxBytes: number): Promise<Uint8Array>;
   /** Null when there is no speech key, which gets a different reply
@@ -941,7 +972,7 @@ export class Inbox {
     // is never downloaded and a stranger's voice is never sent to a
     // vendor to be heard; they get the same one refusal as text does.
     const decision = decide(hooks.state(), message);
-    if (decision.kind === "pair") return hooks.pair(decision.chatId);
+    if (decision.kind === "pair") return hooks.pair(decision.chatId, decision.userId);
     if (decision.kind === "refuse") return hooks.refuse(decision.chatId);
     if (decision.kind === "press") return hooks.press(decision.chatId, decision.press);
     if (decision.kind !== "deliver") return;

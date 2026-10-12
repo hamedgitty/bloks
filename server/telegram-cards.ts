@@ -19,6 +19,7 @@ import { cardAsks, describeCard, type Keyboard } from "./telegram.ts";
 export interface ForwardedCard {
   requestId: string;
   botId: string;
+  generation?: string;
   chatId: number;
   options: string[];
   permission: boolean;
@@ -96,7 +97,7 @@ export class CardButtons {
    * answered by typing as it always was.
    */
   forward(
-    card: { requestId: string; botId: string; chatId: number; permission: boolean; title?: string; subtitle?: string; options?: string[] },
+    card: { requestId: string; botId: string; generation?: string; chatId: number; permission: boolean; title?: string; subtitle?: string; options?: string[] },
     now = Date.now(),
   ): { text: string; keyboard?: Keyboard } {
     this.prune(now);
@@ -106,6 +107,7 @@ export class CardButtons {
     this.cards.set(card.requestId, {
       requestId: card.requestId,
       botId: card.botId,
+      ...(card.generation ? { generation: card.generation } : {}),
       chatId: card.chatId,
       options,
       permission: card.permission,
@@ -147,12 +149,14 @@ export class CardButtons {
     messageId: number,
     data: string,
     now = Date.now(),
+    binding?: { botId: string; generation: string },
   ): { card: ForwardedCard; option: string } | { settled: string } | null {
     this.prune(now);
     const match = TOKEN.exec(data);
     const requestId = match ? this.tokens.get(match[1]!) : undefined;
     const card = requestId ? this.cards.get(requestId) : undefined;
     if (!card || card.chatId !== chatId) return null;
+    if (binding && (card.botId !== binding.botId || card.generation !== binding.generation)) return null;
     if (card.messageId !== undefined && card.messageId !== messageId) return null;
     if (card.settled !== undefined) return { settled: card.settled };
     const option = card.options[Number(match![2])];
