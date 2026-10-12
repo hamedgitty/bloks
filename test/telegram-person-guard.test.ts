@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkPersonClaudeStatus, checkPersonCodexConfig, checkPersonCodexThread, checkPersonCodexTools, makePersonCodexHome, personReplyText } from "../server/person-turn.ts";
+import { checkPersonClaudeStatus, checkPersonCodexConfig, checkPersonCodexThread, checkPersonCodexTools, makePersonCodexHome, personReplyText, readPersonClaudeInstructions } from "../server/person-turn.ts";
+import { MAX_PERSON_PROJECT_BYTES } from "../server/limits.ts";
 import { knockTelegram, migrateTelegramPeople, telegramSender, telegramSenderCurrent } from "../server/telegram-people.ts";
 import type { AgentTelegram } from "../server/telegram-bots.ts";
 import { telegramStatus } from "../server/telegram-bots.ts";
@@ -19,6 +20,7 @@ test("a fresh Codex home links the file login, strips standing configuration and
   const root = mkdtempSync(join(tmpdir(), "bloks-file-login-"));
   const owner = join(root, "owner"); mkdirSync(owner);
   const auth = join(owner, "auth.json"); writeFileSync(auth, JSON.stringify({ OPENAI_API_KEY: "synthetic-key" }));
+  writeFileSync(join(owner, "AGENTS.md"), "Synthetic owner-global instruction.\n");
   const prior = process.env.CODEX_HOME;
   process.env.CODEX_HOME = owner;
   let home: ReturnType<typeof makePersonCodexHome> | undefined;
@@ -31,6 +33,7 @@ test("a fresh Codex home links the file login, strips standing configuration and
     assert.equal(lstatSync(home.path).mode & 0o777, 0o700);
     assert.equal(lstatSync(join(home.path, "auth.json")).isSymbolicLink(), true);
     assert.equal(readlinkSync(join(home.path, "auth.json")), auth);
+    assert.equal(existsSync(join(home.path, "AGENTS.md")), false);
     writeFileSync(join(home.path, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-refresh" }));
     assert.equal(JSON.parse(readFileSync(auth, "utf8")).OPENAI_API_KEY, "synthetic-refresh");
     const config = readFileSync(home.configFile, "utf8");
@@ -45,6 +48,44 @@ test("a fresh Codex home links the file login, strips standing configuration and
     if (prior === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prior;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a Claude person's project text follows the hidden symlink and is reread without local files or imports", () => {
+  const root = mkdtempSync(join(tmpdir(), "bloks-project-instructions-"));
+  const project = join(root, "Planning"); mkdirSync(project); mkdirSync(join(project, ".claude")); mkdirSync(join(root, ".claude"));
+  try {
+    writeFileSync(join(project, "CLAUDE.md"), "ROOT_PROJECT_FACT\n@import.md\n");
+    writeFileSync(join(project, "AGENTS.md"), "HIDDEN_PROJECT_FACT\n");
+    symlinkSync("../AGENTS.md", join(project, ".claude", "CLAUDE.md"));
+    writeFileSync(join(project, "import.md"), "IMPORTED_SECRET_FACT\n");
+    writeFileSync(join(project, "CLAUDE.local.md"), "LOCAL_INSTRUCTION_FACT\n");
+    writeFileSync(join(root, ".claude", "CLAUDE.md"), "GLOBAL_INSTRUCTION_FACT\n");
+    writeFileSync(join(project, ".claude", "settings.json"), '{"permissions":{"defaultMode":"bypassPermissions"}}');
+    const first = readPersonClaudeInstructions(project);
+    assert.match(first, /Owner's project instructions/);
+    assert.match(first, /'the user' means the owner, not the Telegram sender/);
+    assert.match(first, /ROOT_PROJECT_FACT/); assert.match(first, /HIDDEN_PROJECT_FACT/);
+    assert.match(first, /@import\.md/);
+    assert.doesNotMatch(first, /IMPORTED_SECRET_FACT|LOCAL_INSTRUCTION_FACT|GLOBAL_INSTRUCTION_FACT|bypassPermissions/);
+    rmSync(join(project, "CLAUDE.md"));
+    writeFileSync(join(project, "AGENTS.md"), "NEXT_TURN_PROJECT_FACT\n");
+    const second = readPersonClaudeInstructions(project);
+    assert.match(second, /NEXT_TURN_PROJECT_FACT/); assert.doesNotMatch(second, /ROOT_PROJECT_FACT|HIDDEN_PROJECT_FACT/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Claude project instructions hold visibly instead of truncating or reading a non-file", () => {
+  const root = mkdtempSync(join(tmpdir(), "bloks-project-bound-"));
+  try {
+    assert.equal(readPersonClaudeInstructions(root), "");
+    writeFileSync(join(root, "CLAUDE.md"), "x".repeat(MAX_PERSON_PROJECT_BYTES));
+    mkdirSync(join(root, ".claude")); writeFileSync(join(root, ".claude", "CLAUDE.md"), "y");
+    assert.throws(() => readPersonClaudeInstructions(root), /held:.*exceed.*Shorten/s);
+    rmSync(join(root, "CLAUDE.md")); mkdirSync(join(root, "CLAUDE.md"));
+    assert.throws(() => readPersonClaudeInstructions(root), /held:.*could not be read.*regular text file/s);
+    rmSync(join(root, "CLAUDE.md"), { recursive: true }); symlinkSync("missing.md", join(root, "CLAUDE.md"));
+    assert.throws(() => readPersonClaudeInstructions(root), /held:.*could not be read/s);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("reported Codex permissions, tools and enabled configuration layers are checked", () => {

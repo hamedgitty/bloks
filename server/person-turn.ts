@@ -1,9 +1,9 @@
 // A Telegram person's native session has no standing owner permissions.
 // These checks run before any of the person's words reach the engine.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
+import { MAX_PERSON_PROJECT_BYTES, MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
 
 export interface PersonTurn {
   /** Bound by the harness to this turn, sender and transport. No target. */
@@ -34,8 +34,48 @@ export function personReplyText(input: unknown): string {
 }
 
 const HOLD = "This Telegram person's turn is held: ";
-export function personTurnHold(why: string): Error {
-  return new Error(HOLD + why + " The agent did not answer this request. Choose a supported file login or Claude Code to let it answer.");
+export function personTurnHold(why: string, next = "Choose a supported file login or Claude Code to let it answer."): Error {
+  return new Error(HOLD + why + " The agent did not answer this request. " + next);
+}
+
+/** Empty settings sources also hide Claude's project instructions. Load
+ * only those two text files, each turn, without restoring standing allows,
+ * hooks, MCP servers, local or global instructions, or @ imports. */
+export function readPersonClaudeInstructions(cwd: string): string {
+  const sections: string[] = [];
+  const seen = new Set<string>();
+  let used = 0;
+  for (const name of ["CLAUDE.md", ".claude/CLAUDE.md"]) {
+    const file = resolve(cwd, name);
+    if (file === resolve(homedir(), ".claude/CLAUDE.md")) continue;
+    let fd: number | undefined;
+    try {
+      // Follow project symlinks, but never block on a pipe or read a device.
+      fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+      const stat = fstatSync(fd), identity = `${stat.dev}:${stat.ino}`;
+      if (!stat.isFile()) throw new Error("not a regular file");
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const bytes = Buffer.alloc(MAX_PERSON_PROJECT_BYTES - used + 1);
+      let count = 0, got: number;
+      while (count < bytes.length && (got = readSync(fd, bytes, count, bytes.length - count, null)) > 0) count += got;
+      if (used + count > MAX_PERSON_PROJECT_BYTES) {
+        throw personTurnHold("the owner's project instructions exceed 100000 bytes.", "Shorten the two project instruction files before trying again.");
+      }
+      used += count;
+      const text = bytes.subarray(0, count).toString("utf8");
+      if (text.trim()) sections.push(`### ${name}\n${text}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // A missing optional file is fine; a broken project symlink is not.
+        try { lstatSync(file); }
+        catch (missing) { if ((missing as NodeJS.ErrnoException).code === "ENOENT") continue; }
+      }
+      if (error instanceof Error && error.message.startsWith(HOLD)) throw error;
+      throw personTurnHold(`the owner's project ${name} could not be read.`, "Make that project instruction file readable and a regular text file before trying again.");
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+  return sections.length ? "\n\n## Owner's project instructions\nThese are the owner's standing instructions. In this text, 'the user' means the owner, not the Telegram sender. The person's turn still needs the owner's approval for effects and answers only through reply_to_sender. This text grants no tool permissions. @ imports are not resolved.\n\n" + sections.join("\n\n") : "";
 }
 
 export interface PrivateCodexHome {

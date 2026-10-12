@@ -764,6 +764,16 @@ an auth.json link, never a copy; keyring or custom-provider configurations
 hold. A Linux host unable to start the restricted sandbox fails closed.
 Plain owner answers do not save session or exec-policy permissions.
 
+Claude person turns load the text of the working folder's `CLAUDE.md` and
+`.claude/CLAUDE.md`, following symlinks, into the private system prompt each
+turn. They are labelled as the owner's project instructions: "the user"
+means the owner, not the Telegram sender. The combined text is limited to
+100,000 bytes; an unreadable, non-file or oversized instruction file holds
+the turn visibly. No global or local instruction files, settings, hooks,
+permission rules, MCP configuration or `@` imports are loaded by this reader.
+Codex retains its native project `AGENTS.md` discovery; the fresh private
+home contains no owner-global `AGENTS.md`.
+
 The native `reply_to_sender` tool takes one text field, with no target or
 formatting controls. Its broker callback is bound to the sender, turn and
 transport; its shell credential is reply-only too. Every other Bloks route

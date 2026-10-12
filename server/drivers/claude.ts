@@ -33,7 +33,7 @@ import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
-import { checkPersonClaudeInit, checkPersonClaudeStatus, personTurnHold } from "../person-turn.ts";
+import { checkPersonClaudeInit, checkPersonClaudeStatus, personTurnHold, readPersonClaudeInstructions } from "../person-turn.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
  * choices list, or AskUserQuestion's nested option objects. */
@@ -389,6 +389,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // about themselves in settings, and the MCP config carries the
       // Composio key and any header or token a server needs. A private
       // file, in a folder of this turn's own, read only by the CLI, is not.
+      const system = (turn.system ?? "") + (turn.person ? readPersonClaudeInstructions(turn.cwd ?? homedir()) : "");
       let privateDir: string | null = null;
       const privateFile = (name: string, content: string) => {
         privateDir ??= mkdtempSync(join(tmpdir(), "bloks-turn-"));
@@ -396,7 +397,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         writeFileSync(file, content, { mode: 0o600 });
         return file;
       };
-      if (turn.system) argv.push("--append-system-prompt-file", privateFile("system.md", turn.system));
+      if (system) argv.push("--append-system-prompt-file", privateFile("system.md", system));
 
       // Every MCP server has to be named in --allowedTools as well as
       // --mcp-config. A headless acceptEdits run denies anything unlisted
@@ -552,7 +553,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // workspace as itself rather than only describe what should happen
         ...(turn.env ?? {}),
       };
-      if (turn.shared) {
+      if (turn.shared || turn.person) {
         env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
         env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
       }
