@@ -484,7 +484,9 @@ people.people();
 const store = new Store(() => bootSelection);
 const migratedTelegram = migrateTelegram(cfg.telegram, store.bots);
 if (migratedTelegram !== cfg.telegram) {
-  saveConfig({ telegram: migratedTelegram });
+  // With no bot configured there is nothing to migrate on disk. An
+  // unrelated startup must not rewrite the workspace's config.
+  if (cfg.telegram?.token || Object.keys(cfg.telegram?.bots ?? {}).length) saveConfig({ telegram: migratedTelegram });
   cfg.telegram = migratedTelegram;
   const id = migratedTelegram.migratedBotId;
   const generation = id ? migratedTelegram.bots?.[id]?.generation : undefined;
