@@ -387,6 +387,7 @@ test("a Claude person's late ask stays refused after its turn ends", async (t) =
   assert.equal(typeof cursor, "string");
   await f.admit("FAKE_LATE");
   const answer = await until(() => f.records().find((r) => r.lateAnswer)?.lateAnswer, "the late person ask was not settled");
+  assert.equal(f.records().find((r) => r.lateReady)?.lateReady.behavior, "deny", "the broker did not acknowledge the invalid no-send probe before result");
   assert.equal(answer.behavior, "deny");
   assert.equal(existsSync(join(f.root, "effect")), false);
   assert.equal((await f.messages()).some((m) => m.card?.title === "Approval needed"), false);

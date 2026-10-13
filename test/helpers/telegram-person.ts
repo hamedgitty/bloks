@@ -39,7 +39,7 @@ const out=f=>process.stdout.write(JSON.stringify(f)+'\\n');
 const log=f=>appendFileSync(join(root,'engine.jsonl'),JSON.stringify(f)+'\\n');
 const person=process.env.BLOKS_TOKEN?.startsWith('blr_');
 let thread='fixture-'+process.pid,turn='turn-'+process.pid;
-let guard,working=false,late=false;
+let guard,working=false,late=false,lateAfterEnd;
 const pending=new Map();
 const broker=(frame)=>new Promise((resolve,reject)=>{
  let socket;
@@ -58,14 +58,26 @@ async function work(text){
    await new Promise((resolve,reject)=>{
      const connection=createConnection(socket);connection.on('error',reject);
      connection.on('connect',()=>{
-       out({type:'result',subtype:'success',is_error:false,result:'Private transcript only.'});
-       setTimeout(()=>{
+       // connect only confirms the client's end. A refused empty reply
+       // confirms the broker has accepted and is reading this socket,
+       // without sending text, before the result retires the listener.
+       connection.write(JSON.stringify({t:'reply',id:'late-ready',input:{}})+'\\n');
+       lateAfterEnd=()=>{
          out({type:'system',subtype:'init',session_id:'late-person-session',model:'claude-sonnet-5',permissionMode:'default',mcp_servers:[{name:'bloks',status:'connected'}]});
          out({type:'assistant',message:{content:[{type:'text',text:'LATE_PERSON_TEXT'}]}});
          connection.write(JSON.stringify({t:'ask',id:'late-person',tool:'Bash',input:{command:'touch synthetic-marker'}})+'\\n');
-       },400);
+       };
      });
-     createInterface({input:connection}).once('line',line=>{const answer=JSON.parse(line);log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();});
+     createInterface({input:connection}).on('line',line=>{
+       const answer=JSON.parse(line);
+       if(answer.id==='late-ready'){
+         log({lateReady:answer});
+         out({type:'result',subtype:'success',is_error:false,result:'Private transcript only.'});
+         return;
+       }
+       if(answer.id!=='late-person')return;
+       log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();
+     });
    });
    return;
  }
@@ -141,7 +153,9 @@ createInterface({input:process.stdin}).on('line',async line=>{
  respond({turn:{id:turn}});out({method:'turn/started',params:{threadId:thread,turn:{id:turn}}});
  await work(m.params.input.filter(i=>i.type==='text').map(i=>i.text).join(''));
 });
-process.stdin.on('end',()=>{if(!late)process.exit(0)});
+// The driver closes stdin while processing result. Its EOF is the
+// protocol signal to send the late frames, rather than a guessed delay.
+process.stdin.on('end',()=>{if(!late)process.exit(0);lateAfterEnd?.()});
 `, { mode: 0o755 });
   return file;
 }
