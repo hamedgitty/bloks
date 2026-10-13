@@ -39,6 +39,14 @@ Everything below follows from that.
 The canonical event stream is the source of truth. The persisted
 transcript and every client view are projections of it.
 
+A lane reads as working from step 2, but its engine is only started at
+the end of step 3, which can be a moment or, with a box to wake or a
+large folder to photograph, a minute. A stop in between has no engine
+turn to interrupt, so it is kept (`stoppedGettingReady`,
+`interruptLane`) and honoured at the last check before `sendTurn`, the
+same check that turns away a turn for an agent archived or held in that
+time: the turn ends there with a notice, and its engine never hears it.
+
 ## Drivers
 
 A driver turns one provider into the contract in `server/contracts.ts`.

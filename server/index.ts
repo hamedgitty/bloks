@@ -3431,6 +3431,23 @@ type LaneClaim = { lane?: string };
  * first. Whatever asks whether a lane is free counts a claimed one as
  * busy (laneWaits, backgroundTaskId, drainSteer). */
 const claimedLanes = new Map<string, LaneClaim>();
+/** Lanes whose turn was stopped while it was still getting ready. A
+ * lane reads as working from the moment something is said to it, but its
+ * engine is only started once everything it needs is there (notes
+ * recalled, the folder photographed, a box woken), which can take from a
+ * moment to a minute. A stop in between found no engine turn to
+ * interrupt and was lost: the turn then started anyway and ran as if
+ * nobody had pressed anything (GitHub 272). So the stop is kept here and
+ * honoured at the last check before the engine hears a word. */
+const stoppedGettingReady = new Set<string>();
+
+/** Stops a lane's turn, whichever stage it is at: the engine's turn when
+ * there is one, and a turn still getting ready by leaving word for it. */
+async function interruptLane(bot: BotRecord, laneId: string) {
+  const adapter = laneInstance(bot, laneId)?.adapter;
+  if (store.taskByThread(laneId)?.task.busy && !adapter?.hasSession(laneId)) stoppedGettingReady.add(laneId);
+  await adapter?.interruptTurn(laneId);
+}
 
 /** store.deleteTask, counting a lane still getting a turn ready as busy:
  * closed then, the turn would start in a lane that no longer exists. */
@@ -4011,6 +4028,9 @@ async function startClaimedTurn(
   // not awaited: provisioning a box can take a minute and a half, and an
   // HTTP request must never be the thing holding that open.
   if (command) commandTurns.add(task.id);
+  // a stop left for an earlier turn is not this one's; a turn that goes
+  // on from one that was stopped between its two halves still is
+  if (!goesOn) stoppedGettingReady.delete(task.id);
   store.setTaskBusy(task.id, true);
   // a goal judged before this turn began is not judging this one
   laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
@@ -4502,7 +4522,8 @@ async function startClaimedTurn(
       await reloading;
       let engine = registry.get(instanceId);
       if (!engine) throw new Error(unavailableEngineMessage(instanceId));
-      if (compactHere) {
+      // not for a turn already stopped: it ends at the check below
+      if (compactHere && !stoppedGettingReady.has(task.id)) {
         const go = await compactThenSend(bot, task.id, roomId, engine, sending);
         if (!go) {
           // Stopped while the session was being compacted: the turn ends
@@ -4537,7 +4558,14 @@ async function startClaimedTurn(
       // and the lane is left as if it had never been asked.
       const connectionChanged = opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding);
       const senderChanged = personSource && !telegramSenderCurrent(telegramBinding(bot.id), personSource);
-      const withdrawn = unsendable(bot.id) ?? (connectionChanged ? "This agent's Telegram connection changed before the message could start. The words remain unsent in the app." : senderChanged ? "This Telegram person was removed before the message could start. The words remain unsent in the app." : null);
+      // A stop pressed while this was getting ready is the same kind of
+      // thing: there was nothing to interrupt then, so it ends here.
+      const stopped = stoppedGettingReady.delete(task.id);
+      const withdrawn =
+        unsendable(bot.id) ??
+        (connectionChanged ? "This agent's Telegram connection changed before the message could start. The words remain unsent in the app." : null) ??
+        (senderChanged ? "This Telegram person was removed before the message could start. The words remain unsent in the app." : null) ??
+        (stopped ? `Stopped before ${bot.name} had started on it.` : null);
       if (withdrawn) {
         if (connectionChanged || senderChanged) {
           for (const id of telegramInputIds) {
@@ -9728,7 +9756,7 @@ async function stopForYou(bot: BotRecord, laneId: string) {
   if (store.taskByThread(laneId)?.task.goal?.status === "active" && store.taskByThread(laneId)?.task.busy) {
     pauseGoal(bot.id, laneId, goalPausedNotice("stopped"), "you stopped the turn");
   }
-  await laneInstance(bot, laneId)?.adapter.interruptTurn(laneId);
+  await interruptLane(bot, laneId);
 }
 
 /**
@@ -13659,7 +13687,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const lane = mainLaneOf(bot);
         if (!lane.busy) return json(res, 200, { ok: true, stopped: false, note: `${bot.name} was not working; nothing to stop.` });
         cutOff.stop(lane.id);
-        await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id);
+        await interruptLane(bot, lane.id);
         const notice = store.appendMessage(lane.id, { role: "bot", kind: "notice", text: `${caller.name} stopped this turn.` });
         broadcast({ kind: "message", threadId: lane.id, message: notice });
         const why = clamp(body.text, MAX_MESSAGE_CHARS);

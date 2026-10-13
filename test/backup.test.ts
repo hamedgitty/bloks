@@ -370,6 +370,51 @@ test("the daily backup waits for a quiet Bloks, a day since the last, and its sw
   assert.equal(due({ newestAt: now + 48 * hour }), true, "a clock that went back must not stop backups for days");
 });
 
+test("a second restore in the same second sets the workspace aside under its own name", async (t) => {
+  // The folder a restore moves the old workspace to is named to the
+  // second. A second restore inside that second chose the same name, its
+  // move failed on a folder that was not empty, and the note stayed, so
+  // every later start tried the same failing move again (GitHub 271).
+  const { data, put } = workspace(t);
+  const made = await backup.createBackup({ dataDir: data });
+  const now = new Date(2026, 9, 12, 9, 0, 0);
+
+  const first = await backup.stageRestore(made.path, { dataDir: data, now });
+  assert.ok(backup.applyPendingRestore({ dataDir: data, log: () => {} }));
+  put("bots.json", JSON.stringify([{ id: "b9", name: "Changed since" }]));
+
+  const second = await backup.stageRestore(made.path, { dataDir: data, now });
+  assert.notEqual(second.aside, first.aside, "the second restore would move the workspace onto the first one's");
+  assert.ok(second.aside.startsWith(`${data}.before-restore-`));
+  const applied = backup.applyPendingRestore({ dataDir: data, log: () => {} });
+  assert.ok(applied, "the second restore was not put in place");
+  assert.equal(backup.pendingRestore(data), null, "the note was left for the next start to trip over");
+  assert.ok(readFileSync(join(data, "bots.json"), "utf8").includes("Ivy"), "the backup was not put in place");
+  // both workspaces that were replaced are still there
+  assert.ok(readFileSync(join(first.aside, "bots.json"), "utf8").includes("Ivy"));
+  assert.ok(readFileSync(join(second.aside, "bots.json"), "utf8").includes("Changed since"));
+
+  // A note from before names were checked points at a folder that is
+  // already there. It is applied beside it, not failed on at every start.
+  put("bots.json", JSON.stringify([{ id: "b7", name: "Third" }]));
+  const third = await backup.stageRestore(made.path, { dataDir: data, now });
+  const marker = readdirSync(dirname(data)).map((n) => join(dirname(data), n)).find((f) => {
+    try {
+      return statSync(f).isFile() && readFileSync(f, "utf8").includes(third.aside);
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(marker, "the fixture could not find the restore's note");
+  writeFileSync(marker, readFileSync(marker, "utf8").replaceAll(third.aside, first.aside));
+  const stuck = backup.applyPendingRestore({ dataDir: data, log: () => {} });
+  assert.ok(stuck, "a note naming a taken folder was not applied");
+  assert.notEqual(stuck.aside, first.aside);
+  assert.ok(readFileSync(join(stuck.aside, "bots.json"), "utf8").includes("Third"));
+  assert.ok(readFileSync(join(first.aside, "bots.json"), "utf8").includes("Ivy"), "the earlier folder was written over");
+  assert.equal(backup.pendingRestore(data), null);
+});
+
 test("a restore puts the backup in place on the next start, keeps what it replaced, and keeps this computer's keys", async (t) => {
   const { root, data, put } = workspace(t);
   const before = await backup.createBackup({ dataDir: data });
