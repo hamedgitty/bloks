@@ -173,9 +173,10 @@ test("a Telegram file is saved by real wiring, queued through drain and returned
   const f = await fixture(t);
   f.tg.pushFile(OTHER_CHAT);
   f.tg.pushFile(OTHER_CHAT);
-  assert.ok(await waitFor(() => f.tg.state.accepted.some((m) => m.text === "This bot is not paired with you.")));
+  const waiting = "The owner has been asked to let you in. Please wait for their answer.";
+  assert.ok(await waitFor(() => f.tg.state.accepted.some((m) => m.text === waiting)));
   await sleep(200);
-  assert.equal(f.tg.state.accepted.filter((m) => m.text === "This bot is not paired with you.").length, 1);
+  assert.equal(f.tg.state.accepted.filter((m) => m.text === waiting).length, 1);
   assert.equal(f.tg.state.getFiles, 0, "unpaired files are never downloaded");
   await f.h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 60 }) });
   f.tg.pushFile();

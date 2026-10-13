@@ -252,6 +252,9 @@ export interface SendTurnInput {
    * instance is set, and one that pre-allows tools or edits of its own
    * accord (Claude Code) does not. Never with `fullAccess`. */
   untrusted?: boolean;
+  /** A let-in Telegram person. Fresh native session, owner-only approvals
+   * and a turn-bound reply tool, even on a full-access agent. */
+  person?: import("./person-turn.ts").PersonTurn;
   cwd?: string;
   /** Folders the agent may edit without asking, beyond its cwd. The
    * harness grants its own workspace (memory lives there) so an agent

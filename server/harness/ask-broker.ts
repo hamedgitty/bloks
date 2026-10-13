@@ -79,6 +79,8 @@ export interface AskBrokerOptions {
   onAsk: (ask: PendingAsk) => void;
   /** It has been settled, however that happened. */
   onResolve: (resolved: ResolvedAsk) => void;
+  /** A reply capability of this turn only, not a permission request. */
+  onReply?: (input: unknown) => Promise<string>;
   timeoutMs?: number;
 }
 
@@ -133,7 +135,19 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
         } catch {
           continue;
         }
+        if (frame.t === "reply") {
+          const id = String(frame.id ?? "");
+          const send = !retired && options.onReply;
+          void (send ? send(frame.input) : Promise.reject(new Error("this turn cannot reply to a sender")))
+            .then((message) => connection.write(JSON.stringify({ t: "answer", id, behavior: "answer", message }) + "\n"))
+            .catch((error) => { if (!connection.destroyed) connection.write(JSON.stringify({ t: "answer", id, behavior: "deny", message: error instanceof Error ? error.message : "Reply failed" }) + "\n"); });
+          continue;
+        }
         if (frame.t !== "ask") continue;
+        if (retired && options.onReply) {
+          connection.write(JSON.stringify({ t: "answer", id: String(frame.id ?? ""), behavior: "deny", message: "This person's turn has ended." }) + "\n");
+          continue;
+        }
 
         const id = String(frame.id ?? randomUUID());
         const kind = frame.kind === "question" ? ("question" as const) : ("permission" as const);

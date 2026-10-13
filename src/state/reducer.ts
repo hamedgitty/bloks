@@ -73,6 +73,8 @@ export interface Message {
   /** Said in this agent's own chat in a turn another agent's message
    * started: shown in full, with a link to the exchange. Not sent to it. */
   afterAgent?: { peerId: string; peerName: string };
+  telegramPerson?: { personId: string; name: string; requester: string };
+  telegramSent?: { personId: string; name: string; state: "sending" | "sent" | "uncertain" | "failed" };
   /** The user's selection on a decision component. */
   decisionChoice?: number;
   /** Sent while the lane was busy; drains into the next turn. It waits

@@ -33,6 +33,8 @@ export interface AgentToken {
   expiresAt: number;
   /** Changes made so far on this credential. */
   spent: number;
+  /** This credential can only reply to its turn's Telegram sender. */
+  reply?: { sender: import("./telegram-people.ts").TelegramSender; turn: number; attempted?: Set<string> };
 }
 
 /** How long a credential lasts without its turn vouching for it. A turn
@@ -313,6 +315,12 @@ export class AgentTokens {
       expiresAt: now + TOKEN_TTL_MS,
       spent: 0,
     };
+    this.byToken.set(minted.token, minted);
+    return minted;
+  }
+
+  mintReply(botId: string, taskId: string, now: number, sender: import("./telegram-people.ts").TelegramSender, turn: number): AgentToken {
+    const minted: AgentToken = { token: `blr_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, reply: { sender, turn } };
     this.byToken.set(minted.token, minted);
     return minted;
   }

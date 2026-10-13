@@ -13,6 +13,14 @@ export const MAX_MESSAGE_CHARS = 100_000;
 export const MAX_NAME_CHARS = 80;
 export const MAX_TITLE_CHARS = 160;
 
+/** Telegram admission stays small; a reply is one plain-text message. */
+export const MAX_TELEGRAM_PEOPLE = 100;
+export const MAX_PENDING_TELEGRAM_PEOPLE = 20;
+export const MAX_TELEGRAM_REPLY_CHARS = 4096;
+
+/** Project instruction text in an isolated person's Claude session. */
+export const MAX_PERSON_PROJECT_BYTES = 100_000;
+
 /** Descriptions and greetings, which become part of the system prompt. */
 export const MAX_DESCRIPTION_CHARS = 4_000;
 

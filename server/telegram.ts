@@ -23,7 +23,7 @@
 //   to learn yours is to have you send it. The word is single use and
 //   the pairing closes behind it.
 import { IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./attachments.ts";
-import { clamp, MAX_MESSAGE_CHARS } from "./limits.ts";
+import { clamp, MAX_MESSAGE_CHARS, MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
 import { messages } from "./telegram-format.ts";
 import { randomInt } from "node:crypto";
 
@@ -49,6 +49,8 @@ export interface TelegramState {
 }
 
 export interface Incoming {
+  messageId?: number;
+  replyToMessageId?: number;
   chatId: number;
   from: string;
   /** What was typed, or the caption under a photo or a file. */
@@ -214,6 +216,8 @@ export function parseUpdates(payload: unknown): Incoming[] {
     out.push({
       chatId,
       updateId,
+      ...(Number.isSafeInteger(message.message_id) && message.message_id > 0 ? { messageId: message.message_id } : {}),
+      ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message.message_id > 0 ? { replyToMessageId: message.reply_to_message.message_id } : {}),
       text: text.slice(0, 4_000),
       from: String(message?.from?.first_name ?? "someone").slice(0, 60),
       ...(Number.isSafeInteger(message.from?.id) && message.from.id > 0 ? { fromId: message.from.id } : {}),
@@ -432,6 +436,17 @@ export async function post(token: string, chatId: number, text: string, keyboard
   }, canSend)) as { result?: { message_id?: unknown } } | null;
   const id = Number(body?.result?.message_id);
   return Number.isSafeInteger(id) ? id : undefined;
+}
+
+/** A person's explicit plain-text reply. No formatting, buttons, truncation
+ * or retry after an uncertain network result. */
+export async function replyText(token: string, chatId: number, text: string, messageId: number | undefined, canSend: () => boolean): Promise<void> {
+  if (!text.trim() || text.length > MAX_TELEGRAM_REPLY_CHARS) throw new Error("Reply text must contain 1 to 4096 characters.");
+  if (!canSend()) throw new Error("the sender's permission or Telegram connection changed");
+  const result = await call(token, "sendMessage", { chat_id: chatId, text, ...(messageId ? { reply_parameters: { message_id: messageId } } : {}) }) as any;
+  if (result?.ok !== true || !Number.isSafeInteger(result.result?.message_id) || result.result.message_id <= 0) {
+    throw new Error("Telegram did not confirm the reply. Do not send it again automatically.");
+  }
 }
 
 /** Say something else in a message the bot sent, and take its buttons
@@ -938,12 +953,12 @@ export interface InboxHooks {
   saveVoice(bytes: Uint8Array): string;
   saveFile(bytes: Uint8Array, extension: string): string;
   /** A card forwarded to this chat and not yet answered. */
-  waiting(chatId: number): { options: string[]; permission: boolean } | undefined;
+  waiting(chatId: number, source?: Incoming): { options: string[]; permission: boolean } | undefined;
   answer(chatId: number, read: { option?: string; free?: string }): Promise<void>;
   /** A button pressed in a paired chat, by the person it is paired with. */
   press(chatId: number, press: Press): Promise<void>;
   /** Start a turn with this text. Returns at once; the reply follows. */
-  deliver(chatId: number, text: string): void;
+  deliver(chatId: number, text: string, source?: Incoming): void;
 }
 
 const reason = (error: unknown) => (error instanceof Error && error.message) || "something went wrong";
@@ -981,15 +996,15 @@ export class Inbox {
     if (media?.kind === "other") {
       const note = `${mediaDescription(media)} came with this and did not arrive (Bloks can't take ${media.what} from Telegram).`;
       return this.missed(chatId, decision.text, note, notDelivered(media), notDelivered(media, true),
-        refusalNote(media, `Bloks can't take ${media.what} from Telegram`));
+        refusalNote(media, `Bloks can't take ${media.what} from Telegram`), message);
     }
-    if (media?.kind === "voice") return this.voice(chatId, media, decision.text);
+    if (media?.kind === "voice") return this.voice(chatId, media, decision.text, message);
     // A photo is never an answer to a card. It is something new to look
     // at, and reading it as "yes" would be a guess.
     if (media?.kind === "image" || media?.kind === "file") return this.attachments([message]);
-    const waiting = hooks.waiting(chatId);
+    const waiting = hooks.waiting(chatId, message);
     if (waiting) return this.answer(chatId, waiting, decision.text);
-    hooks.deliver(chatId, decision.text);
+    hooks.deliver(chatId, decision.text, message);
   }
 
   /** Lets every album still waiting go now, and waits for them. */
@@ -1016,20 +1031,20 @@ export class Inbox {
    * goes to the agent as a new message, never as the answer to a card,
    * marked with what was missing and why.
    */
-  private async missed(chatId: number, caption: string, note: string, alone: string, captioned: string, standalone: string) {
-    this.hooks.deliver(chatId, withMissing(caption, caption ? note : standalone));
+  private async missed(chatId: number, caption: string, note: string, alone: string, captioned: string, standalone: string, source?: Incoming) {
+    this.hooks.deliver(chatId, withMissing(caption, caption ? note : standalone), source);
     await this.hooks.send(chatId, caption ? captioned : alone);
   }
 
-  private async voice(chatId: number, media: Extract<Media, { kind: "voice" }>, caption = ""): Promise<void> {
+  private async voice(chatId: number, media: Extract<Media, { kind: "voice" }>, caption = "", source?: Incoming): Promise<void> {
     const { hooks } = this;
     // A misheard "no" is a "yes" to something that runs on this machine,
     // so an approval is answered by typing. Asked before the audio goes
     // anywhere, and again after, in case a card arrived meanwhile.
     const typed = `That one needs a tap or a typed answer. ${ASK_AGAIN}`;
-    if (hooks.waiting(chatId)?.permission) return hooks.send(chatId, typed);
+    if (hooks.waiting(chatId, source)?.permission) return hooks.send(chatId, typed);
     const lost = (why: string, alone: string, captioned: string) =>
-      this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned, refusalNote(media, why));
+      this.missed(chatId, caption, `A voice message came with this and did not arrive (${why}).`, alone, captioned, refusalNote(media, why), source);
     const transcribe = hooks.transcriber();
     if (!transcribe) {
       return lost("there is no speech key to transcribe it", notDelivered(media), notDelivered(media, true));
@@ -1063,7 +1078,7 @@ export class Inbox {
         `I couldn't make out any words in that voice message. ${WITHOUT}`,
       );
     }
-    const waiting = hooks.waiting(chatId);
+    const waiting = hooks.waiting(chatId, source);
     if (waiting?.permission) return hooks.send(chatId, typed);
     if (waiting) return this.answer(chatId, waiting, [caption, said].filter(Boolean).join("\n\n"));
     let path: string;
@@ -1077,7 +1092,7 @@ export class Inbox {
         `I couldn't keep that voice message (${why}). ${WITHOUT}`,
       );
     }
-    hooks.deliver(chatId, voiceText(path, said, caption));
+    hooks.deliver(chatId, voiceText(path, said, caption), source);
   }
 
   /** One attachment, or a whole album, as one message: every file that could
@@ -1117,7 +1132,7 @@ export class Inbox {
         if (media.kind === "file" && sizeOrDownload) advice.add(fileAdvice(media));
       }
     }
-    if (!problems.size) return hooks.deliver(chatId, attachmentsText(caption, paths));
+    if (!problems.size) return hooks.deliver(chatId, attachmentsText(caption, paths), parts[0]);
     const why = [...problems].join("; ");
     const toAgent = [...told].join("; ");
     const missing = parts.length - paths.length;
@@ -1132,6 +1147,7 @@ export class Inbox {
         `I couldn't take that ${mediaName(media)} (${why}), so it did not reach your agent.${hint}`,
         `I couldn't take that ${mediaName(media)} (${why}). ${WITHOUT}${hint}`,
         refusalNote(media, why),
+        parts[0],
       );
     }
     if (!paths.length) {
@@ -1142,12 +1158,13 @@ export class Inbox {
         `None of those ${parts.length} reached your agent (${why}).${hint}`,
         `None of those ${parts.length} reached your agent (${why}). Your caption went without them.${hint}`,
         `${parts.length} ${noun} did not arrive, none reached the agent (${toAgent}).`,
+        parts[0],
       );
     }
     // The agent is told what is missing beside what came, so it does not
     // describe an album of three as if two were all of it.
     const note = `${missing} of ${parts.length} ${noun} did not arrive (${toAgent}).`;
-    hooks.deliver(chatId, attachmentsText(withMissing(caption, note), paths));
+    hooks.deliver(chatId, attachmentsText(withMissing(caption, note), paths), parts[0]);
     await hooks.send(chatId, `${missing} of those ${parts.length} did not reach your agent (${why}). The rest did.${hint}`);
   }
 

@@ -232,6 +232,9 @@ export interface Message {
   /** Server-created transport identity. A removed or replaced bot cannot
    * start a queued request that belonged to its previous connection. */
   telegramBinding?: { botId: string; generation: string };
+  telegramPerson?: import("./telegram-people.ts").TelegramSender;
+  /** Explicit reply, kept in the owner's transcript with its send result. */
+  telegramSent?: { personId: string; name: string; state: "sending" | "sent" | "uncertain" | "failed" };
   /** Server-only: the Claude instance that accepted this queued text.
    * Null means it was accepted on another engine; absent is a legacy queue.
    * Derive command dispatch from the current text, including after edits. */
@@ -357,6 +360,9 @@ export interface TaskRecord {
   /** Per-engine conversation cursors, one set per lane so parallel
    * lanes never share a session. */
   resumeCursors: Record<string, unknown>;
+  /** A person used a separate session. The next owner turn receives the
+   * bounded conversation so it learns that exchange without resuming it. */
+  telegramExchangePending?: boolean;
   createdAt: number;
   /** Mail from senders the owner has not listed is answered here, and
    * nothing of the owner's runs here unasked (drainMail in
@@ -866,6 +872,14 @@ export class Store {
     const found = this.taskByThread(threadId);
     if (!found) return;
     found.task.resumeCursors[instanceId] = cursor;
+    this.saveBots();
+  }
+
+  setTelegramExchangePending(threadId: string, pending: boolean) {
+    const found = this.taskByThread(threadId);
+    if (!found || Boolean(found.task.telegramExchangePending) === pending) return;
+    if (pending) found.task.telegramExchangePending = true;
+    else delete found.task.telegramExchangePending;
     this.saveBots();
   }
 
