@@ -104,6 +104,9 @@ createInterface({input:process.stdin}).on('line',async line=>{
      const mount=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks;
      const names=mount.env?.BLOKS_PUBLISH?.split(',')??['approve','ask_user','request_secret'];
      const response=m.request.subtype==='initialize'?{commands:[],current_permission_mode:'default'}:{mcpServers:[{name:'bloks',status:'connected',tools:names.map(name=>({name}))}]};
+     const bad=person&&existsSync(join(root,'guard-case'))?readFileSync(join(root,'guard-case'),'utf8'):'';
+     if(bad==='claude-mode'&&m.request.subtype==='initialize')response.current_permission_mode='bypassPermissions';
+     if(bad==='claude-server'&&m.request.subtype==='mcp_status')response.mcpServers.push({name:'synthetic_account',status:'connected',tools:[{name:'read_history'}]});
      return out({type:'control_response',response:{subtype:'success',request_id:m.request_id,response}});
    }
    if(m.type==='user'){

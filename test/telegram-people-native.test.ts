@@ -66,6 +66,54 @@ test("owner input waits behind a person's turn and does not enter their reply", 
   assert.equal(f.sent(LEE).some((m) => m.body.text.includes("OWNER_PRIVATE_WORDS")), false);
 });
 
+for (const order of ["person-owner", "owner-person"] as const) {
+  test(`mixed-sender queue ${order} keeps new words and trust in separate turns`, async (t) => {
+    const f = await personFixture(t);
+    const ownerWords = "QUEUED_OWNER_WORDS FAKE_TEXT";
+    const personWords = "QUEUED_PERSON_WORDS FAKE_TEXT";
+    let personId: string;
+    if (order === "person-owner") {
+      await f.post(`/api/bots/${f.bot.id}/messages`, { text: "FAKE_HOLD" });
+      await until(() => existsSync(join(f.root, "held")), "the owner did not start");
+      const person = await f.admit(personWords);
+      personId = person.id;
+      await until(async () => (await f.messages()).find((m) => m.telegramPerson?.personId === personId && m.queued), "the person did not queue first");
+      await f.post(`/api/bots/${f.bot.id}/messages`, { text: ownerWords });
+    } else {
+      await f.admit("FAKE_HOLD");
+      await until(() => existsSync(join(f.root, "held")), "the first person did not start");
+      await f.post(`/api/bots/${f.bot.id}/messages`, { text: ownerWords });
+      const secondId = 30303;
+      f.say(personWords, secondId, { from: { id: secondId, is_bot: false, first_name: "Rex" } });
+      const person = await until(async () => (await f.status()).people.find((p: any) => p.name === "Rex"), "the second person did not knock");
+      personId = person.id;
+      await f.post(`/api/bots/${f.bot.id}/telegram`, { personId, action: "allow" });
+      await until(async () => (await f.messages()).find((m) => m.telegramPerson?.personId === personId && m.queued), "the second person did not queue");
+    }
+    assert.equal((await f.messages()).find((m) => m.text === ownerWords).queued, true, "the owner's words did not enter the queue");
+    assert.equal(f.records().filter((r) => typeof r.text === "string").length, 1, "queued words started before the held turn ended");
+    assert.equal(f.records().some((r) => JSON.stringify(r.steered ?? null).includes(ownerWords)), false, "the owner's words steered into the held turn");
+    writeFileSync(join(f.root, "release"), "1");
+    const lastWords = order === "person-owner" ? ownerWords : personWords;
+    await until(() => f.records().some((r) => r.text?.includes(lastWords)), "the last queued words were lost");
+    await f.idle();
+    const turns = f.records().filter((r) => typeof r.text === "string").slice(1);
+    for (const turn of turns) {
+      // Earlier context may quote both senders. Only this turn's new
+      // words decide its requester and must belong to one sender.
+      const words = turn.text.split("--- the new message ---").at(-1)!;
+      const senders = [ownerWords, personWords].filter((text) => words.includes(text));
+      assert.equal(senders.length, 1, "new words from different senders merged into one turn");
+      assert.equal(turn.person, words.includes(personWords), "queued person words ran with owner trust");
+      assert.equal(turn.guard.sandbox, turn.person ? "read-only" : "danger-full-access");
+    }
+    assert.equal(turns.length, 2, "one queued sender did not get its own turn");
+    const newWords = turns.map((turn) => turn.text.split("--- the new message ---").at(-1)!.trim());
+    assert.deepEqual(newWords.map((words) => words.includes(personWords) ? "person" : "owner"), order.split("-"));
+    assert.equal((await f.messages()).find((m) => m.telegramPerson?.personId === personId && m.text?.includes(personWords)).queued, false);
+  });
+}
+
 test("taking one person out drops queued words and stops only their active turn", async (t) => {
   const f = await personFixture(t);
   await f.post(`/api/bots/${f.bot.id}/messages`, { text: "FAKE_HOLD" });
@@ -215,6 +263,26 @@ for (const shape of ["system", "system-rules", "policy", "keyring"]) {
     assert.equal(readFileSync(join(f.root, ".codex/auth.json"), "utf8"), auth);
     assert.equal(existsSync(join(f.root, "effect")), false);
     assert.equal(f.sent(LEE).some((m) => m.body.text === "Hello Lee"), false);
+  });
+}
+
+for (const shape of ["claude-mode", "claude-server"]) {
+  test(`Claude reported ${shape} mismatch holds before receiving the person's words`, async (t) => {
+    const f = await personFixture(t, "claude");
+    writeFileSync(join(f.root, "guard-case"), shape);
+    await f.admit("CLAUDE_MISMATCH_WORDS FAKE_REPLY");
+    await until(() => f.sent(LEE).some((m) => m.body.text.startsWith("This agent cannot answer")) || f.records().some((r) => r.text?.includes("CLAUDE_MISMATCH_WORDS")), "Claude neither held visibly nor received the input");
+    assert.equal(f.records().length, 0, "Claude received the person's words before verifying its reported permissions and tools");
+    assert.ok(f.sent(LEE).some((m) => m.body.text.startsWith("This agent cannot answer")), "the person was left in silence");
+    await f.idle();
+    assert.ok((await f.messages()).some((m) => m.kind === "notice" && /held:/.test(m.text ?? "") && /Claude/.test(m.text ?? "")), "the owner did not see the hold reason");
+    f.say("CLAUDE_MISMATCH_AGAIN FAKE_REPLY", LEE); await f.flushed(); await f.idle();
+    const notices = f.sent(LEE).filter((m) => m.body.text.startsWith("This agent cannot answer"));
+    assert.equal(notices.length, 1, "the neutral hold notice was repeated");
+    assert.equal(notices[0].body.text.includes(shape), false, "the person received the owner's hold reason");
+    assert.equal(f.records().length, 0, "a second message bypassed the Claude startup hold");
+    assert.equal(existsSync(join(f.root, "effect")), false);
+    assert.equal(f.sent(LEE).some((m) => m.body.text === "Hello Lee" || m.body.reply_markup), false);
   });
 }
 
