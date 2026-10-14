@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { takeBackWaiting } from "./take-back.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
@@ -9258,7 +9259,8 @@ async function sendUserMessage(
         : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
     const stop =
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
-    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop };
+    const takeBack = options.from ? ` To take back your messages while they wait, use \`bloks take-back ${bot.id}\`.` : "";
+    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop + takeBack };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
@@ -11772,6 +11774,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       broadcast({ kind: "message.patch", threadId: thread, message: patched });
       return json(res, 200, { message: patched });
     }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/take-back$/);
+    if (m && method === "POST") {
+      // Only a turn's agent credential identifies a sender. Neither the
+      // person nor a paired client may select somebody else's messages.
+      if (!asAgent) return json(res, 403, { error: "take-back needs an agent's turn credential" });
+      const caller = store.bot(asAgent.botId);
+      const recipient = store.bot(m[1]);
+      if (!recipient) return json(res, 404, { error: "no such agent; take-back does not apply to rooms" });
+      if (!caller || caller.id === recipient.id) return json(res, 403, { error: "take-back is only for your messages to another agent" });
+      // No body selection and no await: the queue cannot claim words
+      // between this operation's selection and its last tombstone.
+      const result = takeBackWaiting({
+        store, queues: steerQueues, caller, callerLaneId: asAgent.taskId, recipient,
+        patched: (threadId, message) => broadcast({
+          kind: message.takeBack ? "message" : "message.patch", threadId, message,
+        }),
+        editClosed,
+      });
+      return json(res, result.takenBack.length ? 200 : 409, result.takenBack.length ? result : { ...result, error: result.note });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
     if (m && method === "GET") {
       // Earlier messages of one of this agent's conversations, the page
@@ -13177,6 +13199,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             // what an agent said in its own chat after the other's message
             // is context, listed as such: it was never sent to them
             const note =
+              (msg.takeBack ? { dir: "take-back" as const, ...msg.takeBack } : undefined) ??
               msg.agent ?? (msg.afterAgent ? { dir: "reply" as const, ...msg.afterAgent } : undefined);
             if (!note || note.peerId !== other.id || msg.deleted) continue;
             // a send that arrived is listed once, from the side it arrived on
@@ -13186,7 +13209,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               id: msg.id,
               at: msg.at,
               dir: note.dir,
-              ...(note.status ? { status: note.status } : {}),
+              ...("status" in note && note.status ? { status: note.status } : {}),
               from: fromSelf ? self.id : other.id,
               fromName: fromSelf ? self.name : other.name,
               to: fromSelf ? other.id : self.id,

@@ -123,6 +123,8 @@ export interface RecalledNote {
 export interface Message {
   /** Between two agents rather than with the person; see AgentNote. */
   agent?: AgentNote;
+  /** A record of taking back waiting words, not a send to the peer. */
+  takeBack?: { peerId: string; peerName: string; messages: Array<{ id: string; laneId: string; text: string }> };
   /** Said in this agent's own chat during a turn another agent's message
    * started. Context only: it was not sent to that agent (an agent does
    * that with \`bloks say\`), so it is shown in full like any reply, with

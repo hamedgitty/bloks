@@ -70,6 +70,8 @@ export interface RecalledNote {
 export interface Message {
   /** Between two agents rather than with the person. */
   agent?: AgentNote;
+  /** A record of taking back waiting words, not a send to the peer. */
+  takeBack?: { peerId: string; peerName: string; messages: Array<{ id: string; laneId: string; text: string }> };
   /** Said in this agent's own chat in a turn another agent's message
    * started: shown in full, with a link to the exchange. Not sent to it. */
   afterAgent?: { peerId: string; peerName: string };

@@ -27,7 +27,7 @@ import { cn } from "@/lib/cn";
 interface ExchangeEntry {
   id: string;
   at: number;
-  dir: "in" | "out" | "reply";
+  dir: "in" | "out" | "reply" | "take-back";
   status?: "sent" | "queued" | "failed";
   from: string;
   fromName: string;
@@ -53,12 +53,14 @@ export function AgentExchangeRow({
   onOpen: (peerId: string, messageId: string, text: string) => void;
 }) {
   const { state } = useStore();
-  const note = message.agent!;
+  const note = message.takeBack ?? message.agent!;
+  const incoming = !message.takeBack && message.agent?.dir === "in";
   const peer = state.bots.find((b) => b.id === note.peerId);
   const name = peer?.name ?? note.peerName;
-  const label = note.dir === "in" ? `Message from ${name}` : `Messaged ${name}`;
-  const Icon = note.dir === "in" ? ArrowDownLeft : ArrowUpRight;
-  const failed = note.status === "failed";
+  const label = message.takeBack ? `Took back messages to ${name}` : incoming ? `Message from ${name}` : `Messaged ${name}`;
+  const Icon = incoming ? ArrowDownLeft : ArrowUpRight;
+  const status = message.takeBack ? undefined : message.agent?.status;
+  const failed = status === "failed";
   const preview = (message.text ?? "").replace(/\s+/g, " ").trim();
   return (
     <div className={cn("flex justify-start", fresh && "animate-receive-in")} data-agent-row={botId}>
@@ -70,8 +72,8 @@ export function AgentExchangeRow({
         <Icon size={13} className={cn("shrink-0", failed ? "text-destructive" : "text-brand")} />
         {peer && <AgentAvatar bot={peer} size={16} className="shrink-0" />}
         <span className="shrink-0 font-medium text-foreground/90">{label}</span>
-        {note.status && STATUS_WORDS[note.status] && (
-          <span className={cn("shrink-0", failed && "text-destructive")}>({STATUS_WORDS[note.status]})</span>
+        {status && STATUS_WORDS[status] && (
+          <span className={cn("shrink-0", failed && "text-destructive")}>({STATUS_WORDS[status]})</span>
         )}
         {preview && <span className="min-w-0 truncate">{preview}</span>}
         {/* still one line: how long it waited is a hover away */}
@@ -181,7 +183,7 @@ export function AgentExchangeDialog({
                     {who && <AgentAvatar bot={who} size={16} />}
                     <span className="font-medium text-foreground">{entry.fromName}</span>
                     {/* context, not a message: it stayed in the speaker's own chat */}
-                    <span>{entry.dir === "reply" ? `in its own chat, not sent to ${entry.toName}` : `to ${entry.toName}`}</span>
+                    <span>{entry.dir === "take-back" ? `took back waiting messages to ${entry.toName}` : entry.dir === "reply" ? `in its own chat, not sent to ${entry.toName}` : `to ${entry.toName}`}</span>
                     {entry.status === "failed" && <span className="text-destructive">not delivered</span>}
                     <span className="ml-auto shrink-0 tabular-nums">{stamp(entry.at)}</span>
                   </div>
