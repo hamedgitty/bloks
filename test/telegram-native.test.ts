@@ -32,7 +32,7 @@ interface Call { method: string; body: any; at: number; token: string }
  * are kept as what they were called, what they said they were and how
  * big they were. */
 async function telegramStub(t: TestContext) {
-  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void>, pollTokens: [] as string[], getMeReplies: new Map<string, { status?: number; body: unknown }>() };
+  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void>, pollTokens: [] as string[], getMeReplies: new Map<string, { status?: number; body: unknown }>(), holdDelete: false, deleteReleases: [] as Array<() => void>, deleted: [] as Array<{ id: number; at: number }> };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -67,11 +67,16 @@ async function telegramStub(t: TestContext) {
         return reply({ id: Number(token.split(":")[0]), is_bot: true, username: "PlanningBot" });
       }
       if (["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return reply({ message_id: ++state.messageId });
+      if (method === "deleteMessage") {
+        const finish = () => { state.deleted.push({ id: body.message_id, at: Date.now() }); reply(true); };
+        if (state.holdDelete) return void state.deleteReleases.push(finish);
+        return finish();
+      }
       reply(true);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => { server.closeAllConnections(); server.close(); });
+  t.after(() => { state.deleteReleases.forEach((f) => f()); server.closeAllConnections(); server.close(); });
   return {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
@@ -121,6 +126,7 @@ let thread, turn;
 const waiting = new Map();
 const ask = (id, method, params) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method, params: { threadId: thread, turnId: turn, ...params } }); });
 const tool = (id, command) => out({ method: "item/started", params: { threadId: thread, turnId: turn, item: { type: "commandExecution", id, command } } });
+const say = (id, text) => out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id, text } } });
 const finish = (text, reason) => {
   if (text !== null) out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "answer", text } } });
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: reason ? "failed" : "completed", ...(reason ? { error: { message: reason } } : {}) } } });
@@ -134,10 +140,35 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "model/list") return reply({ data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", isDefault: true, hidden: false }] });
   if (m.method === "skills/list") return reply({ data: [{ cwd: m.params.cwds[0], skills: [], errors: [] }] });
   if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? "native-" + process.pid; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }
+  if (m.method === "turn/interrupt") { out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "interrupted" } } }); return reply(); }
+  if (m.method === "turn/steer" && existsSync(root + "/scope-force-queue")) return out({ id: m.id, error: { code: -32000, message: "fixture cannot steer" } });
   if (m.method !== "turn/start") return reply();
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  const scope = text.match(/SCOPED_[A-Z_]+/g)?.at(-1);
+  if (scope) {
+    writeFileSync(root + "/" + scope + "-started", "1");
+    if (scope === "SCOPED_HOLD") {
+      for (let i = 0; i < 3000 && !existsSync(root + "/aside-release"); i++) await nap(20);
+      return finish("ASIDE DONE");
+    }
+    if (scope === "SCOPED_MAIN_HOLD") {
+      writeFileSync(root + "/scope-force-queue", "1");
+      say("other-note", "An earlier request's note.");
+      let late = false;
+      for (let i = 0; i < 3000 && !existsSync(root + "/main-release"); i++) {
+        if (!late && existsSync(root + "/old-note-release")) { late = true; say("other-late", "An earlier request's late note."); }
+        await nap(20);
+      }
+      return finish("EARLIER FINAL");
+    }
+    if (scope === "SCOPED_LATER") { say("later-note", "LATER NOTE"); return finish("LATER FINAL"); }
+    say("phone-note", "PHONE NOTE");
+    if (scope === "SCOPED_OWNER_PROGRESS") await nap(21_500);
+    say("phone-final", "PHONE FINAL"); tool("after-final", "git status");
+    return finish(null);
+  }
   if (text.includes("EMPTY_TURN")) return finish(null);
   if (text.includes("COMPLETION_FAILURE")) return finish(null, "synthetic completion failure");
   if (text.includes("ENGINE_NOTICE") || text.includes("REPLY_THEN_NOTICE")) {
@@ -186,14 +217,31 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     for (let i = 0; i < 1000 && !existsSync(root + "/unpair-release"); i++) await nap(20);
     return finish("OLD_UNPAIRED_ANSWER");
   }
+  if (text.includes("SLOW_NO_NOTE")) {
+    tool("t1", "npm test"); await nap(21_500);
+    return finish("NO NOTE DONE");
+  }
   if (text.includes("SLOW")) {
+    out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "reasoning", id: "thought", summary: [{ type: "summary_text", text: "PRIVATE_REASONING" }], content: [{ type: "reasoning_text", text: "PRIVATE_REASONING" }] } } });
+    say("n1", "I am checking the parser.");
     tool("t1", "npm test");
     await nap(21_000);
+    if (text.includes("SLOW_ERROR")) {
+      say("n2", "The parser checks pass.");
+      for (let i = 0; i < 1000 && !existsSync(root + "/error-release"); i++) await nap(20);
+      out({ method: "error", params: { threadId: thread, error: { message: "synthetic failure after a note" } } });
+      return finish(null, "synthetic failure after a note");
+    }
+    if (text.includes("SLOW_STOP")) return;
+    say("n2", "The parser checks pass.");
     tool("t2", "npm run build");
     await nap(300);
-    tool("t3", "curl -u sk-test_abcdefghijklmnop api.invalid");
+    say("n3", "I am checking the build.");
+    tool("t3", "npm run lint");
     await nap(5_000);
-    return finish("SLOW DONE");
+    say("answer", "SLOW DONE");
+    tool("trailing", "git status");
+    return finish(null);
   }
   finish("ANSWER");
 });
@@ -213,8 +261,16 @@ const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
-process.stdin.once("data", (input) => {
+process.stdin.once("data", async (input) => {
   out({ type: "system", subtype: "init", session_id: "sess-native", model: "claude-sonnet-5" });
+  if (String(input).includes("CLAUDE_THINKING")) {
+    out({ type: "system", subtype: "thinking_tokens", estimated_tokens: 32, text: "PRIVATE_THINKING" });
+    out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "PRIVATE_THINKING" }, { type: "text", text: "A visible note." }] } });
+    await new Promise((r) => setTimeout(r, 21_500));
+    out({ type: "assistant", message: { content: [{ type: "text", text: "THINKING DONE" }] } });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-native", result: "THINKING DONE" });
+    return setTimeout(() => process.exit(0), 50);
+  }
   if (String(input).includes("CLAUDE_REFUSAL") || String(input).includes("CLAUDE_REPLY_NOTICE")) {
     if (String(input).includes("CLAUDE_REPLY_NOTICE")) out({ type: "assistant", message: { content: [{ type: "text", text: "A real reply." }] } });
     // An is_error result supplies a stopReason without a runtime.error.
@@ -443,30 +499,86 @@ test("files from a turn that did not begin on Telegram stay in the app", async (
   assert.deepEqual([...f.tg.calls("sendPhoto"), ...f.tg.calls("sendDocument")], []);
 });
 
-test("a long turn posts what it is working on, rewrites it as tools change, and takes it away for the answer", async (t) => {
+test("a long turn posts new silent visible notes, then deletes them before its final-only answer", async (t) => {
   const f = await fixture(t);
   const asked = Date.now();
   f.tg.say("SLOW work");
-  const status = await waitFor(() => f.tg.sent().find((m) => m.body.text?.startsWith("Working")), "no status line was posted", 40_000);
-  assert.equal(status.body.text, "Working: npm test...");
-  assert.equal(status.body.disable_notification, true);
-  assert.ok(status.at - asked >= 19_000, `posted after ${status.at - asked} ms, not about twenty seconds`);
+  const first = await waitFor(() => f.tg.state.calls.find((m) => m.body.disable_notification || m.method === "editMessageText"), "no notes message was posted", 40_000);
+  assert.equal(first.method, "sendMessage", "notes must be new posts, never edits");
+  assert.equal(first.body.text, "I am checking the parser.");
+  assert.equal(first.body.disable_notification, true);
+  assert.ok(first.at - asked >= 19_000, "posted after " + (first.at - asked) + " ms, not about twenty seconds");
   const answer = await waitFor(() => f.tg.state.calls.find((c) => c.method === "sendMessage" && c.body.text === "SLOW DONE"), "the answer never came", 40_000);
   assert.equal("disable_notification" in answer.body, false);
-  // one rewrite for two quick tools, naming the later, without the key
-  // its command carried
-  const edits = f.tg.calls("editMessageText");
-  assert.deepEqual(edits.map((c) => [c.body.message_id, c.body.text]), [[status.id, "Working: curl -u [redacted] api.invalid..."]]);
-  const removed = f.tg.calls("deleteMessage");
-  assert.deepEqual(removed.map((c) => c.body), [{ chat_id: CHAT, message_id: status.id }]);
-  assert.ok(removed[0]!.at <= answer.at, "the line is gone before the answer arrives");
+  const notes = f.tg.sent().filter((c) => c.body.disable_notification);
+  assert.equal(notes.length, 2);
+  assert.deepEqual(notes.map((c) => c.body.text), ["I am checking the parser.", "The parser checks pass.\n\nI am checking the build."]);
+  assert.ok(notes[1].at - notes[0].at >= 3_800, "new notes obey the throttle");
+  assert.ok(notes.every((c) => !c.body.parse_mode));
+  assert.equal(f.tg.calls("editMessageText").length, 0);
+  assert.ok(f.tg.calls("sendMessage").every((c) => !c.body.text.includes("Working:")));
+  assert.doesNotMatch(JSON.stringify(f.tg.state.calls), /PRIVATE_REASONING|npm test|npm run build|git status/);
+  assert.deepEqual(f.tg.calls("deleteMessage").map((c) => c.body), notes.map((c) => ({ chat_id: CHAT, message_id: c.id })));
+  assert.ok(notes.every((c) => f.tg.state.deleted.some((d) => d.id === c.id && d.at <= answer.at)), "every known message is gone before the answer");
 });
 
-test("a quick turn posts no status line", async (t) => {
+test("a turn with tools and no visible note posts nothing extra even after twenty seconds", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("SLOW_NO_NOTE");
+  await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "NO NOTE DONE"), "the empty-note turn never ended", 40_000);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 0);
+  assert.equal(f.tg.calls("editMessageText").length, 0);
+});
+
+test("Claude thinking items never reach the notes messages or final answer", async (t) => {
+  const f = await fixture(t, "claude");
+  f.tg.say("CLAUDE_THINKING");
+  const status = await waitFor(() => f.tg.sent().find((m) => m.body.disable_notification), "no visible Claude note", 40_000);
+  assert.equal(status.body.text, "A visible note.");
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text === "THINKING DONE"), "no Claude final answer", 40_000);
+  assert.equal("disable_notification" in answer.body, false);
+  assert.doesNotMatch(JSON.stringify(f.tg.state.calls), /PRIVATE_THINKING/);
+  assert.doesNotMatch(JSON.stringify(await f.messages()), /PRIVATE_THINKING/);
+  assert.ok(f.tg.calls("deleteMessage")[0].at <= answer.at);
+});
+
+test("all notes messages are deleted before an error notice when their text was taken back", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("SLOW_ERROR");
+  await waitFor(() => f.tg.sent().filter((m) => m.body.disable_notification).length === 2, "no two notes before error", 40_000);
+  const notes = f.tg.sent().filter((m) => m.body.disable_notification);
+  assert.deepEqual(notes.map((m) => m.body.text), ["I am checking the parser.", "The parser checks pass."]);
+  const transcript = await f.messages();
+  const from = transcript.findIndex((m) => m.role === "user" && m.text === "SLOW_ERROR");
+  assert.ok(from >= 0);
+  const rows = transcript.slice(from + 1).filter((m) => m.kind === "text" && m.role === "bot");
+  assert.equal(rows.length, 2);
+  for (const note of rows) await f.h.json("/api/threads/" + f.bot.threadId + "/messages/" + note.id, { method: "DELETE" });
+  writeFileSync(join(f.root, "error-release"), "1");
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text === "synthetic failure after a note" && !c.body.disable_notification), "no notice after error", 40_000);
+  assert.equal("parse_mode" in answer.body, false);
+  assert.equal(f.tg.calls("editMessageText").length, 0);
+  assert.deepEqual(f.tg.calls("deleteMessage").map((c) => c.body.message_id), notes.map((m) => m.id));
+  assert.ok(notes.every((m) => f.tg.state.deleted.some((d) => d.id === m.id && d.at <= answer.at)));
+  assert.ok((await f.messages()).some((m) => m.kind === "notice" && m.text.includes("synthetic failure after a note")));
+});
+
+test("stopping a native turn deletes its notes before a fresh answer", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("SLOW_STOP");
+  const status = await waitFor(() => f.tg.sent().find((m) => m.body.disable_notification), "no note before stop", 40_000);
+  await f.post("/api/bots/" + f.bot.id + "/interrupt", { taskId: f.bot.threadId });
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text === "I am checking the parser." && !c.body.disable_notification), "no answer after stop");
+  assert.ok(f.tg.calls("deleteMessage").some((c) => c.body.message_id === status.id && c.at <= answer.at));
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 1);
+});
+
+test("a quick turn posts no notes messages", async (t) => {
   const f = await fixture(t);
   f.tg.say("hello");
   await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "ANSWER"), "the answer never came");
-  assert.equal(f.tg.sent().filter((m) => m.body.text?.startsWith("Working")).length, 0);
+  assert.equal(f.tg.sent().filter((m) => m.body.disable_notification).length, 0);
+  assert.equal(f.tg.calls("editMessageText").length, 0);
   assert.equal(f.tg.calls("deleteMessage").length, 0);
 });
 
@@ -768,4 +880,69 @@ test("unpairing without disabling retires an in-flight answer by generation", as
   await waitFor(async () => (await f.messages()).some((message) => message.role === "bot" && message.text === "OLD_UNPAIRED_ANSWER"), "the old turn never finished in the app");
   await sleep(150);
   assert.equal(f.tg.sent().some((call) => call.body.text === "OLD_UNPAIRED_ANSWER"), false, "the unpaired chat received its retired answer");
+});
+
+test("normal waitForIdle never picks up a later turn's answer or notes", async (t) => {
+  const f = await fixture(t);
+  const { bot } = await f.post("/api/bots/" + f.bot.id + "/tasks", { title: "Aside" });
+  const aside = bot.tasks.find((task: any) => task.id !== f.bot.threadId)!;
+  const active = await f.post("/api/bots/" + f.bot.id + "/tasks/" + f.bot.threadId + "/activate");
+  assert.equal(active.bot.activeTaskId, f.bot.threadId);
+  await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_HOLD", taskId: aside.id });
+  await waitFor(() => existsSync(join(f.root, "SCOPED_HOLD-started")), "the aside never started");
+  f.tg.say("SCOPED_PHONE");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "PHONE FINAL"), "the consuming turn did not end");
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === "PHONE FINAL").length, 0, "waitForIdle is held by the other lane");
+  await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_LATER", taskId: f.bot.threadId });
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "LATER FINAL"), "the later turn never spoke");
+  writeFileSync(join(f.root, "aside-release"), "1");
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text === "PHONE FINAL"), "the original answer never came");
+  assert.equal("disable_notification" in answer.body, false);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text.includes("LATER")).length, 0);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 0);
+});
+
+test("queued words wait without notes, start the twenty seconds at delivery, and exclude a later turn", async (t) => {
+  const f = await fixture(t);
+  await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_MAIN_HOLD" });
+  await waitFor(() => existsSync(join(f.root, "scope-force-queue")), "the first turn never held");
+  f.tg.say("SCOPED_OWNER_PROGRESS");
+  const request = await waitFor(async () => (await f.messages()).find((m) => m.text === "SCOPED_OWNER_PROGRESS" && m.queued), "the phone request never queued");
+  writeFileSync(join(f.root, "old-note-release"), "1");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "An earlier request's late note."), "no earlier note while queued");
+  await sleep(21_000);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 0);
+  writeFileSync(join(f.root, "main-release"), "1");
+  const delivered = await waitFor(async () => (await f.messages()).find((m) => m.id === request.id && !m.queued && m.deliveredAt), "the request never delivered");
+  const status = await waitFor(() => f.tg.sent().find((m) => m.body.disable_notification), "no consuming-turn note", 40_000);
+  assert.equal(status.body.text, "PHONE NOTE");
+  assert.ok(status.at - delivered.deliveredAt >= 19_000, "queue time must not count");
+  f.tg.state.holdDelete = true;
+  await waitFor(() => f.tg.state.deleteReleases.length === 1, "the notes never reached cleanup");
+  await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_LATER" });
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "LATER FINAL"), "the later turn did not end");
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === "PHONE FINAL").length, 0);
+  f.tg.state.holdDelete = false; f.tg.state.deleteReleases.shift()!();
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => c.body.text === "PHONE FINAL"), "no queued answer");
+  assert.ok(f.tg.state.deleted.some((d) => d.id === status.id && d.at <= answer.at));
+  assert.equal(f.tg.calls("editMessageText").length, 0);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text.includes("EARLIER") || c.body.text.includes("LATER")).length, 0);
+});
+
+test("a queued phone request taken back in the app sends none of the running turn's text", async (t) => {
+  const f = await fixture(t);
+  await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_MAIN_HOLD" });
+  await waitFor(() => existsSync(join(f.root, "scope-force-queue")), "the first turn never held");
+  f.tg.say("SCOPED_PHONE");
+  const request = await waitFor(async () => (await f.messages()).find((m) => m.text === "SCOPED_PHONE" && m.queued), "the phone request never queued");
+  writeFileSync(join(f.root, "old-note-release"), "1");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "An earlier request's late note."), "no earlier note");
+  await f.h.json("/api/threads/" + f.bot.threadId + "/messages/" + request.id, { method: "DELETE" });
+  const fallback = "(the agent finished without saying anything)";
+  await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === fallback), "no no-text answer after takeback");
+  writeFileSync(join(f.root, "main-release"), "1");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "EARLIER FINAL"), "the original work was lost");
+  assert.equal(f.tg.calls("sendMessage").filter((c) => /earlier|PHONE/i.test(c.body.text)).length, 0);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 0);
+  assert.equal(existsSync(join(f.root, "SCOPED_PHONE-started")), false);
 });

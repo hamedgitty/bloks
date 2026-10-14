@@ -2,7 +2,7 @@
 // It belongs to that queued request, never to later turns in the lane.
 import type { Message, Store } from "./store.ts";
 import { send, TelegramError, type TelegramState } from "./telegram.ts";
-import { telegramFallback, type TelegramText } from "./telegram-reply.ts";
+import { telegramReply, type TelegramText } from "./telegram-reply.ts";
 
 export interface TelegramReply {
   chatId: number;
@@ -110,11 +110,8 @@ export class TelegramReturns {
       const after = group[0].telegramReply!.after;
       const boundary = after ? transcript.findIndex((m) => m.id === after) : -1;
       const said = failure ? [] : transcript.slice(boundary + 1);
-      const words = said
-        .filter((m) => m.role === "bot" && m.kind === "text" && m.text && !m.deleted)
-        .map((m) => m.text).join("\n\n").trim();
       const answer: TelegramText = failure !== undefined ? { text: failure, markdown: false } :
-        words ? { text: words, markdown: true } : telegramFallback(said, this.redact);
+        telegramReply(said, this.redact);
       // The text is captured before another turn can move the transcript.
       const run = this.say(laneId, group, chatId, answer, said);
       this.sends.add(run);

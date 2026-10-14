@@ -366,7 +366,8 @@ test("a steered same-chat follow-up after restart has one answer for the consumi
   assert.ok(await waitFor(async () => (await messagesOf(f.h, f.bot)).some((m) => m.text === "Working")));
   f.tg.push("FOLLOWUP");
   assert.ok(await waitFor(() => f.tg.answers().length === 1));
-  assert.equal(f.tg.answers()[0].text, "Working\n\nBoth: FOLLOWUP");
+  assert.equal(f.tg.answers()[0].text, "Both: FOLLOWUP");
+  assert.ok((await messagesOf(f.h, f.bot)).some((m) => m.text === "Working"), "the earlier note stays in the app");
   assert.equal(readFileSync(join(f.dataRoot, "spawns"), "utf8"), "1");
   await sleep(300);
   assert.equal(f.tg.answers().length, 1);
@@ -589,7 +590,7 @@ test("a planned drain waits for an in-flight return send", async (t) => {
   assert.ok(await waitFor(async () => (await f.h.json("/api/maintenance/drain")).idle));
 });
 
-test("a synchronous fake engine speaks before carryOn moves its input: all turn text still returns", async (t) => {
+for (const final of [false, true]) test("carryOn moves its held input after turn text: keep the whole return span (final=" + final + ")", async (t) => {
   const rows = [
     { id: "old", role: "bot", kind: "text", text: "OLD ANSWER" },
     { id: "request", role: "user", kind: "text", text: "ASK", queued: true, telegramReply: { chatId: CHAT, state: "queued" } },
@@ -608,17 +609,20 @@ test("a synchronous fake engine speaks before carryOn moves its input: all turn 
     bodies.push(JSON.parse(body));
     return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }));
   });
-  const returns = new TelegramReturns(memory, () => ({ enabled: true, token: "TEST", chatIds: [CHAT] }), () => {}, () => {});
+  const handed: string[][] = [];
+  const returns = new TelegramReturns(memory, () => ({ enabled: true, token: "TEST", chatIds: [CHAT] }), () => {}, () => {},
+    async (_lane, _chat, said) => void handed.push(said.map((m) => m.id)));
   returns.bind("lane", ["request"], true);
   // A synchronous adapter publishes text before startTurn resolves.
   rows.push({ id: "early", at: 1, role: "bot", kind: "text", text: "EARLY" });
   // deliverQueued then moves its request behind that already-spoken text.
   const request = rows.splice(rows.findIndex((m) => m.id === "request"), 1)[0];
   request.queued = false; rows.push(request);
-  rows.push({ id: "final", at: 2, role: "bot", kind: "text", text: "FINAL" });
+  if (final) rows.push({ id: "final", at: 2, role: "bot", kind: "text", text: "FINAL" });
   returns.finish("lane");
   assert.ok(await waitFor(() => request.telegramReply?.state === "sent"));
-  assert.equal(bodies[0].text, "EARLY\n\nFINAL");
+  assert.equal(bodies[0].text, final ? "FINAL" : "EARLY");
+  assert.deepEqual(handed, [final ? ["early", "request", "final"] : ["early", "request"]]);
   returns.finish("lane");
   assert.equal(bodies.length, 1);
 });

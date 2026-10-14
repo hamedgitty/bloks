@@ -799,15 +799,24 @@ the same way (`TelegramReturns`), and only once that answer has arrived.
 Files go only with an answer that goes to the chat: a turn started in
 the app, a routine or a mail sends nothing there.
 
-While a Telegram turn runs the chat shows "typing" (`keepTyping`), and a
-turn still running after about twenty seconds also posts one line saying
-what it is doing, "Working: <tool>..." (`telegram.Progress`, fed from
-`item.started` through `telegramWorking`, keyed by lane). The same
-message is edited as the tool changes, no more than once every four
-seconds, and deleted when the turn ends, before the answer is sent: the
-answer is a new message, so the phone still announces it. While a card
-waits on the person neither "typing" nor the line changes, since the
-agent is waiting then, not working.
+While a Telegram turn runs the chat shows "typing" (`keepTyping`).
+Completed visible notes from its consuming turn go out as new silent messages
+in order, starting after twenty seconds (`telegram.Progress`, fed from stored
+bot text through request-scoped `TurnProgress`). Notes in the first twenty
+seconds or within the four-second throttle are batched; a batch over 4,000
+UTF-16 units splits at whole-note boundaries. Only an individually oversized
+note is cut with an ellipsis. Reasoning items and tool names do not feed the
+messages; without a note there is nothing extra. Notes are never edited.
+Cleanup cancels pending notes, awaits the post in flight, and deletes every
+known message before the new notifying answer or notice. A failed deletion
+does not prevent the answer. While a card waits on the person neither typing
+nor notes post, since the agent is waiting then. An uncertain post suppresses
+further notes in that turn because its message may have arrived without an id.
+The tool line is deliberately removed. Normal answers take the last eligible
+text after the request in its consuming turn, with waiting rows excluded;
+completion captures that span before a later turn starts. Drain returns keep
+their existing `after` span and have no notes messages. With no reply, a plain
+redacted notice is sent; only a turn with neither keeps the empty-answer line.
 
 ## Teams as files
 
