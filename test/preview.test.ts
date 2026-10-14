@@ -33,6 +33,36 @@ describe("every kind says something", () => {
     assert.equal(previewLine(msg({ text: "**Done.** See `report.md`" })), "Done. See report.md");
   });
 
+  test("a take-back record names the removed messages after a textless turn", () => {
+    const record = msg({
+      kind: "activity",
+      at: 20,
+      takeBack: {
+        peerId: "agent-b",
+        peerName: "Agent B",
+        messages: [
+          { id: "first", laneId: "lane-one", text: "Use the first version." },
+          { id: "second", laneId: "lane-two", text: "Use the first version." },
+        ],
+      },
+    });
+    const sender = { threadId: "sender-lane", busy: false, messages: [msg({ text: "Ready.", at: 10 }), record] };
+    assert.equal(lastSaid(sender.messages), record);
+    assert.equal(previewLine(record), "Took back 2 messages");
+    assert.equal(agentPreview(sender), "Took back 2 messages");
+    assert.equal(agentPreview({ ...sender, busy: true }), "Working…");
+    assert.equal(
+      previewLine(msg({ ...record, takeBack: { ...record.takeBack!, messages: [record.takeBack!.messages[0]] } })),
+      "Took back 1 message",
+    );
+    assert.equal(previewLine(msg({ ...record, deleted: true })), "Message taken back");
+  });
+
+  test("ordinary activity still names its tool or says Working", () => {
+    assert.equal(previewLine(msg({ kind: "activity" })), "Working");
+    assert.equal(previewLine(msg({ kind: "activity", tool: { name: "Read", ok: true } })), "Read");
+  });
+
   test("a card shows what it asks", () => {
     assert.equal(
       previewLine(msg({ kind: "options", card: { title: "Ship it?", options: ["Yes"] } as never })),
