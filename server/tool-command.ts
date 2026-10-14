@@ -1,6 +1,6 @@
 // Display detail is sanitized before the event log, store or subscribers.
-// Keep source offsets while reading shell words, including Codex's quoted
-// /bin/bash -lc argument. Replacing only value spans preserves the command.
+// Keep source offsets while reading shell words, including a Codex POSIX
+// shell's quoted -lc or -c argument. Replace only the credential spans.
 const COMMAND_LIMIT = 2000;
 const SECRET_NAME = /token|password|passwd|secret|credential|api[_-]?key|private[_-]?key|access[_-]?key/i;
 
@@ -119,7 +119,7 @@ function maskCredentials(text: string): string {
       }
     }
   }
-  if (outer[0]?.text === "/bin/bash" && outer[1]?.text === "-lc" && outer[2]) {
+  if (/(?:^|\/)(?:ba|z|da|k)?sh$/.test(outer[0]?.text ?? "") && /^-l?c$/.test(outer[1]?.text ?? "") && outer[2]) {
     collect(outer[2].text, words(outer[2].text), outer[2]);
     collect(text, outer.slice(3));
   } else {

@@ -1,5 +1,5 @@
 import { carryOnText } from "../server/cut-off.ts";
-import { commandForms } from "./helpers/command-fixtures.ts";
+import { commandForms, shellWrappers } from "./helpers/command-fixtures.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { toolCommand, legacyToolTitle } from "../server/tool-command.ts";
@@ -69,8 +69,13 @@ test("the display bound is UTF-16, includes its ellipsis and never splits an emo
   assert.equal(toolCommand("😀".repeat(2000), keep)!.length, 1999);
 });
 
-test("every credential shape is fully hidden in direct and both Codex wrappers", () => {
+test("every credential shape is fully hidden in direct commands and POSIX shell wrappers", () => {
   const cases = [
+    ["cd /fixture && GITHUB_TOKEN=fixture_token tool", ["fixture_token"]],
+    ["export API_KEY=fixture_key; tool", ["fixture_key"]],
+    ["cd /fixture && tool --password=fixture_password", ["fixture_password"]],
+    ["cd /fixture && tool --token fixture_flag", ["fixture_flag"]],
+    ['curl -H "Authorization:" "Basic fixture_split_value"', ["fixture_split_value"]],
     ['curl -H "Authorization": "Basic fixture_split_value"', ["fixture_split_value"]],
     ['curl -H "X-Api-Key": "fixture_split_value"', ["fixture_split_value"]],
     ["curl -H 'Cookie': 'session=fixture_split_value'", ["fixture_split_value"]],
@@ -93,7 +98,8 @@ test("every credential shape is fully hidden in direct and both Codex wrappers",
       const shown = toolCommand(input, keep)!;
       for (const value of values) assert.ok(!shown.includes(value), "credential survived: " + value + " in " + shown);
       assert.match(shown, /\[redacted\]/);
-      if (input.startsWith("/bin/bash")) assert.match(shown, /^\/bin\/bash -lc /);
+      const wrapper = shellWrappers.find((prefix) => input.startsWith(prefix + " "));
+      if (wrapper) assert.ok(shown.startsWith(wrapper + " "), "shell wrapper changed: " + shown);
     }
   }
   const unchanged = "sort -u data.txt; curl -u demo:fixture_pass --user demo:fixture_pass https://fixture_token@host.invalid/?access_token=fixture_query";

@@ -27,9 +27,14 @@ const calls = [
   { id: "digest", command: 'curl -H "Authorization: Digest username=\\"demo\\", response=\\"escaped_fixture_value\\"" https://example.invalid' },
   { id: "unclosed", command: 'tool Bearer "unclosed_fixture_value' },
   { id: "extra", command: "API_KEY=assign_fixture_value tool --token flag_fixture_value -H 'Cookie: session=cookie_fixture_value'" },
+  { id: "zsh-wrapped", command: 'cd /fixture && GITHUB_TOKEN=assign_fixture_value tool --password=flag_fixture_value -H "Authorization:" "Basic split_fixture_value"' },
+  { id: "sh-wrapped", command: "cd /fixture && export API_KEY=assign_fixture_value tool --token flag_fixture_value" },
   { id: "single-wrapped", command: SENSITIVE },
   { id: "split-header", command: 'curl -H "Authorization": "Basic split_fixture_value"' },
 ];
+const wrap = (command: string, id: string) => id === "zsh-wrapped" ? singleWrapped(command, "/bin/zsh -lc")
+  : id === "sh-wrapped" ? doubleWrapped(command, "/bin/sh -c")
+  : id === "single-wrapped" ? singleWrapped(command) : doubleWrapped(command);
 const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(read: () => Promise<T | null> | T | null): Promise<T> {
@@ -48,7 +53,7 @@ function fakeEngine(root: string, engine: string) {
     'import { existsSync } from "node:fs";',
     'import { createInterface } from "node:readline";',
     "const root = " + JSON.stringify(root) + ";",
-    "const calls = " + JSON.stringify(calls.map((call) => engine === "codex" && typeof call.command === "string" && call.command.trim() ? { ...call, command: call.id === "single-wrapped" ? singleWrapped(call.command) : doubleWrapped(call.command) } : call)) + ";",
+    "const calls = " + JSON.stringify(calls.map((call) => engine === "codex" && typeof call.command === "string" && call.command.trim() ? { ...call, command: wrap(call.command, call.id) } : call)) + ";",
     'const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");',
     "const nap = (ms) => new Promise((r) => setTimeout(r, ms));",
     'if (process.argv[2] === "--version") { console.log("9.9.9"); process.exit(0); }',
@@ -127,7 +132,7 @@ for (const engine of ["codex", "claude"]) {
       return rows.length === calls.length ? rows : null;
     });
     const name = engine === "claude" ? "Bash" : "shell";
-    const shown = (command: string, id = "") => engine === "codex" ? (id === "single-wrapped" ? singleWrapped(command) : doubleWrapped(command)) : command;
+    const shown = (command: string, id = "") => engine === "codex" ? wrap(command, id) : command;
     assert.deepEqual(rows[0].tool, { name, command: shown(SAFE) });
     assert.equal(rows[1].tool.command, shown(MULTI));
     assert.deepEqual(rows[2].tool, { name, command: shown("ls") });
@@ -136,8 +141,10 @@ for (const engine of ["codex", "claude"]) {
     assert.equal(rows[7].tool.command, shown('curl -H "Authorization: [redacted]" https://example.invalid'));
     assert.equal(rows[8].tool.command, shown('tool Bearer "[redacted]'));
     assert.equal(rows[9].tool.command, shown("API_KEY=[redacted] tool --token [redacted] -H 'Cookie: [redacted]'"));
-    assert.equal(rows[10].tool.command, shown(SAFE, "single-wrapped"));
-    assert.equal(rows[11].tool.command, shown('curl -H "Authorization": "[redacted]"'));
+    assert.equal(rows[10].tool.command, shown('cd /fixture && GITHUB_TOKEN=[redacted] tool --password=[redacted] -H "Authorization:" "[redacted]"', "zsh-wrapped"));
+    assert.equal(rows[11].tool.command, shown("cd /fixture && export API_KEY=[redacted] tool --token [redacted]", "sh-wrapped"));
+    assert.equal(rows[12].tool.command, shown(SAFE, "single-wrapped"));
+    assert.equal(rows[13].tool.command, shown('curl -H "Authorization": "[redacted]"'));
     const inFlight = JSON.parse(readFileSync(join(root, ".bloks", "turns-in-flight.json"), "utf8"));
     assert.equal(inFlight.find((turn: any) => turn.laneId === bot.threadId).tool, engine === "codex" ? shown('curl -H "Authorization": "[redacted]"').slice(0, 80) : "Bash", "pickup lost the legacy tool title");
     await until(() => sse.includes('"kind":"message"') && sse.includes('"command":') ? true : null);
@@ -145,6 +152,11 @@ for (const engine of ["codex", "claude"]) {
     const event = frames().find((f) => f.kind === "runtime" && f.event.itemId === "sensitive").event;
     assert.equal(event.title, name);
     assert.equal(event.command, shown(SAFE), "raw runtime SSE leaked before transcript folding");
+    for (const [id, row] of [["zsh-wrapped", rows[10]], ["sh-wrapped", rows[11]]] as const) {
+      await until(() => sse.includes('"itemId":"' + id + '"') ? true : null);
+      const wrapped = frames().find((f) => f.kind === "runtime" && f.event.itemId === id).event;
+      assert.equal(wrapped.command, row.tool.command, id + " runtime SSE lost the sanitized command");
+    }
     const eventLog = join(root, ".bloks", "events", bot.threadId + ".ndjson");
     const messageFile = join(root, ".bloks", "messages-" + bot.threadId + ".json");
     for (const [sink, text] of [["SSE", sse], ["event log", readFileSync(eventLog, "utf8")], ["message store", readFileSync(messageFile, "utf8")], ["HTTP", JSON.stringify(rows)], ["server output", h.logs()]]) {
