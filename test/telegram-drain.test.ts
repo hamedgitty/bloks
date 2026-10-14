@@ -450,11 +450,21 @@ test("a consuming turn stopped by a missing project folder sends why, not an emp
   assert.equal(f.tg.answers().length, 1);
 });
 
-test("a failed consuming turn without a pickup returns the normal empty-answer fallback once", async (t) => {
+test("a failed consuming turn without a pickup returns its error notice once", async (t) => {
   const f = await fixture(t);
   await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
   assert.ok(await waitFor(() => f.engine.state.held.length === 1));
   f.engine.state.held.shift()!("", 400);
+  assert.ok(await waitFor(() => f.tg.answers().length === 1));
+  assert.match(f.tg.answers()[0].text, /synthetic failure/);
+  assert.equal(f.engine.state.calls.length, 1);
+});
+
+test("a consuming turn with neither text nor a notice keeps the empty-answer fallback", async (t) => {
+  const f = await fixture(t);
+  await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => f.engine.state.held.length === 1));
+  f.engine.state.held.shift()!("");
   assert.ok(await waitFor(() => f.tg.answers().length === 1));
   assert.equal(f.tg.answers()[0].text, "(the agent finished without saying anything)");
   assert.equal(f.engine.state.calls.length, 1);

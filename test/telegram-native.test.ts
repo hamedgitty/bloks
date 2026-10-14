@@ -121,9 +121,9 @@ let thread, turn;
 const waiting = new Map();
 const ask = (id, method, params) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method, params: { threadId: thread, turnId: turn, ...params } }); });
 const tool = (id, command) => out({ method: "item/started", params: { threadId: thread, turnId: turn, item: { type: "commandExecution", id, command } } });
-const finish = (text) => {
-  out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "answer", text } } });
-  out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
+const finish = (text, reason) => {
+  if (text !== null) out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "answer", text } } });
+  out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: reason ? "failed" : "completed", ...(reason ? { error: { message: reason } } : {}) } } });
 };
 createInterface({ input: process.stdin }).on("line", async (line) => {
   const m = JSON.parse(line);
@@ -138,6 +138,13 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("EMPTY_TURN")) return finish(null);
+  if (text.includes("COMPLETION_FAILURE")) return finish(null, "synthetic completion failure");
+  if (text.includes("ENGINE_NOTICE") || text.includes("REPLY_THEN_NOTICE")) {
+    if (text.includes("REPLY_THEN_NOTICE")) out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "reply", text: "A real reply." } } });
+    out({ method: "error", params: { threadId: thread, error: { message: "synthetic engine refusal" } } });
+    return finish(null, "synthetic engine refusal");
+  }
   if (text.includes("SETTINGS_GUARD")) {
     const botId = JSON.parse(readFileSync(root + "/.bloks/bots.json", "utf8")).find((bot) => bot.name === "Planning").id;
     const attempts = [["GET", "/api/telegram"], ["GET", "/api/bots/" + botId + "/telegram"], ["POST", "/api/bots/" + botId + "/telegram", { pair: true }], ["POST", "/api/bots/" + botId + "/telegram", { forget: true }]];
@@ -206,8 +213,14 @@ const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
-process.stdin.once("data", () => {
+process.stdin.once("data", (input) => {
   out({ type: "system", subtype: "init", session_id: "sess-native", model: "claude-sonnet-5" });
+  if (String(input).includes("CLAUDE_REFUSAL") || String(input).includes("CLAUDE_REPLY_NOTICE")) {
+    if (String(input).includes("CLAUDE_REPLY_NOTICE")) out({ type: "assistant", message: { content: [{ type: "text", text: "A real reply." }] } });
+    // An is_error result supplies a stopReason without a runtime.error.
+    out({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-native", result: "The provider refused *this* request: fixture-stored-secret-123, sk-fixture_abcdefghijklmnop." });
+    return setTimeout(() => process.exit(0), 50);
+  }
   const config = JSON.parse(readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"));
   const socket = createConnection(config.mcpServers.bloks.args[1]);
   socket.write(JSON.stringify({ t: "ask", id: "ask-db", tool: "AskUserQuestion", input: { questions: [{ question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] }] } }) + "\\n");
@@ -229,7 +242,7 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
   writeFileSync(join(root, ".bloks/config.json"), JSON.stringify({ instances: {
     codex: { driver: "codex", config: { cli: fakeCodex(root) } },
     claude: { driver: "claudeAgent", config: { cli: fakeClaude(root) } },
-  } }));
+  }, secrets: { TEST_NOTICE: "fixture-stored-secret-123" } }));
   const tg = await telegramStub(t);
   const env = {
     HOME: root, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
@@ -260,6 +273,47 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
 async function cardIn(f: Awaited<ReturnType<typeof fixture>>, title: string) {
   return waitFor(() => f.tg.sent().find((m) => m.method === "sendMessage" && m.body.text.startsWith(title)), `no "${title}" card reached the chat`);
 }
+
+for (const path of ["immediate", "drain"] as const) for (const [prompt, expected] of [
+  ["ENGINE_NOTICE", "synthetic engine refusal"],
+  ["COMPLETION_FAILURE", "synthetic completion failure"],
+  ["EMPTY_TURN", "(the agent finished without saying anything)"],
+  ["REPLY_THEN_NOTICE", "A real reply."],
+]) test(`${path} Telegram answer carries a notice only without a reply (${prompt})`, async (t) => {
+  const f = await fixture(t);
+  if (path === "drain") await f.post("/api/maintenance/drain", { seconds: 60 });
+  f.tg.say(prompt);
+  if (path === "drain") {
+    await waitFor(async () => (await f.messages()).some((m) => m.text === prompt && m.telegramReply?.state === "queued"), "the request never queued");
+    await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  }
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => !c.body.disable_notification && !c.body.text.startsWith("Paired.") && !c.body.text.startsWith("Your message is saved.")), "the answer never came");
+  assert.equal(answer.body.text, expected);
+  assert.equal("disable_notification" in answer.body, false);
+  if (prompt !== "REPLY_THEN_NOTICE") assert.equal("parse_mode" in answer.body, false, "provider notices are plain text");
+  if (prompt !== "EMPTY_TURN") assert.ok((await f.messages()).some((m) => m.kind === "notice" && m.text.includes("synthetic")), "the app keeps the error notice");
+  await sleep(250);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === expected).length, 1);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === "(the agent finished without saying anything)").length, prompt === "EMPTY_TURN" ? 1 : 0);
+});
+
+for (const path of ["immediate", "drain"] as const) for (const prompt of ["CLAUDE_REFUSAL", "CLAUDE_REPLY_NOTICE"]) test(`${path} Claude is_error result reaches Telegram redacted and plain (${prompt})`, async (t) => {
+  const f = await fixture(t, "claude");
+  if (path === "drain") await f.post("/api/maintenance/drain", { seconds: 60 });
+  f.tg.say(prompt);
+  if (path === "drain") {
+    await waitFor(async () => (await f.messages()).some((m) => m.text === prompt && m.telegramReply?.state === "queued"), "the request never queued");
+    await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  }
+  const expected = prompt === "CLAUDE_REFUSAL" ? "The provider refused *this* request: [redacted], [redacted]." : "A real reply.";
+  const answer = await waitFor(() => f.tg.calls("sendMessage").find((c) => !c.body.disable_notification && !c.body.text.startsWith("Paired.") && !c.body.text.startsWith("Your message is saved.")), "the Claude result never reached the chat");
+  assert.equal(answer.body.text, expected);
+  const notices = (await f.messages()).filter((m) => m.kind === "notice");
+  assert.ok(notices.some((m) => m.text.includes("The provider refused")), "the sentence-shaped reason is in the app");
+  if (prompt === "CLAUDE_REFUSAL") assert.equal("parse_mode" in answer.body, false);
+  assert.doesNotMatch(answer.body.text, /fixture-stored-secret-123|sk-fixture_abcdefghijklmnop/);
+  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === "(the agent finished without saying anything)").length, 0);
+});
 
 test("an approval arrives with Allow and Deny to tap, and only the paired person's tap allows it", async (t) => {
   const f = await fixture(t);

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { telegramFallback, type TelegramText } from "./telegram-reply.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as box from "./box.ts";
@@ -2577,10 +2578,10 @@ bus.subscribe((event: RuntimeEvent) => {
         if (said) stalledSince.set(event.threadId, said);
       }
       const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
-      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
       if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
       }
+      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
       // theirs now, and one that failed is something they should see.
@@ -7827,6 +7828,7 @@ const telegramReturns = new TelegramReturns(
     const runtime = owner ? liveTelegram(owner.id) : undefined;
     if (runtime && telegramReturnState(laneId, reply).token) await telegramFiles(runtime, chatId, deliverablesIn(runtime.botId, said));
   },
+  redactSecrets,
 );
 
 /** A reply to a chat. A failed send is not worth a crash. Only what an
@@ -7982,9 +7984,9 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
           // The reply goes back to the chat that asked, and the exchange lands
           // in the agent's own thread like any other conversation.
           const answer = await answerOverTelegram(bot.id, text, chatId, runtime).catch(
-            (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${(error as Error).message}`, files: [] }),
+            (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${redactSecrets((error as Error).message)}`, markdown: false, files: [] }),
           );
-          await telegramSay(runtime, chatId, answer.text, true);
+          await telegramSay(runtime, chatId, answer.text, answer.markdown);
           await telegramFiles(runtime, chatId, answer.files);
         });
         runtime.turns.set(chatId, turn);
@@ -8136,6 +8138,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
     queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId, { botId, generation: runtime.generation }), waitsFor: "restart", fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     return {
       text: "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.",
+      markdown: false,
       files: [],
     };
   }
@@ -8194,13 +8197,12 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
 }
 
 /** A Telegram turn's reply: what the agent said, and what it left. */
-interface TelegramAnswer {
-  text: string;
+interface TelegramAnswer extends TelegramText {
   files: telegram.Deliverable[];
 }
 
 function replyIn(botId: string, messages: readonly Message[]): TelegramAnswer {
-  return { text: saidIn(messages), files: deliverablesIn(botId, messages) };
+  return { ...saidIn(messages), files: deliverablesIn(botId, messages) };
 }
 
 /**
@@ -8247,13 +8249,13 @@ async function telegramFiles(runtime: TelegramRuntime, chatId: number, files: te
 }
 
 /** What the agent said in these messages, as one reply for a phone. */
-function saidIn(messages: readonly Message[]): string {
+function saidIn(messages: readonly Message[]): TelegramText {
   const said = messages
     .filter((message) => message.role === "bot" && message.kind === "text" && message.text)
     .map((message) => message.text as string)
     .join("\n\n")
     .trim();
-  return said || "(the agent finished without saying anything)";
+  return said ? { text: said, markdown: true } : telegramFallback(messages, redactSecrets);
 }
 
 /** Resolves once the turn that took this message has ended: at once

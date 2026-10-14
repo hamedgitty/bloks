@@ -2,6 +2,7 @@
 // It belongs to that queued request, never to later turns in the lane.
 import type { Message, Store } from "./store.ts";
 import { send, TelegramError, type TelegramState } from "./telegram.ts";
+import { telegramFallback, type TelegramText } from "./telegram-reply.ts";
 
 export interface TelegramReply {
   chatId: number;
@@ -23,6 +24,7 @@ export class TelegramReturns {
   private notice: (laneId: string, text: string) => void;
   private files?: (laneId: string, chatId: number, said: Message[], reply: TelegramReply) => Promise<void>;
   private sends = new Set<Promise<void>>();
+  private redact: (text: string) => string;
 
   /** `files` sends what the turn left after its answer has gone. Only
    * then: an answer that did not arrive should not be followed by files
@@ -33,12 +35,14 @@ export class TelegramReturns {
     changed: (laneId: string, message: Message) => void,
     notice: (laneId: string, text: string) => void,
     files?: (laneId: string, chatId: number, said: Message[], reply: TelegramReply) => Promise<void>,
+    redact: (text: string) => string = (text) => text,
   ) {
     this.store = store;
     this.state = state;
     this.changed = changed;
     this.notice = notice;
     this.files = files;
+    this.redact = redact;
   }
 
   get busy() { return this.sends.size > 0; }
@@ -106,11 +110,13 @@ export class TelegramReturns {
       const after = group[0].telegramReply!.after;
       const boundary = after ? transcript.findIndex((m) => m.id === after) : -1;
       const said = failure ? [] : transcript.slice(boundary + 1);
-      const text = failure ?? (said
+      const words = said
         .filter((m) => m.role === "bot" && m.kind === "text" && m.text && !m.deleted)
-        .map((m) => m.text).join("\n\n").trim() || "(the agent finished without saying anything)");
+        .map((m) => m.text).join("\n\n").trim();
+      const answer: TelegramText = failure !== undefined ? { text: failure, markdown: false } :
+        words ? { text: words, markdown: true } : telegramFallback(said, this.redact);
       // The text is captured before another turn can move the transcript.
-      const run = this.say(laneId, group, chatId, text, said);
+      const run = this.say(laneId, group, chatId, answer, said);
       this.sends.add(run);
       void run.finally(() => this.sends.delete(run)).catch((error) => {
         console.error("[bloks] Telegram return could not be recorded:", error);
@@ -118,7 +124,7 @@ export class TelegramReturns {
     }
   }
 
-  private async say(laneId: string, requests: Message[], chatId: number, text: string, said: Message[]) {
+  private async say(laneId: string, requests: Message[], chatId: number, answer: TelegramText, said: Message[]) {
     const change = (patch: Partial<TelegramReply>) => {
       this.patch(laneId, requests, patch);
     };
@@ -133,7 +139,7 @@ export class TelegramReturns {
     change({ state: "sending", parts: 0 });
     let parts = 0;
     try {
-      await send(state.token, chatId, text, true, () => {
+      await send(state.token, chatId, answer.text, answer.markdown, () => {
         change({ parts: ++parts });
         const current = this.state(laneId, reply);
         if (!current.enabled || current.token !== state.token || current.generation !== state.generation) throw new Error("the Telegram connection changed during the answer");
