@@ -7,6 +7,7 @@ import type { Progress } from "./telegram.ts";
 export class TurnProgress {
   private began = false;
   private lastSeen?: string;
+  private pending?: string;
   private closed = false;
   private finished?: Message[];
   private progress: Progress;
@@ -39,8 +40,21 @@ export class TurnProgress {
     }
     const span = replySpan(this.messages(), request.id);
     const after = this.lastSeen ? span.findIndex((m) => m.id === this.lastSeen) + 1 : 0;
-    for (const m of span.slice(after)) if (botWords(m) && m.text) this.progress.note(m.text);
+    for (const m of span.slice(after)) {
+      if (botWords(m) && m.text) {
+        this.flush();
+        this.pending = m.id;
+      } else if (m.role === "bot" && m.kind === "activity" && m.tool && !m.deleted && !m.quiet) this.flush();
+    }
     this.lastSeen = span.at(-1)?.id ?? this.lastSeen;
+  }
+
+  /** A last text may be the reply, even when turn/completed arrives later.
+   * A following tool or another visible text confirms it as a work note. */
+  private flush(): void {
+    const note = this.messages().find((m) => m.id === this.pending);
+    this.pending = undefined;
+    if (note && botWords(note) && note.text) this.progress.note(note.text);
   }
 
   /** Capture before another turn can start, even if waitForIdle or the
@@ -58,6 +72,7 @@ export class TurnProgress {
 
   stop(): Promise<void> {
     this.closed = true;
+    this.pending = undefined;
     return this.progress.stop();
   }
 }

@@ -165,6 +165,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     }
     if (scope === "SCOPED_LATER") { say("later-note", "LATER NOTE"); return finish("LATER FINAL"); }
     say("phone-note", "PHONE NOTE");
+    tool("scope-tool", "git status");
     if (scope === "SCOPED_OWNER_PROGRESS") await nap(21_500);
     say("phone-final", "PHONE FINAL"); tool("after-final", "git status");
     return finish(null);
@@ -219,7 +220,8 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   }
   if (text.includes("SLOW_NO_NOTE")) {
     tool("t1", "npm test"); await nap(21_500);
-    return finish("NO NOTE DONE");
+    say("only-final", "NO NOTE DONE"); await nap(300);
+    return finish(null);
   }
   if (text.includes("SLOW")) {
     out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "reasoning", id: "thought", summary: [{ type: "summary_text", text: "PRIVATE_REASONING" }], content: [{ type: "reasoning_text", text: "PRIVATE_REASONING" }] } } });
@@ -228,6 +230,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     await nap(21_000);
     if (text.includes("SLOW_ERROR")) {
       say("n2", "The parser checks pass.");
+      tool("error-work", "npm run build");
       for (let i = 0; i < 1000 && !existsSync(root + "/error-release"); i++) await nap(20);
       out({ method: "error", params: { threadId: thread, error: { message: "synthetic failure after a note" } } });
       return finish(null, "synthetic failure after a note");
@@ -266,6 +269,7 @@ process.stdin.once("data", async (input) => {
   if (String(input).includes("CLAUDE_THINKING")) {
     out({ type: "system", subtype: "thinking_tokens", estimated_tokens: 32, text: "PRIVATE_THINKING" });
     out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "PRIVATE_THINKING" }, { type: "text", text: "A visible note." }] } });
+    out({ type: "assistant", message: { content: [{ type: "tool_use", id: "visible-work", name: "Read", input: { file_path: "synthetic.ts" } }] } });
     await new Promise((r) => setTimeout(r, 21_500));
     out({ type: "assistant", message: { content: [{ type: "text", text: "THINKING DONE" }] } });
     out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-native", result: "THINKING DONE" });

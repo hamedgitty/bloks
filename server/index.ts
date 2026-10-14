@@ -1880,6 +1880,7 @@ bus.subscribe((event: RuntimeEvent) => {
     // quiet, so the app holds its banner until then (src/lib/notify.ts).
     const checkIn = !inRoom && checkInTurns.has(event.threadId);
     broadcast({ kind: "message", threadId: roomId, message, ...(checkIn ? { checkIn: true } : {}) });
+    if (!inRoom) telegramWorking.get(event.threadId)?.observe();
     return message;
   };
 
@@ -1922,7 +1923,6 @@ bus.subscribe((event: RuntimeEvent) => {
             ...(answering ? { afterAgent: answering } : {}),
             ...(quiet ? { quiet: true } : {}),
           });
-          if (!inRoom) telegramWorking.get(event.threadId)?.observe();
         }
         for (const component of components) {
           if (!mayRender(component.kind, bot.withoutComponents)) continue;

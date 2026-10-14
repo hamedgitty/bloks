@@ -805,8 +805,10 @@ in order, starting after twenty seconds (`telegram.Progress`, fed from stored
 bot text through request-scoped `TurnProgress`). Notes in the first twenty
 seconds or within the four-second throttle are batched; a batch over 4,000
 UTF-16 units splits at whole-note boundaries. Only an individually oversized
-note is cut with an ellipsis. Reasoning items and tool names do not feed the
-messages; without a note there is nothing extra. Notes are never edited.
+note is cut with an ellipsis. The latest text stays pending until a following
+tool or another visible text confirms it as a note, so a delayed turn-end
+event cannot send the final-only reply as progress. Reasoning items and tool
+names do not feed the messages; without a note there is nothing extra. Notes are never edited.
 Cleanup cancels pending notes, awaits the post in flight, and deletes every
 known message before the new notifying answer or notice. A failed deletion
 does not prevent the answer. While a card waits on the person neither typing
