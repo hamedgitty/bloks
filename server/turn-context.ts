@@ -58,3 +58,20 @@ export function freshTurnText(
       : "";
   return `${opening}${gap} The conversation so far:\n\n${history}\n\n--- the new message ---\n\n${turnText}`;
 }
+
+/**
+ * What a session that is resumed after another engine answered for a
+ * while is told (GitHub 284): only the messages it missed, since it
+ * still has everything before them. `missed` is expected bounded already
+ * and whole; a catch-up that would leave messages out is a new session
+ * told the story instead. `by` is the engine that answered.
+ */
+export function catchUpText(
+  missed: ReadonlyArray<{ role: "user" | "assistant"; text: string }>,
+  by: string,
+  turnText: string,
+): string {
+  if (missed.length === 0) return turnText;
+  const history = missed.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`).join("\n\n");
+  return `You are back on this conversation after ${by} answered in your place. Your session has everything up to then. What was said since:\n\n${history}\n\n--- the new message ---\n\n${turnText}`;
+}

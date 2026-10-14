@@ -344,12 +344,41 @@ export function planCompaction(turns: Turn[], budget: number, minKeep = 6): Plan
   return { fold: turns.slice(0, turns.length - keep.length), keep };
 }
 
+/** What every summary carries forward, whichever way it is made. The
+ * person's standing instructions come first and by name: a summary that
+ * kept "how the person wants to be worked with" still let "only these two
+ * sites" or "not that company" fade, and the agent went back to doing
+ * what it was told not to (GitHub 277). */
+const KEEP = [
+  "Keep: every standing instruction they gave, in their own words where it is short: what to use or not use, what to leave out, which sources, sites or tools to rely on, what they are not interested in. Keep these even when nothing lately used them; they hold until the person says otherwise.",
+  "Also keep: decisions made, facts established, anything asked for that is not finished, names, numbers, file paths, and how the person wants to be worked with.",
+];
+
+/** How much of the conversation a summary request carries. */
+const SUMMARY_INPUT_CHARS = 40_000;
+
+/** The part being folded, as the summary request reads it. It used to be
+ * cut at its first 40,000 characters, so in a long stretch whatever the
+ * person said after that never reached the summary at all, and a
+ * requirement they gave late in it was gone once it was folded
+ * (GitHub 277). Their own words are what a summary must not lose, so the
+ * agent's long replies are shortened first, and only then, if it is
+ * still too long, is the middle left out rather than the end. */
+function foldedText(fold: Turn[]): string {
+  const line = (turn: Turn, cap = Infinity) => {
+    const text = turn.role === "assistant" && turn.text.length > cap ? `${turn.text.slice(0, cap)} [...]` : turn.text;
+    return `${turn.role === "user" ? "Them" : "You"}: ${text}`;
+  };
+  let text = fold.map((turn) => line(turn)).join("\n\n");
+  if (text.length > SUMMARY_INPUT_CHARS) text = fold.map((turn) => line(turn, 600)).join("\n\n");
+  if (text.length <= SUMMARY_INPUT_CHARS) return text;
+  const head = Math.floor(SUMMARY_INPUT_CHARS / 4);
+  return `${text.slice(0, head)}\n\n[...]\n\n${text.slice(text.length - (SUMMARY_INPUT_CHARS - head))}`;
+}
+
 /** What the model is asked, when it is asked to summarise. */
 export function summaryPrompt(existing: string | null, fold: Turn[]): string {
-  const conversation = fold
-    .map((turn) => `${turn.role === "user" ? "Them" : "You"}: ${turn.text}`)
-    .join("\n\n")
-    .slice(0, 40_000);
+  const conversation = foldedText(fold);
   return [
     existing
       ? "Here is a summary of a conversation so far, and the part that came after it. Produce one summary covering both."
@@ -359,7 +388,7 @@ export function summaryPrompt(existing: string | null, fold: Turn[]): string {
     "The conversation:",
     conversation,
     "",
-    "Keep: decisions made, facts established, anything asked for that is not finished, names, numbers, file paths, and how the person wants to be worked with.",
+    ...KEEP,
     "Drop: pleasantries, restatements, and anything already superseded.",
     "Write it as notes to yourself, in the second person about them. Under 400 words. No preamble.",
   ].join("\n");
@@ -569,7 +598,7 @@ export function defragPrompt(summary: string): string {
     "",
     summary,
     "",
-    "Keep: decisions made, facts established, anything asked for that is not finished, names, numbers, file paths, and how the person wants to be worked with.",
+    ...KEEP,
     "Write it as notes to yourself, in the second person about them. Under 400 words. No preamble.",
   ].join("\n");
 }
@@ -585,7 +614,7 @@ export function absorbPrompt(existing: string | null, one: Turn): string {
     "Newly said:",
     `${one.role === "user" ? "Them" : "You"}: ${one.text.slice(0, 20_000)}`,
     "",
-    "Keep: decisions made, facts established, anything asked for that is not finished, names, numbers, file paths, and how the person wants to be worked with.",
+    ...KEEP,
     "Drop: pleasantries, restatements, and anything already superseded.",
     "Write it as notes to yourself, in the second person about them. Under 400 words. No preamble.",
   ].join("\n");

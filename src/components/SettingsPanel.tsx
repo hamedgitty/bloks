@@ -538,8 +538,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div>
               <div className="text-[13.5px] font-semibold text-foreground">Backup engine</div>
               <div className="mt-0.5 text-[12.5px] text-muted-foreground">
-                Answers when the model above hits a usage or rate limit, runs out of credit, or is down. The
-                conversation carries over, and the agent switches back once its own engine is usable again.
+                Answers when the model above hits a usage or rate limit, runs out of credit, or is down, or when
+                a turn fails again after one more try. The conversation carries over, and the agent switches
+                back to its own engine and session once that is usable again.
               </div>
             </div>
             <ModelPicker

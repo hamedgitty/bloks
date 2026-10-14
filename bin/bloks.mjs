@@ -98,6 +98,14 @@ const COMMANDS = {
       }
     },
   },
+  "take-back": {
+    use: "take-back <agent-id>",
+    about: "take back all your messages still waiting for another agent, and list their words. Already received messages cannot be taken back; send a correction instead. Rooms are not included",
+    run: (args) => {
+      if (args.length !== 1 || !args[0]) throw new Error("take-back needs one agent id");
+      return request("POST", `/api/bots/${encodeURIComponent(args[0])}/take-back`);
+    },
+  },
   recall: {
     use: "recall <words…> | recall --id <message-id>",
     about: "look something up in your own past conversations: a decision, a name, a preference",

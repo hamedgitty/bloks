@@ -15,6 +15,9 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { takeBackWaiting } from "./take-back.ts";
+import { telegramReply, type TelegramText } from "./telegram-reply.ts";
+import { TurnProgress } from "./telegram-progress.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { legacyToolTitle } from "./tool-command.ts";
@@ -294,11 +297,11 @@ import {
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
 import { describe as describeRoutine, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
-import { engineIsFresh, freshTurnText } from "./turn-context.ts";
+import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { redoCounts, redoPlan, takenBack, type RedoRefusal } from "./redo.ts";
-import { Cooldowns, describeRest, outReason, REASON_WORDS, type Rest } from "./failover.ts";
+import { Cooldowns, describeRest, failureOf, outReason, REASON_WORDS, RETRY_WAIT_MS, STAY_MS, type Rest } from "./failover.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
 import { indexMemory, indexMessages, mostOf, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
 import { excerpt, IndexCache, rank, type TermIndex } from "./recall-index.ts";
@@ -783,16 +786,84 @@ const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
 
 // Backup engines (server/failover.ts). Engines resting after running
 // out, the engine each running lane is on, what went wrong in each
-// lane's turn so far, the lanes whose turn already fell back once (it
-// falls back once: a backup that is also out is reported, not chased),
-// and the rest each lane has already been told about.
+// lane's turn so far, and the rest each lane has already been told about.
 const cooldowns = new Cooldowns();
 const laneEngine = new Map<string, ModelSelection>();
 const turnErrors = new Map<string, string[]>();
-const fellBack = new Set<string>();
 const toldOfRest = new Map<string, number>();
-/** Errors kept off the chat while a backup might take over. */
-const heldErrors = new Map<string, string>();
+/** Errors kept off the chat while the turn might be asked again or
+ * taken by a backup, which says them in its own notice. */
+const heldErrors = new Map<string, string[]>();
+
+// A failed turn asked again (GitHub 284). What each running solo turn was
+// asked, as it was asked, so the same words can go again; the lanes whose
+// running turn started a new session rather than resuming one; and the
+// message each lane is recovering, with what has been tried for it, so it
+// is asked again once and handed over once and never more.
+interface Asked {
+  text: string;
+  /** When what it answers begins in the conversation (turnSince). */
+  since: number;
+  byYou: boolean;
+  from?: { botId: string; name: string };
+  routine?: Message["routine"];
+  replyTo?: ReplyRef;
+  answering?: { peerId: string; peerName: string };
+}
+interface Recovery {
+  asked: Asked;
+  /** The attempt waiting to start or running now. */
+  stage: "retry" | "backup";
+  /** Each attempt that failed, on what, when, and with what words. */
+  tried: Array<{ selection: ModelSelection; at: number; said: string }>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+const turnAsked = new Map<string, Asked>();
+const newSessionTurns = new Set<string>();
+const recoveries = new Map<string, Recovery>();
+/** The line each lane's next turn opens with after a failure: what
+ * failed, when, on which engine and model, and what Bloks did about it
+ * (failureLine). In the turn's words, never the system prompt, so the
+ * agent can tell the person, check what the failed attempt already did,
+ * and report it if that is how it works. */
+const failureNotes = new Map<string, string>();
+/** The wait before a failed turn is asked again, shorter in tests. */
+const RETRY_WAIT = Number(process.env.BLOKS_RETRY_WAIT_MS) || RETRY_WAIT_MS;
+
+// After the backup answers, the conversation stays on it for a while
+// (until the own engine's rest ends, when it rests), so the next message
+// does not try an engine that just failed. Then the own engine resumes
+// its own session, which is still stored, and is told what it missed,
+// rather than starting a new one told the story (GitHub 284). Both in
+// memory: after a restart the own engine is simply tried again, and a
+// session it comes back to is told the story as any engine switch is.
+interface Stay {
+  own: ModelSelection;
+  backup: ModelSelection;
+  until: number;
+}
+const stays = new Map<string, Stay>();
+/** The own engine's session in each lane another engine has been
+ * answering, and from when on (a message's `at`) it missed what was said. */
+const away = new Map<string, { instanceId: string; since: number; by: string; note?: string }>();
+/** How long a conversation stays on its backup, shorter in tests. */
+const STAY = Number(process.env.BLOKS_BACKUP_STAY_MS) || STAY_MS;
+
+const sameSelection = (a: ModelSelection | null | undefined, b: ModelSelection | null | undefined) =>
+  Boolean(a && b && a.instanceId === b.instanceId && (a.model ?? null) === (b.model ?? null));
+
+/** The stay a lane is on, or undefined once it is over: its time is up,
+ * or the person changed the agent's engine or its backup, and their
+ * choice wins. */
+function stayOf(bot: BotRecord, laneId: string, now = Date.now()): Stay | undefined {
+  const stay = stays.get(laneId);
+  if (!stay) return undefined;
+  if (stay.until <= now || !sameSelection(stay.own, bot.modelSelection) || !sameSelection(stay.backup, bot.backupSelection)) {
+    stays.delete(laneId);
+    return undefined;
+  }
+  return stay;
+}
 
 // ── cloud computers sleep when nobody is using them ──────────────────
 // A box bills while it is awake. Once an agent has not used its computer
@@ -832,13 +903,18 @@ function engineUsable(selection: ModelSelection | null | undefined): selection i
 
 /** Which engine a turn on this agent runs on: its own, unless it is resting
  * after running out (or gone) and it has a backup that is not. startTurn and
- * the webhook receiver both ask here, so they cannot disagree about it. */
-function selectEngine(bot: BotRecord, fallback = false): ModelSelection {
+ * the webhook receiver both ask here, so they cannot disagree about it. A
+ * turn handed to the backup (`fallback`) may also go to another model on
+ * the agent's own engine, which cannot stand in while that engine rests. */
+function selectEngine(bot: BotRecord, fallback = false, laneId?: string): ModelSelection {
   const own = bot.modelSelection;
+  if (fallback && engineUsable(bot.backupSelection)) return bot.backupSelection;
+  // a conversation staying on the backup that answered it
+  if (laneId && stayOf(bot, laneId) && engineUsable(bot.backupSelection)) return bot.backupSelection;
   const backup = bot.backupSelection && bot.backupSelection.instanceId !== own.instanceId ? bot.backupSelection : null;
   const ownRest = cooldowns.of(own.instanceId);
   const ownMissing = !registry.get(own.instanceId);
-  return (fallback || ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+  return (ownRest || ownMissing) && engineUsable(backup) ? backup : own;
 }
 
 function unavailableEngineMessage(instanceId: string): string {
@@ -1443,36 +1519,278 @@ for (const inst of registry.instances()) {
 }
 
 /**
- * The end of a turn, read for one question: did the engine run out? If
- * it did, it rests (for every agent on it), and when this agent has a
- * backup the same message goes to the backup once, in this lane, with
- * the conversation replayed to it. Only a solo lane retries: in a room
- * the turn belongs to the room's order of speakers, and the rest simply
- * applies from the next turn on.
+ * The end of a turn, read for what happens to a failed one (GitHub 284).
+ * Not every turn that ends badly failed: a stop, a stalled tool, a
+ * command and a conversation too long for the model (folded and asked
+ * again on its own, see runtime.error) end as they always did. An engine
+ * that ran out rests, for every agent on it, and the message goes to the
+ * backup at once. A safety refusal is asked again at once, in a new
+ * session told the conversation so far, since the refused one refuses
+ * everything after it. Anything else is asked again once in the same
+ * session, after a wait: the engines retry a dropped connection or an
+ * overloaded API themselves before a turn fails, so asking at once would
+ * mostly fail the same way. Only a solo lane goes on: in a room the turn
+ * belongs to the room's order of speakers. True when the turn goes on.
  */
-function fallBackIfOut(bot: BotRecord, laneId: string, roomId: string, ok: boolean, stopReason: string | null): boolean {
+function recoverTurn(
+  bot: BotRecord,
+  laneId: string,
+  roomId: string,
+  end: { ok: boolean; stopReason: string | null; pickingUp: boolean; rebuilt: boolean },
+  say: (text: string, phoneText?: string) => void,
+): boolean {
   const used = laneEngine.get(laneId);
   const errors = turnErrors.get(laneId) ?? [];
-  const held = heldErrors.get(laneId);
+  const held = heldErrors.get(laneId) ?? [];
+  const asked = turnAsked.get(laneId);
+  const newSession = newSessionTurns.delete(laneId);
+  const recovery = recoveries.get(laneId);
   laneEngine.delete(laneId);
   turnErrors.delete(laneId);
   heldErrors.delete(laneId);
+  turnAsked.delete(laneId);
+  recoveries.delete(laneId);
   // An engine that just answered is signed in, whatever a refusal said
   // before: the rest it began is over, or other agents would go on being
   // told for hours that this one cannot answer (GitHub 239).
-  if (ok && used && cooldowns.of(used.instanceId)?.reason === "signedOut") cooldowns.clear(used.instanceId);
+  if (end.ok && used && cooldowns.of(used.instanceId)?.reason === "signedOut") cooldowns.clear(used.instanceId);
   // a call that went silent is about the work, not the engine running
   // out, whatever words the stuck command happened to contain
   const command = commandTurns.delete(laneId);
-  const tryBackup = !command && !ok && used && stopReason !== "interrupted" && stopReason !== "tool_stalled";
-  if (tryBackup && handOver(bot, laneId, roomId, used, [...errors, stopReason ?? ""].join("\n"))) return true;
-  // an error kept back for a backup that then did not take over is shown
-  // after all, exactly as it would have been
-  if (held) {
-    const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text: held });
-    broadcast({ kind: "message", threadId: laneId, message: shown });
+  const failed =
+    !end.ok &&
+    !command &&
+    used &&
+    !end.pickingUp &&
+    end.stopReason !== "interrupted" &&
+    end.stopReason !== "tool_stalled" &&
+    !errors.some((said) => isContextError(said));
+  // a failed turn that gave no reason of its own still says it failed,
+  // or a turn that ends in silence reads as the agent not answering
+  const explainSilence = () => {
+    if (!end.ok && !errors.length && end.stopReason !== "interrupted" && !end.rebuilt) say(failedTurnNotice(end.stopReason));
+  };
+  if (!failed) {
+    showHeldErrors(bot, laneId, held);
+    explainSilence();
+    // 3. The backup answered: the conversation stays on it. An own engine
+    // that rests is left alone until its rest ends instead.
+    const now = store.bot(bot.id);
+    if (end.ok && recovery?.stage === "backup" && used && now && !cooldowns.of(now.modelSelection.instanceId)) {
+      stays.set(laneId, { own: now.modelSelection, backup: used, until: Date.now() + STAY });
+    }
+    return false;
   }
+  const evidence = [...errors, end.stopReason ?? ""].join("\n");
+  // an ACP engine says a refusal with its stop reason alone
+  const kind = failureOf(evidence) === "other" && end.stopReason === "refusal" ? "refusal" : failureOf(evidence);
+  // An engine that ran out rests, for every agent on it, since a limit
+  // belongs to the account and not to one agent. A room's turn rests it
+  // too: the agent's next turn there goes to its backup.
+  const out = outReason(evidence);
+  const rest: Rest | null = out ? cooldowns.rest(used.instanceId, out, evidence) : null;
+  // a refused session refuses every message after it, so it is never
+  // resumed: the next turn, here or in a room, is told the conversation
+  if (kind === "refusal") store.dropSession(laneId, used.instanceId);
+  const said = lastWords(errors, end.stopReason);
+  const fresh = store.bot(bot.id);
+  const goesOn = Boolean(roomId === laneId && asked && fresh && !fresh.archivedAt && !wheel.heldBy(bot.id));
+  const at = Date.now();
+  const tried = [...(recovery?.tried ?? []), { selection: used, at, said }];
+  const told = (did: string) => failureNotes.set(laneId, failureLine(used, at, said, did));
+  const notice = (text: string) => {
+    const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
+    broadcast({ kind: "message", threadId: laneId, message: shown });
+  };
+
+  // 1. Asked again once per message. Not a refusal in a session that was
+  // already new and told the conversation: that would only repeat it. Not
+  // an engine that is out either, which cannot answer before its reset.
+  if (goesOn && !recovery && kind !== "out" && !(kind === "refusal" && newSession)) {
+    notice(
+      kind === "refusal"
+        ? `${engineName(used)} declined this message: ${said}. Trying again in a new session, with the conversation so far.`
+        : `${engineName(used)} failed: ${said}. Trying again in a minute.`,
+    );
+    told(
+      kind === "refusal"
+        ? "The provider declined it, so Bloks started this new session for the message, told the conversation so far."
+        : "Bloks waited a minute and is asking again, in the same session.",
+    );
+    askAgain(bot, laneId, { asked: asked!, stage: "retry", tried }, kind === "refusal" ? 0 : RETRY_WAIT);
+    return true;
+  }
+
+  // 2. Then the backup, once, with the conversation so far, for whoever
+  // asked. Whatever the failure was: the backup is an engine the person
+  // chose for this agent, and the turn it takes is told what failed.
+  const backup = fresh?.backupSelection ?? null;
+  const usable = goesOn && recovery?.stage !== "backup" ? backupFor(backup, used, Boolean(out)) : null;
+  if (usable) {
+    if (rest) toldOfRest.set(laneId, rest.until);
+    const why = rest
+      ? `${engineName(used)} ${REASON_WORDS[out!]} ${describeRest(rest)}.`
+      : recovery
+        ? `${engineName(used)} failed again: ${said}.`
+        : `${engineName(used)} declined this message: ${said}.`;
+    notice(`${why} ${engineName(usable)} is picking this up, with the conversation so far.`);
+    told(`Bloks handed the message to ${engineName(usable)}, this agent's backup engine, with the conversation so far.`);
+    askAgain(bot, laneId, { asked: asked!, stage: "backup", tried }, 0);
+    return true;
+  }
+
+  // 4. Nothing left to try: the error shows as it was, and the same
+  // notice says why nothing else took it. The conversation waits for the
+  // person.
+  told(
+    goesOn
+      ? "Nothing else could take it, so the error was shown and the agent stopped. This is the next message."
+      : roomId !== laneId
+        ? "The error was shown in the room, and it was not asked again."
+        : "The error was shown, and it was not asked again.",
+  );
+  if (!goesOn) {
+    showHeldErrors(bot, laneId, held);
+    explainSilence();
+    return false;
+  }
+  const stopped = `${tried.length > 1 ? "Asking again did not help, so " : ""}${bot.name} has stopped here.`;
+  const first = tried[0];
+  const why =
+    recovery?.stage === "backup"
+      ? `${engineName(used)} could not answer either, so ${bot.name} has stopped here. Before that, ${engineName(first.selection)} said: ${first.said}.`
+      : !backup
+        ? `${stopped} No backup engine is set for it; you can choose one in its settings, under Backup engine.`
+        : `${stopped} Its backup, ${engineName(backup)}, ${whyNotBackup(backup, used, Boolean(out))}.`;
+  if (held.length) showHeldErrors(bot, laneId, held, why);
+  else if (!errors.length) say(sentences(failedTurnNotice(end.stopReason), why), failedTurnNotice(end.stopReason));
+  else notice(why);
+  store.markLane(bot.id, laneId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
   return false;
+}
+
+/** Two sentences as one notice, the first ending in a full stop. */
+function sentences(first: string, then: string): string {
+  const said = first.trim();
+  return /[.!?)]$/.test(said) ? `${said} ${then}` : `${said}. ${then}`;
+}
+
+/** The opening line of a turn after a failure (failureNotes). */
+function failureLine(selection: ModelSelection, at: number, said: string, did: string): string {
+  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `(A note from Bloks: an earlier attempt in this conversation failed at ${time} on ${engineName(selection)}, saying: "${said}". ${did} That attempt may have done part of the work before it failed, so check what is already done before redoing anything, and tell the person what happened if it matters to them.)`;
+}
+
+/** The backup that can take a failed turn: one that is usable and is not
+ * what just failed. Another model on the same engine counts, and resumes
+ * the same session, since sessions are kept per engine; after an engine
+ * that is out it has to be another engine. */
+function backupFor(backup: ModelSelection | null, used: ModelSelection, out: boolean): ModelSelection | null {
+  if (!backup || !engineUsable(backup)) return null;
+  if (backup.instanceId === used.instanceId && (out || (backup.model ?? null) === (used.model ?? null))) return null;
+  return backup;
+}
+
+/** Why a backup that is set could not take the turn, for the notice. */
+function whyNotBackup(backup: ModelSelection, used: ModelSelection, out: boolean): string {
+  const rest = cooldowns.of(backup.instanceId);
+  if (rest) return `${REASON_WORDS[rest.reason]} ${describeRest(rest)}`;
+  if (backup.instanceId === used.instanceId && (out || (backup.model ?? null) === (used.model ?? null))) return "is what just failed";
+  return "is not available";
+}
+
+/** The words a failed turn ended on, for a notice: its last error, or
+ * the reason it gave, without the full stop a sentence goes on after. */
+function lastWords(errors: string[], stopReason: string | null): string {
+  const said = errors.filter((e) => e.trim()).at(-1) ?? failedTurnNotice(stopReason);
+  return redactSecrets(said).trim().slice(0, 300).replace(/[.\s]+$/, "");
+}
+
+/** Errors held back for a turn that did not go on after all, shown
+ * exactly as they would have been. Out of credit, over a limit, signed
+ * out: nothing in this lane moves until the person does something, so
+ * the lane says so with its dot instead of waiting to be found (the app
+ * also raises a banner). */
+function showHeldErrors(bot: BotRecord, laneId: string, held: string[], why?: string) {
+  held.forEach((text, i) => {
+    const last = why && i === held.length - 1;
+    const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text: last ? sentences(text, why) : text, ...(last ? { phoneText: text } : {}) });
+    broadcast({ kind: "message", threadId: laneId, message: shown });
+  });
+  if (held.some((text) => outReason(text))) {
+    store.markLane(bot.id, laneId, true);
+    broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  }
+}
+
+/**
+ * The message a failed turn was asked, asked again after `delay`, in the
+ * same lane, for whoever asked it (a routine, another agent, a stranger's
+ * mail). The lane stays busy while it waits, so whatever is said to it
+ * meanwhile queues as it would behind any turn, and Stop cancels it
+ * (cancelRecovery).
+ */
+function askAgain(bot: BotRecord, laneId: string, recovery: Recovery, delay: number) {
+  // who asked for the turn that failed, before its end clears that
+  const requester = laneRequester.get(laneId) ?? askedLast.get(laneId);
+  recoveries.set(laneId, recovery);
+  store.setTaskBusy(laneId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  const { asked, stage } = recovery;
+  recovery.timer = setTimeout(() => {
+    if (recoveries.get(laneId) !== recovery) return;
+    recovery.timer = undefined;
+    store.setTaskBusy(laneId, false);
+    void startTurn(bot.id, asked.text, {
+      taskId: laneId,
+      presetMessage: true,
+      ...(stage === "retry" ? { retry: true } : { fallback: true }),
+      recovery: stage,
+      byYou: asked.byYou,
+      ...(asked.from ? { from: asked.from } : {}),
+      ...(asked.routine ? { routine: asked.routine } : {}),
+      ...(asked.replyTo ? { replyTo: asked.replyTo } : {}),
+      ...(asked.answering ? { answering: asked.answering } : {}),
+      ...(requester ? { requester } : {}),
+    }).catch((e) => {
+      if (recoveries.get(laneId) === recovery) recoveries.delete(laneId);
+      const why = redactSecrets(e instanceof Error ? e.message : String(e));
+      const owner = store.bot(bot.id);
+      if (owner) settleOwners(owner, laneId, { ok: false, why, unsent: true });
+      telegramReturns.finish(laneId, `Could not answer: ${why}`);
+      telegramWorking.get(laneId)?.ended();
+      const failed = store.appendMessage(laneId, {
+        role: "bot",
+        kind: "notice",
+        text: `It could not be asked again: ${why.slice(0, 300)}`,
+      });
+      broadcast({ kind: "message", threadId: laneId, message: failed });
+    });
+  }, delay);
+}
+
+/** A lane waiting to ask a failed turn again is stopped: nothing is asked,
+ * the lane is free, and whatever waited behind it goes. True when there
+ * was one to stop. */
+function cancelRecovery(bot: BotRecord, laneId: string, why: string): boolean {
+  const recovery = recoveries.get(laneId);
+  if (!recovery?.timer) return false;
+  clearTimeout(recovery.timer);
+  recoveries.delete(laneId);
+  const last = recovery.tried.at(-1);
+  if (last) failureNotes.set(laneId, failureLine(last.selection, last.at, last.said, "Bloks was going to ask again, but it was stopped. This is the next message."));
+  settleOwners(bot, laneId, { ok: false, why: last?.said ?? null });
+  store.setTaskBusy(laneId, false);
+  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: why });
+  broadcast({ kind: "message", threadId: laneId, message: notice });
+  telegramReturns.finish(laneId);
+  telegramWorking.get(laneId)?.ended();
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  drainRoomTags(bot.id);
+  drainSteer(laneId);
+  closeIfAsked(laneId);
+  return true;
 }
 
 /** What a failed turn that gave no reason of its own says. A reason
@@ -1482,50 +1800,6 @@ function failedTurnNotice(stopReason: string | null | undefined): string {
   const reason = (stopReason ?? "").trim();
   if (/\s/.test(reason)) return reason.slice(0, 600);
   return reason ? `The turn did not finish (${reason.slice(0, 80)}).` : "The turn did not finish.";
-}
-
-/** Rests an engine that ran out, and hands the turn to the backup when
- * there is one to hand it to. True when the backup took it. */
-function handOver(bot: BotRecord, laneId: string, roomId: string, used: ModelSelection, evidence: string): boolean {
-  const reason = outReason(evidence);
-  if (!reason) return false;
-  const rest: Rest = cooldowns.rest(used.instanceId, reason, evidence);
-
-  const fresh = store.bot(bot.id);
-  const backup = fresh?.backupSelection;
-  if (!fresh || roomId !== laneId || fellBack.has(laneId) || wheel.heldBy(bot.id) || fresh.archivedAt) return false;
-  if (!backup || backup.instanceId === used.instanceId || !engineUsable(backup)) return false;
-  const asked = [...store.messagesFor(laneId)]
-    .reverse()
-    .find((m) => m.role === "user" && m.kind === "text" && m.text && !m.deleted);
-  if (!asked?.text) return false;
-
-  fellBack.add(laneId);
-  toldOfRest.set(laneId, rest.until);
-  const notice = store.appendMessage(laneId, {
-    role: "bot",
-    kind: "notice",
-    text: `${engineName(used)} ${REASON_WORDS[reason]} ${describeRest(rest)}. ${engineName(backup)} is picking this up, with the conversation so far.`,
-  });
-  broadcast({ kind: "message", threadId: laneId, message: notice });
-  // who asked for the turn that ran out, before its end clears that
-  const requester = laneRequester.get(laneId) ?? askedLast.get(laneId);
-  // after this event has finished settling the lane it ended
-  setTimeout(() => {
-    // A message another agent sent is still that agent's on the backup:
-    // the engine hears who wrote it, and the answer goes back to them.
-    const from = asked.agent?.dir === "in" ? { botId: asked.agent.peerId, name: asked.agent.peerName } : undefined;
-    void startTurn(bot.id, asked.text!, { taskId: laneId, presetMessage: true, fallback: true, byYou: turnsForYou.has(laneId), from, routine: asked.via === "routine" ? asked.routine : undefined, ...(requester ? { requester } : {}) }).catch((e) => {
-      telegramReturns.finish(laneId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
-      const failed = store.appendMessage(laneId, {
-        role: "bot",
-        kind: "notice",
-        text: `${engineName(backup)} could not pick it up either: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 300)}`,
-      });
-      broadcast({ kind: "message", threadId: laneId, message: failed });
-    });
-  }, 0);
-  return true;
 }
 
 // ── the morning brief (server/brief.ts) ────────────────────────────────
@@ -1879,6 +2153,7 @@ bus.subscribe((event: RuntimeEvent) => {
     // quiet, so the app holds its banner until then (src/lib/notify.ts).
     const checkIn = !inRoom && checkInTurns.has(event.threadId);
     broadcast({ kind: "message", threadId: roomId, message, ...(checkIn ? { checkIn: true } : {}) });
+    if (!inRoom) telegramWorking.get(event.threadId)?.observe();
     return message;
   };
 
@@ -1993,9 +2268,6 @@ bus.subscribe((event: RuntimeEvent) => {
         }
         // named on disk, so a turn cut off mid-call can say which call
         cutOff.tool(event.threadId, legacyToolTitle(event));
-        // and on a phone waiting on this lane, once the turn is a long one;
-        // a command line can carry a key, and this one leaves the machine
-        telegramWorking.get(event.threadId)?.using(redactSecrets(legacyToolTitle(event)));
         // The browser is watched from its first use in a turn, not from the
         // turn's start: a turn that never touches it should not end with
         // a picture of whatever page an earlier one left open. Cheap to
@@ -2436,12 +2708,14 @@ bus.subscribe((event: RuntimeEvent) => {
         })();
         break;
       }
-      // An engine running out, with a backup ready to take the message,
-      // is said once, in plain words, when the backup takes over. The
-      // raw error waits: if the backup cannot take it after all, it is
-      // shown then (see fallBackIfOut).
-      if (!inRoom && outReason(event.message) && engineUsable(bot.backupSelection) && !fellBack.has(event.threadId)) {
-        heldErrors.set(event.threadId, event.message.slice(0, 600));
+      // A solo turn that fails is asked again or handed to the backup,
+      // and that is said once, in plain words, with the error in it. The
+      // raw error waits: if nothing takes the turn after all, it is
+      // shown then, as it would have been (see recoverTurn).
+      if (!inRoom && !commandTurns.has(event.threadId) && store.taskByThread(event.threadId)?.task.busy) {
+        const held = heldErrors.get(event.threadId) ?? [];
+        if (held.length < 8) held.push(event.message.slice(0, 600));
+        heldErrors.set(event.threadId, held);
         break;
       }
       // Not a failed tool call: the turn itself could not run. It gets a
@@ -2569,20 +2843,23 @@ bus.subscribe((event: RuntimeEvent) => {
         broadcast({ kind: "message.patch", threadId: roomId, message: settled });
         for (const [item, id] of toolMessageByItem) if (id === settled.id) toolMessageByItem.delete(item);
       }
-      // An engine that fails a turn normally says why with a runtime.error,
-      // shown above as a notice. Some only put the reason on the turn's
-      // end (a Codex turn the provider refused, Antigravity's status), and
-      // a turn that ends in silence reads as the agent not answering.
-      const saidWhy = (turnErrors.get(event.threadId)?.length ?? 0) > 0;
+      // An engine that fails a turn normally says why with a runtime.error.
+      // Some only put the reason on the turn's end (a Codex turn the
+      // provider refused, Antigravity's status), and a turn that ends in
+      // silence reads as the agent not answering, so recoverTurn says it.
       if (event.stopReason === "tool_stalled") {
         const said = turnErrors.get(event.threadId)?.at(-1);
         if (said) stalledSince.set(event.threadId, said);
       }
-      const handedOver = fallBackIfOut(bot, event.threadId, roomId, event.ok !== false, event.stopReason ?? null);
+      const handedOver = recoverTurn(
+        bot,
+        event.threadId,
+        roomId,
+        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt) },
+        (text, phoneText) => pushMessage({ role: "bot", kind: "notice", text, ...(phoneText ? { phoneText } : {}) }),
+      );
       if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
-      if (event.ok === false && !saidWhy && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
-        pushMessage({ role: "bot", kind: "notice", text: failedTurnNotice(event.stopReason) });
-      }
+      if (!pickingUp && !handedOver && !refolding) telegramWorking.get(event.threadId)?.ended();
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
       // theirs now, and one that failed is something they should see.
@@ -2590,7 +2867,10 @@ bus.subscribe((event: RuntimeEvent) => {
         checkInTurns.has(event.threadId) && !inRoom && event.ok !== false && !handedOver &&
         !turnsForYou.has(event.threadId) && foldQuietRun(event.threadId);
       checkInTurns.delete(event.threadId);
-      settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
+      // a turn asked again or handed to the backup is not over yet, so what
+      // waits on how it ends (a routine's run, a workflow step, a meeting's
+      // write-up, a mail's reply) waits for the attempt that ends it
+      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
@@ -3429,6 +3709,8 @@ const stoppedGettingReady = new Set<string>();
 /** Stops a lane's turn, whichever stage it is at: the engine's turn when
  * there is one, and a turn still getting ready by leaving word for it. */
 async function interruptLane(bot: BotRecord, laneId: string) {
+  // a failed turn waiting to be asked again has no engine turn to stop
+  if (cancelRecovery(bot, laneId, "Stopped. It will not be asked again.")) return;
   const adapter = laneInstance(bot, laneId)?.adapter;
   if (store.taskByThread(laneId)?.task.busy && !adapter?.hasSession(laneId)) stoppedGettingReady.add(laneId);
   await adapter?.interruptTurn(laneId);
@@ -3518,8 +3800,12 @@ async function startClaimedTurn(
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
     /** This turn asks again what the lane's last turn was asked, after
-     * the conversation was folded to fit. */
+     * the conversation was folded to fit, or after it failed. */
     retry?: boolean;
+    /** This turn is a failed one's retry or its handover to the backup
+     * (recoverTurn), which keeps the message's place in what has been
+     * tried for it. */
+    recovery?: Recovery["stage"];
     /** Server-created accepting instance for a queued native command. */
     commandInstance?: string;
     /** How many turns in a row agents have started, this one included,
@@ -3649,7 +3935,8 @@ async function startClaimedTurn(
   const directCommandAllowed = registry.get(directCommandInstance ?? "")?.driverKind === "claudeAgent" || (opts.byYou && opts.personal !== false && !opts.roomId);
   const commandInstance = opts.commandInstance ?? (directCommandAllowed ? directCommandInstance : undefined);
   const command = Boolean(commandInstance && commandFor(text, commandInstance));
-  const selection = selectEngine(bot, opts.fallback);
+  const staying = !opts.fallback && Boolean(stayOf(bot, task.id));
+  const selection = selectEngine(bot, opts.fallback, task.id);
   if (command && (selection.instanceId !== commandInstance || acceptingNative(bot) !== commandInstance || !engineUsable(selection))) {
     const name = registry.get(commandInstance!)?.driverKind === "codex" ? "Codex" : "Claude Code";
     throw Object.assign(new Error(`This command was queued for ${name}, but that engine is no longer selected or available. Choose it again and send the command again.`), { status: 409 });
@@ -3773,6 +4060,13 @@ async function startClaimedTurn(
   // triggering message is already on the record; only a solo chat writes
   // the user turn here.
   const telegramInputIds = [...(opts.telegramMessages ?? [])];
+  // Where what this turn answers begins in the conversation: before its
+  // own words, or at the first of the waiting ones it takes. What another
+  // engine answered from here on is what the own engine misses (away).
+  const turnSince = Math.min(
+    Date.now(),
+    ...store.messagesFor(roomId).filter((m) => telegramInputIds.includes(m.id)).map((m) => m.at),
+  );
   if (!blok && !opts.presetMessage) {
     const userMessage = store.appendMessage(roomId, {
       role: "user",
@@ -3794,6 +4088,23 @@ async function startClaimedTurn(
   else replyingTo.delete(task.id);
   // the words as written, for naming the lane; the engine also hears who sent them
   const said = text;
+  // What a solo turn was asked, the way it was asked, so a turn that
+  // fails can be asked again (recoverTurn). A new message starts with a
+  // retry and a handover of its own; a turn going on with a failed one
+  // keeps that message's.
+  if (!opts.recovery) recoveries.delete(task.id);
+  const recovering = opts.recovery ? recoveries.get(task.id) : undefined;
+  if (!blok && !command && recovering) turnAsked.set(task.id, recovering.asked);
+  else if (!blok && !command) {
+    turnAsked.set(task.id, {
+      text: said,
+      since: turnSince,
+      byYou: opts.byYou === true,
+      ...(opts.from ? { from: opts.from } : opts.answering ? { answering: opts.answering } : {}),
+      ...(opts.routine ? { routine: opts.routine } : {}),
+      ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+    });
+  } else if (blok || command) turnAsked.delete(task.id);
   // A named skill injects instructions. Take names from the person's
   // actual words, never from wrappers, notes or background sources.
   const personalWords = opts.personalMessages && !blok
@@ -4052,6 +4363,8 @@ async function startClaimedTurn(
     activeRoom.delete(task.id);
     laneRequester.delete(task.id);
     replyingTo.delete(task.id);
+    turnAsked.delete(task.id);
+    recoveries.delete(task.id);
     // what was got ready for it goes with it: the folder's photograph,
     // the Local VM, and the credential it would have run with
     checkpoints.cancel(task.id);
@@ -4230,15 +4543,46 @@ async function startClaimedTurn(
       // turns. Session-cursor engines get the story replayed inline;
       // API engines replay the transcript themselves every turn.
       const instanceId = selection.instanceId;
+      const nativeReplay = Boolean(instance.adapter.capabilities.replaysNatively);
+      const ownReading = readingFor(task.reading, selection);
+      const handoffTokens = handoffBudget(ownReading?.window ?? contextLimitFor(selection.model));
+      // Another engine answering where the agent's own engine served last:
+      // from here on, the own engine's stored session misses what is said.
+      if (!blok && !command && instanceId !== own.instanceId && !away.has(task.id) && task.lastInstanceId === own.instanceId && typeof task.resumeCursors[own.instanceId] === "string") {
+        const note = failureNotes.get(task.id);
+        away.set(task.id, { instanceId: own.instanceId, since: turnAsked.get(task.id)?.since ?? turnSince, by: engineName(selection), ...(note ? { note } : {}) });
+      }
+      // And the own engine coming back resumes that session, told what it
+      // missed, unless it is longer than a new session's story would be:
+      // then it starts a new session told the conversation, as an engine
+      // switch does (GitHub 284).
+      const back = !blok && !command ? away.get(task.id) : undefined;
+      let missed: { turns: Turn[]; by: string } | null = null;
+      if (back && back.instanceId === instanceId) {
+        away.delete(task.id);
+        const said = store
+          .messagesFor(roomId)
+          .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.at >= back.since && m.at < turnSince)
+          .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: storedPrompt(m) }));
+        const bounded = boundHandoff(said, handoffTokens);
+        const resumes = typeof task.resumeCursors[instanceId] === "string" && !nativeReplay && !guestMail;
+        if (resumes && bounded.left === 0) missed = { turns: bounded.turns, by: back.by };
+        const notice = store.appendMessage(roomId, {
+          role: "bot",
+          kind: "notice",
+          text: missed ? `${engineName(selection)} is back on this conversation, in its own session.` : `${engineName(selection)} is back on this conversation.`,
+        });
+        broadcast({ kind: "message", threadId: roomId, message: notice });
+      }
       const engineFresh =
         !blok &&
+        !missed &&
         engineIsFresh({
           instanceId,
           lastInstanceId: task.lastInstanceId,
           resumeCursors: task.resumeCursors,
           hasUserTurn: transcript.some((m) => m.role === "user"),
         });
-      const nativeReplay = Boolean(instance.adapter.capabilities.replaysNatively);
       let turnText = !command && opts.replyTo
         ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
         : text;
@@ -4255,8 +4599,6 @@ async function startClaimedTurn(
       // the bound leaves messages out and the lane's engine can
       // summarise, the older part is folded into the running summary
       // first, so what is left out is carried by the summary instead.
-      const ownReading = readingFor(task.reading, selection);
-      const handoffTokens = handoffBudget(ownReading?.window ?? contextLimitFor(selection.model));
       const story = async (fold: boolean) => {
         let bounded = boundHandoff(transcript, handoffTokens);
         if (fold && bounded.left > 0 && (await foldContext(bot.id, task.id, false, handoffTokens).catch(() => false))) {
@@ -4291,11 +4633,17 @@ async function startClaimedTurn(
       const replaceSession = compactNow && !compactHere && !compactInTurn;
       if (!command && engineFresh && !nativeReplay) {
         const told = await story(true);
-        turnText = freshTurnText(told.turns, turnText, { left: told.left });
+        // no engine served it last when its session was dropped
+        // (store.dropSession), which is a new session, not another engine
+        turnText = freshTurnText(told.turns, turnText, { left: told.left, ...(task.lastInstanceId === "" ? { why: "session" as const } : {}) });
       } else if (replaceSession) {
         const told = await story(true);
         turnText = freshTurnText(told.turns, turnText, { left: told.left, why: "session" });
       }
+      if (missed) turnText = catchUpText(missed.turns, missed.by, turnText);
+      // the first turn back is told what failed too, unless a newer
+      // failure has its own line waiting
+      if (back?.note && back.instanceId === instanceId && !failureNotes.has(task.id)) failureNotes.set(task.id, back.note);
       const undone = undoneSince.get(task.id);
       if (undone && !command) {
         undoneSince.delete(task.id);
@@ -4306,6 +4654,12 @@ async function startClaimedTurn(
       if (stalledNote && !command) {
         stalledSince.delete(task.id);
         turnText = `${stallPreface(stalledNote)}\n\n${turnText}`;
+      }
+      // what failed before this turn, ahead of everything else it is told
+      const failedNote = command ? undefined : failureNotes.get(task.id);
+      if (failedNote) {
+        failureNotes.delete(task.id);
+        turnText = `${failedNote}\n\n${turnText}`;
       }
 
       // A credential of this agent's own, for this turn only. Given only
@@ -4325,6 +4679,10 @@ async function startClaimedTurn(
       // itself: an engine that keeps the first system prompt of a session
       // never reads a newer one (GitHub 150).
       const resumeCursor = ((engineFresh || replaceSession) && !command) || guestMail ? undefined : task.resumeCursors[instanceId];
+      // a refusal in a session that is already new is not asked again
+      // in another one: it would only be refused the same way
+      if (!blok && !command && resumeCursor === undefined) newSessionTurns.add(task.id);
+      else newSessionTurns.delete(task.id);
       if (!command && credential && resumeCursor && task.briefedCli !== CLI_COMMAND) {
         turnText = `${cliMovedNote(CLI_COMMAND, task.briefedCli)}\n\n${turnText}`;
       }
@@ -4374,10 +4732,9 @@ async function startClaimedTurn(
       // what this turn runs on, and a fresh slate for what goes wrong in it
       laneEngine.set(task.id, selection);
       turnErrors.delete(task.id);
-      if (!opts.fallback) fellBack.delete(task.id);
       // Said once per rest, not once per turn: the first turn on the
       // backup explains itself, the rest of the afternoon does not.
-      if (selection !== own && !opts.fallback) {
+      if (selection !== own && !opts.fallback && !staying) {
         const why = ownRest ?? null;
         if (!why || toldOfRest.get(task.id) !== why.until) {
           if (why) toldOfRest.set(task.id, why.until);
@@ -5570,6 +5927,7 @@ async function windDown(bot: BotRecord) {
       .filter((t) => t.busy)
       .map(async (lane) => {
         cutOff.stop(lane.id);
+        if (cancelRecovery(bot, lane.id, "Stopped. It will not be asked again.")) return;
         await laneInstance(bot, lane.id)?.adapter.interruptTurn(lane.id).catch(() => {});
       }),
   );
@@ -7726,7 +8084,7 @@ interface TelegramRuntime {
    * to take one mid-turn is a round trip, and the next must not pass it. */
   intake: Map<number, Promise<void>>;
   /** This connection's share of telegramWorking, to stop when it goes. */
-  working: Map<string, telegram.Progress>;
+  working: Map<string, TurnProgress>;
 }
 const telegramRuntimes = new Map<string, TelegramRuntime>();
 /** Agents currently answering a phone, so a card they raise can follow
@@ -7735,9 +8093,8 @@ const telegramLive = new Map<string, { chatId: number; generation: string }>();
 /** Every card forwarded to a chat, by request, with the buttons it was
  * sent with (server/telegram-cards.ts). */
 const telegramCards = new CardButtons();
-/** The line saying what a long Telegram turn is doing, by lane, since
- * that is what a tool starting names. */
-const telegramWorking = new Map<string, telegram.Progress>();
+/** Visible notes for a Telegram request, scoped to its consuming lane. */
+const telegramWorking = new Map<string, TurnProgress>();
 
 /** Whether the connection a message came in on is still the agent's. */
 function telegramConnectionCurrent(binding: NonNullable<Message["telegramBinding"]>): boolean {
@@ -7829,6 +8186,7 @@ const telegramReturns = new TelegramReturns(
     const runtime = owner ? liveTelegram(owner.id) : undefined;
     if (runtime && telegramReturnState(laneId, reply).token) await telegramFiles(runtime, chatId, deliverablesIn(runtime.botId, said));
   },
+  redactSecrets,
 );
 
 /** A reply to a chat. A failed send is not worth a crash. Only what an
@@ -7838,12 +8196,10 @@ async function telegramSay(runtime: TelegramRuntime, chatId: number, text: strin
   if (currentTelegram(runtime)) await telegram.send(runtime.token, chatId, text, markdown, undefined, () => Boolean(currentTelegram(runtime))).catch(() => {});
 }
 
-/** A status line in this chat, which keeps quiet while a card there
- * waits on the person. */
+/** Silent notes in this chat, paused while a card waits on the person. */
 function telegramProgress(runtime: TelegramRuntime, chatId: number): telegram.Progress {
   return new telegram.Progress({
     post: (text) => currentTelegram(runtime) ? telegram.post(runtime.token, chatId, text, undefined, true, () => Boolean(currentTelegram(runtime))) : Promise.resolve(undefined),
-    edit: (messageId, text) => currentTelegram(runtime) ? telegram.edit(runtime.token, chatId, messageId, text) : Promise.resolve(),
     // Cleanup uses the captured old token, never a replacement bot's.
     remove: (messageId) => telegram.remove(runtime.token, chatId, messageId),
   }, () => runtime.asks.has(chatId));
@@ -7984,9 +8340,9 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
           // The reply goes back to the chat that asked, and the exchange lands
           // in the agent's own thread like any other conversation.
           const answer = await answerOverTelegram(bot.id, text, chatId, runtime).catch(
-            (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${(error as Error).message}`, files: [] }),
+            (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${redactSecrets((error as Error).message)}`, markdown: false, files: [] }),
           );
-          await telegramSay(runtime, chatId, answer.text, true);
+          await telegramSay(runtime, chatId, answer.text, answer.markdown);
           await telegramFiles(runtime, chatId, answer.files);
         });
         runtime.turns.set(chatId, turn);
@@ -8138,6 +8494,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
     queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId, { botId, generation: runtime.generation }), waitsFor: "restart", fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     return {
       text: "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.",
+      markdown: false,
       files: [],
     };
   }
@@ -8149,8 +8506,14 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
     () => runtime.asks.has(chatId),
   );
   runtime.typing.set(chatId, typing);
-  // and past twenty seconds or so, a line saying what it is doing
-  const progress = telegramProgress(runtime, chatId);
+  // Completed visible notes belong to the request's consuming turn,
+  // never a turn it waited behind. Resolve the row before engine text
+  // can arrive, also when startTurn has not returned yet.
+  let requestId: string | undefined;
+  const asked = () => requestId ??= store.messagesFor(laneId).slice(before)
+    .find((m) => m.role === "user" && m.kind === "text" && m.fromTelegram)?.id;
+  const progress = new TurnProgress(telegramProgress(runtime, chatId),
+    () => store.messagesFor(laneId), asked, () => turnStarted.get(laneId));
   telegramWorking.set(laneId, progress);
   runtime.working.set(laneId, progress);
   const settled = async () => {
@@ -8174,35 +8537,37 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
       const steered = await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       if (!steered && !currentTelegram(runtime)) throw new Error("the Telegram connection changed");
       const sent = steered ?? queueOnLane(botId, laneId, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+      requestId = sent.id;
+      progress.observe();
       // the turn may have ended while its engine was asked
       if (!steered) drainSteer(laneId);
       await answeredAfter(botId, laneId, sent.id, 20 * 60_000, runtime.abort.signal);
       const list = store.messagesFor(laneId);
       const from = list.findIndex((m) => m.id === sent.id);
-      return replyIn(botId, from >= 0 ? list.slice(from + 1) : []);
+      return replyIn(botId, from >= 0 ? list.slice(from + 1) : [], progress.answerSpan());
     } finally {
       await settled();
     }
   }
   try {
     await startTurn(botId, text, { byYou: true, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+    progress.observe();
     // Longer than an ordinary wait, because a card forwarded to the
     // phone is answered on the phone's schedule, not the app's.
     await waitForIdle(botId, 20 * 60_000, runtime.abort.signal);
   } finally {
     await settled();
   }
-  return replyIn(botId, store.messagesFor(laneId).slice(before));
+  return replyIn(botId, store.messagesFor(laneId).slice(before), progress.answerSpan());
 }
 
 /** A Telegram turn's reply: what the agent said, and what it left. */
-interface TelegramAnswer {
-  text: string;
+interface TelegramAnswer extends TelegramText {
   files: telegram.Deliverable[];
 }
 
-function replyIn(botId: string, messages: readonly Message[]): TelegramAnswer {
-  return { text: saidIn(messages), files: deliverablesIn(botId, messages) };
+function replyIn(botId: string, messages: readonly Message[], said: readonly Message[]): TelegramAnswer {
+  return { ...telegramReply(said, redactSecrets), files: deliverablesIn(botId, messages) };
 }
 
 /**
@@ -8246,16 +8611,6 @@ async function telegramFiles(runtime: TelegramRuntime, chatId: number, files: te
   if (!files.length || !state || !pairedChats(state).includes(chatId)) return;
   const note = await telegram.sendFiles(runtime.token, chatId, files, telegram.FILES_PER_TURN, () => Boolean(currentTelegram(runtime))).catch(() => "");
   if (note) await telegramSay(runtime, chatId, note);
-}
-
-/** What the agent said in these messages, as one reply for a phone. */
-function saidIn(messages: readonly Message[]): string {
-  const said = messages
-    .filter((message) => message.role === "bot" && message.kind === "text" && message.text)
-    .map((message) => message.text as string)
-    .join("\n\n")
-    .trim();
-  return said || "(the agent finished without saying anything)";
 }
 
 /** Resolves once the turn that took this message has ended: at once
@@ -9260,7 +9615,8 @@ async function sendUserMessage(
         : `Messages said to ${bot.name} before this one are still waiting to go; this goes with them.`;
     const stop =
       lane.busy && options.from && mayStop(options.from.botId, bot.id) ? ` To stop it now, use \`bloks stop ${bot.id} "<why>"\`.` : "";
-    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop };
+    const takeBack = options.from ? ` To take back your messages while they wait, use \`bloks take-back ${bot.id}\`.` : "";
+    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop + takeBack };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
@@ -11774,6 +12130,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       broadcast({ kind: "message.patch", threadId: thread, message: patched });
       return json(res, 200, { message: patched });
     }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/take-back$/);
+    if (m && method === "POST") {
+      // Only a turn's agent credential identifies a sender. Neither the
+      // person nor a paired client may select somebody else's messages.
+      if (!asAgent) return json(res, 403, { error: "take-back needs an agent's turn credential" });
+      const caller = store.bot(asAgent.botId);
+      const recipient = store.bot(m[1]);
+      if (!recipient) return json(res, 404, { error: "no such agent; take-back does not apply to rooms" });
+      if (!caller || caller.id === recipient.id) return json(res, 403, { error: "take-back is only for your messages to another agent" });
+      // No body selection and no await: the queue cannot claim words
+      // between this operation's selection and its last tombstone.
+      const result = takeBackWaiting({
+        store, queues: steerQueues, caller, callerLaneId: asAgent.taskId, recipient,
+        patched: (threadId, message) => broadcast({
+          kind: message.takeBack ? "message" : "message.patch", threadId, message,
+        }),
+        editClosed,
+      });
+      return json(res, result.takenBack.length ? 200 : 409, result.takenBack.length ? result : { ...result, error: result.note });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
     if (m && method === "GET") {
       // Earlier messages of one of this agent's conversations, the page
@@ -13179,6 +13555,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             // what an agent said in its own chat after the other's message
             // is context, listed as such: it was never sent to them
             const note =
+              (msg.takeBack ? { dir: "take-back" as const, ...msg.takeBack } : undefined) ??
               msg.agent ?? (msg.afterAgent ? { dir: "reply" as const, ...msg.afterAgent } : undefined);
             if (!note || note.peerId !== other.id || msg.deleted) continue;
             // a send that arrived is listed once, from the side it arrived on
@@ -13188,7 +13565,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               id: msg.id,
               at: msg.at,
               dir: note.dir,
-              ...(note.status ? { status: note.status } : {}),
+              ...("status" in note && note.status ? { status: note.status } : {}),
               from: fromSelf ? self.id : other.id,
               fromName: fromSelf ? self.name : other.name,
               to: fromSelf ? other.id : self.id,
@@ -15889,6 +16266,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // back is the person's decision.
         for (const lane of bot.tasks.filter((t) => t.busy)) {
           cutOff.stop(lane.id);
+          if (cancelRecovery(bot, lane.id, "Stopped. It will not be asked again.")) continue;
           await registry
             .get(bot.modelSelection.instanceId)
             ?.adapter.interruptTurn(lane.id)

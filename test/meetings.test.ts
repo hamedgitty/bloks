@@ -130,7 +130,8 @@ describe("through the server", () => {
     await h.json(`/api/meetings/${meeting.id}/segments`, { method: "POST", body: JSON.stringify({ segments: [{ who: "you", text: "Ship it Friday." }] }) });
     const find = async () => ((await h.json("/api/meetings")).meetings as any[]).find((m) => m.id === meeting.id);
 
-    refuseWriteUps = 1;
+    // the write-up and the one retry a failed turn gets (GitHub 284)
+    refuseWriteUps = 2;
     const first = await h.json(`/api/meetings/${meeting.id}/end`, { method: "POST" });
     assert.ok(first.laneId);
     let released = false;

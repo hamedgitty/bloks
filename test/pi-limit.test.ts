@@ -184,7 +184,8 @@ describe("a Pi engine that runs out moves to the backup", () => {
     const instances = Object.fromEntries(shapes.map((s) => [`pi-${s}`, { driver: "pi", config: { cli } }]));
     writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances }));
     spare = await spareEngine();
-    h = await startHarness({ HOME: home });
+    // a failed turn is asked again after this wait (GitHub 284)
+    h = await startHarness({ HOME: home, BLOKS_RETRY_WAIT_MS: "300" });
     await h.fetch("/api/providers/kimi/connect", { method: "POST", body: JSON.stringify({ key: "sk-test-3333333333", url: spare.url }) });
   });
   after(async () => {
@@ -247,13 +248,16 @@ describe("a Pi engine that runs out moves to the backup", () => {
     test(`${shape}: a turn that ends with nothing says so instead of going quiet`, async () => {
       const botId = await agentOn(shape);
       await h.fetch(`/api/bots/${botId}/messages`, { method: "POST", body: JSON.stringify({ text: `SHAPE ${shape} hello` }) });
-      const messages = await settled(botId, (m) => m.some((x) => x.kind === "notice"));
-      assert.ok(messages, "the turn ended without a word to the person");
+      const messages = await settled(botId, (m) => m.some((x) => x.text === "Done, from the spare."));
+      assert.ok(messages, "the backup never answered");
       const notice = messages.find((m: any) => m.kind === "notice");
       assert.match(notice.text, shape === "empty" ? /ended the turn without a reply/ : /refusal/);
-      // nothing says the engine is out, so the backup is not asked
-      assert.ok(!messages.some((m: any) => /picking this up/.test(m.text ?? "")));
-      assert.equal(asked(shape), 1);
+      // Not out, so Pi does not rest: an empty turn is asked again once
+      // before the backup takes it, and a refusal in a new session goes
+      // straight to the backup, since asking again would only repeat it
+      // (GitHub 284).
+      assert.ok(messages.some((m: any) => /picking this up/.test(m.text ?? "")));
+      assert.equal(asked(shape), shape === "empty" ? 2 : 1);
     });
   }
 

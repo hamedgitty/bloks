@@ -104,6 +104,7 @@ export const RULES: Rule[] = [
   // Saying something to somebody. This is the one that turns a chat
   // between one agent and one person into a workspace.
   { method: "POST", path: "/api/bots/:id/messages", why: "say something to another agent" },
+  { method: "POST", path: "/api/bots/:id/take-back", why: "take back its own messages still waiting for another agent" },
   { method: "POST", path: "/api/bloks/:room/messages", why: "say something in a room it is in" },
   { method: "GET", path: "/api/bloks/:room/messages", why: "read what was said in a room it is in" },
 

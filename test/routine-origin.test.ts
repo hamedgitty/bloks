@@ -378,7 +378,10 @@ test("the backup receives the same routine origin, with no duplicate stored prom
   const { routine } = await h.json("/api/routines", post({ name: "Backup scan", prompt, time: futureTime(), days: [], targetId: bot.id, thread: "General" }));
   assert.equal((await h.fetch(`/api/routines/${routine.id}/run`, post({}))).status, 202);
   assert.ok(await waitFor(() => spare.state.held.length), h.logs());
-  assert.equal(JSON.parse(spare.state.calls.at(-1)!).messages.at(-1).content, words("Backup scan", true, prompt));
+  // told what failed first (GitHub 284), then the routine's words as ever
+  const heard: string = JSON.parse(spare.state.calls.at(-1)!).messages.at(-1).content;
+  assert.match(heard, /^\(A note from Bloks: an earlier attempt in this conversation failed at .+Rate limit reached.+\)\n\n/s);
+  assert.ok(heard.endsWith(`\n\n${words("Backup scan", true, prompt)}`), heard);
   assert.equal(inFlight(h.home).find((entry: any) => entry.laneId === bot.threadId)?.byYou, undefined);
   spare.state.held.shift()!();
   assert.ok(await idle(h, bot));

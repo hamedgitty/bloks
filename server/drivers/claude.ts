@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
 import { lineSplitter } from "../ndjson.ts";
-import { outReason } from "../failover.ts";
+import { isRefusal, outReason } from "../failover.ts";
 import { claudePlanUsage } from "../plan-usage.ts";
 import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
@@ -580,10 +580,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let steered = false;
       /** Whether any assistant frame carried usage this turn. */
       let reportedUsage = false;
-      // The CLI saying this turn's engine is out (a limit, signed out), and
-      // when its rate limit said it resets, in epoch seconds. A turn that
-      // ends on that notice failed, whatever its result frame says, or no
-      // backup takes it and the engine is never rested.
+      // The CLI saying this turn's engine is out (a limit, signed out) or
+      // that the provider refused the message, and when its rate limit
+      // said it resets, in epoch seconds. A turn that ends on that notice
+      // failed, whatever its result frame says, or no backup takes it and
+      // the engine is never rested.
       let outNotice: string | null = null;
       let resetsAt: number | null = null;
       let watch: ReturnType<typeof setInterval> | null = null;
@@ -649,11 +650,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // which is what a backup engine and a routine's log need
         let why: string | null =
           outNotice ?? (frame.is_error === true && typeof frame.result === "string" && frame.result.trim() ? frame.result.trim() : null);
+        // the model declining the message, said only by the stop reason:
+        // a failed turn, in words failover.ts reads as a refusal
+        const declined = frame.stop_reason === "refusal";
+        if (!why && declined) why = "The provider declined this message (stop reason: refusal).";
         // the reset the rate limit gave, in the shape failover.ts reads
         // first: "resets 3pm" alone leaves the day and the zone to guess
         if (why && resetsAt && outReason(why)) why = `${why.slice(0, 380)}|${resetsAt}`;
         finish(
-          frame.is_error !== true && !outNotice,
+          frame.is_error !== true && !outNotice && !declined,
           why?.slice(0, 400) ?? frame.stop_reason ?? frame.terminal_reason ?? null,
           total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null,
         );
@@ -733,7 +738,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 frame.error === "authentication_failed"
                   ? "Claude Code is not signed in on this computer. Open Terminal, run claude and sign in, then send this again. Or pick another engine for this agent."
                   : text.trim() || `Claude Code could not run this turn (${frame.error}).`;
-              if (outReason(said) || isLimitNotice(said)) outNotice = said;
+              // a safety refusal fails the turn too, so it is asked again
+              // in a new session rather than read as an answer (GitHub 284)
+              if (outReason(said) || isLimitNotice(said) || isRefusal(said)) outNotice = said;
               emit({ ...envelope(threadId, turnId), type: "runtime.error", message: said });
               break;
             }
@@ -741,7 +748,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // say nothing but the limit notice. Either is the engine being
             // out, not the agent's reply.
             const calls = Array.isArray(message.content) && message.content.some((block: any) => block?.type === "tool_use");
-            if (!calls && ((message.model === "<synthetic>" && outReason(text)) || isLimitNotice(text))) {
+            if (!calls && ((message.model === "<synthetic>" && (outReason(text) || isRefusal(text))) || isLimitNotice(text))) {
               outNotice = text.trim().slice(0, 600);
               emit({ ...envelope(threadId, turnId), type: "runtime.error", message: outNotice });
               break;

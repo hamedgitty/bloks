@@ -123,6 +123,8 @@ export interface RecalledNote {
 export interface Message {
   /** Between two agents rather than with the person; see AgentNote. */
   agent?: AgentNote;
+  /** A record of taking back waiting words, not a send to the peer. */
+  takeBack?: { peerId: string; peerName: string; messages: Array<{ id: string; laneId: string; text: string }> };
   /** Said in this agent's own chat during a turn another agent's message
    * started. Context only: it was not sent to that agent (an agent does
    * that with \`bloks say\`), so it is shown in full like any reply, with
@@ -158,6 +160,10 @@ export interface Message {
    * conversation unread and wakes the phone (GitHub 248). A room mention
    * held at MAX_AGENT_HOPS (server/room-hops.ts) is said the same way. */
   chainHeld?: boolean;
+  /** What a chat on the phone is told of this notice instead of its
+   * text: the error alone, when the app's notice also says where to set
+   * a backup, which means nothing there (GitHub 284). */
+  phoneText?: string;
   /** A notice marking where the engine compacted its own session, and by
    * how much. A line in the conversation, not a warning, and never news:
    * it marks nothing unread and is not carried into a linked channel. */
@@ -303,7 +309,9 @@ export interface Message {
 export interface TaskRecord {
   /** Which provider instance last dispatched here. A different one next
    * time means that engine missed everything since and needs the story
-   * replayed. Never shipped to clients. */
+   * replayed. Empty when the session that served it was dropped
+   * (dropSession), which every engine counts as different. Never shipped
+   * to clients. */
   lastInstanceId?: string;
   /** The CLI command this lane's engine was last told to run. A resumed
    * session told something else gets a note saying so. Never shipped. */
@@ -1057,6 +1065,22 @@ export class Store {
     found.task.resumeCursors = {};
     delete found.task.reading;
     delete found.task.pendingCompaction;
+    this.saveBots();
+  }
+
+  /** One engine's session in a lane that must never be resumed: a safety
+   * refusal, which the session goes on refusing (GitHub 284). Its cursor
+   * goes, and the lane is marked as served by no engine in particular
+   * (an empty lastInstanceId), so whichever engine takes the next turn
+   * is told the conversation so far rather than starting blank or
+   * resuming a session that missed the last turns. */
+  dropSession(threadId: string, instanceId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    delete found.task.resumeCursors[instanceId];
+    found.task.lastInstanceId = "";
+    if (found.task.reading?.instanceId === instanceId) delete found.task.reading;
+    if (found.task.pendingCompaction?.instanceId === instanceId) delete found.task.pendingCompaction;
     this.saveBots();
   }
 

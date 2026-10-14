@@ -104,6 +104,9 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         // bin/bloks-server.mjs sets this, so a test run from inside a Bloks
         // agent would inherit it and find pairing forced on
         BLOKS_LOOPBACK_ONLY: "",
+        // a failed turn is asked again after a wait (GitHub 284), and a
+        // minute is longer than most tests wait for a turn to settle
+        BLOKS_RETRY_WAIT_MS: "50",
         ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],

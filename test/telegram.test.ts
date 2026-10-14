@@ -29,7 +29,9 @@ import {
   send,
   sendFiles,
   type TelegramState,
-  toolLabel,
+  TelegramError,
+  PROGRESS_AFTER_MS,
+  PROGRESS_EVERY_MS,
   unbutton,
 } from "../server/telegram.ts";
 import { splitAttachments } from "../src/lib/attachments.ts";
@@ -841,101 +843,237 @@ describe("typing while the agent works", () => {
   });
 });
 
-describe("a line on what a long turn is doing", () => {
+describe("new silent messages for a long turn's notes", () => {
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const until = async (done: () => boolean) => { for (let i = 0; i < 300 && !done(); i++) await wait(10); };
-  /** A status line whose calls are written down. `posting` holds the
-   * post until the test lets it go. */
-  function line(paused = () => false, afterMs = 30, everyMs = 60) {
-    const calls: string[] = [];
-    let release: (() => void) | null = null;
-    const hold = { on: false };
-    const progress = new Progress(
-      {
-        post: async (text) => {
-          if (hold.on) await new Promise<void>((resolve) => (release = resolve));
-          calls.push(`post ${text}`);
-          return 7;
-        },
-        edit: async (id, text) => void calls.push(`edit ${id} ${text}`),
-        remove: async (id) => void calls.push(`remove ${id}`),
+  const until = async (done: () => boolean) => {
+    for (let i = 0; i < 400 && !done(); i++) await wait(5);
+    assert.ok(done(), "the expected progress call arrived");
+  };
+  function notes(paused = () => false, afterMs = 20, everyMs = 40) {
+    const calls: string[] = [], times: number[] = [];
+    const hold = { post: false };
+    const releases: Array<() => void> = [];
+    let nextId = 7;
+    const record = (text: string) => { calls.push(text); times.push(Date.now()); };
+    const progress = new Progress({
+      post: async (text) => {
+        const id = nextId++;
+        record("post " + text);
+        if (hold.post) await new Promise<void>((r) => releases.push(r));
+        return id;
       },
-      paused,
-      afterMs,
-      everyMs,
-    );
-    return { progress, calls, hold, release: () => release?.() };
+      remove: async (id) => record("remove " + id),
+    }, paused, afterMs, everyMs);
+    return { progress, calls, times, hold, release: () => releases.splice(0).forEach((r) => r()) };
   }
 
-  test("a quick turn says nothing at all", async () => {
-    const { progress, calls } = line();
-    progress.using("npm test");
-    await progress.stop();
+  test("the existing delay and four-second throttle remain", () => {
+    assert.equal(PROGRESS_AFTER_MS, 20_000);
+    assert.equal(PROGRESS_EVERY_MS, 4_000);
+  });
+
+  test("a quick turn posts nothing, even with a note", async () => {
+    const f = notes();
+    f.progress.note("Checking the result.");
+    await f.progress.stop();
     await wait(50);
-    assert.deepEqual(calls, []);
+    assert.deepEqual(f.calls, []);
   });
 
-  test("a long one posts the tool it is on, once, and takes it away at the end", async () => {
-    const { progress, calls } = line();
-    progress.using("mcp__bloks_connectors__GMAIL_SEARCH");
-    await until(() => calls.length > 0);
-    await wait(30);
-    assert.deepEqual(calls, ["post Working: GMAIL_SEARCH..."]);
+  test("no note means no message after the delay, and whitespace is skipped", async () => {
+    const f = notes();
+    f.progress.note(" \n\t ");
+    await wait(60);
+    assert.deepEqual(f.calls, []);
+    f.progress.note("The first visible note.");
+    await until(() => f.calls.length > 0);
+    assert.deepEqual(f.calls, ["post The first visible note."]);
+    await f.progress.stop();
+    assert.deepEqual(f.calls, ["post The first visible note.", "remove 7"]);
+  });
+
+  test("notes in the initial delay go together in order", async () => {
+    const f = notes();
+    f.progress.note("One."); f.progress.note("Two.");
+    await until(() => f.calls.length > 0);
+    assert.deepEqual(f.calls, ["post One.\n\nTwo."]);
+    await f.progress.stop();
+  });
+
+  test("three separated notes make three new posts, all deleted before the answer", async () => {
+    const f = notes();
+    for (const [i, word] of ["One.", "Two.", "Three."].entries()) {
+      f.progress.note(word);
+      await until(() => f.calls.length === i + 1);
+    }
+    await f.progress.stop();
+    f.calls.push("answer");
+    assert.deepEqual(f.calls, ["post One.", "post Two.", "post Three.", "remove 7", "remove 8", "remove 9", "answer"]);
+    assert.ok(f.times[1] - f.times[0] >= 38);
+    assert.ok(f.times[2] - f.times[1] >= 38);
+  });
+
+  test("rapid notes coalesce inside the throttle without replaying earlier notes", async () => {
+    const f = notes();
+    f.progress.note("One."); await until(() => f.calls.length === 1);
+    f.progress.note("Two."); f.progress.note("Three.");
+    await until(() => f.calls.length === 2);
+    assert.deepEqual(f.calls, ["post One.", "post Two.\n\nThree."]);
+    assert.ok(f.times[1] - f.times[0] >= 38);
+    await f.progress.stop();
+  });
+
+  test("a held post serializes later notes even after the throttle expires", async () => {
+    const f = notes(); f.hold.post = true;
+    f.progress.note("One."); await until(() => f.calls.length === 1);
+    try {
+      f.progress.note("Two."); f.progress.note("Three.");
+      await wait(100);
+      assert.deepEqual(f.calls, ["post One."], "a second post must wait for the first response");
+      f.hold.post = false; f.release();
+      await until(() => f.calls.length === 2);
+      assert.deepEqual(f.calls, ["post One.", "post Two.\n\nThree."]);
+    } finally { f.hold.post = false; f.release(); await f.progress.stop(); }
+  });
+
+  test("a card pauses posts without losing any pending notes", async () => {
+    let paused = true;
+    const f = notes(() => paused);
+    f.progress.note("One.");
+    await wait(60); assert.deepEqual(f.calls, []);
+    paused = false; await until(() => f.calls.length === 1);
+    paused = true; f.progress.note("Two."); f.progress.note("Three.");
+    await wait(60); assert.equal(f.calls.length, 1);
+    paused = false; await until(() => f.calls.length === 2);
+    assert.equal(f.calls[1], "post Two.\n\nThree.");
+    await f.progress.stop();
+  });
+
+  test("an overflowing batch splits at whole-note boundaries without dropping older notes", async () => {
+    const f = notes();
+    const a = "a".repeat(1_500), b = "b".repeat(1_500), c = "c".repeat(1_500);
+    f.progress.note(a); f.progress.note(b); f.progress.note(c);
+    await until(() => f.calls.length === 2);
+    assert.deepEqual(f.calls, ["post " + a + "\n\n" + b, "post " + c]);
+    assert.ok(f.calls.every((c) => c.slice(5).length <= 4_000));
+    assert.ok(f.times[1] - f.times[0] >= 38);
+    await f.progress.stop();
+  });
+
+  test("UTF-16 bounds keep an exact 4000-unit note whole and never split an emoji", async () => {
+    const f = notes();
+    f.progress.note("😀".repeat(2_000));
+    f.progress.note("😀".repeat(2_001));
+    f.progress.note("a".repeat(3_998) + "😀tail");
+    f.progress.note("Newest.");
+    await until(() => f.calls.length === 4);
+    assert.deepEqual(f.calls, ["post " + "😀".repeat(2_000), "post " + "😀".repeat(1_999) + "…", "post " + "a".repeat(3_998) + "…", "post Newest."]);
+    assert.ok(f.calls.every((c) => c.slice(5).length <= 4_000));
+    await f.progress.stop();
+  });
+
+  test("notes are plain visible text, with Markdown marks kept as typed", async () => {
+    const f = notes();
+    const note = " *A note*\nwith [a link](https://example.test) ";
+    f.progress.note(note); await until(() => f.calls.length === 1);
+    assert.equal(f.calls[0], "post " + note);
+    await f.progress.stop();
+  });
+
+  test("an uncertain post suppresses all further posts in the turn", async () => {
+    let posts = 0;
+    const progress = new Progress({
+      post: async () => { posts++; throw new Error("connection dropped"); },
+      remove: async () => assert.fail("no known message"),
+    }, () => false, 10, 20);
+    progress.note("One."); await until(() => posts === 1);
+    progress.note("Two."); progress.note("Three.");
+    await wait(80); assert.equal(posts, 1);
     await progress.stop();
-    assert.deepEqual(calls, ["post Working: GMAIL_SEARCH...", "remove 7"]);
   });
 
-  test("with no tool yet it says only that it is working", async () => {
-    const { progress, calls } = line();
-    await until(() => calls.length > 0);
-    assert.deepEqual(calls, ["post Working..."]);
+  test("two acknowledged posts then an unknown failure stop further posts and delete both known ids", async () => {
+    const calls: string[] = [];
+    let posts = 0;
+    const progress = new Progress({
+      post: async (text) => {
+        calls.push("post " + text);
+        if (++posts === 3) throw new Error("connection dropped");
+        return posts;
+      },
+      remove: async (id) => void calls.push("remove " + id),
+    }, () => false, 10, 20);
+    for (const [i, word] of ["One.", "Two.", "Three."].entries()) {
+      progress.note(word); await until(() => posts === i + 1);
+    }
+    progress.note("Four."); progress.note("Five.");
+    await wait(80); assert.equal(posts, 3, "an unknown third attempt prevents a fourth");
+    await progress.stop(); calls.push("answer");
+    assert.deepEqual(calls, ["post One.", "post Two.", "post Three.", "remove 1", "remove 2", "answer"]);
+  });
+
+  test("a successful post with no message id is also never duplicated", async () => {
+    let posts = 0;
+    const progress = new Progress({
+      post: async () => { posts++; return undefined; },
+      remove: async () => assert.fail("no known message"),
+    }, () => false, 10, 20);
+    progress.note("One."); await until(() => posts === 1);
+    progress.note("Two."); await wait(60);
+    assert.equal(posts, 1); await progress.stop();
+  });
+
+  test("a refused post may post again with the next note, without an automatic retry", async () => {
+    const bodies: string[] = [], removed: number[] = [];
+    const progress = new Progress({
+      post: async (text) => { bodies.push(text); if (bodies.length === 1) throw new TelegramError(403); return 7; },
+      remove: async (id) => void removed.push(id),
+    }, () => false, 10, 20);
+    progress.note("One."); await until(() => bodies.length === 1);
+    await wait(60); assert.equal(bodies.length, 1);
+    progress.note("Two."); await until(() => bodies.length === 2);
+    await progress.stop();
+    assert.deepEqual(bodies, ["One.", "Two."]);
+    assert.deepEqual(removed, [7]);
+  });
+
+  test("a refused split batch resumes only when a new note arrives", async () => {
+    const bodies: string[] = [];
+    const progress = new Progress({
+      post: async (text) => { bodies.push(text); if (bodies.length === 1) throw new TelegramError(403); return 7; },
+      remove: async () => {},
+    }, () => false, 10, 20);
+    progress.note("a".repeat(3_000)); progress.note("b".repeat(3_000));
+    await until(() => bodies.length === 1);
+    await wait(60); assert.equal(bodies.length, 1);
+    progress.note("Next."); await until(() => bodies.length === 2);
+    assert.equal(bodies[1], "b".repeat(3_000) + "\n\nNext.");
     await progress.stop();
   });
 
-  test("tools changing quickly rewrite the line once, with the latest", async () => {
-    const { progress, calls } = line(() => false, 10, 300);
-    progress.using("npm test");
-    await until(() => calls.length > 0);
-    progress.using("npm run build");
-    progress.using("npm run lint");
-    await wait(40);
-    assert.equal(calls.length, 1, "not before the wait between rewrites is up");
-    await until(() => calls.length > 1);
-    await wait(350);
-    assert.deepEqual(calls, ["post Working: npm test...", "edit 7 Working: npm run lint..."]);
-    // the same tool again is not a change worth a call
-    progress.using("npm run lint");
-    await wait(350);
-    assert.equal(calls.length, 2);
-    await progress.stop();
+  test("a held post settles before cleanup, pending notes are cancelled, and stop is idempotent", async () => {
+    const f = notes(); f.hold.post = true; f.progress.note("One.");
+    await until(() => f.calls.length === 1);
+    f.progress.note("Two.");
+    const stopped = f.progress.stop();
+    assert.equal(f.progress.stop(), stopped);
+    assert.deepEqual(f.calls, ["post One."]);
+    f.hold.post = false; f.release(); await stopped;
+    f.calls.push("answer"); f.progress.note("Late."); await wait(60);
+    assert.deepEqual(f.calls, ["post One.", "remove 7", "answer"]);
   });
 
-  test("nothing is posted while a card waits on the person, and it comes once the card is answered", async () => {
-    let waiting = true;
-    const { progress, calls } = line(() => waiting, 10, 30);
-    progress.using("npm test");
-    await wait(80);
-    assert.deepEqual(calls, [], "the agent is waiting on them, not working");
-    waiting = false;
-    await until(() => calls.length > 0);
-    assert.deepEqual(calls, ["post Working: npm test..."]);
-    await progress.stop();
-  });
-
-  test("a line still being posted when the turn ends is taken away once it lands", async () => {
-    const { progress, calls, hold, release } = line(() => false, 10);
-    hold.on = true;
-    await wait(40);
-    const stopped = progress.stop();
-    release();
-    await stopped;
-    assert.deepEqual(calls, ["post Working...", "remove 7"]);
-  });
-
-  test("a tool's name reads as a person would read it", () => {
-    assert.equal(toolLabel("mcp__bloks__ask_user"), "ask_user");
-    assert.equal(toolLabel("npm test\n--watch"), "npm test");
-    assert.equal(toolLabel("x".repeat(100)), `${"x".repeat(57)}...`);
+  test("a failed delete does not prevent the remaining deletions or the answer", async () => {
+    const calls: string[] = [];
+    let nextId = 1;
+    const progress = new Progress({
+      post: async (text) => { calls.push("post " + text); return nextId++; },
+      remove: async (id) => { calls.push("remove " + id); if (id === 1) throw new Error("delete refused"); },
+    }, () => false, 10, 20);
+    progress.note("One."); await until(() => calls.length === 1);
+    progress.note("Two."); await until(() => calls.length === 2);
+    await progress.stop(); calls.push("answer");
+    assert.deepEqual(calls, ["post One.", "post Two.", "remove 1", "remove 2", "answer"]);
   });
 });
 

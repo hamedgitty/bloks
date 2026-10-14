@@ -141,6 +141,8 @@ setTimeout(() => process.exit(0), 50);
   const env = {
     HOME: dataRoot, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
+    // a failed turn is asked again after this wait (GitHub 284)
+    BLOKS_RETRY_WAIT_MS: "200",
   };
   let h = await startHarness(env);
   const bot = await agentOn(h, engine.port, "Planning");
@@ -366,7 +368,8 @@ test("a steered same-chat follow-up after restart has one answer for the consumi
   assert.ok(await waitFor(async () => (await messagesOf(f.h, f.bot)).some((m) => m.text === "Working")));
   f.tg.push("FOLLOWUP");
   assert.ok(await waitFor(() => f.tg.answers().length === 1));
-  assert.equal(f.tg.answers()[0].text, "Working\n\nBoth: FOLLOWUP");
+  assert.equal(f.tg.answers()[0].text, "Both: FOLLOWUP");
+  assert.ok((await messagesOf(f.h, f.bot)).some((m) => m.text === "Working"), "the earlier note stays in the app");
   assert.equal(readFileSync(join(f.dataRoot, "spawns"), "utf8"), "1");
   await sleep(300);
   assert.equal(f.tg.answers().length, 1);
@@ -450,11 +453,38 @@ test("a consuming turn stopped by a missing project folder sends why, not an emp
   assert.equal(f.tg.answers().length, 1);
 });
 
-test("a failed consuming turn without a pickup returns the normal empty-answer fallback once", async (t) => {
+test("a failed consuming turn keeps its return for the retry, and sends that answer once", async (t) => {
   const f = await fixture(t);
   await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
   assert.ok(await waitFor(() => f.engine.state.held.length === 1));
   f.engine.state.held.shift()!("", 400);
+  assert.ok(await waitFor(() => f.engine.state.held.length === 1), "the failed turn was not asked again");
+  assert.equal(f.tg.answers().length, 0);
+  f.engine.state.held.shift()!("RETRIED_ANSWER");
+  assert.ok(await waitFor(() => f.tg.answers().length === 1));
+  assert.equal(f.tg.answers()[0].text, "RETRIED_ANSWER");
+  assert.equal(f.engine.state.calls.length, 2);
+  await sleep(250);
+  assert.equal(f.tg.answers().length, 1);
+});
+
+test("a failed consuming turn whose retry fails too returns its error notice once", async (t) => {
+  const f = await fixture(t);
+  await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => f.engine.state.held.length === 1));
+  f.engine.state.held.shift()!("", 400);
+  assert.ok(await waitFor(() => f.engine.state.held.length === 1));
+  f.engine.state.held.shift()!("", 400);
+  assert.ok(await waitFor(() => f.tg.answers().length === 1));
+  assert.match(f.tg.answers()[0].text, /synthetic failure/);
+  assert.equal(f.engine.state.calls.length, 2);
+});
+
+test("a consuming turn with neither text nor a notice keeps the empty-answer fallback", async (t) => {
+  const f = await fixture(t);
+  await f.queue(); await f.h.json("/api/maintenance/drain", { method: "DELETE" });
+  assert.ok(await waitFor(() => f.engine.state.held.length === 1));
+  f.engine.state.held.shift()!("");
   assert.ok(await waitFor(() => f.tg.answers().length === 1));
   assert.equal(f.tg.answers()[0].text, "(the agent finished without saying anything)");
   assert.equal(f.engine.state.calls.length, 1);
@@ -579,7 +609,7 @@ test("a planned drain waits for an in-flight return send", async (t) => {
   assert.ok(await waitFor(async () => (await f.h.json("/api/maintenance/drain")).idle));
 });
 
-test("a synchronous fake engine speaks before carryOn moves its input: all turn text still returns", async (t) => {
+for (const final of [false, true]) test("carryOn moves its held input after turn text: keep the whole return span (final=" + final + ")", async (t) => {
   const rows = [
     { id: "old", role: "bot", kind: "text", text: "OLD ANSWER" },
     { id: "request", role: "user", kind: "text", text: "ASK", queued: true, telegramReply: { chatId: CHAT, state: "queued" } },
@@ -598,17 +628,20 @@ test("a synchronous fake engine speaks before carryOn moves its input: all turn 
     bodies.push(JSON.parse(body));
     return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }));
   });
-  const returns = new TelegramReturns(memory, () => ({ enabled: true, token: "TEST", chatIds: [CHAT] }), () => {}, () => {});
+  const handed: string[][] = [];
+  const returns = new TelegramReturns(memory, () => ({ enabled: true, token: "TEST", chatIds: [CHAT] }), () => {}, () => {},
+    async (_lane, _chat, said) => void handed.push(said.map((m) => m.id)));
   returns.bind("lane", ["request"], true);
   // A synchronous adapter publishes text before startTurn resolves.
   rows.push({ id: "early", at: 1, role: "bot", kind: "text", text: "EARLY" });
   // deliverQueued then moves its request behind that already-spoken text.
   const request = rows.splice(rows.findIndex((m) => m.id === "request"), 1)[0];
   request.queued = false; rows.push(request);
-  rows.push({ id: "final", at: 2, role: "bot", kind: "text", text: "FINAL" });
+  if (final) rows.push({ id: "final", at: 2, role: "bot", kind: "text", text: "FINAL" });
   returns.finish("lane");
   assert.ok(await waitFor(() => request.telegramReply?.state === "sent"));
-  assert.equal(bodies[0].text, "EARLY\n\nFINAL");
+  assert.equal(bodies[0].text, final ? "FINAL" : "EARLY");
+  assert.deepEqual(handed, [final ? ["early", "request", "final"] : ["early", "request"]]);
   returns.finish("lane");
   assert.equal(bodies.length, 1);
 });

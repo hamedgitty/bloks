@@ -443,6 +443,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
       let finished = false;
+      let stopping = false;
       // the thread's token total before this turn, set by its first update
       let tokenBase: TokenCount | null = null;
       // what this turn has been charged so far, and the part of it spent
@@ -782,6 +783,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "turn/completed": {
+            if (stopping) break;
             // Only the thread the turn is in can end it. Another one
             // ending (a compaction left behind) said the person's turn
             // was done while it was still working, and the process was
@@ -802,6 +804,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "error": {
+            if (stopping) break;
             // The app-server nests the text (`error.message`); older ones
             // had it at the top. One it is about to retry is not the end
             // of the turn, so only the last one is said. A compaction that
@@ -844,6 +847,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       child.on("close", (code) => {
         if (finished) return;
+        if (stopping) return finish(false, "interrupted");
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -886,7 +890,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (finished) return;
         emit({ ...envelope(threadId, turnId), type: "runtime.error", message: "Compaction was stopped." });
         finish(false, "interrupted");
-      } : abort, steer, asks });
+      } : () => {
+        // finish also aborts for cleanup, which is not a requested stop.
+        stopping = true;
+        abort();
+      }, steer, asks });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
       // Handshake and kickoff. Anything that goes wrong in here has to end
@@ -1060,7 +1068,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }), "starting the turn", "Codex");
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
-          if (finished) return;
+          if (finished || stopping) return;
           emit({
             ...envelope(threadId, turnId),
             type: "runtime.error",

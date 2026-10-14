@@ -17,8 +17,13 @@
 //
 // Deciding "out" is reading error text, which no two providers phrase
 // alike. The patterns are deliberately about capacity and access, never
-// about the work: a failed test or a refused command must stay a failed
-// turn, or the backup would get to repeat whatever went wrong.
+// about the work: only an engine that is out rests, for everyone on it.
+//
+// Any other failed turn is not left there either (GitHub 284): it is
+// asked again once, and then handed to the backup once, each attempt
+// told what failed. The one other thing read from the error is a safety
+// refusal, which is asked again in a new session rather than the same
+// one. Everything else is asked again as it is.
 //
 // Everything here is pure except the cooldown table, which lives in
 // memory: after a restart the first turn simply tries the main engine
@@ -49,6 +54,43 @@ export function outReason(text: string | null | undefined): OutReason | null {
   for (const [reason, pattern] of PATTERNS) if (pattern.test(said)) return reason;
   return null;
 }
+
+// A provider's safety check declining the message, which is neither the
+// engine being out nor the work going wrong. Its own words ask for a new
+// session ("Try rephrasing the request in a new session or change your
+// model"), and the session it happened in refuses every message after it,
+// so that session is never resumed (GitHub 284). Kept to the shapes the
+// checks actually use: an agent saying "refusal" about its work must not
+// cost it its session.
+const REFUSAL =
+  /safeguards? (?:have |has )?flagged|flagged (?:this|the|your) (?:message|request|prompt|content)|(?:violates?|against|violation of) (?:our|the|anthropic's|openai's) (?:usage|content|acceptable use) polic|content[_ ]policy[_ ]violation|blocked by (?:our|the) (?:safety|content) (?:system|filter)|unable to respond to this request, which appears to violate|stop[_ ]reason"?:?\s*"?refusal\b/i;
+
+/** True when a failed turn was refused by the provider's safety check. */
+export function isRefusal(text: string | null | undefined): boolean {
+  return REFUSAL.test((text ?? "").slice(0, 4000));
+}
+
+/** What a failed turn gets (GitHub 284): an engine that is out goes
+ * straight to the backup, a refusal is asked again at once in a new
+ * session, and anything else is asked again after a wait. */
+export type Failure = "out" | "refusal" | "other";
+
+export function failureOf(text: string | null | undefined): Failure {
+  if (outReason(text)) return "out";
+  if (isRefusal(text)) return "refusal";
+  return "other";
+}
+
+/** How long a failed turn waits before it is asked again. The engines
+ * already retry a dropped connection or an overloaded API for a while
+ * before they give up on a turn, so asking at once would mostly fail
+ * the same way. */
+export const RETRY_WAIT_MS = 60_000;
+/** How long a conversation stays on the backup that answered it, when
+ * its own engine is not resting: long enough that a flapping engine is
+ * not tried on every message, short enough that the agent is soon back
+ * in its own session. */
+export const STAY_MS = 30 * 60_000;
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const MINUTE = 60_000;

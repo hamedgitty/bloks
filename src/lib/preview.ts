@@ -73,6 +73,10 @@ export function previewLine(last: Message | undefined): string {
     case "options":
       return last.card ? last.card.title : "Asked you something";
     case "activity":
+      if (last.takeBack) {
+        const count = last.takeBack.messages.length;
+        return `Took back ${count} message${count === 1 ? "" : "s"}`;
+      }
       return last.tool ? toolLabel(last.tool) : "Working";
     case "screen":
       return "Shared a screen frame";

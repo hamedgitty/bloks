@@ -169,7 +169,9 @@ test("an interrupted child-last turn keeps the parent reading", async t => {
     { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1,
       duration_api_ms: 1, session_id: "parent-session", result: "Stopped for this fixture", total_cost_usd: 0 }]);
   assert.equal((await f.lane()).context.used, 50_000);
-  assert.equal(f.stored().usage.input, 300_000);
+  // a failed turn is asked again once (GitHub 284), and each attempt counts
+  assert.equal(f.calls().length, 2);
+  assert.equal(f.stored().usage.input, 600_000);
 });
 
 test("every non-null parent value is a child and missing usage cannot resolve a marker", async t => {

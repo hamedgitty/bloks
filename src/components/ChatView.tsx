@@ -1102,7 +1102,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       // looks like the person's own words
       // A reply the agent wrote in its own chat is never compacted,
       // whoever started the turn (older ones were marked dir "reply").
-      if (m.agent && m.agent.dir !== "reply" && (m.kind === "text" || m.kind === "activity")) {
+      if (m.takeBack || (m.agent && m.agent.dir !== "reply" && (m.kind === "text" || m.kind === "activity"))) {
         return (
           <div key={m.id} data-msg-index={absolute}>
             <AgentExchangeRow
@@ -1120,11 +1120,11 @@ export function ChatView({ bot }: { bot: Bot }) {
         case "activity": {
           // a run of tool calls is one line; it starts at the first
           const before = list[offset - 1];
-          if (before?.kind === "activity" && !before.deleted && !before.agent && !before.quiet) return null;
+          if (before?.kind === "activity" && !before.deleted && !before.agent && !before.takeBack && !before.quiet) return null;
           const run: Message[] = [];
           for (let i = offset; i < list.length; i++) {
             const next = list[i];
-            if (next.kind !== "activity" || next.deleted || next.agent || next.quiet) break;
+            if (next.kind !== "activity" || next.deleted || next.agent || next.takeBack || next.quiet) break;
             run.push(next);
           }
           return <ToolRun key={m.id} messages={run} fresh={fresh} />;

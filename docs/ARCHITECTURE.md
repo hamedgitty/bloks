@@ -243,19 +243,60 @@ composer is not taken back; it goes after the redone words.
 
 ## Backup engines
 
-`server/failover.ts` decides whether a failed turn failed because its
-engine is out (a usage or rate limit, no credit, an outage, signed out)
-rather than because of the work, from the turn's runtime errors and stop
-reason, and when the engine should be usable again (an epoch, "try again
-in 20m", "resets 3pm", or a default per reason, capped at twelve hours).
+`server/failover.ts` reads a failed turn's runtime errors and stop
+reason for what kind of failure it was (`failureOf`): its engine being
+out (a usage or rate limit, no credit, an outage, signed out), a safety
+refusal by the provider, or anything else. For an engine that is out it
+also reads when it should be usable again (an epoch, "try again in
+20m", "resets 3pm", or a default per reason, capped at twelve hours).
 The engine rests in a per-instance table in memory, so every agent on it
-skips it until then. An agent with a `backupSelection` has its failed
-solo turn started again on the backup, once, with `fallback: true`; the
-engine switch hands over the bounded story as any switch does (see
-Compactions). The raw error is held back while a backup takes over and
-shown if none does. Room turns do not retry, but the rest applies to
-their next turn. A turn that answers ends a sign-in rest on its engine
-early, since the login works again.
+skips it until then. A stop, a stalled tool, a command and a
+conversation too long for the model (folded and asked again on its own)
+are not failures here.
+
+What happens to a failed solo turn (GitHub 284) is decided at its end
+(`recoverTurn` in `server/index.ts`), once per message. A refusal is
+asked again at once in a new session told the bounded story (see
+Compactions), and the refused session is dropped (`store.dropSession`:
+its cursor goes and `lastInstanceId` is emptied, so whichever engine
+comes next is told the conversation); a refusal in a session that was
+already new is not asked again. An engine that is out is not asked
+again. Anything else is asked again once in the same session after
+`RETRY_WAIT_MS` (a minute; `BLOKS_RETRY_WAIT_MS` in tests), with the
+lane kept busy so new messages queue; Stop, an archive or a hold cancels
+the wait. When the retry fails, or there was none to make, the backup
+takes the message once, with `fallback: true`, for whoever asked: any
+`backupSelection` that is usable and is not what just failed (another
+engine, or another model on the same engine, which resumes the same
+session; after an engine that is out, another engine). When nothing can
+take it, the raw errors are shown as they were, one notice says why (no
+backup and where to set one, the backup unavailable, or both errors when
+the backup failed too), and the lane is marked for the person. The raw
+error is held back while a turn may still go on and said in the notice
+that says what happens next.
+
+After the backup answers, that lane stays on it (`stays`) for `STAY_MS`
+(half an hour; `BLOKS_BACKUP_STAY_MS` in tests), or until the own
+engine's rest ends when it rests; the person changing the agent's engine
+or backup ends it. The own engine's stored session is remembered as away
+from the lane (`away`) from the first message another engine answered.
+When it serves the lane again it resumes that session and is told only
+the messages it missed (`catchUpText` in `server/turn-context.ts`),
+unless it has no stored session or what it missed would not fit a new
+session's bounded story, and then it starts a new session told the story
+as any engine switch does. Each turn after a failure (the retry, the
+backup, the first turn back, the next turn after a stop or after the
+agent gave up) opens with one line in its own words saying what failed,
+when, on which engine and model, and what Bloks did (`failureNotes`).
+All of this is in memory: after a restart the own engine is simply tried
+again.
+
+Room turns are not asked again or handed over, since they belong to the
+room's order of speakers. The error shows in the room, an engine that is
+out rests so the agent's next room turn uses its backup, a refused
+session is dropped, and the agent's next turn is told what failed. A
+turn that answers ends a sign-in rest on its engine early, since the
+login works again.
 
 Other agents read the same facts the person sees
 (`server/engine-readiness.ts`). With an agent's credential,
@@ -799,15 +840,26 @@ the same way (`TelegramReturns`), and only once that answer has arrived.
 Files go only with an answer that goes to the chat: a turn started in
 the app, a routine or a mail sends nothing there.
 
-While a Telegram turn runs the chat shows "typing" (`keepTyping`), and a
-turn still running after about twenty seconds also posts one line saying
-what it is doing, "Working: <tool>..." (`telegram.Progress`, fed from
-`item.started` through `telegramWorking`, keyed by lane). The same
-message is edited as the tool changes, no more than once every four
-seconds, and deleted when the turn ends, before the answer is sent: the
-answer is a new message, so the phone still announces it. While a card
-waits on the person neither "typing" nor the line changes, since the
-agent is waiting then, not working.
+While a Telegram turn runs the chat shows "typing" (`keepTyping`).
+Completed visible notes from its consuming turn go out as new silent messages
+in order, starting after twenty seconds (`telegram.Progress`, fed from stored
+bot text through request-scoped `TurnProgress`). Notes in the first twenty
+seconds or within the four-second throttle are batched; a batch over 4,000
+UTF-16 units splits at whole-note boundaries. Only an individually oversized
+note is cut with an ellipsis. The latest text stays pending until a following
+tool or another visible text confirms it as a note, so a delayed turn-end
+event cannot send the final-only reply as progress. Reasoning items and tool
+names do not feed the messages; without a note there is nothing extra. Notes are never edited.
+Cleanup cancels pending notes, awaits the post in flight, and deletes every
+known message before the new notifying answer or notice. A failed deletion
+does not prevent the answer. While a card waits on the person neither typing
+nor notes post, since the agent is waiting then. An uncertain post suppresses
+further notes in that turn because its message may have arrived without an id.
+The tool line is deliberately removed. Normal answers take the last eligible
+text after the request in its consuming turn, with waiting rows excluded;
+completion captures that span before a later turn starts. Drain returns keep
+their existing `after` span and have no notes messages. With no reply, a plain
+redacted notice is sent; only a turn with neither keeps the empty-answer line.
 
 ## Teams as files
 

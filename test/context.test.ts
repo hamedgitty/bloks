@@ -126,6 +126,25 @@ describe("the summary itself", () => {
     assert.match(prompt, /Drop: pleasantries/);
   });
 
+  test("the prompt keeps the person's standing instructions, and their words late in a long stretch", () => {
+    // a requirement given late in a long stretch used to fall past the
+    // cut and never reach the summary (GitHub 277)
+    const long = "x".repeat(5_000);
+    const fold = [
+      ...Array.from({ length: 12 }, (_, i) => [say("user", `step ${i}`), say("assistant", long)]).flat(),
+      say("user", "only search Google Flights and Skyscanner"),
+      say("assistant", "understood"),
+    ];
+    const prompt = summaryPrompt(null, fold);
+    assert.match(prompt, /only search Google Flights and Skyscanner/);
+    assert.match(prompt, /Them: step 0/);
+    assert.match(prompt, /every standing instruction/);
+    assert.ok(prompt.length < 45_000, `the request grew to ${prompt.length}`);
+    for (const other of [defragPrompt("notes"), absorbPrompt(null, say("user", "not company ABCD"))]) {
+      assert.match(other, /every standing instruction/);
+    }
+  });
+
   test("summarising again folds the previous summary in rather than beside it", () => {
     // otherwise a long conversation ends up with a stack of summaries,
     // each one a little further from what happened
