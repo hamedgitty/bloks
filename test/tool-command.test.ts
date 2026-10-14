@@ -30,23 +30,30 @@ test("commands hide Authorization headers and standalone Bearer values", () => {
     'curl -H "Authorization: Custom fixture_token with an unfinished quote',
     "curl -H 'Authorization: Basic fixture_token with an unfinished quote",
   ]) {
-    const shown = toolCommand(command, keep)!;
-    assert.ok(!shown.includes("fixture_token"), shown);
-    assert.match(shown, /\[redacted\]/);
+    for (const input of commandForms(command)) {
+      const shown = toolCommand(input, keep)!;
+      assert.ok(!shown.includes("fixture_token"), shown);
+      assert.match(shown, /\[redacted\]/);
+    }
   }
   const both = toolCommand("curl -H 'Authorization: Basic first_token' -H 'Other: Bearer second_token'", keep)!;
   assert.ok(!both.includes("first_token") && !both.includes("second_token"));
 });
 
 test("a URL keeps its scheme, user and host, but no password", () => {
-  assert.equal(toolCommand("curl https://demo:fixture_password@example.invalid/path", keep), "curl https://demo:[redacted]@example.invalid/path");
-  assert.equal(toolCommand("curl https://demo:pw:more%40encoded@example.invalid", keep), "curl https://demo:[redacted]@example.invalid");
-  assert.equal(toolCommand("curl https://:fixture_password@example.invalid ftp://demo:second_password@example.invalid", keep), "curl https://:[redacted]@example.invalid ftp://demo:[redacted]@example.invalid");
-  assert.equal(toolCommand("curl https://example.invalid/path", keep), "curl https://example.invalid/path");
+  for (const [input, expected] of [
+    ["curl https://demo:fixture_password@example.invalid/path", "curl https://demo:[redacted]@example.invalid/path"],
+    ["curl https://demo:pw:more%40encoded@example.invalid", "curl https://demo:[redacted]@example.invalid"],
+    ["curl https://:fixture_password@example.invalid ftp://demo:second_password@example.invalid", "curl https://:[redacted]@example.invalid ftp://demo:[redacted]@example.invalid"],
+    ["curl https://example.invalid/path", "curl https://example.invalid/path"],
+  ]) {
+    commandForms(input).forEach((command, i) => assert.equal(toolCommand(command, keep), commandForms(expected)[i]));
+  }
 });
 
 test("redaction sees a whole credential crossing the display cut", () => {
   const secret = "stored_fixture_credential";
+  commandForms("printf " + secret).forEach((command, i) => assert.equal(toolCommand(command, (text) => text.replaceAll(secret, "[redacted]")), commandForms("printf [redacted]")[i]));
   const before = "x".repeat(2000 - 11) + secret + " trailing";
   const shown = toolCommand(before, (text) => text.replaceAll(secret, "[redacted]"))!;
   assert.ok(!shown.includes("stored_fix"), "clipping before redaction left part of a stored credential");
@@ -64,6 +71,9 @@ test("the display bound is UTF-16, includes its ellipsis and never splits an emo
 
 test("every credential shape is fully hidden in direct and both Codex wrappers", () => {
   const cases = [
+    ['curl -H "Authorization": "Basic fixture_split_value"', ["fixture_split_value"]],
+    ['curl -H "X-Api-Key": "fixture_split_value"', ["fixture_split_value"]],
+    ["curl -H 'Cookie': 'session=fixture_split_value'", ["fixture_split_value"]],
     ["curl -H 'Proxy-aUtHoRiZaTiOn: Digest username=\"fixture_user\", response=\"fixture_response\"' https://example.invalid", ["fixture_user", "fixture_response"]],
     ['curl -H "Authorization: Digest username=\\"fixture_user\\", response=\\"fixture_response\\"" https://example.invalid', ["fixture_user", "fixture_response"]],
     ["curl Authorization=Digest username=fixture_user,response=fixture_response", ["fixture_user", "fixture_response"]],

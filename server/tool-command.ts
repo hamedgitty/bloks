@@ -90,7 +90,7 @@ function maskCredentials(text: string): string {
         const start = hit.index! + hit[0].length;
         const [a, b] = valueEnd(word.text, start);
         mask(word, a, b);
-        if (!word.quoted) headerPending = true;
+        if (!word.quoted || start === word.text.length) headerPending = true;
       }
       const bearers = /\bbearer(?:\s+|$)/gi;
       for (const hit of word.text.matchAll(bearers)) {

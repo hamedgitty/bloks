@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { startHarness } from "./helpers/server.ts";
 
 const SECRET = "stored_fixture_credential";
-const PRIVATE = [SECRET, "sk-fixture_abcdefghijklmnop", "header_fixture_value", "url_fixture_password", "escaped_fixture_value", "unclosed_fixture_value", "assign_fixture_value", "flag_fixture_value", "cookie_fixture_value"];
+const PRIVATE = [SECRET, "sk-fixture_abcdefghijklmnop", "header_fixture_value", "url_fixture_password", "escaped_fixture_value", "unclosed_fixture_value", "assign_fixture_value", "flag_fixture_value", "cookie_fixture_value", "split_fixture_value"];
 const MULTI = "printf 'first line'\nprintf 'second line'";
 const SENSITIVE = "curl -H 'Authorization: Bearer header_fixture_value' https://demo:url_fixture_password@example.invalid -d " + SECRET + " -d sk-fixture_abcdefghijklmnop";
 const SAFE = "curl -H 'Authorization: [redacted]' https://demo:[redacted]@example.invalid -d [redacted] -d [redacted]";
@@ -28,6 +28,7 @@ const calls = [
   { id: "unclosed", command: 'tool Bearer "unclosed_fixture_value' },
   { id: "extra", command: "API_KEY=assign_fixture_value tool --token flag_fixture_value -H 'Cookie: session=cookie_fixture_value'" },
   { id: "single-wrapped", command: SENSITIVE },
+  { id: "split-header", command: 'curl -H "Authorization": "Basic split_fixture_value"' },
 ];
 const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -136,8 +137,9 @@ for (const engine of ["codex", "claude"]) {
     assert.equal(rows[8].tool.command, shown('tool Bearer "[redacted]'));
     assert.equal(rows[9].tool.command, shown("API_KEY=[redacted] tool --token [redacted] -H 'Cookie: [redacted]'"));
     assert.equal(rows[10].tool.command, shown(SAFE, "single-wrapped"));
+    assert.equal(rows[11].tool.command, shown('curl -H "Authorization": "[redacted]"'));
     const inFlight = JSON.parse(readFileSync(join(root, ".bloks", "turns-in-flight.json"), "utf8"));
-    assert.equal(inFlight.find((turn: any) => turn.laneId === bot.threadId).tool, engine === "codex" ? shown(SAFE, "single-wrapped").slice(0, 80) : "Bash", "pickup lost the legacy tool title");
+    assert.equal(inFlight.find((turn: any) => turn.laneId === bot.threadId).tool, engine === "codex" ? shown('curl -H "Authorization": "[redacted]"').slice(0, 80) : "Bash", "pickup lost the legacy tool title");
     await until(() => sse.includes('"kind":"message"') && sse.includes('"command":') ? true : null);
     const frames = () => sse.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
     const event = frames().find((f) => f.kind === "runtime" && f.event.itemId === "sensitive").event;
