@@ -101,6 +101,21 @@ test("tool activity shows its kind, never its arguments", () => {
   assert.equal(toolKind("mcp__composio__GMAIL_SEND"), "Used a connected app");
 });
 
+test("command detail follows the existing member activity permission in history and live frames", () => {
+  const row = msg({ kind: "activity", tool: { name: "shell", command: "printf '[redacted]'", ok: false, stopped: true } });
+  const hidden = memberMessage(row, view())!;
+  assert.deepEqual(hidden.tool, { name: "Ran a command", ok: false, stopped: true });
+  assert.equal("command" in hidden.tool!, false);
+  assert.deepEqual(memberMessage(row, view({ activityDetail: true }))!.tool, row.tool);
+  for (const kind of ["message", "message.patch"]) {
+    const frame = { kind, threadId: ROOM, message: row };
+    const limited = memberFrame(frame, () => view()) as any;
+    assert.equal("command" in limited.message.tool, false, kind);
+    const detailed = memberFrame(frame, () => view({ activityDetail: true })) as any;
+    assert.deepEqual(detailed.message.tool, row.tool, kind);
+  }
+});
+
 test("approvals reach members without their buttons; questions keep theirs", () => {
   const approval = msg({
     kind: "options",
@@ -138,5 +153,14 @@ test("frames reach a member only for their own rooms", () => {
   assert.equal(memberFrame({ kind: "room.typing", roomId: OTHER, name: "Sam" }, viewOf), null);
   for (const kind of ["bot", "runtime", "config", "relay", "screen", "blok", "instances", "room.joinRequest", "computer"]) {
     assert.equal(memberFrame({ kind, roomId: ROOM, threadId: ROOM }, viewOf), null, kind);
+  }
+});
+
+test("stable Codex command kinds match Bash for restricted members", () => {
+  for (const command of ["curl https://example.invalid", "browser navigate https://example.invalid"]) {
+    const row = msg({ kind: "activity", tool: { name: "shell", command } });
+    assert.equal(memberMessage(row, view())!.tool!.name, "Ran a command");
+    assert.equal("command" in memberMessage(row, view())!.tool!, false);
+    assert.notEqual(toolKind(command), "Ran a command");
   }
 });

@@ -1,3 +1,6 @@
+import { toolLabel } from "../src/lib/tool-summary.ts";
+import { previewLine } from "../src/lib/preview.ts";
+import { preview } from "../src/lib/threads.ts";
 // Tool calls: one line per run of them, and none left spinning.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +14,7 @@ import { startHarness } from "./helpers/server.ts";
 describe("a run of tool calls, counted", () => {
   test("tools are sorted by what they did", () => {
     assert.equal(kindOf("Bash"), "command");
-    assert.equal(kindOf("npm test -- --watch=false"), "command", "Codex labels a command with the command");
+    assert.equal(kindOf("npm test -- --watch=false"), "command", "legacy command labels still count");
     assert.equal(kindOf("Read"), "read");
     assert.equal(kindOf("Grep"), "search");
     assert.equal(kindOf("web_search"), "search");
@@ -40,6 +43,12 @@ describe("a run of tool calls, counted", () => {
     assert.equal(running([{ name: "Bash", ok: true }, { name: "Bash" }]), true);
     assert.equal(running([{ name: "Bash", ok: true }, { name: "Bash", stopped: true }]), false);
   });
+
+  test("commands count by kind even when their command text names a search or read tool", () => {
+    assert.equal(summarize([{ name: "Bash", command: "ls", ok: true }, { name: "shell", command: "cat", ok: false }]), "Ran 2 commands");
+    assert.equal(summarize([{ name: "shell", command: "Read" }, { name: "Read" }, { name: "Grep" }, { name: "Edit" }]), "Ran 1 command, read 1 file, searched once, edited 1 file");
+    assert.equal(summarize([{ name: "npm test" }, { name: "Bash" }]), "Ran 2 commands", "old no-field rows retain their counts");
+  });
 });
 
 describe("a call nobody will hear back from", () => {
@@ -55,7 +64,7 @@ describe("a call nobody will hear back from", () => {
       const before = JSON.parse(readFileSync(file, "utf8"));
       before.push(
         { id: "t1", at: Date.now(), role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
-        { id: "t2", at: Date.now(), role: "bot", kind: "activity", tool: { name: "Bash" } },
+        { id: "t2", at: Date.now(), role: "bot", kind: "activity", tool: { name: "Bash", command: "printf 'demo'" } },
       );
       writeFileSync(file, JSON.stringify(before));
 
@@ -64,7 +73,7 @@ describe("a call nobody will hear back from", () => {
         const { bots } = await h.json("/api/bots");
         const messages = bots.find((b: any) => b.id === bot.id).messages;
         assert.deepEqual(messages.find((m: any) => m.id === "t1").tool, { name: "Bash", ok: true });
-        assert.deepEqual(messages.find((m: any) => m.id === "t2").tool, { name: "Bash", stopped: true });
+        assert.deepEqual(messages.find((m: any) => m.id === "t2").tool, { name: "Bash", command: "printf 'demo'", stopped: true });
       } finally {
         await h.stop();
       }
@@ -113,4 +122,20 @@ describe("keeping a suggested change to a skill", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+});
+
+test("all command labels use the first nonblank line and preserve stable counts", () => {
+  for (const tool of [
+    { name: "shell", command: "\n  \n/bin/bash -lc 'printf ready'\nprintf later" },
+    { name: "Bash", command: "\nprintf ready\nprintf later" },
+    { name: "old command", command: undefined },
+  ]) {
+    const expected = tool.command?.includes("/bin/bash") ? "/bin/bash -lc 'printf ready'" : tool.command ? "printf ready" : tool.name;
+    assert.equal(toolLabel(tool), expected);
+    const row = { id: "tool", role: "bot", kind: "activity", at: 0, tool } as const;
+    assert.equal(previewLine(row), expected);
+    assert.equal(preview(row), expected);
+  }
+  assert.equal(toolLabel({ name: "Bash", command: " \n\t" }), "Bash");
+  assert.equal(summarize([{ name: "shell", command: "ls" }, { name: "Bash", command: "read" }]), "Ran 2 commands");
 });

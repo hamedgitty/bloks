@@ -23,6 +23,7 @@
 //   grouped. A lens that omits something is a lens people learn not to
 //   trust.
 import type { Message } from "@/state/reducer";
+import { toolLabel } from "./tool-summary.ts";
 
 export interface Thread {
   /** The message the conversation hangs off. */
@@ -137,7 +138,7 @@ export function preview(message: Message, max = 140): string {
     case "options":
       return message.card?.title ?? "a question";
     case "activity":
-      return message.tool?.name ?? "did something";
+      return message.tool ? toolLabel(message.tool) : "did something";
     case "screen":
       return "a screenshot";
     case "changes":

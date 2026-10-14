@@ -183,7 +183,7 @@ export interface Message {
   /** activity messages: tool name + outcome */
   /** `stopped`: the turn ended before this call reported back, so it
    * will never say whether it worked. */
-  tool?: { name: string; ok?: boolean; stopped?: boolean };
+  tool?: { name: string; command?: string; ok?: boolean; stopped?: boolean };
   /** activity messages: the turn had made this same call (same tool, same
    * arguments) this many times, 5, 10 or 20, shown as a chip on its run. */
   repeated?: number;

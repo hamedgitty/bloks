@@ -161,7 +161,8 @@ export function memberMessage(message: Message, view: MemberView): Message | nul
     case "activity": {
       if (!message.tool) return null;
       if (view.activityDetail) return message;
-      return { ...message, tool: { ...message.tool, name: toolKind(message.tool.name) } };
+      const { command: _command, ...tool } = message.tool;
+      return { ...message, tool: { ...tool, name: toolKind(message.tool.name) } };
     }
     case "options": {
       if (!message.card) return null;

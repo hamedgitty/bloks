@@ -13,6 +13,7 @@
 
 export interface ToolLike {
   name: string;
+  command?: string;
   ok?: boolean;
   stopped?: boolean;
 }
@@ -24,9 +25,8 @@ const SEARCH = /^(grep|glob|ls|list|search|web_?search|websearch|webfetch|web_?f
 const EDIT = /^(edit|write|multiedit|multi_edit|notebookedit|create|str_replace(_editor)?|apply_patch|write_file|edit_file)$/i;
 const COMMAND = /^(bash|shell|terminal|exec|run|sandbox_exec|run_shell_command|command)$/i;
 
-/** What kind of call a chip is, from the only thing a chip carries: its
- * label. Engines that label a command by the command itself (Codex)
- * show a line with a space in it, which no tool name has. */
+/** Count by kind, independently of a command's display detail. The
+ * whitespace heuristic still recognizes older command-labelled rows. */
 export function kindOf(name: string): ToolKind {
   const bare = name.trim().replace(/^mcp__[^_]+__/, "");
   if (COMMAND.test(bare)) return "command";
@@ -69,4 +69,9 @@ export function running(tools: ToolLike[]): boolean {
  * worth saying. */
 export function repeatedIn(rows: Array<{ repeated?: number }>): number {
   return rows.reduce((top, row) => (typeof row.repeated === "number" && row.repeated > top ? row.repeated : top), 0);
+}
+
+/** One visible command label, with old no-detail rows left as named. */
+export function toolLabel(tool: Pick<ToolLike, "name" | "command">): string {
+  return tool.command?.split(/\r?\n/).find((line) => line.trim()) ?? tool.name;
 }

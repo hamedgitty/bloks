@@ -297,7 +297,7 @@ function summarise(params: any, fallback: string): string {
 function toolLabel(item: any): string | null {
   switch (item.type) {
     case "commandExecution":
-      return String(item.command ?? "shell").slice(0, 80);
+      return "shell";
     case "fileChange":
       return "edit";
     case "mcpToolCall":
@@ -683,6 +683,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               itemType: "tool",
               itemId: item.id,
               title: label,
+              ...(item.type === "commandExecution" && typeof item.command === "string" ? { command: item.command } : {}),
               ...(paths.length ? { paths } : {}),
               // a command writes what it writes, and says nothing of it
               ...(item.type === "commandExecution" ? { mayWrite: true } : {}),

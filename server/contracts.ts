@@ -109,6 +109,9 @@ export type RuntimeEvent = RuntimeEventBase &
         type: "item.started";
         itemType: "tool" | "reasoning";
         title?: string;
+        /** Command display detail. The bus redacts and bounds it before
+         * logging or publishing; title stays the tool's counted kind. */
+        command?: string;
         /** The files this call writes, when the engine says: what a change
          * card can be sure was this turn's own work (server/checkpoints.ts). */
         paths?: string[];

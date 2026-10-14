@@ -189,7 +189,7 @@ export interface Message {
   /** activity messages: tool name + outcome */
   /** `stopped`: the turn ended before this call reported back, so it
    * will never say whether it worked. */
-  tool?: { name: string; ok?: boolean; stopped?: boolean };
+  tool?: { name: string; command?: string; ok?: boolean; stopped?: boolean };
   /** activity messages: this call was the 5th, 10th or 20th time its turn
    * made the very same call (server/repeats.ts). On one row a turn, the
    * latest to reach a higher mark; the row before it loses it. Beside

@@ -15,10 +15,17 @@ import { join } from "node:path";
 
 import { EVENTS_DIR } from "../config.ts";
 import type { ProviderInstance, RuntimeEvent, RuntimeEventListener } from "../contracts.ts";
+import { toolCommand } from "../tool-command.ts";
 
 export class EventBus {
   private subscribers = new Set<RuntimeEventListener>();
   private detachers = new Map<string, () => void>();
+
+  private readonly redact: (text: string) => string;
+
+  constructor(redact: (text: string) => string) {
+    this.redact = redact;
+  }
 
   /** Start relaying from these instances. Safe to call again after a
    * `detach`, which is what a config reload does for the engines it
@@ -41,6 +48,11 @@ export class EventBus {
   }
 
   publish(event: RuntimeEvent) {
+    if (event.type === "item.started" && event.itemType === "tool" && event.command !== undefined) {
+      const { command, ...rest } = event;
+      const safe = toolCommand(command, this.redact);
+      event = { ...rest, ...(safe ? { command: safe } : {}) };
+    }
     this.record(event);
     // Iterate a copy: a subscriber is allowed to unsubscribe from inside
     // its own callback, and mutating the set mid-loop would skip someone.

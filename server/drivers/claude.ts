@@ -776,6 +776,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 itemType: "tool",
                 itemId: block.id,
                 title: block.name,
+                ...(block.name === "Bash" && typeof block.input?.command === "string" ? { command: block.input.command } : {}),
                 ...(paths.length ? { paths } : {}),
                 // a command writes what it writes, and says nothing of it
                 ...(block.name === "Bash" ? { mayWrite: true } : {}),
