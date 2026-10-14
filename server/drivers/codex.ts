@@ -782,6 +782,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "turn/completed": {
+            if (stopping) break;
             // Only the thread the turn is in can end it. Another one
             // ending (a compaction left behind) said the person's turn
             // was done while it was still working, and the process was
@@ -802,6 +803,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
 
           case "error": {
+            if (stopping) break;
             // The app-server nests the text (`error.message`); older ones
             // had it at the top. One it is about to retry is not the end
             // of the turn, so only the last one is said. A compaction that
@@ -1065,7 +1067,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }), "starting the turn", "Codex");
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
-          if (finished) return;
+          if (finished || stopping) return;
           emit({
             ...envelope(threadId, turnId),
             type: "runtime.error",

@@ -11,7 +11,7 @@ import type { RuntimeEvent } from "../server/contracts.ts";
 import { CodexDriver } from "../server/drivers/codex.ts";
 import { describeEarlyExit } from "../server/drivers/spawn-error.ts";
 
-async function setup(t: TestContext, holdInitialize = false) {
+async function setup(t: TestContext, holdInitialize = false, holdClose = false) {
   const children: any[] = [];
   const requests: any[] = [];
   t.mock.method(fs, "mkdirSync", () => undefined);
@@ -23,7 +23,7 @@ async function setup(t: TestContext, holdInitialize = false) {
       stdout, stderr: new PassThrough(), signals: [] as string[],
       kill(signal: string) {
         this.signals.push(signal);
-        queueMicrotask(() => child.emit("close", null, signal));
+        if (!holdClose) queueMicrotask(() => child.emit("close", null, signal));
         return true;
       },
       stdin: new Writable({ write(chunk, _encoding, done) {
@@ -97,4 +97,50 @@ test("Codex completion cleanup is not an interruption or an early-exit error", a
   assert.deepEqual(h.events.filter((e) => e.type === "runtime.error"), []);
   assert.deepEqual(h.events.filter((e) => e.type === "turn.completed").map((e) => [e.ok, e.stopReason]), [[true, null]]);
   assert.equal(h.instance.adapter.hasSession("lane"), false);
+});
+
+for (const method of ["error", "turn/completed"]) test(`a queued ${method} frame cannot change a requested stop`, async (t) => {
+  const h = await setup(t, false, true);
+  await h.instance.adapter.interruptTurn("lane");
+  h.child.send({ method, params: {
+    threadId: "native-thread", turnId: "native-turn", willRetry: false,
+    error: { message: "Synthetic cancellation" },
+    turn: { id: "native-turn", status: "completed" },
+  } });
+  await h.spin();
+  // Stdout can still carry frames between SIGTERM and the child's close.
+  assert.deepEqual(h.events.filter((e) => e.type === "runtime.error" || e.type === "turn.completed"), []);
+  h.child.emit("close", null, "SIGTERM");
+  await h.spin();
+  assert.deepEqual(h.events.filter((e) => e.type === "runtime.error"), []);
+  assert.deepEqual(h.events.filter((e) => e.type === "turn.completed").map((e) => [e.ok, e.stopReason]), [[false, "interrupted"]]);
+  assert.equal(h.instance.adapter.hasSession("lane"), false);
+});
+
+test("a pending handshake rejection after Stop waits for close and ends quietly", async (t) => {
+  const h = await setup(t, true, true);
+  await h.instance.adapter.interruptTurn("lane");
+  const pending = h.requests.filter((r) => r.method === "initialize").at(-1);
+  h.child.send({ id: pending.id, error: { code: -32000, message: "Synthetic cancellation" } });
+  await h.spin();
+  assert.deepEqual(h.events.filter((e) => e.type === "runtime.error" || e.type === "turn.completed"), []);
+  h.child.emit("close", null, "SIGTERM");
+  await h.spin();
+  assert.deepEqual(h.events.filter((e) => e.type === "runtime.error"), []);
+  assert.deepEqual(h.events.filter((e) => e.type === "turn.completed").map((e) => [e.ok, e.stopReason]), [[false, "interrupted"]]);
+  assert.equal(h.instance.adapter.hasSession("lane"), false);
+});
+
+test("final token usage is still recorded while a requested stop waits for close", async (t) => {
+  const h = await setup(t, false, true);
+  await h.instance.adapter.interruptTurn("lane");
+  h.child.send({ method: "thread/tokenUsage/updated", params: {
+    threadId: "native-thread",
+    tokenUsage: { total: { inputTokens: 100, outputTokens: 2 }, last: { inputTokens: 100, outputTokens: 2 } },
+  } });
+  await h.spin();
+  assert.deepEqual(h.events.filter((e) => e.type === "thread.token-usage.updated").map((e) => [e.input, e.output]), [[100, 2]]);
+  h.child.emit("close", null, "SIGTERM");
+  await h.spin();
+  assert.deepEqual(h.events.filter((e) => e.type === "turn.completed").map((e) => [e.ok, e.stopReason]), [[false, "interrupted"]]);
 });
