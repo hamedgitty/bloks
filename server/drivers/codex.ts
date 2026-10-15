@@ -1029,17 +1029,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               ...guard,
               ephemeral: false,
             };
-            if (turn.effort) startParams.reasoningEffort = turn.effort;
-            let started: any;
-            try {
-              started = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
-            } catch (error) {
-              // An app-server old enough to refuse the effort field should
-              // cost the user their preference, not their message.
-              if (!turn.effort) throw error;
-              delete startParams.reasoningEffort;
-              started = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
-            }
+            const started: any = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
             codexThread = started?.thread?.id ?? null;
             reportedModel = started?.model ?? null;
           }
@@ -1058,13 +1048,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const skills = await selectedSkills(turn.skillNames);
           if (finished) return;
           for (const skill of skills) skillNamesSent.add(skill.name);
-          const begun: any = await within(rpc.request("turn/start", {
+          const turnParams: Record<string, unknown> = {
             threadId: codexThread,
             input: [
               { type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words },
               ...skills.map(({ name, path }) => ({ type: "skill", name, path })),
             ],
-          }), "starting the turn", "Codex");
+          };
+          // Effort is a turn/start input, not thread/start.reasoningEffort
+          // (a response field). Stating it every turn covers resumes too.
+          if (turn.effort) turnParams.effort = turn.effort;
+          let begun: any;
+          try {
+            begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+          } catch (error) {
+            // An older app-server refusing the field costs the preference,
+            // not the message. Other failures must not submit the words twice.
+            if (finished || stopping || !turn.effort || !/effort|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
+            delete turnParams.effort;
+            begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+          }
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
           if (finished || stopping) return;
