@@ -32,8 +32,8 @@ importers:
         specifier: ^1.2.16
         version: 1.2.16(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@trycua/cua-driver':
-        specifier: ^0.34.0
-        version: 0.34.0
+        specifier: ^0.34.1
+        version: 0.34.1
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -59,8 +59,8 @@ importers:
         specifier: ^14.0.0
         version: 14.0.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       posthog-js:
-        specifier: ^1.438.2
-        version: 1.438.2(@types/react@19.3.0)(react@19.3.0)
+        specifier: ^1.438.7
+        version: 1.438.7(@types/react@19.3.0)(react@19.3.0)
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -477,14 +477,14 @@ packages:
     resolution: {integrity: sha512-ODOov0sGMJMf3jPonOkgGqPknTsu+DdQ7kD++gz8aI+aFMOMHFbWAA2taqXXVTdP+OTOQR/znGvSpmkeI0WTYQ==}
     engines: {node: '>=14.18.0'}
 
-  '@posthog/browser-common@0.9.2':
-    resolution: {integrity: sha512-kD0ayI59d+DVcqEFLFA1TU1B03PFNV/Hy18Yv1EOB24Px0CDDowkTR3pBE2j8MYeqtp+4XOoVTXrcJaJUp6zrg==}
+  '@posthog/browser-common@0.9.4':
+    resolution: {integrity: sha512-QlG0WZFG9iTp9cmXTypB4cgnxBAD3GImrj9AwmA84uh8uy5vIVgVLjoTTdOAW29XL+kh/eLn/5ZtBQt2JQfR+w==}
 
-  '@posthog/core@1.57.2':
-    resolution: {integrity: sha512-dfxeSjUvR+j4M7odvyf/KVdcKTZZ87u/l9swJtDt9vFkI2km3RhEveOkIHtFcZEQ1cllx7YaKJfdw6c8zfIEvg==}
+  '@posthog/core@1.58.0':
+    resolution: {integrity: sha512-vluXIlVF6WGeHoQbsQK8Y1ywXZlJDU7YHEKiXAArQU38yFBpgxxfD0kInbYHtura4Fr7Z7H8WiDFvtMpCGehGg==}
 
-  '@posthog/types@1.415.1':
-    resolution: {integrity: sha512-7Qs2wcqipl8KcFpIkIKE1Wcj1djX4dEB3cfq907HrNpKK7/xKh3U4N4bkOD6h9+8j3SxWWrj9JNpE8CZXsE35w==}
+  '@posthog/types@1.415.2':
+    resolution: {integrity: sha512-BIIHPyXcPZuNTImrR1qLqLKFw7j9o8co6LG/9OpLtpWJ3RT0y89Lx6VCtd37N9/dkr/qW7y0uPjJxAxjsALHtw==}
 
   '@radix-ui/primitive@1.1.7':
     resolution: {integrity: sha512-rqWnm76nYT8HoNNqEjpgJ7Pw/DrBj5iBTrmEPo6HTX5+VJyBNOqTdv4g89G63HuR5g0AaENoAcH7Is5fF2kZ8Q==}
@@ -1047,40 +1047,40 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@trycua/cua-driver-darwin-arm64@0.34.0':
-    resolution: {integrity: sha512-UhzOe86Q1cJpl8lagOCgMnnekzbZz7hnvmBU4hDc7apUqnv6BBAJJz2e1DE4CUkNCCF2tkZSHA6xUncTYdnylA==}
+  '@trycua/cua-driver-darwin-arm64@0.34.1':
+    resolution: {integrity: sha512-GSTwGvNVkg7uMrdvaxwqD9m6cbknDpceaJAdL4bnVTPHjSIk1Jw5Sf/3DpYT1NSqzLgz1ipia306l0LxlsDpmQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@trycua/cua-driver-darwin-x64@0.34.0':
-    resolution: {integrity: sha512-v4Pj3BuQ48d713uIhNjSP5F9hD2zoKtMfJWfii2lx35fJNwJImhDZccxbDjDnAVjIrGICqviGVCrLTq1OiDSaA==}
+  '@trycua/cua-driver-darwin-x64@0.34.1':
+    resolution: {integrity: sha512-9LNIqARZrdptxiAu3xRO45MPxUuvGtA7Na2yAaibI92p0kps9bRYGV+Rcm+yIxuupdg07Jwyo8Up+FO4rxrQNw==}
     cpu: [x64]
     os: [darwin]
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.34.0':
-    resolution: {integrity: sha512-RUygHOF8D20sLgJ1NrVmsb13I3W+XDcOvEnFt5/YTHsXoyWaj2KPneY3mUTONH0/ya25KbVOmI6vObdVZetMyA==}
+  '@trycua/cua-driver-linux-arm64-gnu@0.34.1':
+    resolution: {integrity: sha512-0UDbpOSyGCfq4w5kgKLzKOD7Ms2K5likULF4FY+T2nvmeL3Sf+LyhXEhs8TNuZ8fwgW5TauMq1kYb6LK5ofFGQ==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-linux-x64-gnu@0.34.0':
-    resolution: {integrity: sha512-MUe05gFjB9AK1BgMnQQBgRQFBeu6jzBAO7kpc5QbybtcwzbGiXlDDvrtirrWJ+AYJFqvaewE3DPdwT+aC7UL7A==}
+  '@trycua/cua-driver-linux-x64-gnu@0.34.1':
+    resolution: {integrity: sha512-RyrYm28rmi8cXzlrdaR5Qi8WQ+jRaZ3Qo8govoOyq5vcjqUefN3G5fPRjxl4MpqqanXs7pwUYVF+d4Gwjq7HoQ==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.34.0':
-    resolution: {integrity: sha512-xlrck9tP1fD9AQpbWyuF6axnQHRYv8hM+iV7j5vI8yP3HCQl3bsGmvXa9r230d6A7zGqr5dHvbVPFw8y5gVvnQ==}
+  '@trycua/cua-driver-win32-arm64-msvc@0.34.1':
+    resolution: {integrity: sha512-jmqDxZTL1+mAWMAnVKfZF+J5bEZok3SjwUOdA4o8hzD74mPLPJO8RUXsvPp4SYtMnnUO6JsDZvz4xrW5m99d6w==}
     cpu: [arm64]
     os: [win32]
 
-  '@trycua/cua-driver-win32-x64-msvc@0.34.0':
-    resolution: {integrity: sha512-BzdQ9rSOvekEdHLwEpYOaNAYRVXwav9cNnaR4traNmKPLkr+IvhQZv5K6CDGMM20O2S9q7lHG6k8n6jHA4zqHg==}
+  '@trycua/cua-driver-win32-x64-msvc@0.34.1':
+    resolution: {integrity: sha512-DBjd+cb8x+HM8xvTvhq4//5HxZm2+ZNS5ZENy969KZppwAN9jzdzXEy0qboWbutGGzFfFv1TglPBLGxRYA3UGA==}
     cpu: [x64]
     os: [win32]
 
-  '@trycua/cua-driver@0.34.0':
-    resolution: {integrity: sha512-MJs5+z6dM9UnqXZuKCE9uNZPA12QZOI+7wiKjk2ZmTtGox7Scvx1w+7fv6B1CTQV+3/ZR8fVmfEILbq/90WbVg==}
+  '@trycua/cua-driver@0.34.1':
+    resolution: {integrity: sha512-6r/s28tw2mf9PBawwzfHSSwdbx9kZ+rqy6Hpv4oTRsz2CwG/vl5oWLlNQu/YQy9zuZzCdwXGidmZR0tla2k+4w==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -2104,8 +2104,8 @@ packages:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
-  posthog-js@1.438.2:
-    resolution: {integrity: sha512-4AbEQ0lJp4WupgA+y5fiBnepSril+qA1rAYuFy9oKQ0xd8yg19p5XNKDgZW/nGwJF2KVx/joy4vKWhyuJNoCVw==}
+  posthog-js@1.438.7:
+    resolution: {integrity: sha512-fcP3x031ASiq0/xXpK7QccnnbEQlF4oO2nXyXID0QXkMIoNXuBZg7u0MdsxJYXFqFEgGGtNP83ynsm8PCxi9BA==}
     peerDependencies:
       '@types/react': '>=16.8.0'
       react: '>=16.8.0'
@@ -2955,16 +2955,16 @@ snapshots:
       tslib: 2.8.1
       webcrypto-core: 1.9.2
 
-  '@posthog/browser-common@0.9.2':
+  '@posthog/browser-common@0.9.4':
     dependencies:
-      '@posthog/core': 1.57.2
-      '@posthog/types': 1.415.1
+      '@posthog/core': 1.58.0
+      '@posthog/types': 1.415.2
 
-  '@posthog/core@1.57.2':
+  '@posthog/core@1.58.0':
     dependencies:
-      '@posthog/types': 1.415.1
+      '@posthog/types': 1.415.2
 
-  '@posthog/types@1.415.1': {}
+  '@posthog/types@1.415.2': {}
 
   '@radix-ui/primitive@1.1.7': {}
 
@@ -3425,35 +3425,35 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 7.3.6(@types/node@26.6.4)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  '@trycua/cua-driver-darwin-arm64@0.34.0':
+  '@trycua/cua-driver-darwin-arm64@0.34.1':
     optional: true
 
-  '@trycua/cua-driver-darwin-x64@0.34.0':
+  '@trycua/cua-driver-darwin-x64@0.34.1':
     optional: true
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.34.0':
+  '@trycua/cua-driver-linux-arm64-gnu@0.34.1':
     optional: true
 
-  '@trycua/cua-driver-linux-x64-gnu@0.34.0':
+  '@trycua/cua-driver-linux-x64-gnu@0.34.1':
     optional: true
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.34.0':
+  '@trycua/cua-driver-win32-arm64-msvc@0.34.1':
     optional: true
 
-  '@trycua/cua-driver-win32-x64-msvc@0.34.0':
+  '@trycua/cua-driver-win32-x64-msvc@0.34.1':
     optional: true
 
-  '@trycua/cua-driver@0.34.0':
+  '@trycua/cua-driver@0.34.1':
     dependencies:
       '@ubjs/core': 0.31.0-3
       '@ubjs/node': 0.31.0-3
     optionalDependencies:
-      '@trycua/cua-driver-darwin-arm64': 0.34.0
-      '@trycua/cua-driver-darwin-x64': 0.34.0
-      '@trycua/cua-driver-linux-arm64-gnu': 0.34.0
-      '@trycua/cua-driver-linux-x64-gnu': 0.34.0
-      '@trycua/cua-driver-win32-arm64-msvc': 0.34.0
-      '@trycua/cua-driver-win32-x64-msvc': 0.34.0
+      '@trycua/cua-driver-darwin-arm64': 0.34.1
+      '@trycua/cua-driver-darwin-x64': 0.34.1
+      '@trycua/cua-driver-linux-arm64-gnu': 0.34.1
+      '@trycua/cua-driver-linux-x64-gnu': 0.34.1
+      '@trycua/cua-driver-win32-arm64-msvc': 0.34.1
+      '@trycua/cua-driver-win32-x64-msvc': 0.34.1
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -4174,7 +4174,7 @@ snapshots:
       es6-error: 4.1.1
       matcher: 3.0.0
       roarr: 2.15.4
-      semver: 7.8.5
+      semver: 7.7.4
       serialize-error: 7.0.1
     optional: true
 
@@ -4452,11 +4452,11 @@ snapshots:
 
   node-abi@4.33.0:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-api-version@0.2.1:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-gyp@12.4.0:
     dependencies:
@@ -4465,7 +4465,7 @@ snapshots:
       graceful-fs: 4.2.11
       nopt: 9.0.0
       proc-log: 6.1.0
-      semver: 7.8.5
+      semver: 7.7.4
       tar: 7.5.22
       tinyglobby: 0.2.17
       undici: 6.28.0
@@ -4541,11 +4541,11 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  posthog-js@1.438.2(@types/react@19.3.0)(react@19.3.0):
+  posthog-js@1.438.7(@types/react@19.3.0)(react@19.3.0):
     dependencies:
-      '@posthog/browser-common': 0.9.2
-      '@posthog/core': 1.57.2
-      '@posthog/types': 1.415.1
+      '@posthog/browser-common': 0.9.4
+      '@posthog/core': 1.58.0
+      '@posthog/types': 1.415.2
       core-js: 3.50.0
       dompurify: 3.4.14
       fflate: 0.4.9
