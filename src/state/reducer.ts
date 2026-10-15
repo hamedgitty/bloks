@@ -358,6 +358,7 @@ export interface ConfigStatus {
   /** Whether agents are reminded of their other conversations before
    * your turn. On unless turned off. */
   recall?: { beforeTurn: boolean };
+  agents?: { turnLimit: number | null };
   /** Count-only cards for overlapping turns with no own files. On by default. */
   changes?: { showShared: boolean };
   /** How long a silent tool call may hold a turn, in minutes; 0 is never. */

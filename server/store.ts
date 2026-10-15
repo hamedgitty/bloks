@@ -154,12 +154,14 @@ export interface Message {
   /** A notice about the lane's goal (server/goals.ts): set, or where it
    * ended up. Done is news like a finished reply, blocked like a question. */
   goal?: "set" | "done" | "blocked" | "out" | "paused";
-  /** A notice that agents stopped at MAX_AGENT_CHAIN (server/index.ts):
-   * their next message, or a routine or a watcher one of them filed,
-   * waits for the person. Like a goal blocked on them, it marks the
+  /** A notice that agents stopped at the workspace turn limit (server/agent-chain.ts):
+   * an agent message was refused, or scheduled work did not start.
+   * Nothing is held for delivery. Like a blocked goal, it marks the
    * conversation unread and wakes the phone (GitHub 248). A room mention
    * held at MAX_AGENT_HOPS (server/room-hops.ts) is said the same way. */
   chainHeld?: boolean;
+  /** Direct hold dedupe, excluding the redacted excerpt. */
+  chainHoldKey?: string;
   /** What a chat on the phone is told of this notice instead of its
    * text: the error alone, when the app's notice also says where to set
    * a backup, which means nothing there (GitHub 284). */

@@ -126,6 +126,8 @@ export interface RoutineRun {
    * a client that does not know it still reads a run that went fine. */
   quiet?: boolean;
   error?: string;
+  /** A blocked scheduled slot, not an engine run or a consumed occurrence. */
+  heldSlot?: number;
   /** Where to look for the whole thing. */
   threadId?: string;
 }
@@ -133,6 +135,13 @@ export interface RoutineRun {
 /** How many runs a routine remembers. Enough to see a pattern, not
  * enough to turn a settings file into a log store. */
 export const MAX_RUNS = 20;
+
+/** One latest hold beside the real runs: waiting cannot evict their history. */
+function keepRuns(runs: RoutineRun[]): RoutineRun[] {
+  let real = 0;
+  let held = 0;
+  return runs.filter((run) => run.heldSlot !== undefined ? ++held <= 1 : ++real <= MAX_RUNS);
+}
 
 /** A routine spends the user's tokens unattended, so the caps are tight. */
 export const MAX_ROUTINES = 50;
@@ -601,6 +610,19 @@ export class RoutineStore {
     this.save();
   }
 
+  /** Record once per blocked slot without marking it run or disabling it. */
+  holdRun(id: string, slot: number, threadId: string, error: string): boolean {
+    const routine = this.get(id);
+    if (!routine || routine.runs?.some((run) => run.heldSlot === slot && run.error === error)) return false;
+    const now = Date.now();
+    routine.runs = keepRuns([{
+      id: newId(), startedAt: now, endedAt: now, state: "failed",
+      heldSlot: slot, threadId, error,
+    }, ...(routine.runs ?? [])]);
+    this.save();
+    return true;
+  }
+
   /** Opens a run and hands back its id, so whoever finishes it can find
    * it again. Runs are kept newest first and capped. */
   beginRun(id: string, threadId?: string): RoutineRun | null {
@@ -612,7 +634,7 @@ export class RoutineStore {
       state: "running",
       ...(threadId ? { threadId } : {}),
     };
-    routine.runs = [run, ...(routine.runs ?? [])].slice(0, MAX_RUNS);
+    routine.runs = keepRuns([run, ...(routine.runs ?? [])]);
     this.save();
     return run;
   }

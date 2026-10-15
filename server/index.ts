@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
+import { agentTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, CHAIN_LIMIT_TITLE } from "./agent-chain.ts";
 import { takeBackWaiting } from "./take-back.ts";
 import { telegramReply, type TelegramText } from "./telegram-reply.ts";
 import { TurnProgress } from "./telegram-progress.ts";
@@ -295,7 +296,7 @@ import {
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { describe as describeRoutine, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
+import { describe as describeRoutine, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -2022,7 +2023,10 @@ function previewOf(frame: unknown): WakePreview | null {
     return { title: `${who} has a question`, body: clip(m.card.subtitle || m.card.title), category: "question", threadId: f.threadId };
   }
   // stopped and waiting for the person, in Bloks's own words
-  if (m.kind === "notice" && m.text && (m.goal === "blocked" || m.chainHeld)) {
+  if (m.kind === "notice" && m.text && m.chainHeld) {
+    return { title: CHAIN_LIMIT_TITLE, body: clip(m.text), category: "question", threadId: f.threadId };
+  }
+  if (m.kind === "notice" && m.text && m.goal === "blocked") {
     return { title: room ? `${room.name} is waiting for you` : `${bot?.name ?? "An agent"} is waiting for you`, body: clip(m.text), category: "question", threadId: f.threadId };
   }
   if (m.kind === "text" && m.text) {
@@ -2936,7 +2940,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (inRoom) {
         const said = store.messagesFor(roomId);
         const last = [...said].reverse().find((m) => m.from === bot.id && m.kind === "text");
-        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester, (agentChain.get(event.threadId) ?? 0) + 1, (turnHops.get(event.threadId) ?? 0) + 1);
+        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester, nextAgentChain(event.threadId) ?? 0, (turnHops.get(event.threadId) ?? 0) + 1);
         if (bloks.get(roomId)?.sharing) broadcast({ kind: "room.activity", roomId, botId: bot.id, busy: false });
       }
       activeRoom.delete(event.threadId);
@@ -4289,7 +4293,7 @@ async function startClaimedTurn(
   // reads this turn's place and not the last one's
   const goesOn = opts.carriedOn || opts.fallback || opts.retry;
   const inRoomChain = opts.roomId && opts.roomId !== task.id ? (roomChain.get(opts.roomId) ?? 0) : 0;
-  agentChain.set(task.id, opts.chain ?? (goesOn ? (agentChain.get(task.id) ?? 0) : inRoomChain));
+  agentChain.set(task.id, agentLimit() === null ? 0 : opts.chain ?? (goesOn ? (agentChain.get(task.id) ?? 0) : inRoomChain));
   // and its count of the room being passed along, set here for the same
   // reason: what this turn says in a room is judged by its own count
   turnHops.set(task.id, opts.hops ?? (goesOn ? (turnHops.get(task.id) ?? 0) : 0));
@@ -5471,8 +5475,8 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     }
     // An agent's watcher past the limit is held without looking, so
     // whatever changed is still there for the look after the person's say.
-    if ((w.chain ?? 0) > MAX_AGENT_CHAIN) {
-      const why = chainHeld(w.chain!);
+    if (chainPastLimit(w.chain ?? 0)) {
+      const why = chainHeld(w.chain!, `The watcher ${chainName(w.name)} did not look for ${chainName(bot.name)}.`);
       // the person is told once a hold starts, not at every look it holds
       const toldAlready = w.lastError === why;
       w.lastCheck = Date.now();
@@ -5480,7 +5484,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       const speaksIn = w.laneId && w.thread ? bot.tasks.find((t) => t.id === w.laneId && t.title === w.thread) : undefined;
       const lane = speaksIn ?? namedLane(bot, w.thread) ?? mainLaneOf(bot);
       if (!toldAlready && lane) {
-        chainNotice(bot, lane.id, `The watcher ${w.name} did not look: agents had started ${w.chain! - 1} turns in a row without you. Look now or change it to go on.`);
+        chainNotice(bot, lane.id, why);
       }
       return { fired: false, note: w.lastError };
     }
@@ -6294,10 +6298,14 @@ const spokeInTurn = new Set<string>();
  * themselves, with `bloks say` before the person has a say. Each one is
  * a paid turn, and a turn's own budget (TURN_BUDGET in
  * server/agent-cli.ts) starts again in every one of them, so nothing
- * else stops two agents keeping each other going all afternoon. Twelve
- * is longer than any real handoff and far shorter than a loop. Rooms
+ * else stops two agents keeping each other going all afternoon. The
+ * workspace limit defaults to twelve and may be switched off. Rooms
  * have their own bound as well (MAX_AGENT_HOPS in server/room-hops.ts). */
-const MAX_AGENT_CHAIN = 12;
+function agentLimit(): number | null { return agentTurnLimit(cfg.agents?.turnLimit); }
+function chainPastLimit(depth: number): boolean { return pastAgentLimit(depth, agentLimit()); }
+function nextAgentChain(laneId: string): number | undefined {
+  return agentLimit() === null ? undefined : (agentChain.get(laneId) ?? 0) + 1;
+}
 
 /** Where each lane's latest turn sits in a chain of agents' messages: 0
  * for one the person, a routine, a watcher, a webhook or an email
@@ -6340,7 +6348,7 @@ interface AgentChain {
 /** The place in the chain a message from the agent whose turn runs in
  * `laneId` would take. */
 function chainFrom(sender: { id: string; name: string }, laneId: string): AgentChain {
-  return { depth: (agentChain.get(laneId) ?? 0) + 1, sender: { botId: sender.id, name: sender.name } };
+  return { depth: nextAgentChain(laneId) ?? 0, sender: { botId: sender.id, name: sender.name } };
 }
 
 /** The place in the chain for a turn that takes these waiting items,
@@ -6364,8 +6372,8 @@ function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; c
 
 /** Why a routine or a watcher an agent filed did not start its turn:
  * agents had already started too many in a row (MAX_AGENT_CHAIN). */
-function chainHeld(chain: number): string {
-  return `Held: agents had started ${chain - 1} turns in a row without you. Run it or change it to go on.`;
+function chainHeld(chain: number, subject: string): string {
+  return `Held: ${chainLimitText(subject, chain, agentLimit()!)}`;
 }
 
 /** A chain held at MAX_AGENT_CHAIN, said where the person will find it:
@@ -6374,10 +6382,10 @@ function chainHeld(chain: number): string {
  * for a goal blocked on them. Held at night, it used to wait unseen
  * until somebody happened to open the right conversation (GitHub 248).
  * Once, however often the same hold is met again. */
-function chainNotice(bot: BotRecord, laneId: string, text: string) {
+function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string) {
   const last = store.messagesFor(laneId).at(-1);
-  if (last?.kind === "notice" && last.text === text) return;
-  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, chainHeld: true });
+  if (last?.kind === "notice" && (key ? last.chainHeld && last.chainHoldKey === key : last.text === text)) return;
+  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, chainHeld: true, ...(key ? { chainHoldKey: key } : {}) });
   store.markLane(bot.id, laneId, true);
   broadcast({ kind: "message", threadId: laneId, message: notice });
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -6389,16 +6397,15 @@ function chainNotice(bot: BotRecord, laneId: string, text: string) {
  * had a say, so the notice says so and names only the last step of it,
  * rather than calling it back and forth between the last two. Whoever
  * the person writes to next starts from 0. */
-function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain) {
-  const times = chain.depth - 1;
-  const last = chain.sender.botId === bot.id ? `${bot.name} to itself` : `${chain.sender.name} to ${bot.name}`;
-  chainNotice(bot, laneId, `Agents have started ${times} turns in a row without you, the last from ${last}; the next one waits for you.`);
-  return Object.assign(
-    new Error(
-      `${bot.name} did not get this. Agents have started ${times} turns in a row without the person, which is as many as Bloks lets run before they have a say. Finish this turn and say where things stand; the person carries it on from there.`,
-    ),
-    { status: 429 },
-  );
+function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain, words: string) {
+  const limit = agentLimit()!;
+  const text = redactSecrets(chainLimitText(
+    `A message from ${chainName(chain.sender.name)} to ${chainName(bot.name)} was not delivered.`,
+    chain.depth, limit, chainExcerpt(words, redactSecrets),
+  ));
+  const key = JSON.stringify([chain.sender.botId, bot.id, chain.depth, limit]);
+  chainNotice(bot, laneId, text, key);
+  return Object.assign(new Error(text), { status: 429 });
 }
 
 /** Conversations an agent asked to close from inside its own turn there.
@@ -6675,9 +6682,9 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
   // no further than a room lets agents pass it along, and no further than
   // any chain of agents' messages may go, before the person has a say.
   // Asked once somebody is known to be named, so the room hears of it.
-  const held = heldMention(store.bot(fromBotId)?.name ?? "An agent", named.map((m) => m.name), { hops, chain }, MAX_AGENT_CHAIN);
+  const held = heldMention(store.bot(fromBotId)?.name ?? "An agent", named.map((m) => m.name), { hops, chain }, agentLimit(), chainExcerpt(text, redactSecrets));
   if (held) return sayMentionHeld(roomId, held);
-  roomChain.set(roomId, chain);
+  roomChain.set(roomId, agentLimit() === null ? 0 : chain);
   const queue = dispatching.get(roomId);
   for (const target of named) {
     // the room is mid-round: take a number rather than talk over it
@@ -6825,16 +6832,16 @@ async function offerJob(jobId: string): Promise<Job | null> {
   }
   // Jobs agents post for one another are a chain like their messages
   // are: past the limit the job is left for the person to offer again.
-  if ((job.chain ?? 0) > MAX_AGENT_CHAIN) {
+  const agent = nextFor(job, candidates());
+  if (chainPastLimit(job.chain ?? 0)) {
     const held = jobs.finish(job.id, {
       ok: false,
-      result: `Not offered: agents had started ${job.chain! - 1} turns in a row without you. Offer it again to hand it out.`,
+      result: chainLimitText(`A job offer from the job board to ${chainName(agent?.name ?? "an available agent")} was not delivered.`, job.chain!, agentLimit()!, chainExcerpt(job.title, redactSecrets)),
       now: Date.now(),
     });
     broadcast({ kind: "jobs" });
     return held;
   }
-  const agent = nextFor(job, candidates());
   if (!agent) {
     broadcast({ kind: "jobs" });
     return job;
@@ -8009,22 +8016,21 @@ async function runDueRoutines() {
       // the conversation it names, or the agent's first (GitHub 237)
       const laneId = workLaneId(bot.id, routine.thread);
       if (!laneId) continue;
+      // A blocked attempt is a record, not a consumed scheduled slot.
+      if (chainPastLimit(routine.chain ?? 0)) {
+        const why = chainHeld(routine.chain!, `The routine ${chainName(routine.name ?? "without a name")} did not start a scheduled turn for ${chainName(bot.name)}.`)
+          + " It can run at its next scheduled time if the limit allows, within the missed-run grace, or by hand. A one-time routine past that grace needs a manual run.";
+        const slot = lastScheduledBefore(routine, now)!;
+        if (routines.holdRun(routine.id, slot.getTime(), laneId, why)) {
+          chainNotice(bot, laneId, why);
+          broadcast({ kind: "routines" });
+        }
+        continue;
+      }
       routines.markRan(routine.id, now.getTime());
       const run = routines.beginRun(routine.id, laneId);
       if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
       broadcast({ kind: "routines" });
-      // An agent's routine past the limit is held, run by run, until the
-      // person runs it or changes it: the run says so in its history.
-      if ((routine.chain ?? 0) > MAX_AGENT_CHAIN) {
-        const why = chainHeld(routine.chain!);
-        // the person is told once a hold starts, not at every run it holds
-        const toldAlready = routine.runs?.[1]?.error === why;
-        closeRun(laneId, { ok: false, error: why });
-        if (!toldAlready) {
-          chainNotice(bot, laneId, `${routine.name ? `The routine ${routine.name}` : "A routine"} did not run: agents had started ${routine.chain! - 1} turns in a row without you. Run it or change it to go on.`);
-        }
-        continue;
-      }
       await startTurn(routine.targetId, routine.prompt, {
         taskId: laneId,
         computerOverride: routine.runsOn,
@@ -9547,7 +9553,7 @@ async function sendUserMessage(
   }
   // Refused whether it would start a turn or wait for one: either way it
   // is one more turn nobody but the agents asked for.
-  if (options.chain && options.chain.depth > MAX_AGENT_CHAIN) throw chainRefusal(bot, lane.id, options.chain);
+  if (options.chain && chainPastLimit(options.chain.depth)) throw chainRefusal(bot, lane.id, options.chain, text);
   // waiting behind a turn or not, it was said to this agent now
   const yours = Boolean(options.yours && !options.from);
   if (yours) withYou({ bot });
@@ -10301,6 +10307,7 @@ function configStatus() {
     // on unless turned off: notes from an agent's other conversations
     // ahead of the person's turn (recallAhead)
     recall: { beforeTurn: cfg.recall?.beforeTurn !== false },
+    agents: { turnLimit: agentLimit() },
     changes: { showShared: cfg.changes?.showShared !== false },
     // how long a silent tool call may hold a turn, in minutes; 0 is never
     turns: { stallMinutes: stallLimitMs() / 60_000 },
@@ -14248,7 +14255,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         broadcast({ kind: "message", threadId: blok.id, message });
         // whoever started the turn it said this from is still the one who
         // asked, so a member's chain does not become the owner's
-        void relayMentions(blok.id, asAgent.botId, text, laneRequester.get(asAgent.taskId), (agentChain.get(asAgent.taskId) ?? 0) + 1, (turnHops.get(asAgent.taskId) ?? 0) + 1).catch(() => {});
+        void relayMentions(blok.id, asAgent.botId, text, laneRequester.get(asAgent.taskId), nextAgentChain(asAgent.taskId) ?? 0, (turnHops.get(asAgent.taskId) ?? 0) + 1).catch(() => {});
         triggersFired({ kind: "message", targetId: blok.id, text, fromUser: false });
         return json(res, 201, { message });
       }
@@ -14802,7 +14809,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         createdAt: Date.now(),
         fires: [],
         // filed from an agent's turn, its turns go on from that one's place
-        ...(asAgent ? { chain: (agentChain.get(asAgent.taskId) ?? 0) + 1 } : {}),
+        ...(asAgent ? { chain: nextAgentChain(asAgent.taskId) } : {}),
       };
       // A check runs a command with nobody watching. The person filing one
       // has approved it by writing it; an agent's waits for the person,
@@ -14882,10 +14889,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (canRun && !couldRun) w.lastError = undefined;
       // the person changing it has had their say; an agent changing it
       // carries its own turn's place (MAX_AGENT_CHAIN)
-      const wasHeld = (w.chain ?? 0) > MAX_AGENT_CHAIN;
-      if (asAgent) w.chain = (agentChain.get(asAgent.taskId) ?? 0) + 1;
+      const wasHeld = chainPastLimit(w.chain ?? 0);
+      if (asAgent) w.chain = nextAgentChain(asAgent.taskId);
       else delete w.chain;
-      if (wasHeld && !((w.chain ?? 0) > MAX_AGENT_CHAIN)) w.lastError = undefined;
+      if (wasHeld && !(chainPastLimit(w.chain ?? 0))) w.lastError = undefined;
       saveWatchers();
       armWatcher(w);
       // approving a check takes its baseline straight away
@@ -15493,7 +15500,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const brief = clamp(body.brief, MAX_DESCRIPTION_CHARS) ?? "";
       if (!title && !brief) return json(res, 400, { error: "a job needs something to do" });
       // posted from an agent's turn, its taker's turn is one more in that chain
-      const chain = asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined;
+      const chain = asAgent ? nextAgentChain(asAgent.taskId) : undefined;
       const job = jobs.post({ title: title || brief.slice(0, 80), brief: brief || title, now: Date.now(), chain });
       record({
         at: Date.now(),
@@ -15530,7 +15537,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
       // the person offering it has had their say; an agent offering it
       // takes it one further along its own chain
-      const chain = asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined;
+      const chain = asAgent ? nextAgentChain(asAgent.taskId) : undefined;
       if (body.again) jobs.patch(job.id, { offers: [], state: "open", result: undefined, chain });
       else jobs.patch(job.id, { state: "open", chain });
       const offered = await offerJob(job.id);
@@ -16434,7 +16441,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const unnamed = clean.targetKind === "agent" ? threadRefusal(clean.targetId, clean.thread) : null;
       if (unnamed) return json(res, 400, { error: unnamed });
       // filed from an agent's turn, its turns go on from that one's place
-      const routine = routines.create({ ...clean, ...(asAgent ? { chain: (agentChain.get(asAgent.taskId) ?? 0) + 1 } : {}) });
+      const routine = routines.create({ ...clean, ...(asAgent ? { chain: nextAgentChain(asAgent.taskId) } : {}) });
       if (!routine) return json(res, 507, { error: `you can have at most ${MAX_ROUTINES} routines` });
       broadcast({ kind: "routines" });
       return json(res, 201, { routine: { ...routine, summary: describeRoutine(routine) } });
@@ -16483,7 +16490,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (unnamed) return json(res, 400, { error: unnamed });
       // the person changing it has had their say; an agent changing it
       // carries its own turn's place
-      const routine = routines.patch(m[1], { ...merged, chain: asAgent ? (agentChain.get(asAgent.taskId) ?? 0) + 1 : undefined });
+      const routine = routines.patch(m[1], { ...merged, chain: asAgent ? nextAgentChain(asAgent.taskId) : undefined });
       broadcast({ kind: "routines" });
       return json(res, 200, { routine: { ...routine!, summary: describeRoutine(routine!) } });
     }
@@ -16667,6 +16674,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
+      if (body.agents !== undefined && (
+        !isRecord(body.agents) || !Object.hasOwn(body.agents, "turnLimit") ||
+        (body.agents.turnLimit !== null && (
+          typeof body.agents.turnLimit !== "number" || !Number.isSafeInteger(body.agents.turnLimit) || body.agents.turnLimit < 1
+        ))
+      )) return json(res, 400, { error: "agents.turnLimit must be a whole number of at least 1, or null for Off" });
       if (body.changes !== undefined && (
         !body.changes || typeof body.changes !== "object" || Array.isArray(body.changes) ||
         typeof (body.changes as Record<string, unknown>).showShared !== "boolean"
@@ -16728,6 +16741,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           Object.assign(cfg, saveConfig({ turns: { stallMinutes: minutes as number } }));
           wroteSomething = true;
         }
+      }
+      if (isRecord(body.agents)) {
+        Object.assign(cfg, saveConfig({ agents: { turnLimit: body.agents.turnLimit as number | null } }));
+        wroteSomething = true;
       }
       if (body.recall && typeof body.recall === "object" && !Array.isArray(body.recall)) {
         const beforeTurn = (body.recall as Record<string, unknown>).beforeTurn;

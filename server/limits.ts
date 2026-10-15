@@ -13,6 +13,10 @@ export const MAX_MESSAGE_CHARS = 100_000;
 export const MAX_NAME_CHARS = 80;
 export const MAX_TITLE_CHARS = 160;
 
+/** Two names and a redacted excerpt in a chain-limit refusal/phone preview. */
+export const MAX_CHAIN_NAME_CHARS = 50;
+export const MAX_CHAIN_EXCERPT_CHARS = 160;
+
 /** Descriptions and greetings, which become part of the system prompt. */
 export const MAX_DESCRIPTION_CHARS = 4_000;
 

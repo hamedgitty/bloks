@@ -15,6 +15,8 @@
  */
 export const MAX_AGENT_HOPS = 3;
 
+import { chainLimitText, chainName, pastAgentLimit } from "./agent-chain.ts";
+
 /** The room's notice for a mention held at MAX_AGENT_HOPS. */
 export function hopsNotice(from: string, named: readonly string[]): string {
   return `${from} named ${named.join(", ")} after agents had already passed the room along ${MAX_AGENT_HOPS} times in a row without you, so nobody was woken. Post in the room to carry on.`;
@@ -31,11 +33,12 @@ export function heldMention(
   from: string,
   named: readonly string[],
   at: { hops: number; chain: number },
-  maxChain: number,
+  maxChain: number | null,
+  excerpt?: string,
 ): string | null {
   if (at.hops > MAX_AGENT_HOPS) return hopsNotice(from, named);
-  if (at.chain > maxChain) {
-    return `${from} named ${named.join(", ")} after agents had started ${at.chain - 1} turns in a row without you, so nobody was woken. Post in the room to carry on.`;
+  if (pastAgentLimit(at.chain, maxChain)) {
+    return chainLimitText(`A mention from ${chainName(from)} to ${named.map(chainName).join(", ")} in this room woke nobody.`, at.chain, maxChain!, excerpt);
   }
   return null;
 }

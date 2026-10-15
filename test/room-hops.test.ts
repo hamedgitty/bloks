@@ -34,10 +34,11 @@ test("a held mention's notice says who named whom, and one notice covers both bo
   assert.equal(heldMention("Bob", ["Alice"], { hops: 4, chain: 4 }, 12), heldBy("Bob", "Alice"));
   assert.equal(hopsNotice("Bob", ["Alice", "Cara"]), heldBy("Bob", "Alice", "Cara"));
   // the chain bound, worded as it was before there were two
-  assert.equal(
-    heldMention("Bob", ["Alice"], { hops: 1, chain: 13 }, 12),
-    "Bob named Alice after agents had started 12 turns in a row without you, so nobody was woken. Post in the room to carry on.",
-  );
+  const chained = heldMention("Bob", ["Alice"], { hops: 1, chain: 13 }, 12)!;
+  assert.match(chained, /from Bob to Alice in this room woke nobody/);
+  assert.match(chained, /Nothing is held for delivery/);
+  assert.match(chained, /workspace limit of 12/);
+  assert.match(chained, /Settings > General > Working with agents/);
   // past both, the room hears of it once
   assert.equal(heldMention("Bob", ["Alice"], { hops: 4, chain: 13 }, 12), heldBy("Bob", "Alice"));
 });

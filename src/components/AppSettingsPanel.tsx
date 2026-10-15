@@ -13,6 +13,7 @@ import Monitor from "lucide-react/dist/esm/icons/monitor.mjs";
 import Moon from "lucide-react/dist/esm/icons/moon.mjs";
 import Sun from "lucide-react/dist/esm/icons/sun.mjs";
 import { api, useStore } from "@/state/store";
+import { MAX_AGENT_CHAIN } from "../../server/agent-chain.ts";
 import { useTheme, type Theme } from "@/lib/theme";
 import type { UpdateState } from "@/types/bridge";
 import { drainingLine } from "./UpdateCard";
@@ -268,6 +269,57 @@ function ProposeSkills() {
       description="After a conversation that worked something out, write the procedure down as a skill for you to keep or not."
       control={<Switch aria-label="Suggest skills" checked={on} disabled={saving} onCheckedChange={set} />}
     />
+  );
+}
+
+function AgentTurnLimit() {
+  const { state, dispatch } = useStore();
+  const configured = state.config?.agents?.turnLimit;
+  const stored = configured === undefined ? MAX_AGENT_CHAIN : configured;
+  const lastNumber = useRef(stored ?? MAX_AGENT_CHAIN);
+  const [number, setNumber] = useState(String(stored ?? lastNumber.current));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (stored !== null) lastNumber.current = stored;
+    setNumber(String(stored ?? lastNumber.current));
+  }, [stored]);
+
+  const save = (turnLimit: number | null) => {
+    setSaving(true);
+    setError("");
+    api("/api/config", { method: "PUT", body: JSON.stringify({ agents: { turnLimit } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch((cause: unknown) => {
+        setNumber(String(stored ?? lastNumber.current));
+        setError(cause instanceof Error ? cause.message : "The turn limit could not be saved.");
+      })
+      .finally(() => setSaving(false));
+  };
+  const saveNumber = () => {
+    const value = Number(number);
+    if (!/^[0-9]+$/.test(number) || !Number.isSafeInteger(value) || value < 1) {
+      setError("Enter a whole number of at least 1.");
+      return;
+    }
+    save(value);
+  };
+  return (
+    <SettingRow
+      label="Agents' turn limit"
+      description="Stop a chain after this many agent-started turns. Each turn uses your plan; Off lets agents keep each other going until the plan's limit is spent. Your message in a conversation starts its count over."
+      control={<Switch aria-label="Limit consecutive agent turns" checked={stored !== null} disabled={saving} onCheckedChange={(on) => save(on ? lastNumber.current : null)} />}
+    >
+      {stored !== null && <div className="mt-3 flex flex-wrap items-center gap-2">
+        <input aria-label="Maximum consecutive agent turns" type="number" min="1" step="1" value={number} disabled={saving}
+          onChange={(event) => { setNumber(event.target.value); setError(""); }}
+          className="h-8 w-24 rounded-lg border bg-background px-2 text-[13px] outline-none focus:border-primary" />
+        <span className="text-[12px] text-muted-foreground">turns</span>
+        <Button size="sm" variant="secondary" disabled={saving || number === String(stored)} onClick={saveNumber} aria-label="Save turn limit">Save</Button>
+      </div>}
+      {stored === null && <p className="mt-2 text-[12px] text-muted-foreground">Off. The separate limit on passing a room along still applies.</p>}
+      {error && <p role="alert" className="mt-2 text-[12px] text-destructive">{error}</p>}
+    </SettingRow>
   );
 }
 
@@ -668,7 +720,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations files changes cards shared folder",
+        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations files changes cards shared folder agents turn limit consecutive chain off",
       },
       {
         id: "about-you",
@@ -829,6 +881,7 @@ function GeneralPage() {
         <QuickAskShortcut />
         <ProposeSkills />
         <RecallBeforeTurn />
+        <AgentTurnLimit />
         <SharedChanges />
         <Compaction />
         <IdleCompaction />

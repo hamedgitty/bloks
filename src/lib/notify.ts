@@ -32,6 +32,8 @@
 //   of a run that turns out quiet is never news either.
 
 /** The parts of a message this decision actually depends on. */
+import { CHAIN_LIMIT_TITLE } from "../../server/agent-chain.ts";
+
 const ENGINE_OUT =
   /credit balance is too low|insufficient[_ ](?:quota|credits|funds|balance)|billing|payment required|\b402\b|out of credits|exceed your available credits|usage limit|limit (?:reached|exceeded)|quota|rate[ _-]?limit|\b429\b|not (?:logged|signed) in|sign in/i;
 
@@ -45,6 +47,7 @@ export interface NotifiableMessage {
   quiet?: boolean;
   /** A notice about the conversation's goal (server/goals.ts). */
   goal?: string;
+  chainHeld?: boolean;
 }
 
 export interface NotifyContext {
@@ -107,6 +110,12 @@ export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notic
       target,
       urgent: true,
     };
+  }
+
+  // This is a chain guard, even when its explanation names billing or quota.
+  if (message.kind === "notice" && message.chainHeld) {
+    if (watching) return null;
+    return { title: CHAIN_LIMIT_TITLE, body: preview(message.text ?? ""), target, urgent: true };
   }
 
   // Where a goal ended up. Blocked has stopped the work until the person

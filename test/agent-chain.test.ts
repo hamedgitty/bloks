@@ -4,8 +4,8 @@
 // turn's own budget (TURN_BUDGET) starts again in every one of them, so
 // two agents answering each other went on until somebody noticed. Now a
 // turn started by an agent's message sits one further along a chain than
-// the sender's turn did, and past twelve in a row the next message waits
-// for the person; whoever they write to starts the chain over.
+// the sender's turn did. The workspace limit defaults to twelve; past it
+// a message is refused, and the person's next words start the chain over.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -139,7 +139,7 @@ test("two agents answering each other stop after twelve turns, and the person wr
 
   // The person asks Alpha to say something to Bravo, and from there each
   // answers the other. Twelve turns in a row are the agents' own; the
-  // thirteenth message is the one that waits for the person.
+  // thirteenth message is refused, with nothing waiting for delivery.
   await h.fetch(`/api/bots/${alpha.id}/messages`, { method: "POST", body: JSON.stringify({ text: `START ${bravo.id}` }) });
   const refused = await waitFor(() => says(home).find((line) => line.said.refused) ?? null, 60_000);
   assert.ok(refused, `the agents were still answering each other after ${says(home).length} messages`);
@@ -151,12 +151,12 @@ test("two agents answering each other stop after twelve turns, and the person wr
   assert.ok(all.slice(0, 12).every((line) => !line.said.refused), "a message inside the limit was refused");
   // the turn at twelve was Alpha's, so its message to Bravo is the one refused
   assert.equal(refused.to, bravo.id);
-  assert.match(refused.said.error, /did not get this/);
+  assert.match(refused.said.error, /was not delivered/);
   assert.match(refused.said.error, /12 turns in a row/);
   // and the person reads why in the conversation it was meant for
   const told = await notices(h, bravo);
   assert.ok(
-    told.includes("Agents have started 12 turns in a row without you, the last from Alpha to Bravo; the next one waits for you."),
+    told.some((text) => text.includes("from Alpha to Bravo was not delivered") && text.includes("Settings > General > Working with agents")),
     `nothing in Bravo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
   const heldNotices = ((await h.json(`/api/bots/${bravo.id}/messages?limit=200`)).messages as any[]).filter((m) => m.chainHeld);
@@ -186,7 +186,7 @@ test("an agent messaging itself is a chain too", async (t) => {
   assert.equal(says(home).length, 13);
   const told = await notices(h, solo);
   assert.ok(
-    told.includes("Agents have started 12 turns in a row without you, the last from Solo to itself; the next one waits for you."),
+    told.some((text) => text.includes("from Solo to Solo was not delivered") && text.includes("Nothing is held for delivery")),
     `nothing in Solo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
 });
@@ -218,7 +218,7 @@ test("naming an agent in a room from a conversation, and being answered there, i
   assert.ok(total !== null && total <= 14, `the agents were still going after ${says(home).length} messages`);
   const room = (await h.json(`/api/bloks/${blok.id}/messages?limit=200`)).messages as any[];
   assert.ok(
-    room.some((m) => m.kind === "notice" && /turns in a row without you, so nobody was woken/.test(m.text)),
+    room.some((m) => m.kind === "notice" && /in this room woke nobody/.test(m.text)),
     `nothing in the room says why it stopped: ${JSON.stringify(room.map((m) => m.text))}`,
   );
 
@@ -238,8 +238,12 @@ test("jobs agents post for each other are a chain, and past it wait for the pers
   const total = await settledSays(home, h);
   assert.ok(total !== null && total <= 14, `jobs were still being posted after ${says(home).length}`);
   const { jobs } = await h.json("/api/jobs");
-  const held = (jobs as any[]).find((job) => job.state === "failed" && /Not offered: agents had started 12 turns in a row/.test(job.result ?? ""));
+  const held = (jobs as any[]).find((job) => job.state === "failed" && /A job offer.*was not delivered.*workspace limit of 12/.test(job.result ?? ""));
   assert.ok(held, `no job was held for the person: ${JSON.stringify((jobs as any[]).map((job) => [job.state, job.result]))}`);
+  assert.match(held.result, /Nothing is held for delivery/);
+  assert.match(held.result, /Each turn uses your plan/);
+  assert.match(held.result, /starts the count over/);
+  assert.match(held.result, /Settings > General > Working with agents/);
 });
 
 test("routines and watchers an agent files carry its place, and past the limit wait for the person", async (t) => {
@@ -296,7 +300,7 @@ test("routines and watchers an agent files carry its place, and past the limit w
   rewrite("watchers.json", (rows) => { rows[0].chain = 13; });
   h = await startHarness({ HOME: home });
   const held = await waitFor(async () => (await h.json("/api/routines")).routines[0].runs?.find((run: any) => run.state === "failed") ?? null, 20_000);
-  assert.match(held?.error ?? "", /^Held: agents had started 12 turns in a row without you/);
+  assert.match(held?.error ?? "", /^Held:.*workspace limit of 12/);
   writeFileSync(join(dir, "new.txt"), "x");
   // a folder is looked at once it has been still for SETTLE_MS (20 s)
   const quietly = await waitFor(async () => (/^Held:/.test((await h.json("/api/watchers")).watchers[0].lastError ?? "") ? true : null), 45_000);
@@ -306,10 +310,16 @@ test("routines and watchers an agent files carry its place, and past the limit w
   // and the person is told, where the work would have gone on, not only
   // in each one's last error (GitHub 248)
   const heldNotices = ((await h.json(`/api/bots/${alpha.id}/messages?limit=200`)).messages as any[]).filter((m) => m.chainHeld).map((m) => m.text);
-  assert.deepEqual(heldNotices, [
-    "The routine Nightly did not run: agents had started 12 turns in a row without you. Run it or change it to go on.",
-    "The watcher drops did not look: agents had started 12 turns in a row without you. Look now or change it to go on.",
-  ]);
+  assert.equal(heldNotices.length, 2);
+  assert.match(heldNotices[0], /routine Nightly did not start.*Alpha/);
+  assert.match(heldNotices[1], /watcher drops did not look for Alpha/);
+  for (const text of heldNotices) {
+    assert.match(text, /Nothing is held for delivery/);
+    assert.match(text, /workspace limit of 12/);
+    assert.match(text, /Each turn uses your plan/);
+    assert.match(text, /starts the count over/);
+    assert.match(text, /Settings > General > Working with agents/);
+  }
   const alphaLane = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === alpha.id).tasks[0];
   assert.equal(alphaLane.unread, true, "a held routine or watcher left its conversation read");
 
