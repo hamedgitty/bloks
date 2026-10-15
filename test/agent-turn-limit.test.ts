@@ -16,7 +16,7 @@ const explanation = (text: string) => {
   assert.match(text, /Nothing is held for delivery/);
   assert.match(text, /Each turn uses your plan/);
   assert.match(text, /keeping each other going.*usage limit is spent/);
-  assert.match(text, /Your message.*starts the count over.*routine, watcher or webhook/);
+  assert.match(text, /A message from the person.*starts the count over.*routine, watcher or webhook/);
   assert.match(text, /Raise or switch off.*Settings > General > Working with agents/);
 };
 

@@ -25,5 +25,5 @@ export function chainExcerpt(words: string, redact: (text: string) => string): s
 
 /** Shared by the refusal, its notice and scheduled-work records. */
 export function chainLimitText(what: string, depth: number, limit: number, excerpt?: string): string {
-  return `${what} Nothing is held for delivery. Agents had started ${depth - 1} turns in a row; this turn would exceed the workspace limit of ${limit}. Each turn uses your plan. The limit stops agents keeping each other going until the plan's usage limit is spent. Your message in that conversation starts the count over, as does an independent routine, watcher or webhook turn. Raise or switch off Agents' turn limit in Settings > General > Working with agents.${excerpt ? ` Excerpt: "${excerpt}"` : ""}`;
+  return `${what} Nothing is held for delivery. Agents had started ${depth - 1} turns in a row; this turn would exceed the workspace limit of ${limit}. Each turn uses your plan. The limit stops agents keeping each other going until the plan's usage limit is spent. A message from the person in that conversation starts the count over, as does an independent routine, watcher or webhook turn. Raise or switch off Agents' turn limit in Settings > General > Working with agents.${excerpt ? ` Excerpt: "${excerpt}"` : ""}`;
 }
