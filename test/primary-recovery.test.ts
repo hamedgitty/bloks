@@ -46,6 +46,14 @@ describe("bounded usage reservations", () => {
     assert.ok(b); a.cancel(); a.finished();
     assert.equal(c.reserve("own", 100, NOW + 300), undefined);
   });
+  test("a cancelled reservation cannot release the next reservation on the same rest", () => {
+    const c = resting(), a = c.reserve("own", 100, NOW + 100)!;
+    a.cancel();
+    const b = c.reserve("own", 100, NOW + 101)!; assert.ok(b);
+    a.cancel(); a.finished();
+    assert.equal(c.reserve("own", 100, NOW + 300), undefined, "late cancellation released a newer try");
+    b.cancel(); assert.ok(c.reserve("own", 100, NOW + 300));
+  });
   test("success clearing the entry cannot be undone by a late callback", () => {
     const c = resting(); const a = c.reserve("own", 100, NOW + 100)!;
     c.clear("own"); c.rest("own", "limit", "usage limit reached", NOW + 200);

@@ -277,9 +277,12 @@ export class Cooldowns {
       accepted() { accepted = true; finish(); },
       finished() { finished = true; finish(); },
       cancel() {
-        if (accepted || !owns()) return;
-        entry.lastTry = previous;
-        delete entry.trying;
+        if (accepted) return false;
+        if (owns()) {
+          entry.lastTry = previous;
+          delete entry.trying;
+        }
+        return true;
       },
     };
   }

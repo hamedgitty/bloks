@@ -152,6 +152,7 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
   const begin = Checkpoints.prototype.begin;
   Checkpoints.prototype.begin = async function(...args) {
     if (existsSync(home + "/hold-preparation")) {
+      rmSync(home + "/hold-preparation");
       writeFileSync(home + "/preparation-entered", "yes");
       const until = Date.now() + 10000;
       while (!existsSync(home + "/release-preparation") && Date.now() < until) await new Promise(r => setTimeout(r, 20));
@@ -242,6 +243,8 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     const b = await bot("crash"); plan("crash", ["limit", "fail", "ok"]);
     await send(b, "initial", "crash", true); await elapsed("crash");
     await send(b, "crash on try", "crash", true);
+    assert.equal((await notices(b, /declined this message/)).length, 0, "a crash was labelled a refusal");
+    assert.equal((await notices(b, /failed: Connection reset by peer/)).length, 1);
     await send(b, "interval not elapsed", "crash", true);
     assert.equal(calls("crash").length, 2);
     assert.equal((await notices(b, /Trying again in a minute/)).length, 0);
@@ -326,6 +329,22 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     assert.match(calls(mode).at(-1)!.text, /usage limit reached/);
     await send(b, "following ordinary", mode, false);
     assert.ok(!calls(mode).at(-1)!.text.startsWith("(A note from Bloks: an earlier attempt"), "failure line repeated");
+  });
+  test("Stop returns a reserved instance to another lane before preparation finishes", async () => {
+    const a = await bot("stop-other"), b = await bot("stop-other"); plan("stop-other", ["limit", "ok"]);
+    await send(a, "initial", "stop-other", true); await elapsed("stop-other");
+    writeFileSync(join(home, "hold-preparation"), "yes");
+    const started = await h.fetch(`/api/bots/${a}/messages`, { method: "POST", body: JSON.stringify({ text: "stopped before dispatch" }) }); assert.ok(started.ok);
+    await wait(async () => existsSync(join(home, "preparation-entered")), "preparation did not hold");
+    assert.ok(existsSync(join(home, "reserved")));
+    const stopped = await h.fetch(`/api/bots/${a}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: (await me(a)).taskId }) }); assert.ok(stopped.ok);
+    try {
+      await send(b, "other lane can try now", "stop-other", false);
+      assert.equal(calls("stop-other").length, 2);
+      assert.ok(!calls("stop-other").some(c => c.text.includes("stopped before dispatch")));
+    } finally { writeFileSync(join(home, "release-preparation"), "yes"); }
+    await wait(async () => !(await me(a)).busy, "stopped preparation never settled");
+    assert.equal(calls("stop-other").length, 2);
   });
   if (kind === "claudeAgent") test("a native command hears no pending stopped-retry failure; the next model turn hears it once", async () => {
     const b = await bot("pending-command", false); plan("pending-command", ["fail", "ok", "ok", "ok"]);

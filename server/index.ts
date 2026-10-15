@@ -826,8 +826,11 @@ const recoveries = new Map<string, Recovery>();
  * agent can tell the person, check what the failed attempt already did,
  * and report it if that is how it works. */
 const failureNotes = new Map<string, { text: string }>();
-const primaryReturns = new Map<string, () => void>();
-const primaryTries = new Map<string, NonNullable<ReturnType<Cooldowns["reserve"]>>>();
+type PrimaryTry = { reservation: NonNullable<ReturnType<Cooldowns["reserve"]>>; returned?: () => void };
+const primaryTries = new Map<string, PrimaryTry>();
+function cancelPrimaryTry(laneId: string, trying = primaryTries.get(laneId)) {
+  if (trying?.reservation.cancel() && primaryTries.get(laneId) === trying) primaryTries.delete(laneId);
+}
 /** The wait before a failed turn is asked again, shorter in tests. */
 const RETRY_WAIT = Number(process.env.BLOKS_RETRY_WAIT_MS) || RETRY_WAIT_MS;
 const RETRY_INTERVAL = Number(process.env.BLOKS_RETRY_INTERVAL_MS) || RETRY_INTERVAL_MS;
@@ -1554,10 +1557,8 @@ function recoverTurn(
   recoveries.delete(laneId);
   const trying = primaryTries.get(laneId);
   primaryTries.delete(laneId);
-  trying?.finished();
-  const returned = primaryReturns.get(laneId);
-  primaryReturns.delete(laneId);
-  if (end.ok) returned?.();
+  trying?.reservation.finished();
+  if (end.ok) trying?.returned?.();
   const command = commandTurns.delete(laneId);
   // A model that answered can take work again. A local command says
   // nothing about quota, but keeps the existing signed-in recovery.
@@ -1634,13 +1635,13 @@ function recoverTurn(
   const backup = fresh?.backupSelection ?? null;
   const usable = goesOn && recovery?.stage !== "backup" ? backupFor(backup, used, Boolean(out)) : null;
   if (usable) {
-    const alreadyTold = trying && rest && toldOfRest.get(laneId) === rest.until;
+    const alreadyTold = trying && rest?.reason === "limit" && toldOfRest.get(laneId) === rest.until;
     if (rest) toldOfRest.set(laneId, rest.until);
     const why = rest
       ? `${engineName(used)} ${REASON_WORDS[out!]} ${describeRest(rest)}.`
       : recovery
         ? `${engineName(used)} failed again: ${said}.`
-        : `${engineName(used)} declined this message: ${said}.`;
+        : `${engineName(used)} ${kind === "refusal" ? "declined this message" : "failed"}: ${said}.`;
     if (!alreadyTold) notice(`${why} ${engineName(usable)} is picking this up, with the conversation so far.`);
     told(`Bloks handed the message to ${engineName(usable)}, this agent's backup engine, with the conversation so far.`);
     askAgain(bot, laneId, { asked: asked!, stage: "backup", tried }, 0);
@@ -3719,7 +3720,10 @@ async function interruptLane(bot: BotRecord, laneId: string) {
   // a failed turn waiting to be asked again has no engine turn to stop
   if (cancelRecovery(bot, laneId, "Stopped. It will not be asked again.")) return;
   const adapter = laneInstance(bot, laneId)?.adapter;
-  if (store.taskByThread(laneId)?.task.busy && !adapter?.hasSession(laneId)) stoppedGettingReady.add(laneId);
+  if (store.taskByThread(laneId)?.task.busy && !adapter?.hasSession(laneId)) {
+    stoppedGettingReady.add(laneId);
+    cancelPrimaryTry(laneId);
+  }
   await adapter?.interruptTurn(laneId);
 }
 
@@ -3748,6 +3752,9 @@ async function startTurn(botId: string, text: string, opts: Parameters<typeof st
   const claim: LaneClaim = {};
   try {
     await startClaimedTurn(botId, text, opts, claim);
+  } catch (error) {
+    claim.cancelPrimaryTry?.();
+    throw error;
   } finally {
     if (claim.lane && claimedLanes.get(claim.lane) === claim) {
       claimedLanes.delete(claim.lane);
@@ -3946,19 +3953,16 @@ async function startClaimedTurn(
   const staying = !opts.fallback && Boolean(stayOf(bot, task.id));
   const ownInstance = registry.get(own.instanceId);
   const backup = bot.backupSelection;
-  const ownTry =
+  const reservation =
     !command && !opts.fallback && !opts.retry && !opts.carriedOn && !staying &&
     (!opts.roomId || opts.roomId === task.id) && ownRest?.reason === "limit" &&
     ownInstance?.enabled !== false && (ownInstance?.driverKind === "claudeAgent" || ownInstance?.driverKind === "codex") &&
     backup?.instanceId !== own.instanceId && engineUsable(backup)
       ? cooldowns.reserve(own.instanceId, RETRY_INTERVAL) : undefined;
+  const ownTry: PrimaryTry | undefined = reservation ? { reservation } : undefined;
   if (ownTry) {
     primaryTries.set(task.id, ownTry);
-    claim.cancelPrimaryTry = () => {
-      ownTry.cancel();
-      primaryReturns.delete(task.id);
-      if (primaryTries.get(task.id) === ownTry) primaryTries.delete(task.id);
-    };
+    claim.cancelPrimaryTry = () => cancelPrimaryTry(task.id, ownTry);
   }
   const selection = ownTry ? own : selectEngine(bot, opts.fallback, task.id);
   if (command && (selection.instanceId !== commandInstance || acceptingNative(bot) !== commandInstance || !engineUsable(selection))) {
@@ -4604,7 +4608,7 @@ async function startClaimedTurn(
         };
         // A bounded try is back only after the model answers. A rejected
         // try keeps the original blind spot and gives no false return line.
-        if (ownTry) primaryReturns.set(task.id, returned);
+        if (ownTry) ownTry.returned = returned;
         else returned();
       }
       const engineFresh =
@@ -4936,7 +4940,7 @@ async function startClaimedTurn(
         }
         await engine.adapter.sendTurn(sending);
         tryAccepted = true;
-        ownTry?.accepted();
+        ownTry?.reservation.accepted();
       };
       if (command) await send();
       else await withFailureNote(failureNotes, task.id, send);
