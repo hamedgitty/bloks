@@ -842,9 +842,9 @@ interface Stay {
   until: number;
 }
 const stays = new Map<string, Stay>();
-/** The own engine's session in each lane another engine has been
- * answering, and from when on (a message's `at`) it missed what was said. */
-const away = new Map<string, { instanceId: string; since: number; by: string; note?: string }>();
+/** Why another selection answered in each lane. A stored own session
+ * also keeps when (a message's `at`) it began missing what was said. */
+const away = new Map<string, { own: ModelSelection; backup: ModelSelection; at: number; rest?: Rest; since?: number; by: string; note: string }>();
 /** How long a conversation stays on its backup, shorter in tests. */
 const STAY = Number(process.env.BLOKS_BACKUP_STAY_MS) || STAY_MS;
 
@@ -862,6 +862,17 @@ function stayOf(bot: BotRecord, laneId: string, now = Date.now()): Stay | undefi
     return undefined;
   }
   return stay;
+}
+
+/** A handover belongs to the engine choices that made it. A later
+ * explicit choice must not receive an old automatic-return reason. */
+function awayOf(bot: BotRecord, laneId: string) {
+  const pending = away.get(laneId);
+  if (pending && (!sameSelection(pending.own, bot.modelSelection) || !sameSelection(pending.backup, bot.backupSelection))) {
+    away.delete(laneId);
+    return undefined;
+  }
+  return pending;
 }
 
 // ── cloud computers sleep when nobody is using them ──────────────────
@@ -1679,6 +1690,16 @@ function sentences(first: string, then: string): string {
 function failureLine(selection: ModelSelection, at: number, said: string, did: string): string {
   const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return `(A note from Bloks: an earlier attempt in this conversation failed at ${time} on ${engineName(selection)}, saying: "${said}". ${did} That attempt may have done part of the work before it failed, so check what is already done before redoing anything, and tell the person what happened if it matters to them.)`;
+}
+
+/** A switch without a failed attempt in this conversation still has a
+ * cause. Keep it in past tense: the first turn back hears this line too. */
+function backupLine(own: ModelSelection, backup: ModelSelection, rest: Rest | undefined, at: number): string {
+  const why = rest ? REASON_WORDS[rest.reason].replace(/^is /, "was ") : "was not available";
+  const tries = rest
+    ? `Bloks tries ${engineName(own)} again on the first turn after ${new Date(rest.until).toISOString()}`
+    : `Bloks checks for ${engineName(own)} again on each new turn`;
+  return `(A note from Bloks: ${engineName(own)} ${why}, so at ${new Date(at).toISOString()} Bloks switched this conversation to ${engineName(backup)}, this agent's backup engine. ${tries} and returns to it automatically when it is available.)`;
 }
 
 /** The backup that can take a failed turn: one that is usable and is not
@@ -3993,6 +4014,9 @@ async function startClaimedTurn(
   // where the reply lands: the lane's own thread, or the shared room
   const roomId = opts.roomId ?? task.id;
   const blok = roomId === task.id ? null : bloks.get(roomId);
+  // Private rooms can share a provider lane with solo turns. Their
+  // switch context still belongs to each agent in each room separately.
+  const awayId = blok ? `${task.id}:${roomId}` : task.id;
   // Who the agent is told it is working with, which is not the same as
   // who is on the roster. An archived member is still in the room so the
   // transcript stays legible, but telling a live agent to hand something
@@ -4544,23 +4568,18 @@ async function startClaimedTurn(
       const nativeReplay = Boolean(instance.adapter.capabilities.replaysNatively);
       const ownReading = readingFor(task.reading, selection);
       const handoffTokens = handoffBudget(ownReading?.window ?? contextLimitFor(selection.model));
-      // Another engine answering where the agent's own engine served last:
-      // from here on, the own engine's stored session misses what is said.
-      if (!blok && !command && instanceId !== own.instanceId && !away.has(task.id) && task.lastInstanceId === own.instanceId && typeof task.resumeCursors[own.instanceId] === "string") {
-        const note = failureNotes.get(task.id);
-        away.set(task.id, { instanceId: own.instanceId, since: turnAsked.get(task.id)?.since ?? turnSince, by: engineName(selection), ...(note ? { note } : {}) });
-      }
       // And the own engine coming back resumes that session, told what it
       // missed, unless it is longer than a new session's story would be:
       // then it starts a new session told the conversation, as an engine
       // switch does (GitHub 284).
-      const back = !blok && !command ? away.get(task.id) : undefined;
+      const wasAway = command ? undefined : awayOf(store.bot(bot.id) ?? bot, awayId);
+      const back = !blok && sameSelection(wasAway?.own, selection) ? wasAway : undefined;
       let missed: { turns: Turn[]; by: string } | null = null;
-      if (back && back.instanceId === instanceId) {
-        away.delete(task.id);
+      const missedSince = back?.since;
+      if (back && missedSince !== undefined) {
         const said = store
           .messagesFor(roomId)
-          .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.at >= back.since && m.at < turnSince)
+          .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.at >= missedSince && m.at < turnSince)
           .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: storedPrompt(m) }));
         const bounded = boundHandoff(said, handoffTokens);
         const resumes = typeof task.resumeCursors[instanceId] === "string" && !nativeReplay && !guestMail;
@@ -4639,9 +4658,6 @@ async function startClaimedTurn(
         turnText = freshTurnText(told.turns, turnText, { left: told.left, why: "session" });
       }
       if (missed) turnText = catchUpText(missed.turns, missed.by, turnText);
-      // the first turn back is told what failed too, unless a newer
-      // failure has its own line waiting
-      if (back?.note && back.instanceId === instanceId && !failureNotes.has(task.id)) failureNotes.set(task.id, back.note);
       const undone = undoneSince.get(task.id);
       if (undone && !command) {
         undoneSince.delete(task.id);
@@ -4653,12 +4669,9 @@ async function startClaimedTurn(
         stalledSince.delete(task.id);
         turnText = `${stallPreface(stalledNote)}\n\n${turnText}`;
       }
-      // what failed before this turn, ahead of everything else it is told
+      // A failure in this conversation keeps its original longer line.
       const failedNote = command ? undefined : failureNotes.get(task.id);
-      if (failedNote) {
-        failureNotes.delete(task.id);
-        turnText = `${failedNote}\n\n${turnText}`;
-      }
+      if (failedNote) failureNotes.delete(task.id);
 
       // A credential of this agent's own, for this turn only. Given only
       // to engines that run a process, because a driver that talks to an
@@ -4898,7 +4911,39 @@ async function startClaimedTurn(
         settleUnsent(withdrawn);
         return;
       }
+      // Read the choices and rest at dispatch: either can change while
+      // a turn is getting ready. The chat notice is not the dedupe, and
+      // a changed rest gets one correction with absolute past facts.
+      const chosen = store.bot(bot.id) ?? bot;
+      const pending = command ? undefined : awayOf(chosen, awayId);
+      const restNow = cooldowns.of(chosen.modelSelection.instanceId) ?? (sameSelection(chosen.modelSelection, own) ? ownRest : undefined);
+      const changedRest = pending?.rest?.until !== restNow?.until || pending?.rest?.reason !== restNow?.reason;
+      const at = pending?.at ?? turnSince;
+      const since = pending?.since ?? (!blok && instanceId !== own.instanceId && task.lastInstanceId === own.instanceId && typeof task.resumeCursors[own.instanceId] === "string"
+        ? turnAsked.get(task.id)?.since ?? turnSince
+        : undefined);
+      const leaving = !command && sameSelection(chosen.modelSelection, own) && sameSelection(selection, chosen.backupSelection) && !sameSelection(selection, chosen.modelSelection) && (!pending || changedRest)
+        ? {
+            own: chosen.modelSelection,
+            backup: selection,
+            at,
+            rest: restNow,
+            by: engineName(selection),
+            note: failedNote ?? (blok && staying && !restNow ? awayOf(chosen, task.id)?.note : undefined) ?? backupLine(chosen.modelSelection, selection, restNow, at),
+            ...(since !== undefined ? { since } : {}),
+          }
+        : undefined;
+      const returning = !command && sameSelection(pending?.own, selection) ? pending : undefined;
+      const note = failedNote ?? returning?.note ?? leaving?.note;
+      if (note) {
+        sending.text = `${note}\n\n${sending.text}`;
+        if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
+      }
       await engine.adapter.sendTurn(sending);
+      // A stopped preparation or a command did not hear this line. Keep
+      // the handover until an engine has actually accepted the turn.
+      if (leaving) away.set(awayId, leaving);
+      else if (returning) away.delete(awayId);
       if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
       // A local command has not heard a pending engine handoff or CLI note.
