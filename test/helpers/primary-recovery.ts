@@ -53,7 +53,7 @@ if (kind === "claudeAgent") {
     out({ type: "result", subtype: "success", is_error: failed, num_turns: 1, duration_api_ms: 1, total_cost_usd: 0, session_id: session, result: said });
   });
 } else {
-  let thread = "thread-" + id, count = 0;
+  let thread = "thread-" + id + "-" + process.pid, count = 0;
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const m = JSON.parse(line); if (!m.method) return;
     const methods = read("methods-" + id + ".json", []); methods.push(m.method); write("methods-" + id + ".json", methods);
