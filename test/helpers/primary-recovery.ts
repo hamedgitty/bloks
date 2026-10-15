@@ -31,7 +31,7 @@ const take = (text, session) => {
 const later = async (outcome) => {
   if (outcome === "hold") { const until = Date.now() + 10000; while (!existsSync(dir + "/release-" + id) && Date.now() < until) await new Promise(r => setTimeout(r, 20)); }
 };
-const saidFor = (outcome) => outcome === "fail" ? "Connection reset by peer" : outcome === "credit" ? "Insufficient credits" : outcome === "overloaded" ? "Provider overloaded" : outcome === "relative" ? "usage limit reached, try again in 20m" : "usage limit reached|" + epoch;
+const saidFor = (outcome) => outcome === "fail" ? "Connection reset by peer" : outcome === "credit" ? "Insufficient credits" : outcome === "overloaded" ? "Provider overloaded" : outcome === "relative" ? "usage limit reached, try again in 20m" : outcome === "weekly" ? "Weekly limit exceeded|" + (epoch + 3600) : "usage limit reached|" + epoch;
 if (kind === "claudeAgent") {
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const frame = JSON.parse(line); if (frame.type !== "user") return;
@@ -41,11 +41,11 @@ if (kind === "claudeAgent") {
     out({ type: "system", subtype: "init", session_id: session, model: "claude-sonnet-5" });
     const failed = !["ok", "hold"].includes(outcome), said = failed ? saidFor(outcome) : "Answered " + id;
     const events = [];
-    if (["limit", "relative"].includes(outcome)) {
+    if (["limit", "relative", "weekly"].includes(outcome)) {
       events.push("rate_limit_event");
-      out({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt: outcome === "relative" ? Math.floor(Date.now() / 1000) + 1200 : epoch, rateLimitType: "five_hour" } });
+      out({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt: outcome === "relative" ? Math.floor(Date.now() / 1000) + 1200 : outcome === "weekly" ? epoch + 3600 : epoch, rateLimitType: outcome === "weekly" ? "seven_day" : "five_hour" } });
     }
-    if (!failed || ["limit", "relative"].includes(outcome)) {
+    if (!failed || ["limit", "relative", "weekly"].includes(outcome)) {
       events.push("assistant");
       out({ type: "assistant", ...(failed ? { error: "rate_limit" } : {}), session_id: session, message: { id: "m1", model: failed ? "<synthetic>" : "claude-sonnet-5", role: "assistant", content: [{ type: "text", text: said }], usage: { input_tokens: failed ? 0 : 1, output_tokens: failed ? 0 : 1 } } });
     }
@@ -135,6 +135,19 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     if (delay === 0 && existsSync(home + "/delay-next-backup")) { rmSync(home + "/delay-next-backup"); delay = ${INTERVAL + 350}; }
     return timeout(callback, delay, ...args);
   };
+  const { Cooldowns } = await import(${JSON.stringify(new URL("../../server/failover.ts", import.meta.url).href)});
+  const reserve = Cooldowns.prototype.reserve;
+  Cooldowns.prototype.reserve = function(...args) {
+    const result = reserve.apply(this, args);
+    if (result) writeFileSync(home + "/reserved", "yes");
+    return result;
+  };
+  const { Store } = await import(${JSON.stringify(new URL("../../server/store.ts", import.meta.url).href)});
+  const pin = Store.prototype.pinTaskCwd;
+  Store.prototype.pinTaskCwd = function(...args) {
+    if (existsSync(home + "/fail-preparation")) { rmSync(home + "/fail-preparation"); throw new Error("Fixture preparation failed"); }
+    return pin.apply(this, args);
+  };
   const { Checkpoints } = await import(${JSON.stringify(new URL("../../server/checkpoints.ts", import.meta.url).href)});
   const begin = Checkpoints.prototype.begin;
   Checkpoints.prototype.begin = async function(...args) {
@@ -152,10 +165,6 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     const driver = (await import(url))[key], create = driver.create;
     driver.create = async function(...args) {
       const instance = await create.apply(this, args), adapter = instance.adapter, send = adapter.sendTurn;
-      adapter.capabilities = new Proxy(adapter.capabilities, { get(target, prop) {
-        if (prop === "replaysNatively" && existsSync(home + "/fail-preparation")) { rmSync(home + "/fail-preparation"); throw new Error("Fixture preparation failed"); }
-        return Reflect.get(target, prop);
-      }});
       adapter.sendTurn = async function(turn) {
         if (existsSync(home + "/reject-send")) {
           rmSync(home + "/reject-send"); writeFileSync(home + "/rejected-text", turn.text); throw new Error("Fixture rejected dispatch");
@@ -216,6 +225,18 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     assert.match(calls("reject", true).at(-1)!.text, /\(A note from Bloks: an earlier attempt in this conversation failed at .+ on .+, saying:/);
     assert.match(calls("reject", true).at(-1)!.text, /usage limit reached/);
     assert.equal((await notices(b, /Trying again in a minute/)).length, 0);
+  });
+  test("a restored short window cannot clear a fresh weekly rejection and its later reset", async () => {
+    const b = await bot("weekly"); plan("weekly", ["limit", "weekly"]);
+    await send(b, "short window exhausted", "weekly", true); await elapsed("weekly");
+    await send(b, "short reset but weekly still exhausted", "weekly", true);
+    assert.equal(calls("weekly").length, 2);
+    assert.equal(calls("weekly").at(-1)!.outcome, "weekly");
+    assert.match(calls("weekly", true).at(-1)!.text, /Weekly limit exceeded/);
+    assert.equal((await notices(b, /is out of usage/)).length, 2, "fresh later reset was lost");
+    await send(b, "remaining wait", "weekly", true);
+    assert.equal(calls("weekly").length, 2, "weekly rejection was cleared without success");
+    assert.equal((await notices(b, /is back on this conversation/)).length, 0);
   });
   test("a non-out crash keeps the rest and reservation interval, without a retry stage", async () => {
     const b = await bot("crash"); plan("crash", ["limit", "fail", "ok"]);
@@ -289,15 +310,16 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     writeFileSync(join(home, mode === "stop" ? "hold-preparation" : mode === "send" ? "reject-send" : "fail-preparation"), "yes");
     const count = calls(mode).length;
     const response = await h.fetch(`/api/bots/${b}/messages`, { method: "POST", body: JSON.stringify({ text: "not accepted" }) });
-    if (mode === "prepare") { assert.equal(response.status, 500); assert.match(await response.text(), /Fixture preparation failed/); }
-    else assert.ok(response.ok, await response.text());
+    assert.ok(response.ok, await response.text());
     if (mode === "stop") {
       await wait(async () => existsSync(join(home, "preparation-entered")), "preparation gate not reached");
       const stopped = await h.fetch(`/api/bots/${b}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: (await me(b)).taskId }) }); assert.ok(stopped.ok);
       writeFileSync(join(home, "release-preparation"), "yes");
     }
     await wait(async () => !(await me(b)).busy, "unaccepted turn never settled");
+    assert.ok(existsSync(join(home, "reserved")), "fixture failed before reserving the retry");
     assert.equal(calls(mode).length, count, "unaccepted dispatch reached the provider");
+    if (mode === "prepare") assert.match(JSON.stringify((await me(b)).messages), /Fixture preparation failed/);
     if (mode === "send") assert.match(readFileSync(join(home, "rejected-text"), "utf8"), /\(A note from Bloks: an earlier attempt/);
     await send(b, "ordinary accepted", mode, false);
     assert.match(calls(mode).at(-1)!.text, /\(A note from Bloks: an earlier attempt/);
