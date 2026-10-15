@@ -842,9 +842,11 @@ interface Stay {
   until: number;
 }
 const stays = new Map<string, Stay>();
-/** Why another selection answered in each lane. A stored own session
- * also keeps when (a message's `at`) it began missing what was said. */
-const away = new Map<string, { own: ModelSelection; backup: ModelSelection; at: number; rest?: Rest; since?: number; by: string; note: string }>();
+/** The own session's catch-up starts during preparation, as before,
+ * even when that preparation is stopped before the backup hears it. */
+const catchups = new Map<string, { instanceId: string; since: number; by: string }>();
+/** A reason is heard only when a turn dispatches, per agent and room. */
+const away = new Map<string, { own: ModelSelection; backup: ModelSelection; at: number; rest?: Rest; note: string }>();
 /** How long a conversation stays on its backup, shorter in tests. */
 const STAY = Number(process.env.BLOKS_BACKUP_STAY_MS) || STAY_MS;
 
@@ -4572,14 +4574,16 @@ async function startClaimedTurn(
       // missed, unless it is longer than a new session's story would be:
       // then it starts a new session told the conversation, as an engine
       // switch does (GitHub 284).
-      const wasAway = command ? undefined : awayOf(store.bot(bot.id) ?? bot, awayId);
-      const back = !blok && sameSelection(wasAway?.own, selection) ? wasAway : undefined;
+      if (!blok && !command && instanceId !== own.instanceId && !catchups.has(task.id) && task.lastInstanceId === own.instanceId && typeof task.resumeCursors[own.instanceId] === "string") {
+        catchups.set(task.id, { instanceId: own.instanceId, since: turnAsked.get(task.id)?.since ?? turnSince, by: engineName(selection) });
+      }
+      const back = !blok && !command ? catchups.get(task.id) : undefined;
       let missed: { turns: Turn[]; by: string } | null = null;
-      const missedSince = back?.since;
-      if (back && missedSince !== undefined) {
+      if (back && back.instanceId === instanceId) {
+        catchups.delete(task.id);
         const said = store
           .messagesFor(roomId)
-          .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.at >= missedSince && m.at < turnSince)
+          .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.at >= back.since && m.at < turnSince)
           .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: storedPrompt(m) }));
         const bounded = boundHandoff(said, handoffTokens);
         const resumes = typeof task.resumeCursors[instanceId] === "string" && !nativeReplay && !guestMail;
@@ -4919,18 +4923,13 @@ async function startClaimedTurn(
       const restNow = cooldowns.of(chosen.modelSelection.instanceId) ?? (sameSelection(chosen.modelSelection, own) ? ownRest : undefined);
       const changedRest = pending?.rest?.until !== restNow?.until || pending?.rest?.reason !== restNow?.reason;
       const at = pending?.at ?? turnSince;
-      const since = pending?.since ?? (!blok && instanceId !== own.instanceId && task.lastInstanceId === own.instanceId && typeof task.resumeCursors[own.instanceId] === "string"
-        ? turnAsked.get(task.id)?.since ?? turnSince
-        : undefined);
       const leaving = !command && sameSelection(chosen.modelSelection, own) && sameSelection(selection, chosen.backupSelection) && !sameSelection(selection, chosen.modelSelection) && (!pending || changedRest)
         ? {
             own: chosen.modelSelection,
             backup: selection,
             at,
             rest: restNow,
-            by: engineName(selection),
             note: failedNote ?? (blok && staying && !restNow ? awayOf(chosen, task.id)?.note : undefined) ?? backupLine(chosen.modelSelection, selection, restNow, at),
-            ...(since !== undefined ? { since } : {}),
           }
         : undefined;
       const returning = !command && sameSelection(pending?.own, selection) ? pending : undefined;

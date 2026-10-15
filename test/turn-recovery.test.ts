@@ -823,7 +823,7 @@ tick();
         assert.ok(await settled(botId, (m) => answers(m).length === 4));
         assert.doesNotMatch(calls(tag).at(-1)!.text, /A note from Bloks/, "the old reason survived two explicit choices");
       }
-      assert.equal((await me(botId)).messages.filter((m: any) => m.kind === "notice" && /is back on this conversation/.test(m.text ?? "")).length, 0);
+      assert.equal((await me(botId)).messages.filter((m: any) => m.kind === "notice" && /is back on this conversation/.test(m.text ?? "")).length, 1, "an explicit engine choice changed the base's return notice");
     }
   });
 
@@ -942,6 +942,35 @@ tick();
     await say(botId, "[t-room-stay] solo return");
     assert.ok(await settled(botId, (m) => answers(m).length === 3));
     assert.equal(allCalls().find((call) => call.text.endsWith("[t-room-stay] solo return"))!.text.split("\n")[0], failure, "the room consumed the solo return reason");
+  });
+
+  test("a stopped first backup preserves the existing return notice and catch-up without a reason", async () => {
+    const botId = await agent("Willow", { instanceId: "claude-b", backup: true });
+    plan("t-stop-return", ["ok", "ok"]);
+    await say(botId, "[t-stop-return] seed own session");
+    assert.ok(await settled(botId, (m) => answers(m).length === 1));
+    const file = join(home, ".bloks", "config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    const own = config.instances["claude-b"];
+    delete config.instances["claude-b"];
+    writeFileSync(file, JSON.stringify(config));
+    const reload = () => h.fetch("/api/providers/kimi/connect", { method: "POST", body: JSON.stringify({ key: "sk-test-3333333333", url: spare.url }) });
+    assert.equal((await reload()).status, 200);
+    await stopPreparation(botId, "t-stop-return");
+    config.instances["claude-b"] = own;
+    writeFileSync(file, JSON.stringify(config));
+    assert.equal((await reload()).status, 200);
+    await say(botId, "[t-stop-return] first own turn after Stop");
+    assert.ok(await settled(botId, (m) => answers(m).length === 2));
+    const back = calls("t-stop-return")[1];
+    assert.ok(back);
+    assert.equal(back.session, calls("t-stop-return")[0].session);
+    assert.equal(back.resumed, true);
+    assert.equal(spare.inputs.filter((text) => text.includes("[t-stop-return]")).length, 0, "the stopped backup heard a turn");
+    assert.doesNotMatch(back.text, /A note from Bloks/, "a lane that never dispatched to its backup received a switch reason");
+    assert.match(back.text, /What was said since/, "stopped preparation changed the base's catch-up");
+    assert.match(back.text, /\[t-stop-return\] held preparation/);
+    assert.equal((await me(botId)).messages.filter((m: any) => m.kind === "notice" && /is back on this conversation/.test(m.text ?? "")).length, 1, "stopped preparation changed the base's return notice");
   });
 
   test("a newer backup failure wins over the original handover reason", async () => {
