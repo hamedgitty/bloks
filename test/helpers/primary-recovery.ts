@@ -10,7 +10,7 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // event before its synthetic assistant, as failover.test.ts does. Codex
 // emits an error before any item. These are fixture order claims only.
 const CLI = String.raw`#!__NODE__
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const kind = "__KIND__", dir = "__DIR__", id = "__ID__";
 const args = process.argv.slice(2);
@@ -18,7 +18,7 @@ if (args[0] === "--version") { console.log(kind === "codex" ? "codex-cli 9.9.9" 
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(); }
 if (args[0] === "login") { console.log("Logged in using ChatGPT"); process.exit(); }
 const read = (name, otherwise) => existsSync(dir + "/" + name) ? JSON.parse(readFileSync(dir + "/" + name, "utf8")) : otherwise;
-const write = (name, value) => writeFileSync(dir + "/" + name, JSON.stringify(value));
+const write = (name, value) => { writeFileSync(dir + "/" + name + "." + process.pid + ".part", JSON.stringify(value)); renameSync(dir + "/" + name + "." + process.pid + ".part", dir + "/" + name); };
 const out = (m) => console.log(JSON.stringify(m));
 const epoch = read("reset.json", Math.floor(Date.now() / 1000) + 3600);
 const take = (text, session) => {
@@ -81,7 +81,7 @@ if (kind === "claudeAgent") {
 `;
 
 type Call = { text: string; session: string; outcome: string; at: number };
-const INTERVAL = 1_800;
+const INTERVAL = 1_800, STAY = 6_000;
 export function primaryRecovery(kind: "claudeAgent" | "codex") {
  describe(`${kind}: ordinary recovery`, () => {
   let home: string, h: Harness;
@@ -177,7 +177,7 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
   }
 }
 `);
-    h = await startHarness({ HOME: home, BLOKS_RETRY_INTERVAL_MS: String(INTERVAL), BLOKS_RETRY_WAIT_MS: "1200", BLOKS_BACKUP_STAY_MS: "1000", NODE_OPTIONS: `--import=${preload}` });
+    h = await startHarness({ HOME: home, BLOKS_RETRY_INTERVAL_MS: String(INTERVAL), BLOKS_RETRY_WAIT_MS: "1200", BLOKS_BACKUP_STAY_MS: String(STAY), NODE_OPTIONS: `--import=${preload}` });
   });
   afterEach(async () => { await h?.stop(); rmSync(home, { recursive: true, force: true }); });
 
@@ -394,13 +394,17 @@ if (process.argv[1]?.endsWith("/server/index.ts")) {
     const reload = await h.fetch("/api/providers/kimi", { method: "DELETE" }); assert.ok(reload.ok);
     await send(b, "own missing", "missing", true); assert.equal(calls("missing").length, 1);
   });
-  test("a backup stay does not try; an expired stay plus own rest does", async () => {
+  test("an active backup stay does not try a resting own engine; an expired stay plus own rest does", async () => {
     const b = await bot("stay"); plan("stay", ["fail", "fail", "limit", "ok"]);
     await send(b, "start a stay", "stay", true);
     await send(b, "still on stay", "stay", true); assert.equal(calls("stay").length, 2);
+    const stayed = calls("stay", true).at(-1)!.at;
     // Another lane rests the same own instance while this lane has a stay.
     const a = await bot("stay", false); await send(a, "shared limit", "stay", false);
-    await elapsed("stay"); await send(b, "stale stay", "stay", false);
+    await elapsed("stay"); await send(b, "active stay", "stay", true);
+    assert.equal(calls("stay").length, 3, "a lane on a backup stay tried its resting own engine");
+    await pause(Math.max(0, stayed + STAY + 500 - Date.now()));
+    await send(b, "stale stay", "stay", false);
   });
 });
 
