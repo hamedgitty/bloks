@@ -104,6 +104,28 @@ describe("long replies", () => {
     assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
   });
 
+  test("long malformed parenthesis destinations stay within the reading bound", () => {
+    const piece = "[a ](https://example.com/(((";
+    const input = piece.repeat(Math.ceil(60_000 / piece.length));
+    const started = Date.now();
+    const chunks = messages(input, true);
+    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+    assert.equal(chunks.map((chunk) => chunk.plain).join("").replace(/\s/g, ""), input.replace(/\s/g, ""));
+    for (const chunk of chunks) assert.doesNotMatch(chunk.html!, /<a /);
+  });
+
+  test("long complete parenthesis destinations stay within the reading bound", () => {
+    const piece = "[a ](https://example.com/a)";
+    const repeats = Math.ceil(60_000 / piece.length);
+    const started = Date.now();
+    const chunks = messages(piece.repeat(repeats), true);
+    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+    const html = chunks.map((chunk) => chunk.html!).join("");
+    assert.equal([...html.matchAll(/<a href="https:\/\/example\.com\/a">/g)].length, repeats);
+    assert.equal(chunks.map((chunk) => chunk.plain).join("").match(/https:\/\/example\.com\/a/g)?.length, repeats);
+    for (const chunk of chunks) assert.ok(balanced(chunk.html!));
+  });
+
   test("a link to an address longer than a message goes as text, not a message per letter", () => {
     const address = `https://example.com/${"x".repeat(9_000)}`;
     const sent = messages(`See [the long one](${address}) for more.`, true);
@@ -190,6 +212,150 @@ describe("Markdown, as Telegram shows it", () => {
   });
 });
 
+describe("labelled link destinations", () => {
+  test("the depth-zero delimiter leaves punctuation and following parentheses outside", () => {
+    const [punctuation] = messages("[x](https://example.com/a_(b)).", true);
+    assert.equal(punctuation!.html, '<a href="https://example.com/a_(b)">x</a>.');
+    assert.equal(punctuation!.plain, "x (https://example.com/a_(b)).");
+    const [following] = messages("[x](https://example.com/a) (note)", true);
+    assert.equal(following!.html, '<a href="https://example.com/a">x</a> (note)');
+    assert.equal(following!.plain, "x (https://example.com/a) (note)");
+    const [stray] = messages("[x](https://example.com/a) extra)", true);
+    assert.equal(stray!.html, '<a href="https://example.com/a">x</a> extra)');
+    assert.equal(stray!.plain, "x (https://example.com/a) extra)");
+  });
+
+  test("an unclosed destination stays literal through end of line", () => {
+    for (const input of ["[x](https://example.com/a_(b)", "[x](https://example.com/a_(b"]) {
+      const [chunk] = messages(input, true);
+      assert.equal(chunk!.html, input, "an unbalanced destination became a partial anchor");
+      assert.equal(chunk!.plain, input);
+    }
+  });
+
+  test("backslash does not escape a destination delimiter", () => {
+    // These exact bytes are the unchanged formatter's result.
+    const [chunk] = messages(String.raw`[x](https://example.com/a\)b)`, true);
+    const url = "https://example.com/a\\";
+    assert.equal(chunk!.html, `<a href="${url}">x</a>b)`);
+    assert.equal(chunk!.plain, `x (${url})b)`);
+  });
+
+  test("nested brackets still use the first closing bracket for the label", () => {
+    const [ordinary] = messages("[a [b](https://example.com/a) c]", true);
+    assert.equal(ordinary!.html, '<a href="https://example.com/a">a [b</a> c]');
+    assert.equal(ordinary!.plain, "a [b (https://example.com/a) c]");
+    const [parenthesized] = messages("[a [b](https://example.com/(1)) c]", true);
+    assert.equal(parenthesized!.html, '<a href="https://example.com/(1)">a [b</a> c]');
+    assert.equal(parenthesized!.plain, "a [b (https://example.com/(1)) c]");
+  });
+
+  test("raw balanced parentheses stay in the complete target", () => {
+    for (const url of [
+      "https://example.com/listing-(area)-id.html",
+      "https://example.com/path-(one-(two))-id.html?near=(harbor)#(plan)",
+      "http://example.com/(one)(two)",
+      "mailto:person(area)@example.com",
+      "tg://resolve?domain=example_(area)",
+    ]) {
+      const [chunk] = messages(`Before [Offer](${url}) after.`, true);
+      assert.equal(chunk!.html, `Before <a href="${url}">Offer</a> after.`, "the raw URL or its delimiter was truncated");
+      assert.equal(chunk!.plain, `Before Offer (${url}) after.`);
+    }
+  });
+
+  test("encoded and mixed targets are kept byte-for-byte", () => {
+    for (const url of [
+      "https://example.com/listing-%28area%29-id.html",
+      "https://example.com/%2528area%2529",
+      "https://example.com/%28one%29-(two)",
+    ]) {
+      const [chunk] = messages(`[Offer](${url})`, true);
+      assert.equal(chunk!.html, `<a href="${url}">Offer</a>`);
+      assert.equal(chunk!.plain, `Offer (${url})`);
+    }
+  });
+
+  test("multiple links keep their boundaries and existing whitespace policy", () => {
+    const [chunk] = messages("Before [A]( HTTPS://example.com/(a)  ) after [B](https://example.com/(b)).", true);
+    assert.equal(chunk!.html, 'Before <a href="HTTPS://example.com/(a)">A</a> after <a href="https://example.com/(b)">B</a>.');
+    assert.equal(chunk!.plain, "Before A (HTTPS://example.com/(a)) after B (https://example.com/(b)).");
+  });
+
+  test("query punctuation is escaped for HTML without rewriting the target", () => {
+    const [chunk] = messages('[Offer](https://example.com/(area)?q="(one)"&page=2)', true);
+    assert.equal(chunk!.html, '<a href="https://example.com/(area)?q=&quot;(one)&quot;&amp;page=2">Offer</a>');
+    assert.equal(chunk!.plain, 'Offer (https://example.com/(area)?q="(one)"&page=2)');
+  });
+
+  test("malformed destinations stay literal instead of becoming partial anchors", () => {
+    for (const input of [
+      "[Offer](https://example.com/(area)",
+      "[Offer](https://example.com/(area) extra)",
+      "[x](https://example.com/a (b))",
+      "[Offer](https://)",
+      "[Offer](javascript:alert(1))",
+    ]) {
+      const [chunk] = messages(input, true);
+      assert.equal(chunk!.plain, input);
+      assert.equal(chunk!.html, input);
+    }
+  });
+
+  test("split labels keep the complete raw and encoded target on every chunk", () => {
+    const label = Array.from({ length: 150 }, (_, i) => `word${i}`).join(" ");
+    for (const url of ["https://example.com/listing-(area)-id.html", "https://example.com/listing-%28area%29-id.html"]) {
+      const chunks = messages(`[${label}](${url})`, true, 240);
+      assert.ok(chunks.length > 2);
+      const labels: string[] = [];
+      for (const chunk of chunks) {
+        assert.ok(balanced(chunk.html!));
+        assert.ok(chunk.plain.length <= 240 && shown(chunk.html!).length <= 240);
+        assert.ok(chunk.html!.startsWith(`<a href="${url}">`), "a chunk lost the complete link target");
+        assert.ok(chunk.html!.endsWith("</a>"));
+        assert.ok(chunk.plain.endsWith(` (${url})`), "a chunk lost the complete fallback target");
+        labels.push(chunk.plain.slice(0, -` (${url})`.length));
+      }
+      assert.deepEqual(words(labels.join(" ")), words(label));
+    }
+  });
+
+  test("an oversized parenthesized target still arrives whole as text", () => {
+    const url = `https://example.com/(${"x".repeat(9_000)})`;
+    const chunks = messages(`[Offer](${url})`, true);
+    assert.ok(chunks.length <= 4);
+    assert.ok(chunks.map((chunk) => chunk.plain).join("").includes(url));
+    for (const chunk of chunks) {
+      assert.ok(chunk.plain.length <= MESSAGE_CHARS);
+      assert.ok(balanced(chunk.html!));
+    }
+  });
+
+  test("a target longer than half a message is spelled whole as words", () => {
+    const url = `https://example.com/(${"x".repeat(140)})`;
+    assert.ok(url.length > 240 / 2 && url.length < 240);
+    const chunks = messages(`[Offer](${url})`, true, 240);
+    assert.ok(chunks.map((chunk) => chunk.plain).join("").includes(url));
+    for (const chunk of chunks) {
+      assert.doesNotMatch(chunk.html!, /<a /);
+      assert.ok(chunk.plain.length <= 240);
+    }
+  });
+
+  test("long malformed URL prefixes and parentheses do not rescan the tail", () => {
+    const prefix = "[a](https://example.com/(";
+    const repeats = Math.ceil(60_000 / prefix.length);
+    const inputs = [prefix.repeat(repeats), `${prefix.repeat(repeats)} invalid${")".repeat(repeats * 2)}`];
+    const started = Date.now();
+    for (const input of inputs) {
+      const chunks = messages(input, true);
+      assert.equal(chunks.map((chunk) => chunk.plain).join("").replace(/\s/g, ""), input.replace(/\s/g, ""));
+      for (const chunk of chunks) assert.doesNotMatch(chunk.html!, /<a /);
+    }
+    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+  });
+});
+
 describe("sending", () => {
   const record = (t: { mock: { method: Function } }, answer: (body: any, n: number) => Response) => {
     const bodies: any[] = [];
@@ -231,6 +397,16 @@ describe("sending", () => {
     await send("T", 42, "hello", true);
     assert.equal(bodies.length, 2);
     assert.deepEqual(bodies[0], bodies[1]);
+  });
+
+  test("formatting refusal keeps a parenthesized destination in the plain fallback", async (t) => {
+    const bodies = record(t, (body) =>
+      body.parse_mode ? Response.json({ ok: false, description: "can't parse entities" }, { status: 400 }) : ok(),
+    );
+    await send("T", 42, "Before [Offer](https://example.com/listing-(area)-id.html) after.", true);
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].text, 'Before <a href="https://example.com/listing-(area)-id.html">Offer</a> after.');
+    assert.deepEqual(bodies[1], { chat_id: 42, text: "Before Offer (https://example.com/listing-(area)-id.html) after." });
   });
 
   test("any other failure stops there rather than leaving a gap", async (t) => {

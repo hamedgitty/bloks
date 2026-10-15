@@ -54,11 +54,24 @@ const BLANK: Item = { kind: "blank" };
 
 // ── reading Markdown ───────────────────────────────────────────────────
 
-/** What follows a link's words: the closing bracket and the address. */
-const LINK_END = /^\]\(\s*((?:https?:\/\/|mailto:|tg:\/\/)[^\s)]+)\s*\)/i;
+/** What starts a link's address, after its words. */
+const LINK_START = /^\]\(\s*((?:https?:\/\/|mailto:|tg:\/\/))/i;
 const ESCAPABLE = /[!-/:-@[-`{-~]/;
 const WORD = /[\p{L}\p{N}]/u;
 const SPACE = /\s/;
+
+/** An address ends at the first closing parenthesis at depth zero.
+ * Inner parentheses belong to the address; following words do not. The
+ * index is built only after LINK_START finds a possible link destination. */
+function parenthesisEnds(source: string): Map<number, number> {
+  const ends = new Map<number, number>();
+  const open: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === "(") open.push(i);
+    else if (source[i] === ")" && open.length) ends.set(open.pop()!, i);
+  }
+  return ends;
+}
 
 /** How many of `char` there are in a row from `at`. */
 function runOf(source: string, at: number, char: string): number {
@@ -133,7 +146,11 @@ function inline(source: string, look: Look = {}): Run[] {
   // once, and a line of brackets that are not links costs one pass, not
   // one for each bracket. `bracket` is the line's length when none is left.
   let bracket = -1;
-  const ends = new Map<number, RegExpExecArray | null>();
+  const ends = new Map<number, { url: string; after: number } | null>();
+  let parentheses: Map<number, number> | undefined;
+  // The next space only moves forward, even across malformed destinations.
+  const spaces = /\s/g;
+  let space = -1;
   let i = 0;
   while (i < source.length) {
     const char = source[i]!;
@@ -173,12 +190,29 @@ function inline(source: string, look: Look = {}): Run[] {
         if (bracket < 0) bracket = source.length;
       }
       if (bracket > i + 1 && bracket < source.length) {
-        if (!ends.has(bracket)) ends.set(bracket, LINK_END.exec(source.slice(bracket)));
+        if (!ends.has(bracket)) {
+          const start = LINK_START.exec(source.slice(bracket));
+          let end: { url: string; after: number } | null = null;
+          if (start) {
+            const close = (parentheses ??= parenthesisEnds(source)).get(bracket + 1);
+            if (close !== undefined) {
+              const from = bracket + start[0].length - start[1]!.length;
+              let to = close;
+              while (to > from && SPACE.test(source[to - 1]!)) to--;
+              if (space < from) {
+                spaces.lastIndex = from;
+                space = spaces.exec(source)?.index ?? source.length;
+              }
+              if (to - from > start[1]!.length && space >= to) end = { url: source.slice(from, to), after: close + 1 };
+            }
+          }
+          ends.set(bracket, end);
+        }
         const end = ends.get(bracket);
         if (end) {
           settle();
-          out.push(...inline(source.slice(i + 1, bracket), { ...look, url: end[1]! }));
-          i = bracket + end[0].length;
+          out.push(...inline(source.slice(i + 1, bracket), { ...look, url: end.url }));
+          i = end.after;
           continue;
         }
       }
