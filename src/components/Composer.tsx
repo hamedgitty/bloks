@@ -1,5 +1,5 @@
 import { track } from "@/lib/analytics";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from "react";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import Mic from "lucide-react/dist/esm/icons/mic.mjs";
 import Plus from "lucide-react/dist/esm/icons/plus.mjs";
@@ -27,7 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { modKey } from "@/lib/thisComputer";
 import { composerCeiling, edgeMask } from "@/lib/composerSize";
-import { boxFor, carryFocus, keepDraft, readDraft, showBox, takeBack, takeFocus, type Draft } from "@/lib/drafts";
+import { acceptDraft, boxFor, carryFocus, discardRecovery, isEmptyDraft, keepDraft, readDraft, readRecoveries, recoverDraft, restoreRecovery, showBox, takeFocus, type Draft } from "@/lib/drafts";
 import { insert as insertCommand, matches as matchCommands, segments, slashAt, withBloksCommands, type Command } from "@/lib/slashCommands";
 import { escapeTaken } from "@/lib/useEscape";
 
@@ -132,6 +132,25 @@ function VoiceMeter({ level }: { level: number }) {
   );
 }
 
+function AttachmentChip({ attachment: a, onRemove }: { attachment: Attachment; onRemove?: () => void }) {
+  return (
+    <span className="flex max-w-[240px] items-center gap-1.5 rounded-xl border bg-muted/50 py-1 pl-1.5 pr-1 text-[12px] text-foreground">
+      {a.kind === "image" ? (
+        <img src={`/api/attachments/${attachmentBasename(a.path)}`} alt={a.name} className="size-7 shrink-0 rounded-lg object-cover" />
+      ) : (
+        <FileIcon size={14} className="shrink-0 text-muted-foreground" />
+      )}
+      <span className="min-w-0 flex-1 truncate">{a.kind === "paste" ? `Pasted text, ${a.lines} lines` : a.name}</span>
+      <span className="shrink-0 text-muted-foreground">{formatBytes(a.bytes)}</span>
+      {onRemove && (
+        <button onClick={onRemove} className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label={`Remove ${a.kind === "paste" ? "pasted text" : a.name}`}>
+          <X size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function Composer({
   bot,
   replyTo,
@@ -155,7 +174,24 @@ export function Composer({
   // carried to another agent and sent there. What it holds is kept for
   // this conversation when it goes, and found again when it comes back.
   const draftKey = `${bot.id}:${bot.activeTaskId ?? bot.threadId}`;
-  const [text, setText] = useState(() => readDraft(draftKey).text);
+  const [draft, setDraftState] = useState(() => readDraft<Attachment>(draftKey));
+  const { text, attachments } = draft;
+  const latest = useRef(draft);
+  // Accepted typing and asynchronous intake are visible to a failure in
+  // the same batch, before React has rendered the new words or chips.
+  const setDraft = (next: Draft<Attachment>) => {
+    setDraftState(acceptDraft(latest, next));
+  };
+  const setText = (next: SetStateAction<string>) => setDraft({
+    ...latest.current,
+    text: typeof next === "function" ? next(latest.current.text) : next,
+  });
+  const setAttachments = (next: SetStateAction<Attachment[]>) => setDraft({
+    ...latest.current,
+    attachments: typeof next === "function" ? next(latest.current.attachments) : next,
+  });
+  const [recoveries, setRecoveries] = useState(() => readRecoveries(draftKey));
+  const [blockedRecovery, setBlockedRecovery] = useState<string | null>(null);
   useEffect(() => {
     if (prefill) setText(prefill.text);
   }, [prefill]);
@@ -178,18 +214,13 @@ export function Composer({
   // replacing what someone had started writing
   const baseText = useRef("");
   const inputRef = useAutoSize(text);
-  /** Chips riding with the next message. */
-  const [attachments, setAttachments] = useState(() => readDraft<Attachment>(draftKey).attachments);
-  const latest = useRef({ text, attachments });
-  latest.current = { text, attachments };
   const mounted = useRef(true);
   // the words a failed send hands back, into this box when it is the one
   // on screen for this conversation
   const receive = (sent: Draft<Attachment>) => {
-    const back = takeBack(latest.current, sent);
-    if (!back) return;
-    setText(back.text);
-    setAttachments(back.attachments);
+    const back = recoverDraft(draftKey, latest, sent);
+    if (back) setDraft(back);
+    else setRecoveries(readRecoveries(draftKey));
   };
   const receiveRef = useRef(receive);
   receiveRef.current = receive;
@@ -217,8 +248,18 @@ export function Composer({
     if (mounted.current) return receive(sent);
     const box = boxFor<Attachment>(draftKey);
     if (box) return box(sent);
-    const back = takeBack(readDraft<Attachment>(draftKey), sent);
+    const back = recoverDraft(draftKey, { current: readDraft<Attachment>(draftKey) }, sent);
     if (back) keepDraft(draftKey, back);
+  };
+  const restore = (id: string) => {
+    if (!readRecoveries(draftKey).some((item) => item.id === id)) return;
+    if (!isEmptyDraft(latest.current)) return setBlockedRecovery(id);
+    const back = restoreRecovery(draftKey, id, latest);
+    if (!back) return;
+    setDraft(back);
+    setRecoveries(readRecoveries(draftKey));
+    setBlockedRecovery(null);
+    inputRef.current?.focus();
   };
   /** Why something did not become a chip, said once, dismissible. */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
@@ -328,6 +369,7 @@ export function Composer({
   }, []);
 
   const send = (stopFirst = false) => {
+    const { text, attachments } = latest.current;
     // These branches submit no message to sequence after Stop, but the
     // modifier shortcut still stops as it did before.
     const stopOnly = () => {
@@ -340,9 +382,8 @@ export function Composer({
     if (/^\s*\/goal\s*$/.test(text) && !attachments.length && !lane?.noGoals) {
       stopOnly();
       dispatch({ type: "openGoal", botId: bot.id, taskId: laneId });
-      setText("");
+      setDraft({ text: "", attachments: [] });
       setSlash(null);
-      latest.current = { text: "", attachments: [] };
       return;
     }
     const sent = { text, attachments };
@@ -355,18 +396,16 @@ export function Composer({
       onFailed: () => giveBack(sent),
     });
     track("message_sent", { driver: bot.modelSelection?.instanceId });
-    setText("");
+    // Empty now, before a quick refusal can hand the input back.
+    setDraft({ text: "", attachments: [] });
     setSlash(null);
-    setAttachments([]);
-    // empty from now, not from the next render, which a quick refusal
-    // could beat and find the words still here
-    latest.current = { text: "", attachments: [] };
     setAttachNotice(null);
     onClearReply?.();
   };
 
 
   const startRehearsal = () => {
+    const { text, attachments } = latest.current;
     const task = composeOutgoing(text, attachments).trim();
     if (!task || rehearsing) return;
     setRehearsing(true);
@@ -376,9 +415,7 @@ export function Composer({
     // the words left in it were then kept as this conversation's draft:
     // back here, Enter would have sent the task for real.
     const sent = { text, attachments };
-    latest.current = { text: "", attachments: [] };
-    setText("");
-    setAttachments([]);
+    setDraft({ text: "", attachments: [] });
     api("/api/rehearsals", { method: "POST", body: JSON.stringify({ botId: bot.id, text: task, compareWith }) })
       .then(() => {
         track("rehearsal_started", { compared: compareWith.length });
@@ -571,6 +608,31 @@ export function Composer({
           <ReplyChip draft={replyTo} onClear={() => onClearReply?.()} />
         </div>
       )}
+      {recoveries.length > 0 && (
+        <section aria-label="Saved submissions" className="mx-auto mb-2 max-h-64 max-w-[760px] space-y-2 overflow-y-auto">
+          {recoveries.map((item) => (
+            <div key={item.id} role="group" aria-label="Saved submission" className="rounded-xl border bg-card px-3 py-2 text-[12px]">
+              <p className="font-medium">Saved submission</p>
+              <p className="text-muted-foreground">Check the conversation before sending again.</p>
+              {item.draft.text && <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-all">{item.draft.text}</p>}
+              {item.draft.attachments.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {item.draft.attachments.map((a) => <AttachmentChip key={a.id} attachment={a} />)}
+                </div>
+              )}
+              <div className="mt-1 flex gap-2">
+                <button type="button" onClick={() => restore(item.id)} className="rounded-lg px-2 py-1 hover:bg-accent">Restore draft</button>
+                <button type="button" onClick={() => {
+                  discardRecovery(draftKey, item.id);
+                  setRecoveries(readRecoveries(draftKey));
+                  setBlockedRecovery(null);
+                }} className="rounded-lg px-2 py-1 text-muted-foreground hover:bg-accent">Discard</button>
+              </div>
+              {blockedRecovery === item.id && <p className="mt-1 text-muted-foreground">Finish or clear the current draft first.</p>}
+            </div>
+          ))}
+        </section>
+      )}
       {attachNotice && (
         <div className="mx-auto mb-2 flex max-w-[760px] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
           <span className="min-w-0 flex-1">{attachNotice}</span>
@@ -586,31 +648,7 @@ export function Composer({
       {attachments.length > 0 && (
         <div className="mx-auto mb-2 flex max-w-[760px] flex-wrap gap-1.5">
           {attachments.map((a) => (
-            <span
-              key={a.id}
-              className="flex max-w-[240px] items-center gap-1.5 rounded-xl border bg-muted/50 py-1 pl-1.5 pr-1 text-[12px] text-foreground"
-            >
-              {a.kind === "image" ? (
-                <img
-                  src={`/api/attachments/${attachmentBasename(a.path)}`}
-                  alt={a.name}
-                  className="size-7 shrink-0 rounded-lg object-cover"
-                />
-              ) : (
-                <FileIcon size={14} className="shrink-0 text-muted-foreground" />
-              )}
-              <span className="min-w-0 flex-1 truncate">
-                {a.kind === "paste" ? `Pasted text, ${a.lines} lines` : a.name}
-              </span>
-              <span className="shrink-0 text-muted-foreground">{formatBytes(a.bytes)}</span>
-              <button
-                onClick={() => setAttachments((cur) => cur.filter((x) => x.id !== a.id))}
-                className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label={`Remove ${a.kind === "paste" ? "pasted text" : a.name}`}
-              >
-                <X size={12} />
-              </button>
-            </span>
+            <AttachmentChip key={a.id} attachment={a} onRemove={() => setAttachments((cur) => cur.filter((x) => x.id !== a.id))} />
           ))}
         </div>
       )}

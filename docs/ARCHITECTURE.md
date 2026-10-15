@@ -568,6 +568,17 @@ exit, so the message waits in the normal queue until that turn settles
 instead of joining the dying turn. Either request's failure uses the normal
 draft recovery; a failed Stop submits nothing. Plain Enter still steers.
 
+An empty composer receives failed text and attachments back immediately.
+If newer words or chips occupy it, `src/lib/drafts.ts` retains the failed
+payload separately under that conversation's existing draft key. The
+composer lists each saved submission with explicit Restore/Discard actions.
+Restore fills an empty box and never sends; an occupied box keeps both.
+Accepted input and recovery update the current draft synchronously before
+React renders, so batched failures cannot replace one another. This stays
+in window memory across conversation navigation, not reload or restart,
+and does not imply the server failed to receive a message whose reply was
+lost. Room composers keep their existing draft contract.
+
 Another agent can ask for the same thing when what it says changes the
 work under way: `bloks say <agent> --now <text>`, which is `now: true`
 on `POST /api/bots/:id/messages` from an agent's credential. It is
