@@ -327,12 +327,18 @@ export function Composer({
     };
   }, []);
 
-  const send = () => {
-    if (rehearse) return void startRehearsal();
-    if (!text.trim() && !attachments.length) return;
+  const send = (stopFirst = false) => {
+    // These branches submit no message to sequence after Stop, but the
+    // modifier shortcut still stops as it did before.
+    const stopOnly = () => {
+      if (stopFirst) dispatch({ type: "interrupt", botId: bot.id });
+    };
+    if (rehearse) { stopOnly(); return void startRehearsal(); }
+    if (!text.trim() && !attachments.length) { stopOnly(); return; }
     // `/goal` alone has nothing to aim at yet, so it opens the dialog
     // that asks, rather than sending a goal the server would refuse
     if (/^\s*\/goal\s*$/.test(text) && !attachments.length && !lane?.noGoals) {
+      stopOnly();
       dispatch({ type: "openGoal", botId: bot.id, taskId: laneId });
       setText("");
       setSlash(null);
@@ -345,6 +351,7 @@ export function Composer({
       botId: bot.id,
       text: composeOutgoing(text, attachments),
       replyTo: replyTo ?? undefined,
+      stopFirst,
       onFailed: () => giveBack(sent),
     });
     track("message_sent", { driver: bot.modelSelection?.instanceId });
@@ -839,10 +846,7 @@ export function Composer({
             // stops a running turn first, then sends the same message.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if ((e.metaKey || e.ctrlKey) && openLaneWorking(bot)) {
-                dispatch({ type: "interrupt", botId: bot.id });
-              }
-              send();
+              send((e.metaKey || e.ctrlKey) && openLaneWorking(bot));
             }
             if (e.key === "Escape" && recording) return setRecording(false);
             // Esc stops the agent, as the stop button does (GitHub 258).
@@ -906,7 +910,7 @@ export function Composer({
           </button>
         ) : (
           <button
-            onClick={send}
+            onClick={() => send()}
             disabled={!canSend}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-150 ease-out active:scale-95",

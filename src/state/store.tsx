@@ -23,6 +23,7 @@ import {
 import { CheckInHold, noticeFor } from "@/lib/notify";
 import { sendBotArchive } from "@/lib/botArchive";
 import { sendCardAnswer } from "@/lib/cardAnswer";
+import { sendMessage } from "@/lib/sendMessage";
 import { sendRoomPatch } from "@/lib/roomPatch";
 import { keepTrying } from "@/lib/retry";
 import { placeRow, type Listed } from "@/lib/sections";
@@ -211,10 +212,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const bot = stateRef.current.bots.find((b) => b.id === action.botId);
           const typedIn = bot ? (bot.activeTaskId ?? bot.threadId) : undefined;
           const taskId = bot ? typedLane(bot) : undefined;
-          api(`/api/bots/${action.botId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({ text: action.text, replyTo: action.replyTo, ...(taskId ? { taskId } : {}) }),
-          }).then(
+          sendMessage(api, { ...action, taskId }).then(
             (r) => {
               // Typed in the lane strangers' mail is answered in, the words
               // went to the first conversation, so the screen goes there

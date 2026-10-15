@@ -12220,8 +12220,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           replyTo: replyRef(body.replyTo),
           from,
           yours: !asAgent,
-          steer: !asAgent,
-          // only another agent asks for this; the person's words always try
+          // A stop-and-send follow-up must not join the dying turn, even
+          // when its engine has not closed after acknowledging Stop.
+          steer: !asAgent && body.steer !== false,
+          // only another agent asks for this; the person's words normally try
           now: Boolean(from) && body.now === true,
           // an agent writing, to another or to itself, carries its turn's
           // place in a chain of agents' messages one further; and never as

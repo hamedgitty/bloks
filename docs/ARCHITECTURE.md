@@ -560,6 +560,14 @@ its chat is waiting on, and one answer covers both; a turn that did not
 start from Telegram takes the words too, or they wait, and either way
 the answer goes back to the chat instead of a refusal.
 
+Command/Ctrl+Enter in the app stops before submitting the follow-up
+(`src/lib/sendMessage.ts`). When a conversation is named, both requests
+name it. It waits for `/interrupt` to answer, then sends the message with
+`steer: false`. Stop acknowledges the request, not necessarily the engine's
+exit, so the message waits in the normal queue until that turn settles
+instead of joining the dying turn. Either request's failure uses the normal
+draft recovery; a failed Stop submits nothing. Plain Enter still steers.
+
 Another agent can ask for the same thing when what it says changes the
 work under way: `bloks say <agent> --now <text>`, which is `now: true`
 on `POST /api/bots/:id/messages` from an agent's credential. It is
