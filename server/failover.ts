@@ -86,6 +86,10 @@ export function failureOf(text: string | null | undefined): Failure {
  * before they give up on a turn, so asking at once would mostly fail
  * the same way. */
 export const RETRY_WAIT_MS = 60_000;
+/** A real message can try a resting subscription again, at most once
+ * in fifteen minutes per instance. A rejected try delays that message
+ * by an engine start and rejection; idle time starts no request. */
+export const RETRY_INTERVAL_MS = 15 * 60_000;
 /** How long a conversation stays on the backup that answered it, when
  * its own engine is not resting: long enough that a flapping engine is
  * not tried on every message, short enough that the agent is soon back
@@ -228,22 +232,56 @@ export interface Rest {
 
 /** Engines resting after running out, by instance id. */
 export class Cooldowns {
-  private resting = new Map<string, Rest>();
+  private resting = new Map<string, { rest: Rest; since: number; lastTry?: number; trying?: object }>();
 
   rest(instanceId: string, reason: OutReason, text: string, now = Date.now()): Rest {
-    const rest = { until: restUntil(reason, text, now), reason };
-    this.resting.set(instanceId, rest);
+    const previous = this.of(instanceId, now);
+    const until = restUntil(reason, text, now);
+    // The same reset rounded a little differently is still the same
+    // rest, so it does not repeat the dispatch notice in every lane.
+    const rest = { until: previous?.reason === reason && Math.abs(previous.until - until) <= MINUTE ? previous.until : until, reason };
+    const entry = this.resting.get(instanceId);
+    if (entry) {
+      entry.rest = rest;
+      if (!previous) entry.since = now;
+    } else this.resting.set(instanceId, { rest, since: now });
     return rest;
   }
 
   /** The rest an engine is on, or undefined once it is over. */
   of(instanceId: string, now = Date.now()): Rest | undefined {
-    const rest = this.resting.get(instanceId);
-    if (rest && rest.until <= now) {
-      this.resting.delete(instanceId);
+    const entry = this.resting.get(instanceId);
+    if (entry && entry.rest.until <= now) {
+      if (!entry.trying) this.resting.delete(instanceId);
       return undefined;
     }
-    return rest;
+    return entry?.rest;
+  }
+
+  /** Reserve a bounded usage retry before preparation. A dispatch that
+   * is not accepted gives back both its place and the interval. Only the
+   * reservation that owns this entry can finish it. */
+  reserve(instanceId: string, interval = RETRY_INTERVAL_MS, now = Date.now()) {
+    if (this.of(instanceId, now)?.reason !== "limit") return undefined;
+    const entry = this.resting.get(instanceId)!;
+    if (entry.trying || now - (entry.lastTry ?? entry.since) < interval) return undefined;
+    const previous = entry.lastTry;
+    const token = {};
+    entry.trying = token;
+    entry.lastTry = now;
+    let accepted = false;
+    let finished = false;
+    const owns = () => this.resting.get(instanceId) === entry && entry.trying === token;
+    const finish = () => { if (accepted && finished && owns()) delete entry.trying; };
+    return {
+      accepted() { accepted = true; finish(); },
+      finished() { finished = true; finish(); },
+      cancel() {
+        if (accepted || !owns()) return;
+        entry.lastTry = previous;
+        delete entry.trying;
+      },
+    };
   }
 
   clear(instanceId: string) {
@@ -258,6 +296,15 @@ export class Cooldowns {
     }
     return out;
   }
+}
+
+/** Only an accepted ordinary dispatch consumes the pending failure it
+ * heard. Identity protects a newer entry, even with the same words. */
+export async function withFailureNote<T>(notes: Map<string, { text: string }>, lane: string, send: (line?: string) => Promise<T>): Promise<T> {
+  const note = notes.get(lane);
+  const result = await send(note?.text);
+  if (note && notes.get(lane) === note) notes.delete(lane);
+  return result;
 }
 
 /** "until 3:00 PM", "for about 20 minutes": for the note in the chat. */

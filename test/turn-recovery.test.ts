@@ -50,6 +50,7 @@ let input = "";
   }
   if (outcome === "limit") {
     const said = "You've hit your session limit · resets 3:20pm (Asia/Yerevan)";
+    out({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + 40 * 60, rateLimitType: "five_hour" } });
     out({ type: "assistant", error: "rate_limit", session_id: session, message: { id: "m-" + calls.length, model: "<synthetic>", role: "assistant", content: [{ type: "text", text: said }], usage: { input_tokens: 0, output_tokens: 0 } } });
     return result(said, true);
   }
