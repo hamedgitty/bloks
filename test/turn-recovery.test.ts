@@ -973,6 +973,54 @@ tick();
     assert.equal((await me(botId)).messages.filter((m: any) => m.kind === "notice" && /is back on this conversation/.test(m.text ?? "")).length, 1, "stopped preparation changed the base's return notice");
   });
 
+  test("stopped backup preparation retains a pending failure line until the own engine accepts it", async () => {
+    const botId = await agent("Ash", { instanceId: "claude-b", backup: true });
+    const tag = "t-failure-stop";
+    plan(tag, ["ok", "fail", "ok"]);
+    await say(botId, `[${tag}] seed own session`);
+    assert.ok(await settled(botId, (m) => answers(m).length === 1));
+    await say(botId, `[${tag}] a real failed attempt`);
+    const waiting = await waitFor(async () => {
+      const found = await me(botId);
+      return found.busy && found.messages.some((m: any) => /Trying again/.test(m.text ?? "")) ? found : null;
+    });
+    assert.ok(waiting, "the original failure did not reach its retry wait");
+    const lane = waiting.tasks?.[0]?.id ?? waiting.threadId;
+    assert.equal((await h.fetch(`/api/bots/${botId}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: lane }) })).status, 200);
+    assert.ok(await settled(botId, (m) => m.some((x: any) => x.kind === "notice" && /Stopped/.test(x.text ?? ""))));
+    const file = join(home, ".bloks", "config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    const own = config.instances["claude-b"];
+    const reload = () => h.fetch("/api/providers/kimi/connect", { method: "POST", body: JSON.stringify({ key: "sk-test-3333333333", url: spare.url }) });
+    try {
+      delete config.instances["claude-b"];
+      writeFileSync(file, JSON.stringify(config));
+      assert.equal((await reload()).status, 200);
+      await stopPreparation(botId, tag);
+      config.instances["claude-b"] = own;
+      writeFileSync(file, JSON.stringify(config));
+      assert.equal((await reload()).status, 200);
+      await say(botId, `[${tag}] first own return`);
+      assert.ok(await settled(botId, (m) => answers(m).length === 2));
+      const back = calls(tag).at(-1)!;
+      const backupCalls = spare.inputs.filter((input) => input.includes(`[${tag}]`)).length;
+      const returns = (await me(botId)).messages.filter((m: any) => m.kind === "notice" && /is back on this conversation/.test(m.text ?? "")).length;
+      console.log("REVIEW_FAILURE_NOTE:" + JSON.stringify({ backupCalls, resumed: back.resumed, sameSession: back.session === calls(tag)[0].session, returns, firstLine: back.text.split("\n")[0], replay: /What was said since/.test(back.text), reason: /^\(A note from Bloks:/.test(back.text) }));
+      assert.equal(backupCalls, 0);
+      assert.equal(back.resumed, true);
+      assert.equal(back.session, calls(tag)[0].session);
+      assert.equal(returns, 1);
+      assert.match(back.text, /What was said since/);
+      assert.match(back.text, /^\(A note from Bloks: .+Connection reset.+it was stopped/s, "stopped backup preparation dropped the existing failure line on return");
+      await say(botId, `[${tag}] ordinary own turn`);
+      assert.ok(await settled(botId, (m) => answers(m).length === 3));
+      assert.doesNotMatch(calls(tag).at(-1)!.text, /A note from Bloks/, "an accepted own turn did not consume the pending failure line");
+    } finally {
+      config.instances["claude-b"] = own;
+      writeFileSync(file, JSON.stringify(config));
+      await reload();
+    }
+  });
   test("a newer backup failure wins over the original handover reason", async () => {
     const botId = await agent("Ash", { backup: true });
     plan("t-latest", ["ok", "fail", "fail", "ok", "ok"]);

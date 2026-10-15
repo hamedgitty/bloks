@@ -825,7 +825,7 @@ const recoveries = new Map<string, Recovery>();
  * (failureLine). In the turn's words, never the system prompt, so the
  * agent can tell the person, check what the failed attempt already did,
  * and report it if that is how it works. */
-const failureNotes = new Map<string, string>();
+const failureNotes = new Map<string, { text: string }>();
 /** The wait before a failed turn is asked again, shorter in tests. */
 const RETRY_WAIT = Number(process.env.BLOKS_RETRY_WAIT_MS) || RETRY_WAIT_MS;
 
@@ -1609,7 +1609,7 @@ function recoverTurn(
   const goesOn = Boolean(roomId === laneId && asked && fresh && !fresh.archivedAt && !wheel.heldBy(bot.id));
   const at = Date.now();
   const tried = [...(recovery?.tried ?? []), { selection: used, at, said }];
-  const told = (did: string) => failureNotes.set(laneId, failureLine(used, at, said, did));
+  const told = (did: string) => failureNotes.set(laneId, { text: failureLine(used, at, said, did) });
   const notice = (text: string) => {
     const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
     broadcast({ kind: "message", threadId: laneId, message: shown });
@@ -1801,7 +1801,7 @@ function cancelRecovery(bot: BotRecord, laneId: string, why: string): boolean {
   clearTimeout(recovery.timer);
   recoveries.delete(laneId);
   const last = recovery.tried.at(-1);
-  if (last) failureNotes.set(laneId, failureLine(last.selection, last.at, last.said, "Bloks was going to ask again, but it was stopped. This is the next message."));
+  if (last) failureNotes.set(laneId, { text: failureLine(last.selection, last.at, last.said, "Bloks was going to ask again, but it was stopped. This is the next message.") });
   settleOwners(bot, laneId, { ok: false, why: last?.said ?? null });
   store.setTaskBusy(laneId, false);
   const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text: why });
@@ -4673,9 +4673,6 @@ async function startClaimedTurn(
         stalledSince.delete(task.id);
         turnText = `${stallPreface(stalledNote)}\n\n${turnText}`;
       }
-      // A failure in this conversation keeps its original longer line.
-      const failedNote = command ? undefined : failureNotes.get(task.id);
-      if (failedNote) failureNotes.delete(task.id);
 
       // A credential of this agent's own, for this turn only. Given only
       // to engines that run a process, because a driver that talks to an
@@ -4918,6 +4915,9 @@ async function startClaimedTurn(
       // Read the choices and rest at dispatch: either can change while
       // a turn is getting ready. The chat notice is not the dedupe, and
       // a changed rest gets one correction with absolute past facts.
+      // A failure in this conversation keeps its original longer line.
+      const pendingFailure = command ? undefined : failureNotes.get(task.id);
+      const failedNote = pendingFailure?.text;
       const chosen = store.bot(bot.id) ?? bot;
       const pending = command ? undefined : awayOf(chosen, awayId);
       const restNow = cooldowns.of(chosen.modelSelection.instanceId) ?? (sameSelection(chosen.modelSelection, own) ? ownRest : undefined);
@@ -4939,6 +4939,8 @@ async function startClaimedTurn(
         if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
       }
       await engine.adapter.sendTurn(sending);
+      // Keep an undelivered failure line, and never consume a newer failure.
+      if (pendingFailure && failureNotes.get(task.id) === pendingFailure) failureNotes.delete(task.id);
       // A stopped preparation or a command did not hear this line. Keep
       // the handover until an engine has actually accepted the turn.
       if (leaving) away.set(awayId, leaving);
