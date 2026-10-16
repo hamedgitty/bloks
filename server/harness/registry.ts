@@ -18,6 +18,7 @@ import type {
   ProviderInstance,
   ProviderSnapshot,
 } from "../contracts.ts";
+import type { EnginePauses } from "../engine-pauses.ts";
 
 /** A configured instance that could not be brought up, kept so it can be
  * displayed and so its config survives the round trip. */
@@ -48,9 +49,11 @@ export class ProviderRegistry {
    * actually changes. */
   private built = new Map<InstanceId, string>();
   private drivers: Map<string, AnyProviderDriver>;
+  private enginePauses: EnginePauses | undefined;
 
-  constructor(drivers: readonly AnyProviderDriver[]) {
+  constructor(drivers: readonly AnyProviderDriver[], enginePauses?: EnginePauses) {
     this.drivers = new Map(drivers.map((driver) => [driver.driverKind, driver]));
+    this.enginePauses = enginePauses;
   }
 
   async load(configs: InstanceConfigMap) {
@@ -79,6 +82,7 @@ export class ProviderRegistry {
             environment: entry.environment ?? {},
             enabled: entry.enabled ?? true,
             config,
+            enginePauses: this.enginePauses,
           }),
         });
       } catch (error) {

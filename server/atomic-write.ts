@@ -15,13 +15,15 @@ import { randomUUID } from "node:crypto";
 
 /** Replaces `file` with `data` in one step. With a mode, the new file has
  * exactly that mode from the moment it exists, so a key in it is never
- * readable by anyone else, not even between a write and a chmod. Throws
+ * readable by anyone else, not even between a write and a chmod. With
+ * fallbackInPlace:false a persistently busy rename throws instead of
+ * reverting to a non-atomic save. Throws
  * when the new one cannot be written, and the old one is left as it was. */
 export function writeFileAtomic(
   file: string,
   data: string | Uint8Array,
   mode?: number,
-  { flush = true }: { flush?: boolean } = {},
+  { flush = true, fallbackInPlace = true }: { flush?: boolean; fallbackInPlace?: boolean } = {},
 ): void {
   // Beside the file, so the rename stays on one filesystem and is atomic.
   const temp = `${file}.${process.pid}.tmp`;
@@ -66,7 +68,7 @@ export function writeFileAtomic(
         continue;
       }
       rmSync(temp, { force: true });
-      if (!busy) throw error;
+      if (!busy || !fallbackInPlace) throw error;
       writeFileSync(file, data, mode === undefined ? undefined : { mode });
       return;
     }

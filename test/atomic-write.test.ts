@@ -57,6 +57,18 @@ test("a save that fails part way leaves the old file exactly as it was", (t) => 
   assert.deepEqual(readdirSync(dir), ["routines.json"], "the half-written temp is cleaned up");
 });
 
+test("strict atomic policy saves never overwrite in place when rename stays busy", t => {
+  const dir = scratch(t), file = join(dir, "pauses.json");
+  writeFileSync(file, "old policy");
+  t.mock.method(fs, "renameSync", () => { throw Object.assign(new Error("fixture busy"), { code: "EBUSY" }); });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => writeFileAtomic(file, "new policy", 0o600, { fallbackInPlace: false }), /fixture busy/);
+    assert.equal(readFileSync(file, "utf8"), "old policy");
+    assert.deepEqual(readdirSync(dir), ["pauses.json"]);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("a file that will not parse is moved aside; a missing one is left alone", (t) => {
   const dir = scratch(t);
   const file = join(dir, "jobs.json");

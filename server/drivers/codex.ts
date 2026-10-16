@@ -39,7 +39,8 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses } from "./engine-processes.ts";
+import { EngineProcesses, signalGroup } from "./engine-processes.ts";
+import { EnginePauseError, type EngineInvocation, type InvocationOrigin } from "../engine-pauses.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -164,22 +165,44 @@ function rememberTotal(thread: string, total: TokenCount) {
 
 /** Asks the installed CLI what it can run. No thread is started and
  * nothing is spent; the process is killed as soon as the list lands. */
-async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promise<T>): Promise<T | null> {
+interface ProbeAdmission { prepare(): Promise<EngineInvocation | undefined>; disposed(): boolean; track(child: ReturnType<typeof spawn>): void }
+async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promise<T>, gate?: ProbeAdmission): Promise<T | null> {
+  const admission = await gate?.prepare();
+  if (gate?.disposed()) { await admission?.closed(); throw new EnginePauseError("closed"); }
   const env: Record<string, string | undefined> = { ...process.env, NPM_CONFIG_LOGLEVEL: "error" };
   delete env.OPENAI_API_KEY;
   let child;
   try {
-    child = spawn(cli, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-  } catch {
+    const start = () => spawn(cli, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    child = admission ? admission.invoke(start) : start();
+    gate?.track(child);
+  } catch (error) {
+    await admission?.closed();
+    if (error instanceof EnginePauseError) throw error;
     return null;
   }
+  let hard: ReturnType<typeof setTimeout> | undefined;
+  admission?.onCancel(() => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
+    hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 3_000);
+    hard.unref?.();
+  });
+  child.once("close", () => {
+    clearTimeout(hard);
+    void (admission?.signal.aborted ? admission?.residual() : admission?.closed())?.catch(() => {});
+  });
   child.stderr?.resume();
-  const rpc = attachRpc({
+  const link = attachRpc({
     stdin: child.stdin,
     stdout: child.stdout,
     onRequest: (msg) => rpc.replyError(msg.id, -32601, "not supported by this client"),
     onNotify: () => {},
   });
+  const rpc: RpcLink = { ...link,
+    request: async (method, params) => admission ? admission.invoke(() => link.request(method, params)) : link.request(method, params),
+    notify: (method, params) => admission ? admission.invoke(() => link.notify(method, params)) : link.notify(method, params),
+  };
   const timer = setTimeout(() => rpc.failPending(new Error("timed out")), PROBE_TIMEOUT_MS);
   timer.unref?.();
   child.on("error", (e) => rpc.failPending(e instanceof Error ? e : new Error(String(e))));
@@ -188,7 +211,8 @@ async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promis
     await rpc.request("initialize", { clientInfo: { name: "bloks", version: "1" } });
     rpc.notify("initialized", {});
     return await read(rpc);
-  } catch {
+  } catch (error) {
+    if (error instanceof EnginePauseError) throw error;
     return null;
   } finally {
     clearTimeout(timer);
@@ -201,7 +225,7 @@ async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promis
   }
 }
 
-async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
+async function probeCatalog(cli: string, gate?: ProbeAdmission): Promise<ModelCatalog | null> {
   return probe(cli, homedir(), async (rpc) => {
     const pages: any[] = [];
     let cursor: string | null = null;
@@ -212,7 +236,7 @@ async function probeCatalog(cli: string): Promise<ModelCatalog | null> {
       if (!cursor) break;
     }
     return catalogFromModelList(pages);
-  });
+  }, gate);
 }
 
 export interface CodexConfig {
@@ -346,11 +370,42 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
   async create(input: DriverCreateInput<CodexConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
+    let disposed = false;
+    const service = { kind: "service" } as const;
+    // Model names/catalogs do not establish the effective native provider.
+    // Until its route is authoritative and bound to this actual process,
+    // an applicable family/model pause conservatively leaves it pending.
+    const routes = (model: string | null) => [{ instanceId, driverKind: DRIVER_KIND, family: null, model }];
+    const prepare = async (origin: InvocationOrigin | undefined, model: string | null, purpose: string) => {
+      if (disposed) throw new EnginePauseError("closed");
+      return input.enginePauses?.prepare(origin ?? service, purpose === "codex-turn" ? [...routes(model), ...routes(null)] : routes(model), purpose);
+    };
+    const engines = new EngineProcesses();
+    const probeGate: ProbeAdmission = { prepare: () => prepare(service, null, "codex-probe"), disposed: () => disposed, track: child => engines.add(child) };
+    const execProbe = async (args: string[]) => {
+      const admission = await prepare(service, null, "codex-auth");
+      try {
+        if (disposed) throw new EnginePauseError("closed");
+        return await new Promise<{ error: Error | null; stdout: string; stderr: string }>((resolve, reject) => {
+          let hard: ReturnType<typeof setTimeout> | undefined;
+          const start = () => execFile(config.cli, args, { timeout: 8_000, windowsHide: true, encoding: "utf8" }, (error, stdout, stderr) => {
+            clearTimeout(hard);
+            void (async () => { await admission?.closed(); if (admission?.signal.aborted) throw new EnginePauseError("closed"); resolve({ error, stdout, stderr }); })().catch(reject);
+          });
+          const child = admission ? admission.invoke(start) : start();
+          engines.add(child);
+          admission?.onCancel(() => { if (child.exitCode !== null || child.signalCode !== null) return; child.kill("SIGTERM"); hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 3_000); hard.unref?.(); });
+        });
+      } catch (error) { await admission?.closed(); throw error; }
+    };
 
     // replaced in place once the CLI answers; a failed probe (not
     // installed, too old to know model/list) keeps the list above
     const models: ModelCatalog = { default: MODELS.default, options: [...MODELS.options] };
-    const catalogReady = probeCatalog(config.cli).then((catalog) => {
+    const catalogReady = (input.enginePauses && !input.enginePauses.allowed(service, routes(null)) ? Promise.resolve(null) : probeCatalog(config.cli, probeGate).catch(error => {
+      if (error instanceof EnginePauseError) return null;
+      throw error;
+    })).then((catalog) => {
       if (!catalog) return;
       models.options = catalog.options;
       models.default = catalog.default;
@@ -365,8 +420,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       asks: Map<string, Answer>;
     }
     const running = new Map<string, RunningTurn>();
-    /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
-    const engines = new EngineProcesses();
+    const preparing = new Map<string, { cancelled: boolean }>();
     // Busy transitions and several open windows share a short menu
     // read. A different folder or engine never borrows another's rows.
     const skillCatalogs = new Map<string, { at: number; result: Promise<CodexSkill[] | null> }>();
@@ -377,7 +431,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const cached = skillCatalogs.get(cwd);
       if (cached) return cached.result;
       if (skillCatalogs.size >= 32) skillCatalogs.delete(skillCatalogs.keys().next().value!);
-      const result = probe(config.cli, homedir(), async (rpc) => readCodexSkills(await rpc.request("skills/list", { cwds: [cwd], forceReload: true }), cwd));
+      const result = probe(config.cli, homedir(), async (rpc) => readCodexSkills(await rpc.request("skills/list", { cwds: [cwd], forceReload: true }), cwd), probeGate);
       skillCatalogs.set(cwd, { at: now, result });
       return result;
     };
@@ -399,7 +453,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (running.has(threadId)) throw new Error("a turn is already running on this thread");
+      if (running.has(threadId) || preparing.has(threadId)) throw new Error("a turn is already running on this thread");
+      const claim = { cancelled: false }; preparing.set(threadId, claim);
+      try {
+      // Preserve an unpicked resumed thread's own model. Its identity stays
+      // unknown for admission; never substitute a catalog default silently.
+      turn = { ...turn };
       const turnId = newId();
 
       const env: Record<string, string | undefined> = {
@@ -431,19 +490,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         );
       }
 
-      const child = spawn(config.cli, appServerArgs, {
-        cwd: turn.cwd ?? homedir(),
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: OWN_GROUP,
-        windowsHide: true,
-      });
+      const admission = await prepare(turn.invocationOrigin, turn.model ?? null, "codex-turn");
+      let child: ReturnType<typeof spawn> & { stdin: NonNullable<ReturnType<typeof spawn>["stdin"]>; stdout: NonNullable<ReturnType<typeof spawn>["stdout"]>; stderr: NonNullable<ReturnType<typeof spawn>["stderr"]> };
+      try {
+        if (claim.cancelled || disposed) throw new EnginePauseError("closed");
+        const start = () => { turn.onInvoked?.(); return spawn(config.cli, appServerArgs, {
+          cwd: turn.cwd ?? homedir(), env, stdio: ["pipe", "pipe", "pipe"], detached: OWN_GROUP, windowsHide: true,
+        }); };
+        child = admission ? admission.invoke(start) : start();
+      } catch (error) { await admission?.closed(); throw error; }
       engines.add(child);
 
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
       let finished = false;
+      let childClosed = false;
       let stopping = false;
+      let paused = false;
       // the thread's token total before this turn, set by its first update
       let tokenBase: TokenCount | null = null;
       // what this turn has been charged so far, and the part of it spent
@@ -476,15 +539,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const skillNamesSent = new Set<string>();
 
       const abort = () => {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            /* already gone */
-          }
-        }
+        if (!childClosed && child.exitCode == null && child.signalCode == null) signalGroup(child, "SIGTERM");
       };
 
       const rpc = attachRpc({
@@ -500,6 +555,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         onNotify: (msg) => onAgentNotification(msg),
       });
 
+      const request = async (method: string, params?: unknown) => admission ? admission.invoke(() => rpc.request(method, params)) : rpc.request(method, params);
+
       const finish = (ok: boolean, stopReason: string | null) => {
         if (finished) return;
         finished = true;
@@ -510,6 +567,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
         abort();
       };
+
+      admission?.onCancel(() => {
+        paused = true; stopping = true; abort(); finish(false, "engine_paused");
+        const hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) signalGroup(child, "SIGKILL"); }, 3_000);
+        hard.unref?.();
+        child.once("close", () => clearTimeout(hard));
+      });
 
       // ── the agent asking us something ──
       function onAgentRequest(msg: any) {
@@ -846,8 +910,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
 
       child.on("close", (code) => {
+        childClosed = true;
+        void (paused || stopping || admission?.signal.aborted ? admission?.residual() : admission?.closed())?.catch(() => {});
         if (finished) return;
-        if (stopping) return finish(false, "interrupted");
+        if (stopping) return finish(false, paused ? "engine_paused" : "interrupted");
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -860,7 +926,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (!names?.length) return [];
         try {
           const cwd = turn.cwd ?? homedir();
-          const listed = readCodexSkills(await within(rpc.request("skills/list", { cwds: [cwd], forceReload: true }), "listing skills", "Codex", PROBE_TIMEOUT_MS), cwd) ?? [];
+          const listed = readCodexSkills(await within(request("skills/list", { cwds: [cwd], forceReload: true }), "listing skills", "Codex", PROBE_TIMEOUT_MS), cwd) ?? [];
           return [...new Set(names)].filter((name) => !skillNamesSent.has(name)).flatMap((name) => listed.find((skill) => skill.name === name) ?? []).slice(0, Math.max(0, MAX_CODEX_SKILL_ITEMS - skillNamesSent.size));
         } catch {
           // The unchanged dollar words remain Codex's own fallback.
@@ -878,7 +944,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (!canSteer()) return false;
         for (const skill of skills) skillNamesSent.add(skill.name);
         try {
-          await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
+          await request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
           return true;
         } catch {
           for (const skill of skills) skillNamesSent.delete(skill.name);
@@ -902,8 +968,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // locked against a process that is never going to answer.
       void (async () => {
         try {
-          await within(rpc.request("initialize", { clientInfo: { name: "bloks", version: "1" } }), "starting up", "Codex");
-          rpc.notify("initialized", {});
+          await within(request("initialize", { clientInfo: { name: "bloks", version: "1" } }), "starting up", "Codex");
+          if (admission) admission.invoke(() => rpc.notify("initialized", {})); else rpc.notify("initialized", {});
 
           const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
           if (turn.compactOnly && !cursor) throw new Error("There is no Codex conversation to compact yet.");
@@ -932,7 +998,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // and the agent lost its session (GitHub 230).
             const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard, excludeTurns: true };
             if (turn.model) resumeParams.model = turn.model;
-            const resume = () => within(rpc.request("thread/resume", resumeParams), "reopening the conversation", "Codex");
+            const resume = () => within(request("thread/resume", resumeParams), "reopening the conversation", "Codex");
             try {
               let resumed: any;
               try {
@@ -949,6 +1015,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               reportedModel = resumed?.model ?? null;
               carriedOn = true;
             } catch (error) {
+              if (error instanceof EnginePauseError) throw error;
               // forgotten or unsupported; a fresh thread below. Anything
               // still to come about the old one is not about this turn.
               abandoned.add(cursor);
@@ -979,7 +1046,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 clearTimeout(timer);
                 resolve(worked);
               };
-              rpc.request("thread/compact/start", { threadId: thread }).catch((error) => {
+              request("thread/compact/start", { threadId: thread }).catch((error) => {
                 compactError = error instanceof Error ? error.message : "Codex could not compact this conversation.";
                 compacting?.(false);
               });
@@ -1030,7 +1097,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               ...guard,
               ephemeral: false,
             };
-            const started: any = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
+            const started: any = await within(request("thread/start", startParams), "opening a conversation", "Codex");
             codexThread = started?.thread?.id ?? null;
             reportedModel = started?.model ?? null;
           }
@@ -1061,16 +1128,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (turn.effort) turnParams.effort = turn.effort;
           let begun: any;
           try {
-            begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+            begun = await within(request("turn/start", turnParams), "starting the turn", "Codex");
           } catch (error) {
             // An older app-server refusing the field costs the preference,
             // not the message. Other failures must not submit the words twice.
             if (finished || stopping || !turn.effort || !/effort|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
             delete turnParams.effort;
-            begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+            begun = await within(request("turn/start", turnParams), "starting the turn", "Codex");
           }
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
+          if (error instanceof EnginePauseError) { paused = true; stopping = true; finish(false, "engine_paused"); return; }
           if (finished || stopping) return;
           emit({
             ...envelope(threadId, turnId),
@@ -1082,34 +1150,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       })();
 
       return { turnId };
+      } finally { preparing.delete(threadId); }
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) =>
-          resolve(error ? null : stdout.trim()),
-        );
-      });
+      const result = await execProbe(["--version"]);
+      const version = result.error ? null : result.stdout.trim();
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-      // Installed is not signed in, and the gap between them is the first
-      // message failing. `codex login status` answers with its exit code;
-      // a CLI too old to know the subcommand falls back to the file its
-      // login writes, and a key in the environment counts as signed in.
-      const authenticated = await new Promise<boolean>((resolve) => {
-        if (process.env.OPENAI_API_KEY) return resolve(true);
-        execFile(config.cli, ["login", "status"], { timeout: 8_000, windowsHide: true }, (error, stdout, stderr) => {
-          if (!error) return resolve(true);
-          const said = `${stdout}\n${stderr}`;
-          if (/not logged in|logged out/i.test(said)) return resolve(false);
-          resolve(existsSync(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json")));
-        });
-      });
+      let authenticated = Boolean(process.env.OPENAI_API_KEY);
+      if (!authenticated) {
+        const { error, stdout, stderr } = await execProbe(["login", "status"]);
+        authenticated = !error || (!/not logged in|logged out/i.test(`${stdout}\n${stderr}`) && existsSync(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json")));
+      }
       return { state: "available", version, authenticated };
     };
 
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      pauseRoutes: model => [...routes(model), ...routes(null)],
+      pauseAdmission: input.enginePauses ? { paths: ["readiness", "catalog", "skill-probe", "foreground-spawn", "foreground-rpc", "native-compaction", "active-child-cancellation"], limitations: ["Local close does not prove remote descendants stopped.", "Native provider/model provenance remains unknown; applicable family/model pauses leave it pending before probes or launch.", "Delegated external routes need their own admission contract."] } : undefined,
       displayName: input.displayName,
       enabled: input.enabled,
       models,
@@ -1125,7 +1185,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
         steerTurn: async (threadId, text, options) => (await running.get(threadId)?.steer(text, options)) ?? false,
 
-        interruptTurn: async (threadId) => running.get(threadId)?.abort(),
+        interruptTurn: async (threadId) => { const pending = preparing.get(threadId); if (pending) pending.cancelled = true; running.get(threadId)?.abort(); },
 
         respondToRequest: async (threadId, requestId, decision) => {
           const answer = running.get(threadId)?.asks.get(requestId);
@@ -1143,6 +1203,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         hasSession: (threadId) => running.has(threadId),
 
         stopAll: async () => {
+          for (const pending of preparing.values()) pending.cancelled = true;
           for (const turn of running.values()) turn.abort();
         },
 
@@ -1153,6 +1214,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       },
 
       dispose: async () => {
+        disposed = true;
+        for (const pending of preparing.values()) pending.cancelled = true;
         skillCatalogs.clear();
         for (const turn of running.values()) turn.abort();
         listeners.clear();

@@ -151,6 +151,8 @@ export interface WorkflowRun {
   values: Record<string, Record<string, string>>;
   steps: RunStep[];
   waiting?: Waiting;
+  /** Source-owned never-started work, retried by the existing workflow sweep. */
+  engineHold?: { at: number; stepId: string; reason: "engine-paused" };
   /** Why it stopped, when it stopped for a reason worth saying. */
   error?: string;
 }
@@ -658,6 +660,9 @@ export class WorkflowStore {
     for (const workflow of this.workflows) {
       for (const run of workflow.runs ?? []) {
         if (run.state !== "running") continue;
+        // A durable source-owned pause never dispatched an ask. The
+        // existing workflow sweep still owns it after restart.
+        if (run.engineHold?.reason === "engine-paused" && !run.steps.some(step => step.state === "running")) continue;
         run.state = "failed";
         run.endedAt = now;
         run.error = "Bloks stopped while this was running.";

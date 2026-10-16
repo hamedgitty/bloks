@@ -74,6 +74,7 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
+import { EnginePauseError, type EngineInvocation, type InvocationOrigin } from "../engine-pauses.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
 const sessionCosts = new SessionCosts();
@@ -256,21 +257,57 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
   async create(input: DriverCreateInput<ClaudeConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
+    let disposed = false;
+    const route = (model: string | null) => [{ instanceId, driverKind: DRIVER_KIND, family: "claude", model }];
+    const service = { kind: "service" } as const;
+    const prepare = (origin: InvocationOrigin | undefined, model: string | null, purpose: string, nested = false) => {
+      if (disposed) throw new EnginePauseError("closed");
+      return input.enginePauses?.prepare(origin ?? service, nested && model ? [...route(model), ...route(null)] : route(model), purpose);
+    };
+    const activeChild = (child: ChildProcessWithoutNullStreams | ReturnType<typeof execFile>) =>
+      child.exitCode === null && child.signalCode === null;
+    // Auth/readiness are actual invocations too. No initial selection grant
+    // can authorize a probe after an await or a policy activation.
+    const probe = async (args: string[]) => {
+      const lease = await prepare(service, null, "claude-probe");
+      try {
+        if (disposed) throw new EnginePauseError("closed");
+        return await new Promise<{ error: Error | null; stdout: string }>((resolve, reject) => {
+          let hard: ReturnType<typeof setTimeout> | undefined;
+          const start = () => execFile(config.cli, args, { timeout: 8_000, windowsHide: true, encoding: "utf8" }, (error, stdout) => {
+            clearTimeout(hard);
+            void (async () => {
+              await lease?.closed();
+              if (lease?.signal.aborted) throw new EnginePauseError("closed");
+              resolve({ error, stdout });
+            })().catch(reject);
+          });
+          const child = lease ? lease.invoke(start) : start();
+          lease?.onCancel(() => {
+            if (!activeChild(child)) return;
+            child.kill("SIGTERM");
+            hard = setTimeout(() => { if (activeChild(child)) child.kill("SIGKILL"); }, 3_000);
+            hard.unref?.();
+          });
+        });
+      } catch (error) { await lease?.closed(); throw error; }
+    };
 
     // Snapshot control was added in Claude Code 2.1.257. Probe before any
     // turns can start, and refresh with the normal health check after a CLI
     // update. An older or unrecognised CLI keeps its existing arguments.
     let snapshotOffSupported = false;
-    const readVersion = () => new Promise<string | null>((resolve) => {
-      execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) => {
+    const readVersion = async () => {
+        const { error, stdout } = await probe(["--version"]);
         const version = error ? null : stdout.trim();
         const parts = version?.match(/^(\d+)\.(\d+)\.(\d+)(?:\s|$)/);
         const [major, minor, patch] = parts?.slice(1).map(Number) ?? [];
         snapshotOffSupported = major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 257)));
-        resolve(version);
-      });
-    });
-    await readVersion();
+        return version;
+    };
+    // A paused factory retains its configured instance/catalog. It must not
+    // become a permanent shadow merely because startup cannot probe it yet.
+    if (!input.enginePauses || input.enginePauses.allowed(service, route(null))) await readVersion();
 
     // What the plan signed in here has left, as the CLI last said, for
     // the composer's card (server/plan-usage.ts). The limits belong to
@@ -287,6 +324,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     /** At most one turn per thread. A second send while one is live is a
      * caller bug, not a queue to manage. */
     const running = new Map<string, RunningTurn>();
+    const preparing = new Map<string, { cancelled: boolean }>();
     /** Brokers of turns that have ended while their process runs on. A
      * background task or subagent can still ask for permission after the
      * result, and its answer has to reach the broker it asked, not the
@@ -309,7 +347,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (running.has(threadId)) throw new Error("a turn is already running on this thread");
+      if (running.has(threadId) || preparing.has(threadId)) throw new Error("a turn is already running on this thread");
+      const claim = { cancelled: false };
+      preparing.set(threadId, claim);
+      try {
 
       const turnId = newId();
       const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
@@ -323,6 +364,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let lastSign = Date.now();
       /** Set once Stop (or a stalled call) has asked this process to end. */
       let stopping = false;
+      let paused = false;
       /** What a stalled call was, as the person read it. */
       let stalled: string | null = null;
       /** The turn ended without the process letting go; ignore it from here. */
@@ -554,14 +596,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       delete env.CLAUDECODE;
       delete env.CLAUDE_CODE_ENTRYPOINT;
 
-      const child = spawn(config.cli, argv, {
+      let admission: EngineInvocation | undefined;
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        admission = await prepare(turn.invocationOrigin, turn.model ?? null, "claude-turn", true);
+        if (claim.cancelled || disposed) throw new EnginePauseError("closed");
+        const start = () => { turn.onInvoked?.(); return spawn(config.cli, argv, {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
         // its own process group, so killing -pid takes the MCP servers too
         detached: OWN_GROUP,
         windowsHide: true,
-      });
+        }); };
+        child = admission ? admission.invoke(start) : start();
+      } catch (error) {
+        broker.close();
+        if (privateDir) {
+          try { rmSync(privateDir, { recursive: true, force: true, maxRetries: 3 }); }
+          catch { /* Preserve the admission outcome; tmpdir cleanup owns leftovers. */ }
+        }
+        await admission?.closed();
+        throw error;
+      }
       engines.add(child);
 
       let finished = false;
@@ -636,7 +693,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
         if (stopping) {
-          finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null);
+          finish(false, paused ? "engine_paused" : stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null);
           return;
         }
         // A limit can also arrive as a successful result whose text is
@@ -908,7 +965,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       /** A stopped turn ends quietly: the person asked for it, or the
        * stall has already said why. */
-      const endStopped = () => finish(false, stalled ? "tool_stalled" : "interrupted");
+      const endStopped = () => finish(false, paused ? "engine_paused" : stalled ? "tool_stalled" : "interrupted");
 
       const ended = (code: number | null) => {
         if (finished) return;
@@ -930,6 +987,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       child.on("close", (code) => {
         exited = true;
+        // A cancelled request's local close is not remote completion. Keep
+        // it visible even after expiry, parent end, deletion or reload.
+        void (admission?.signal.aborted || abandoned || stopping ? admission?.residual() : admission?.closed())?.catch(() => {});
         const kept = afterTurn.get(threadId);
         if (broker && kept?.delete(broker)) {
           broker.close();
@@ -984,6 +1044,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }, STOP_GRACE_MS * 2);
         giveUp.unref?.();
       };
+      admission?.onCancel(() => {
+        paused = true;
+        stopping = true;
+        // Parent completion does not discard a still-running physical call.
+        // Never signal a later child by a reused lane/PID after observed exit.
+        if (activeChild(child)) {
+          signal("SIGTERM");
+          const hard = setTimeout(() => { if (activeChild(child)) signal("SIGKILL"); }, STOP_GRACE_MS);
+          hard.unref?.();
+        }
+        const bounded = setTimeout(() => {
+          if (!finished) { abandoned = true; endStopped(); }
+          void admission?.residual().catch(() => {});
+        }, STOP_GRACE_MS * 2);
+        bounded.unref?.();
+        child.once("close", () => clearTimeout(bounded));
+      });
 
       // A call gone silent ends the turn, and says which call it was.
       const limitMs = typeof turn.stallMs === "number" ? turn.stallMs : DEFAULT_STALL_MINUTES * 60_000;
@@ -1008,18 +1085,33 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         inputOpen = false;
         child.stdin.end();
       }
+      const write = (message: unknown) => {
+        const send = () => child.stdin.write(JSON.stringify(message) + "\n");
+        try {
+          // A process lease does not grant its next completion. Recheck
+          // the current fence at every actual input-frame boundary.
+          if (admission) admission.invoke(send);
+          else send();
+          appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: message });
+          return true;
+        } catch (error) {
+          if (!(error instanceof EnginePauseError)) throw error;
+          paused = true;
+          abort();
+          return false;
+        }
+      };
       const say = (text: string) => {
         // Over stdin, never argv: a pasted document would blow past
         // ARG_MAX, and argv is readable by every process on the machine.
         const message = { type: "user", message: { role: "user", content: text } };
-        child.stdin.write(JSON.stringify(message) + "\n");
-        appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: message });
+        return write(message);
       };
       const steer = (text: string) => {
         if (finished || stopping || exited || !inputOpen) return false;
-        steered = true;
-        say(text);
-        return true;
+        const sent = say(text);
+        if (sent) steered = true;
+        return sent;
       };
 
       running.set(threadId, { turnId, abort, steer, broker });
@@ -1028,11 +1120,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // Bare metadata request: does not change permissions, hooks or tools.
       // Do not await it; an older CLI can ignore it and still run this turn.
       const initialize = { type: "control_request", request_id: initializeId, request: { subtype: "initialize" } };
-      child.stdin.write(JSON.stringify(initialize) + "\n");
-      appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: initialize });
+      if (!write(initialize)) return { turnId };
       say(turn.text);
 
       return { turnId };
+      } finally { preparing.delete(threadId); }
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
@@ -1051,27 +1143,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // away the one answer that is authoritative and lands on the file check
       // the comment above already says cannot see a Keychain login. The file
       // is only a fallback for a CLI old enough not to answer at all.
-      const authenticated = await new Promise<boolean>((resolve) => {
-        execFile(config.cli, ["auth", "status"], { timeout: 8_000, windowsHide: true }, (error, stdout) => {
+      const authenticated = await (async () => {
+          const { error, stdout } = await probe(["auth", "status"]);
           try {
             const { loggedIn } = JSON.parse(stdout) as { loggedIn?: unknown };
-            if (typeof loggedIn === "boolean") return resolve(loggedIn);
+            if (typeof loggedIn === "boolean") return loggedIn;
           } catch {
             /* not JSON: an older CLI, or one that died before printing */
           }
           if (error) {
-            return resolve(existsSync(join(homedir(), ".claude", ".credentials.json")));
+            return existsSync(join(homedir(), ".claude", ".credentials.json"));
           }
           // it answered without erroring, which older CLIs do not
-          resolve(true);
-        });
-      });
+          return true;
+      })();
       return { state: "available", version, authenticated };
     };
 
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      pauseRoutes: model => [...route(model), ...route(null)],
+      pauseAdmission: input.enginePauses ? { paths: ["readiness", "foreground", "one-shot", "active-child-cancellation"], limitations: ["Local child close does not prove remote descendants stopped.", "Unresolved internal model routes stay pending during matching pauses."] } : undefined,
       displayName: input.displayName,
       enabled: input.enabled,
       models: MODELS,
@@ -1085,7 +1178,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
         steerTurn: async (threadId, text) => running.get(threadId)?.steer(text) ?? false,
 
-        interruptTurn: async (threadId) => running.get(threadId)?.abort(),
+        interruptTurn: async (threadId) => {
+          const pending = preparing.get(threadId);
+          if (pending) pending.cancelled = true;
+          running.get(threadId)?.abort();
+        },
 
         respondToRequest: async (threadId, requestId, decision) => {
           // the running turn's broker first, then any finished turn's whose
@@ -1102,6 +1199,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         hasSession: (threadId) => running.has(threadId),
 
         stopAll: async () => {
+          for (const pending of preparing.values()) pending.cancelled = true;
           for (const turn of running.values()) turn.abort();
           for (const kept of afterTurn.values()) for (const b of kept) b.close();
           afterTurn.clear();
@@ -1118,8 +1216,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // machine. The same variables a turn drops are dropped here, or a key
       // in the environment would bill these summaries to the API instead
       // of the person's subscription.
-      generateText: (prompt: string) =>
-        new Promise((resolve, reject) => {
+      generateText: async (prompt: string, origin?: InvocationOrigin) => {
+        const admission = await prepare(origin, ONE_SHOT_MODEL, "claude-text");
+        if (disposed) { await admission?.closed(); throw new EnginePauseError("closed"); }
+        let started = false;
+        return new Promise<string>((resolve, reject) => {
           const env: Record<string, string | undefined> = { ...process.env };
           delete env.ANTHROPIC_API_KEY;
           delete env.CLAUDECODE;
@@ -1137,12 +1238,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           const cli = /[/\\]/.test(config.cli) ? resolvePath(config.cli) : config.cli;
           let child: ChildProcessWithoutNullStreams;
           try {
-            child = spawn(cli, [
+            const start = () => spawn(cli, [
               "-p", "--model", ONE_SHOT_MODEL, "--output-format", "text",
               "--safe-mode", "--setting-sources", "", "--tools", "",
               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
               "--no-session-persistence",
             ], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+            child = admission ? admission.invoke(start) : start();
+            started = Boolean(child.pid);
+            engines.add(child);
           } catch (error) {
             tidy();
             reject(error);
@@ -1151,6 +1255,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           let out = "";
           let err = "";
           let killTimer: ReturnType<typeof setTimeout> | undefined;
+          admission?.onCancel(() => {
+            if (!activeChild(child)) return;
+            child.kill("SIGTERM");
+            killTimer = setTimeout(() => { if (activeChild(child)) child.kill("SIGKILL"); }, 3_000);
+            killTimer.unref?.();
+          });
           const timer = setTimeout(() => {
             // asked to stop first, so it can take its own children with it,
             // and only then made to
@@ -1167,17 +1277,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             clearTimeout(timer);
             reject(error);
           });
-          child.on("close", (code) => {
+          child.on("close", async (code) => {
             clearTimeout(timer);
             clearTimeout(killTimer);
             tidy();
-            if (code === 0) resolve(out.trim());
-            else reject(new Error(err.trim() || `Claude Code exited with ${code}`));
+            try {
+              if (!started || (code === 0 && out.trim() && !admission?.signal.aborted)) await admission?.closed();
+              else await admission?.residual();
+              if (admission?.signal.aborted) reject(new EnginePauseError("closed"));
+              else if (code === 0) resolve(out.trim());
+              else reject(new Error(err.trim() || `Claude Code exited with ${code}`));
+            } catch (error) { reject(error); }
           });
           child.stdin.end(prompt);
-        }),
+        }).catch(async error => { if (!started) await admission?.closed(); throw error; });
+      },
 
       dispose: async () => {
+        disposed = true;
+        for (const pending of preparing.values()) pending.cancelled = true;
         for (const turn of running.values()) turn.abort();
         listeners.clear();
         await engines.end();

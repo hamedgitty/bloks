@@ -9,6 +9,7 @@
 // It reads its credential from the environment, which is where the turn
 // put it. Nothing is stored, nothing is cached, and there is no login: a
 // credential that outlives its turn would be a credential worth stealing.
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,36 @@ const TOKEN = process.env.BLOKS_TOKEN || "";
 
 /** Everything this understands, and what each one is for. */
 const COMMANDS = {
+  "engine-pauses": {
+    use: "engine-pauses",
+    about: "read temporary engine restrictions, coverage gaps and cancellation residuals, without provider probes",
+    run: () => request("GET", "/api/engine-pauses"),
+  },
+  "engine-pause": {
+    use: "engine-pause --until <ISO-with-offset> --timezone <IANA-zone> [--family <family>] [--driver <kind>] [--instance <id>] [--model <id>] [--agents all|id,id] [--id <operation-id>]",
+    about: "temporarily restrict matching invocations, leaving preferences intact; no permitted route leaves work pending. Status reports incomplete coverage and cancellation uncertainty. Keep the operation id to reconcile a lost receipt",
+    run: async args => {
+      const flags = parseFlags(args);
+      for (let i = 0; i < args.length; i++) {
+        if (!args[i].startsWith("--")) throw new Error("Use engine-pause flags shown in help.");
+        if (!args[i].includes("=") && args[i + 1] !== undefined && !args[i + 1].startsWith("--")) i++;
+      }
+      if (Object.keys(flags).some(key => !["until", "timezone", "family", "driver", "instance", "model", "agents", "id"].includes(key)) || Object.values(flags).some(value => value === "true" || !value)) throw new Error("Every engine-pause flag needs the value shown in help.");
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(flags.until ?? "") || !Number.isFinite(Date.parse(flags.until))) throw new Error("--until needs an ISO timestamp with an explicit offset or Z.");
+      if (!flags.timezone || flags.timezone === "true") throw new Error("--timezone needs the requested IANA time zone.");
+      const selector = Object.fromEntries([["family",flags.family],["driverKind",flags.driver],["instanceId",flags.instance],["model",flags.model]].filter(([,v])=>v!==undefined));
+      if (!Object.keys(selector).length) throw new Error("Select --family, --driver, --instance or --model.");
+      const id = flags.id ?? randomUUID();
+      const agents = flags.agents === undefined || flags.agents === "all" ? "all" : flags.agents.split(",");
+      try { return await request("POST", "/api/engine-pauses", {id,agents,selector,until:Date.parse(flags.until),timeZone:flags.timezone}); }
+      catch (error) { throw new Error(`Pause operation ${id}: ${error.message} Read engine-pauses before deciding whether to retry this same id and request.`); }
+    },
+  },
+  "engine-unpause": {
+    use: "engine-unpause <pause-id>",
+    about: "end one restriction you created; overlapping restrictions stay active and no saved preferences are restored",
+    run: args => { if(args.length!==1)throw new Error("engine-unpause needs one pause id.");return request("DELETE", `/api/engine-pauses/${encodeURIComponent(args[0])}`); },
+  },
   whoami: {
     use: "whoami",
     about: "who this credential says you are",
