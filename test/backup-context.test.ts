@@ -116,6 +116,36 @@ process.stdin.on("data",async function take(c){
   };
 }
 
+async function laneEvents(t: TestContext, f: Awaited<ReturnType<typeof fixture>>) {
+  const abort = new AbortController();
+  const frames: any[] = [];
+  const stream = await f.h.fetch("/api/events", { signal: abort.signal });
+  assert.ok(stream.ok && stream.body);
+  const reading = (async () => {
+    let buffer = "";
+    const reader = stream.body!.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += Buffer.from(value).toString();
+      for (let split = buffer.indexOf("\n\n"); split >= 0; split = buffer.indexOf("\n\n")) {
+        const event = buffer.slice(0, split); buffer = buffer.slice(split + 2);
+        if (event.startsWith("data: ")) {
+          const frame = JSON.parse(event.slice(6));
+          if (frame.kind === "bot" && frame.bot?.id === f.bot.id) {
+            const lane = frame.bot.tasks.find((task: any) => task.id === f.bot.threadId);
+            if (lane) frames.push(lane);
+          }
+        }
+      }
+    }
+  })();
+  // The harness after-hook can close the socket before this hook runs.
+  void reading.catch(() => {});
+  t.after(async () => { abort.abort(); await reading.catch(() => {}); });
+  return frames;
+}
+
 for (const answer of ["codex", "claude"] as const) {
   test(`${answer} backup keeps its own first reading while busy, idle and reloaded`, async t => {
     const f = await fixture(t, answer);
@@ -145,42 +175,65 @@ for (const answer of ["codex", "claude"] as const) {
 test("a backup turn hides a primary reading until its own reading arrives, without reload", async t => {
   const f = await fixture(t);
   await f.edit(bot => f.seed(bot, f.primary));
-  const abort = new AbortController();
-  const frames: any[] = [];
-  const stream = await f.h.fetch("/api/events", { signal: abort.signal });
-  assert.ok(stream.ok && stream.body);
-  const reading = (async () => {
-    let buffer = "";
-    const reader = stream.body!.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += Buffer.from(value).toString();
-      for (let split = buffer.indexOf("\n\n"); split >= 0; split = buffer.indexOf("\n\n")) {
-        const event = buffer.slice(0, split); buffer = buffer.slice(split + 2);
-        if (event.startsWith("data: ")) frames.push(JSON.parse(event.slice(6)));
-      }
-    }
-  })();
-  // The harness after-hook can close the socket before this hook runs.
-  void reading.catch(() => {});
-  t.after(async () => { abort.abort(); await reading.catch(() => {}); });
+  const frames = await laneEvents(t, f);
   f.spec({ used, window, hold: true, defer: true });
   await f.say();
   assert.equal((await f.lane()).context.measured, false);
   assert.equal((await f.activity()).context.used, 0);
-  await assert.doesNotReject(waitFor(() => frames.some(frame => frame.kind === "bot" && frame.bot?.id === f.bot.id &&
-    frame.bot.tasks.some((task: any) => task.id === f.bot.threadId && task.state === "working" && task.context.measured === false))),
+  await assert.doesNotReject(waitFor(() => frames.some(task => task.state === "working" && task.context.measured === false)),
   "the selected engine's unmeasured snapshot must reach clients before its first reading");
   const readingFrom = frames.length;
   f.readingGate();
   await waitFor(async () => (await f.lane()).context.used === used);
-  await assert.doesNotReject(waitFor(() => frames.slice(readingFrom).some(frame => frame.kind === "bot" && frame.bot?.id === f.bot.id &&
-    frame.bot.tasks.some((task: any) => task.id === f.bot.threadId && task.context.used === used && task.context.limit === window))),
+  await assert.doesNotReject(waitFor(() => frames.slice(readingFrom).some(task => task.context.used === used && task.context.limit === window)),
   "the first measured snapshot must reach clients while the answer is held");
   assert.equal((await f.activity()).context.limit, window);
   f.gate();
   await f.settled();
+});
+
+test("the event stream orders busy, selection and first usage frames through settle", async t => {
+  const f = await fixture(t);
+  await f.edit(bot => {
+    bot.modelSelection = codex;
+    bot.backupSelection = { ...codex, instanceId: "other" };
+    f.seed(bot, bot.backupSelection).reading.used = 12_000;
+  });
+  const frames = await laneEvents(t, f);
+  f.spec({ used, window, hold: true, defer: true });
+  const response = await f.h.fetch(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "A synthetic message", taskId: f.bot.threadId }) });
+  assert.ok(response.ok);
+  await waitFor(() => f.nativeCalls().some(call => call.method === "turn/start"));
+  // HTTP is independent of the client stream: omitting the selection frame
+  // must leave these assertions passing and fail only the event assertion.
+  assert.equal((await f.lane()).state, "working");
+  assert.equal((await f.lane()).context.measured, false);
+  assert.equal((await f.activity()).context.measured, false);
+  t.diagnostic("HTTP selection assertions passed before checking the event stream");
+  await assert.doesNotReject(waitFor(() => frames.some(task => task.state === "working" && !task.context.measured)),
+    "the event stream must publish the selected origin before usage");
+  const beforeUsage = frames.filter(task => task.state === "working");
+  assert.equal(beforeUsage.length, 2, "exactly one selection frame must follow the busy frame before usage");
+  assert.equal(beforeUsage[0].context.used, 12_000, "the busy frame still holds the preceding engine's reading");
+  assert.equal(beforeUsage[0].context.measured, true);
+  assert.equal(beforeUsage[1].context.measured, false);
+  const readingFrom = frames.length;
+  f.readingGate();
+  await assert.doesNotReject(waitFor(() => frames.slice(readingFrom).some(task => task.state === "working" && task.context.used === used)),
+    "the first usage frame must follow the selection frame without reload");
+  const firstUsage = frames.slice(readingFrom).find(task => task.context.used === used);
+  assert.equal(firstUsage.context.limit, window);
+  assert.equal(firstUsage.context.measured, true);
+  const settleFrom = frames.length;
+  f.gate();
+  await f.settled();
+  await assert.doesNotReject(waitFor(() => frames.slice(settleFrom).some(task => task.state === "idle")),
+    "the settled bot frame must reach clients");
+  const settled = frames.slice(settleFrom).find(task => task.state === "idle");
+  assert.equal(settled.context.measured, true, "after the running selection is removed, the answering engine's reading stays visible");
+  assert.equal(settled.context.used, used);
+  assert.equal(settled.context.limit, window);
+  assert.equal(f.stored().tasks[0].lastInstanceId, codex.instanceId);
 });
 
 test("a return to primary hides the old backup reading even when the model reports none", async t => {
@@ -361,6 +414,7 @@ test("a running native command keeps the preceding model's selection", async t =
     bot.backupSelection = { ...codex, instanceId: "other" };
     f.seed(bot, bot.backupSelection).resumeCursors.codex = "primary-session";
   });
+  const frames = await laneEvents(t, f);
   f.spec({ compact: "hold" });
   const response = await f.h.fetch(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "/compact", taskId: f.bot.threadId }) });
   assert.ok(response.ok);
@@ -369,6 +423,24 @@ test("a running native command keeps the preceding model's selection", async t =
   assert.equal(f.stored().tasks[0].lastInstanceId, "other");
   assert.equal((await f.lane()).context.used, used);
   assert.equal((await f.activity()).context.limit, window);
+  await assert.doesNotReject(waitFor(() => frames.filter(task => task.state === "working").length >= 2),
+    "a command must also publish its selection frame");
+  const busy = frames.filter(task => task.state === "working");
+  assert.equal(busy.length, 2, "a command has one busy frame and exactly one selection frame before native compaction");
+  for (const task of busy) {
+    assert.equal(task.context.measured, true);
+    assert.equal(task.context.used, used);
+    assert.equal(task.context.limit, window);
+  }
+  const settleFrom = frames.length;
   const stopped = await f.h.fetch(`/api/bots/${f.bot.id}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: f.bot.threadId }) });
   assert.ok(stopped.ok);
+  await f.settled();
+  assert.equal(f.stored().tasks[0].lastInstanceId, "other", "a settled command must not replace the last answering engine");
+  await assert.doesNotReject(waitFor(() => frames.slice(settleFrom).some(task => task.state === "idle")),
+    "a command's settled frame must reach clients");
+  const settled = frames.slice(settleFrom).find(task => task.state === "idle");
+  assert.equal(settled.context.measured, true);
+  assert.equal(settled.context.used, used);
+  assert.equal(settled.context.limit, window);
 });
