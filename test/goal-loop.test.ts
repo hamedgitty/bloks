@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { agentOn, messagesOf, waitFor } from "./helpers/turns.ts";
+import { chainRelay } from "./helpers/chain-relay.ts";
 
 /** The judge's question, as server/goals.ts words it. */
 const JUDGE = "Decide whether it is there yet";
@@ -182,6 +183,8 @@ test("blocked hands the goal back, the lane waits on the person, and their answe
   p.state.verdicts = [verdict("blocked", "needs the staging password"), verdict("done", "deployed")];
   const h = await startHarness();
   t.after(() => h.stop());
+  const pushes: Array<{ frames: any[]; wake: unknown }> = [];
+  await chainRelay(t, h, pushes);
   const bot = await agentOn(h, p.port, "Eve");
 
   await say(h, bot, "/goal deploy to staging");
@@ -190,6 +193,9 @@ test("blocked hands the goal back, the lane waits on the person, and their answe
   assert.equal(lane.state, "needs-you");
   assert.equal(lane.unread, true);
   assert.ok((await messagesOf(h, bot)).some((m) => m.goal === "blocked" && /Goal blocked: needs the staging password\./.test(m.text)));
+  const delivered = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.threadId === bot.threadId && frame.message?.goal === "blocked")));
+  assert.ok(delivered, "the blocked-goal record did not reach the paired phone");
+  assert.equal(delivered.wake, undefined, "a blocked goal without a question must not wake the phone");
 
   await say(h, bot, "it is in the team vault under staging");
   const done = await goalIs(h, bot, "done");

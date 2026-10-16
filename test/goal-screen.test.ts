@@ -87,13 +87,12 @@ test("a goal says where it ended up once, and its turns on the way stay quiet", 
   const done = noticeFor({ role: "bot", kind: "notice", goal: "done", text: "Goal done: shipped (3 turns)." }, away);
   assert.equal(done?.title, "Sage");
   assert.equal(done?.urgent, false);
-  // blocked has stopped the work, like a question, so it outranks the switch
+  // A blocked goal is a record, not a concrete question for the person.
   const blocked = noticeFor(
     { role: "bot", kind: "notice", goal: "blocked", text: "Goal blocked: needs a key." },
     { ...away, bot: { ...bot, notifications: false } },
   );
-  assert.equal(blocked?.title, "Sage needs you");
-  assert.equal(blocked?.urgent, true);
+  assert.equal(blocked, null);
   assert.ok(noticeFor({ role: "bot", kind: "notice", goal: "out", text: "Goal stopped after 20 turns." }, away));
   // the person's own doing is not news to them
   assert.equal(noticeFor({ role: "bot", kind: "notice", goal: "set", text: "Goal set: x." }, away), null);

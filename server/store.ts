@@ -152,12 +152,13 @@ export interface Message {
    * someone left) rather than something going wrong. */
   event?: boolean;
   /** A notice about the lane's goal (server/goals.ts): set, or where it
-   * ended up. Done is news like a finished reply, blocked like a question. */
+   * ended up. Done follows the reply switch; blocked alone is a record,
+   * not a question for the person. */
   goal?: "set" | "done" | "blocked" | "out" | "paused";
   /** A notice that agents stopped at the workspace turn limit (server/agent-chain.ts):
    * an agent message was refused, or scheduled work did not start.
-   * Nothing is held for delivery. Like a blocked goal, it marks the
-   * conversation unread and wakes the phone (GitHub 248). A room mention
+   * Nothing is held for delivery. It marks the conversation unread but
+   * does not ask the person a question or wake the phone. A room mention
    * held at MAX_AGENT_HOPS (server/room-hops.ts) is said the same way. */
   chainHeld?: boolean;
   /** Direct hold dedupe, excluding the redacted excerpt. */

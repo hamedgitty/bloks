@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
-import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, CHAIN_LIMIT_TITLE, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT } from "./agent-chain.ts";
+import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT } from "./agent-chain.ts";
 import { takeBackWaiting } from "./take-back.ts";
 import { telegramReply, type TelegramText } from "./telegram-reply.ts";
 import { TurnProgress } from "./telegram-progress.ts";
@@ -2011,16 +2011,20 @@ function wakeFor(payload: unknown): Wake | undefined {
   const blok = p.threadId ? bloks.get(p.threadId) : null;
   const shared = blok?.sharing ? blok : null;
 
-  // a goal blocked on the person is as stopped as a question: the owner's,
-  // since goals are only ever set in the owner's own conversations. So
-  // are agents held at the chain limit, whose next turn is the person's.
-  if (message.kind === "notice" && (message.goal === "blocked" || message.chainHeld)) {
-    return owner ? { reason: "needs-you", clients: [owner], preview: true } : { reason: "needs-you", preview: true };
-  }
-
-  if (message.kind === "options" && message.card?.requestId) {
+  // A stopped process is a record for its owner, not a question for the
+  // person. Only an unanswered card asks them to decide something.
+  const card = message.card;
+  if (message.deleted || message.quiet) return undefined;
+  if (message.kind === "options" && card && !card.answered && !card.dismissed && (card.requestId || card.runId)) {
+    // Workflow controls are the owner's. Their card opens the run's
+    // existing answer route, never an engine permission request.
+    if (card.runId) {
+      // Without an owner target, stay quiet rather than wake members
+      // who cannot answer this workflow's card.
+      return owner ? { reason: "needs-you", clients: [owner], preview: true } : undefined;
+    }
     if (!owner) return { reason: "needs-you", preview: true };
-    const approval = Boolean(message.card.tool) || message.card.title === "Approval needed";
+    const approval = Boolean(card.tool) || card.title === "Approval needed";
     // a question is every collaborator's; an approval only theirs when the
     // owner has shared approvals, and never the one who asked for it
     const collaborators =
@@ -2028,14 +2032,15 @@ function wakeFor(payload: unknown): Wake | undefined {
         ? people
             .membersOf(shared.id)
             .filter((m) => m.role === "collaborator" && m.person.relayTokenHash)
-            .filter((m) => !approval || m.personId !== message.card!.askedFor)
+            .filter((m) => !approval || m.personId !== card.askedFor)
             .map((m) => m.person.relayTokenHash!)
         : [];
     return { reason: "needs-you", clients: [owner, ...collaborators], preview: true };
   }
 
-  // someone named in a shared room, by a person or an agent
-  if (shared && message.kind === "text" && message.text) {
+  // A person naming someone in a shared room wants their attention. An
+  // agent mention is coordination, and does not interrupt a person.
+  if (shared && message.role === "user" && message.kind === "text" && message.text) {
     const said = message.text.toLowerCase();
     const named = people
       .membersOf(shared.id)
@@ -2064,7 +2069,16 @@ function previewOf(frame: unknown): WakePreview | null {
   const bot = m.from ? store.bot(m.from) : store.botByThread(f.threadId);
   const room = bloks.get(f.threadId);
   const clip = (text: string) => (text.length > 178 ? `${text.slice(0, 177).trimEnd()}…` : text);
-  if (m.kind === "options" && m.card?.requestId) {
+  if (m.deleted || m.quiet) return null;
+  if (m.kind === "options" && m.card && !m.card.answered && !m.card.dismissed && (m.card.requestId || m.card.runId)) {
+    if (m.card.runId) {
+      return {
+        title: room ? `Approval needed in ${room.name}` : `${bot?.name ?? "A workflow"} needs your approval`,
+        body: clip(`${m.card.title} ${m.card.subtitle || ""}`.trim()),
+        category: "question",
+        threadId: f.threadId,
+      };
+    }
     const approval = Boolean(m.card.tool) || m.card.title === "Approval needed";
     const who = bot?.name ?? "An agent";
     if (approval) {
@@ -2080,13 +2094,6 @@ function previewOf(frame: unknown): WakePreview | null {
       };
     }
     return { title: `${who} has a question`, body: clip(m.card.subtitle || m.card.title), category: "question", threadId: f.threadId };
-  }
-  // stopped and waiting for the person, in Bloks's own words
-  if (m.kind === "notice" && m.text && m.chainHeld) {
-    return { title: CHAIN_LIMIT_TITLE, body: clip(m.text), category: "question", threadId: f.threadId };
-  }
-  if (m.kind === "notice" && m.text && m.goal === "blocked") {
-    return { title: room ? `${room.name} is waiting for you` : `${bot?.name ?? "An agent"} is waiting for you`, body: clip(m.text), category: "question", threadId: f.threadId };
   }
   if (m.kind === "text" && m.text) {
     const speaker = m.role === "bot" ? (bot?.name ?? "An agent") : m.author ? (people.person(m.author)?.name ?? "Someone") : hostName();
@@ -5610,7 +5617,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // An agent's watcher past the limit is held without looking, so
     // whatever changed is still there for the look after the person's say.
     if (chainPastLimit(w.chain ?? 0)) {
-      const why = chainHeld(w.chain!, `The watcher ${chainName(w.name)} did not look for ${chainName(bot.name)}.`);
+      const why = chainHeld(`The watcher ${chainName(w.name)} did not look for ${chainName(bot.name)}.`);
       // the person is told once a hold starts, not at every look it holds
       const toldAlready = w.lastError === why;
       w.lastCheck = Date.now();
@@ -6507,18 +6514,14 @@ function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; c
   return depth;
 }
 
-/** Why a routine or a watcher an agent filed did not start its turn:
- * agents had already started too many in a row (MAX_AGENT_CHAIN). */
-function chainHeld(chain: number, subject: string): string {
-  return `Held: ${chainLimitText(subject, chain, agentLimit())}`;
+/** Why a routine or a watcher an agent filed skipped this run. */
+function chainHeld(subject: string): string {
+  return chainLimitText(subject, agentLimit());
 }
 
-/** A chain held at MAX_AGENT_CHAIN, said where the person will find it:
- * a notice in the conversation it would have gone on in, that
- * conversation marked unread, and the phone woken for it (wakeFor), as
- * for a goal blocked on them. Held at night, it used to wait unseen
- * until somebody happened to open the right conversation (GitHub 248).
- * Once, however often the same hold is met again. */
+/** A chain held at MAX_AGENT_CHAIN, recorded once in the conversation
+ * and marked unread. Its owner can review the stop without interrupting
+ * the person, who has not been asked to decide anything. */
 function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string) {
   const last = store.messagesFor(laneId).at(-1);
   if (last?.kind === "notice" && (key ? last.chainHeld && last.chainHoldKey === key : last.text === text)) return;
@@ -6530,21 +6533,19 @@ function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string)
 
 /** The refusal an agent gets for a message past MAX_AGENT_CHAIN, and the
  * notice the person finds in the recipient's conversation (chainNotice).
- * The count is the whole chain, every agent's turn since the person last
- * had a say, so the notice says so and names only the last step of it,
- * rather than calling it back and forth between the last two. Whoever
- * the person writes to next starts from 0. */
+ * Only this undelivered message is described; a refusal does not say
+ * whether the underlying task is finished or needs the person. */
 function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain, words: string) {
   const limit = agentLimit();
   const text = redactSecrets(chainLimitText(
     `A message from ${chainName(chain.sender.name)} to ${chainName(bot.name)} was not delivered.`,
-    chain.depth, limit, chainExcerpt(words, redactSecrets),
+    limit, chainExcerpt(words, redactSecrets),
   ));
   const key = JSON.stringify([chain.sender.botId, bot.id, chain.depth, limit]);
   chainNotice(bot, laneId, text, key);
   // the person's notice says where the limit is set; the agent's says to
   // wrap up, and nothing about lifting it
-  return Object.assign(new Error(chainAgentRefusal(bot.name, chain.depth)), { status: 429 });
+  return Object.assign(new Error(chainAgentRefusal(bot.name, limit)), { status: 429 });
 }
 
 /** Conversations an agent asked to close from inside its own turn there.
@@ -6975,7 +6976,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
   if (chainPastLimit(job.chain ?? 0)) {
     const held = jobs.finish(job.id, {
       ok: false,
-      result: chainLimitText(`A job offer from the job board to ${chainName(agent?.name ?? "an available agent")} was not delivered.`, job.chain!, agentLimit(), chainExcerpt(job.title, redactSecrets)),
+      result: chainLimitText(`A job offer from the job board to ${chainName(agent?.name ?? "an available agent")} was not delivered.`, agentLimit(), chainExcerpt(job.title, redactSecrets)),
       now: Date.now(),
     });
     broadcast({ kind: "jobs" });
@@ -7982,11 +7983,18 @@ function settleTimeouts() {
   for (const run of timedOut(workflows.waiting(), Date.now())) {
     const waiting = run.waiting!;
     endStep(run.id, waiting.stepId, "timed-out", { error: "nobody answered in time" });
-    // the card stops asking, so nobody answers a question that has closed
+    // Keep the closed question visible when its old notification opens.
+    // A card the person put aside keeps that explicit dismissal.
     const existing = store.messagesFor(waiting.threadId).find((m) => m.id === waiting.messageId);
     if (existing?.card && !existing.card.answered) {
       const patched = store.patchMessage(waiting.threadId, waiting.messageId, {
-        card: { ...existing.card, answered: "no answer in time", dismissed: true },
+        card: {
+          ...existing.card,
+          answered: CLOSED_UNANSWERED,
+          closed: waiting.onTimeout === "continue"
+            ? "Nobody answered in time, so the workflow carried on"
+            : "Nobody answered in time, so the workflow stopped",
+        },
       });
       if (patched) broadcast({ kind: "message.patch", threadId: waiting.threadId, message: patched });
     }
@@ -8023,7 +8031,7 @@ function stopRunsOnEdit(workflowId: string) {
       const card = store.messagesFor(waiting.threadId).find((m) => m.id === waiting.messageId);
       if (card?.card && !card.card.answered) {
         const patched = store.patchMessage(waiting.threadId, waiting.messageId, {
-          card: { ...card.card, answered: "the workflow changed", dismissed: true },
+          card: { ...card.card, answered: CLOSED_UNANSWERED, closed: "The workflow was edited, so this run stopped" },
         });
         if (patched) broadcast({ kind: "message.patch", threadId: waiting.threadId, message: patched });
       }
@@ -8157,8 +8165,7 @@ async function runDueRoutines() {
       if (!laneId) continue;
       // A blocked attempt is a record, not a consumed scheduled slot.
       if (chainPastLimit(routine.chain ?? 0)) {
-        const why = chainHeld(routine.chain!, `The routine ${chainName(routine.name ?? "without a name")} did not start a scheduled turn for ${chainName(bot.name)}.`)
-          + " It can run at its next scheduled time if the limit allows, within the missed-run grace, or by hand. A one-time routine past that grace needs a manual run.";
+        const why = chainHeld(`The routine ${chainName(routine.name ?? "without a name")} did not start a scheduled turn for ${chainName(bot.name)}.`);
         const slot = lastScheduledBefore(routine, now)!;
         if (routines.holdRun(routine.id, slot.getTime(), laneId, why)) {
           chainNotice(bot, laneId, why);
