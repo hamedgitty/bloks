@@ -325,19 +325,32 @@ function Bubble({
   };
   // where nothing hovers, a tap on the bubble shows the bar
   const tap = useTapToShow();
+  const saidAt = message.at && !hideTime ? (
+    <time
+      dateTime={new Date(message.at).toISOString()}
+      className="mt-0.5 px-1 text-[11px] leading-4 tabular-nums text-muted-foreground"
+    >
+      {/* a goal's note goes through the queue only to wait its turn;
+          nobody queued it, so it says when it went, once */}
+      {message.deliveredAt && message.via !== "goal"
+        ? queuedLine(message.queuedAt ?? message.at, message.deliveredAt)
+        : stamp(message.at)}
+    </time>
+  ) : null;
 
   return (
     <div
+      ref={user ? undefined : tap.row}
       className={cn(
         "flex flex-col",
-        user ? "items-end" : "items-start",
+        user ? "items-end" : "group relative items-start",
         // arriving messages rise into place from the side they belong to
         fresh && (user ? "animate-send-in" : "animate-receive-in"),
       )}
     >
       {/* The person's bar stays beside the bubble on desktop. The agent's
           bar floats so even an invisible bar reserves no reading width. */}
-      <div ref={tap.row} className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      <div ref={user ? tap.row : undefined} className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
           <MessageActionBar
             className="max-sm:absolute max-sm:-top-8 max-sm:right-0 max-sm:z-10"
@@ -446,38 +459,30 @@ function Bubble({
           {/* what recall put ahead of these words for the agent */}
           {user && message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
         </div>
-        {!user && (
-          // The bar reserves no text width. Its full-height wrapper lets
-          // it stay in reach while a tall reply scrolls past the viewport.
-          <div className="pointer-events-none absolute inset-y-0 right-0 z-10">
-            <MessageActionBar
-              className="sticky top-2"
-              open={tap.open}
-              message={message}
-              author={author}
-              onReply={onReply}
-              onForward={onForward}
-              onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-              onDelete={onDelete ? () => onDelete(message.id) : undefined}
-            />
-          </div>
-        )}
       </div>
-      {/* The time sits below the words. One that waited for a turn says
-          both times; it
-          joined the conversation when it went, which is why it is here. */}
-      {message.at && !hideTime ? (
-        <time
-          dateTime={new Date(message.at).toISOString()}
-          className="mt-0.5 px-1 text-[11px] leading-4 tabular-nums text-muted-foreground"
-        >
-          {/* a goal's note goes through the queue only to wait its turn;
-              nobody queued it, so it says when it went, once */}
-          {message.deliveredAt && message.via !== "goal"
-            ? queuedLine(message.queuedAt ?? message.at, message.deliveredAt)
-            : stamp(message.at)}
-        </time>
-      ) : null}
+      {/* The 36 px action bar fits beside the time without covering
+          words or reactions, even when its hover state changes. */}
+      {user ? saidAt : (
+        <div className="mt-0.5 flex min-h-10 w-full items-center pr-40">
+          {saidAt}
+        </div>
+      )}
+      {!user && (
+        // A normal reply keeps its actions below words and reactions.
+        // A tall reply keeps the bar in reach as it scrolls past.
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 flex flex-col justify-end">
+          <MessageActionBar
+            className="sticky bottom-1"
+            open={tap.open}
+            message={message}
+            author={author}
+            onReply={onReply}
+            onForward={onForward}
+            onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
+            onDelete={onDelete ? () => onDelete(message.id) : undefined}
+          />
+        </div>
+      )}
     </div>
   );
 }

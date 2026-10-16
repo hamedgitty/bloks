@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createTranscriptWidth, transcriptWidth, TRANSCRIPT_WIDTH_KEY, TRANSCRIPT_WIDTHS } from "../src/lib/transcriptWidth.ts";
 
 test("unknown stored choices use Narrow and never become CSS", () => {
-  for (const value of [undefined, null, "", "garbage", "WIDE", "<img src=x onerror=alert(1)>", "var(--bad)", "999999px", "url(https://example.com)", 960, [], {}]) {
+  for (const value of [undefined, null, "", "garbage", "WIDE", "constructor", "__proto__", "toString", "<img src=x onerror=alert(1)>", "var(--bad)", "999999px", "url(https://example.com)", 960, [], {}]) {
     assert.equal(transcriptWidth(value), "narrow");
     const applied: string[] = [];
     const choice = createTranscriptWidth({ getItem: () => value as string, setItem() {} }, (css) => applied.push(css));
