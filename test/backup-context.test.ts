@@ -103,7 +103,7 @@ process.stdin.on("data",async function take(c){
     task.resumeCursors = { [by.instanceId]: "fixture-session" };
     return task;
   };
-  return { ...f, get h() { return f.h; }, lane, activity, edit, calls, say, turn, settings, seed, primary, backup,
+  return { ...f, get h() { return f.h; }, lane, activity, edit, calls, nativeCalls: f.calls, say, turn, settings, seed, primary, backup,
     claudeSpec: (change: Record<string, unknown>) => writeFileSync(specFile, JSON.stringify({ ...spec, ...change })),
     readingGate: () => writeFileSync(join(f.root, "reading-gate"), ""),
     async drop(instanceId: string) {
@@ -122,7 +122,11 @@ for (const answer of ["codex", "claude"] as const) {
     f.spec({ used, window, hold: true });
     f.claudeSpec({ hold: true });
     await f.say();
-    await waitFor(async () => (await f.lane()).context.used === used);
+    await waitFor(() => {
+      const reading = f.stored().tasks.find((task: any) => task.id === f.bot.threadId).reading;
+      return reading?.instanceId === f.backup.instanceId && reading.used === used;
+    });
+    assert.equal((await f.lane()).context.used, used, "the first backup reading must reach the display");
     assert.equal((await f.lane()).state, "working");
     assert.equal((await f.lane()).context.measured, true);
     const busyWindow = answer === "claude" ? 200_000 : window;
@@ -141,12 +145,39 @@ for (const answer of ["codex", "claude"] as const) {
 test("a backup turn hides a primary reading until its own reading arrives, without reload", async t => {
   const f = await fixture(t);
   await f.edit(bot => f.seed(bot, f.primary));
+  const abort = new AbortController();
+  const frames: any[] = [];
+  const stream = await f.h.fetch("/api/events", { signal: abort.signal });
+  assert.ok(stream.ok && stream.body);
+  const reading = (async () => {
+    let buffer = "";
+    const reader = stream.body!.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += Buffer.from(value).toString();
+      for (let split = buffer.indexOf("\n\n"); split >= 0; split = buffer.indexOf("\n\n")) {
+        const event = buffer.slice(0, split); buffer = buffer.slice(split + 2);
+        if (event.startsWith("data: ")) frames.push(JSON.parse(event.slice(6)));
+      }
+    }
+  })();
+  // The harness after-hook can close the socket before this hook runs.
+  void reading.catch(() => {});
+  t.after(async () => { abort.abort(); await reading.catch(() => {}); });
   f.spec({ used, window, hold: true, defer: true });
   await f.say();
   assert.equal((await f.lane()).context.measured, false);
   assert.equal((await f.activity()).context.used, 0);
+  await assert.doesNotReject(waitFor(() => frames.some(frame => frame.kind === "bot" && frame.bot?.id === f.bot.id &&
+    frame.bot.tasks.some((task: any) => task.id === f.bot.threadId && task.state === "working" && task.context.measured === false))),
+  "the selected engine's unmeasured snapshot must reach clients before its first reading");
+  const readingFrom = frames.length;
   f.readingGate();
   await waitFor(async () => (await f.lane()).context.used === used);
+  await assert.doesNotReject(waitFor(() => frames.slice(readingFrom).some(frame => frame.kind === "bot" && frame.bot?.id === f.bot.id &&
+    frame.bot.tasks.some((task: any) => task.id === f.bot.threadId && task.context.used === used && task.context.limit === window))),
+  "the first measured snapshot must reach clients while the answer is held");
   assert.equal((await f.activity()).context.limit, window);
   f.gate();
   await f.settled();
@@ -260,7 +291,8 @@ test("saved ceiling and share edits refresh the same backup reading and Activity
 });
 
 test("a room's answering lane uses its own dispatch identity and reading", async t => {
-  const f = await fixture(t);
+  // Shared rooms permit Claude's tool-free turn, while Codex sits out.
+  const f = await fixture(t, "claude");
   await f.edit(bot => { f.seed(bot, f.primary).reading.used = 12_000; });
   const other = await f.hire("Other");
   const { blok } = await f.post("/api/bloks", { name: "Shared fixture", memberIds: [f.bot.id, other.id] });
@@ -275,16 +307,28 @@ test("a room's answering lane uses its own dispatch identity and reading", async
   await f.post(`/api/bots/${other.id}/messages`, { text: "A synthetic priming message" });
   await waitFor(async () => (await f.h.json("/api/bots?messages=0")).bots.find((bot: any) => bot.id === other.id)?.tasks.every((task: any) => task.state === "idle"));
   f.spec({ used, window, hold: true });
+  f.claudeSpec({ hold: true });
   const response = await f.h.fetch(`/api/bloks/${blok.id}/messages`, { method: "POST", body: JSON.stringify({ text: "@Rex A synthetic room message" }) });
   assert.ok(response.ok);
-  await waitFor(async () => (await f.current()).tasks.some((task: any) => task.room === blok.id && task.context.used === used));
-  const room = (await f.current()).tasks.find((task: any) => task.room === blok.id);
-  assert.equal(room.context.limit, window);
+  const roomLane = async () => (await f.h.json("/api/bloks")).bloks.find((room: any) => room.id === blok.id).lanes[f.bot.id];
+  let room: any;
+  try {
+    await waitFor(async () => {
+      const id = await roomLane();
+      room = (await f.current()).tasks.find((task: any) => task.id === id);
+      return room?.context.used === used;
+    });
+  } catch (error) {
+    throw new Error(JSON.stringify({ bot: await f.current(), room: await f.h.json("/api/bloks"), calls: f.calls(), logs: f.h.logs() }), { cause: error });
+  }
+  assert.equal(room.context.measured, true);
+  assert.equal((await f.activity(room.id)).context.limit, room.context.limit);
   assert.equal((await f.activity(room.id)).context.used, used);
   assert.equal((await f.lane()).context.used, 12_000);
   f.gate();
   await f.settled();
   assert.equal((await f.lane(room.id)).context.used, used);
+  assert.equal((await f.lane(room.id)).context.limit, window);
   assert.equal((await f.lane()).context.used, 12_000);
 });
 
@@ -315,16 +359,16 @@ test("a running native command keeps the preceding model's selection", async t =
   await f.edit(bot => {
     bot.modelSelection = codex;
     bot.backupSelection = { ...codex, instanceId: "other" };
-    f.seed(bot, bot.backupSelection);
+    f.seed(bot, bot.backupSelection).resumeCursors.codex = "primary-session";
   });
   f.spec({ compact: "hold" });
   const response = await f.h.fetch(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "/compact", taskId: f.bot.threadId }) });
   assert.ok(response.ok);
-  await waitFor(() => readFileSync(join(f.root, "calls.jsonl"), "utf8").includes('"thread/compact/start"'));
+  await waitFor(() => f.nativeCalls().some(call => call.method === "thread/compact/start"));
   assert.equal((await f.lane()).state, "working");
   assert.equal(f.stored().tasks[0].lastInstanceId, "other");
   assert.equal((await f.lane()).context.used, used);
   assert.equal((await f.activity()).context.limit, window);
-  const stopped = await f.h.fetch(`/api/bots/${f.bot.id}/stop`, { method: "POST", body: JSON.stringify({ taskId: f.bot.threadId }) });
+  const stopped = await f.h.fetch(`/api/bots/${f.bot.id}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: f.bot.threadId }) });
   assert.ok(stopped.ok);
 });
