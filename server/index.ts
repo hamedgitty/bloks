@@ -158,6 +158,7 @@ import {
   handoffBudget,
   knownLimitFor,
   laneFill,
+  selectionForContext,
   readingFor,
   type Reading,
   type Turn,
@@ -4812,6 +4813,9 @@ async function startClaimedTurn(
 
       // what this turn runs on, and a fresh slate for what goes wrong in it
       laneEngine.set(task.id, selection);
+      // The busy frame preceded selection. Publish its display origin now,
+      // before a first reading, or a client keeps the previous engine's fill.
+      broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
       engineAskedAt.set(task.id, Date.now());
       turnErrors.delete(task.id);
       // Said once per rest, not once per turn: the first turn on the
@@ -7109,6 +7113,8 @@ function readingBy(threadId: string, instanceId: string): { instanceId: string; 
 }
 
 function noteLaneReading(event: RuntimeEvent, said: { used: number | null; window: number | null }) {
+  const found = store.taskByThread(event.threadId);
+  const before = found && JSON.stringify(laneContext(found.bot, found.task));
   const instanceId = event.providerInstanceId ?? event.provider;
   const by = readingBy(event.threadId, instanceId);
   const used = typeof said.used === "number" && Number.isFinite(said.used) && said.used > 0 ? said.used : null;
@@ -7121,6 +7127,11 @@ function noteLaneReading(event: RuntimeEvent, said: { used: number | null; windo
   }
   const patched = store.resolveCompaction(event.threadId, by, used);
   if (patched) broadcast({ kind: "message.patch", ...patched });
+  // Usage can arrive before text or a tool event. Keep the client on the
+  // same fill as the API, without repeating identical tool-loop readings.
+  if (found && before !== JSON.stringify(laneContext(found.bot, found.task))) {
+    broadcast({ kind: "bot", bot: clientBot(found.bot) });
+  }
 }
 
 /** Where each lane last was when it was compacted before a turn, kept
@@ -7141,10 +7152,16 @@ function beforeTurnSettings(): { ceiling: number; at: number | undefined } {
 /** The line is a budget only for a session Bloks can compact before a
  * turn. Replay engines, missing cursors and guest mail keep the window. */
 function laneContext(bot: BotRecord, task: TaskRecord) {
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const selection = selectionForContext({
+    modelSelection: bot.modelSelection, backupSelection: bot.backupSelection,
+    lastInstanceId: task.lastInstanceId, running: laneEngine.get(task.id) ?? null,
+    command: commandTurns.has(task.id),
+  });
+  const instance = selection && registry.get(selection.instanceId);
   const canCompact = instance && !instance.adapter.capabilities.replaysNatively &&
-    typeof task.resumeCursors[bot.modelSelection.instanceId] === "string" && !task.guestMail;
-  return laneFill(task.reading, bot.modelSelection, canCompact ? beforeTurnSettings() : undefined);
+    typeof task.resumeCursors[selection.instanceId] === "string" && !task.guestMail;
+  return laneFill(selection ? task.reading : undefined, selection ?? { instanceId: "" },
+    canCompact ? beforeTurnSettings() : undefined);
 }
 
 /** The reading's window: the engine's, or the table's when the model is

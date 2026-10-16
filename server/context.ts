@@ -23,6 +23,8 @@
 //
 // Everything here is pure.
 
+import type { ModelSelection } from "./contracts.ts";
+
 /**
  * How much a model will take.
  *
@@ -96,6 +98,27 @@ export interface Reading {
   instanceId: string;
   model: string | null;
   at: number;
+}
+
+/** The display follows this lane's last model dispatch, not its routing
+ * preference. A command does not replace that model dispatch. */
+export function selectionForContext({
+  modelSelection, backupSelection, lastInstanceId, running, command,
+}: {
+  modelSelection: ModelSelection;
+  backupSelection: ModelSelection | null | undefined;
+  lastInstanceId: string | undefined;
+  running: ModelSelection | null;
+  command: boolean;
+}): ModelSelection | null {
+  if (running && !command) return running;
+  // Legacy lanes and a dropped session have no usable dispatch identity.
+  if (!lastInstanceId) return modelSelection;
+  const own = modelSelection.instanceId === lastInstanceId ? modelSelection : null;
+  const backup = backupSelection?.instanceId === lastInstanceId ? backupSelection : null;
+  // The instance alone cannot name the last model between turns.
+  if (own && backup && own.model !== backup.model) return null;
+  return own ?? backup;
 }
 
 /** The reading, if it was made by the engine and model about to use it. */
