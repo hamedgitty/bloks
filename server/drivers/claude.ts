@@ -1127,6 +1127,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           // This writes text, not work in the server's project. Keep the
           // sign-in home, but load none of its customizations or tools.
           const cwd = mkdtempSync(join(tmpdir(), "bloks-text-"));
+          const tidy = () => {
+            try {
+              rmSync(cwd, { recursive: true, force: true, maxRetries: 3 });
+            } catch (error) {
+              console.error("[claude-text] could not remove the temporary folder:", error);
+            }
+          };
           const cli = /[/\\]/.test(config.cli) ? resolvePath(config.cli) : config.cli;
           let child: ChildProcessWithoutNullStreams;
           try {
@@ -1134,11 +1141,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               "-p", "--model", ONE_SHOT_MODEL, "--output-format", "text",
               "--safe-mode", "--setting-sources", "", "--tools", "",
               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-              "--settings", '{"disableAllHooks":true}', "--disable-slash-commands",
               "--no-session-persistence",
             ], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
           } catch (error) {
-            rmSync(cwd, { recursive: true, force: true });
+            tidy();
             reject(error);
             return;
           }
@@ -1164,12 +1170,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.on("close", (code) => {
             clearTimeout(timer);
             clearTimeout(killTimer);
-            try {
-              rmSync(cwd, { recursive: true, force: true, maxRetries: 3 });
-            } catch (error) {
-              reject(error);
-              return;
-            }
+            tidy();
             if (code === 0) resolve(out.trim());
             else reject(new Error(err.trim() || `Claude Code exited with ${code}`));
           });

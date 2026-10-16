@@ -4,6 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 import type { TestContext } from "node:test";
@@ -63,12 +65,14 @@ async function oneShot(t: TestContext, mode = "text", path: "absolute" | "relati
   Object.assign(process.env, env);
   const cli = join(root, "fake-claude.mjs"), seen = join(root, "seen.json"), target = join(root, "write-target.txt");
   writeFileSync(cli, `#!${process.execPath}
-import { writeFileSync, renameSync } from "node:fs";
+import { existsSync, writeFileSync, renameSync } from "node:fs";
 const args=process.argv.slice(2);
 if(args[0]==="--version"){console.log("9.9.9 (Claude Code)");process.exit(0);}
 const mode=${JSON.stringify(mode)};
-if(mode==="hang")process.on("SIGTERM",()=>{});
-if(mode==="late")process.on("SIGTERM",()=>{console.log("Late answer");process.exit(0);});
+const cwd=process.cwd();
+const stopping=()=>{const path=${JSON.stringify(join(root, "stopping.json"))};writeFileSync(path+".part",JSON.stringify({cwdExists:existsSync(cwd)}));renameSync(path+".part",path);};
+if(mode==="hang")process.on("SIGTERM",stopping);
+if(mode==="late")process.on("SIGTERM",()=>{stopping();console.log("Late answer");process.exit(0);});
 let input="";
 process.stdin.on("data",c=>{input+=c;});
 process.stdin.on("end",()=>{
@@ -77,10 +81,11 @@ process.stdin.on("end",()=>{
  writeFileSync(record+".part",JSON.stringify(value));renameSync(record+".part",record);
  writeFileSync(${JSON.stringify(seen)}+"."+process.pid+".part",JSON.stringify(value));renameSync(${JSON.stringify(seen)}+"."+process.pid+".part",${JSON.stringify(seen)});
  if(mode==="hang"||mode==="late"){setInterval(()=>{},1000);return;}
- if(mode==="fail"){console.error("Fixture failed");process.exit(7);}
+ if(mode==="fail"){console.log("Partial output before failure.");console.error("Fixture failed");process.exit(7);}
+ if(mode==="unsupported"){console.error("Unknown option --safe-mode");process.exit(2);}
  if(mode==="empty"){console.log("   ");return;}
  if(input.includes("WRITE_FIXTURE")&&args[args.indexOf("--tools")+1]!=="")writeFileSync(${JSON.stringify(target)},"unwanted fixture write");
- console.log("A short fixture summary.");
+ console.log(mode==="echo"?input:"A short fixture summary.");
 });
 `, { mode: 0o755 });
   // Resolve the configured CLI from the caller before changing cwd.
@@ -103,10 +108,11 @@ process.stdin.on("end",()=>{
     }
     rmSync(root, { recursive: true, force: true });
   });
-  const ready = () => new Promise<void>(resolve => {
-    if (existsSync(seen)) return resolve();
-    const check = () => { if (existsSync(seen)) { watcher.close(); resolve(); } };
+  const waitFile = (file: string) => new Promise<void>(resolve => {
+    if (existsSync(file)) return resolve();
+    const check = () => { if (existsSync(file)) { watcher.close(); resolve(); } };
     const watcher = watch(root, check);
+    t.after(() => watcher.close());
     check();
   });
   const waitGone = async () => {
@@ -117,7 +123,9 @@ process.stdin.on("end",()=>{
     }
     assert.deepEqual(readdirSync(temps), [], "one-shot cwd outlived its child");
   };
-  return { root, temps, seen, target, records, instance, ready, waitGone, info: () => JSON.parse(readFileSync(seen, "utf8")) };
+  const ready = () => waitFile(seen);
+  const stopping = async () => { const file = join(root, "stopping.json"); await waitFile(file); return JSON.parse(readFileSync(file, "utf8")); };
+  return { root, temps, seen, target, records, instance, ready, stopping, waitGone, info: () => JSON.parse(readFileSync(seen, "utf8")) };
 }
 
 for (const path of ["absolute", "relative", "PATH"] as const) test(`text-only launch preserves sign-in, rejects a requested write and removes its cwd, path=${path}`, async t => {
@@ -125,29 +133,35 @@ for (const path of ["absolute", "relative", "PATH"] as const) test(`text-only la
   const prompt = "WRITE_FIXTURE: write a local fixture file and summarise.";
   assert.equal(await f.instance.generateText!(prompt), "A short fixture summary.");
   const seen = f.info();
+  assert.deepEqual(seen.args, [
+    "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
+    "--safe-mode", "--setting-sources", "", "--tools", "",
+    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--no-session-persistence",
+  ]);
   assert.equal(seen.input, prompt);
   assert.ok(!seen.args.some((arg: string) => arg.includes(prompt)));
   assert.notEqual(seen.cwd, process.cwd());
+  assert.ok(!seen.cwd.startsWith(process.cwd() + "/"));
   assert.equal(seen.cwd.startsWith(f.temps), true);
   assert.deepEqual([seen.home, seen.profile, seen.auth], [f.root, f.root, join(f.root, "auth")]);
   assert.deepEqual([seen.key, seen.parent, seen.entry], [null, null, null]);
   const value = (flag: string) => seen.args[seen.args.indexOf(flag) + 1];
-  for (const flag of ["--safe-mode", "--strict-mcp-config", "--settings", "--disable-slash-commands", "--no-session-persistence"]) assert.ok(seen.args.includes(flag), flag);
+  for (const flag of ["--safe-mode", "--strict-mcp-config", "--no-session-persistence"]) assert.ok(seen.args.includes(flag), flag);
   assert.equal(value("--tools"), "");
   assert.equal(value("--setting-sources"), "");
   assert.deepEqual(JSON.parse(value("--mcp-config")), { mcpServers: {} });
-  assert.deepEqual(JSON.parse(value("--settings")), { disableAllHooks: true });
   assert.equal(seen.args.includes("--bare"), false);
   assert.equal(seen.args.includes("--dangerously-skip-permissions"), false);
   assert.equal(existsSync(f.target), false);
   assert.equal(existsSync(seen.cwd), false);
 });
 
-for (const mode of ["empty", "fail", "missing"]) test(`one-shot ${mode} keeps its result semantics and cleans up`, async t => {
+for (const mode of ["empty", "fail", "missing", "unsupported"]) test(`one-shot ${mode} keeps its result semantics and cleans up`, async t => {
   const f = await oneShot(t, mode);
   if (mode === "empty") assert.equal(await f.instance.generateText!("A fixture prompt"), "");
-  else await assert.rejects(f.instance.generateText!("A fixture prompt"), mode === "fail" ? /Fixture failed/ : /ENOENT/);
+  else await assert.rejects(f.instance.generateText!("A fixture prompt"), mode === "fail" ? /Fixture failed/ : mode === "unsupported" ? /Unknown option --safe-mode/ : /ENOENT/);
   await f.waitGone();
+  assert.equal(readdirSync(f.records).length, mode === "missing" ? 0 : 1, "a rejected child was retried without isolation");
 });
 
 for (const mode of ["hang", "late"]) test(`a timed-out ${mode} child cannot return a summary and its cwd is reaped`, async t => {
@@ -156,23 +170,46 @@ for (const mode of ["hang", "late"]) test(`a timed-out ${mode} child cannot retu
   const gone = f.ready();
   const pending = f.instance.generateText!("A fixture timeout");
   await gone;
+  assert.equal(existsSync(f.info().cwd), true);
+  const stopped = f.stopping();
   const rejects = assert.rejects(pending, /within a minute/);
   t.mock.timers.tick(60_000);
   await rejects;
-  t.mock.timers.tick(3_000);
-  t.mock.timers.reset();
+  try {
+    assert.equal((await stopped).cwdExists, true, "the cwd was removed before the child closed");
+  } finally {
+    t.mock.timers.tick(3_000);
+    t.mock.timers.reset();
+  }
   await f.waitGone();
 });
 
 test("concurrent one-shots have separate temporary directories", async t => {
-  const f = await oneShot(t);
+  const f = await oneShot(t, "echo");
   const answers = await Promise.all([
     f.instance.generateText!("First fixture prompt"),
     f.instance.generateText!("Second fixture prompt"),
   ]);
   const calls = readdirSync(f.records).map(name => JSON.parse(readFileSync(join(f.records, name), "utf8")));
-  assert.deepEqual(answers, ["A short fixture summary.", "A short fixture summary."]);
+  assert.deepEqual(answers, ["First fixture prompt", "Second fixture prompt"]);
   assert.equal(calls.length, 2);
   assert.notEqual(calls[0].cwd, calls[1].cwd);
   assert.equal(calls.some(call => existsSync(call.cwd)), false);
+});
+
+for (const mode of ["text", "fail"]) test(`a cleanup error logs once and preserves the ${mode} result`, async t => {
+  const f = await oneShot(t, mode);
+  const logged = t.mock.method(console, "error", () => {});
+  t.mock.method(fs, "rmSync", () => { throw new Error("Fixture cleanup failed"); });
+  syncBuiltinESMExports();
+  try {
+    if (mode === "text") assert.equal(await f.instance.generateText!("A fixture prompt"), "A short fixture summary.");
+    else await assert.rejects(f.instance.generateText!("A fixture prompt"), /Fixture failed/);
+    assert.equal(logged.mock.calls.length, 1);
+    assert.match(String(logged.mock.calls[0].arguments[0]), /could not remove the temporary folder/);
+    assert.equal(existsSync(f.info().cwd), true, "the cleanup failure was not exercised");
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
