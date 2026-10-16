@@ -34,7 +34,7 @@ export async function chainRelay(t: TestContext, h: Harness, pushes?: Array<{ fr
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  await h.json("/api/relay", { method: "PUT", body: JSON.stringify({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, agentToken: "example-agent-token", enabled: true }) });
+  await h.json("/api/relay", { method: "PUT", body: JSON.stringify({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, agentToken: "example-agent-token", clientToken: claimed.token, enabled: true }) });
   assert.ok(await waitFor(() => connected ? true : null), "the isolated server did not connect to its relay");
   return previews;
 }

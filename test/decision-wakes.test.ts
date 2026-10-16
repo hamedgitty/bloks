@@ -70,6 +70,22 @@ test("a shared workflow gate wakes its owner, never collaborators", async (t) =>
   assert.equal(pushed.previews["owner-device"].requestId, undefined);
 });
 
+test("a workflow gate without an owner relay target stays quiet and delivered", async (t) => {
+  const w = await alertWorkspace(t);
+  assert.equal((await w.h.fetch("/api/relay", { method: "PATCH", body: JSON.stringify({ clientToken: "" }) })).status, 200);
+  const { workflow } = await w.h.json("/api/workflows", { method: "POST", body: JSON.stringify({
+    name: "Shared review", trigger: { kind: "manual", targetKind: "room", targetId: w.roomId }, steps: [
+      { id: "gate", action: "approve", text: "Publish the shared draft?", timeoutMin: 120 },
+    ],
+  }) });
+  const { run } = await w.h.json(`/api/workflows/${workflow.id}/run`, { method: "POST", body: "{}" });
+  const card = await waitFor(() => w.ownerFrames().find((f) => f.message?.card?.runId === run.id)?.message);
+  assert.ok(card, "the gate record was not delivered");
+  assert.ok((await w.h.json(`/api/bloks/${w.roomId}/messages`)).messages.some((m: any) => m.id === card.id), "the gate record was not stored");
+  t.diagnostic("gate delivery and storage assertions passed without an owner relay target");
+  assert.equal(w.captured(card.id)?.wake, undefined, "a missing owner target must not turn a gate into an untargeted wake");
+});
+
 test("human mentions target only the named device and agent mentions only leave a record", async (t) => {
   const w = await alertWorkspace(t);
   const bot = await w.hire(), other = await w.hire("Reviewer");

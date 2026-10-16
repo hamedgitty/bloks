@@ -2019,7 +2019,9 @@ function wakeFor(payload: unknown): Wake | undefined {
     // Workflow controls are the owner's. Their card opens the run's
     // existing answer route, never an engine permission request.
     if (card.runId) {
-      return owner ? { reason: "needs-you", clients: [owner], preview: true } : { reason: "needs-you", preview: true };
+      // Without an owner target, stay quiet rather than wake members
+      // who cannot answer this workflow's card.
+      return owner ? { reason: "needs-you", clients: [owner], preview: true } : undefined;
     }
     if (!owner) return { reason: "needs-you", preview: true };
     const approval = Boolean(card.tool) || card.title === "Approval needed";
