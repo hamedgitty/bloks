@@ -106,8 +106,9 @@ export function nativeHistoryContext(environment: NodeJS.ProcessEnv, cwd: string
       if (!existsSync(path)) return [];
       const canonical = realpathSync(path);
       // A supported home can itself be a trusted symlink. A collection
-      // escaping that home is not authority for an unrelated directory.
-      return within(base, canonical) && statSync(canonical).isDirectory() ? [canonical] : [];
+      // cannot reclassify the home, credentials or a private sibling as
+      // history by redirecting its own root.
+      return canonical === path && statSync(canonical).isDirectory() ? [canonical] : [];
     });
     return { roots, generation: digest({ home, configured, requested, base, identity: [identity.dev, identity.ino] }) };
   } catch { return null; }

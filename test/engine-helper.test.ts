@@ -433,6 +433,10 @@ test('trusted history context binds default/custom/relative homes without creden
  symlinkSync(join(home,'.codex'),join(home,'trusted-home-link'),'dir');assert.deepEqual(nativeHistoryContext({HOME:home,CODEX_HOME:join(home,'trusted-home-link')},join(home,'project'))!.roots,a.roots);
  rmSync(join(home,'.codex','archived_sessions'),{recursive:true});symlinkSync(join(home,'outside'),join(home,'.codex','archived_sessions'),'dir');
  assert.deepEqual(nativeHistoryContext({HOME:home},join(home,'project'))!.roots,[join(home,'.codex','sessions')]);
+ unlinkSync(join(home,'.codex','archived_sessions'));symlinkSync(join(home,'.codex'),join(home,'.codex','archived_sessions'),'dir');
+ assert.equal(nativeHistoryContext({HOME:home},join(home,'project'))!.roots.includes(join(home,'.codex')),false,'history collection link granted the credential-bearing home itself');
+ mkdirSync(join(home,'.codex','private-account-state'));unlinkSync(join(home,'.codex','archived_sessions'));symlinkSync(join(home,'.codex','private-account-state'),join(home,'.codex','archived_sessions'),'dir');
+ assert.deepEqual(nativeHistoryContext({HOME:home},join(home,'project'))!.roots,[join(home,'.codex','sessions')],'history collection symlink granted a private sibling');
  assert.equal(nativeHistoryContext({HOME:home,CODEX_HOME:''},join(home,'project')),null);assert.equal(nativeHistoryContext({HOME:home,CODEX_HOME:'~unresolved/path'},join(home,'project')),null);
  assert.equal(nativeHistoryContext({HOME:'relative'},join(home,'project')),null);
 });

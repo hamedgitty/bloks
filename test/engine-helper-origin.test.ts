@@ -1,7 +1,7 @@
 // Actual server-issued turn/check scopes, broker HTTP and explicit fake children.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync,existsSync,symlinkSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
+import { copyFileSync,existsSync,symlinkSync,unlinkSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test,type TestContext } from 'node:test';
@@ -133,6 +133,12 @@ test('issuer rejects escaping history collections and changed trusted parent hom
  const outside=join(f.home,'private-sibling');mkdirSync(outside);rmSync(join(f.historyHome,'archived_sessions'),{recursive:true});symlinkSync(outside,join(f.historyHome,'archived_sessions'),'dir');
  const before=f.log().filter(c=>c.kind==='auth').length;
  assert.equal((await f.phase(descriptor,{...f.review(),additionalDirectories:[outside]})).body.state,'pending','escaping collection symlink granted an unrelated root');assert.equal(f.log().filter(c=>c.kind==='auth').length,before);
+ unlinkSync(join(f.historyHome,'archived_sessions'));symlinkSync(f.historyHome,join(f.historyHome,'archived_sessions'),'dir');
+ assert.equal((await f.phase(descriptor,{...f.review(),additionalDirectories:[f.historyHome]})).body.state,'pending','collection symlink granted the credential-bearing Codex home');
+ assert.equal(f.log().filter(c=>c.kind==='auth').length,before);
+ const privateSibling=join(f.historyHome,'private-account-state');mkdirSync(privateSibling);unlinkSync(join(f.historyHome,'archived_sessions'));symlinkSync(privateSibling,join(f.historyHome,'archived_sessions'),'dir');
+ assert.equal((await f.phase(descriptor,{...f.review(),additionalDirectories:[privateSibling]})).body.state,'pending','collection symlink reclassified a private sibling as history');
+ assert.equal(f.log().filter(c=>c.kind==='auth').length,before);
  const auth={...f.review(),additionalDirectories:[join(f.historyHome,'sessions')]};assert.equal((await f.phase(descriptor,auth)).body.state,'accepted');await f.readEvents(descriptor,auth.operationId);
  const next=join(f.home,'replacement-codex');mkdirSync(join(next,'sessions'),{recursive:true});
  const file=join(f.data,'config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.secrets.CODEX_HOME=next;writeFileSync(file,JSON.stringify(config));
