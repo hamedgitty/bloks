@@ -66,11 +66,6 @@ export function OptionCard({
               {card.subtitle}
             </div>
           )}
-          {card.answered && !card.closed && !card.cutOff && (
-            <div className="mt-1 text-[12px] text-muted-foreground">
-              {card.runId ? "Closed" : "Answered"}: {card.answered}
-            </div>
-          )}
           {card.answeredBy && (
             <div className="mt-1 text-[12px] text-muted-foreground">Answered by {card.answeredBy}</div>
           )}
