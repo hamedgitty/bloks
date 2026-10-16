@@ -43,6 +43,7 @@ import { AgentDefaults } from "./AgentDefaults";
 import { SettingRow, SettingsGroup, SettingsPageHeader } from "./SettingsLayout";
 import { Segmented } from "@/components/ui/segmented";
 import { useConversationsView } from "@/lib/conversationsView";
+import { useTranscriptWidth } from "@/lib/useTranscriptWidth";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
 import Archive from "lucide-react/dist/esm/icons/archive.mjs";
 import CloudIcon from "lucide-react/dist/esm/icons/cloud.mjs";
@@ -715,7 +716,7 @@ export const SETTINGS_PAGES: Array<{ group: string; pages: SettingsPage[] }> = [
         label: "General",
         icon: SlidersHorizontal,
         description: `How Bloks looks and behaves on ${thisComputer()}.`,
-        keywords: "theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations files changes cards shared folder agents turn limit consecutive chain",
+        keywords: "width transcript narrow medium wide column theme dark light appearance sidebar conversations threads shortcut quick ask hotkey summarise compaction compact idle cache long turn tokens quota skills suggest recall remember memory other conversations files changes cards shared folder agents turn limit consecutive chain",
       },
       {
         id: "about-you",
@@ -845,6 +846,7 @@ const ALL_PAGES = SETTINGS_PAGES.flatMap((g) => g.pages);
 
 function GeneralPage() {
   const { theme, setTheme } = useTheme();
+  const [width, setWidth] = useTranscriptWidth();
   const [conversations, setConversations] = useConversationsView();
   return (
     <>
@@ -857,6 +859,22 @@ function GeneralPage() {
               value={theme}
               onChange={setTheme}
               options={THEME_OPTIONS.map((o) => ({ value: o.value, label: <>{o.icon}{o.label}</> }))}
+            />
+          }
+        />
+        <SettingRow
+          label="Transcript width"
+          description="Maximum width of the conversation and composer. Saved on this device."
+          control={
+            <Segmented
+              aria-label="Transcript width"
+              value={width}
+              onChange={setWidth}
+              options={[
+                { value: "narrow", label: "Narrow" },
+                { value: "medium", label: "Medium" },
+                { value: "wide", label: "Wide" },
+              ]}
             />
           }
         />

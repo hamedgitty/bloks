@@ -1257,6 +1257,13 @@ through `PATCH /api/bots/:id` and `PATCH /api/bloks/:id` with `section`,
 the headings is `GET /api/sidebar` and `PUT /api/sidebar/sections`, kept
 in `sidebar.json` and announced as a `sidebar` frame.
 
+Transcript width is also a per-device reading choice, kept in `localStorage`.
+`src/lib/transcriptWidth.ts` normalizes it to Narrow (760 px), Medium (800 px)
+or Wide (960 px); the thin DOM adapter applies the cap before React renders.
+The conversation, room lenses and composer share that cap, with a 760 px
+fallback. Agent text can use the column while the person's bubble and screen
+previews keep their existing percentage caps.
+
 The sidebar's conversations view (`src/components/SidebarParts.tsx`) is a
 per-device choice in `localStorage`. Settings is a page beside the
 sidebar, like Automations, with its pages listed once in

@@ -45,14 +45,14 @@ export function ForumLens({
 
   if (!threads.length) {
     return (
-      <div className="mx-auto max-w-[760px] px-4 py-16 text-center text-[13px] text-muted-foreground md:px-6">
+      <div className="mx-auto max-w-[var(--transcript-width,760px)] px-4 py-16 text-center text-[13px] text-muted-foreground md:px-6">
         Nothing said yet. Topics appear here as the room fills up.
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-1.5 px-4 pb-6 pt-3 md:px-6">
+    <div className="mx-auto flex max-w-[var(--transcript-width,760px)] flex-col gap-1.5 px-4 pb-6 pt-3 md:px-6">
       {threads.map((thread) => (
         <ThreadRow
           key={thread.root.id}

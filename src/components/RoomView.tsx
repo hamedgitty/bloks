@@ -790,7 +790,7 @@ export function RoomView({ blok }: { blok: Blok }) {
             }}
           />
         ) : (
-        <div className="mx-auto flex max-w-[760px] flex-col gap-2 pb-4 pt-3">
+        <div className="mx-auto flex max-w-[var(--transcript-width,760px)] flex-col gap-2 pb-4 pt-3">
           {(start > 0 || earlier.remaining > 0) && (
             <button
               onClick={showEarlier}
@@ -848,12 +848,12 @@ export function RoomView({ blok }: { blok: Blok }) {
       />
       <div className="relative px-4 pb-4 pt-1 md:px-6 md:pb-5">
         {replyTo && (
-          <div className="mx-auto mb-2 max-w-[760px]">
+          <div className="mx-auto mb-2 max-w-[var(--transcript-width,760px)]">
             <ReplyChip draft={replyTo} onClear={() => setReplyTo(null)} />
           </div>
         )}
         {mentionMatches.length > 0 && (
-          <div className="mx-auto mb-1.5 max-w-[760px]">
+          <div className="mx-auto mb-1.5 max-w-[var(--transcript-width,760px)]">
             <div className="overflow-hidden rounded-xl border bg-popover p-1 shadow-lg shadow-(color:--shadow-color)">
               {mentionMatches.map((m, i) => (
                 <button
@@ -875,7 +875,7 @@ export function RoomView({ blok }: { blok: Blok }) {
             </div>
           </div>
         )}
-        <div className="mx-auto flex max-w-[760px] items-end gap-1 rounded-[22px] border bg-background p-1.5 pl-4 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150 focus-within:border-ring/50">
+        <div className="mx-auto flex max-w-[var(--transcript-width,760px)] items-end gap-1 rounded-[22px] border bg-background p-1.5 pl-4 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150 focus-within:border-ring/50">
           <textarea
             ref={inputRef}
             rows={1}

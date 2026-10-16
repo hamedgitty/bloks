@@ -147,7 +147,7 @@ function Rewound({ messages }: { messages: Message[] }) {
         <div className="flex w-full animate-fade-in flex-col gap-1.5">
           {words.map((m) => (
             <div key={m.id} className={cn("flex w-full", m.role === "user" ? "justify-end" : "justify-start")}>
-              <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[13px] text-muted-foreground line-through decoration-muted-foreground/50 sm:max-w-[68%]">
+              <div className={cn("min-w-0 whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[13px] text-muted-foreground line-through decoration-muted-foreground/50 [overflow-wrap:anywhere]", m.role === "user" ? "max-w-[82%] sm:max-w-[68%]" : "max-w-full")}>
                 {m.text}
               </div>
             </div>
@@ -179,7 +179,7 @@ function QuietCheckIns({ messages }: { messages: Message[] }) {
         <div className="flex w-full animate-fade-in flex-col gap-1">
           {words.map((m) => (
             <div key={m.id} className={cn("flex w-full", m.role === "user" ? "justify-end" : "justify-start")}>
-              <div className="max-w-[82%] whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[12.5px] text-muted-foreground sm:max-w-[68%]">
+              <div className={cn("min-w-0 whitespace-pre-wrap rounded-2xl border border-dashed px-3 py-1.5 text-[12.5px] text-muted-foreground [overflow-wrap:anywhere]", m.role === "user" ? "max-w-[82%] sm:max-w-[68%]" : "max-w-full")}>
                 {m.text}
                 <span className="ml-2 text-[10.5px] text-muted-foreground/70">{stamp(m.at)}</span>
               </div>
@@ -335,9 +335,8 @@ function Bubble({
         fresh && (user ? "animate-send-in" : "animate-receive-in"),
       )}
     >
-      {/* On a phone the bar floats over the bubble, as it does in rooms:
-          beside it, an invisible bar held 200px of every row and squeezed
-          a message to a few words a line. */}
+      {/* The person's bar stays beside the bubble on desktop. The agent's
+          bar floats so even an invisible bar reserves no reading width. */}
       <div ref={tap.row} className={cn("group relative flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
           <MessageActionBar
@@ -355,7 +354,7 @@ function Bubble({
         )}
         {/* A column, so reactions hang under the bubble they belong to
             rather than beside it where they would push the text around. */}
-        <div className={cn("flex max-w-[82%] flex-col sm:max-w-[68%]", user && "items-end")}>
+        <div className={cn("flex flex-col", user ? "max-w-[82%] items-end sm:max-w-[68%]" : "min-w-0")}>
           {user && (message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine" || message.via === "goal") && (
             <div className="mb-0.5 px-1 text-[11px] text-muted-foreground">
               {message.via === "routine" ? `From your routine${message.routine?.name ? ` ${message.routine.name}` : ""}` : message.via === "watcher" ? "From your watcher" : message.via === "webhook" ? "From a webhook" : message.via === "goal" ? goalLabel(message.text ?? "") : "By email"}
@@ -448,20 +447,24 @@ function Bubble({
           {user && message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
         </div>
         {!user && (
-          <MessageActionBar
-            className="max-sm:absolute max-sm:-top-8 max-sm:left-0 max-sm:z-10"
-            open={tap.open}
-            message={message}
-            author={author}
-            onReply={onReply}
-            onForward={onForward}
-            onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-            onDelete={onDelete ? () => onDelete(message.id) : undefined}
-          />
+          // The bar reserves no text width. Its full-height wrapper lets
+          // it stay in reach while a tall reply scrolls past the viewport.
+          <div className="pointer-events-none absolute inset-y-0 right-0 z-10">
+            <MessageActionBar
+              className="sticky top-2"
+              open={tap.open}
+              message={message}
+              author={author}
+              onReply={onReply}
+              onForward={onForward}
+              onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
+              onDelete={onDelete ? () => onDelete(message.id) : undefined}
+            />
+          </div>
         )}
       </div>
-      {/* Under the row rather than in it, so the action bar stays centred
-          on the words. One that waited for a turn says both times; it
+      {/* The time sits below the words. One that waited for a turn says
+          both times; it
           joined the conversation when it went, which is why it is here. */}
       {message.at && !hideTime ? (
         <time
@@ -492,7 +495,7 @@ function GuestMailLine({ bot }: { bot: Bot }) {
   if (!bot.tasks?.some((t) => t.id === open && t.guestMail)) return null;
   const first = bot.tasks.find((t) => !t.guestMail);
   return (
-    <p className="mx-auto w-full max-w-[760px] px-4 pb-1 text-center text-[12px] leading-snug text-muted-foreground md:px-6">
+    <p className="mx-auto w-full max-w-[var(--transcript-width,760px)] px-4 pb-1 text-center text-[12px] leading-snug text-muted-foreground md:px-6">
       Mail from senders you have not listed is answered here, in conversation only. What you write goes to{" "}
       {first ? `"${first.title}"` : "the first conversation"}.
     </p>
@@ -511,7 +514,7 @@ function OtherLaneWaiting({ bot }: { bot: Bot }) {
   if (!waiting.length) return null;
   const first = waiting[0];
   return (
-    <div className="mx-auto w-full max-w-[760px] px-4 md:px-6">
+    <div className="mx-auto w-full max-w-[var(--transcript-width,760px)] px-4 md:px-6">
       <button
         onClick={() => dispatch({ type: "selectTask", botId: bot.id, taskId: first.id })}
         className="mb-2 flex w-full items-center gap-2 rounded-xl bg-warning/10 px-3.5 py-2 text-left text-[13px] text-warning transition-colors duration-150 hover:bg-warning/15"
@@ -591,7 +594,7 @@ function EngineBanner({ bot }: { bot: Bot }) {
   const agentic = new Set(state.providers.filter((p) => p.agentic).map((p) => p.kind));
   const alternative = ready.find((i) => agentic.has(i.driverKind)) ?? ready[0];
   return (
-    <div className="mx-auto w-full max-w-[760px] px-4 md:px-6">
+    <div className="mx-auto w-full max-w-[var(--transcript-width,760px)] px-4 md:px-6">
       <div className="mb-2 rounded-xl border border-warning/30 bg-warning/5 px-3.5 py-2.5 text-[13px] leading-relaxed">
         <div className="flex items-start gap-2">
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
@@ -763,7 +766,7 @@ function LiveBrowser({ botId, frame }: { botId: string; frame: { png: string; mi
 function StreamingBubble({ text }: { text: string }) {
   return (
     <div className="flex w-full justify-start">
-      <div className="streaming-text max-w-[82%] rounded-2xl rounded-bl-md bg-muted px-3.5 py-2 text-[14.5px] leading-relaxed text-foreground sm:max-w-[68%]">
+      <div className="streaming-text min-w-0 max-w-full rounded-2xl rounded-bl-md bg-muted px-3.5 py-2 text-[14.5px] leading-relaxed text-foreground">
         <Markdownish text={text} />
       </div>
     </div>
@@ -1344,7 +1347,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         onScroll={onScroll}
         className="flex-1 overflow-y-auto px-4 md:px-6 [overflow-anchor:none]"
       >
-        <div className="mx-auto flex max-w-[760px] flex-col gap-2.5 pb-4 pt-2">
+        <div className="mx-auto flex max-w-[var(--transcript-width,760px)] flex-col gap-2.5 pb-4 pt-2">
           {start > 0 || earlier.remaining > 0 ? (
             <button
               onClick={showEarlier}

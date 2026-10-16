@@ -256,7 +256,7 @@ export function WaitingStrip({
   return (
     <div className="px-4 md:px-6">
       <div
-        className="mx-auto flex max-h-[40vh] max-w-[760px] flex-col gap-1.5 overflow-y-auto pb-1"
+        className="mx-auto flex max-h-[40vh] max-w-[var(--transcript-width,760px)] flex-col gap-1.5 overflow-y-auto pb-1"
         aria-label="Waiting to send"
       >
         {messages.map((m) => (
