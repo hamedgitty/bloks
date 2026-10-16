@@ -33,7 +33,27 @@ export interface AgentToken {
   expiresAt: number;
   /** Changes made so far on this credential. */
   spent: number;
+  /** Only the final direct submission, retained through normal renewal. */
+  report?: ReservedReport;
 }
+
+export interface ReportResponse { status: number; body: Record<string, unknown> }
+export interface ReservedReport {
+  identity: string;
+  /** A write may have taken effect. It cannot be safely refunded. */
+  dispatched: boolean;
+  accepted: boolean;
+  response: ReportResponse;
+}
+
+export const REPORT_PENDING: ReportResponse = {
+  status: 202,
+  body: { ok: false, pending: true, note: "This direct message is still pending. Retry the same words and destination to check it; do not send a replacement." },
+};
+export const REPORT_UNCERTAIN: ReportResponse = {
+  status: 202,
+  body: { ok: false, uncertain: true, note: "This direct message may have been accepted. Retry only the same submission to check its receipt; do not send it again elsewhere." },
+};
 
 /** How long a credential lasts without its turn vouching for it. A turn
  * that is still running renews it (see `alive` below): long turns are
@@ -61,6 +81,7 @@ export type TurnAlive = (taskId: string) => boolean;
  * sender's, and past MAX_AGENT_CHAIN (server/index.ts) the next message
  * waits for the person.
  */
+// Eleven general changes plus one final direct message to another agent.
 export const TURN_BUDGET = 12;
 
 /**
@@ -351,9 +372,20 @@ export class AgentTokens {
    * is spent, which the guard turns into a refusal that says so.
    */
   spend(token: AgentToken): boolean {
-    if (token.spent >= TURN_BUDGET) return false;
+    if (this.byToken.get(token.token) !== token || token.spent >= TURN_BUDGET - 1) return false;
     token.spent++;
     return true;
+  }
+
+  /** Called synchronously after delivery guards, before any recipient write. */
+  claimReport(token: AgentToken, identity: string, now: number, alive?: TurnAlive): ReservedReport {
+    if (this.identify(token.token, now, alive) !== token) {
+      throw Object.assign(new Error("this request's credential expired or was revoked"), { status: 401 });
+    }
+    if (token.spent !== TURN_BUDGET - 1 || token.report) {
+      throw Object.assign(new Error("this turn's direct reporting slot is already occupied"), { status: 429 });
+    }
+    return token.report = { identity, dispatched: false, accepted: false, response: REPORT_PENDING };
   }
 
   revokeBot(botId: string) {

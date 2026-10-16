@@ -160,7 +160,7 @@ function foldOver(
   for (const m of messages) {
     if (m.agent?.dir === "out") {
       // one that was not delivered reached nobody
-      if (m.agent.status === "failed") continue;
+      if (m.agent.status === "failed" || m.agent.status === "uncertain") continue;
       if (o.asker?.by === "agent" && o.asker.peerId === m.agent.peerId) replied = true;
       else if (!messaged.some((p) => p.peerId === m.agent!.peerId)) messaged.push({ peerId: m.agent.peerId, peerName: m.agent.peerName });
     } else if (m.kind === "activity" && m.tool && !m.agent) {

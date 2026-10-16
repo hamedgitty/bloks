@@ -99,7 +99,7 @@ export interface AgentNote {
   peerId: string;
   peerName: string;
   /** "out" only: whether it was taken, queued behind a running turn, or refused. */
-  status?: "sent" | "queued" | "failed";
+  status?: "sent" | "queued" | "failed" | "uncertain";
 }
 
 /** One note recall added to a turn (Message.recalled). */

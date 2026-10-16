@@ -20,7 +20,7 @@ import { lineSplitter } from "../ndjson.ts";
 
 export interface RpcLink {
   /** Call the child and wait for its reply. */
-  request(method: string, params?: unknown): Promise<any>;
+  request(method: string, params?: unknown, beforeWrite?: () => void): Promise<any>;
   /** Tell the child something, expecting no reply. */
   notify(method: string, params?: unknown): void;
   /** Answer a request the child made of us. */
@@ -97,11 +97,17 @@ export function attachRpc(options: RpcOptions): RpcLink {
   }));
 
   return {
-    request(method, params) {
+    request(method, params, beforeWrite) {
       return new Promise((resolve, reject) => {
         const id = nextId++;
         pending.set(id, { resolve, reject });
-        write({ jsonrpc: "2.0", id, method, params });
+        try {
+          beforeWrite?.();
+          write({ jsonrpc: "2.0", id, method, params });
+        } catch (error) {
+          pending.delete(id);
+          reject(error);
+        }
       });
     },
     notify(method, params) {

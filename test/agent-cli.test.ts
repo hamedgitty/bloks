@@ -298,7 +298,7 @@ describe("the credential itself", () => {
     // does
     const tokens = new AgentTokens();
     const minted = tokens.mint(ME, "task-1", 1);
-    for (let i = 0; i < TURN_BUDGET; i++) {
+    for (let i = 0; i < TURN_BUDGET - 1; i++) {
       assert.equal(tokens.spend(minted), true, `change ${i + 1} should be allowed`);
     }
     assert.equal(tokens.spend(minted), false, "the budget should run out");
