@@ -18,11 +18,11 @@
 //   bloks      the permission bridge, so the agent can ask the user
 //   computer   the agent's cloud desktop, or this Mac
 //   composio   whatever third-party accounts are connected
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
@@ -1124,18 +1124,39 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           delete env.ANTHROPIC_API_KEY;
           delete env.CLAUDECODE;
           delete env.CLAUDE_CODE_ENTRYPOINT;
-          const child = spawn(config.cli, ["-p", "--model", ONE_SHOT_MODEL, "--output-format", "text"], {
-            env,
-            stdio: ["pipe", "pipe", "pipe"],
-            windowsHide: true,
-          });
+          // This writes text, not work in the server's project. Keep the
+          // sign-in home, but load none of its customizations or tools.
+          const cwd = mkdtempSync(join(tmpdir(), "bloks-text-"));
+          const tidy = () => {
+            try {
+              rmSync(cwd, { recursive: true, force: true, maxRetries: 3 });
+            } catch (error) {
+              console.error("[claude-text] could not remove the temporary folder:", error);
+            }
+          };
+          const cli = /[/\\]/.test(config.cli) ? resolvePath(config.cli) : config.cli;
+          let child: ChildProcessWithoutNullStreams;
+          try {
+            child = spawn(cli, [
+              "-p", "--model", ONE_SHOT_MODEL, "--output-format", "text",
+              "--safe-mode", "--setting-sources", "", "--tools", "",
+              "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+              "--no-session-persistence",
+            ], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+          } catch (error) {
+            tidy();
+            reject(error);
+            return;
+          }
           let out = "";
           let err = "";
+          let killTimer: ReturnType<typeof setTimeout> | undefined;
           const timer = setTimeout(() => {
             // asked to stop first, so it can take its own children with it,
             // and only then made to
             child.kill("SIGTERM");
-            setTimeout(() => child.kill("SIGKILL"), 3_000).unref?.();
+            killTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+            killTimer.unref?.();
             reject(new Error("Claude Code did not answer within a minute"));
           }, 60_000);
           timer.unref?.();
@@ -1148,6 +1169,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           });
           child.on("close", (code) => {
             clearTimeout(timer);
+            clearTimeout(killTimer);
+            tidy();
             if (code === 0) resolve(out.trim());
             else reject(new Error(err.trim() || `Claude Code exited with ${code}`));
           });

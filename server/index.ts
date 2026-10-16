@@ -7530,9 +7530,10 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
   if (needsDefrag(summary)) {
     try {
       const tighter = (await instance.generateText(defragPrompt(summary))).trim();
-      if (tighter) summary = tighter;
+      if (!tighter) return false;
+      summary = tighter;
     } catch {
-      /* keep the baggy one; it is still a summary */
+      return false;
     }
   }
 
