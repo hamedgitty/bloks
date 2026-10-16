@@ -277,7 +277,7 @@ export class EngineHelperBroker {
         ...(req.resume ? ["--resume", req.sessionId] : ["--session-id", req.sessionId, "--name", "Claude collaboration"]),
         ...(current.additionalDirectories.length ? ["--add-dir", ...current.additionalDirectories] : [])];
       const child = lease.invoke(() => spawn(profile.executable, args, { cwd: profile.cwd, env: profile.environment,
-        stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" }));
+        stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true }));
       rt.child = child;
       // No event-loop gap exists between actual spawn and installing its exact
       // child generation. Activation afterwards sees this registered lease.

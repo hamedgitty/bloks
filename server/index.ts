@@ -4507,10 +4507,10 @@ async function startClaimedTurn(
   const directPending = (stopped: boolean) => {
     if (!directSource || returnedDirect) return;
     returnedDirect = true;
-    if (stopped) {
-      const message = store.patchMessage(roomId, directSource.id, { queued: false, unsent: true });
-      if (message) broadcast({ kind: "message.patch", threadId: roomId, message });
-    } else {
+    // Normal Stop preserves the ordinary source history and existing
+    // catch-up semantics. It never transfers this request into the queue.
+    if (stopped) return;
+    {
       const message = store.patchMessage(roomId, directSource.id, { queued: true, queuedAt: directSource.at, namedSkills: opts.byYou === true && opts.personal !== false && !opts.from });
       if (message) broadcast({ kind: "message.patch", threadId: roomId, message });
       const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
