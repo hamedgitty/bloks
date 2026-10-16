@@ -615,3 +615,17 @@ describe("a room", () => {
     assert.equal(line(foldsOf(folded)[0]), "worked 5 min · 1 command · 3 files");
   });
 });
+
+test("uncertain report receipts do not become a claimed reply or delivery in the folded result", () => {
+  fresh();
+  const uncertain = (id: string, peerId: string) => messaged(id, peerId, "Synthetic peer", {
+    agent: { dir: "out", peerId, peerName: "Synthetic peer", status: "uncertain" },
+    tool: { name: "messaged Synthetic peer" },
+  });
+  const [fold] = foldsOf(foldTurns([
+    asked("in", "reviewer", "Synthetic reviewer"), tool("work"),
+    uncertain("back", "reviewer"), uncertain("forward", "next-owner"),
+  ], false));
+  assert.equal(fold.replied, false);
+  assert.deepEqual(fold.messaged, []);
+});

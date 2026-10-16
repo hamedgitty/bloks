@@ -50,7 +50,7 @@ export interface AgentNote {
   dir: "in" | "out" | "reply";
   peerId: string;
   peerName: string;
-  status?: "sent" | "queued" | "failed";
+  status?: "sent" | "queued" | "failed" | "uncertain";
 }
 
 /** One note recall added to the turn a message started (server/store.ts). */

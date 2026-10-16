@@ -320,8 +320,10 @@ export interface ProviderAdapter {
    * never answer false for words the engine may still act on, or they
    * would be said twice. Optional: an engine that cannot take input
    * mid-turn leaves it out and everything waits for the next turn.
+   * onDispatch, when supplied for a reserved report, runs immediately before
+   * the physical write. Errors after that attempt must propagate, not fall back.
    */
-  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[] }): Promise<boolean>;
+  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[]; onDispatch?: () => void }): Promise<boolean>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
   respondToRequest(
     threadId: ThreadId,

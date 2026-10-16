@@ -28,7 +28,7 @@ interface ExchangeEntry {
   id: string;
   at: number;
   dir: "in" | "out" | "reply" | "take-back";
-  status?: "sent" | "queued" | "failed";
+  status?: "sent" | "queued" | "failed" | "uncertain";
   from: string;
   fromName: string;
   to: string;
@@ -38,7 +38,7 @@ interface ExchangeEntry {
   text: string;
 }
 
-const STATUS_WORDS: Record<string, string> = { queued: "waiting for its turn", failed: "not delivered" };
+const STATUS_WORDS: Record<string, string> = { queued: "waiting for its turn", failed: "not delivered", uncertain: "acceptance uncertain" };
 
 /** One compact row in an agent's chat for a message to or from another agent. */
 export function AgentExchangeRow({
@@ -185,6 +185,7 @@ export function AgentExchangeDialog({
                     {/* context, not a message: it stayed in the speaker's own chat */}
                     <span>{entry.dir === "take-back" ? `took back waiting messages to ${entry.toName}` : entry.dir === "reply" ? `in its own chat, not sent to ${entry.toName}` : `to ${entry.toName}`}</span>
                     {entry.status === "failed" && <span className="text-destructive">not delivered</span>}
+                    {entry.status === "uncertain" && <span>acceptance uncertain</span>}
                     <span className="ml-auto shrink-0 tabular-nums">{stamp(entry.at)}</span>
                   </div>
                   {newLane && (

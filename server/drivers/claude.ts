@@ -281,7 +281,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       turnId: string;
       abort: () => void;
       /** More words for this turn, or false when it can no longer take them. */
-      steer: (text: string) => boolean;
+      steer: (text: string, onDispatch?: () => void) => boolean;
       broker?: AskBroker;
     }
     /** At most one turn per thread. A second send while one is live is a
@@ -1008,17 +1008,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         inputOpen = false;
         child.stdin.end();
       }
-      const say = (text: string) => {
+      const say = (text: string, onDispatch?: () => void) => {
         // Over stdin, never argv: a pasted document would blow past
         // ARG_MAX, and argv is readable by every process on the machine.
         const message = { type: "user", message: { role: "user", content: text } };
+        onDispatch?.();
         child.stdin.write(JSON.stringify(message) + "\n");
         appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: message });
       };
-      const steer = (text: string) => {
+      const steer = (text: string, onDispatch?: () => void) => {
         if (finished || stopping || exited || !inputOpen) return false;
-        steered = true;
-        say(text);
+        say(text, () => { onDispatch?.(); steered = true; });
         return true;
       };
 
@@ -1083,7 +1083,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
 
-        steerTurn: async (threadId, text) => running.get(threadId)?.steer(text) ?? false,
+        steerTurn: async (threadId, text, options) => running.get(threadId)?.steer(text, options?.onDispatch) ?? false,
 
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 

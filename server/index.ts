@@ -135,7 +135,7 @@ import {
   updateCount,
   type RegistryEntry,
 } from "./skill-registry.ts";
-import { AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint } from "./agent-cli.ts";
+import { REPORT_UNCERTAIN, type ReservedReport, type ReportResponse, AgentTokens, allows, capabilities, cliBriefing, cliMovedNote, runsAProcess, secretHint } from "./agent-cli.ts";
 import {
   CACHE_LIFETIME_MS,
   COMPACT_AT,
@@ -3833,6 +3833,7 @@ async function startClaimedTurn(
     /** One turn's answer to "where does this run", e.g. a routine that
      * wants the cloud computer regardless of the agent's own setting. */
     computerOverride?: "cloud" | "local" | "off";
+    admission?: DirectAdmission;
     /** The user message is already in the transcript (a drained queue);
      * do not append it again. */
     presetMessage?: boolean;
@@ -3969,7 +3970,7 @@ async function startClaimedTurn(
       entry.items.push({ text, ...(opts.chain ? { chain: opts.chain } : {}) });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false, chain: opts.chain });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false, chain: opts.chain, admission: opts.admission });
     }
     return;
   }
@@ -4152,6 +4153,7 @@ async function startClaimedTurn(
     ...store.messagesFor(roomId).filter((m) => telegramInputIds.includes(m.id)).map((m) => m.at),
   );
   if (!blok && !opts.presetMessage) {
+    opts.admission?.beforeEffect();
     const userMessage = store.appendMessage(roomId, {
       role: "user",
       kind: "text",
@@ -4163,6 +4165,7 @@ async function startClaimedTurn(
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
     });
+    opts.admission?.accepted("sent");
     if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
   }
@@ -9417,6 +9420,7 @@ function queueOnLane(
   options: {
     replyTo?: ReplyRef;
     from?: { botId: string; name: string };
+    admission?: DirectAdmission;
     /** Not the person: a webhook, a watcher, or Bloks keeping a goal going. */
     via?: "webhook" | "watcher" | "goal";
     routine?: Message["routine"];
@@ -9436,6 +9440,7 @@ function queueOnLane(
   // person's own words.
   const accepting = !options.from && !options.via && store.bot(botId) ? acceptingNative(store.bot(botId)!, laneId) : undefined;
   const commandInstance = accepting && (options.personal !== false || (options.routine && registry.get(accepting)?.driverKind === "claudeAgent")) ? accepting : null;
+  options.admission?.beforeEffect();
   const message = store.appendMessage(laneId, {
     role: "user", kind: "text", text, queued: true, queuedAt: Date.now(),
     ...(options.waitsFor ? { waitsFor: options.waitsFor } : {}),
@@ -9449,6 +9454,7 @@ function queueOnLane(
     ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance } : {}),
   });
+  options.admission?.accepted("queued");
   broadcast({ kind: "message", threadId: laneId, message });
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
   entry.items.push({
@@ -9489,7 +9495,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -9513,7 +9519,7 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"] } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
   if (commandTurns.has(lane.id) || (!options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
@@ -9537,8 +9543,15 @@ async function steerOne(
   const words = from ? fromAgentPrompt(from, text) : text;
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
-  const took = await (names.length ? adapter.steerTurn(lane.id, words, { skillNames: names }) : adapter.steerTurn(lane.id, words)).catch(() => false);
+  const taking = adapter.steerTurn(lane.id, words, {
+    ...(names.length ? { skillNames: names } : {}),
+    ...(options.admission ? { onDispatch: () => options.admission!.beforeEffect() } : {}),
+  });
+  // A thrown reserved steer may already have reached the engine. Its caller
+  // must retain uncertainty, rather than queue a second delivery.
+  const took = options.admission ? await taking : await taking.catch(() => false);
   if (!took) return null;
+  options.admission?.accepted("steered");
   const message = store.appendMessage(lane.id, {
     role: "user",
     kind: "text",
@@ -9654,6 +9667,12 @@ function storedPrompt(message: Message): string {
     ? fromRoutinePrompt(message.routine, text) : text;
 }
 
+/** Per-request observation at recipient admission, used only by the final say. */
+interface DirectAdmission {
+  beforeEffect(): void;
+  accepted(kind: "sent" | "queued" | "steered"): void;
+}
+
 /** `yours` says the person wrote it, which moves the agent up the
  * sidebar and makes its answer a reply to them. Said by the caller,
  * because an agent writing to itself has no `from` either. */
@@ -9674,6 +9693,7 @@ async function sendUserMessage(
     now?: boolean;
     /** An agent sent this, to another agent or to itself (chainFrom). */
     chain?: AgentChain;
+    guardedAdmission?: (lane: TaskRecord) => DirectAdmission;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -9693,6 +9713,7 @@ async function sendUserMessage(
   // Refused whether it would start a turn or wait for one: either way it
   // is one more turn nobody but the agents asked for.
   if (options.chain && chainPastLimit(options.chain.depth)) throw chainRefusal(bot, lane.id, options.chain, text);
+  const admission = options.guardedAdmission?.(lane);
   // waiting behind a turn or not, it was said to this agent now
   const yours = Boolean(options.yours && !options.from);
   if (yours) withYou({ bot });
@@ -9730,7 +9751,7 @@ async function sendUserMessage(
     if (options.from && options.now && lane.busy) {
       const why = mayJoin(options.from.botId, bot, lane);
       askedEngine = !why;
-      const steered = why ? null : await steerLane(bot, lane, text, { replyTo: options.replyTo, from: options.from, personal: false });
+      const steered = why ? null : await steerLane(bot, lane, text, { replyTo: options.replyTo, from: options.from, personal: false, admission });
       if (steered) {
         return {
           ok: true,
@@ -9743,7 +9764,7 @@ async function sendUserMessage(
       notJoined = ` It did not join that turn: ${why ?? `${bot.name}'s turn could not take words mid-turn just then`}.`;
     }
     queueOnLane(bot.id, lane.id, text, {
-      replyTo: options.replyTo, from: options.from, personal: options.personal, chain: options.chain?.depth,
+      replyTo: options.replyTo, from: options.from, personal: options.personal, chain: options.chain?.depth, admission,
       ...(drain.on && yours ? { waitsFor: "restart" as const } : {}),
     });
     // Asking the engine took a moment, and the turn may have ended in it,
@@ -9761,7 +9782,7 @@ async function sendUserMessage(
     const takeBack = options.from ? ` To take back your messages while they wait, use \`bloks take-back ${bot.id}\`.` : "";
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note: waits + notJoined + stop + takeBack };
   }
-  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth });
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth, admission });
   triggersFired({ kind: "message", targetId: bot.id, text, fromUser: true });
   // which conversation it went to, so a caller outside the app (the MCP
   // connector) reads the answer from there and not from whichever lane
@@ -11434,6 +11455,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // surface than the person at the keyboard, and the narrowing has to
   // happen whatever else the request looks like.
   const asAgent = agentTokens.identify(bearerToken(req), Date.now(), turnAlive);
+  // Chosen once before body parsing. An eleventh general write never becomes
+  // a second debit merely because another request reaches the reserve first.
+  let reservedDirect = false;
   if (asAgent) {
     if (!isLocalRequest(req)) {
       return json(res, 403, { error: "an agent's credential only works on this machine" });
@@ -11448,8 +11472,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // Reading is free; changing the workspace is counted, so a pair of
     // agents cannot message each other in a circle all afternoon.
     if (method !== "GET" && !agentTokens.spend(asAgent)) {
-      return json(res, 429, {
-        error: "this turn has changed as much as one turn may. Finish up and say what you did.",
+      const direct = method === "POST" && path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
+      if (direct && direct[1] !== asAgent.botId) reservedDirect = true;
+      else return json(res, 429, {
+        error: asAgent.report
+          ? "this turn's general changes are used and its direct reporting slot is occupied."
+          : "this turn's general changes are used. One direct message to another agent remains available.",
       });
     }
   }
@@ -12315,6 +12343,102 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const text = clamp(body.text, MAX_MESSAGE_CHARS);
       if (!text) return json(res, 400, { error: "text required" });
+      if (reservedDirect && asAgent) {
+        const current = () => agentTokens.identify(bearerToken(req), Date.now(), turnAlive) === asAgent;
+        const unauthorized = () => json(res, 401, { error: "this request's credential expired or was revoked" });
+        if (!current()) return unauthorized();
+        const requestedTask = typeof body.taskId === "string" && body.taskId ? body.taskId : undefined;
+        const replyTo = replyRef(body.replyTo);
+        const now = body.now === true;
+        // The omitted selector is stable, even if General or lane state changes.
+        const identity = JSON.stringify([m[1], text, requestedTask ?? null, replyTo ?? null, now]);
+        if (asAgent.report) {
+          if (asAgent.report.identity !== identity) return json(res, 429, { error: "this turn's direct reporting slot is occupied by another submission" });
+          const receipt = asAgent.report.response;
+          return json(res, receipt.status, receipt.body);
+        }
+        const sender = store.bot(asAgent.botId);
+        const recipient = store.bot(m[1]);
+        const from = sender && recipient ? { botId: sender.id, name: sender.name } : undefined;
+        if (!sender) return json(res, 403, { error: "the sending agent no longer exists" });
+        const taskId = requestedTask ?? (recipient ? mainLaneOf(recipient).id : undefined);
+        let claim: ReservedReport | undefined;
+        let refused: ReportResponse | undefined;
+        let activityId: string | undefined;
+        let activityAttempted = false;
+        let activityStatus: AgentNote["status"];
+        const note = (status: NonNullable<AgentNote["status"]>) => {
+          if (!from || !recipient || !sender.tasks.some((t) => t.id === asAgent.taskId) || activityStatus === status) return;
+          activityStatus = status;
+          // A throwing append may already have persisted its row. Do not
+          // append again when that optional activity has no returned id.
+          if (activityAttempted && !activityId) return;
+          activityAttempted = true;
+          try {
+            const fields = {
+              tool: { name: `messaged ${recipient.name}`, ...(status === "uncertain" ? {} : { ok: status !== "failed" }) },
+              agent: { dir: "out" as const, peerId: recipient.id, peerName: recipient.name, status },
+            };
+            const message = activityId
+              ? store.patchMessage(asAgent.taskId, activityId, fields)
+              : store.appendMessage(asAgent.taskId, { role: "bot", kind: "activity", text, ...fields });
+            if (message) {
+              activityId = message.id;
+              broadcast({ kind: "message", threadId: asAgent.taskId, message });
+            }
+          } catch { /* ancillary activity cannot erase known recipient admission */ }
+        };
+        // No readiness probe is needed to admit a report. Freeze the actual
+        // acceptance before activity/broadcast/output; retries perform none.
+        const sending = sendUserMessage(m[1], text, {
+          taskId, replyTo, from, personal: false, now,
+          chain: chainFrom(sender, asAgent.taskId),
+          guardedAdmission: (lane) => {
+            claim = agentTokens.claimReport(asAgent, identity, Date.now(), turnAlive);
+            const held = claim;
+            const destination = { taskId: lane.id, lane: lane.title };
+            return {
+              beforeEffect() {
+                if (!held.dispatched && !current()) throw Object.assign(new Error("this request's credential expired or was revoked"), { status: 401 });
+                held.dispatched = true;
+                held.response = REPORT_UNCERTAIN;
+              },
+              accepted(kind) {
+                if (held.accepted) return;
+                held.accepted = true;
+                asAgent.spent++;
+                held.response = { status: 202, body: {
+                  ok: true, ...destination,
+                  ...(kind === "queued" ? { queued: true, note: "This message is queued until the recipient can take it." } : {}),
+                  ...(kind === "steered" ? { steered: true, note: "The recipient's running turn took this message." } : {}),
+                } };
+                note(kind === "queued" ? "queued" : "sent");
+              },
+            };
+          },
+        }).catch((error: unknown) => {
+          if (claim?.accepted) return;
+          if (claim?.dispatched) {
+            claim.response = REPORT_UNCERTAIN;
+            note("uncertain");
+          } else {
+            if (asAgent.report === claim) asAgent.report = undefined;
+            const e = error as { status?: number; message?: string };
+            // Proven before the first recipient/RPC effect, not inferred
+            // from an error code. Keep the existing definite guard reason.
+            refused = { status: e.status ?? 500, body: { error: e.status ? e.message : "This message was not accepted before dispatch." } };
+            note("failed");
+          }
+        });
+        // One event-loop yield, not a per-retry waiter, polling timer or queue.
+        // Slow preparation remains observable and can settle this same claim.
+        await Promise.race([sending, new Promise<void>((done) => setImmediate(done))]);
+        if (!current()) return unauthorized();
+        if (claim?.dispatched && !claim.accepted) note("uncertain");
+        const receipt = refused ?? claim?.response;
+        if (!receipt) return json(res, 500, { error: "This message was not accepted before dispatch." });
+        return json(res, receipt.status, receipt.body);
+      }
       // a lane may be named; otherwise the one the person has open, or, for
       // another agent writing, General: which lane the person happened to
       // be reading is no business of an agent's message
