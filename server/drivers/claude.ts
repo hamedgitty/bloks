@@ -73,7 +73,7 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses } from "./engine-processes.ts";
+import { EngineProcesses, processGroup } from "./engine-processes.ts";
 import { EnginePauseError, type EngineInvocation, type InvocationOrigin } from "../engine-pauses.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
@@ -266,8 +266,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (disposed) throw new EnginePauseError("closed");
       return input.enginePauses?.prepare(origin ?? service, nested && model ? [...route(model), ...route(null)] : route(model), purpose);
     };
-    const activeChild = (child: ChildProcessWithoutNullStreams | ReturnType<typeof execFile>) =>
-      child.exitCode === null && child.signalCode === null;
+    /** Every physical process owned by this instance, including probes. */
+    const engines = new EngineProcesses();
     // Auth/readiness are actual invocations too. No initial selection grant
     // can authorize a probe after an await or a policy activation.
     const probe = async (args: string[]) => {
@@ -275,24 +275,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       try {
         if (disposed) throw new EnginePauseError("closed");
         return await new Promise<{ error: Error | null; stdout: string }>((resolve, reject) => {
-          let hard: ReturnType<typeof setTimeout> | undefined;
           const start = () => execFile(config.cli, args, { timeout: 8_000, windowsHide: true, encoding: "utf8" }, (error, stdout) => {
-            clearTimeout(hard);
             void (async () => {
-              await lease?.closed();
+              if (!lease?.signal.aborted && processGroup(child).closed()) await lease?.closed(); else await lease?.residual();
               if (lease?.signal.aborted) throw new EnginePauseError("closed");
               resolve({ error, stdout });
             })().catch(reject);
           });
           const child = lease ? lease.invoke(start) : start();
-          lease?.onCancel(() => {
-            if (!activeChild(child)) return;
-            child.kill("SIGTERM");
-            hard = setTimeout(() => { if (activeChild(child)) child.kill("SIGKILL"); }, 3_000);
-            hard.unref?.();
-          });
+          processGroup(child, false);
+          engines.add(child);
+          lease?.onCancel(() => processGroup(child).stop(3_000));
         });
-      } catch (error) { await lease?.closed(); throw error; }
+      } catch (error) { if (lease?.signal.aborted) await lease?.residual(); else await lease?.closed(); throw error; }
     };
 
     // Snapshot control was added in Claude Code 2.1.257. Probe before any
@@ -333,8 +328,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * next turn's (which has never heard of it). Each is closed when its
      * process exits. */
     const afterTurn = new Map<string, Set<AskBroker>>();
-    /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
-    const engines = new EngineProcesses();
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -367,6 +360,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       /** Set once Stop (or a stalled call) has asked this process to end. */
       let stopping = false;
       let paused = false;
+      let admission: EngineInvocation | undefined;
       /** What a stalled call was, as the person read it. */
       let stalled: string | null = null;
       /** The turn ended without the process letting go; ignore it from here. */
@@ -530,6 +524,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const socketPath = brokerSocket(threadId, turnId);
       const broker = createAskBroker({
         socketPath,
+        writeReply: (ask, behavior, write) => {
+          if (ask.kind === "permission" && behavior === "deny") return write();
+          try {
+            if (!admission) throw new EnginePauseError("closed");
+            admission.invoke(write);
+          } catch (error) {
+            paused = true; stopping = true;
+            if (child) processGroup(child).stop(STOP_GRACE_MS);
+            throw error;
+          }
+        },
         onAsk: (ask) => {
           asking++;
           lastSign = Date.now();
@@ -598,7 +603,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       delete env.CLAUDECODE;
       delete env.CLAUDE_CODE_ENTRYPOINT;
 
-      let admission: EngineInvocation | undefined;
       let child: ChildProcessWithoutNullStreams;
       try {
         admission = await prepare(turn.invocationOrigin, turn.model ?? null, "claude-turn", true);
@@ -991,7 +995,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         exited = true;
         // A cancelled request's local close is not remote completion. Keep
         // it visible even after expiry, parent end, deletion or reload.
-        void (admission?.signal.aborted || abandoned || stopping ? admission?.residual() : admission?.closed())?.catch(() => {});
+        void (admission?.signal.aborted || abandoned || stopping || !processGroup(child).closed() ? admission?.residual() : admission?.closed())?.catch(() => {});
         const kept = afterTurn.get(threadId);
         if (broker && kept?.delete(broker)) {
           broker.close();
@@ -1013,19 +1017,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         late.unref?.();
       });
 
-      const signal = (sig: NodeJS.Signals) => {
-        try {
-          process.kill(-child.pid!, sig);
-        } catch {
-          // no process group (already reaped, or platform quirk)
-          try {
-            child.kill(sig);
-          } catch {
-            /* gone */
-          }
-        }
-      };
-
       // SIGTERM, then SIGKILL, then the turn ends whether or not the
       // process let go. A CLI stuck in a tool call sat through SIGTERM
       // for two hours (GitHub 146), and a process blocked in a read the
@@ -1034,11 +1025,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const abort = () => {
         if (finished || stopping) return;
         stopping = true;
-        signal("SIGTERM");
-        const kill = setTimeout(() => {
-          if (!exited) signal("SIGKILL");
-        }, STOP_GRACE_MS);
-        kill.unref?.();
+        processGroup(child).stop(STOP_GRACE_MS);
         const giveUp = setTimeout(() => {
           if (finished) return;
           abandoned = true;
@@ -1049,19 +1036,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       admission?.onCancel(() => {
         paused = true;
         stopping = true;
-        // Parent completion does not discard a still-running physical call.
-        // Never signal a later child by a reused lane/PID after observed exit.
-        if (activeChild(child)) {
-          signal("SIGTERM");
-          const hard = setTimeout(() => { if (activeChild(child)) signal("SIGKILL"); }, STOP_GRACE_MS);
-          hard.unref?.();
-        }
+        // The owned group survives leader close; cancellation still reaches
+        // same-group tools without ever looking up a replacement lane child.
+        processGroup(child).stop(STOP_GRACE_MS);
         const bounded = setTimeout(() => {
           if (!finished) { abandoned = true; endStopped(); }
           void admission?.residual().catch(() => {});
         }, STOP_GRACE_MS * 2);
         bounded.unref?.();
-        child.once("close", () => clearTimeout(bounded));
+        child.once("close", () => { if (processGroup(child).closed()) clearTimeout(bounded); });
       });
 
       // A call gone silent ends the turn, and says which call it was.
@@ -1258,19 +1241,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           }
           let out = "";
           let err = "";
-          let killTimer: ReturnType<typeof setTimeout> | undefined;
           admission?.onCancel(() => {
-            if (!activeChild(child)) return;
-            child.kill("SIGTERM");
-            killTimer = setTimeout(() => { if (activeChild(child)) child.kill("SIGKILL"); }, 3_000);
-            killTimer.unref?.();
+            processGroup(child).stop(3_000);
           });
           const timer = setTimeout(() => {
-            // asked to stop first, so it can take its own children with it,
-            // and only then made to
-            child.kill("SIGTERM");
-            killTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
-            killTimer.unref?.();
+            processGroup(child).stop(3_000);
             reject(new Error("Claude Code did not answer within a minute"));
           }, 60_000);
           timer.unref?.();
@@ -1283,10 +1258,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           });
           child.on("close", async (code) => {
             clearTimeout(timer);
-            clearTimeout(killTimer);
             tidy();
             try {
-              if (!started || (code === 0 && out.trim() && !admission?.signal.aborted)) await admission?.closed();
+              if (!started || (code === 0 && out.trim() && !admission?.signal.aborted && processGroup(child).closed())) await admission?.closed();
               else await admission?.residual();
               if (admission?.signal.aborted) reject(new EnginePauseError("closed"));
               else if (code === 0) resolve(out.trim());

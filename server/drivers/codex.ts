@@ -39,7 +39,7 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses, signalGroup } from "./engine-processes.ts";
+import { EngineProcesses, signalGroup, processGroup } from "./engine-processes.ts";
 import { EnginePauseError, type EngineInvocation, type InvocationOrigin } from "../engine-pauses.ts";
 
 const DRIVER_KIND = "codex";
@@ -165,7 +165,7 @@ function rememberTotal(thread: string, total: TokenCount) {
 
 /** Asks the installed CLI what it can run. No thread is started and
  * nothing is spent; the process is killed as soon as the list lands. */
-interface ProbeAdmission { prepare(): Promise<EngineInvocation | undefined>; disposed(): boolean; track(child: ReturnType<typeof spawn>): void }
+interface ProbeAdmission { prepare(): Promise<EngineInvocation | undefined>; disposed(): boolean; engines: EngineProcesses }
 async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promise<T>, gate?: ProbeAdmission): Promise<T | null> {
   const admission = await gate?.prepare();
   if (gate?.disposed()) { await admission?.closed(); throw new EnginePauseError("closed"); }
@@ -173,24 +173,18 @@ async function probe<T>(cli: string, cwd: string, read: (rpc: RpcLink) => Promis
   delete env.OPENAI_API_KEY;
   let child;
   try {
-    const start = () => spawn(cli, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const start = () => spawn(cli, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: OWN_GROUP, windowsHide: true });
     child = admission ? admission.invoke(start) : start();
-    gate?.track(child);
+    gate?.engines.add(child);
   } catch (error) {
     await admission?.closed();
     if (error instanceof EnginePauseError) throw error;
     return null;
   }
-  let hard: ReturnType<typeof setTimeout> | undefined;
-  admission?.onCancel(() => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    child.kill("SIGTERM");
-    hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 3_000);
-    hard.unref?.();
-  });
+  const group = processGroup(child);
+  admission?.onCancel(() => group.stop(3_000));
   child.once("close", () => {
-    clearTimeout(hard);
-    void (admission?.signal.aborted ? admission?.residual() : admission?.closed())?.catch(() => {});
+    void (admission?.signal.aborted || !group.closed() ? admission?.residual() : admission?.closed())?.catch(() => {});
   });
   child.stderr?.resume();
   const link = attachRpc({
@@ -381,22 +375,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       return input.enginePauses?.prepare(origin ?? service, purpose === "codex-turn" ? [...routes(model), ...routes(null)] : routes(model), purpose);
     };
     const engines = new EngineProcesses();
-    const probeGate: ProbeAdmission = { prepare: () => prepare(service, null, "codex-probe"), disposed: () => disposed, track: child => engines.add(child) };
+    const probeGate: ProbeAdmission = { prepare: () => prepare(service, null, "codex-probe"), disposed: () => disposed, engines };
     const execProbe = async (args: string[]) => {
       const admission = await prepare(service, null, "codex-auth");
       try {
         if (disposed) throw new EnginePauseError("closed");
         return await new Promise<{ error: Error | null; stdout: string; stderr: string }>((resolve, reject) => {
-          let hard: ReturnType<typeof setTimeout> | undefined;
           const start = () => execFile(config.cli, args, { timeout: 8_000, windowsHide: true, encoding: "utf8" }, (error, stdout, stderr) => {
-            clearTimeout(hard);
-            void (async () => { await admission?.closed(); if (admission?.signal.aborted) throw new EnginePauseError("closed"); resolve({ error, stdout, stderr }); })().catch(reject);
+            void (async () => { if (!admission?.signal.aborted && processGroup(child).closed()) await admission?.closed(); else await admission?.residual(); if (admission?.signal.aborted) throw new EnginePauseError("closed"); resolve({ error, stdout, stderr }); })().catch(reject);
           });
           const child = admission ? admission.invoke(start) : start();
+          processGroup(child, false);
           engines.add(child);
-          admission?.onCancel(() => { if (child.exitCode !== null || child.signalCode !== null) return; child.kill("SIGTERM"); hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 3_000); hard.unref?.(); });
+          admission?.onCancel(() => processGroup(child).stop(3_000));
         });
-      } catch (error) { await admission?.closed(); throw error; }
+      } catch (error) { if (admission?.signal.aborted) await admission?.residual(); else await admission?.closed(); throw error; }
     };
 
     // replaced in place once the CLI answers; a failed probe (not
@@ -500,6 +493,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         child = admission ? admission.invoke(start) : start();
       } catch (error) { await admission?.closed(); throw error; }
       engines.add(child);
+      const group = processGroup(child);
 
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
@@ -570,10 +564,25 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       admission?.onCancel(() => {
         paused = true; stopping = true; abort(); finish(false, "engine_paused");
-        const hard = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) signalGroup(child, "SIGKILL"); }, 3_000);
-        hard.unref?.();
-        child.once("close", () => clearTimeout(hard));
+        group.stop(3_000);
       });
+
+      const replyGranted = (id: unknown, result: unknown, denied: unknown): boolean => {
+        try {
+          if (admission) admission.invoke(() => rpc.reply(id, result));
+          else rpc.reply(id, result);
+          return true;
+        } catch (error) {
+          // A policy refusal is orderly cancellation, not a provider failure
+          // or an exception escaping the native input callback.
+          if (!(error instanceof EnginePauseError)) throw error;
+          rpc.reply(id, denied);
+          paused = true; stopping = true;
+          group.stop(3_000);
+          finish(false, "engine_paused");
+          return false;
+        }
+      };
 
       // ── the agent asking us something ──
       function onAgentRequest(msg: any) {
@@ -626,16 +635,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         // questions: a question has no safe automatic answer, only a less
         // useful one. A turn the owner did not vouch for asks anyway.
         if (((config.fullAuto && !turn.untrusted) || turn.fullAccess) && !isQuestion) {
-          logDecision("resolved", "allow", "auto");
-          return rpc.reply(msg.id, permissionReply(true, "auto"));
+          const allowed = replyGranted(msg.id, permissionReply(true, "auto"), permissionReply(false, "policy"));
+          logDecision("resolved", allowed ? "allow" : "deny", allowed ? "auto" : "engine-paused");
+          return;
         }
 
         const answer: Answer = (behavior, message, source = "user", reply = true) => {
           if (!asks.delete(requestId)) return;
           rpcAsks.delete(msg.id);
           clearTimeout(timer);
-          logDecision("resolved", behavior, source);
-
           if (reply && isQuestion) {
             // Each sub-question is answered by id; we put the same text
             // against all of them, since the card asked as one thing.
@@ -643,12 +651,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             for (const q of Array.isArray(params.questions) ? params.questions : []) {
               answers[q.id] = { answers: [message || UNANSWERED_QUESTION] };
             }
-            rpc.reply(msg.id, { answers });
+            if (!replyGranted(msg.id, { answers }, { answers: {} })) { behavior = "deny"; source = "engine-paused"; }
           } else if (reply) {
             const allowed = behavior === "allow";
-            rpc.reply(msg.id, permissionReply(allowed, source));
+            if (allowed) { if (!replyGranted(msg.id, permissionReply(true, source), permissionReply(false, "policy"))) { behavior = "deny"; source = "engine-paused"; } }
+            else rpc.reply(msg.id, permissionReply(false, source));
           }
 
+          logDecision("resolved", behavior, source);
           emit({
             ...envelope(threadId, turnId),
             type: "request.resolved",
@@ -911,7 +921,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       child.on("close", (code) => {
         childClosed = true;
-        void (paused || stopping || admission?.signal.aborted ? admission?.residual() : admission?.closed())?.catch(() => {});
+        void (paused || stopping || admission?.signal.aborted || !group.closed() ? admission?.residual() : admission?.closed())?.catch(() => {});
         if (finished) return;
         if (stopping) return finish(false, paused ? "engine_paused" : "interrupted");
         emit({

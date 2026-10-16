@@ -1,7 +1,7 @@
 // Run in an isolated HOME/environment. These exercise the actual Claude
 // driver with an explicit fake executable, never a real CLI/account.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,11 +9,24 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
-import { test, type TestContext } from "node:test";
-import { ClaudeDriver } from "../server/drivers/claude.ts";
+import { test, after, type TestContext } from "node:test";
 import { EnginePauses, EnginePauseError, type PauseStorage } from "../server/engine-pauses.ts";
-import { ProviderRegistry } from "../server/harness/registry.ts";
 import type { RuntimeEvent } from "../server/contracts.ts";
+
+// Each test file is a separate Node worker. Set its throwaway native home
+// before importing config/driver modules; never write synthetic native logs
+// or permission sockets into an installed workspace when run from a shell.
+const suiteHome = mkdtempSync(join(tmpdir(), "bloks-native-unit-"));
+const inheritedHome = process.env.HOME, inheritedProfile = process.env.USERPROFILE;
+process.env.HOME = suiteHome; process.env.USERPROFILE = suiteHome;
+after(() => {
+  if (inheritedHome === undefined) delete process.env.HOME; else process.env.HOME = inheritedHome;
+  if (inheritedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = inheritedProfile;
+  rmSync(suiteHome, { recursive: true, force: true });
+});
+const { DATA_DIR } = await import("../server/config.ts");
+const { ClaudeDriver } = await import("../server/drivers/claude.ts");
+const { ProviderRegistry } = await import("../server/harness/registry.ts");
 
 const worker = { kind: "agent", agentId: "worker", laneId: "lane" } as const;
 const other = { kind: "agent", agentId: "other", laneId: "other-lane" } as const;
@@ -22,15 +35,17 @@ async function until(check: () => boolean) {
   assert.fail("fake driver boundary did not reach expected state");
 }
 async function fixture(t: TestContext) {
+  mkdirSync(DATA_DIR, { recursive: true });
   const home = mkdtempSync(join(tmpdir(), "bloks-driver-pause-")), cli = join(home, "fake-claude.cjs"), counter = join(home, "calls.jsonl");
   const launches: string[] = [], signals: Array<{ pid: number; signal: string }> = [], wireWrites: string[] = [];
+  let probeHook: (() => void) | null = null;
   const spawn = childProcess.spawn, execFile = childProcess.execFile, kill = process.kill;
   t.mock.method(process, "kill", (...args: any[]) => {
     if (args[1] !== 0) signals.push({ pid: Math.abs(args[0]), signal: String(args[1] ?? "SIGTERM") });
     return Reflect.apply(kill, process, args);
   });
   t.mock.method(childProcess, "spawn", (...args: any[]) => {
-    if (args[0] === cli) launches.push("spawn");
+    if (args[0] === cli) { launches.push("spawn"); args[2] = { ...args[2], env: { HOME: suiteHome, USERPROFILE: suiteHome, PATH: "" } }; }
     const child = Reflect.apply(spawn, childProcess, args);
     if (args[0] === cli && child.stdin) {
       const write = child.stdin.write;
@@ -39,8 +54,10 @@ async function fixture(t: TestContext) {
     return child;
   });
   t.mock.method(childProcess, "execFile", (...args: any[]) => {
-    if (args[0] === cli) launches.push("probe");
-    return Reflect.apply(execFile, childProcess, args);
+    if (args[0] === cli) { launches.push("probe"); args[2] = { ...args[2], env: { HOME: suiteHome, USERPROFILE: suiteHome, PATH: "" } }; }
+    const child = Reflect.apply(execFile, childProcess, args);
+    if (args[0] === cli && args[1]?.[0] === "auth") child.stdout?.prependListener("data", () => probeHook?.());
+    return child;
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
@@ -48,11 +65,12 @@ async function fixture(t: TestContext) {
 const fs=require('node:fs');
 const args=process.argv.slice(2),counter=${JSON.stringify(counter)};
 const note=phase=>fs.appendFileSync(counter,JSON.stringify({phase,args,pid:process.pid,cwd:process.cwd()})+'\\n');
+const descendant=label=>{const beat=counter+'.'+process.pid+'.heartbeat',c=require('node:child_process').spawn(process.execPath,['-e',"const fs=require('node:fs');process.on('SIGTERM',()=>{});setInterval(()=>fs.appendFileSync(process.argv[1],'x'),20);",beat],{stdio:'ignore',env:{}});c.unref();fs.appendFileSync(counter,JSON.stringify({phase:'descendant',label,pid:process.pid,descendant:c.pid,beat})+'\\n');};
 if(args[0]==='--version'){note('version');console.log('9.9.9 (Claude Code)');}
 else if(args[0]==='auth'){note('auth');console.log(JSON.stringify({loggedIn:true}));}
 else if(args[args.indexOf('--output-format')+1]==='text'){
  let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{
-  note('text');if(text==='hold'){setInterval(()=>{},1000);return;}
+  note('text');if(text.includes('descendant'))descendant(text);if(text==='hold'){setInterval(()=>{},1000);return;}
   console.log('A fake summary.');
  });
 }else{
@@ -61,6 +79,15 @@ else if(args[args.indexOf('--output-format')+1]==='text'){
    const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const frame=JSON.parse(line);
    if(frame.type!=='user'||begun)continue;begun=true;note('turn');
    const text=frame.message.content;
+   if(text.includes('descendant')){descendant(text);if(text.includes('closed'))setTimeout(()=>process.exit(0),50);else setInterval(()=>{},1000);continue;}
+   if(text.startsWith('ask-')){
+    process.on('SIGTERM',()=>{});
+    const mcp=JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config')+1],'utf8'));
+    const socket=require('node:net').connect(mcp.mcpServers.bloks.args[1]);
+    socket.on('error',()=>{});socket.on('data',data=>fs.appendFileSync(counter,JSON.stringify({phase:'ask-reply',data:String(data),pid:process.pid})+'\\n'));
+    socket.on('connect',()=>socket.write(JSON.stringify({t:'ask',id:'fake-ask',kind:text.includes('question')?'question':'permission',tool:text.includes('question')?'ask_user':'Bash',input:{question:'Synthetic question'}})+'\\n'));
+    setInterval(()=>{},1000);continue;
+   }
    if(text==='hold'){setInterval(()=>{},1000);continue;}
    console.log(JSON.stringify({type:'system',subtype:'init',session_id:'fake-session',model:'claude-sonnet-5'}));
    console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'A fake reply.'}],usage:{input_tokens:1,output_tokens:1}}}));
@@ -83,7 +110,7 @@ else if(args[args.indexOf('--output-format')+1]==='text'){
     id: randomUUID(), agents: options.agents ?? "all", selector: options.model ? { family: "claude", model: options.model } : { family: "claude" }, until: 2_000, timeZone: "UTC",
   });
   t.after(async () => { await instance.dispose(); rmSync(home,{recursive:true,force:true}); });
-  return { policy, storage, instance, input, frames, calls, launches, signals, wireWrites, pause, setNow: (n: number) => { now=n; } };
+  return { policy, storage, instance, input, frames, calls, launches, signals, wireWrites, pause, setProbeHook: (hook: (() => void) | null) => { probeHook = hook; }, setNow: (n: number) => { now=n; } };
 }
 
 test("a pending activation fences the next actual Claude input frame on an already running process", async t => {
@@ -280,4 +307,63 @@ test("unverified native backend provenance cannot use the CLI label to bypass a 
   await assert.rejects(f.instance.generateText!("unknown native route",worker),e=>e instanceof EnginePauseError,"CLI label exempted an unverified native route");
   assert.equal(f.launches.length,before,"unknown native backend crossed the real spawn boundary");
   assert.equal(await f.instance.generateText!("unaffected scoped agent",other),"A fake summary.");
+});
+
+
+test('actual Claude bridge fences question/permission answers during activation and after commit, and permits unaffected/no-pause replies',async t=>{
+ for(const mode of ['committed','activating','unaffected','none']) for(const question of [false,true]){
+  const f=await fixture(t),lane=mode+'-'+question;
+  await f.instance.adapter.sendTurn({threadId:lane,text:question?'ask-question':'ask-permission',invocationOrigin:worker,stallMs:0});
+  await until(()=>f.frames.some(e=>e.type==='request.opened'));
+  const ask=f.frames.find(e=>e.type==='request.opened') as any;
+  let release=()=>{},activation:Promise<unknown>|undefined;
+  if(mode==='activating'){
+   let entered!:()=>void;const blocked=new Promise<void>(r=>{release=r;}),writing=new Promise<void>(r=>{entered=r;}),save=f.storage.save;
+   f.storage.save=async value=>{if((value as any).pauses.length){entered();await blocked;}await save(value);};activation=f.pause();await writing;
+  }else if(mode!=='none')await f.pause({agents:mode==='unaffected'?['other']:['worker']});
+  try{
+   await f.instance.adapter.respondToRequest!(lane,ask.requestId,{behavior:question?'answer':'allow',message:'Synthetic authorized answer'});await delay(100);
+   const allowed=f.calls().filter(c=>c.phase==='ask-reply').flatMap(c=>String(c.data).trim().split('\n').map(line=>JSON.parse(line))).filter(r=>r.behavior==='allow'||r.behavior==='answer');
+   assert.equal(allowed.length,mode==='none'||mode==='unaffected'?1:0,'paused Claude bridge forwarded a permissive answer');
+   assert.equal(f.calls().filter(c=>c.phase==='turn').length,1,'bridge denial replayed the turn');
+  }finally{release();await activation;}
+ }
+});
+
+
+test('actual Claude foreground/one-shot cancellation retains descendant ownership through leader close', {skip:process.platform==='win32'},async t=>{
+ for(const kind of ['foreground','closed-foreground','one-shot']){
+  const f=await fixture(t);let pid=0;t.after(()=>{if(pid){try{process.kill(pid,'SIGKILL');}catch{}}});
+  if(kind==='one-shot')assert.equal(await f.instance.generateText!('descendant summary',worker),'A fake summary.');
+  else await f.instance.adapter.sendTurn({threadId:kind,text:kind.includes('closed')?'descendant-closed':'descendant',invocationOrigin:worker,stallMs:0});
+  await until(()=>f.calls().some(c=>c.phase==='descendant'));const run=f.calls().find(c=>c.phase==='descendant');pid=run.descendant;
+  await until(()=>{try{return readFileSync(run.beat).length>0;}catch{return false;}});
+  if(kind==='closed-foreground')await until(()=>f.frames.some(e=>e.type==='turn.completed'));
+  await f.pause({agents:['worker']});await delay(3300);const before=readFileSync(run.beat).length;await delay(150);
+  assert.equal(readFileSync(run.beat).length,before,'native Claude local descendant outlived pause escalation');
+  assert.ok(f.policy.status().invocations.some(r=>r.state==='residual'),'local stop erased unconfirmed provider work');
+ }
+});
+
+
+test('actual Claude timeout replies are fenced while safe permission denial remains available',async t=>{
+ for(const question of [false,true])for(const paused of [false,true]){
+  const f=await fixture(t);let fire:(()=>void)|undefined;const timer=globalThis.setTimeout;
+  t.mock.method(globalThis,'setTimeout',((fn:any,ms:any,...args:any[])=>{if(ms===900000){fire=()=>fn(...args);return timer(()=>{},900000);}return timer(fn,ms,...args);}) as any);
+  await f.instance.adapter.sendTurn({threadId:'timeout',text:question?'ask-question':'ask-permission',invocationOrigin:worker,stallMs:0});await until(()=>f.frames.some(e=>e.type==='request.opened'));
+  let release=()=>{},activation:Promise<unknown>|undefined;
+  if(paused){let entered!:()=>void;const blocked=new Promise<void>(r=>release=r),writing=new Promise<void>(r=>entered=r),save=f.storage.save;f.storage.save=async value=>{if((value as any).pauses.length){entered();await blocked;}await save(value);};activation=f.pause();await writing;}
+  try{assert.ok(fire);fire();await delay(100);const frames=f.calls().filter(c=>c.phase==='ask-reply').flatMap(c=>String(c.data).trim().split('\n').map(line=>JSON.parse(line)));
+   assert.equal(frames.filter(r=>r.behavior==='answer').length,question&&!paused?1:0,'paused timeout sent a continuation');
+   if(!question)assert.equal(frames.filter(r=>r.behavior==='deny').length,1,'safe permission denial was blocked');
+  }finally{release();await activation;}
+ }
+});
+
+
+test('cancelled Claude auth probe callback keeps residual uncertainty instead of closing its invocation',async t=>{
+ const f=await fixture(t);assert.equal((await f.instance.snapshot()).state,'available');
+ let activation:Promise<unknown>|undefined;f.setProbeHook(()=>{f.setProbeHook(null);activation=f.pause();});
+ await assert.rejects(f.instance.snapshot(),e=>e instanceof EnginePauseError);await activation;
+ assert.ok(f.policy.status().invocations.some(r=>r.purpose==='claude-probe'&&r.state==='residual'),'auth callback cleared unconfirmed work');
 });

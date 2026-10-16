@@ -43,12 +43,18 @@ capabilities or account credentials.
 The durable restriction becomes effective before cancellation is enumerated.
 Current policy, invocation registration and the actual process/request boundary
 are ordered together. A prior selection or lease is not a future call's grant.
+Native approval, question and timeout replies are rechecked at their write
+boundary too; denial does not create a provider retry or replay.
 Existing configured, proven permitted alternatives may be used, including a
 different model on the same API instance. Preferences remain intact.
 
 Cancellation targets the registered invocation, not every agent sharing its
 instance. A sent interrupt or local process close does not establish remote
-completion. Unconfirmed work remains residual across expiry and restart. A
+completion. Local group escalation survives its leader closing; an observed
+absent or replaced group is retired, rather than reused through a later lane.
+Escaped descendants and remote work remain unconfirmed. Ungrouped readiness
+and auth probes support child-only cancellation and retain uncertainty when
+cancelled. Unconfirmed work remains residual across expiry and restart. A
 turn cancelled by a pause and then cut off by a crash is not replayed after
 expiry; its existing continuation control provides a reconciliation point.
 
@@ -70,7 +76,11 @@ otherwise constrained contexts do not inherit that profile from saved agent
 preferences. Broad workspace credentials do not pass into check shells or
 helper children. Auth, model, session and configuration generations remain
 bound; unavailable admission leaves the helper pending without a direct-launch
-or provider-failure fallback.
+or provider-failure fallback. Native Codex history comes only from the trusted
+origin launch HOME/CODEX_HOME and its existing canonical sessions and
+archived_sessions collections. A separate project folder is supported. This
+does not grant all HOME, credential siblings or caller-selected history roots;
+a changed parent-home generation or unsupported provenance remains pending.
 
 Pause enforced for the verified registered native paths reported by status.
 Protection is incomplete: unintegrated external launch adapters, external MCP

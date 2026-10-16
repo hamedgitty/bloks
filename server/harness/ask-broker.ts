@@ -80,6 +80,9 @@ export interface AskBrokerOptions {
   /** It has been settled, however that happened. */
   onResolve: (resolved: ResolvedAsk) => void;
   timeoutMs?: number;
+  /** Driver-owned synchronous admission at the actual permissive socket write.
+   * A throw closes this connection without forwarding the answer. */
+  writeReply?: (ask: PendingAsk, behavior: string, write: () => void) => void;
 }
 
 export interface AskBroker {
@@ -151,9 +154,14 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
           if (!open.delete(id)) return;
           clearTimeout(timer);
           try {
-            connection.write(JSON.stringify({ t: "answer", id, behavior, message }) + "\n");
-          } catch {
-            /* the proxy is gone; the turn is ending anyway */
+            const write = () => { connection.write(JSON.stringify({ t: "answer", id, behavior, message }) + "\n"); };
+            if (options.writeReply) options.writeReply(ask, behavior, write); else write();
+          } catch (error) {
+            behavior = "deny";
+            if (source !== "shutdown" && source !== "turn-ended") {
+              source = error instanceof Error && error.name === "EnginePauseError" ? "engine-paused" : "unavailable";
+            }
+            connection.destroy();
           }
           options.onResolve({ ...ask, behavior, source });
         };

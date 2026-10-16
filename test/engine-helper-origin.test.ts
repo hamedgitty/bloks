@@ -1,15 +1,16 @@
 // Actual server-issued turn/check scopes, broker HTTP and explicit fake children.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
+import { copyFileSync,existsSync,symlinkSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test,type TestContext } from 'node:test';
 import { startHarness } from './helpers/server.ts';
 import { waitFor } from './helpers/turns.ts';
-async function fixture(t:TestContext){
+async function fixture(t:TestContext,customHistory=false){
  const home=mkdtempSync(join(tmpdir(),'bloks-helper-origin-')),data=join(home,'.bloks'),projects=join(home,'.claude','projects'),cli=join(home,'explicit-fake.cjs'),calls=join(home,'calls.jsonl');
- mkdirSync(data);mkdirSync(projects,{recursive:true});mkdirSync(join(home,'origins'));
+ mkdirSync(data);mkdirSync(projects,{recursive:true});mkdirSync(join(home,'origins'));mkdirSync(join(home,'project'));
+ const historyHome=join(home,customHistory?'custom-codex':'.codex');mkdirSync(join(historyHome,'sessions'),{recursive:true});mkdirSync(join(historyHome,'archived_sessions'));
  writeFileSync(cli,`#!${process.execPath}\n`+String.raw`
 const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2),home=process.env.HOME;
 const native=args.includes('--input-format');
@@ -28,17 +29,17 @@ let prompt='';process.stdin.on('data',c=>prompt+=c);process.stdin.on('end',()=>{
 });
 `,{mode:0o700});
  writeFileSync(join(data,'config.json'),JSON.stringify({instances:{claude:{driver:'claudeAgent',config:{cli}}},agentDefaults:{modelSelection:{instanceId:'claude',model:'claude-sonnet-5'}},secrets:{PLANTED_SECRET:'SYNTHETIC_NEVER_IN_STATUS'}}));
- const env={HOME:home,USERPROFILE:home,BLOKS_TOKEN:'SYNTHETIC_BROAD_TOKEN_MUST_NOT_REACH_CHECKS'};let h=await startHarness(env);
+ const env={HOME:home,USERPROFILE:home,BLOKS_TOKEN:'SYNTHETIC_BROAD_TOKEN_MUST_NOT_REACH_CHECKS',...(customHistory?{CODEX_HOME:historyHome}:{})};let h=await startHarness(env);
  t.after(async()=>{await h.stop();rmSync(home,{recursive:true,force:true});});
  const request=async(method:string,path:string,body?:unknown,authorization?:string)=>{const response=await h.fetch(path,{method,...(body===undefined?{}:{body:JSON.stringify(body)}),...(authorization?{headers:{authorization}}:{})});return {status:response.status,body:await response.json()};};
  const {bot}=await h.json('/api/bots',{method:'POST',body:JSON.stringify({name:'Synthetic reviewer'})});
- await request('PATCH',`/api/bots/${bot.id}`,{approvals:'full',cwd:home});
+ await request('PATCH',`/api/bots/${bot.id}`,{approvals:'full',cwd:join(home,'project')});
  const start=async(label:string)=>{await request('POST',`/api/bots/${bot.id}/messages`,{text:'ORIGIN '+label});assert.ok(await waitFor(()=>existsSync(join(home,'origins',label+'.json'))));return JSON.parse(readFileSync(join(home,'origins',label+'.json'),'utf8'));};
  const log=()=>existsSync(calls)?readFileSync(calls,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
  const readEvents=async(descriptor:any,id:string)=>{const response=await h.fetch(`/api/engine-helper-runs/${id}/events`,{headers:{authorization:'EngineHelper '+descriptor.capability,origin:descriptor.origin}});assert.equal(response.status,200);return (await response.text()).split('\n').filter(line=>line.startsWith('data: ')).map(line=>JSON.parse(line.slice(6)));};
  const phase=async(descriptor:any,body:any)=>{const response=await h.fetch('/api/engine-helper-runs',{method:'POST',body:JSON.stringify(body),headers:{authorization:'EngineHelper '+descriptor.capability,origin:descriptor.origin}});return {status:response.status,body:await response.json()};};
  const review=()=>({version:1,operationId:randomUUID(),profile:'claude.review',reviewId:randomUUID(),sessionId:randomUUID(),resume:false,additionalDirectories:[],phase:'auth'});
- return {home,data,cli,bot,get h(){return h;},request,start,log,phase,readEvents,review,async restart(edit?:()=>void){await h.stop();edit?.();h=await startHarness(env);}};
+ return {home,historyHome,data,cli,bot,get h(){return h;},request,start,log,phase,readEvents,review,async restart(edit?:()=>void){await h.stop();edit?.();h=await startHarness(env);}};
 }
 
 test('a trusted native descriptor completes one auth/model operation after its parent ends without workspace authority',async t=>{
@@ -103,4 +104,40 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
  const before=f.log().filter(call=>call.kind==='auth').length;rmSync(audit);
  await f.request('POST','/api/engine-pauses',{id:'before-check',agents:[f.bot.id],selector:{family:'claude'},until:Date.now()+60000,timeZone:'UTC'});
  const held=await f.request('POST',`/api/watchers/${id}/check`,{});assert.equal(held.body.fired,false);assert.match(held.body.note,/paused/);assert.equal(existsSync(audit),false);assert.equal(f.log().filter(call=>call.kind==='auth').length,before,'paused check reached fake auth');
+});
+
+
+test('trusted native history collections support separate project/default/custom home while unrelated roots remain denied',async t=>{
+ for(const custom of [false,true]){
+  const f=await fixture(t,custom),origin=await f.start('separate-history'),descriptor=JSON.parse(origin.descriptor);
+  for(const collection of ['sessions','archived_sessions']){
+   const folder=join(f.historyHome,collection,'2026','10');mkdirSync(folder,{recursive:true});
+   const auth={...f.review(),additionalDirectories:[folder]};
+   assert.equal((await f.phase(descriptor,auth)).body.state,'accepted','trusted history collection refused before auth');
+   assert.equal((await f.readEvents(descriptor,auth.operationId)).at(-1).state,'completed');
+   const model={...auth,phase:'model',operationId:randomUUID(),authRunId:auth.operationId,prompt:'Synthetic history review.'};
+   assert.equal((await f.phase(descriptor,model)).body.state,'accepted');await f.readEvents(descriptor,model.operationId);
+  }
+  for(const directory of [f.home,f.historyHome,join(f.home,'unrelated')]){
+   mkdirSync(directory,{recursive:true});const before=f.log().filter(c=>c.kind==='auth').length;
+   const denied=await f.phase(descriptor,{...f.review(),additionalDirectories:[directory]});
+   assert.equal(denied.body.state,'pending','unrelated directory was accepted as native history');
+   assert.equal(f.log().filter(c=>c.kind==='auth').length,before,'invalid root reached actual auth');
+  }
+ }
+});
+
+
+test('issuer rejects escaping history collections and changed trusted parent home between phases', {skip:process.platform==='win32'},async t=>{
+ const f=await fixture(t),origin=await f.start('history-change'),descriptor=JSON.parse(origin.descriptor);
+ const outside=join(f.home,'private-sibling');mkdirSync(outside);rmSync(join(f.historyHome,'archived_sessions'),{recursive:true});symlinkSync(outside,join(f.historyHome,'archived_sessions'),'dir');
+ const before=f.log().filter(c=>c.kind==='auth').length;
+ assert.equal((await f.phase(descriptor,{...f.review(),additionalDirectories:[outside]})).body.state,'pending','escaping collection symlink granted an unrelated root');assert.equal(f.log().filter(c=>c.kind==='auth').length,before);
+ const auth={...f.review(),additionalDirectories:[join(f.historyHome,'sessions')]};assert.equal((await f.phase(descriptor,auth)).body.state,'accepted');await f.readEvents(descriptor,auth.operationId);
+ const next=join(f.home,'replacement-codex');mkdirSync(join(next,'sessions'),{recursive:true});
+ const file=join(f.data,'config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.secrets.CODEX_HOME=next;writeFileSync(file,JSON.stringify(config));
+ assert.equal((await f.request('POST','/api/providers/grok/connect',{key:'SYNTHETIC_UNUSED_KEY',url:'http://127.0.0.1:1'})).status,200);
+ const count=f.log().filter(c=>c.kind==='helper-model').length;
+ assert.equal((await f.phase(descriptor,{...auth,phase:'model',operationId:randomUUID(),authRunId:auth.operationId,prompt:'Must remain pending.'})).body.state,'pending','old auth froze the obsolete parent-home grant');
+ assert.equal(f.log().filter(c=>c.kind==='helper-model').length,count);
 });

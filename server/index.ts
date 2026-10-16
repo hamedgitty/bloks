@@ -36,7 +36,7 @@ import {
 } from "./artifact-comments.ts";
 import * as composio from "./composio.ts";
 import { EnginePauses, EnginePauseError, pauseFile } from "./engine-pauses.ts";
-import { EngineHelperBroker, helperFile, type HelperOrigin, type ReviewProfile } from "./engine-helper.ts";
+import { EngineHelperBroker, helperFile, nativeHistoryContext, type HelperOrigin, type ReviewProfile } from "./engine-helper.ts";
 import { engineHelperHttp } from "./engine-helper-http.ts";
 import {
   APP_VERSION,
@@ -447,7 +447,7 @@ await registry.load(instanceConfigs(cfg));
 // descriptor conveys no workspace/config/stop authority to a check shell.
 interface NativeHelperScope {
   origin: HelperOrigin; botId: string; laneId: string; cwd: string; roots: string[];
-  instanceId: string; permission: string; live: () => boolean; until: number;
+  instanceId: string; permission: string; historyGeneration?: string; live: () => boolean; until: number;
 }
 const helperHost = hostname();
 const helperScopes = new Map<string, NativeHelperScope>();
@@ -457,6 +457,8 @@ const engineHelpers = new EngineHelperBroker(enginePauses, helperFile(join(DATA_
   if (!scope || !bot || bot.archivedAt || bot.approvals !== "full" || origin.generation !== scope.origin.generation ||
       scopePermission(bot) !== scope.permission || isSharedLane(scope.laneId) || rehearsals.forTask(scope.laneId) ||
       bot.tasks.find(t => t.id === scope.laneId)?.guestMail) return null;
+  const history = nativeHistoryContext({ ...process.env, ...usableSecrets(cfg.secrets) }, scope.cwd);
+  if (!history || history.generation !== scope.historyGeneration) return null;
   const instance = registry.get(scope.instanceId), entry = cfg.instances?.[scope.instanceId];
   if (!instance || instance.driverKind !== "claudeAgent" || instance.enabled === false || !entry) return null;
   const config = (entry.config ?? {}) as Record<string, unknown>;
@@ -470,7 +472,7 @@ const engineHelpers = new EngineHelperBroker(enginePauses, helperFile(join(DATA_
   return { host: helperHost, originGeneration: origin.generation,
     permissionGeneration: createHash("sha256").update(scope.permission).digest("hex"),
     configurationGeneration: createHash("sha256").update(JSON.stringify(entry)).digest("hex"),
-    effectiveFullAccess: true, cwd: scope.cwd, roots: scope.roots, executable, environment,
+    effectiveFullAccess: true, cwd: scope.cwd, roots: [...scope.roots, ...(history?.roots ?? [])], historyGeneration: history?.generation, executable, environment,
     projectsDirectory: join(resolve(scope.cwd, environment.CLAUDE_CONFIG_DIR ?? join(environment.HOME ?? homedir(), ".claude")), "projects"),
     instanceId: scope.instanceId };
 });
@@ -484,7 +486,10 @@ function helperDescriptor(bot: BotRecord, laneId: string, cwd: string, roots: st
   for (const [id, scope] of helperScopes) if (scope.until < Date.now()) helperScopes.delete(id);
   if (helperScopes.size >= 4_000) return;
   const origin: HelperOrigin = { id: newId(), generation: newId(), host: helperHost, invocation: { kind: "agent", agentId: bot.id, laneId } };
-  const scope = { origin, botId: bot.id, laneId, cwd, roots, instanceId: selected.instanceId, permission: scopePermission(bot), live, until: Date.now() + 60 * 60_000 };
+  const history = nativeHistoryContext({ ...process.env, ...usableSecrets(cfg.secrets) }, cwd);
+  if (!history) return;
+  const historyGeneration = history.generation;
+  const scope = { origin, botId: bot.id, laneId, cwd, roots, historyGeneration, instanceId: selected.instanceId, permission: scopePermission(bot), live, until: Date.now() + 60 * 60_000 };
   helperScopes.set(origin.id, scope);
   try {
     const capability = engineHelpers.issue(origin, () => helperScopes.get(origin.id) === scope && scope.until > Date.now() && live());

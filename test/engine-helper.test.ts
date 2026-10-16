@@ -10,7 +10,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { once } from "node:events";
 import { test, type TestContext } from "node:test";
 import { EnginePauses, type PauseStorage } from "../server/engine-pauses.ts";
-import { EngineHelperBroker, HelperError, helperFile, type HelperRequest, type ReviewProfile } from "../server/engine-helper.ts";
+import { EngineHelperBroker, HelperError, helperFile, nativeHistoryContext, type HelperRequest, type ReviewProfile } from "../server/engine-helper.ts";
 import { engineHelperHttp } from "../server/engine-helper-http.ts";
 
 const code = (value: HelperError["code"]) => (e: unknown) => e instanceof HelperError && e.code === value;
@@ -34,6 +34,9 @@ const fs=require('node:fs');
 const spec=JSON.parse(fs.readFileSync(process.env.FAKE_SETTINGS,'utf8'));
 const auth=process.argv[2]==='auth';
 fs.appendFileSync(spec.counter,JSON.stringify({phase:auth?'auth':'model',args:process.argv.slice(2),env:process.env,pid:process.pid})+'\n');
+if(!auth && spec.spawnDescendant) {
+ const c=require('node:child_process').spawn(process.execPath,['-e', 'const fs=require("node:fs"); process.on("SIGTERM",()=>{}); fs.writeFileSync(process.argv[1],String(process.pid)); setInterval(()=>fs.appendFileSync(process.argv[2],"x"),20);', spec.descendantPid, spec.heartbeat],{stdio:'ignore',env:{}});c.unref();
+}
 const finish=()=>{
  if(auth) process.stdout.write(spec.badAuth?'SECRET-invalid-auth':JSON.stringify({loggedIn:true,apiProvider:'firstParty',authMethod:'claude.ai',...(spec.omitProjects?{}:{projectsDirectory:spec.projects}),secret:'PLANTED-AUTH-SECRET'}));
  else if(spec.overflowModel) process.stdout.write('x'.repeat(9*1024*1024));
@@ -391,4 +394,45 @@ test("unverified native helper provenance is pending under a different family re
   await f.pause({family:"gemini"});
   await assert.rejects(f.start(f.req()),e=>String(e).includes("paused"),"helper CLI label exempted an unverified native route");
   assert.equal(f.starts().length,before,"unknown helper backend reached auth");
+});
+
+// Actual fixed-profile local descendant cancellation regression.
+test("policy cancellation terminates a registered model group even after its leader exits", async t => {
+ const f=fixture(t),a=await f.auth(),pidFile=join(f.home,"descendant.pid"),heartbeat=join(f.home,"heartbeat");
+ f.set({hangModel:true,ignoreTerm:false,spawnDescendant:true,descendantPid:pidFile,heartbeat});
+ const m=f.model(a);let pid=0;
+ try {
+  await f.start(m);await until(()=>{try{pid=Number(readFileSync(pidFile,"utf8"));return pid>0&&readFileSync(heartbeat).length>0;}catch{return false;}});
+  await f.pause();await f.broker.settled(f.token,m.operationId);await delay(300);
+  const before=readFileSync(heartbeat).length;await delay(150);const after=readFileSync(heartbeat).length;
+  console.log(JSON.stringify({probe:"registered-group-cancellation",leader:f.starts().at(-1)?.pid,descendant:pid,before,after,operation:f.broker.status().operations.at(-1)}));
+  assert.equal(after,before,"registered model descendant continued running after cancellation and escalation window");
+ } finally {if(pid){try{process.kill(pid,"SIGKILL");}catch{}}}
+});
+
+
+test('policy cancellation still reaches a local descendant when model leader closed before activation',async t=>{
+ const f=fixture(t),a=await f.auth(),pidFile=join(f.home,'closed-descendant.pid'),heartbeat=join(f.home,'closed-heartbeat');
+ f.set({spawnDescendant:true,descendantPid:pidFile,heartbeat});const m=f.model(a);let pid=0;
+ try{
+  await f.start(m);await f.broker.settled(f.token,m.operationId);await until(()=>{try{pid=Number(readFileSync(pidFile,'utf8'));return pid>0&&readFileSync(heartbeat).length>0;}catch{return false;}});
+  assert.equal(f.broker.status().operations.at(-1)?.localClosed,true);
+  await f.pause();await delay(300);const before=readFileSync(heartbeat).length;await delay(150);
+  assert.equal(readFileSync(heartbeat).length,before,'closed leader lost ownership of its still-live local group');
+  assert.equal(f.broker.status().operations.at(-1)?.remote,'unconfirmed','local group stop erased remote uncertainty');
+ }finally{if(pid){try{process.kill(pid,'SIGKILL');}catch{}}}
+});
+
+
+test('trusted history context binds default/custom/relative homes without credential siblings or escaping collections', {skip:process.platform==='win32'}, t=>{
+ const home=mkdtempSync(join(tmpdir(),'bloks-native-history-'));t.after(()=>rmSync(home,{recursive:true,force:true}));
+ mkdirSync(join(home,'project'));mkdirSync(join(home,'.codex','sessions'),{recursive:true});mkdirSync(join(home,'.codex','archived_sessions'));mkdirSync(join(home,'outside'));
+ const a=nativeHistoryContext({HOME:home},join(home,'project'))!;assert.deepEqual(a.roots,[join(home,'.codex','sessions'),join(home,'.codex','archived_sessions')]);
+ const relative=nativeHistoryContext({HOME:home,CODEX_HOME:'../.codex'},join(home,'project'))!;assert.deepEqual(relative.roots,a.roots);
+ assert.deepEqual(nativeHistoryContext({HOME:home,CODEX_HOME:'~/.codex'},join(home,'project'))!.roots,a.roots);
+ symlinkSync(join(home,'.codex'),join(home,'trusted-home-link'),'dir');assert.deepEqual(nativeHistoryContext({HOME:home,CODEX_HOME:join(home,'trusted-home-link')},join(home,'project'))!.roots,a.roots);
+ rmSync(join(home,'.codex','archived_sessions'),{recursive:true});symlinkSync(join(home,'outside'),join(home,'.codex','archived_sessions'),'dir');
+ assert.deepEqual(nativeHistoryContext({HOME:home},join(home,'project'))!.roots,[join(home,'.codex','sessions')]);
+ assert.equal(nativeHistoryContext({HOME:home,CODEX_HOME:''},join(home,'project')),null);assert.equal(nativeHistoryContext({HOME:home,CODEX_HOME:'~unresolved/path'},join(home,'project')),null);
+ assert.equal(nativeHistoryContext({HOME:'relative'},join(home,'project')),null);
 });

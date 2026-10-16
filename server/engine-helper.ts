@@ -1,10 +1,12 @@
 // Fixed native-owned review profile. HTTP transport and trusted turn-origin
 // assembly are separate callers, never a caller-selected command endpoint.
+import { homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { realpathSync, readdirSync, statSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, sep, join } from "node:path";
+import { realpathSync, readdirSync, statSync, readFileSync, existsSync } from "node:fs";
+import { isAbsolute, relative, sep, join, resolve } from "node:path";
 import { EnginePauses, EnginePauseError, type EngineInvocation, type EngineRoute, type InvocationOrigin, type PauseStorage } from "./engine-pauses.ts";
+import { processGroup, type OwnedProcessGroup } from "./drivers/engine-processes.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
 export function helperFile(file: string): PauseStorage {
@@ -34,6 +36,7 @@ export interface ReviewProfile {
   environment: NodeJS.ProcessEnv;
   projectsDirectory: string;
   instanceId: string;
+  historyGeneration?: string;
 }
 export type HelperRequest = {
   version: 1; operationId: string; profile: "claude.review";
@@ -61,7 +64,7 @@ export interface HelperEvent {
 interface Capability { origin: HelperOrigin; owner: string; live: () => boolean }
 interface Runtime {
   events: HelperEvent[]; bytes: number; subscribers: Set<() => void>;
-  lease?: EngineInvocation; child?: ChildProcessWithoutNullStreams;
+  lease?: EngineInvocation; child?: ChildProcessWithoutNullStreams; group?: OwnedProcessGroup;
   attachTimer?: ReturnType<typeof setTimeout>; timeout?: ReturnType<typeof setTimeout>;
   hardStop?: ReturnType<typeof setTimeout>; observeStop?: ReturnType<typeof setTimeout>;
   cancel: boolean; overflow: boolean; inputFailed: boolean; attached: boolean; readers: number; stopReason?: string;
@@ -85,6 +88,31 @@ export function reviewEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   env.OMNI_CLAUDE_REVIEW = "1";
   return env;
 }
+/** Trusted issuer environment only. Grant the supported native history
+ * collections, never all HOME/CODEX_HOME (which also contain credentials).
+ * The adapter still validates exact rollout/history-base bounds itself. */
+export function nativeHistoryContext(environment: NodeJS.ProcessEnv, cwd: string): { roots: string[]; generation: string } | null {
+  try {
+    const home = environment.HOME === undefined ? homedir() : environment.HOME;
+    if (!home || !isAbsolute(home) || environment.CODEX_HOME === "") return null;
+    let configured = environment.CODEX_HOME ?? join(home, ".codex");
+    if (configured === "~") configured = home;
+    else if (configured.startsWith("~/")) configured = join(home, configured.slice(2));
+    else if (configured.startsWith("~")) return null;
+    const requested = resolve(cwd, configured), base = realpathSync(requested), identity = statSync(base);
+    if (!identity.isDirectory()) return null;
+    const roots = ["sessions", "archived_sessions"].flatMap(name => {
+      const path = join(base, name);
+      if (!existsSync(path)) return [];
+      const canonical = realpathSync(path);
+      // A supported home can itself be a trusted symlink. A collection
+      // escaping that home is not authority for an unrelated directory.
+      return within(base, canonical) && statSync(canonical).isDirectory() ? [canonical] : [];
+    });
+    return { roots, generation: digest({ home, configured, requested, base, identity: [identity.dev, identity.ino] }) };
+  } catch { return null; }
+}
+
 export class HelperError extends Error {
   readonly code: "invalid" | "forbidden" | "conflict" | "pending" | "storage" | "cursor";
   constructor(code: HelperError["code"]) { super(`Engine helper ${code}.`); this.name = "HelperError"; this.code = code; }
@@ -278,7 +306,7 @@ export class EngineHelperBroker {
         ...(current.additionalDirectories.length ? ["--add-dir", ...current.additionalDirectories] : [])];
       const child = lease.invoke(() => spawn(profile.executable, args, { cwd: profile.cwd, env: profile.environment,
         stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true }));
-      rt.child = child;
+      rt.child = child; rt.group = processGroup(child);
       // No event-loop gap exists between actual spawn and installing its exact
       // child generation. Activation afterwards sees this registered lease.
       this.event(req.operationId, "launched");
@@ -300,8 +328,10 @@ export class EngineHelperBroker {
       child.stdin.end(req.phase === "model" ? req.prompt : undefined);
       const close = await closed;
       if (rt.timeout) clearTimeout(rt.timeout);
-      if (rt.hardStop) clearTimeout(rt.hardStop);
-      if (rt.observeStop) clearTimeout(rt.observeStop);
+      if (rt.group?.closed()) {
+        if (rt.hardStop) clearTimeout(rt.hardStop);
+        if (rt.observeStop) clearTimeout(rt.observeStop);
+      }
       let authValid = req.phase !== "auth";
       if (req.phase === "auth" && close.code === 0 && !rt.cancel && !rt.overflow && !childError) {
         try {
@@ -318,7 +348,7 @@ export class EngineHelperBroker {
       // Native model close alone cannot prove nested/remote work ended. Keep
       // this conservative residual until a supported authoritative observation.
       const remote = req.phase === "model" ? "unconfirmed" as const : "none" as const;
-      const descendants = !child.pid || this.groupClosed(child) ? "closed" as const : "unconfirmed" as const;
+      const descendants = !child.pid || rt.group?.closed() ? "closed" as const : "unconfirmed" as const;
       const uncertain = remote === "unconfirmed" || descendants === "unconfirmed";
       const broken = rt.overflow || rt.inputFailed || childError;
       const outcome = broken ? "failed" : rt.cancel ? uncertain ? "residual" : "cancelled" :
@@ -342,35 +372,32 @@ export class EngineHelperBroker {
       }
     } finally { if (rt.attachTimer && rt.readers === 0) clearTimeout(rt.attachTimer); rt.resolveDone(); }
   }
-  private groupClosed(child: ChildProcessWithoutNullStreams) {
-    if (process.platform === "win32" || !child.pid) return false;
-    try { process.kill(-child.pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-  }
   private async stop(id: string, rt: Runtime, reason = "cancel-requested") {
     if (rt.cancel) return;
     rt.cancel = true;
     rt.stopReason = reason;
-    const prior = this.ledger.operations.find(r => r.id === id)!;
-    if (prior.localClosed) return; // A sent interrupt cannot settle remote uncertainty.
-    const child = rt.child;
-    const kill = (signal: NodeJS.Signals) => {
-      // Only this retained child, while still observed active, never a stored
-      // PID after restart or a later child using a lane's reused key.
-      if (!child || child.exitCode !== null || child.signalCode !== null) return;
-      try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Remains unconfirmed until close. */ }
-    };
-    // Cancellation itself must still reach the retained process on a ledger
-    // failure. Its already durable intent remains residual after restart.
-    kill("SIGTERM");
-    if (child && child.exitCode === null && child.signalCode === null) {
-      rt.hardStop = setTimeout(() => kill("SIGKILL"), this.timing.hardStop);
+    const group = rt.group;
+    group?.signal("SIGTERM");
+    if (group && !group.closed()) {
+      rt.hardStop = setTimeout(() => group.signal("SIGKILL"), this.timing.hardStop);
+      rt.hardStop.unref?.();
       rt.observeStop = setTimeout(() => {
-      void this.finish(id, "residual", { localClosed: false, descendants: "unconfirmed", remote: "unconfirmed", reason: "stop-unconfirmed" })
-        .then(() => rt.lease?.residual()).catch(() => { this.fault = true; });
+        // Status may refine local observation after an earlier terminal frame,
+        // but never issues a contradictory second content/completion result.
+        void this.mutate(next => {
+          const run = next.operations.find(r => r.id === id)!;
+          run.cancelRequested = true;
+          run.descendants = group.closed() ? "closed" : "unconfirmed";
+          if (!run.localClosed || run.remote === "unconfirmed" || run.descendants !== "closed") {
+            run.state = "residual"; run.reason = "stop-unconfirmed";
+          }
+        }).then(() => rt.lease?.residual()).catch(() => { this.fault = true; });
       }, this.timing.observeStop);
+      rt.observeStop.unref?.();
     }
     await this.mutate(next => { const run = next.operations.find(r => r.id === id)!;
-      if (!["completed", "failed", "cancelled", "pending"].includes(run.state)) run.state = "cancel-requested"; });
+      run.cancelRequested = true;
+      if (!["completed", "failed", "cancelled", "pending"].includes(run.state)) run.state = run.localClosed ? "residual" : "cancel-requested"; });
     this.event(id, "cancel-requested");
   }
   private async finish(id: string, state: RunState, facts: Record<string, unknown>) {
