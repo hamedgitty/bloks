@@ -74,13 +74,13 @@ test('lost actual HTTP output returns retained receipt without readiness, activi
  assert.equal((await f.messages(f.sender)).filter(m=>m.agent?.dir==='out').length,1);
 });
 
-for(const phase of ['before-persist','after-persist','after-queue','sender-activity'])test(`explicit admission provenance: ${phase}`,async t=>{
+for(const phase of ['before-persist','before-persist-status','after-persist','after-queue','sender-activity'])test(`explicit admission provenance: ${phase}`,async t=>{
  const f=await reporting(t);
  if(phase==='after-queue')await f.request('POST',`/api/bots/${f.target.id}/messages`,{text:'BUSY'});
  await f.use();await f.control('fault',{mode:phase});const result=await f.say();
  assert.equal(JSON.stringify(result).includes('SYNTHETIC_SECRET'),false);
- if(phase==='before-persist'){
-  assert.equal(result.status,500);assert.equal((await f.control('token',{token:f.token})).report,undefined);
+ if(phase==='before-persist'||phase==='before-persist-status'){
+  assert.equal(result.status,phase==='before-persist'?500:409);assert.equal((await f.control('token',{token:f.token})).report,undefined);
   await f.control('fault',{mode:''});assert.equal((await f.accepted()).body.ok,true);
  }else if(phase==='after-persist'){
   assert.equal(result.body.uncertain,true);assert.deepEqual(await f.say(),result);assert.equal((await f.say({text:'OTHER'})).status,429);

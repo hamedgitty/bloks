@@ -12426,7 +12426,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             const e = error as { status?: number; message?: string };
             // Proven before the first recipient/RPC effect, not inferred
             // from an error code. Keep the existing definite guard reason.
-            refused = { status: e.status ?? 500, body: { error: e.status ? e.message : "This message was not accepted before dispatch." } };
+            refused = { status: e.status ?? 500, body: { error: e.status ? redactSecrets(e.message ?? "This message was refused before dispatch.") : "This message was not accepted before dispatch." } };
             note("failed");
           }
         });

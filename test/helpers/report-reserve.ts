@@ -44,7 +44,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
  return reply();
 });
 `,{mode:0o700});
- writeFileSync(join(home,'.bloks/config.json'),JSON.stringify({instances:{codex:{driver:'codex',config:{cli:fake}}},agentDefaults:{modelSelection:{instanceId:'codex',model:'gpt-6.1-sol'}},recall:{beforeTurn:false}}));
+ writeFileSync(join(home,'.bloks/config.json'),JSON.stringify({instances:{codex:{driver:'codex',config:{cli:fake}}},agentDefaults:{modelSelection:{instanceId:'codex',model:'gpt-6.1-sol'}},recall:{beforeTurn:false},secrets:{RR_PLANTED_SECRET:'SYNTHETIC_SECRET_DO_NOT_PRINT'}}));
  const controls=String.raw`
 let reportFault='',reportGate:undefined|(()=>void),reportWait:Promise<void>|undefined;
 const originalAppend=store.appendMessage.bind(store);
@@ -81,7 +81,7 @@ process.on('message',(m:any)=>{
  let source=readFileSync(server,'utf8');
  const marker='  if (!blok && !opts.presetMessage) {';
  assert.ok(source.includes(marker));
- source=source.replace(marker,marker+"\n    if (opts.admission && reportWait) await reportWait;\n    if (opts.admission && reportFault === 'before-persist') throw new Error('SYNTHETIC_SECRET_DO_NOT_PRINT');");
+ source=source.replace(marker,marker+"\n    if (opts.admission && reportWait) await reportWait;\n    if (opts.admission && reportFault === 'before-persist') throw new Error('SYNTHETIC_SECRET_DO_NOT_PRINT');\n    if (opts.admission && reportFault === 'before-persist-status') throw Object.assign(new Error('SYNTHETIC_SECRET_DO_NOT_PRINT'), {status:409});");
  source=source.replace('  if (drain.on && !opts.carriedOn', "  if (opts.admission && reportFault === 'drain-transition') drain.start(30000);\n  if (drain.on && !opts.carriedOn");
  writeFileSync(host,source+'\n'+controls);
  const port=20000+Math.floor(Math.random()*20000),url='http://127.0.0.1:'+port;
