@@ -49,6 +49,8 @@ export interface Job {
   finishedAt?: number;
   /** The agent's own account of what it did, or why it could not. */
   result?: string;
+  /** Never-started work remains on the existing board while admission is paused. */
+  engineHold?: { at: number; reason: "engine-paused" };
   /** Posted from an agent's turn: the place in a chain of agents'
    * messages its taker's turn would take (MAX_AGENT_CHAIN in
    * server/index.ts). Absent when the person posted or offered it. */

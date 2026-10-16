@@ -16,6 +16,8 @@
 // another, and every abstraction here is one they would have to learn
 // first.
 
+import type { EnginePauses, InvocationOrigin, EngineRoute } from "./engine-pauses.ts";
+
 export type DriverKind = string;
 export type InstanceId = string;
 export type ThreadId = string;
@@ -178,6 +180,12 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
 export interface SendTurnInput {
   threadId: ThreadId;
+  /** Harness-authenticated origin, never taken from a submitted body. Captured
+   * inputs retain this identity for compaction, recovery and late work. */
+  invocationOrigin?: InvocationOrigin;
+  /** Trusted source-owned commit, called synchronously inside the actual
+   * invocation gate, before starting the native process or HTTP request. */
+  onInvoked?: () => void;
   text: string;
   model?: string;
   /** Run without the engine's hooks (Claude Code: plugins and settings
@@ -389,6 +397,9 @@ export interface DriverCreateInput<Config> {
   environment: Record<string, string>;
   enabled: boolean;
   config: Config;
+  /** Loaded before driver factories/probes. Optional for isolated consumers;
+   * the application registry always supplies its durable owner. */
+  enginePauses?: EnginePauses;
 }
 
 export interface ProviderInstance {
@@ -398,6 +409,12 @@ export interface ProviderInstance {
   readonly enabled: boolean;
   readonly models: ModelCatalog;
   readonly adapter: ProviderAdapter;
+  /** Native admission boundaries implemented by this live generation. Missing
+   * means uncovered, never implied by the driver's name or saved selection. */
+  readonly pauseAdmission?: { paths: readonly string[]; limitations: readonly string[] };
+  /** A source's preflight preview only. Actual driver invocation still
+   * resolves and checks its route again at the physical boundary. */
+  pauseRoutes?(model: string): EngineRoute[];
   /** Resolves when a deferred catalog probe has finished, if this engine
    * has one. The picker loads before that, so the harness refetches. */
   catalogReady?: Promise<void>;
@@ -406,7 +423,7 @@ export interface ProviderInstance {
   snapshot(): Promise<ProviderSnapshot>;
   /** A cheap one-shot completion, for naming and summarising. Optional:
    * not every engine has something small enough to be worth using. */
-  generateText?(prompt: string): Promise<string>;
+  generateText?(prompt: string, origin?: InvocationOrigin): Promise<string>;
   /** The latest the engine said about its plan's limits, kept in memory
    * on the instance and null until it says anything. Optional: only an
    * engine signed in to a subscription has limits to report. For the

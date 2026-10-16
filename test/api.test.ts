@@ -4836,7 +4836,9 @@ describe("the job board", () => {
 
     // somebody is on it: cancelled rather than erased, since their turn is still out there
     const { job: taken } = await h.json("/api/jobs", { method: "POST", body: JSON.stringify({ title: "Filing" }) });
-    assert.equal(taken.claimedBy, clerk.id);
+    // Preparation does not claim work before actual invocation. Reconcile
+    // the existing board once that invocation has accepted the offer.
+    assert.ok(await waitFor(async () => (await onBoard(taken.id))?.claimedBy === clerk.id));
     await h.fetch(`/api/jobs/${taken.id}`, { method: "DELETE" });
     assert.equal((await onBoard(taken.id))?.state, "cancelled");
 
@@ -4871,7 +4873,7 @@ describe("the job board", () => {
       method: "POST",
       body: JSON.stringify({ title: "Herbarium cataloguing" }),
     });
-    assert.equal(job.claimedBy, keeper.id);
+    assert.ok(await waitFor(async () => (await onBoard(job.id))?.claimedBy === keeper.id));
     const done = await waitFor(async () => {
       const j = await onBoard(job.id);
       return j?.state === "done" ? j : null;

@@ -10,7 +10,7 @@ import "./pending-restore.ts";
 import { existsSync, mkdirSync, openAsBlob, readdirSync, readFileSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { extname, join, resolve, sep } from "node:path";
 
@@ -35,6 +35,9 @@ import {
   parseAnchor,
 } from "./artifact-comments.ts";
 import * as composio from "./composio.ts";
+import { EnginePauses, EnginePauseError, pauseFile } from "./engine-pauses.ts";
+import { EngineHelperBroker, helperFile, nativeHistoryContext, type HelperOrigin, type ReviewProfile } from "./engine-helper.ts";
+import { engineHelperHttp } from "./engine-helper-http.ts";
 import {
   APP_VERSION,
   DATA_DIR,
@@ -295,9 +298,9 @@ import {
   vmStatus,
   vmStop,
 } from "./local-vm.ts";
-import { widenPath } from "./path.ts";
+import { widenPath, resolveOnPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { describe as describeRoutine, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
+import { describe as describeRoutine, isDue as routineIsDue, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -435,8 +438,64 @@ const iconCache = new Map<string, { type: string; bytes: Buffer }>();
 widenPath();
 ensureDirs();
 const cfg = loadConfig();
-const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
+// Durable restriction precedes factories, readiness/auth probes and recovery.
+const enginePauses = new EnginePauses(pauseFile(join(DATA_DIR, "engine-pauses.json")));
+const registry = new ProviderRegistry(BUILT_IN_DRIVERS, enginePauses);
 await registry.load(instanceConfigs(cfg));
+
+// Only native harness code can issue this fixed-profile capability. A
+// descriptor conveys no workspace/config/stop authority to a check shell.
+interface NativeHelperScope {
+  origin: HelperOrigin; botId: string; laneId: string; cwd: string; roots: string[];
+  instanceId: string; permission: string; historyGeneration?: string; live: () => boolean; until: number;
+}
+const helperHost = hostname();
+const helperScopes = new Map<string, NativeHelperScope>();
+const scopePermission = (bot: BotRecord) => JSON.stringify({ approvals: bot.approvals, cwd: bot.cwd, archivedAt: bot.archivedAt });
+const engineHelpers = new EngineHelperBroker(enginePauses, helperFile(join(DATA_DIR, "engine-helper-runs.json")), (origin): ReviewProfile | null => {
+  const scope = helperScopes.get(origin.id), bot = scope && store.bot(scope.botId);
+  if (!scope || !bot || bot.archivedAt || bot.approvals !== "full" || origin.generation !== scope.origin.generation ||
+      scopePermission(bot) !== scope.permission || isSharedLane(scope.laneId) || rehearsals.forTask(scope.laneId) ||
+      bot.tasks.find(t => t.id === scope.laneId)?.guestMail) return null;
+  const history = nativeHistoryContext({ ...process.env, ...usableSecrets(cfg.secrets) }, scope.cwd);
+  if (!history || history.generation !== scope.historyGeneration) return null;
+  const instance = registry.get(scope.instanceId), entry = cfg.instances?.[scope.instanceId];
+  if (!instance || instance.driverKind !== "claudeAgent" || instance.enabled === false || !entry) return null;
+  const config = (entry.config ?? {}) as Record<string, unknown>;
+  const environment = { ...process.env, ...usableSecrets(cfg.secrets), ...entry.environment };
+  const cli = typeof config.cli === "string" ? config.cli : "claude";
+  // An overridden PATH cannot be resolved against the server's unrelated
+  // PATH. Require an explicit launcher rather than probing an account.
+  if (!/[/\\]/.test(cli) && environment.PATH !== process.env.PATH) return null;
+  const executable = /[/\\]/.test(cli) ? resolve(scope.cwd, cli) : resolveOnPath(cli);
+  if (!executable) return null;
+  return { host: helperHost, originGeneration: origin.generation,
+    permissionGeneration: createHash("sha256").update(scope.permission).digest("hex"),
+    configurationGeneration: createHash("sha256").update(JSON.stringify(entry)).digest("hex"),
+    effectiveFullAccess: true, cwd: scope.cwd, roots: [...scope.roots, ...(history?.roots ?? [])], historyGeneration: history?.generation, executable, environment,
+    projectsDirectory: join(resolve(scope.cwd, environment.CLAUDE_CONFIG_DIR ?? join(environment.HOME ?? homedir(), ".claude")), "projects"),
+    instanceId: scope.instanceId };
+});
+const helperOrigin = `http://127.0.0.1:${PORT}`;
+const handleEngineHelpers = engineHelperHttp(engineHelpers, helperOrigin);
+function helperDescriptor(bot: BotRecord, laneId: string, cwd: string, roots: string[], effectiveFullAccess: boolean, live: () => boolean): string | undefined {
+  if (!effectiveFullAccess || bot.approvals !== "full" || isSharedLane(laneId) || rehearsals.forTask(laneId) || bot.tasks.find(t => t.id === laneId)?.guestMail) return;
+  const configured = registry.instances().filter(instance => instance.driverKind === "claudeAgent" && instance.enabled !== false);
+  const selected = configured.find(instance => instance.instanceId === bot.modelSelection.instanceId) ?? (configured.length === 1 ? configured[0] : undefined);
+  if (!selected) return;
+  for (const [id, scope] of helperScopes) if (scope.until < Date.now()) helperScopes.delete(id);
+  if (helperScopes.size >= 4_000) return;
+  const origin: HelperOrigin = { id: newId(), generation: newId(), host: helperHost, invocation: { kind: "agent", agentId: bot.id, laneId } };
+  const history = nativeHistoryContext({ ...process.env, ...usableSecrets(cfg.secrets) }, cwd);
+  if (!history) return;
+  const historyGeneration = history.generation;
+  const scope = { origin, botId: bot.id, laneId, cwd, roots, historyGeneration, instanceId: selected.instanceId, permission: scopePermission(bot), live, until: Date.now() + 60 * 60_000 };
+  helperScopes.set(origin.id, scope);
+  try {
+    const capability = engineHelpers.issue(origin, () => helperScopes.get(origin.id) === scope && scope.until > Date.now() && live());
+    return JSON.stringify({ version: 1, origin: helperOrigin, capability });
+  } catch { helperScopes.delete(origin.id); return; }
+}
 
 const bus = new EventBus(redactSecrets);
 bus.attach(registry.instances());
@@ -924,6 +983,14 @@ function engineUsable(selection: ModelSelection | null | undefined): selection i
   return Boolean(instance && instance.enabled !== false && !cooldowns.of(selection.instanceId));
 }
 
+/** A preflight preview cannot authorize a provider operation. Unimplemented
+ * or opaque identities stay conservative; each actual driver rechecks later. */
+function routeAllowed(bot: BotRecord, selection: ModelSelection): boolean {
+  const instance = registry.get(selection.instanceId);
+  const routes = instance?.pauseRoutes?.(selection.model) ?? [{ instanceId: selection.instanceId, driverKind: instance?.driverKind ?? "unknown", family: null, model: null }];
+  return enginePauses.allowed({ kind: "agent", agentId: bot.id }, routes);
+}
+
 /** Which engine a turn on this agent runs on: its own, unless it is resting
  * after running out (or gone) and it has a backup that is not. startTurn and
  * the webhook receiver both ask here, so they cannot disagree about it. A
@@ -932,12 +999,15 @@ function engineUsable(selection: ModelSelection | null | undefined): selection i
 function selectEngine(bot: BotRecord, fallback = false, laneId?: string): ModelSelection {
   const own = bot.modelSelection;
   if (fallback && engineUsable(bot.backupSelection)) return bot.backupSelection;
-  // a conversation staying on the backup that answered it
-  if (laneId && stayOf(bot, laneId) && engineUsable(bot.backupSelection)) return bot.backupSelection;
+  const staying = laneId && stayOf(bot, laneId) && engineUsable(bot.backupSelection);
   const backup = bot.backupSelection && bot.backupSelection.instanceId !== own.instanceId ? bot.backupSelection : null;
   const ownRest = cooldowns.of(own.instanceId);
   const ownMissing = !registry.get(own.instanceId);
-  return (ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+  const preferred = staying ? bot.backupSelection! : (ownRest || ownMissing) && engineUsable(backup) ? backup : own;
+  if (routeAllowed(bot, preferred)) return preferred;
+  // Restrict admission, never preferences. A model-only restriction can
+  // leave another configured model on the SAME instance permitted.
+  return [own, bot.backupSelection].find((choice): choice is ModelSelection => Boolean(choice && engineUsable(choice) && routeAllowed(bot, choice))) ?? preferred;
 }
 
 function unavailableEngineMessage(instanceId: string): string {
@@ -1559,7 +1629,7 @@ function recoverTurn(
   bot: BotRecord,
   laneId: string,
   roomId: string,
-  end: { ok: boolean; stopReason: string | null; pickingUp: boolean; rebuilt: boolean },
+  end: { ok: boolean; stopReason: string | null; pickingUp: boolean; rebuilt: boolean; unstarted?: boolean },
   say: (text: string, phoneText?: string) => void,
 ): boolean {
   const used = laneEngine.get(laneId);
@@ -1580,6 +1650,12 @@ function recoverTurn(
   trying?.reservation.finished();
   if (end.ok) trying?.returned?.();
   const command = commandTurns.delete(laneId);
+  // Admission/cancellation is a policy outcome, not a failed provider that
+  // authorizes fallback, a retry or another background review.
+  if (end.stopReason === "engine_paused") {
+    store.setTaskEngineHold(laneId, end.unstarted ? "pending" : "interrupted");
+    return false;
+  }
   // A model that answered can take work again, if it was asked after
   // the engine last ran out. A local command says nothing about quota,
   // but keeps the existing signed-in recovery.
@@ -2913,14 +2989,21 @@ bus.subscribe((event: RuntimeEvent) => {
         const said = turnErrors.get(event.threadId)?.at(-1);
         if (said) stalledSince.set(event.threadId, said);
       }
+      const dispatch = sourceDispatches.get(event.threadId);
+      const unstarted = Boolean(dispatch && !dispatch.invoked);
+      if (event.stopReason === "engine_paused" && unstarted && dispatch && !dispatch.pending) {
+        dispatch.pending = true;
+        dispatch.pendingSource?.(false);
+      }
+      if (dispatch) sourceDispatches.delete(event.threadId);
       const handedOver = recoverTurn(
         bot,
         event.threadId,
         roomId,
-        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt) },
+        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt), unstarted },
         (text, phoneText) => pushMessage({ role: "bot", kind: "notice", text, ...(phoneText ? { phoneText } : {}) }),
       );
-      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
+      if (!pickingUp && !handedOver && !(event.stopReason === "engine_paused" && unstarted)) telegramReturns.finish(event.threadId);
       if (!pickingUp && !handedOver && !refolding) telegramWorking.get(event.threadId)?.ended();
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
@@ -2932,14 +3015,14 @@ bus.subscribe((event: RuntimeEvent) => {
       // a turn asked again or handed to the backup is not over yet, so what
       // waits on how it ends (a routine's run, a workflow step, a meeting's
       // write-up, a mail's reply) waits for the attempt that ends it
-      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
+      if (!handedOver && !(event.stopReason === "engine_paused" && unstarted)) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
       // A turn another agent started that ended well without a word to
       // the person leaves nothing to read; anything else marks the chat.
       const quietAgentTurn =
-        replyingTo.has(event.threadId) && event.ok !== false && !spokeInTurn.has(event.threadId);
+        event.stopReason === "engine_paused" || replyingTo.has(event.threadId) && event.ok !== false && !spokeInTurn.has(event.threadId);
       spokeInTurn.delete(event.threadId);
       if (quietAgentTurn || quietRun) {
         // nothing new here
@@ -2959,8 +3042,8 @@ bus.subscribe((event: RuntimeEvent) => {
       // and none of what the mail said may reach it as context.
       const guestEnded = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE;
       if (guestEnded) store.startFreshSession(event.threadId);
-      if (guestEnded) {
-        // nothing of the owner's to keep from this turn
+      if (guestEnded || event.stopReason === "engine_paused") {
+        // nothing to summarize after a cancelled or constrained invocation
       } else if (!command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
         void foldAfterTurn(bot.id, event.threadId);
       } else if (!command) {
@@ -2977,7 +3060,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // the owner's to turn into the agent's standing skills.
       // Nor the lane strangers' mail is answered in, whoever's turn this was.
       const guestLane = guestEnded || Boolean(settledLane?.guestMail);
-      if (!command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+      if (event.stopReason !== "engine_paused" && !command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
       drainRoomTags(bot.id);
       // before anything queued starts the next turn on the old session
       freshIfAsked(event.threadId);
@@ -3000,7 +3083,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (inRoom) {
         const said = store.messagesFor(roomId);
         const last = [...said].reverse().find((m) => m.from === bot.id && m.kind === "text");
-        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester, nextAgentChain(event.threadId), (turnHops.get(event.threadId) ?? 0) + 1);
+        if (event.stopReason !== "engine_paused" && last?.text) void relayMentions(roomId, bot.id, last.text, requester, nextAgentChain(event.threadId), (turnHops.get(event.threadId) ?? 0) + 1);
         if (bloks.get(roomId)?.sharing) broadcast({ kind: "room.activity", roomId, botId: bot.id, busy: false });
       }
       activeRoom.delete(event.threadId);
@@ -3299,6 +3382,7 @@ function retireCarryOn(turn: TurnInFlight) {
  */
 function recoverCutOff(now = Date.now()) {
   const picked: TurnInFlight[] = [];
+  const uncertain = new Set<string>();
   for (const turn of cutOff.all()) {
     if (turn.waiting) continue;
     const agent = store.bot(turn.botId);
@@ -3307,7 +3391,14 @@ function recoverCutOff(now = Date.now()) {
       Boolean(agent?.tasks.some((t) => t.id === turn.laneId)) &&
       !rehearsals.forTask(turn.laneId) &&
       (!turn.roomId || Boolean(bloks.get(turn.roomId)));
-    const next = recoveryFor(turn, now, { agent, lane });
+    let next = recoveryFor(turn, now, { agent, lane });
+    const paused = enginePauses.interruptedLane(turn.botId, turn.laneId, turn.startedAt) ||
+      agent?.tasks.find(task => task.id === turn.laneId)?.engineHold?.phase === "interrupted";
+    if (paused && next !== "drop") {
+      uncertain.add(turn.laneId);
+      store.setTaskEngineHold(turn.laneId, "interrupted");
+      next = "ask";
+    }
     if (next === "drop") {
       cutOff.take(turn.laneId);
     } else if (next === "ask") {
@@ -3317,7 +3408,9 @@ function recoverCutOff(now = Date.now()) {
         role: "bot",
         kind: "notice",
         ...(turn.roomId ? { from: turn.botId } : {}),
-        text: turn.carriedOn && now - turn.seenAt <= MAX_QUEUED_RECOVERY_MS
+        text: paused
+          ? "An engine pause interrupted this turn before Bloks stopped. Outstanding work may still be unconfirmed. This turn and its waiting messages have not been replayed. Check the current work before choosing Continue."
+          : turn.carriedOn && now - turn.seenAt <= MAX_QUEUED_RECOVERY_MS
           ? `${name} was cut off again when Bloks stopped, while picking up from the last time, so it has not picked up on its own.`
           : cutOffWaitingNotice(name),
         carryOn: { laneId: turn.laneId },
@@ -3334,7 +3427,7 @@ function recoverCutOff(now = Date.now()) {
   // Only these turns actually continue. A cut-off record left waiting
   // for Continue must not lend its Telegram return to a later app turn.
   telegramReturns.recover((laneId) => pickingUp.has(laneId));
-  recoverQueued(now, pickingUp);
+  recoverQueued(now, new Set([...pickingUp, ...uncertain]));
   for (const turn of picked) carryOn(turn, "restart");
   // after both, so a goal whose turn or next note is going on is left be
   pauseStrandedGoals();
@@ -3802,12 +3895,20 @@ function deleteLane(botId: string, laneId: string): ReturnType<typeof store.dele
  * marking its lane busy (refused, held by a drain, or failed getting
  * ready) lets go of the lane here, and what waited behind it goes, as
  * it would after a turn. */
+interface SourceDispatch {
+  invoked: boolean;
+  pending: boolean;
+  pendingSource?: (stopped: boolean) => void;
+}
+const sourceDispatches = new Map<string, SourceDispatch>();
+
 async function startTurn(botId: string, text: string, opts: Parameters<typeof startClaimedTurn>[2] = {}): Promise<void> {
   const claim: LaneClaim = {};
   try {
     await startClaimedTurn(botId, text, opts, claim);
   } catch (error) {
     claim.cancelPrimaryTry?.();
+    if (error instanceof EnginePauseError) opts.sourcePending?.(false);
     throw error;
   } finally {
     if (claim.lane && claimedLanes.get(claim.lane) === claim) {
@@ -3824,6 +3925,10 @@ async function startClaimedTurn(
   text: string,
   opts: {
     roomId?: string;
+    /** Internal source callbacks, never submitted by an HTTP caller. */
+    sourceInvoked?: () => void;
+    sourcePending?: (stopped: boolean) => void;
+    sourceFailed?: (reason: string) => void;
     /** How many times in a row agents had passed the room along when a
      * mention started this turn (turnHops). Unset is 0, except on a turn
      * that goes on with another, which keeps that turn's count. */
@@ -3854,6 +3959,8 @@ async function startClaimedTurn(
     from?: { botId: string; name: string };
     /** A routine started this turn; the transcript keeps its prompt alone. */
     routine?: Message["routine"];
+    /** Trusted routine owner, before its first invocation opens a run. */
+    routineId?: string;
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
@@ -4009,7 +4116,7 @@ async function startClaimedTurn(
   const backup = bot.backupSelection;
   const reservation =
     !command && !opts.fallback && !opts.retry && !opts.carriedOn && !staying &&
-    (!opts.roomId || opts.roomId === task.id) && triesBeforeReset(own, ownRest) && ownInstance?.enabled !== false &&
+    (!opts.roomId || opts.roomId === task.id) && routeAllowed(bot, own) && triesBeforeReset(own, ownRest) && ownInstance?.enabled !== false &&
     backup?.instanceId !== own.instanceId && engineUsable(backup)
       ? cooldowns.reserve(own.instanceId, RETRY_INTERVAL) : undefined;
   const ownTry: PrimaryTry | undefined = reservation ? { reservation } : undefined;
@@ -4025,6 +4132,10 @@ async function startClaimedTurn(
   const instance = registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(new Error(unavailableEngineMessage(selection.instanceId)), { status: 409 });
+  }
+  if (!routeAllowed(bot, selection)) {
+    store.setTaskEngineHold(task.id, "pending");
+    throw Object.assign(new EnginePauseError("paused"), { status: 423, enginePaused: true });
   }
   if (sharing && !sharedSafe(instance.driverKind)) {
     throw Object.assign(
@@ -4151,11 +4262,15 @@ async function startClaimedTurn(
     Date.now(),
     ...store.messagesFor(roomId).filter((m) => telegramInputIds.includes(m.id)).map((m) => m.at),
   );
+  let commitRoutineMessage: (() => void) | undefined;
+  let directSource: Message | undefined;
+  let directWords: string | undefined;
   if (!blok && !opts.presetMessage) {
-    const userMessage = store.appendMessage(roomId, {
+    const sourceWords = text;
+    const append = () => { const userMessage = store.appendMessage(roomId, {
       role: "user",
       kind: "text",
-      text,
+      text: sourceWords,
       ...(recalledAhead ? { recalled: recalledAhead.notes } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
@@ -4163,8 +4278,11 @@ async function startClaimedTurn(
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
     });
+    if (!opts.routine && !opts.sourceInvoked) { directSource = userMessage; directWords = userMessage.text; }
     if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
-    broadcast({ kind: "message", threadId: roomId, message: userMessage });
+    broadcast({ kind: "message", threadId: roomId, message: userMessage }); };
+    if (opts.routine || opts.sourceInvoked) commitRoutineMessage = append;
+    else append();
   }
   // what this turn says back belongs to that exchange (see AgentNote)
   const answering = opts.from ? { peerId: opts.from.botId, peerName: opts.from.name } : opts.answering;
@@ -4196,7 +4314,7 @@ async function startClaimedTurn(
     : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
   const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
   if (opts.from) text = fromAgentPrompt(opts.from, text);
-  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id));
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id, opts.routineId));
 
   // ── the transcript for API-backed drivers ──
   //
@@ -4220,12 +4338,17 @@ async function startClaimedTurn(
     // not been yet (it joins at the end when it goes), so no engine hears either
     const settled = store
       .messagesFor(roomId)
-      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
+      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.id !== directSource?.id)
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         text: storedPrompt(m),
       }));
-    return assembleTranscript(settled, task.context ?? null, transcriptBudget);
+    // assembleTranscript removes the current user prompt, which the driver
+    // sends separately. A source awaiting its invocation receipt has not
+    // entered settled history yet, so supply that last prompt in memory
+    // rather than accidentally dropping the previous assistant reply.
+    const awaitingSource = Boolean(directSource || commitRoutineMessage || opts.sourceInvoked);
+    return assembleTranscript(awaitingSource ? [...settled, { role: "user", text: said }] : settled, task.context ?? null, transcriptBudget);
   };
 
   // The rule: anything that would fall out of the window gets summarised
@@ -4385,6 +4508,35 @@ async function startClaimedTurn(
   // the instant someone presses send. The dispatch itself is deliberately
   // not awaited: provisioning a box can take a minute and a half, and an
   // HTTP request must never be the thing holding that open.
+  let returnedDirect = false;
+  const directPending = (stopped: boolean) => {
+    if (!directSource || returnedDirect) return;
+    returnedDirect = true;
+    // Normal Stop preserves the ordinary source history and existing
+    // catch-up semantics. It never transfers this request into the queue.
+    if (stopped) return;
+    {
+      const message = store.patchMessage(roomId, directSource.id, { queued: true, queuedAt: directSource.at, namedSkills: opts.byYou === true && opts.personal !== false && !opts.from });
+      if (message) broadcast({ kind: "message.patch", threadId: roomId, message });
+      const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
+      if (!entry.items.some(item => item.messageId === directSource!.id)) entry.items.unshift({ messageId: directSource.id, ...(opts.chain ? { chain: opts.chain } : {}) });
+      steerQueues.set(task.id, entry);
+    }
+  };
+  const dispatch: SourceDispatch = { invoked: false, pending: false, pendingSource: opts.sourcePending ?? (directSource ? directPending : undefined) };
+  sourceDispatches.set(task.id, dispatch);
+  const invoked = () => {
+    if (dispatch.invoked) return;
+    if (dispatch.pending || sourceDispatches.get(task.id) !== dispatch) throw new EnginePauseError("closed");
+    opts.sourceInvoked?.();
+    if (directSource) {
+      const current = store.messagesFor(roomId).find(message => message.id === directSource!.id);
+      if (!current || current.deleted || current.unsent || current.text !== directWords) throw new EnginePauseError("closed");
+    }
+    commitRoutineMessage?.();
+    dispatch.invoked = true;
+    store.setTaskEngineHold(task.id, null);
+  };
   if (command) commandTurns.add(task.id);
   // a stop left for an earlier turn is not this one's; a turn that goes
   // on from one that was stopped between its two halves still is
@@ -4441,7 +4593,11 @@ async function startClaimedTurn(
   // The lane goes back to idle, whichever way this turn ends without
   // reaching its engine. Nothing is listening for a turn.completed that
   // was never going to come.
-  const settleUnsent = (failure?: string) => {
+  const settleUnsent = (failure?: string, pending = false) => {
+    if (!pending && !dispatch.invoked) {
+      directPending(true);
+      opts.sourceFailed?.(failure ?? "The engine invocation did not start.");
+    }
     claim.cancelPrimaryTry?.();
     commandTurns.delete(task.id);
     checkInTurns.delete(task.id);
@@ -4458,12 +4614,12 @@ async function startClaimedTurn(
     if (sharing) broadcast({ kind: "room.activity", roomId: sharedRoom!.id, botId: bot.id, busy: false });
     store.setTaskBusy(task.id, false);
     // a Telegram request this turn took is answered with why it did not run
-    telegramReturns.finish(task.id, failure);
+    if (!pending) telegramReturns.finish(task.id, failure);
     turnStarted.delete(task.id);
     repeats.end(task.id);
     cutOff.end(task.id);
     // and so is whatever registered to hear how it ended
-    settleOwners(bot, task.id, { ok: false, why: failure ?? null, unsent: true });
+    if (!pending) settleOwners(bot, task.id, { ok: false, why: failure ?? null, unsent: true });
     broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
     drainRoomTags(bot.id);
     freshIfAsked(task.id);
@@ -4837,6 +4993,8 @@ async function startClaimedTurn(
 
       const sending: SendTurnInput = {
         threadId: task.id,
+        invocationOrigin: { kind: "agent", agentId: bot.id, laneId: task.id },
+        onInvoked: invoked,
         cwd: turnCwd,
         ...(credential
           ? {
@@ -4898,6 +5056,13 @@ async function startClaimedTurn(
           (project && !guestMail ? `\n\n${briefFor(project)}` : ""),
         integrations,
       };
+      // This origin is assembled from the effective turn, not a request
+      // body or the agent's saved full-access preference alone.
+      const descriptor = helperDescriptor(bot, task.id, turnCwd ?? workspace.ensureWorkspace(bot.id),
+        [turnCwd ?? workspace.ensureWorkspace(bot.id), ...(sending.extraDirs ?? [])],
+        sending.fullAccess === true && !sharing && !guestMail && !opts.rehearsal && !onCloud && !vmTurn,
+        () => sourceDispatches.get(task.id) === dispatch && !dispatch.pending && store.taskByThread(task.id)?.task.busy === true);
+      sending.env = { ...sending.env, BLOKS_ENGINE_HELPER: descriptor ?? "" };
       // What an idle compaction sends again later, so its request starts
       // with the same tools and system prompt as this one and reads the
       // cache this turn leaves. Not the words, the transcript, or the
@@ -4908,6 +5073,7 @@ async function startClaimedTurn(
           text: _text,
           transcript: _transcript,
           env: _env,
+          onInvoked: _invoked,
           resumeCursor: _cursor,
           handoff: _handoff,
           compactFirst: _compactFirst,
@@ -5023,6 +5189,7 @@ async function startClaimedTurn(
         if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
       }
       await engine.adapter.sendTurn(sending);
+      if (!engine.pauseAdmission) invoked();
       tryAccepted = true;
       ownTry?.reservation.accepted();
       // Keep an undelivered failure line, and never consume a newer failure.
@@ -5040,6 +5207,14 @@ async function startClaimedTurn(
       // A local command has not heard a pending engine handoff or CLI note.
       if (!command) store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
+      if (e instanceof EnginePauseError && !dispatch.invoked) {
+        const stopped = stoppedGettingReady.delete(task.id);
+        dispatch.pending = true;
+        dispatch.pendingSource?.(stopped);
+        if (!stopped) store.setTaskEngineHold(task.id, "pending");
+        settleUnsent(stopped ? "Stopped before the engine invocation started." : undefined, !stopped);
+        return;
+      }
       const message = redactSecrets(e instanceof Error ? e.message : String(e));
       const failure = store.appendMessage(roomId, {
         role: "bot",
@@ -5055,7 +5230,10 @@ async function startClaimedTurn(
       });
       settleUnsent(`Could not answer: ${message}`);
     } finally {
-      if (!tryAccepted) claim.cancelPrimaryTry?.();
+      if (!tryAccepted) {
+        claim.cancelPrimaryTry?.();
+        if (sourceDispatches.get(task.id) === dispatch) sourceDispatches.delete(task.id);
+      }
     }
   })();
 }
@@ -5502,9 +5680,13 @@ function checkFolder(bot: BotRecord): string {
 /** What a check runs with: this machine's environment and the secrets
  * saved for agents, never an agent's workspace credential, which lives
  * for one turn and a check is not a turn. */
-function checkEnv(): NodeJS.ProcessEnv {
+function checkEnv(bot?: BotRecord, laneId?: string, cwd?: string, live: () => boolean = () => false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...usableSecrets(cfg.secrets) };
-  delete env.BLOKS_TOKEN;
+  for (const key of Object.keys(env)) if (key.startsWith("BLOKS_")) delete env[key];
+  if (bot && laneId && cwd) {
+    const descriptor = helperDescriptor(bot, laneId, cwd, [cwd], bot.approvals === "full", live);
+    if (descriptor) env.BLOKS_ENGINE_HELPER = descriptor;
+  }
   return env;
 }
 
@@ -5566,13 +5748,10 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
     // as a person's message would.
     const lane = watcherLane(w, bot);
     const chain = w.chain ? { chain: w.chain } : {};
-    if (laneWaits(lane)) {
-      queueOnLane(bot.id, lane.id, text, { via: "watcher", ...chain });
-    } else {
-      const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "watcher" });
-      broadcast({ kind: "message", threadId: lane.id, message: said });
-      await startTurn(bot.id, text, { taskId: lane.id, presetMessage: true, ...chain });
-    }
+    // The existing durable queue owns the change before the frontier
+    // advances. A pause during preparation cannot consume that message.
+    queueOnLane(bot.id, lane.id, text, { via: "watcher", ...chain });
+    drainSteer(lane.id);
   }
   w.fires = [{ at: Date.now(), summary: what.split("\n")[0].slice(0, 160) }, ...w.fires].slice(0, 10);
 }
@@ -5602,6 +5781,10 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // now would only use the change up. The first look after the release
     // finds it instead (GitHub 135).
     if (wheel.heldBy(bot.id)) return { fired: false, note: `${bot.name} is being held right now; it will look again once released` };
+    if (!routeAllowed(bot, selectEngine(bot, false, lane?.id))) {
+      w.lastError = "This watcher did not look because its agent's route is paused or unresolved under an engine restriction. Its change frontier is unchanged.";
+      return { fired: false, note: w.lastError };
+    }
     if (!checkAllowed(w, bot.approvals)) {
       w.lastCheck = Date.now();
       w.lastError = `Waiting for approval: its command does not run until ${hostName()} approves it here.`;
@@ -5631,9 +5814,12 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       if (runningChecks >= MAX_CHECKS_AT_ONCE) return { fired: false, note: "other checks are running; it will look again shortly" };
       runningChecks++;
       let result: Awaited<ReturnType<typeof runCheck>>;
+      let live = true;
       try {
-        result = await runCheck(w.target, checkFolder(bot), checkEnv());
+        const cwd = checkFolder(bot), task = (w.laneId && bot.tasks.find(t => t.id === w.laneId)) || namedLane(bot, w.thread) || mainLaneOf(bot);
+        result = await runCheck(w.target, cwd, checkEnv(bot, task?.id, cwd, () => live));
       } finally {
+        live = false;
         runningChecks--;
       }
       const outcome = checkOutcome(result, w.seen);
@@ -5678,7 +5864,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // reached only if any turn this look called for has started
     if ("seen" in next) w.seen = next.seen;
     if (next.seenItems) w.seenItems = next.seenItems;
-    return { fired, note: fired ? "changed, and the agent is on it" : what ? w.lastError ?? "" : manual ? "no change since the last look" : "" };
+    return { fired, note: fired ? "changed, and saved for the agent in its existing queue" : what ? w.lastError ?? "" : manual ? "no change since the last look" : "" };
   } catch (e) {
     w.lastError = (e as Error).message.slice(0, 200);
     w.lastCheck = Date.now();
@@ -6624,6 +6810,7 @@ function drainRoomTags(botId: string) {
       continue;
     }
     if (blok.sharing ? laneBusy(bot, roomId) : bot.busy) continue;
+    if (!routeAllowed(bot, selectEngine(bot))) continue;
     // claimed before any async work, so two racing settles fire it once
     roomTags.take(botId, entry);
     const previous = roomPosting.get(roomId);
@@ -6663,11 +6850,18 @@ async function speakInTurn(
     .sort(([a], [b]) => (a.seniority ?? 1) - (b.seniority ?? 1));
 
   for (const [member, text, hops] of ordered) {
+    if (!routeAllowed(member, selectEngine(member))) {
+      queueRoomTag(member.id, roomId, text, requester, hops);
+      continue;
+    }
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
-    await startTurn(member.id, text, { roomId, hops, requester, byYou }).catch((e) =>
-      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
-    );
+    const pending = (stopped: boolean) => { if (!stopped) queueRoomTag(member.id, roomId, text, requester, hops); };
+    await startTurn(member.id, text, { roomId, hops, requester, byYou, sourcePending: pending }).catch((e) => {
+      if (e instanceof EnginePauseError) { pending(false); return; }
+      if (waitsForTurn(e)) pending(false);
+      else sayTurnedAway(roomId, e);
+    });
     await waitForRoomTurn(member.id, roomId);
   }
 }
@@ -6952,6 +7146,8 @@ function candidates(): Candidate[] {
 
 /** Jobs posted or passed on during a drain, to offer when it ends. */
 const jobsHeld = new Set<string>();
+/** A job has one preparing source owner until its actual invocation. */
+const preparingJobs = new Set<string>();
 
 /**
  * Put a job to whoever looks most suited, and start them on it.
@@ -6962,6 +7158,7 @@ const jobsHeld = new Set<string>();
 async function offerJob(jobId: string): Promise<Job | null> {
   const job = jobs.get(jobId);
   if (!job || (job.state !== "open" && job.state !== "claimed")) return job;
+  if (preparingJobs.has(jobId)) return job;
   // Left open on the board while Bloks finishes up to restart, and
   // offered when the drain is called off (endDrain). After a restart it
   // waits on the board for Offer, as one nobody was free for does.
@@ -6971,7 +7168,11 @@ async function offerJob(jobId: string): Promise<Job | null> {
   }
   // Jobs agents post for one another are a chain like their messages
   // are: past the limit the job is left for the person to offer again.
-  const agent = nextFor(job, candidates());
+  const available = candidates();
+  const agent = nextFor(job, available.filter(candidate => {
+    const bot = store.bot(candidate.id);
+    return Boolean(bot && routeAllowed(bot, selectEngine(bot)));
+  }));
   if (chainPastLimit(job.chain ?? 0)) {
     const held = jobs.finish(job.id, {
       ok: false,
@@ -6982,6 +7183,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
     return held;
   }
   if (!agent) {
+    if (nextFor(job, available)) jobs.patch(job.id, { engineHold: job.engineHold ?? { at: Date.now(), reason: "engine-paused" } });
     broadcast({ kind: "jobs" });
     return job;
   }
@@ -6991,11 +7193,30 @@ async function offerJob(jobId: string): Promise<Job | null> {
     // queueing work behind work
     return job;
   }
-  const claimed = jobs.offer(job.id, agent, laneId, Date.now());
-  openJobs.set(laneId, job.id);
-  broadcast({ kind: "jobs" });
-  broadcast({ kind: "bot", bot: clientBot(store.bot(agent.id)) });
-  await startTurn(agent.id, offerText(job), { taskId: laneId, ...(job.chain ? { chain: job.chain } : {}) }).catch((e) => {
+  const source = { title: job.title, brief: job.brief };
+  const pending = (stopped: boolean) => {
+    preparingJobs.delete(job.id);
+    if (!stopped && jobs.get(job.id)?.state === "open") jobs.patch(job.id, { engineHold: job.engineHold ?? { at: Date.now(), reason: "engine-paused" } });
+    broadcast({ kind: "jobs" });
+  };
+  const failed = (reason: string) => {
+    preparingJobs.delete(job.id);
+    if (jobs.get(job.id)?.state === "open") jobs.finish(job.id, { ok: false, result: reason, now: Date.now() });
+    broadcast({ kind: "jobs" });
+  };
+  preparingJobs.add(job.id);
+  await startTurn(agent.id, offerText(job), { taskId: laneId, ...(job.chain ? { chain: job.chain } : {}), sourcePending: pending, sourceFailed: failed, sourceInvoked: () => {
+    const current = jobs.get(job.id);
+    if (!preparingJobs.has(job.id) || current?.state !== "open" || current.title !== source.title || current.brief !== source.brief) throw new EnginePauseError("closed");
+    jobs.offer(job.id, agent, laneId, Date.now());
+    jobs.patch(job.id, { engineHold: undefined });
+    openJobs.set(laneId, job.id);
+    preparingJobs.delete(job.id);
+    broadcast({ kind: "jobs" });
+    broadcast({ kind: "bot", bot: clientBot(store.bot(agent.id)) });
+  } }).catch((e) => {
+    if (e instanceof EnginePauseError) { pending(false); return; }
+    preparingJobs.delete(job.id);
     openJobs.delete(laneId);
     jobs.finish(job.id, {
       ok: false,
@@ -7004,7 +7225,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
     });
     broadcast({ kind: "jobs" });
   });
-  return claimed;
+  return jobs.get(job.id);
 }
 
 /**
@@ -7461,7 +7682,7 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   const plan = planCompaction(asTurns, budget, force ? 2 : 6);
   if (!plan.fold.length) return false;
 
-  const summary = (await instance.generateText(summaryPrompt(task.context?.summary ?? null, plan.fold))).trim();
+  const summary = (await instance.generateText(summaryPrompt(task.context?.summary ?? null, plan.fold), { kind: "agent", agentId: botId, laneId: threadId })).trim();
   if (!summary) return false;
 
   store.setTaskContext(threadId, {
@@ -7519,7 +7740,7 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
 
   if (plan.absorb) {
     try {
-      summary = (await instance.generateText(absorbPrompt(summary || null, plan.absorb))).trim();
+      summary = (await instance.generateText(absorbPrompt(summary || null, plan.absorb), { kind: "agent", agentId: botId, laneId: threadId })).trim();
     } catch {
       return false;
     }
@@ -7529,10 +7750,11 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
   // A summary that has grown baggy is the problem it was meant to solve.
   if (needsDefrag(summary)) {
     try {
-      const tighter = (await instance.generateText(defragPrompt(summary))).trim();
-      if (tighter) summary = tighter;
+      const tighter = (await instance.generateText(defragPrompt(summary), { kind: "agent", agentId: botId, laneId: threadId })).trim();
+      if (!tighter) return false;
+      summary = tighter;
     } catch {
-      /* keep the baggy one; it is still a summary */
+      return false;
     }
   }
 
@@ -7580,7 +7802,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
   const mine = listSkills().filter((s) => s.source === "user");
   let answer: string;
   try {
-    answer = await instance.generateText(reviewPrompt(turns, mine.map((s) => ({ id: s.id, name: s.name }))));
+    answer = await instance.generateText(reviewPrompt(turns, mine.map((s) => ({ id: s.id, name: s.name }))), { kind: "agent", agentId: botId, laneId: threadId });
   } catch {
     return false;
   }
@@ -7599,7 +7821,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
   if (target) {
     let edits: SkillEdit[] = [];
     try {
-      edits = parseEdits(await instance.generateText(patchPrompt(target, parsed.body)));
+      edits = parseEdits(await instance.generateText(patchPrompt(target, parsed.body), { kind: "agent", agentId: botId, laneId: threadId }));
     } catch {
       edits = [];
     }
@@ -7871,11 +8093,27 @@ async function walkRun(runId: string): Promise<void> {
         // before this line returns. Taken back if it never started, or a
         // later unrelated turn in that lane would be read as this step's
         // answer and walk a run that has already stopped.
+        const pending = (stopped: boolean) => {
+          if (workflowTurns.get(laneId)?.runId === runId) workflowTurns.delete(laneId);
+          workflows.update(runId, (r) => {
+            if (r.state !== "running") return;
+            r.steps = r.steps.filter(sp => sp.stepId !== step.id || Boolean(sp.endedAt));
+            if (!stopped) r.engineHold ??= { at: Date.now(), stepId: step.id, reason: "engine-paused" };
+          });
+          broadcast({ kind: "workflows" });
+        };
+        if (!routeAllowed(bot, selectEngine(bot, false, laneId))) { pending(false); return; }
         workflowTurns.set(laneId, { runId, stepId: step.id });
         try {
-          await startTurn(bot.id, text, { taskId: laneId });
+          await startTurn(bot.id, text, { taskId: laneId, sourcePending: pending, sourceInvoked: () => {
+            const current = workflows.run(runId);
+            if (!current || current.run.state !== "running" || current.workflow.steps[current.run.cursor]?.id !== step.id ||
+              fillTemplate(current.workflow.steps[current.run.cursor].text, scopeOf(current.run)).trim() !== text) throw new EnginePauseError("closed");
+            workflows.update(runId, r => { delete r.engineHold; });
+          } });
         } catch (e) {
           workflowTurns.delete(laneId);
+          if (e instanceof EnginePauseError) { pending(false); return; }
           throw e;
         }
         // the rest happens in turn.completed
@@ -8105,7 +8343,65 @@ setTimeout(() => {
   resumeStalled();
 }, 2_000).unref?.();
 
+const ENGINE_ROUTINE_HOLD = "This routine did not start because its engine route is paused or unresolved under a restriction. Its scheduled slot remains unconsumed. It is eligible only within its existing missed-run grace; an older one-time slot needs a manual run.";
+const ENGINE_MANUAL_ROUTINE_HOLD = "The requested manual run did not start because its engine route is paused or unresolved under a restriction. No automatic replay of this manual request is scheduled.";
+function roomEnginesPaused(room: BlokRecord): boolean {
+  const members = room.memberIds.map(id => store.bot(id)).filter((bot): bot is BotRecord => Boolean(bot && !bot.archivedAt && !wheel.heldBy(bot.id)));
+  return members.length > 0 && members.every(bot => !routeAllowed(bot, selectEngine(bot)));
+}
+
+/** The routine remains its own retry owner. Reserving the lane prevents a
+ * second preparation; only an actual invocation spends the scheduled slot. */
+function routineDispatch(routine: Routine, laneId: string, manual: boolean, slot: number) {
+  const snapshot = JSON.stringify({ prompt: routine.prompt, time: routine.time, date: routine.date,
+    every: routine.every, days: routine.days, enabled: routine.enabled, scheduledAt: routine.scheduledAt });
+  const current = () => {
+    const now = routines.get(routine.id);
+    return now && JSON.stringify({ prompt: now.prompt, time: now.time, date: now.date,
+      every: now.every, days: now.days, enabled: now.enabled, scheduledAt: now.scheduledAt }) === snapshot ? now : null;
+  };
+  const pending = () => {
+    if (!current()) return;
+    routines.holdRun(routine.id, slot, laneId, manual
+      ? ENGINE_MANUAL_ROUTINE_HOLD
+      : ENGINE_ROUTINE_HOLD);
+    store.setTaskEngineHold(laneId, "pending");
+    broadcast({ kind: "routines" });
+  };
+  let recorded = false;
+  return {
+    pending,
+    sourcePending: (stopped: boolean) => { if (!stopped) pending(); },
+    sourceFailed: (reason: string) => {
+      if (recorded || !current()) return;
+      recorded = true;
+      // A structural refusal remains a failed attempt in existing history.
+      // Only a policy hold preserves an eligible scheduled slot.
+      if (!manual) routines.markRan(routine.id, Date.now());
+      const run = routines.beginRun(routine.id, laneId);
+      if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
+      closeRun(laneId, { ok: false, error: reason });
+    },
+    sourceInvoked: () => {
+      const now = current();
+      if (!now || (!manual && !routineIsDue(now, new Date()))) throw new EnginePauseError("closed");
+      if (!manual) routines.markRan(routine.id, Date.now());
+      recorded = true;
+      const run = routines.beginRun(routine.id, laneId);
+      if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
+      broadcast({ kind: "routines" });
+    },
+  };
+}
+
 async function runDueRoutines() {
+  // Reuse the existing source sweep. Only never-started queued words
+  // can become eligible after expiry; interrupted effects are not replayed.
+  for (const bot of store.bots) for (const lane of bot.tasks) {
+    if (lane.engineHold?.phase === "pending" && !lane.busy && routeAllowed(bot, selectEngine(bot, false, lane.id))) drainSteer(lane.id);
+  }
+  for (const botId of roomTags.agents()) drainRoomTags(botId);
+  for (const job of jobs.jobs) if (job.state === "open" && job.engineHold && !preparingJobs.has(job.id)) void offerJob(job.id);
   // A routine has no queue to wait in. It stays due instead, unmarked,
   // and fires once Bloks is back, inside the grace window a late routine
   // has anyway (server/drain.ts keeps a drain shorter than that).
@@ -8125,6 +8421,11 @@ async function runDueRoutines() {
       // used to post, mark itself run and report success, which burns a
       // "once" routine on an empty room.
       if (!members.some((m) => !m.archivedAt && !wheel.heldBy(m.id))) continue;
+      if (roomEnginesPaused(blok)) {
+        routines.holdRun(routine.id, lastScheduledBefore(routine, now)!.getTime(), blok.id, ENGINE_ROUTINE_HOLD);
+        broadcast({ kind: "routines" });
+        continue;
+      }
       routines.markRan(routine.id, now.getTime());
       const run = routines.beginRun(routine.id, blok.id);
       if (run) openRuns.set(blok.id, { routineId: routine.id, runId: run.id });
@@ -8166,21 +8467,20 @@ async function runDueRoutines() {
         }
         continue;
       }
-      routines.markRan(routine.id, now.getTime());
-      const run = routines.beginRun(routine.id, laneId);
-      if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
-      broadcast({ kind: "routines" });
+      const source = routineDispatch(routine, laneId, false, lastScheduledBefore(routine, now)!.getTime());
+      if (!routeAllowed(bot, selectEngine(bot, false, laneId))) { source.pending(); continue; }
       await startTurn(routine.targetId, routine.prompt, {
+        sourceInvoked: source.sourceInvoked,
+        sourcePending: source.sourcePending,
+        sourceFailed: source.sourceFailed,
         taskId: laneId,
         computerOverride: routine.runsOn,
         routine: routineMark(routine, false),
+        routineId: routine.id,
         ...(routine.chain ? { chain: routine.chain } : {}),
       }).catch((e) => {
-        // it never even started; that is a finished run, not a hung one
-        closeRun(laneId, {
-          ok: false,
-          error: redactSecrets(e instanceof Error ? e.message : String(e)),
-        });
+        if (e instanceof EnginePauseError) { source.pending(); return; }
+        source.sourceFailed(redactSecrets(e instanceof Error ? e.message : String(e)));
       });
     }
   }
@@ -9639,9 +9939,9 @@ function routineMark(routine: Routine, manual: boolean): NonNullable<Message["ro
 
 /** What a routine run in this lane said last time it said anything, as
  * the note its next turn carries, or null when it has not yet. */
-function lastReportFor(laneId: string): string | null {
-  const open = openRuns.get(laneId);
-  return open ? lastReportNote(routines.get(open.routineId)?.lastReport) : null;
+function lastReportFor(laneId: string, routineId?: string): string | null {
+  const id = routineId ?? openRuns.get(laneId)?.routineId;
+  return id ? lastReportNote(routines.get(id)?.lastReport) : null;
 }
 
 /** Stored words stay unchanged; engines hear who started the message. */
@@ -9702,6 +10002,12 @@ async function sendUserMessage(
   if (yours && lane.goal?.status === "blocked") {
     const { lastReason: _answered, ...goal } = lane.goal;
     putGoal(bot.id, lane.id, { ...goal, status: "active" });
+  }
+  if (!routeAllowed(bot, selectEngine(bot, false, lane.id))) {
+    queueOnLane(bot.id, lane.id, text, { replyTo: options.replyTo, from: options.from, personal: options.personal, chain: options.chain?.depth });
+    store.setTaskEngineHold(lane.id, "pending");
+    return { ok: true, queued: true, pending: true, taskId: lane.id, lane: lane.title,
+      note: "This message remains in its conversation queue because no configured engine route is currently permitted. Engine-pause status shows the restriction and any unresolved route." };
   }
   if (laneWaits(lane)) {
     if (yours && options.steer) {
@@ -9831,6 +10137,10 @@ function drainSteer(threadId: string) {
     closeIfAsked(threadId);
     return;
   }
+  if (!routeAllowed(bot, selectEngine(bot, false, threadId))) {
+    store.setTaskEngineHold(threadId, "pending");
+    return;
+  }
   // Claim only this segment before any async work; a command is a turn
   // of its own, and the suffix stays ahead of any newly arriving words.
   const segment = queuedSegment(threadId, entry.items);
@@ -9842,6 +10152,7 @@ function drainSteer(threadId: string) {
     return words === null ? [] : [{ item, words }];
   });
   if (alive.length === 0) {
+    if (lane.engineHold?.phase === "pending") store.setTaskEngineHold(threadId, null);
     // Everything that waited was taken back, so no turn starts, and no
     // settle comes along after it to do what a settle does once the
     // queue is clear: the room lines and the close that stood aside for
@@ -9851,7 +10162,6 @@ function drainSteer(threadId: string) {
     return;
   }
   // into the conversation before the turn that answers them
-  deliverQueued(threadId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : [])));
   // one turn answers the whole burst
   const joined = alive.map((said) => said.words).join("\n");
   // a burst that is all one agent's messages is that exchange's to answer
@@ -9868,8 +10178,29 @@ function drainSteer(threadId: string) {
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
   const telegramBinding = said.find((message) => message?.telegramBinding)?.telegramBinding;
   const chain = burstChain(threadId, alive.map(({ item }) => item));
+  let returned = false;
+  const sourcePending = (stopped: boolean) => {
+    if (returned) return;
+    returned = true;
+    if (stopped) {
+      for (const { item } of alive) if (item.messageId) {
+        const patch = store.patchMessage(threadId, item.messageId, { queued: false, unsent: true });
+        if (patch) broadcast({ kind: "message.patch", threadId, message: patch });
+      }
+      return;
+    }
+    const current = steerQueues.get(threadId);
+    steerQueues.set(threadId, { botId: entry.botId, items: [...segment.items, ...(current?.items ?? [])] });
+  };
+  const sourceInvoked = () => {
+    // A queued edit made during preparation invalidates this immutable
+    // prompt before it reaches an engine. The same source ids retry once.
+    if (alive.some(({ item, words }) => steerWords(threadId, item) !== words)) throw new EnginePauseError("closed");
+    deliverQueued(threadId, alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []));
+  };
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, sourceInvoked, sourcePending }).catch((e) => {
+    if (e instanceof EnginePauseError) { sourcePending(false); return; }
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     const failure = store.appendMessage(threadId, {
       role: "bot",
@@ -10305,6 +10636,10 @@ function goalTurnEnded(
 ) {
   const goal = store.taskByThread(laneId)?.task.goal;
   if (!goal || goal.status !== "active" || ended.goesOn) return;
+  if (ended.stopReason === "engine_paused") {
+    putGoal(bot.id, laneId, { ...goal, status: "paused", lastReason: "Its engine route was paused; interrupted work needs reconciliation." });
+    return;
+  }
   if (!ended.ok && !ended.inRoom && !ended.command) {
     if (ended.stopReason === "interrupted") pauseGoal(bot.id, laneId, goalPausedNotice("stopped"), "the turn was stopped");
     else pauseGoal(bot.id, laneId, goalPausedNotice("failed", ended.out ? "its engine is out" : undefined), "the last turn did not finish");
@@ -10337,7 +10672,9 @@ async function judgeGoal(botId: string, laneId: string): Promise<void> {
     if (goal.check) {
       // the person's own command, so a shell, as a watcher's check runs:
       // its own process group, stopped whole at the limit, output capped
-      const ran = await runCheck(goal.check, laneFolder(found.bot, found.task), checkEnv(), GOAL_CHECK_TIMEOUT_MS, { tail: true });
+      let live = true;
+      const cwd = laneFolder(found.bot, found.task);
+      const ran = await runCheck(goal.check, cwd, checkEnv(found.bot, found.task.id, cwd, () => live), GOAL_CHECK_TIMEOUT_MS, { tail: true }).finally(() => { live = false; });
       check = {
         command: goal.check,
         code: ran.code,
@@ -10354,7 +10691,7 @@ async function judgeGoal(botId: string, laneId: string): Promise<void> {
         timer = setTimeout(() => done(""), GOAL_JUDGE_MS);
         timer.unref?.();
       });
-      const answer = await Promise.race([instance.generateText(judgePrompt(goal, reply, check)).catch(() => ""), late]);
+      const answer = await Promise.race([instance.generateText(judgePrompt(goal, reply, check), { kind: "agent", agentId: botId, laneId }).catch(() => ""), late]);
       clearTimeout(timer);
       verdict = parseVerdict(answer);
     }
@@ -11283,6 +11620,7 @@ const server = createServer((req, res) => {
 });
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+  if (await handleEngineHelpers(req, res)) return;
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -11523,6 +11861,46 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   }
 
   try {
+    // This is after the authenticated agent and shared-member guards. It
+    // neither widens ordinary Stop nor rewrites anyone's preferences.
+    if (path === "/api/engine-pauses" || /^\/api\/engine-pauses\/[^/]+$/.test(path)) {
+      // An explicitly presented member identity stays a member even when
+      // transported over loopback. It cannot borrow the local owner lane.
+      if (!asAgent && deviceForToken(bearerToken(req))?.personId) return json(res, 403, { error: "A shared member cannot manage workspace engine restrictions." });
+      const actor = asAgent ? { kind: "agent" as const, id: asAgent.botId } : { kind: "owner" as const };
+      try {
+        if (method === "POST" && path === "/api/engine-pauses") {
+          const body = await readBody(req).catch(() => { throw new EnginePauseError("invalid"); });
+          await enginePauses.activate(actor, body as unknown as import("./engine-pauses.ts").PauseRequest);
+        } else if (method === "DELETE" && path !== "/api/engine-pauses") {
+          let id: string;
+          try { id = decodeURIComponent(path.slice("/api/engine-pauses/".length)); } catch { throw new EnginePauseError("invalid"); }
+          await enginePauses.cancel(actor, id);
+          if (!drain.on) for (const bot of store.bots) for (const lane of bot.tasks) {
+            if (lane.engineHold?.phase === "pending") drainSteer(lane.id);
+          }
+        } else if (method !== "GET" || path !== "/api/engine-pauses") {
+          return json(res, 405, { error: "Use status, create, or cancel one restriction." });
+        }
+        const status = enginePauses.status();
+        // No snapshot/readiness call here: status must never invoke a provider.
+        const boundaries = registry.entries().map(entry => {
+          const live = entry.live;
+          return { instanceId: entry.instanceId, driverKind: live?.driverKind ?? entry.shadow!.driverKind,
+            paths: live?.pauseAdmission?.paths ?? [], limitations: live?.pauseAdmission?.limitations ?? ["Native admission is not implemented for this driver."] };
+        });
+        return json(res, 200, { ...status, helpers: engineHelpers.status(),
+          holds: store.bots.flatMap(bot => bot.tasks.filter(task => task.engineHold).map(task => ({ agentId: bot.id, laneId: task.id, ...task.engineHold! }))),
+          coverage: { state: "incomplete", boundaries,
+          missing: ["Unintegrated external launch adapters and check scopes.", "Unresolved routes and unconfirmed running work.", ...boundaries.filter(row => !row.paths.length).map(row => `Driver ${row.driverKind} admission is not implemented.`)] } });
+      } catch (error) {
+        if (error instanceof EnginePauseError) {
+          const code = error.code === "forbidden" ? 403 : error.code === "conflict" ? 409 : error.code === "storage" ? 503 : 400;
+          return json(res, code, { error: error.message });
+        }
+        throw error;
+      }
+    }
     // ── events stream ──
     if (method === "GET" && path === "/api/events") {
       if (sseClients.size >= MAX_SSE_CLIENTS) {
@@ -11775,7 +12153,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // Name, role, persona and a few skills in one call. Whatever
         // comes back is a proposal shown in editable fields, never
         // something applied on the person's behalf.
-        const draft = parseDraft(await instance.generateText(draftPrompt(description)));
+        const draft = parseDraft(await instance.generateText(draftPrompt(description), { kind: "service" }));
         return json(res, 200, draft);
       } catch {
         return json(res, 200, { skills: [] }); // never block creation on a drafting call
@@ -16656,6 +17034,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (routine.targetKind === "room") {
         const blok = bloks.get(routine.targetId);
         if (!blok) return json(res, 404, { error: "that room is gone" });
+        if (roomEnginesPaused(blok)) {
+          routines.holdRun(routine.id, Date.now(), blok.id, ENGINE_MANUAL_ROUTINE_HOLD);
+          broadcast({ kind: "routines" });
+          return json(res, 202, { ok: true, pending: true, note: ENGINE_MANUAL_ROUTINE_HOLD });
+        }
         const run = routines.beginRun(routine.id, blok.id);
         if (run) openRuns.set(blok.id, { routineId: routine.id, runId: run.id });
         broadcast({ kind: "routines" });
@@ -16674,20 +17057,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           const lane = (target && namedLane(target, routine.thread)?.title) ?? routine.thread ?? "General";
           return json(res, 409, { error: `that agent's ${lane} lane is busy. Try again when it settles` });
         }
-        const run = routines.beginRun(routine.id, laneId);
-        if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
-        broadcast({ kind: "routines" });
+        const source = routineDispatch(routine, laneId, true, Date.now());
+        const target = store.bot(routine.targetId)!;
+        if (!routeAllowed(target, selectEngine(target, false, laneId))) {
+          source.pending();
+          return json(res, 202, { ok: true, pending: true, note: "The requested manual run did not start because its engine route is paused or unresolved under a restriction. No automatic replay is scheduled." });
+        }
         try {
           await startTurn(routine.targetId, routine.prompt, {
+            sourceInvoked: source.sourceInvoked,
+            sourcePending: source.sourcePending,
+            sourceFailed: source.sourceFailed,
             taskId: laneId,
             computerOverride: routine.runsOn,
             routine: routineMark(routine, true),
+            routineId: routine.id,
           });
         } catch (e) {
-          closeRun(laneId, {
-            ok: false,
-            error: redactSecrets(e instanceof Error ? e.message : String(e)),
-          });
+          if (e instanceof EnginePauseError) source.pending();
+          else source.sourceFailed(redactSecrets(e instanceof Error ? e.message : String(e)));
           throw e;
         }
       }

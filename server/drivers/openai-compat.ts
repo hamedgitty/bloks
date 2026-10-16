@@ -28,6 +28,7 @@ import type { ProviderSpec } from "../providers.ts";
 import { appendNative } from "./native.ts";
 import { BOAT_API } from "../boat.ts";
 import { callSignature } from "../repeats.ts";
+import { EnginePauseError, type InvocationOrigin } from "../engine-pauses.ts";
 
 export interface CompatConfig {
   url: string;
@@ -381,6 +382,43 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
         (spec.kind === "grok" ? (input.environment.XAI_API_KEY ?? process.env.XAI_API_KEY) : "") ??
         "";
       const needsKey = spec.auth !== "none";
+      let disposed = false;
+      const requests = new Set<AbortController>();
+      const service = { kind: "service" } as const;
+      // A custom host or multi-provider gateway cannot prove its resolved
+      // backend merely by naming a model. Keep that route unknown under an
+      // applicable restriction rather than guessing a safe provider.
+      const ownFamily: Record<string, string> = { gemini: "gemini", grok: "grok", kimi: "kimi", llama: "llama", deepseek: "deepseek", mistral: "mistral" };
+      const route = (model: string | null) => [{ instanceId, driverKind: spec.kind,
+        family: config.url === spec.url ? ownFamily[spec.kind] ?? null : null,
+        model: config.url === spec.url && ownFamily[spec.kind] && model && !/(?:latest|auto|free)$/.test(model) ? model : null }];
+      // One durable invocation per HTTP request, including every tool-loop
+      // round and probe. A returned response does not grant its next call.
+      const request = async <T>(origin: InvocationOrigin | undefined, model: string | null, purpose: string,
+        signal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<T>, confirmed: () => boolean = () => true, onInvoked?: () => void): Promise<T> => {
+        if (disposed) throw new EnginePauseError("closed");
+        const controller = new AbortController();
+        requests.add(controller);
+        let lease: Awaited<ReturnType<NonNullable<typeof input.enginePauses>["prepare"]>> | undefined;
+        let started = false;
+        try {
+          lease = await input.enginePauses?.prepare(origin ?? service, route(model), purpose);
+          if (disposed) throw new EnginePauseError("closed");
+          const bounded = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
+          bounded.throwIfAborted();
+          lease?.onCancel(() => controller.abort());
+          const start = () => { onInvoked?.(); started = true; return operation(bounded); };
+          const result = await (lease ? lease.invoke(start) : start());
+          if (bounded.aborted) throw bounded.reason;
+          if (confirmed()) await lease?.closed(); else await lease?.residual();
+          return result;
+        } catch (error) {
+          // HTTP abort/transport loss is not evidence of remote completion.
+          if (started) await lease?.residual(); else await lease?.closed();
+          if (lease?.signal.aborted) throw new EnginePauseError("closed");
+          throw error;
+        } finally { requests.delete(controller); }
+      };
       const listeners = new Set<RuntimeEventListener>();
       const active = new Map<
         string,
@@ -421,9 +459,11 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
         if (refreshing) return refreshing;
         refreshing = (async () => {
           try {
-            const res = await fetch(`${config.url}/models`, {
-              headers: headers(),
-              signal: AbortSignal.timeout(8_000),
+            const res = await request(service, null, "compat-catalog", AbortSignal.timeout(8_000), async signal => {
+              const response = await fetch(`${config.url}/models`, { headers: headers(), signal });
+              // Consume before the lease ends, not merely after headers.
+              const body = await response.text();
+              return new Response(body, { status: response.status, headers: response.headers });
             });
             // 401/403 is the provider saying the key is wrong; a 404 just
             // means it does not publish a model list, which is fine
@@ -459,7 +499,8 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
               models.options = next.options;
             }
             catalogAt = Date.now();
-          } catch {
+          } catch (error) {
+            if (error instanceof EnginePauseError) throw error;
             // provider does not expose /models, or the network is down.
             // The spec's list stays, which is the whole point of having one.
           } finally {
@@ -472,13 +513,15 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
       const complete = async (
         messages: Array<{ role: string; content: string }>,
         model: string,
-        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
+        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; origin?: InvocationOrigin; onInvoked?: () => void },
       ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+        let confirmed = !opts.stream;
+        return request(opts.origin, model, "compat-text", opts.signal ?? AbortSignal.timeout(120_000), async signal => {
         const res = await fetch(`${config.url}/chat/completions`, {
           method: "POST",
           headers: headers(),
           body: JSON.stringify({ model, messages, stream: opts.stream }),
-          signal: opts.signal ?? AbortSignal.timeout(120_000),
+          signal,
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
@@ -534,7 +577,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             buf = buf.slice(nl + 1);
             if (!line.startsWith("data:")) continue;
             const data = line.slice(5).trim();
-            if (data === "[DONE]") continue;
+            if (data === "[DONE]") { confirmed = true; continue; }
             let chunk: any;
             try {
               chunk = JSON.parse(data);
@@ -543,6 +586,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             }
             // some gateways surface provider failures inside the stream
             if (chunk.error) throw new Error(String(chunk.error.message ?? chunk.error).slice(0, 200));
+            if (typeof chunk.choices?.[0]?.finish_reason === "string") confirmed = true;
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
               text += delta;
@@ -557,6 +601,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
           }
         }
         return { text, usage };
+        }, () => confirmed, opts.onInvoked);
       };
 
       /** One non-streaming completion, returning the whole assistant
@@ -566,10 +611,12 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
         model: string,
         tools: any[],
         signal: AbortSignal,
-      ): Promise<{ message: any; usage: { input: number; output: number } | null }> => {
+        origin?: InvocationOrigin,
+        onInvoked?: () => void,
+      ): Promise<{ message: any; usage: { input: number; output: number } | null }> => request(origin, model, "compat-round", signal, async admittedSignal => {
         // The turn's own signal ends it on stop; the bound ends it when the
         // provider simply never answers, which the turn signal never does.
-        const bounded = AbortSignal.any([signal, AbortSignal.timeout(ROUND_TIMEOUT_MS)]);
+        const bounded = AbortSignal.any([admittedSignal, AbortSignal.timeout(ROUND_TIMEOUT_MS)]);
         let res: Response;
         try {
           res = await fetch(`${config.url}/chat/completions`, {
@@ -595,7 +642,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
             : null,
         };
-      };
+      }, undefined, onInvoked);
 
       /**
        * The agentic path: rounds of completion, tools between them.
@@ -648,7 +695,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
         let usageTotal = { input: 0, output: 0 };
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const { message, usage } = await completeRaw(messages, model, tools, signal);
+          const { message, usage } = await completeRaw(messages, model, tools, signal, turn.invocationOrigin, turn.onInvoked);
           if (usage) {
             usageTotal = { input: usageTotal.input + usage.input, output: usageTotal.output + usage.output };
             // Each request has its own prompt, while accounting still
@@ -872,6 +919,9 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
+        if (disposed) throw new EnginePauseError("closed");
+        const model = turn.model || models.default;
+        input.enginePauses?.assertAllowed(turn.invocationOrigin ?? service, route(model));
         if (needsKey && !apiKey) throw new Error(`${spec.name} is not connected yet`);
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
@@ -898,7 +948,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
           ...base(threadId, turnId),
           type: "session.started",
           sessionId: null,
-          model: turn.model ?? models.default,
+          model,
         });
 
         (async () => {
@@ -908,7 +958,7 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
                 threadId,
                 turnId,
                 messages,
-                turn.model || models.default,
+                model,
                 turn,
                 abort.signal,
               );
@@ -916,8 +966,10 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
               emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
               return;
             }
-            const { text, usage } = await complete(messages, turn.model || models.default, {
+            const { text, usage } = await complete(messages, model, {
               stream: true,
+              origin: turn.invocationOrigin,
+              onInvoked: turn.onInvoked,
               signal: abort.signal,
               onDelta: (delta) =>
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
@@ -937,15 +989,16 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             const entry = active.get(threadId);
             for (const settle of entry?.asks.values() ?? []) settle("The turn ended before you answered.", "turn-ended");
             active.delete(threadId);
+            const paused = e instanceof EnginePauseError;
             const aborted = (e as Error).name === "AbortError";
-            if (!aborted) {
+            if (!aborted && !paused) {
               emit({ ...base(threadId, turnId), type: "runtime.error", message: (e as Error).message });
             }
             emit({
               ...base(threadId, turnId),
               type: "turn.completed",
               ok: false,
-              stopReason: aborted ? "interrupted" : "error",
+              stopReason: paused ? "engine_paused" : aborted ? "interrupted" : "error",
               cost: null,
             });
           }
@@ -955,6 +1008,8 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
       };
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
+        if (disposed) throw new EnginePauseError("closed");
+        input.enginePauses?.assertAllowed(service, route(null));
         if (needsKey && !apiKey) {
           return { state: "unavailable", reason: `${spec.name} is not connected. ${spec.keyHint}.` };
         }
@@ -964,13 +1019,19 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
           const first = catalogAt === 0;
           const refresh = refreshCatalog();
           if (first) await Promise.race([refresh, new Promise((r) => setTimeout(r, 2_500))]);
+          else void refresh.catch(() => { /* A background refresh can become paused after snapshot began. */ });
         }
         if (spec.auth === "none") {
           // a local server either answers or it does not
           try {
-            const res = await fetch(`${config.url}/models`, { signal: AbortSignal.timeout(1_500) });
+            const res = await request(service, null, "compat-health", AbortSignal.timeout(1_500), async signal => {
+              const response = await fetch(`${config.url}/models`, { signal });
+              await response.arrayBuffer();
+              return response;
+            });
             if (!res.ok) throw new Error(String(res.status));
-          } catch {
+          } catch (error) {
+            if (error instanceof EnginePauseError) throw error;
             return { state: "unavailable", reason: `${spec.name} is not running on this machine` };
           }
         }
@@ -983,6 +1044,8 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
       return {
         instanceId,
         driverKind: spec.kind,
+        pauseRoutes: route,
+        pauseAdmission: input.enginePauses ? { paths: ["readiness", "foreground-request", "one-shot", "tool-loop-round", "active-request-cancellation"], limitations: ["HTTP abort does not confirm remote completion.", "Unresolved gateway, custom-host or model-alias routes stay pending during matching pauses."] } : undefined,
         displayName: input.displayName ?? spec.name,
         enabled: input.enabled,
         models,
@@ -1006,13 +1069,15 @@ export function openAiCompatDriver(spec: ProviderSpec): ProviderDriver<CompatCon
             return () => listeners.delete(listener);
           },
         },
-        generateText: async (prompt: string) => {
+        generateText: async (prompt: string, origin?: InvocationOrigin) => {
           const { text } = await complete([{ role: "user", content: prompt }], spec.small || models.default, {
-            stream: false,
+            stream: false, origin,
           });
           return text;
         },
         dispose: async () => {
+          disposed = true;
+          for (const controller of requests) controller.abort();
           for (const { abort } of active.values()) abort.abort();
           listeners.clear();
         },

@@ -309,6 +309,9 @@ export interface Message {
 /** One lane of work: its own transcript, its own provider session, its
  * own busy flag. The id doubles as the threadId everywhere. */
 export interface TaskRecord {
+  /** A factual source-owned hold, never a second replay queue. Interrupted
+   * work needs reconciliation; expiry alone cannot replay completed effects. */
+  engineHold?: { at: number; phase: "pending" | "interrupted"; reason: "engine-paused" };
   /** Which provider instance last dispatched here. A different one next
    * time means that engine missed everything since and needs the story
    * replayed. Empty when the session that served it was dropped
@@ -1176,6 +1179,14 @@ export class Store {
     if (task.lastInstanceId === instanceId && !cliChanged) return;
     task.lastInstanceId = instanceId;
     if (cliChanged) task.briefedCli = cli;
+    this.saveBots();
+  }
+
+  setTaskEngineHold(threadId: string, phase: "pending" | "interrupted" | null): void {
+    const found = this.taskByThread(threadId);
+    if (!found) return;
+    if (phase) found.task.engineHold = { at: Date.now(), phase, reason: "engine-paused" };
+    else delete found.task.engineHold;
     this.saveBots();
   }
 

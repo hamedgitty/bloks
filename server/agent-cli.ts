@@ -81,6 +81,11 @@ export interface Rule {
 }
 
 export const RULES: Rule[] = [
+  // One delegated temporary restriction, not arbitrary cross-agent Stop or
+  // preference writes. The route derives its creator from this credential.
+  { method: "GET", path: "/api/engine-pauses", why: "read temporary restrictions, implemented boundaries and outstanding cancellation uncertainty without probing providers" },
+  { method: "POST", path: "/api/engine-pauses", why: "temporarily restrict requested engine routes and cancel only their matched invocations" },
+  { method: "DELETE", path: "/api/engine-pauses/:id", why: "end a restriction this agent created, leaving overlapping restrictions intact" },
   // The one route that exists for the command line itself. It is on the
   // list like everything else, because the guard runs before any route
   // does and a route nobody listed is a route nobody reaches.

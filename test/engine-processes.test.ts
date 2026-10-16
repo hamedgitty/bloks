@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { EngineProcesses } from "../server/drivers/engine-processes.ts";
+import { EngineProcesses, processGroup, OwnedProcessGroup } from "../server/drivers/engine-processes.ts";
 import { startHarness } from "./helpers/server.ts";
 
 const POSIX = process.platform !== "win32";
@@ -175,8 +175,39 @@ test("every driver that starts an engine in a group of its own ends it on dispos
     const groups = code.match(/detached:\s*OWN_GROUP/g)?.length ?? 0;
     if (!groups) continue;
     seen++;
-    assert.equal(code.match(/engines\.add\(child\)/g)?.length ?? 0, groups, `${file}: an engine started in its own group is not kept for dispose`);
+    // Ungrouped readiness/auth probes can be tracked as well. Check each
+    // grouped launch's own following registration, not a global count.
+    for (const group of code.matchAll(/detached:\s*OWN_GROUP/g)) {
+      assert.match(code.slice(group.index, group.index + 1_000), /engines\.add\(child\)/, `${file}: an engine started in its own group is not kept for dispose`);
+    }
     assert.match(code, /dispose: async \(\) => \{[\s\S]{0,300}?await engines\.end\(\)/, `${file}: dispose does not end its engines`);
   }
   assert.ok(seen >= 4, `found only ${seen} drivers; the scan itself is broken`);
+});
+
+
+test('retained group escalation survives an already reaped leader and leaves another generation running', {skip:!POSIX},async t=>{
+ const first=engine(false),other=engine(true);const [a,b]=await Promise.all([first.pids,other.pids]);sweep(t,()=>[a.engine,a.tool,b.engine,b.tool]);
+ const owned=processGroup(first.child);first.child.kill('SIGTERM');await new Promise(r=>first.child.once('exit',r));
+ owned.stop(30);assert.ok(await goneWithin([a.tool],3000),'leader-close abandoned its local descendant');
+ assert.ok(alive(b.engine)&&alive(b.tool),'old cancellation reached a different group generation');
+ processGroup(other.child).stop(30);assert.ok(await goneWithin([b.engine,b.tool],3000));
+});
+
+test('observed absent groups and a replacement positive leader PID never receive delayed signals',t=>{
+ for(const replacement of [false,true]){
+  const calls:Array<[number,unknown]>=[],fake={pid:1234567,exitCode:0,signalCode:null} as ChildProcess;
+  t.mock.method(process,'kill',((pid:number,signal:unknown)=>{calls.push([pid,signal]);if(pid>0&&replacement)return true;if(signal===0)throw Object.assign(new Error('absent'),{code:'ESRCH'});return true;}) as any);
+  const group=new OwnedProcessGroup(fake,true);group.closed();group.signal('SIGKILL');
+  assert.equal(calls.some(([,signal])=>signal==='SIGKILL'),false,'stale identity signalled a reused or already retired group');
+  t.mock.restoreAll();
+ }
+});
+
+
+test('a bounded group stop genuinely attempts both signals but cannot claim completion after OS refusal',async t=>{
+ const calls:unknown[]=[];const fake={pid:1234568,exitCode:null,signalCode:null} as ChildProcess;
+ t.mock.method(process,'kill',((_pid:number,signal:unknown)=>{calls.push(signal);throw Object.assign(new Error('denied'),{code:'EPERM'});}) as any);
+ const group=new OwnedProcessGroup(fake,true);group.stop(5);await new Promise(r=>setTimeout(r,20));
+ assert.ok(calls.includes('SIGTERM')&&calls.includes('SIGKILL'),'bounded local escalation was abandoned');assert.equal(group.closed(),false,'failed signalling became observed completion');
 });
