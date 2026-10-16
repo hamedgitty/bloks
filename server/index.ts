@@ -158,6 +158,7 @@ import {
   handoffBudget,
   knownLimitFor,
   laneFill,
+  selectionForContext,
   readingFor,
   type Reading,
   type Turn,
@@ -7141,10 +7142,16 @@ function beforeTurnSettings(): { ceiling: number; at: number | undefined } {
 /** The line is a budget only for a session Bloks can compact before a
  * turn. Replay engines, missing cursors and guest mail keep the window. */
 function laneContext(bot: BotRecord, task: TaskRecord) {
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const selection = selectionForContext({
+    modelSelection: bot.modelSelection, backupSelection: bot.backupSelection,
+    lastInstanceId: task.lastInstanceId, running: laneEngine.get(task.id) ?? null,
+    command: commandTurns.has(task.id),
+  });
+  const instance = selection && registry.get(selection.instanceId);
   const canCompact = instance && !instance.adapter.capabilities.replaysNatively &&
-    typeof task.resumeCursors[bot.modelSelection.instanceId] === "string" && !task.guestMail;
-  return laneFill(task.reading, bot.modelSelection, canCompact ? beforeTurnSettings() : undefined);
+    typeof task.resumeCursors[selection.instanceId] === "string" && !task.guestMail;
+  return laneFill(selection ? task.reading : undefined, selection ?? { instanceId: "" },
+    canCompact ? beforeTurnSettings() : undefined);
 }
 
 /** The reading's window: the engine's, or the table's when the model is
