@@ -52,6 +52,31 @@ export function shouldLoadEarlier(o: { top: number; lastTop: number; more: boole
   return o.more && !o.loading && o.top < o.lastTop && o.top <= EARLIER_AHEAD_PX;
 }
 
+/** Only new rows before this request's boundary advance history. Live
+ * tail arrivals and repeated page ids do not buy another automatic ask. */
+export function earlierPrefix(page: readonly Message[], current: readonly Message[], before?: string): Message[] {
+  const have = new Set(current.map((m) => m.id));
+  const fresh: Message[] = [];
+  for (const message of page) {
+    if (message.id === before) break;
+    if (!have.has(message.id)) {
+      have.add(message.id);
+      fresh.push(message);
+    }
+  }
+  return fresh;
+}
+
+/** Automatic opening/resize fills stop at eight windows or pages. A
+ * folded page can advance history without adding height, so only the
+ * actual geometry, cursor progress and this finite ceiling bound it. */
+export const AUTO_EARLIER_PAGES = 8;
+export function shouldFillEarlier(o: { width: number; height: number; contentHeight: number;
+  more: boolean; loading: boolean; stopped: boolean; attempts: number }): boolean {
+  return o.width > 0 && o.height > 0 && o.contentHeight + 1 < o.height &&
+    o.more && !o.loading && !o.stopped && o.attempts < AUTO_EARLIER_PAGES;
+}
+
 /**
  * The message ↑ in an empty composer opens for editing: the newest one
  * you typed here that still has words to edit. A message taken back has

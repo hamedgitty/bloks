@@ -191,6 +191,17 @@ messages route. Missing or invalid counts keep the full local transcript,
 so app hydration still has its history. Through Cloud, `olderMessages`
 counts everything omitted, including when the requested tail is zero.
 
+The desktop also windows the rendered rows. `useHistoryPaging` reveals the
+next local window or asks `useEarlier` for one server page when an opening
+or resized transcript leaves unused height. It stops when filled, exhausted,
+on a nonadvancing page or error, or after eight automatic expansions. Folded
+pages can advance without growing the column. The manual button remains at
+that ceiling, and intentional upward paging shares the same exclusion latch.
+Each visit owns its requests and measurement frames. Prepending holds an
+identified visible row measured after the wait, so new tail content does not
+move a reader who scrolled away. Find targets and the room's topics lens
+suppress paging that could displace their position.
+
 ## Rehearsals
 
 `server/rehearsals.ts` clones the agent's folder (copy-on-write with

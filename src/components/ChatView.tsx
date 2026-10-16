@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import BellOff from "lucide-react/dist/esm/icons/bell-off.mjs";
 import Search from "lucide-react/dist/esm/icons/search.mjs";
@@ -17,8 +17,8 @@ import { OptionCard } from "./OptionCard";
 import { MessageComponent } from "./Gallery";
 import { Composer } from "./Composer";
 import { TerminalPanel } from "./Terminal";
-import { lastEditable, quietLine, quietRunAt, shouldLoadEarlier, showTypingDots, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
-import { useEarlier } from "@/lib/useEarlier";
+import { lastEditable, quietLine, quietRunAt, showTypingDots, splitWaiting } from "@/lib/transcript";
+import { useHistoryPaging } from "@/lib/useHistoryPaging";
 import { useLanesInSidebar } from "@/lib/conversationsView";
 import { findHits, stepHit } from "@/lib/find";
 import { isApproval } from "@/lib/cardAnswer";
@@ -840,6 +840,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const liveBrowser =
     bot.busy && frame?.source === "browser" && frame !== frameAtTurnStart ? frame : null;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
   // The conversation, and what waits to join it above the composer.
   const { said, waiting } = useMemo(() => splitWaiting(bot.messages), [bot.messages]);
   const arrivals = useArrivals(bot.id, said);
@@ -910,10 +911,6 @@ export function ChatView({ bot }: { bot: Bot }) {
   const streaming = state.streaming[bot.threadId];
   const provisioning = state.provisioning[bot.id];
 
-  // the rendered slice of a long thread; the boundary is an absolute
-  // index so appends grow the window instead of sliding rows away
-  const [boundary, setBoundary] = useState<number | null>(null);
-  const preExpand = useRef<number | null>(null);
   // A finished turn's work is one line above its result
   // (src/lib/turnFold.ts). These are the ones opened to read the work.
   const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
@@ -921,7 +918,6 @@ export function ChatView({ bot }: { bot: Bot }) {
   const lastThreadKey = useRef(threadKey);
   if (lastThreadKey.current !== threadKey) {
     lastThreadKey.current = threadKey;
-    setBoundary(null);
     setOpenFolds(new Set());
     // A quote is of a message in the conversation it was picked in, and a
     // rewind's words belong to theirs: neither goes with you to another.
@@ -972,7 +968,8 @@ export function ChatView({ bot }: { bot: Bot }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const start = windowStart(said.length, boundary);
+  const earlier = useHistoryPaging("bot", bot, said, scrollRef, pinned, !finding);
+  const start = earlier.start;
   // A hit above the rendered slice would be invisible and unscrollable,
   // so finding one opens the window far enough back to show it.
   const visibleStart = currentHit >= 0 && currentHit < start ? Math.max(0, currentHit - 4) : start;
@@ -983,38 +980,13 @@ export function ChatView({ bot }: { bot: Bot }) {
   const hitShown = !hitFold || openFolds.has(hitFold);
 
   // follow the tail only while the reader is actually at the tail
-  const pinned = useRef(true);
   useStickToBottom(scrollRef, pinned);
-  const scrolledTo = useRef(0);
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // scrolling up near the top brings the next page in without a press
-    const lastTop = scrolledTo.current;
-    scrolledTo.current = el.scrollTop;
-    // Only the reader scrolling up lets go of the end. Content that grew
-    // under a reader who was there (a font, a card laying out) reaches
-    // this as a scroll too, and used to leave them short of the last line.
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 || (pinned.current && el.scrollTop >= lastTop);
-    if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
-  };
 
   useEffect(() => {
     if (pinned.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
   }, [bot.id, said.length, waiting.length, streaming, bot.busy]);
-
-  // expanding restores the reader's place: the same row stays under the
-  // cursor while the earlier window mounts above it
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && preExpand.current !== null) {
-      el.scrollTop += el.scrollHeight - preExpand.current;
-      preExpand.current = null;
-    }
-    // a page from the server lands above with start still at 0
-  }, [start, said.length]);
 
   // When a turn ends its work folds, and the reply stays where it is on
   // screen for a reader who is not at the end. After the effect above:
@@ -1047,26 +1019,19 @@ export function ChatView({ bot }: { bot: Bot }) {
   // Walk to a hit: render it, then bring it to the middle of the view.
   useEffect(() => {
     if (currentHit < 0) return;
-    const row = document.querySelector(`[data-msg-index="${currentHit}"]`);
+    pinned.current = false;
+    const row = scrollRef.current?.querySelector(`[data-msg-index="${currentHit}"]`);
     row?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [currentHit, visibleStart, hitShown]);
 
   // the two-agent exchange opened from one of its rows, if any
   const [exchange, setExchange] = useState<{ peerId: string; messageId: string; text: string } | null>(null);
-  const earlier = useEarlier("bot", bot);
   const lanesInSidebar = useLanesInSidebar();
   // One conversation is the usual agent (GitHub 237): with nothing to
   // switch to, the strip would only be a "+" inviting a second. New
   // conversation and Clear stay on the agent's row in the sidebar.
   const strip = !lanesInSidebar && (bot.tasks?.length ?? 0) > 1;
-  const showEarlier = () => {
-    preExpand.current = scrollRef.current?.scrollHeight ?? null;
-    pinned.current = false;
-    if (start > 0) return setBoundary(Math.max(0, start - TRANSCRIPT_WINDOW));
-    // everything here is showing; the rest is still on the computer
-    setBoundary(0);
-    void earlier.load();
-  };
+
 
   const first = said[0];
   // this conversation, not the agent: another one may be the one working
@@ -1104,7 +1069,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       // whoever started the turn (older ones were marked dir "reply").
       if (m.takeBack || (m.agent && m.agent.dir !== "reply" && (m.kind === "text" || m.kind === "activity"))) {
         return (
-          <div key={m.id} data-msg-index={absolute}>
+          <div key={m.id} data-msg-index={absolute} data-message-id={m.id}>
             <AgentExchangeRow
               message={m}
               botId={bot.id}
@@ -1157,7 +1122,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           // Once its turn has folded, the line above it says who asked.
           const after = folded.named.has(m.id) ? undefined : (m.afterAgent ?? (m.agent?.dir === "reply" ? m.agent : undefined));
           return (
-            <div key={m.id} data-msg-index={absolute}>
+            <div key={m.id} data-msg-index={absolute} data-message-id={m.id}>
             {after && (
               <AfterAgentLink
                 peerId={after.peerId}
@@ -1341,13 +1306,13 @@ export function ChatView({ bot }: { bot: Bot }) {
       )}
       <div
         ref={scrollRef}
-        onScroll={onScroll}
+        onScroll={earlier.onScroll}
         className="flex-1 overflow-y-auto px-4 md:px-6 [overflow-anchor:none]"
       >
         <div className="mx-auto flex max-w-[760px] flex-col gap-2.5 pb-4 pt-2">
           {start > 0 || earlier.remaining > 0 ? (
             <button
-              onClick={showEarlier}
+              onClick={earlier.showEarlier}
               disabled={earlier.loading}
               className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[12px] text-muted-foreground transition-colors duration-150 hover:border-foreground/25 hover:text-foreground disabled:opacity-60"
             >
