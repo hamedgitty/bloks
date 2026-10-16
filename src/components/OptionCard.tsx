@@ -61,9 +61,14 @@ export function OptionCard({
           <div className="mt-1 break-words text-[14.5px] font-semibold text-foreground [overflow-wrap:anywhere]">
             {card.title}
           </div>
-          {card.subtitle && (
+          {card.subtitle && !(card.runId && card.answered) && (
             <div className="mt-0.5 break-words text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
               {card.subtitle}
+            </div>
+          )}
+          {card.answered && !card.closed && !card.cutOff && (
+            <div className="mt-1 text-[12px] text-muted-foreground">
+              {card.runId ? "Closed" : "Answered"}: {card.answered}
             </div>
           )}
           {card.answeredBy && (

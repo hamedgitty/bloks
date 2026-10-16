@@ -75,7 +75,8 @@ test("refusals redact the attempted words, keep four parts and dedupe reworded r
   const secret = "example-stored-credential-abcdefgh";
   const key = "sk-example1234567890abcdefghijkl";
   const f = await controlledChain(t, { secrets: { example: secret } });
-  const previews = await chainRelay(t, f.h);
+  const pushes: Array<{ frames: any[]; wake: unknown }> = [];
+  await chainRelay(t, f.h, pushes);
   const a = await f.hire("Alpha"), b = await f.hire("Bravo");
   const { bot, other, turn } = await f.depth(a, b, 12);
   for (const text of [`First\n  ${secret} ${key}`, `Different ${secret} ${key}`]) {
@@ -93,10 +94,9 @@ test("refusals redact the attempted words, keep four parts and dedupe reworded r
   assert.match(held[0].text, /12 turns in a row.*limit of 12/);
   assert.match(held[0].text, /Excerpt:.*\[redacted\].*\[redacted\]/);
   assert.ok(!held[0].text.includes("\n"));
-  const laneWake = await waitFor(() => previews.find((p) => p.title === "Agents stopped at the limit" && p.threadId === other.threadId));
-  assert.ok(laneWake, "the direct refusal had no chain wake");
-  assert.match(laneWake.body, /Alpha to Bravo/);
-  assert.ok(laneWake.body.length <= 178);
+  const laneFrame = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.message?.id === held[0].id)));
+  assert.ok(laneFrame, "the direct hold was not delivered to the paired phone");
+  assert.equal(laneFrame.wake, undefined, "a mechanical direct hold must not wake the phone");
   assert.ok(!held[0].text.includes(secret) && !held[0].text.includes(key));
   assert.ok(!(await f.messages(other)).some((m) => m.role === "user" && /First|Different/.test(m.text ?? "")));
   await f.begin(other, "A person's new message");
@@ -108,10 +108,9 @@ test("refusals redact the attempted words, keep four parts and dedupe reworded r
   const { blok } = await f.h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Example room", memberIds: [bot.id, other.id] }) });
   const mention = await f.agent(turn, `/api/bloks/${blok.id}/messages`, { text: "@Bravo A refused mention" });
   assert.ok(mention.ok);
-  const roomWake = await waitFor(() => previews.find((p) => p.title === "Agents stopped at the limit" && p.threadId === blok.id));
-  assert.ok(roomWake, "the room refusal had no chain wake");
-  assert.match(roomWake.body, /Alpha to Bravo/);
-  assert.ok(roomWake.body.length <= 178);
+  const roomFrame = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.threadId === blok.id && frame.message?.chainHeld)));
+  assert.ok(roomFrame, "the room hold was not delivered to the paired phone");
+  assert.equal(roomFrame.wake, undefined, "a mechanical room hold must not wake the phone");
   const stop = await f.agent(turn, `/api/bots/${other.id}/interrupt`, { text: "A stop reason beyond the limit" });
   assert.equal(stop.status, 200);
   assert.equal((await stop.json()).said, undefined);
@@ -163,7 +162,7 @@ test("routines, watchers and jobs agents file carry the chain, at any limit", as
   assert.equal(refused.status, 429);
 });
 
-test("a room holds at the chain bound and the hop bound, and chain titles beat engine errors", () => {
+test("a room keeps both guard bounds and records them without turning engine words into alerts", () => {
   assert.equal(heldMention("Alpha", ["Bravo"], { hops: 1, chain: 50 }, 50), null);
   assert.match(heldMention("Alpha", ["Bravo"], { hops: 1, chain: 51 }, 50) ?? "", /workspace limit of 50/);
   assert.equal(heldMention("Alpha", ["Bravo"], { hops: 4, chain: 13 }, 12), hopsNotice("Alpha", ["Bravo"]));
@@ -173,10 +172,10 @@ test("a room holds at the chain bound and the hop bound, and chain titles beat e
   explanation(text);
   assert.match(text, /usage limit reached/);
   const ctx = { focused: false, selectedId: "elsewhere", threadId: "lane", bot: { id: "bot", name: "Bravo" } };
-  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, ctx)?.title, "Agents stopped at the limit");
-  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, goal: "blocked", text }, ctx)?.title, "Agents stopped at the limit");
+  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, ctx), null);
+  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, goal: "blocked", text }, ctx), null);
   assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, { ...ctx, focused: true, selectedId: "bot" }), null);
-  assert.equal(noticeFor({ role: "bot", kind: "notice", text: "usage limit reached" }, ctx)?.title, "Bravo could not answer");
+  assert.equal(noticeFor({ role: "bot", kind: "notice", text: "usage limit reached" }, ctx), null);
   assert.equal(chainExcerpt("a\n" + "x".repeat(300), (s) => s).length, 160);
   const boundaryKey = "sk-" + "q".repeat(40);
   assert.equal(chainExcerpt("x".repeat(150) + boundaryKey, (words) => words.replace(boundaryKey, "[redacted]")), "x".repeat(150) + "[redacted]");

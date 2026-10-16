@@ -592,15 +592,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const bot = current.bots.find((b) => b.tasks?.some((t) => t.id === threadId));
     const room = current.bloks.find((r) => r.id === threadId);
     if (!bot && !room) return;
-    const text = (message as { text?: string }).text ?? "";
     const notice = noticeFor(message as never, {
       focused: document.hasFocus() && document.visibilityState === "visible",
       selectedId: current.selectedId,
       threadId,
       ...(bot ? { bot: { id: bot.id, name: bot.name, notifications: bot.notifications } } : {}),
       ...(room ? { room: { id: room.id, name: room.name } } : {}),
-      // a room line that named you is the one worth hearing about
-      mentionsUser: /(^|\s)@(you|me)\b/i.test(text),
       goalRunning: bot?.tasks?.find((t) => t.id === threadId)?.goal?.status === "active",
     });
     if (!notice) return;

@@ -8,21 +8,21 @@
 // So the policy is written down here, once, as a pure function, rather
 // than scattered across the places that happen to see an event:
 //
-//   Approvals always interrupt. A blocked agent is doing nothing until
-//   you answer, and that is the whole reason the phone buzzes too.
+//   Unanswered questions and approvals interrupt. A stopped process
+//   alone has not asked the person to decide anything.
 //
 //   A settled reply interrupts only if that agent is allowed to, and
 //   only when you are not already looking at it.
 //
-//   Agents talking to each other in a room stay silent unless they named
-//   you, because six agents thinking out loud is not six notifications.
+//   An agent's room mention stays silent. A person naming somebody is
+//   handled by the server's targeted phone wake.
 //
 //   Nothing interrupts when you are looking straight at it. A banner for
 //   a message already on your screen is noise with extra steps.
 //
-//   Tool activity, screen frames, artifacts and notices never interrupt.
-//   They are the work, not news about it. The one notice that is news is
-//   where a goal ended up, and while a conversation works toward one,
+//   A hold, a blocked goal or an engine failure is a record for its owner,
+//   not a question for the person. Goal results follow the reply switch,
+//   and while a conversation works toward one,
 //   its turns' replies are the work too: the goal's end is said once,
 //   when it comes, rather than twenty times on the way.
 //
@@ -31,18 +31,14 @@
 //   that waits for the end of its turn (CheckInHold), so the commentary
 //   of a run that turns out quiet is never news either.
 
-import { CHAIN_LIMIT_TITLE } from "./turn-limit.ts";
-
-const ENGINE_OUT =
-  /credit balance is too low|insufficient[_ ](?:quota|credits|funds|balance)|billing|payment required|\b402\b|out of credits|exceed your available credits|usage limit|limit (?:reached|exceeded)|quota|rate[ _-]?limit|\b429\b|not (?:logged|signed) in|sign in/i;
-
 /** The parts of a message this decision actually depends on. */
 export interface NotifiableMessage {
   role?: string;
   kind?: string;
   text?: string;
   from?: string;
-  card?: { requestId?: string; title?: string };
+  card?: { requestId?: string; runId?: string; title?: string; subtitle?: string; answered?: string; dismissed?: boolean };
+  deleted?: boolean;
   /** Part of a quiet check-in (server/store.ts). */
   quiet?: boolean;
   /** A notice about the conversation's goal (server/goals.ts). */
@@ -62,8 +58,6 @@ export interface NotifyContext {
   bot?: { id: string; name: string; notifications?: boolean };
   /** The room it landed in, if it is a room. */
   room?: { id: string; name: string };
-  /** The user's own name, for deciding whether a room line named them. */
-  mentionsUser?: boolean;
   /** The conversation it landed in is working toward a goal right now. */
   goalRunning?: boolean;
 }
@@ -93,7 +87,7 @@ function preview(text: string): string {
  * Null means stay quiet, which is the answer most of the time.
  */
 export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notice | null {
-  if (message.role !== "bot" || message.quiet) return null;
+  if (message.role !== "bot" || message.quiet || message.deleted) return null;
 
   const who = ctx.room ? ctx.room.name : (ctx.bot?.name ?? "An agent");
   const target = ctx.room ? ctx.room.id : (ctx.bot?.id ?? ctx.threadId);
@@ -103,55 +97,34 @@ export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notic
 
   // An agent that stopped to ask. This one outranks everything, including
   // the per-agent switch: the work is halted until it is answered.
-  if (message.kind === "options" && message.card?.requestId) {
+  if (message.kind === "options" && message.card && !message.card.answered && !message.card.dismissed && (message.card.requestId || message.card.runId)) {
     if (watching) return null;
     return {
       title: ctx.room ? `${who}: someone needs you` : `${who} needs you`,
-      body: preview(message.card.title || "An agent is waiting for your answer."),
+      body: preview(message.card.runId
+        ? `${message.card.title || "Approval needed"} ${message.card.subtitle || ""}`
+        : message.card.subtitle || message.card.title || "An agent is waiting for your answer."),
       target,
       urgent: true,
     };
   }
 
-  // This is a chain guard, even when its explanation names billing or quota.
-  if (message.kind === "notice" && message.chainHeld) {
-    if (watching) return null;
-    return { title: CHAIN_LIMIT_TITLE, body: preview(message.text ?? ""), target, urgent: true };
-  }
-
-  // Where a goal ended up. Blocked has stopped the work until the person
-  // answers, the same as a question; done or out of turns is news the
-  // way a finished reply is, from an agent allowed to interrupt. Set and
-  // paused are the person's own doing, or said by something louder.
+  // Finished goals follow the person's existing reply switch. A blocked
+  // goal alone asks no question, so it stays in the conversation.
   if (message.kind === "notice" && message.goal) {
     if (watching) return null;
-    if (message.goal === "blocked") {
-      return { title: `${who} needs you`, body: preview(message.text || "A goal is waiting on you."), target, urgent: true };
-    }
     if ((message.goal === "done" || message.goal === "out") && ctx.bot?.notifications !== false) {
       return { title: who, body: preview(message.text ?? ""), target, urgent: false };
     }
     return null;
   }
 
-  // An agent that could not answer because its engine is out: credits, a
-  // plan limit, a sign-in. Its work is stopped until the person acts, the
-  // same as a question, so it is said even when the agent is otherwise
-  // quiet. The words match server/failover.ts, which reads the same errors.
-  if (message.kind === "notice" && message.text && ENGINE_OUT.test(message.text)) {
-    if (watching) return null;
-    return { title: `${who} could not answer`, body: preview(message.text), target, urgent: true };
-  }
-
   if (message.kind !== "text" || !message.text?.trim()) return null;
   if (watching) return null;
 
-  // In a room, agents answer each other constantly. Only a line that
-  // named you is news; the rest is them working.
-  if (ctx.room) {
-    if (!ctx.mentionsUser) return null;
-    return { title: `${who}`, body: preview(message.text), target, urgent: false };
-  }
+  // An agent's room mention is coordination, not a person's ask.
+  // Human mentions still use the server's targeted phone wake.
+  if (ctx.room) return null;
 
   // A one to one reply, if this agent is allowed to interrupt, and not
   // one on the way to a goal, whose end is said when it comes.

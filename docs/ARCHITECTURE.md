@@ -665,12 +665,13 @@ members.
 A refusal is said where the person will find it
 (`chainNotice`): a notice in the conversation the next turn would have
 gone on in, naming the whole count and its last step, that conversation
-marked unread, and the phone woken for it as for a goal blocked on them.
+marked unread. The record does not wake the phone or raise a desktop
+banner: a mechanical hold does not itself ask the person to decide.
 A routine or a watcher says so once when its hold starts, not at every
 tick or look. Direct refusals dedupe consecutive notices by sender,
 recipient, depth and limit, ignoring the redacted excerpt. A person's
 message between refusals allows a fresh notice. These notices retain
-`chainHeld`, and their phone and desktop title names the limit.
+`chainHeld` and explain the limit in the conversation.
 
 ## Goals
 
@@ -723,9 +724,10 @@ unlisted mail and rehearsals. One left active after a restart with
 nothing running or waiting in its lane was between turns when Bloks
 stopped, and is paused rather than judged again unattended.
 
-While a goal runs, its turns' replies raise no banner; where it ended up
-does, blocked as loudly as a question, and blocked also wakes the
-owner's phone. An agent reads its goal with `bloks goal`
+While a goal runs, its turns' replies raise no banner. Done and out-of-
+turns notices follow the agent's reply switch. A blocked notice alone
+raises no banner and does not wake the phone; an unanswered question or
+approval card, including a workflow gate, does. An agent reads its goal with `bloks goal`
 (`GET /api/agent/goal`, which reads the goal of the lane its credential
 was minted for), and nothing on its list reaches the routes that set
 one.

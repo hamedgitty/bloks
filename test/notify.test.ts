@@ -48,12 +48,11 @@ describe("what is worth interrupting for", () => {
     assert.equal(noticeFor({ role: "bot", kind: "text", text: "just thinking" }, quiet), null);
   });
 
-  test("agents talking in a room are silent unless they named you", () => {
+  test("agent mentions in a room stay quiet while actual approval cards interrupt", () => {
     const room = { ...base, bot: undefined, room: { id: "room-1", name: "Launch" }, threadId: "room-1" };
     assert.equal(noticeFor({ role: "bot", kind: "text", text: "on it" }, room), null);
-    const named = noticeFor({ role: "bot", kind: "text", text: "@you what do you think?" }, { ...room, mentionsUser: true });
-    assert.equal(named?.title, "Launch");
-    assert.equal(named?.target, "room-1");
+    const named = noticeFor({ role: "bot", kind: "text", text: "@you what do you think?" }, room);
+    assert.equal(named, null);
     // an approval in a room still interrupts without a mention
     const ask = noticeFor(
       { role: "bot", kind: "options", card: { requestId: "r2", title: "Ship it?" } },
@@ -89,10 +88,58 @@ describe("what is worth interrupting for", () => {
 });
 
 describe("an agent that could not answer", () => {
-  test("out of credit is said like a question, and ordinary notices stay quiet (#81)", () => {
+  test("an engine failure is a record, not an unanswered decision", () => {
     const out = noticeFor({ role: "bot", kind: "notice", text: "402 This request would exceed your available credits" }, base);
-    assert.equal(out?.title, "Sage could not answer");
-    assert.equal(out?.urgent, true);
+    assert.equal(out, null);
     assert.equal(noticeFor({ role: "bot", kind: "notice", text: "Starting a new task keeps this one readable." }, base), null);
+  });
+});
+
+
+describe("only pending decision cards bypass the reply switch", () => {
+  const quiet = { ...base, bot: { ...bot, notifications: false } };
+  test("a workflow gate names its question and deadline and opens its existing conversation", () => {
+    const notice = noticeFor({ role: "bot", kind: "options", card: {
+      runId: "run-1", title: "Publish the draft?", subtitle: "Draft review stops tomorrow if nobody answers.",
+    } }, quiet);
+    assert.equal(notice?.urgent, true);
+    assert.equal(notice?.target, "bot-1");
+    assert.match(notice!.body, /Publish the draft\?/);
+    assert.match(notice!.body, /stops tomorrow/);
+  });
+  test("a request says the actual question rather than its generic heading", () => {
+    const notice = noticeFor({ role: "bot", kind: "options", card: {
+      requestId: "ask-1", title: "Your agent has a question", subtitle: "Which draft should I publish?",
+    } }, quiet);
+    assert.equal(notice?.body, "Which draft should I publish?");
+  });
+  for (const pointer of [{ requestId: "ask-1" }, { runId: "run-1" }]) {
+    for (const settled of [{ answered: "Yes" }, { answered: "Closed without an answer" }, { dismissed: true }]) {
+      test(`a settled ${Object.keys(pointer)[0]} card stays quiet: ${JSON.stringify(settled)}`, () => {
+        assert.equal(noticeFor({ role: "bot", kind: "options", card: { ...pointer, ...settled, title: "Proceed?" } }, base), null);
+      });
+    }
+    test(`a deleted ${Object.keys(pointer)[0]} card stays quiet`, () => {
+      assert.equal(noticeFor({ role: "bot", kind: "options", deleted: true, card: { ...pointer, title: "Proceed?" } }, base), null);
+    });
+  }
+  for (const message of [
+    { chainHeld: true, text: "Held because the turn limit was reached." },
+    { goal: "blocked", text: "The work is blocked." },
+    { text: "429 quota exceeded" }, { text: "Not signed in" }, { text: "402 billing payment required" },
+  ]) {
+    test(`a mechanical notice never bypasses either switch state: ${message.text}`, () => {
+      for (const ctx of [base, quiet]) assert.equal(noticeFor({ role: "bot", kind: "notice", ...message }, ctx), null);
+    });
+  }
+  test("finished goal results still follow the existing per-agent reply switch", () => {
+    for (const goal of ["done", "out"]) {
+      const message = { role: "bot", kind: "notice", goal, text: "This run ended." };
+      assert.equal(noticeFor(message, base)?.urgent, false);
+      assert.equal(noticeFor(message, quiet), null);
+    }
+  });
+  test("a setup card with no request or workflow remains quiet", () => {
+    assert.equal(noticeFor({ role: "bot", kind: "options", card: { title: "A setup recommendation" } }, base), null);
   });
 });

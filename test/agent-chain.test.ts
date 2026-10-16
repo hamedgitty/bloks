@@ -163,7 +163,7 @@ test("two agents answering each other stop after twelve turns, and the person wr
     `nothing in Bravo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
   const heldNotices = ((await h.json(`/api/bots/${bravo.id}/messages?limit=200`)).messages as any[]).filter((m) => m.chainHeld);
-  assert.equal(heldNotices.length, 1, "the hold is not marked as waiting for the person, so the phone would not wake for it");
+  assert.equal(heldNotices.length, 1, "the hold must remain recorded in the conversation");
   const bravoLane = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bravo.id).tasks[0];
   assert.equal(bravoLane.unread, true, "the conversation that stopped was not marked unread");
 

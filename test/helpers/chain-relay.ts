@@ -7,7 +7,7 @@ import { deviceKey, open, peek } from "../../server/relay-crypto.ts";
 import { waitFor } from "./turns.ts";
 import type { Harness } from "./server.ts";
 
-export async function chainRelay(t: TestContext, h: Harness) {
+export async function chainRelay(t: TestContext, h: Harness, pushes?: Array<{ frames: any[]; wake: unknown }>) {
   await h.json("/api/pair", { method: "PUT", body: JSON.stringify({ enabled: true }) });
   const started = await h.json("/api/pair/start", { method: "POST" });
   const claimed = await h.json("/api/pair/claim", { method: "POST", body: JSON.stringify({ code: started.code, device: "Example phone" }) });
@@ -26,6 +26,7 @@ export async function chainRelay(t: TestContext, h: Harness) {
     req.on("data", (chunk) => body += chunk);
     req.on("end", () => {
       const pushed = JSON.parse(body || "{}");
+      pushes?.push({ frames: (pushed.frames ?? []).map((frame: string) => open(key, peek(frame)!)), wake: pushed.wake });
       const sealed = pushed.wake?.sealed?.[claimed.device.id];
       if (sealed) previews.push(open(key, peek(sealed)!));
       res.writeHead(200, { "content-type": "application/json" }); res.end("{}");
