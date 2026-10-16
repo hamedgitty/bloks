@@ -4,6 +4,8 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { reporting, until } from './helpers/report-reserve.ts';
+import { initialState, reducer } from '../src/state/reducer.ts';
+import { foldTurns } from '../src/lib/turnFold.ts';
 
 test('eleven general mutations leave one ordinary CLI report and bound every subsequent write',async t=>{
  const f=await reporting(t);await f.use();
@@ -107,6 +109,7 @@ for(const mode of ['drop','stall','success','prewrite'])test(`actual Codex --now
  if(mode==='success'||mode==='prewrite')result=await f.accepted(body);
  else result=await until(async()=>{const x=await f.say(body);return x.body.uncertain||x.body.ok?x:null});
  if(mode==='drop')await until(async()=>!(await f.control('steering',{task:f.target.threadId})));
+ if(mode==='stall')await until(()=>f.calls().some(call=>call.method==='turn/steer'));
  result=await f.say(body);
  assert.deepEqual(await f.say(body),result);
  const words=(await f.messages()).filter(m=>m.text==='FINAL');const steers=f.calls().filter(c=>c.method==='turn/steer');
@@ -189,4 +192,51 @@ test('disconnect and revoke after RPC write cannot replay or publish receipt to 
  assert.equal((await f.messages()).filter(m=>m.text==='FINAL').length,1);
  assert.equal(f.calls().filter(c=>c.method==='turn/steer').length,1);
  assert.equal(f.calls().filter(c=>c.method==='turn/start').length,1);
+});
+
+
+test('late acceptance patches the open sender row and its folded result exactly once',async t=>{
+ const f=await reporting(t),abort=new AbortController();
+ const response=await fetch(f.url+'/api/events',{signal:abort.signal});assert.equal(response.status,200);
+ const frames:any[]=[];let state:any={...initialState,bots:[{...f.sender,messages:[]}],bloks:[]};
+ const reader=response.body!.getReader(),decoder=new TextDecoder();
+ const sender=()=>state.bots.find((bot:any)=>bot.id===f.sender.id);
+ const activities=()=>sender().messages.filter((m:any)=>m.text==='FINAL'&&m.agent?.dir==='out');
+ const foldedPeers=()=>foldTurns([{id:'synthetic-source-request',at:1,role:'user',kind:'text',text:'Synthetic request'},...sender().messages],false).rows.flatMap(row=>row.kind==='fold'?row.fold.messaged:[]);
+ const reading=(async()=>{let pending='';try{
+  while(true){const result=await reader.read();if(result.done)break;pending+=decoder.decode(result.value,{stream:true});let end;
+   while((end=pending.indexOf('\n\n'))>=0){const event=pending.slice(0,end);pending=pending.slice(end+2);
+    for(const line of event.split('\n'))if(line.startsWith('data: ')){
+     const frame=JSON.parse(line.slice(6));frames.push(frame);
+     if(frame.kind==='bot')state=reducer(state,{type:'botPatched',bot:frame.bot});
+     if(frame.threadId===f.sender.threadId&&frame.kind==='message')state=reducer(state,{type:'messageAdded',threadId:frame.threadId,message:frame.message});
+     if(frame.threadId===f.sender.threadId&&frame.kind==='message.patch')state=reducer(state,{type:'messagePatched',threadId:frame.threadId,message:frame.message,moved:frame.moved===true});
+    }
+   }
+  }
+ }catch(error){if(!abort.signal.aborted)throw error;}})();
+ try{
+  await f.request('POST',`/api/bots/${f.target.id}/messages`,{text:'BUSY'});
+  await until(()=>f.calls().some(call=>call.method==='turn/start'));await f.use();
+  writeFileSync(join(f.home,'steer-mode'),'stall');const body={text:'FINAL',now:true};
+  await f.say(body);const pending=await until(async()=>{const result=await f.say(body);return result.body.uncertain?result:null});assert.equal(pending.body.uncertain,true);
+  await until(()=>activities().some((m:any)=>m.agent.status==='uncertain'));
+  assert.equal(activities().length,1);assert.deepEqual(foldedPeers(),[]);
+  const initial=activities()[0],startCount=f.calls().filter(call=>call.method==='turn/start').length;
+  writeFileSync(join(f.home,'steer-release'),'');const receipt=await f.accepted(body);assert.equal(receipt.body.steered,true);
+  await until(()=>frames.some(frame=>frame.threadId===f.sender.threadId&&frame.message?.id===initial.id&&frame.message.agent?.status==='sent'));
+  const stored=(await f.messages(f.sender)).filter(m=>m.text==='FINAL'&&m.agent?.dir==='out');
+  assert.equal(stored.length,1);assert.equal(stored[0].agent.status,'sent');
+  const activityFrames=()=>frames.filter(frame=>frame.threadId===f.sender.threadId&&frame.message?.id===initial.id);
+  t.diagnostic(JSON.stringify({receipt,storedStatus:stored[0].agent.status,visibleStatus:activities()[0].agent.status,frames:activityFrames().map(frame=>({kind:frame.kind,status:frame.message.agent.status}))}));
+  assert.equal(activities()[0].agent.status,'sent','open sender transcript must reconcile late acceptance');
+  assert.deepEqual(activityFrames().map(frame=>[frame.kind,frame.message.agent.status]),[['message','uncertain'],['message.patch','sent']]);
+  assert.equal(activities().length,1);assert.deepEqual(foldedPeers(),[{peerId:f.target.id,peerName:f.target.name}]);
+  for(let i=0;i<3;i++)assert.deepEqual(await f.say(body),receipt);
+  assert.equal((await f.messages(f.sender)).filter(m=>m.text==='FINAL'&&m.agent?.dir==='out').length,1);
+  const recipient=(await f.messages()).filter(m=>m.text==='FINAL');assert.equal(recipient.length,1);assert.equal(Boolean(recipient[0].queued),false);
+  assert.equal(f.calls().filter(call=>call.method==='turn/steer').length,1);
+  assert.equal(f.calls().filter(call=>call.method==='turn/start').length,startCount);
+  assert.equal(activityFrames().length,2);
+ }finally{abort.abort();await reading;}
 });

@@ -12379,12 +12379,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               tool: { name: `messaged ${recipient.name}`, ...(status === "uncertain" ? {} : { ok: status !== "failed" }) },
               agent: { dir: "out" as const, peerId: recipient.id, peerName: recipient.name, status },
             };
+            const wasExisting = Boolean(activityId);
             const message = activityId
               ? store.patchMessage(asAgent.taskId, activityId, fields)
               : store.appendMessage(asAgent.taskId, { role: "bot", kind: "activity", text, ...fields });
             if (message) {
               activityId = message.id;
-              broadcast({ kind: "message", threadId: asAgent.taskId, message });
+              broadcast({ kind: wasExisting ? "message.patch" : "message", threadId: asAgent.taskId, message });
             }
           } catch { /* ancillary activity cannot erase known recipient admission */ }
         };
