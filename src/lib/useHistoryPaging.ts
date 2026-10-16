@@ -86,6 +86,7 @@ export function useHistoryPaging(
       pending.anchor = anchor();
       setWindow({ visit: life, boundary: pending.boundary });
     } else {
+      setWindow({ visit: life, boundary: 0 });
       void now.earlier.load((first) => {
         if (!current() || life.generation !== generation || life.pending !== pending) return;
         pending.first = first;
