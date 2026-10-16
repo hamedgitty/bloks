@@ -576,7 +576,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // A policy refusal is orderly cancellation, not a provider failure
           // or an exception escaping the native input callback.
           if (!(error instanceof EnginePauseError)) throw error;
-          rpc.reply(id, denied);
+          // Questions have no permission-denial result. Even an empty answer
+          // map is a successful RPC reply, so withhold it while cancelling.
+          if (denied !== undefined) rpc.reply(id, denied);
           paused = true; stopping = true;
           group.stop(3_000);
           finish(false, "engine_paused");
@@ -651,7 +653,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             for (const q of Array.isArray(params.questions) ? params.questions : []) {
               answers[q.id] = { answers: [message || UNANSWERED_QUESTION] };
             }
-            if (!replyGranted(msg.id, { answers }, { answers: {} })) { behavior = "deny"; source = "engine-paused"; }
+            if (!replyGranted(msg.id, { answers }, undefined)) { behavior = "deny"; source = "engine-paused"; }
           } else if (reply) {
             const allowed = behavior === "allow";
             if (allowed) { if (!replyGranted(msg.id, permissionReply(true, source), permissionReply(false, "policy"))) { behavior = "deny"; source = "engine-paused"; } }

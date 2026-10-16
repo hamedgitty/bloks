@@ -207,8 +207,8 @@ test('actual question replies and timeout continuations obey the same physical p
   try{
    if(timeout){assert.ok(fire);fire();}
    else{const response=f.instance.adapter.respondToRequest!(lane,ask.requestId,{behavior:'answer',message:'Synthetic answer'});if(mode==='committed')await assert.rejects(response,/no such pending request/);else await response;}
-   await delay(100);const replies=f.calls().filter(c=>c.reply?.id===999&&Object.keys(c.reply.result?.answers??{}).length>0);
-   assert.equal(replies.length,mode==='none'||mode==='unaffected'?1:0,'paused Codex question resumed through manual/timeout reply');
+   await delay(100);const replies=f.calls().filter(c=>c.reply?.id===999&&Object.prototype.hasOwnProperty.call(c.reply,'result'));
+   assert.equal(replies.length,mode==='none'||mode==='unaffected'?1:0,'paused Codex question received a successful manual/timeout response');
    assert.equal(f.calls().filter(c=>c.method==='turn/start').length,1,'question refusal caused replay');
   }finally{release();await activation;}
  }
