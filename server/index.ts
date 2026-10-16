@@ -4261,11 +4261,11 @@ async function startClaimedTurn(
   let directSource: Message | undefined;
   let directWords: string | undefined;
   if (!blok && !opts.presetMessage) {
+    const sourceWords = text;
     const append = () => { const userMessage = store.appendMessage(roomId, {
       role: "user",
       kind: "text",
-      text,
-      ...(!opts.routine && !opts.sourceInvoked ? { queued: true, queuedAt: Date.now(), namedSkills: opts.byYou === true && opts.personal !== false && !opts.from } : {}),
+      text: sourceWords,
       ...(recalledAhead ? { recalled: recalledAhead.notes } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
       ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
@@ -4333,7 +4333,7 @@ async function startClaimedTurn(
     // not been yet (it joins at the end when it goes), so no engine hears either
     const settled = store
       .messagesFor(roomId)
-      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent)
+      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent && m.id !== directSource?.id)
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         text: storedPrompt(m),
@@ -4511,6 +4511,8 @@ async function startClaimedTurn(
       const message = store.patchMessage(roomId, directSource.id, { queued: false, unsent: true });
       if (message) broadcast({ kind: "message.patch", threadId: roomId, message });
     } else {
+      const message = store.patchMessage(roomId, directSource.id, { queued: true, queuedAt: directSource.at, namedSkills: opts.byYou === true && opts.personal !== false && !opts.from });
+      if (message) broadcast({ kind: "message.patch", threadId: roomId, message });
       const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
       if (!entry.items.some(item => item.messageId === directSource!.id)) entry.items.unshift({ messageId: directSource.id, ...(opts.chain ? { chain: opts.chain } : {}) });
       steerQueues.set(task.id, entry);
@@ -4525,7 +4527,6 @@ async function startClaimedTurn(
     if (directSource) {
       const current = store.messagesFor(roomId).find(message => message.id === directSource!.id);
       if (!current || current.deleted || current.unsent || current.text !== directWords) throw new EnginePauseError("closed");
-      deliverQueued(roomId, [directSource.id]);
     }
     commitRoutineMessage?.();
     dispatch.invoked = true;
@@ -8362,13 +8363,25 @@ function routineDispatch(routine: Routine, laneId: string, manual: boolean, slot
     store.setTaskEngineHold(laneId, "pending");
     broadcast({ kind: "routines" });
   };
+  let recorded = false;
   return {
     pending,
     sourcePending: (stopped: boolean) => { if (!stopped) pending(); },
+    sourceFailed: (reason: string) => {
+      if (recorded || !current()) return;
+      recorded = true;
+      // A structural refusal remains a failed attempt in existing history.
+      // Only a policy hold preserves an eligible scheduled slot.
+      if (!manual) routines.markRan(routine.id, Date.now());
+      const run = routines.beginRun(routine.id, laneId);
+      if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
+      closeRun(laneId, { ok: false, error: reason });
+    },
     sourceInvoked: () => {
       const now = current();
       if (!now || (!manual && !routineIsDue(now, new Date()))) throw new EnginePauseError("closed");
       if (!manual) routines.markRan(routine.id, Date.now());
+      recorded = true;
       const run = routines.beginRun(routine.id, laneId);
       if (run) openRuns.set(laneId, { routineId: routine.id, runId: run.id });
       broadcast({ kind: "routines" });
@@ -8454,6 +8467,7 @@ async function runDueRoutines() {
       await startTurn(routine.targetId, routine.prompt, {
         sourceInvoked: source.sourceInvoked,
         sourcePending: source.sourcePending,
+        sourceFailed: source.sourceFailed,
         taskId: laneId,
         computerOverride: routine.runsOn,
         routine: routineMark(routine, false),
@@ -8461,11 +8475,7 @@ async function runDueRoutines() {
         ...(routine.chain ? { chain: routine.chain } : {}),
       }).catch((e) => {
         if (e instanceof EnginePauseError) { source.pending(); return; }
-        // it never even started; that is a finished run, not a hung one
-        closeRun(laneId, {
-          ok: false,
-          error: redactSecrets(e instanceof Error ? e.message : String(e)),
-        });
+        source.sourceFailed(redactSecrets(e instanceof Error ? e.message : String(e)));
       });
     }
   }
@@ -17052,16 +17062,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           await startTurn(routine.targetId, routine.prompt, {
             sourceInvoked: source.sourceInvoked,
             sourcePending: source.sourcePending,
+            sourceFailed: source.sourceFailed,
             taskId: laneId,
             computerOverride: routine.runsOn,
             routine: routineMark(routine, true),
             routineId: routine.id,
           });
         } catch (e) {
-          closeRun(laneId, {
-            ok: false,
-            error: redactSecrets(e instanceof Error ? e.message : String(e)),
-          });
+          if (e instanceof EnginePauseError) source.pending();
+          else source.sourceFailed(redactSecrets(e instanceof Error ? e.message : String(e)));
           throw e;
         }
       }

@@ -175,7 +175,11 @@ test("every driver that starts an engine in a group of its own ends it on dispos
     const groups = code.match(/detached:\s*OWN_GROUP/g)?.length ?? 0;
     if (!groups) continue;
     seen++;
-    assert.equal(code.match(/engines\.add\(child\)/g)?.length ?? 0, groups, `${file}: an engine started in its own group is not kept for dispose`);
+    // Ungrouped readiness/auth probes can be tracked as well. Check each
+    // grouped launch's own following registration, not a global count.
+    for (const group of code.matchAll(/detached:\s*OWN_GROUP/g)) {
+      assert.match(code.slice(group.index, group.index + 1_000), /engines\.add\(child\)/, `${file}: an engine started in its own group is not kept for dispose`);
+    }
     assert.match(code, /dispose: async \(\) => \{[\s\S]{0,300}?await engines\.end\(\)/, `${file}: dispose does not end its engines`);
   }
   assert.ok(seen >= 4, `found only ${seen} drivers; the scan itself is broken`);

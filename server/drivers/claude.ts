@@ -1245,7 +1245,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               "--safe-mode", "--setting-sources", "", "--tools", "",
               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
               "--no-session-persistence",
-            ], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+            ], { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: OWN_GROUP, windowsHide: true });
             child = admission ? admission.invoke(start) : start();
             started = Boolean(child.pid);
             engines.add(child);

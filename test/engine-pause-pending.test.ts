@@ -197,7 +197,7 @@ test('a newly received direct message keeps its original source id through prepa
   const before=f.calls.length;let source:any;
   try {
    assert.equal((await f.say('DIRECT_ORIGINAL_UNHEARD')).status,202);assert.ok(await waitFor(()=>JSON.parse(readFileSync(join(f.data,'bots.json'),'utf8')).find((b:any)=>b.id===f.bot.id).busy));
-   source=(await f.messages()).find(m=>m.text==='DIRECT_ORIGINAL_UNHEARD');assert.ok(source?.queued,'direct preparation claimed the source was heard before invocation');
+   source=(await f.messages()).find(m=>m.text==='DIRECT_ORIGINAL_UNHEARD');assert.ok(source,'direct source was not retained during preparation');assert.equal(source.deliveredAt,undefined,'direct preparation invented a queued-delivery time');
    if(change==='pause')await f.pause('direct-preparation');
    assert.equal((await f.request('PATCH',`/api/threads/${f.bot.threadId}/messages/${source.id}`,{text:'DIRECT_CURRENT_EDIT'})).status,200);
   } finally {writeFileSync(gate,'');await reload;}
