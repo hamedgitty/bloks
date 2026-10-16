@@ -5617,7 +5617,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // An agent's watcher past the limit is held without looking, so
     // whatever changed is still there for the look after the person's say.
     if (chainPastLimit(w.chain ?? 0)) {
-      const why = chainHeld(w.chain!, `The watcher ${chainName(w.name)} did not look for ${chainName(bot.name)}.`);
+      const why = chainHeld(`The watcher ${chainName(w.name)} did not look for ${chainName(bot.name)}.`);
       // the person is told once a hold starts, not at every look it holds
       const toldAlready = w.lastError === why;
       w.lastCheck = Date.now();
@@ -6514,10 +6514,9 @@ function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; c
   return depth;
 }
 
-/** Why a routine or a watcher an agent filed did not start its turn:
- * agents had already started too many in a row (MAX_AGENT_CHAIN). */
-function chainHeld(chain: number, subject: string): string {
-  return `Held: ${chainLimitText(subject, chain, agentLimit())}`;
+/** Why a routine or a watcher an agent filed skipped this run. */
+function chainHeld(subject: string): string {
+  return chainLimitText(subject, agentLimit());
 }
 
 /** A chain held at MAX_AGENT_CHAIN, recorded once in the conversation
@@ -6534,21 +6533,19 @@ function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string)
 
 /** The refusal an agent gets for a message past MAX_AGENT_CHAIN, and the
  * notice the person finds in the recipient's conversation (chainNotice).
- * The count is the whole chain, every agent's turn since the person last
- * had a say, so the notice says so and names only the last step of it,
- * rather than calling it back and forth between the last two. Whoever
- * the person writes to next starts from 0. */
+ * Only this undelivered message is described; a refusal does not say
+ * whether the underlying task is finished or needs the person. */
 function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain, words: string) {
   const limit = agentLimit();
   const text = redactSecrets(chainLimitText(
     `A message from ${chainName(chain.sender.name)} to ${chainName(bot.name)} was not delivered.`,
-    chain.depth, limit, chainExcerpt(words, redactSecrets),
+    limit, chainExcerpt(words, redactSecrets),
   ));
   const key = JSON.stringify([chain.sender.botId, bot.id, chain.depth, limit]);
   chainNotice(bot, laneId, text, key);
   // the person's notice says where the limit is set; the agent's says to
   // wrap up, and nothing about lifting it
-  return Object.assign(new Error(chainAgentRefusal(bot.name, chain.depth)), { status: 429 });
+  return Object.assign(new Error(chainAgentRefusal(bot.name, limit)), { status: 429 });
 }
 
 /** Conversations an agent asked to close from inside its own turn there.
@@ -6979,7 +6976,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
   if (chainPastLimit(job.chain ?? 0)) {
     const held = jobs.finish(job.id, {
       ok: false,
-      result: chainLimitText(`A job offer from the job board to ${chainName(agent?.name ?? "an available agent")} was not delivered.`, job.chain!, agentLimit(), chainExcerpt(job.title, redactSecrets)),
+      result: chainLimitText(`A job offer from the job board to ${chainName(agent?.name ?? "an available agent")} was not delivered.`, agentLimit(), chainExcerpt(job.title, redactSecrets)),
       now: Date.now(),
     });
     broadcast({ kind: "jobs" });
@@ -8168,8 +8165,7 @@ async function runDueRoutines() {
       if (!laneId) continue;
       // A blocked attempt is a record, not a consumed scheduled slot.
       if (chainPastLimit(routine.chain ?? 0)) {
-        const why = chainHeld(routine.chain!, `The routine ${chainName(routine.name ?? "without a name")} did not start a scheduled turn for ${chainName(bot.name)}.`)
-          + " It can run at its next scheduled time if the limit allows, within the missed-run grace, or by hand. A one-time routine past that grace needs a manual run.";
+        const why = chainHeld(`The routine ${chainName(routine.name ?? "without a name")} did not start a scheduled turn for ${chainName(bot.name)}.`);
         const slot = lastScheduledBefore(routine, now)!;
         if (routines.holdRun(routine.id, slot.getTime(), laneId, why)) {
           chainNotice(bot, laneId, why);

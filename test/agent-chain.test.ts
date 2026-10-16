@@ -152,9 +152,9 @@ test("two agents answering each other stop after twelve turns, and the person wr
   // the turn at twelve was Alpha's, so its message to Bravo is the one refused
   assert.equal(refused.to, bravo.id);
   // the agent is told to wrap up, never where the limit is set
-  assert.match(refused.said.error, /Bravo did not get this/);
-  assert.match(refused.said.error, /12 turns in a row/);
-  assert.match(refused.said.error, /Finish this turn and say where things stand; the person carries it on from there/);
+  assert.match(refused.said.error, /Bravo did not get this message/);
+  assert.match(refused.said.error, /limit of 12 consecutive turns/);
+  assert.match(refused.said.error, /Finish this turn and report any unfinished work/);
   assert.doesNotMatch(refused.said.error, /Settings|raise|switch off|plan/i);
   // and the person reads why in the conversation it was meant for
   const told = await notices(h, bravo);
@@ -189,7 +189,7 @@ test("an agent messaging itself is a chain too", async (t) => {
   assert.equal(says(home).length, 13);
   const told = await notices(h, solo);
   assert.ok(
-    told.some((text) => text.includes("from Solo to Solo was not delivered") && text.includes("Nothing is held for delivery")),
+    told.some((text) => text.includes("from Solo to Solo was not delivered") && text.includes("limit of 12 consecutive turns")),
     `nothing in Solo's conversation says why it stopped: ${JSON.stringify(told)}`,
   );
 });
@@ -232,7 +232,7 @@ test("naming an agent in a room from a conversation, and being answered there, i
   writeFileSync(join(home, "quiet"), "");
 });
 
-test("jobs agents post for each other are a chain, and past it wait for the person", async (t) => {
+test("jobs agents post for each other are a chain, and past it are not offered", async (t) => {
   const { home, h, hire } = await boot(t);
   await hire("Alpha");
   await hire("Bravo");
@@ -241,15 +241,14 @@ test("jobs agents post for each other are a chain, and past it wait for the pers
   const total = await settledSays(home, h);
   assert.ok(total !== null && total <= 14, `jobs were still being posted after ${says(home).length}`);
   const { jobs } = await h.json("/api/jobs");
-  const held = (jobs as any[]).find((job) => job.state === "failed" && /A job offer.*was not delivered.*workspace limit of 12/.test(job.result ?? ""));
-  assert.ok(held, `no job was held for the person: ${JSON.stringify((jobs as any[]).map((job) => [job.state, job.result]))}`);
-  assert.match(held.result, /Nothing is held for delivery/);
-  assert.match(held.result, /Every turn costs usage/);
-  assert.match(held.result, /starts the count over/);
+  const held = (jobs as any[]).find((job) => job.state === "failed" && /A job offer.*was not delivered.*limit of 12 consecutive turns/.test(job.result ?? ""));
+  assert.ok(held, `no job offer was refused: ${JSON.stringify((jobs as any[]).map((job) => [job.state, job.result]))}`);
+  assert.match(held.result, /helps prevent repeated messages from using up your plan/);
+  assert.doesNotMatch(held.result, /starts the count|person.*carr|queued|redeliver/i);
   assert.match(held.result, /Settings > General > Working with agents/);
 });
 
-test("routines and watchers an agent files carry its place, and past the limit wait for the person", async (t) => {
+test("routines and watchers an agent files carry its place, and past the limit skip their run", async (t) => {
   const home = workspace();
   let h = await startHarness({ HOME: home });
   t.after(async () => {
@@ -303,10 +302,10 @@ test("routines and watchers an agent files carry its place, and past the limit w
   rewrite("watchers.json", (rows) => { rows[0].chain = 13; });
   h = await startHarness({ HOME: home });
   const held = await waitFor(async () => (await h.json("/api/routines")).routines[0].runs?.find((run: any) => run.state === "failed") ?? null, 20_000);
-  assert.match(held?.error ?? "", /^Held:.*workspace limit of 12/);
+  assert.match(held?.error ?? "", /^The routine Nightly did not start.*limit of 12 consecutive turns/);
   writeFileSync(join(dir, "new.txt"), "x");
   // a folder is looked at once it has been still for SETTLE_MS (20 s)
-  const quietly = await waitFor(async () => (/^Held:/.test((await h.json("/api/watchers")).watchers[0].lastError ?? "") ? true : null), 45_000);
+  const quietly = await waitFor(async () => (/^The watcher drops did not look/.test((await h.json("/api/watchers")).watchers[0].lastError ?? "") ? true : null), 45_000);
   assert.ok(quietly, "the watcher looked and acted past the limit");
   const asked = async (words: string) => ((await h.json(`/api/bots/${alpha.id}/messages?limit=200`)).messages as any[]).some((m) => m.text?.includes(words));
   assert.ok(!(await asked("ROUTINE-RAN")) && !(await asked("WATCHER-RAN")), "a held routine or watcher started a turn");
@@ -317,10 +316,9 @@ test("routines and watchers an agent files carry its place, and past the limit w
   assert.match(heldNotices[0], /routine Nightly did not start.*Alpha/);
   assert.match(heldNotices[1], /watcher drops did not look for Alpha/);
   for (const text of heldNotices) {
-    assert.match(text, /Nothing is held for delivery/);
-    assert.match(text, /workspace limit of 12/);
-    assert.match(text, /Every turn costs usage/);
-    assert.match(text, /starts the count over/);
+    assert.match(text, /limit of 12 consecutive turns/);
+    assert.match(text, /helps prevent repeated messages from using up your plan/);
+    assert.doesNotMatch(text, /starts the count|person.*carr|queued|redeliver|by hand|manual run/i);
     assert.match(text, /Settings > General > Working with agents/);
   }
   const alphaLane = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === alpha.id).tasks[0];

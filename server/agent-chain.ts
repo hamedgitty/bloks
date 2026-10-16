@@ -38,13 +38,13 @@ export function chainExcerpt(words: string, redact: (text: string) => string): s
   return redact(words).replace(/\s+/g, " ").trim().slice(0, MAX_CHAIN_EXCERPT_CHARS);
 }
 
-/** For the person: the notice, the room's word and scheduled-work records. */
-export function chainLimitText(what: string, depth: number, limit: number, excerpt?: string): string {
-  return `${what} Nothing is held for delivery. Agents had started ${depth - 1} turns in a row; this turn would exceed the workspace limit of ${limit}. Every turn costs usage, and the limit stops agents keeping each other going without you. A message from the person in that conversation starts the count over, as does an independent routine, watcher or webhook turn. The limit is in Settings > General > Working with agents.${excerpt ? ` Excerpt: "${excerpt}"` : ""}`;
+/** The person's notice names only the undelivered item or skipped run.
+ * Reset mechanics do not establish that the task needs their attention. */
+export function chainLimitText(what: string, limit: number, excerpt?: string): string {
+  return `${what.replace(/\.$/, "")}: agents reached the limit of ${limit} consecutive turn${limit === 1 ? "" : "s"}. This limit helps prevent repeated messages from using up your plan. Change it in Settings > General > Working with agents.${excerpt ? ` Excerpt: "${excerpt}"` : ""}`;
 }
 
-/** For the agent whose message was refused. It is told to wrap up, never
- * where the limit is set: asking the person to lift it is not its call. */
-export function chainAgentRefusal(recipient: string, depth: number): string {
-  return `${recipient} did not get this. Agents have started ${depth - 1} turns in a row without the person, which is as many as Bloks lets run before they have a say. Finish this turn and say where things stand; the person carries it on from there.`;
+/** The agent wraps up without assuming the person must continue the task. */
+export function chainAgentRefusal(recipient: string, limit: number): string {
+  return `${recipient} did not get this message: agents reached the limit of ${limit} consecutive turn${limit === 1 ? "" : "s"}. Finish this turn and report any unfinished work.`;
 }

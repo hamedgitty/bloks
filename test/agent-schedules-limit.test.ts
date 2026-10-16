@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { controlledChain } from "./helpers/agent-chain.ts";
+import { chainRelay } from "./helpers/chain-relay.ts";
 import { waitFor } from "./helpers/turns.ts";
+import { noticeFor } from "../src/lib/notify.ts";
 
 const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
 
@@ -40,8 +42,11 @@ test("held schedules resume on their own after a higher limit, without consuming
   const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const routine = async (targetId: string, prompt: string) => (await f.h.json("/api/routines", post({ targetId, targetKind: "agent", prompt, time: "09:00", repeat: "once", date: ymd(tomorrow), days: [] }))).routine;
   const a = await routine(runner.id, "First scheduled work"), b = await routine(later.id, "Later scheduled work"), old = await routine(runner.id, "Old disabled work");
+  const pushes: Array<{ frames: any[]; wake: unknown }> = [];
+  await chainRelay(t, f.h, pushes);
   await f.restart(() => {
-  const due = new Date(Date.now() - 60_000);
+  // Keep the first tick in the future until the restarted relay connects.
+  const due = new Date(Date.now() + 2 * 60_000);
   const time = `${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`;
   const routineFile = join(f.home, ".bloks/routines.json");
   const saved = JSON.parse(readFileSync(routineFile, "utf8"));
@@ -52,13 +57,16 @@ test("held schedules resume on their own after a higher limit, without consuming
   writeFileSync(routineFile, JSON.stringify(saved));
   const watcherFile = join(f.home, ".bloks/watchers.json");
   const watches = JSON.parse(readFileSync(watcherFile, "utf8"));
-  for (const w of watches) { w.chain = w.id === second.id ? 30 : 15; w.lastCheck = 0; }
+  for (const w of watches) { w.chain = w.id === second.id ? 30 : 15; w.lastCheck = due.getTime(); }
   writeFileSync(watcherFile, JSON.stringify(watches));
   });
+  assert.ok(await waitFor(async () => (await f.h.json("/api/relay/status")).connected ? true : null), "the restarted synthetic relay did not connect");
+  assert.equal((await f.messages(runner)).filter((m) => m.chainHeld).length, 0, "a scheduled hold happened before relay capture was ready");
   writeFileSync(join(dirs[0], "new.txt"), "first"); writeFileSync(join(dirs[1], "new.txt"), "later");
+  await tick(8 * 60_000);
   const routines = async () => (await f.h.json("/api/routines")).routines as any[];
   const watchers = async () => (await f.h.json("/api/watchers")).watchers as any[];
-  assert.ok(await waitFor(async () => (await watchers()).every((w) => w.lastError?.startsWith("Held:")) ? true : null, 45_000), "watchers did not reach the chain guard");
+  assert.ok(await waitFor(async () => (await watchers()).every((w) => w.lastError?.includes("agents reached the limit of 12 consecutive turns")) ? true : null, 45_000), "watchers did not reach the chain guard");
   // Three clock-driven thirty-second ticks execute the real scheduler path.
   // The minute watcher callback keeps its normal five-minute eligibility test.
   await tick(30_000); await tick(30_000); await tick(30_000);
@@ -71,6 +79,20 @@ test("held schedules resume on their own after a higher limit, without consuming
   }
   const notices = (await f.messages(runner)).filter((m) => m.chainHeld);
   assert.equal(notices.length, 1, "repeated scheduler ticks added hold notices");
+  for (const bot of [runner, later, reader, failure]) {
+    const stops = (await f.messages(bot)).filter((m) => m.chainHeld);
+    assert.equal(stops.length, bot.id === later.id ? 2 : 1, "each skipped routine and watcher must leave its own explanation");
+    for (const notice of stops) {
+    assert.match(notice.text, /^The (routine|watcher) .*(did not start a scheduled turn|did not look).*: agents reached the limit of 12 consecutive turns\./);
+    assert.match(notice.text, /helps prevent repeated messages from using up your plan/);
+    assert.match(notice.text, /Change it in Settings > General > Working with agents\./);
+    assert.doesNotMatch(notice.text, /Held:|starts the count|manual run|by hand|person.*carr|queued|redeliver/i);
+    const frame = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.message?.id === notice.id)));
+    assert.ok(frame, "the scheduled stop was not delivered to the synthetic phone");
+    assert.equal(frame.wake, undefined, "the scheduled stop woke the phone");
+    assert.equal(noticeFor(notice, { focused: false, selectedId: "elsewhere", threadId: bot.threadId, bot }), null, "the scheduled stop raised a desktop banner");
+    }
+  }
   writeFileSync(join(f.home, "finish-all"), "");
   status = 503;
   await f.limit(24);
@@ -84,7 +106,7 @@ test("held schedules resume on their own after a higher limit, without consuming
   let w = await watchers();
   assert.equal(w.find((w) => w.id === first.id).lastError, undefined);
   assert.match(w.find((w) => w.id === bad.id).lastError, /the address answered 503/);
-  assert.match(w.find((w) => w.id === second.id).lastError, /^Held:/);
+  assert.match(w.find((w) => w.id === second.id).lastError, /^The watcher .*: agents reached the limit of 24 consecutive turns/);
   await f.limit(50);
   await tick(5 * 60_000);
   assert.ok(await waitFor(async () => {

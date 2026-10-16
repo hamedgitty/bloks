@@ -623,9 +623,10 @@ later delivery. It defaults to twelve (`MAX_AGENT_CHAIN` in
 no Off, because the whole-chain count is the bound on cost. Settings,
 General, Working with agents exposes the live setting. A malformed
 stored value reads as twelve, and one above 50 as 50. The recipient's
-notice explains who was not reached, the cost bound, how the count
-starts over and where the limit is set; the sender is only told to
-finish its turn and say where things stand. Whoever the person writes to
+notice names the undelivered item or skipped run, the reached limit, its
+cost reason and where the limit is set. It does not say that the task
+failed or that the person must continue it; the sender is told to finish
+its turn and report any unfinished work. Whoever the person writes to
 next starts over at 0, whether their words start the turn, join it, or
 are among what it takes when it goes. A burst of waiting messages takes
 the furthest place among them, and a pickup, a backup engine or a retry

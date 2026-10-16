@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,17 +15,48 @@ const garbage = ["abc", 0, -1, 1.5, true, [], {}, null, Number.MAX_SAFE_INTEGER 
 /** Refused by the API; stored by hand, each reads as the bound. */
 const tooHigh = [51, 1000, Number.MAX_SAFE_INTEGER];
 const explanation = (text: string) => {
-  assert.match(text, /Nothing is held for delivery/);
-  assert.match(text, /Every turn costs usage.*keeping each other going without you/);
-  assert.match(text, /A message from the person.*starts the count over.*routine, watcher or webhook/);
-  assert.match(text, /The limit is in Settings > General > Working with agents/);
-  assert.doesNotMatch(text, /switch off|\bOff\b/);
+  assert.match(text, /: agents reached the limit of \d+ consecutive turns?\./);
+  assert.match(text, /This limit helps prevent repeated messages from using up your plan\./);
+  assert.match(text, /Change it in Settings > General > Working with agents\./);
+  assert.doesNotMatch(text, /switch off|\bOff\b|starts the count|person.*carr|queued|redeliver|by hand|manual run/i);
 };
 /** What the agent is told: wrap up, and nothing about lifting the limit. */
 const toldToWrapUp = (text: string) => {
-  assert.match(text, /Finish this turn and say where things stand; the person carries it on from there\./);
-  assert.doesNotMatch(text, /Settings|raise|switch off|plan|limit of/i);
+  assert.match(text, /Finish this turn and report any unfinished work\./);
+  assert.doesNotMatch(text, /Settings|raise|switch off|plan|person.*carr/i);
 };
+
+for (const completed of [true, false]) test(completed
+  ? "a refused cleanup confirmation does not turn completed work into a request"
+  : "a refused assignment identifies only the message that was not delivered", async (t) => {
+  const f = await controlledChain(t, { agents: { turnLimit: 1 } });
+  const pushes: Array<{ frames: any[]; wake: unknown }> = [];
+  await chainRelay(t, f.h, pushes);
+  const a = await f.hire("Alpha"), b = await f.hire("Bravo");
+  const at = await f.depth(a, b, 1);
+  const item = join(f.home, "example-cleanup-file");
+  writeFileSync(item, "Example work");
+  if (completed) rmSync(item);
+  const text = completed ? "Cleanup complete. The temporary file was removed." : "Please remove the temporary file.";
+  const before = f.turns().length;
+  const res = await f.agent(at.turn, `/api/bots/${at.other.id}/messages`, { text });
+  assert.equal(res.status, 429);
+  toldToWrapUp((await res.json()).error);
+  const messages = await f.messages(at.other);
+  const notice = messages.find((m) => m.chainHeld);
+  assert.ok(notice);
+  assert.match(notice.text, /^A message from Bravo to Alpha was not delivered: agents reached the limit of 1 consecutive turn\./);
+  explanation(notice.text);
+  assert.ok(notice.text.includes(`Excerpt: "${text}"`));
+  assert.doesNotMatch(notice.text, /task failed|work failed|reply to continue|must continue|carries it on|Nothing is held|starts the count/i);
+  assert.equal(messages.some((m) => m.role === "user" && m.text === text), false, "the refused item must not be delivered as an assignment");
+  assert.equal(f.turns().length, before, "the refusal started another turn");
+  assert.equal(existsSync(item), !completed, "a refused message changed the completed or unfinished work");
+  const pushed = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.message?.id === notice.id)));
+  assert.ok(pushed, "the in-chat explanation was not delivered to the synthetic phone");
+  assert.equal(pushed.wake, undefined, "the stop alone woke the phone");
+  assert.equal(noticeFor(notice, { focused: false, selectedId: "elsewhere", threadId: at.other.threadId, bot: at.other }), null, "the stop alone raised a desktop banner");
+});
 
 test("stored values never switch the limit off: malformed is twelve, past fifty is fifty", async () => {
   for (const value of [undefined, ...garbage]) {
@@ -71,7 +102,7 @@ test("config is validated before any section writes, refuses null and past fifty
   assert.equal((await f.agent(turn, "/api/config", { agents: { turnLimit: 1 } }, "PUT")).status, 403);
 });
 
-test("refusals redact the attempted words, keep four parts and dedupe reworded retries", async (t) => {
+test("refusals name the undelivered message, redact its words and dedupe reworded retries", async (t) => {
   const secret = "example-stored-credential-abcdefgh";
   const key = "sk-example1234567890abcdefghijkl";
   const f = await controlledChain(t, { secrets: { example: secret } });
@@ -84,14 +115,14 @@ test("refusals redact the attempted words, keep four parts and dedupe reworded r
     assert.equal(res.status, 429);
     const error = (await res.json()).error as string;
     toldToWrapUp(error);
-    assert.match(error, /^Bravo did not get this\. Agents have started 12 turns in a row/);
+    assert.match(error, /^Bravo did not get this message: agents reached the limit of 12 consecutive turns/);
     assert.ok(!error.includes(secret) && !error.includes(key));
   }
   let held = (await f.messages(other)).filter((m) => m.chainHeld);
   assert.equal(held.length, 1, "a reworded retry woke the recipient twice");
   explanation(held[0].text);
   assert.match(held[0].text, /from Alpha to Bravo was not delivered/);
-  assert.match(held[0].text, /12 turns in a row.*limit of 12/);
+  assert.match(held[0].text, /limit of 12 consecutive turns/);
   assert.match(held[0].text, /Excerpt:.*\[redacted\].*\[redacted\]/);
   assert.ok(!held[0].text.includes("\n"));
   const laneFrame = await waitFor(() => pushes.find((p) => p.frames.some((frame) => frame.message?.id === held[0].id)));
@@ -133,7 +164,7 @@ test("changing the live limit moves the line, never the count", async (t) => {
   assert.equal(lower.status, 429);
   toldToWrapUp((await lower.json()).error);
   const told = (await f.messages(at.bot)).filter((m) => m.chainHeld).at(-1);
-  assert.match(told?.text ?? "", /workspace limit of 1\./);
+  assert.match(told?.text ?? "", /limit of 1 consecutive turn\./);
 });
 
 test("routines, watchers and jobs agents file carry the chain, at any limit", async (t) => {
@@ -164,11 +195,11 @@ test("routines, watchers and jobs agents file carry the chain, at any limit", as
 
 test("a room keeps both guard bounds and records them without turning engine words into alerts", () => {
   assert.equal(heldMention("Alpha", ["Bravo"], { hops: 1, chain: 50 }, 50), null);
-  assert.match(heldMention("Alpha", ["Bravo"], { hops: 1, chain: 51 }, 50) ?? "", /workspace limit of 50/);
+  assert.match(heldMention("Alpha", ["Bravo"], { hops: 1, chain: 51 }, 50) ?? "", /limit of 50 consecutive turns/);
   assert.equal(heldMention("Alpha", ["Bravo"], { hops: 4, chain: 13 }, 12), hopsNotice("Alpha", ["Bravo"]));
-  toldToWrapUp(chainAgentRefusal("Bravo", 13));
+  toldToWrapUp(chainAgentRefusal("Bravo", 12));
   // an engine-out word in the explanation must not turn it into an engine alert
-  const text = chainLimitText("A message from Alpha to Bravo was not delivered.", 13, 12, "the usage limit reached");
+  const text = chainLimitText("A message from Alpha to Bravo was not delivered.", 12, "the usage limit reached");
   explanation(text);
   assert.match(text, /usage limit reached/);
   const ctx = { focused: false, selectedId: "elsewhere", threadId: "lane", bot: { id: "bot", name: "Bravo" } };
@@ -182,6 +213,6 @@ test("a room keeps both guard bounds and records them without turning engine wor
   assert.ok(text.slice(0, 178).includes("Alpha to Bravo"));
   const from = chainName("A".repeat(80)), to = chainName("B".repeat(80));
   assert.equal(from.length, 50); assert.equal(to.length, 50);
-  const clipped = chainLimitText(`A message from ${from} to ${to} was not delivered.`, 13, 12).slice(0, 178);
+  const clipped = chainLimitText(`A message from ${from} to ${to} was not delivered.`, 12).slice(0, 178);
   assert.ok(clipped.includes(from) && clipped.includes(to));
 });
