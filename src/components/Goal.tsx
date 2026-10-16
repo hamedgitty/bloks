@@ -53,7 +53,7 @@ export function GoalChip({ bot }: { bot: Bot }) {
     // a block around it, as the composer has: an auto margin straight
     // inside the chat's column would size the chip to its words
     <div className="px-4 md:px-6">
-      <div className="mx-auto mb-1 max-w-[760px] animate-rise-in">
+      <div className="mx-auto mb-1 max-w-[var(--transcript-width,760px)] animate-rise-in">
         <div
           className={cn(
             "flex items-center gap-2 rounded-xl border bg-card py-1 pl-3 pr-1 text-[12.5px]",

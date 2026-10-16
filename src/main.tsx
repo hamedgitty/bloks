@@ -4,6 +4,9 @@ import App from "./App";
 import { ThemeProvider } from "./lib/theme";
 import "@fontsource-variable/inter";
 import "./styles.css";
+import { startTranscriptWidth } from "./lib/useTranscriptWidth";
+
+startTranscriptWidth();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

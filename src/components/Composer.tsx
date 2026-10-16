@@ -538,7 +538,7 @@ export function Composer({
   if (bot.archivedAt) {
     return (
       <div className="px-4 pb-4 pt-1 md:px-6 md:pb-5">
-        <div className="mx-auto flex max-w-[760px] items-center gap-3 rounded-2xl border bg-muted/40 px-3.5 py-3">
+        <div className="mx-auto flex max-w-[var(--transcript-width,760px)] items-center gap-3 rounded-2xl border bg-muted/40 px-3.5 py-3">
           <Archive size={15} className="shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-muted-foreground">
             {bot.archivedBy
@@ -562,7 +562,7 @@ export function Composer({
   if (bot.held) {
     return (
       <div className="px-4 pb-4 pt-1 md:px-6 md:pb-5">
-        <div className="mx-auto flex max-w-[760px] items-center gap-3 rounded-2xl border border-warning/40 bg-warning/5 px-3.5 py-3">
+        <div className="mx-auto flex max-w-[var(--transcript-width,760px)] items-center gap-3 rounded-2xl border border-warning/40 bg-warning/5 px-3.5 py-3">
           <Hand size={15} className="shrink-0 text-warning" />
           <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-foreground">
             You have {bot.name}&rsquo;s computer ({bot.held.why}). It will not start anything until you
@@ -604,12 +604,12 @@ export function Composer({
         </div>
       )}
       {replyTo && (
-        <div className="mx-auto mb-2 max-w-[760px]">
+        <div className="mx-auto mb-2 max-w-[var(--transcript-width,760px)]">
           <ReplyChip draft={replyTo} onClear={() => onClearReply?.()} />
         </div>
       )}
       {recoveries.length > 0 && (
-        <section aria-label="Saved submissions" className="mx-auto mb-2 max-h-64 max-w-[760px] space-y-2 overflow-y-auto">
+        <section aria-label="Saved submissions" className="mx-auto mb-2 max-h-64 max-w-[var(--transcript-width,760px)] space-y-2 overflow-y-auto">
           {recoveries.map((item) => (
             <div key={item.id} role="group" aria-label="Saved submission" className="rounded-xl border bg-card px-3 py-2 text-[12px]">
               <p className="font-medium">Saved submission</p>
@@ -634,7 +634,7 @@ export function Composer({
         </section>
       )}
       {attachNotice && (
-        <div className="mx-auto mb-2 flex max-w-[760px] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
+        <div className="mx-auto mb-2 flex max-w-[var(--transcript-width,760px)] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
           <span className="min-w-0 flex-1">{attachNotice}</span>
           <button
             onClick={() => setAttachNotice(null)}
@@ -646,14 +646,14 @@ export function Composer({
         </div>
       )}
       {attachments.length > 0 && (
-        <div className="mx-auto mb-2 flex max-w-[760px] flex-wrap gap-1.5">
+        <div className="mx-auto mb-2 flex max-w-[var(--transcript-width,760px)] flex-wrap gap-1.5">
           {attachments.map((a) => (
             <AttachmentChip key={a.id} attachment={a} onRemove={() => setAttachments((cur) => cur.filter((x) => x.id !== a.id))} />
           ))}
         </div>
       )}
       {rehearse && (
-        <div className="mx-auto mb-2 max-w-[760px] animate-rise-in rounded-xl border bg-card px-3 py-2">
+        <div className="mx-auto mb-2 max-w-[var(--transcript-width,760px)] animate-rise-in rounded-xl border bg-card px-3 py-2">
           <div className="flex items-center gap-2 text-[12.5px] text-foreground">
             <FlaskConical size={14} className="shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
@@ -703,7 +703,7 @@ export function Composer({
         </div>
       )}
       {speechError && (
-        <div className="mx-auto mb-2 flex max-w-[760px] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
+        <div className="mx-auto mb-2 flex max-w-[var(--transcript-width,760px)] animate-rise-in items-center gap-2 rounded-xl bg-warning/10 px-3 py-2 text-[12px] text-warning">
           <span className="min-w-0 flex-1">{speechError}</span>
           {(micDenied || speechPane === "speech") && (
             <button
@@ -723,7 +723,7 @@ export function Composer({
         </div>
       )}
       {slash && slashShown && (
-        <div className="mx-auto mb-1.5 max-w-[760px]">
+        <div className="mx-auto mb-1.5 max-w-[var(--transcript-width,760px)]">
           <div
             role="listbox"
             aria-label={`${bot.name}'s commands`}
@@ -765,7 +765,7 @@ export function Composer({
       )}
       <div
         className={cn(
-          "mx-auto flex max-w-[760px] items-end gap-1 rounded-[22px] border bg-background p-1.5 pl-2 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150",
+          "mx-auto flex max-w-[var(--transcript-width,760px)] items-end gap-1 rounded-[22px] border bg-background p-1.5 pl-2 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150",
           "focus-within:border-ring/50",
         )}
       >
