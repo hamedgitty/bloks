@@ -22,8 +22,8 @@ import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
 import { GroupCallButton } from "./Voice";
-import { shouldLoadEarlier, splitWaiting, windowStart, TRANSCRIPT_WINDOW } from "@/lib/transcript";
-import { useEarlier } from "@/lib/useEarlier";
+import { splitWaiting } from "@/lib/transcript";
+import { useHistoryPaging } from "@/lib/useHistoryPaging";
 import { ArtifactCard } from "./Artifacts";
 import {
   ForwardDialog,
@@ -401,6 +401,7 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [showRoutines, setShowRoutines] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
   // The crown goes to whoever the server would actually route to, which
    // is the most senior of the ones that can answer.
   const lead = answering.reduce<Bot | null>(
@@ -411,17 +412,11 @@ export function RoomView({ blok }: { blok: Blok }) {
   // conversation is not about to answer this room
   const working = members.filter((m) => workingInRoom(m, blok.id));
 
-  const [boundary, setBoundary] = useState<number | null>(null);
-  const preExpand = useRef<number | null>(null);
-  const lastRoomKey = useRef(blok.id);
-  if (lastRoomKey.current !== blok.id) {
-    lastRoomKey.current = blok.id;
-    setBoundary(null);
-  }
   // The room's conversation, and what waits behind the round it is in,
   // above the composer until it goes (GitHub 170).
   const { said, waiting } = useMemo(() => splitWaiting(blok.messages), [blok.messages]);
-  const start = windowStart(said.length, boundary);
+  const earlier = useHistoryPaging("room", { ...blok, threadId: blok.id }, said, scrollRef, pinned, lens === "stream" && !highlightId);
+  const start = earlier.start;
   // which messages have answers hanging off them, for the stream's hint
   const counts = replyCounts(said);
   // Each agent's finished turn is one line above its reply
@@ -439,30 +434,7 @@ export function RoomView({ blok }: { blok: Blok }) {
   const visibleRows = useMemo(() => rowsFrom(folded.rows, start), [folded, start]);
   const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
 
-  const pinned = useRef(true);
   useStickToBottom(scrollRef, pinned);
-  const scrolledTo = useRef(0);
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // scrolling up near the top brings the next page in without a press
-    const lastTop = scrolledTo.current;
-    scrolledTo.current = el.scrollTop;
-    // Only the reader scrolling up lets go of the end. Content that grew
-    // under a reader who was there (a font, a card laying out) reaches
-    // this as a scroll too, and used to leave them short of the last line.
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 || (pinned.current && el.scrollTop >= lastTop);
-    if (shouldLoadEarlier({ top: el.scrollTop, lastTop, more: start > 0 || earlier.remaining > 0, loading: earlier.loading })) showEarlier();
-  };
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && preExpand.current !== null) {
-      el.scrollTop += el.scrollHeight - preExpand.current;
-      preExpand.current = null;
-    }
-    // a page from the server lands above with start still at 0
-  }, [start, said.length]);
 
   // When a turn ends its work folds, and the reply stays where it is on
   // screen for a reader who is not at the end. After the effect above:
@@ -484,16 +456,6 @@ export function RoomView({ blok }: { blok: Blok }) {
       if (!next.delete(key)) next.add(key);
       return next;
     });
-  };
-
-  const earlier = useEarlier("room", { ...blok, threadId: blok.id });
-  const showEarlier = () => {
-    preExpand.current = scrollRef.current?.scrollHeight ?? null;
-    pinned.current = false;
-    if (start > 0) return setBoundary(Math.max(0, start - TRANSCRIPT_WINDOW));
-    // everything here is showing; the rest is still on the computer
-    setBoundary(0);
-    void earlier.load();
   };
 
   useEffect(() => {
@@ -763,7 +725,7 @@ export function RoomView({ blok }: { blok: Blok }) {
 
       <div
         ref={scrollRef}
-        onScroll={onScroll}
+        onScroll={earlier.onScroll}
         className="flex-1 overflow-y-auto px-4 md:px-6 [overflow-anchor:none]"
       >
         {lens === "forum" ? (
@@ -775,15 +737,18 @@ export function RoomView({ blok }: { blok: Blok }) {
               setHighlightId(messageId);
               // the stream may be windowed to its tail, so open the whole
               // thing rather than scrolling to something not rendered
-              setBoundary(0);
+              pinned.current = false;
+              earlier.showAll();
               // and a message under a fold is shown by opening the fold
               const fold = foldHolding(folded.rows, said.findIndex((m) => m.id === messageId));
               if (fold) {
                 pinned.current = false;
                 setOpenFolds((open) => new Set(open).add(fold));
               }
+              const scroller = scrollRef.current;
               requestAnimationFrame(() => {
-                document
+                if (!scroller || scrollRef.current !== scroller) return;
+                scroller
                   .querySelector(`[data-room-msg="${messageId}"]`)
                   ?.scrollIntoView({ block: "center", behavior: "smooth" });
               });
@@ -793,7 +758,7 @@ export function RoomView({ blok }: { blok: Blok }) {
         <div className="mx-auto flex max-w-[760px] flex-col gap-2 pb-4 pt-3">
           {(start > 0 || earlier.remaining > 0) && (
             <button
-              onClick={showEarlier}
+              onClick={earlier.showEarlier}
               disabled={earlier.loading}
               className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[12px] text-muted-foreground transition-colors duration-150 hover:border-foreground/25 hover:text-foreground disabled:opacity-60"
             >
