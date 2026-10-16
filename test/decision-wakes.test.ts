@@ -177,22 +177,41 @@ test("restart closes a cut-off broker card without a new decision alert", async 
   assert.deepEqual((await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id).card, opened.card);
 });
 
-test("a gate timing out is a settled record, not another alert", async (t) => {
+test("expired workflow gates keep closed reasons and the person's put-aside choice", async (t) => {
   const w = await alertWorkspace(t);
   const bot = await w.hire();
-  const { workflow } = await w.h.json("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Short review", trigger: { kind: "manual" }, steps: [
-    { id: "gate", action: "approve", text: "Publish before the review ends?", targetId: bot.id, timeoutMin: 1 },
-  ] }) });
-  const { run } = await w.h.json(`/api/workflows/${workflow.id}/run`, { method: "POST", body: "{}" });
-  const card = await waitFor(() => w.ownerFrames().find((f) => f.message?.card?.runId === run.id)?.message);
-  assert.ok(card);
-  assert.equal(w.captured(card.id)?.wake?.reason, "needs-you");
-  const settled = await waitFor(() => w.captured(card.id, "message.patch"), 105_000);
-  assert.ok(settled, "the gate deadline did not settle its card");
-  assert.equal(settled.wake, undefined, "a timed-out gate must not send another question alert");
-  const opened = (await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id);
-  assert.equal(opened.card.answered, "no answer in time", "opening the expired question must show that it closed");
-  assert.notEqual(opened.card.dismissed, true, "a timeout must not hide a card the person did not put aside");
+  const gates: Array<{ workflowId: string; runId: string; card: any; onTimeout: "stop" | "continue" }> = [];
+  for (const onTimeout of ["stop", "continue"] as const) {
+    for (const putAside of [false, true]) {
+      const { workflow } = await w.h.json("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Short review", trigger: { kind: "manual" }, steps: [
+        { id: "gate", action: "approve", text: `Publish the ${onTimeout} example, put-aside=${putAside}?`, targetId: bot.id, timeoutMin: 1, onTimeout },
+      ] }) });
+      const { run } = await w.h.json(`/api/workflows/${workflow.id}/run`, { method: "POST", body: "{}" });
+      const card = await waitFor(() => w.ownerFrames().find((f) => f.message?.card?.runId === run.id)?.message);
+      assert.ok(card, "the pending gate must be delivered before it expires");
+      assert.equal(w.captured(card.id)?.wake?.reason, "needs-you");
+      if (putAside) assert.equal((await w.h.fetch(`/api/bots/${bot.id}/cards/${card.id}`, { method: "PATCH", body: JSON.stringify({ dismissed: true }) })).status, 200);
+      const before = (await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id);
+      gates.push({ workflowId: workflow.id, runId: run.id, card: before, onTimeout });
+    }
+  }
+  await Promise.all(gates.map(async ({ workflowId, runId, card, onTimeout }) => {
+    const settled = await waitFor(() => w.pushes.find((p) => p.frames.some((f) => f.device === "owner-device" && f.frame.kind === "message.patch" && f.frame.message?.id === card.id && f.frame.message.card?.closed)), 105_000);
+    assert.ok(settled, "the gate deadline must deliver the settled card");
+    const opened = (await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id);
+    assert.equal(opened.card.answered, "Closed without an answer");
+    assert.equal(opened.card.closed, `Nobody answered in time, so the workflow ${onTimeout === "continue" ? "carried on" : "stopped"}`);
+    assert.equal(opened.card.dismissed, card.card.dismissed, "a timeout must leave the person's dismissal untouched");
+    assert.equal(Object.hasOwn(opened.card, "dismissed"), Object.hasOwn(card.card, "dismissed"));
+    assert.equal(settled.wake, undefined, "a timed-out gate must not send another question alert");
+    const ended = await waitFor(async () => {
+      const flow = (await w.h.json("/api/workflows")).workflows.find((v: any) => v.id === workflowId);
+      const found = flow.runs.find((r: any) => r.id === runId);
+      return found.state === (onTimeout === "continue" ? "done" : "stopped") ? found : null;
+    });
+    assert.ok(ended, "the timeout must preserve the workflow's stop or continue policy");
+    assert.equal(ended.waiting, undefined);
+  }));
 });
 
 
@@ -236,12 +255,19 @@ for (const putAside of [false, true]) {
     const card = await waitFor(() => w.ownerFrames().find((f) => f.message?.card?.runId === run.id)?.message);
     assert.ok(card);
     if (putAside) assert.equal((await w.h.fetch(`/api/bots/${bot.id}/cards/${card.id}`, { method: "PATCH", body: JSON.stringify({ dismissed: true }) })).status, 200);
+    const before = (await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id);
     assert.equal((await w.h.fetch(`/api/workflows/${workflow.id}`, { method: "PATCH", body: JSON.stringify({ steps: [{ ...steps[0], text: "A different draft?" }] }) })).status, 200);
-    const settled = await waitFor(() => w.pushes.find((p) => p.frames.some((f) => f.device === "owner-device" && f.frame.kind === "message.patch" && f.frame.message?.id === card.id && f.frame.message.card.answered === "the workflow changed")));
+    const settled = await waitFor(() => w.pushes.find((p) => p.frames.some((f) => f.device === "owner-device" && f.frame.kind === "message.patch" && f.frame.message?.id === card.id && f.frame.message.card.closed === "The workflow was edited, so this run stopped")));
     assert.ok(settled, "the closed gate did not reach the paired phone");
     assert.equal(settled.wake, undefined);
     const opened = (await w.h.json(`/api/bots/${bot.id}/messages`)).messages.find((m: any) => m.id === card.id);
-    assert.equal(opened.card.answered, "the workflow changed");
-    assert.equal(Boolean(opened.card.dismissed), putAside, "settlement must not invent or undo the person's dismissal");
+    assert.equal(opened.card.answered, "Closed without an answer");
+    assert.equal(opened.card.closed, "The workflow was edited, so this run stopped");
+    const flow = (await w.h.json("/api/workflows")).workflows.find((v: any) => v.id === workflow.id);
+    const ended = flow.runs.find((r: any) => r.id === run.id);
+    assert.equal(ended.state, "stopped");
+    assert.equal(ended.waiting, undefined);
+    assert.equal(opened.card.dismissed, before.card.dismissed, "settlement must not invent or undo the person's dismissal");
+    assert.equal(Object.hasOwn(opened.card, "dismissed"), Object.hasOwn(before.card, "dismissed"));
   });
 }

@@ -7991,7 +7991,13 @@ function settleTimeouts() {
     const existing = store.messagesFor(waiting.threadId).find((m) => m.id === waiting.messageId);
     if (existing?.card && !existing.card.answered) {
       const patched = store.patchMessage(waiting.threadId, waiting.messageId, {
-        card: { ...existing.card, answered: "no answer in time" },
+        card: {
+          ...existing.card,
+          answered: CLOSED_UNANSWERED,
+          closed: waiting.onTimeout === "continue"
+            ? "Nobody answered in time, so the workflow carried on"
+            : "Nobody answered in time, so the workflow stopped",
+        },
       });
       if (patched) broadcast({ kind: "message.patch", threadId: waiting.threadId, message: patched });
     }
@@ -8028,7 +8034,7 @@ function stopRunsOnEdit(workflowId: string) {
       const card = store.messagesFor(waiting.threadId).find((m) => m.id === waiting.messageId);
       if (card?.card && !card.card.answered) {
         const patched = store.patchMessage(waiting.threadId, waiting.messageId, {
-          card: { ...card.card, answered: "the workflow changed" },
+          card: { ...card.card, answered: CLOSED_UNANSWERED, closed: "The workflow was edited, so this run stopped" },
         });
         if (patched) broadcast({ kind: "message.patch", threadId: waiting.threadId, message: patched });
       }
