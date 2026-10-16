@@ -124,12 +124,12 @@ test("actual Claude driver denies probes, foreground and one-shots before any ne
   assert.equal(f.input.config.permissionMode,"acceptEdits");
 });
 
-test("actual small model and captured instance recheck policy while a different scoped agent remains permitted", async t => {
+test("an unresolved small-model alias and captured instance stay pending while a different scoped agent remains permitted", async t => {
   const f = await fixture(t), captured=f.instance.generateText!.bind(f.instance);
   assert.equal(await captured("positive",worker),"A fake summary.");
-  await f.pause({agents:["worker"],model:"claude-haiku-4-5"});
+  await f.pause({agents:["worker"],model:"claude-haiku-4-5-20990101"});
   const before=f.calls().filter(c=>c.phase==="text").length;
-  await assert.rejects(captured("blocked small model",worker),e=>e instanceof EnginePauseError);
+  await assert.rejects(captured("blocked small model",worker),e=>e instanceof EnginePauseError,"unresolved small-model alias bypassed the model-specific restriction");
   assert.equal(await captured("other agent",other),"A fake summary.");
   assert.equal(f.calls().filter(c=>c.phase==="text").length,before+1);
   const run=f.calls().filter(c=>c.phase==="text").at(-1);

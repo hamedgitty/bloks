@@ -3954,6 +3954,8 @@ async function startClaimedTurn(
     from?: { botId: string; name: string };
     /** A routine started this turn; the transcript keeps its prompt alone. */
     routine?: Message["routine"];
+    /** Trusted routine owner, before its first invocation opens a run. */
+    routineId?: string;
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
@@ -4307,7 +4309,7 @@ async function startClaimedTurn(
     : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
   const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
   if (opts.from) text = fromAgentPrompt(opts.from, text);
-  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id));
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id, opts.routineId));
 
   // ── the transcript for API-backed drivers ──
   //
@@ -8455,6 +8457,7 @@ async function runDueRoutines() {
         taskId: laneId,
         computerOverride: routine.runsOn,
         routine: routineMark(routine, false),
+        routineId: routine.id,
         ...(routine.chain ? { chain: routine.chain } : {}),
       }).catch((e) => {
         if (e instanceof EnginePauseError) { source.pending(); return; }
@@ -9921,9 +9924,9 @@ function routineMark(routine: Routine, manual: boolean): NonNullable<Message["ro
 
 /** What a routine run in this lane said last time it said anything, as
  * the note its next turn carries, or null when it has not yet. */
-function lastReportFor(laneId: string): string | null {
-  const open = openRuns.get(laneId);
-  return open ? lastReportNote(routines.get(open.routineId)?.lastReport) : null;
+function lastReportFor(laneId: string, routineId?: string): string | null {
+  const id = routineId ?? openRuns.get(laneId)?.routineId;
+  return id ? lastReportNote(routines.get(id)?.lastReport) : null;
 }
 
 /** Stored words stay unchanged; engines hear who started the message. */
@@ -17052,6 +17055,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             taskId: laneId,
             computerOverride: routine.runsOn,
             routine: routineMark(routine, true),
+            routineId: routine.id,
           });
         } catch (e) {
           closeRun(laneId, {

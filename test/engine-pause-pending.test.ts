@@ -94,7 +94,7 @@ test('activation during preparation keeps the same edited queue record until a r
 test('scheduled once and repeated slots stay unconsumed across restart, while old/manual work does not replay',async t=>{
  const f=await fixture(t,true);await f.say('POSITIVE_SCHEDULE_CONTROL');assert.ok(await waitFor(()=>f.calls.length>0));assert.ok(await f.done());await f.pause('scheduled-pause');
  const date=(at:Date)=>`${at.getFullYear()}-${String(at.getMonth()+1).padStart(2,'0')}-${String(at.getDate()).padStart(2,'0')}`;
- const slot=(id:string,minutes:number,repeat:string)=>{const at=new Date(Date.now()-minutes*60000);return {id,targetKind:'agent',targetId:f.bot.id,prompt:id,time:`${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}`,days:[],repeat,...(repeat==='once'?{date:date(at)}:{}),enabled:true,createdAt:at.getTime()-60000,scheduledAt:at.getTime()-60000};};
+ const slot=(id:string,minutes:number,repeat:string)=>{const at=new Date(Date.now()-minutes*60000);return {id,targetKind:'agent',targetId:f.bot.id,prompt:id,time:`${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}`,days:[],repeat,...(repeat==='once'?{date:date(at)}:{}),...(id==='SCHEDULE_REPEAT'?{lastReport:{at:at.getTime()-60000,summary:'PRESERVED_PRIOR_ROUTINE_REPORT'}}:{}),enabled:true,createdAt:at.getTime()-60000,scheduledAt:at.getTime()-60000};};
  await f.restart(()=>writeFileSync(join(f.data,'routines.json'),JSON.stringify([slot('SCHEDULE_ONCE',2,'once'),slot('SCHEDULE_REPEAT',2,'weekly'),slot('OBSOLETE_MANUAL',180,'once')])));
  const rows=async()=>(await f.request('GET','/api/routines')).body.routines as any[];
  await f.request('POST','/api/power',{state:'resume'});
@@ -111,6 +111,7 @@ test('scheduled once and repeated slots stay unconsumed across restart, while ol
  assert.ok(await waitFor(async()=>(await rows()).filter(r=>r.id!=='OBSOLETE_MANUAL').every(r=>r.lastRunAt)));
  assert.ok(await f.done());
  for(const id of ['SCHEDULE_ONCE','SCHEDULE_REPEAT'])assert.equal(f.calls.slice(before).filter(c=>String(c.messages.at(-1)?.content).includes(id)).length,1,'one eligible occurrence did not dispatch exactly once');
+ assert.ok(String(f.calls.slice(before).find(c=>String(c.messages.at(-1)?.content).includes('SCHEDULE_REPEAT'))?.messages.at(-1)?.content).includes('PRESERVED_PRIOR_ROUTINE_REPORT'),'deferred routine dispatch dropped its previous report');
  assert.equal(f.calls.slice(before).some(c=>JSON.stringify(c.messages).includes('OBSOLETE_MANUAL')),false,'obsolete or manually held work replayed automatically');
  const old=(await rows()).find(r=>r.id==='OBSOLETE_MANUAL');assert.equal(old.lastRunAt,undefined);
  const manualBefore=f.calls.length;assert.equal((await f.request('POST','/api/routines/OBSOLETE_MANUAL/run',{})).status,202);assert.ok(await waitFor(()=>f.calls.length>manualBefore));assert.ok(await f.done());

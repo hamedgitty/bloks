@@ -1217,7 +1217,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // in the environment would bill these summaries to the API instead
       // of the person's subscription.
       generateText: async (prompt: string, origin?: InvocationOrigin) => {
-        const admission = await prepare(origin, ONE_SHOT_MODEL, "claude-text");
+        // The CLI selector is an alias, not an authoritative versioned identity.
+        // Keep unknown reachable identity alongside the exact wire selector.
+        const admission = await prepare(origin, ONE_SHOT_MODEL, "claude-text", true);
         if (disposed) { await admission?.closed(); throw new EnginePauseError("closed"); }
         let started = false;
         return new Promise<string>((resolve, reject) => {
