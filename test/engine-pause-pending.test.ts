@@ -16,21 +16,23 @@ async function fixture(t:TestContext,scheduler=false,crash=false){
   if(String(body.messages.at(-1)?.content).includes('CRASH_HOLD_SOURCE'))return;
   res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'A synthetic finished answer.'}}],usage:{prompt_tokens:1,completion_tokens:1}}));
  });await new Promise<void>(r=>fake.listen(0,'127.0.0.1',r));const origin=`http://127.0.0.1:${(fake.address() as any).port}`;
+ const prepDir=join(home,'preparation-folder'),prepArm=join(home,'preparation-arm'),prepAsked=join(home,'preparation-asked'),prepGate=join(home,'preparation-release');mkdirSync(prepDir);
  const preload=join(home,'fake-transport.mjs');
- writeFileSync(preload,`const original=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=new URL(String(input));if(url.origin==='https://generativelanguage.googleapis.com')return original(${JSON.stringify(origin)}+url.pathname+url.search,init);if(url.hostname==='127.0.0.1'||url.hostname==='localhost')return original(input,init);throw new Error('Non-fixture network is unavailable.');};`);
+ writeFileSync(preload,`import fs from 'node:fs';import fsp from 'node:fs/promises';import{syncBuiltinESMExports}from 'node:module';const readdir=fsp.readdir;fsp.readdir=async(...args)=>{if(String(args[0])===${JSON.stringify(prepDir)}&&fs.existsSync(${JSON.stringify(prepArm)})){fs.writeFileSync(${JSON.stringify(prepAsked)},'');const until=Date.now()+30000;while(!fs.existsSync(${JSON.stringify(prepGate)})&&Date.now()<until)await new Promise(r=>setTimeout(r,10));}return readdir(...args);};syncBuiltinESMExports();const original=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=new URL(String(input));if(url.origin==='https://generativelanguage.googleapis.com')return original(${JSON.stringify(origin)}+url.pathname+url.search,init);if(url.hostname==='127.0.0.1'||url.hostname==='localhost')return original(input,init);throw new Error('Non-fixture network is unavailable.');};`);
  writeFileSync(join(data,'config.json'),JSON.stringify({instances:{gemini:{driver:'gemini',environment:{GEMINI_API_KEY:'SYNTHETIC_ONLY_KEY'},config:{}}},agentDefaults:{modelSelection:{instanceId:'gemini',model:'gemini-3.8-flash'}}}));
  const clock=join(home,'clock');writeFileSync(clock,'0');
  const arm=join(home,'crash-arm'),crashPreload=join(home,'crash-commit.mjs');
  writeFileSync(crashPreload,`import fs from 'node:fs';import {syncBuiltinESMExports}from 'node:module';const rename=fs.renameSync;fs.renameSync=(from,to)=>{rename(from,to);if(String(to)===${JSON.stringify(join(data,'engine-pauses.json'))}&&fs.existsSync(${JSON.stringify(arm)})){const saved=JSON.parse(fs.readFileSync(to,'utf8'));if(saved.pauses.some(p=>p.id==='crash-restriction'))process.kill(process.pid,'SIGKILL');}};syncBuiltinESMExports();`);
  const env={HOME:home,USERPROFILE:home,NODE_OPTIONS:'--import='+preload+(scheduler?' --import='+new URL('./helpers/scheduler-clock.mjs',import.meta.url).href:'')+(crash?' --import='+crashPreload:''),...(scheduler?{BLOKS_TEST_CLOCK_FILE:clock}:{})};let h=await startHarness(env);
- t.after(async()=>{await h.stop();fake.closeAllConnections();await new Promise<void>(r=>fake.close(()=>r()));rmSync(home,{recursive:true,force:true});});
+ t.after(async()=>{writeFileSync(prepGate,'');await h.stop();fake.closeAllConnections();await new Promise<void>(r=>fake.close(()=>r()));rmSync(home,{recursive:true,force:true});});
  const {bot}=await h.json('/api/bots',{method:'POST',body:JSON.stringify({name:'Synthetic worker'})});
+ assert.equal((await h.fetch(`/api/bots/${bot.id}`,{method:'PATCH',body:JSON.stringify({cwd:prepDir})})).status,200);
  const request=async(method:string,path:string,body?:unknown)=>{const res=await h.fetch(path,{method,...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:res.status,body:await res.json()};};
  const pause=async(id:string,selector:any={family:'gemini'},until=Date.now()+120000)=>request('POST','/api/engine-pauses',{id,agents:[bot.id],selector,until,timeZone:'UTC'});
  const say=(text:string)=>request('POST',`/api/bots/${bot.id}/messages`,{text});
  const messages=async()=>(await h.json(`/api/bots/${bot.id}/messages?limit=200`)).messages as any[];
  const done=()=>waitFor(async()=>{const stored=JSON.parse(readFileSync(join(data,'bots.json'),'utf8'));const current=stored.find((b:any)=>b.id===bot.id);return !current.busy?true:null;});
- return {home,data,arm,get h(){return h;},bot,calls,request,pause,say,messages,done,restart:async(edit?:()=>void)=>{await h.stop();edit?.();h=await startHarness(env);}};
+ return {home,data,arm,get h(){return h;},bot,calls,request,pause,say,messages,done,preparation:async()=>{assert.equal((await request('PATCH',`/api/bots/${bot.id}`,{cwd:prepDir})).status,200);writeFileSync(prepArm,'');return {asked:prepAsked,release:()=>writeFileSync(prepGate,'')};},restart:async(edit?:()=>void)=>{await h.stop();edit?.();h=await startHarness(env);}};
 }
 
 test('a model-only pause selects the permitted configured backup on the same API instance without preference writes',async t=>{
@@ -72,16 +74,13 @@ test('expiry uses the existing source sweep and preserves a newer saved model ch
 test('activation during preparation keeps the same edited queue record until a real invocation starts',async t=>{
  const f=await fixture(t);await f.say('POSITIVE_BEFORE_PREPARATION');assert.ok(await waitFor(()=>f.calls.length>0));assert.ok(await f.done());
  await f.pause('hold-before');await f.say('QUEUED_BEFORE_PREPARATION');const queued=(await f.messages()).find(m=>m.text==='QUEUED_BEFORE_PREPARATION');assert.ok(queued?.queued);
- const asked=join(f.home,'version-asked'),gate=join(f.home,'version-release'),cli=join(f.home,'fake-version.cjs');
- writeFileSync(cli,`#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){fs.writeFileSync(${JSON.stringify(asked)},'');const until=Date.now()+15000;const tick=()=>{if(fs.existsSync(${JSON.stringify(gate)})||Date.now()>until){console.log('2.1.300 (Claude Code)');process.exit(0);}setTimeout(tick,20);};tick();}else if(process.argv[2]==='auth'){console.log(JSON.stringify({loggedIn:true}));}else process.exit(99);\n`,{mode:0o755});
- const file=join(f.data,'config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.instances.slow={driver:'claudeAgent',config:{cli}};writeFileSync(file,JSON.stringify(config));
- const reload=f.h.fetch('/api/providers/grok/connect',{method:'POST',body:JSON.stringify({key:'SYNTHETIC_UNUSED_KEY',url:'http://127.0.0.1:1'})});
- assert.ok(await waitFor(()=>existsSync(asked)),'explicit fake preparation did not start');
+ const preparing=await f.preparation();
  await f.request('DELETE','/api/engine-pauses/hold-before');
- assert.ok(await waitFor(()=>JSON.parse(readFileSync(join(f.data,'bots.json'),'utf8')).find((b:any)=>b.id===f.bot.id).busy),'queued source never entered preparation');
+ assert.ok(await waitFor(()=>existsSync(preparing.asked)),'explicit fake file preparation did not start');
+ assert.ok(JSON.parse(readFileSync(join(f.data,'bots.json'),'utf8')).find((b:any)=>b.id===f.bot.id).busy,'queued source never entered preparation');
  await f.pause('during-preparation');
  assert.equal((await f.request('PATCH',`/api/threads/${f.bot.threadId}/messages/${queued.id}`,{text:'EDITED_DURING_PREPARATION'})).status,200);
- const before=f.calls.length;writeFileSync(gate,'');await reload;assert.ok(await f.done());
+ const before=f.calls.length;preparing.release();assert.ok(await f.done());
  assert.equal(f.calls.length,before,'paused preparation reached the actual provider');
  const held=(await f.messages()).find(m=>m.id===queued.id);assert.equal(held?.queued,true,'preparation consumed an unstarted source');assert.equal(held?.text,'EDITED_DURING_PREPARATION');
  assert.ok((await f.request('GET','/api/engine-pauses')).body.holds.some((h:any)=>h.agentId===f.bot.id&&h.phase==='pending'));
@@ -190,17 +189,14 @@ test('a crash immediately after the durable pause commit cannot replay an interr
 test('a newly received direct message keeps its original source id through preparation pauses and edits',async t=>{
  for(const change of ['pause','edit']){
   const f=await fixture(t);await f.say('POSITIVE_DIRECT_CONTROL');assert.ok(await waitFor(()=>f.calls.length>0));assert.ok(await f.done());
-  const asked=join(f.home,'direct-version-asked'),gate=join(f.home,'direct-version-release'),cli=join(f.home,'direct-fake-version.cjs');
-  writeFileSync(cli,`#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){fs.writeFileSync(${JSON.stringify(asked)},'');const until=Date.now()+15000;const tick=()=>{if(fs.existsSync(${JSON.stringify(gate)})||Date.now()>until){console.log('2.1.300 (Claude Code)');process.exit(0);}setTimeout(tick,20);};tick();}else if(process.argv[2]==='auth')console.log(JSON.stringify({loggedIn:true}));else process.exit(99);\n`,{mode:0o755});
-  const file=join(f.data,'config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.instances.slow={driver:'claudeAgent',config:{cli}};writeFileSync(file,JSON.stringify(config));
-  const reload=f.h.fetch('/api/providers/grok/connect',{method:'POST',body:JSON.stringify({key:'SYNTHETIC_UNUSED_KEY',url:'http://127.0.0.1:1'})});assert.ok(await waitFor(()=>existsSync(asked)));
+  const preparing=await f.preparation();
   const before=f.calls.length;let source:any;
   try {
-   assert.equal((await f.say('DIRECT_ORIGINAL_UNHEARD')).status,202);assert.ok(await waitFor(()=>JSON.parse(readFileSync(join(f.data,'bots.json'),'utf8')).find((b:any)=>b.id===f.bot.id).busy));
+   assert.equal((await f.say('DIRECT_ORIGINAL_UNHEARD')).status,202);assert.ok(await waitFor(()=>existsSync(preparing.asked)),'direct file preparation did not reach the controlled barrier');
    source=(await f.messages()).find(m=>m.text==='DIRECT_ORIGINAL_UNHEARD');assert.ok(source,'direct source was not retained during preparation');assert.equal(source.deliveredAt,undefined,'direct preparation invented a queued-delivery time');
    if(change==='pause')await f.pause('direct-preparation');
    assert.equal((await f.request('PATCH',`/api/threads/${f.bot.threadId}/messages/${source.id}`,{text:'DIRECT_CURRENT_EDIT'})).status,200);
-  } finally {writeFileSync(gate,'');await reload;}
+  } finally {preparing.release();}
   if(change==='pause'){
    assert.ok(await f.done());assert.equal(f.calls.length,before);assert.equal((await f.messages()).find(m=>m.id===source.id)?.queued,true,'a direct source was lost during the preparation pause');
    await f.request('DELETE','/api/engine-pauses/direct-preparation');

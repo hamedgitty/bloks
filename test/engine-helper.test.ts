@@ -384,3 +384,11 @@ test("model crash or output overflow cannot be returned as a valid content strea
     assert.equal(f.starts().length, 2);
   }
 });
+
+
+test("unverified native helper provenance is pending under a different family restriction before auth", async t => {
+  const f=fixture(t);await f.auth();const before=f.starts().length;
+  await f.pause({family:"gemini"});
+  await assert.rejects(f.start(f.req()),e=>String(e).includes("paused"),"helper CLI label exempted an unverified native route");
+  assert.equal(f.starts().length,before,"unknown helper backend reached auth");
+});

@@ -62,9 +62,10 @@ test('a trusted native descriptor completes one auth/model operation after its p
 });
 
 test('native pause, permission or selected config changes between helper phases prevent the actual model spawn',async t=>{
- for(const change of ['pause','permission','config']){
+ for(const change of ['pause','unknown-family','permission','config']){
   const f=await fixture(t),origin=await f.start(change),descriptor=JSON.parse(origin.descriptor),auth=f.review();assert.equal((await f.phase(descriptor,auth)).body.state,'accepted');assert.equal((await f.readEvents(descriptor,auth.operationId)).at(-1).state,'completed');
   if(change==='pause')await f.request('POST','/api/engine-pauses',{id:'between-phases',agents:[f.bot.id],selector:{model:'claude-opus-5'},until:Date.now()+60000,timeZone:'UTC'});
+  else if(change==='unknown-family')await f.request('POST','/api/engine-pauses',{id:'unknown-family-between-phases',agents:[f.bot.id],selector:{family:'gemini'},until:Date.now()+60000,timeZone:'UTC'});
   else if(change==='permission')await f.request('PATCH',`/api/bots/${f.bot.id}`,{approvals:'ask'});
   else {const next=join(f.home,'replacement-explicit-fake.cjs');copyFileSync(f.cli,next);const file=join(f.data,'config.json'),config=JSON.parse(readFileSync(file,'utf8'));config.instances.claude.config.cli=next;writeFileSync(file,JSON.stringify(config));const changed=await f.request('POST','/api/providers/grok/connect',{key:'SYNTHETIC_UNUSED_KEY',url:'http://127.0.0.1:1'});assert.equal(changed.status,200);}
   const before=f.log().filter(call=>call.kind==='helper-model').length;const denied=await f.phase(descriptor,{...auth,operationId:randomUUID(),phase:'model',authRunId:auth.operationId,prompt:'Must remain pending.'});assert.equal(denied.body.state,'pending','changed native authorization permitted a model launch');assert.equal(f.log().filter(call=>call.kind==='helper-model').length,before,'denied helper reached a native model invocation');

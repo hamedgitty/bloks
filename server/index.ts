@@ -5777,7 +5777,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // finds it instead (GitHub 135).
     if (wheel.heldBy(bot.id)) return { fired: false, note: `${bot.name} is being held right now; it will look again once released` };
     if (!routeAllowed(bot, selectEngine(bot, false, lane?.id))) {
-      w.lastError = "This watcher did not look because its agent's configured engine or model is paused. Its change frontier is unchanged.";
+      w.lastError = "This watcher did not look because its agent's route is paused or unresolved under an engine restriction. Its change frontier is unchanged.";
       return { fired: false, note: w.lastError };
     }
     if (!checkAllowed(w, bot.approvals)) {
@@ -8338,8 +8338,8 @@ setTimeout(() => {
   resumeStalled();
 }, 2_000).unref?.();
 
-const ENGINE_ROUTINE_HOLD = "This routine did not start because its configured engine or model is paused. Its scheduled slot remains unconsumed. It is eligible only within its existing missed-run grace; an older one-time slot needs a manual run.";
-const ENGINE_MANUAL_ROUTINE_HOLD = "The requested manual run did not start because its configured engine or model is paused. No automatic replay of this manual request is scheduled.";
+const ENGINE_ROUTINE_HOLD = "This routine did not start because its engine route is paused or unresolved under a restriction. Its scheduled slot remains unconsumed. It is eligible only within its existing missed-run grace; an older one-time slot needs a manual run.";
+const ENGINE_MANUAL_ROUTINE_HOLD = "The requested manual run did not start because its engine route is paused or unresolved under a restriction. No automatic replay of this manual request is scheduled.";
 function roomEnginesPaused(room: BlokRecord): boolean {
   const members = room.memberIds.map(id => store.bot(id)).filter((bot): bot is BotRecord => Boolean(bot && !bot.archivedAt && !wheel.heldBy(bot.id)));
   return members.length > 0 && members.every(bot => !routeAllowed(bot, selectEngine(bot)));
@@ -17056,7 +17056,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const target = store.bot(routine.targetId)!;
         if (!routeAllowed(target, selectEngine(target, false, laneId))) {
           source.pending();
-          return json(res, 202, { ok: true, pending: true, note: "The requested manual run did not start because its engine or model is paused. No automatic replay is scheduled." });
+          return json(res, 202, { ok: true, pending: true, note: "The requested manual run did not start because its engine route is paused or unresolved under a restriction. No automatic replay is scheduled." });
         }
         try {
           await startTurn(routine.targetId, routine.prompt, {

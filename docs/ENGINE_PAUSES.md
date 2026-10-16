@@ -75,7 +75,7 @@ or provider-failure fallback.
 Pause enforced for the verified registered native paths reported by status.
 Protection is incomplete: unintegrated external launch adapters, external MCP
 services, unsupported native drivers, unresolved routes and unconfirmed running
-work remain explicit dependencies. Native Codex and custom gateway provenance
+work remain explicit dependencies. Native Claude/Codex and custom gateway provenance
 can remain unknown; a model label alone does not prove a permitted backend.
 This is not a whole-workspace or quota-protected claim.
 

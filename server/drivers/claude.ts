@@ -258,7 +258,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
     let disposed = false;
-    const route = (model: string | null) => [{ instanceId, driverKind: DRIVER_KIND, family: "claude", model }];
+    // The native CLI can load gateway/provider configuration outside this
+    // catalog. Without current backend attestation its label is no exemption.
+    const route = (model: string | null) => [{ instanceId, driverKind: DRIVER_KIND, family: null, model }];
     const service = { kind: "service" } as const;
     const prepare = (origin: InvocationOrigin | undefined, model: string | null, purpose: string, nested = false) => {
       if (disposed) throw new EnginePauseError("closed");
@@ -1164,7 +1166,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       instanceId,
       driverKind: DRIVER_KIND,
       pauseRoutes: model => [...route(model), ...route(null)],
-      pauseAdmission: input.enginePauses ? { paths: ["readiness", "foreground", "one-shot", "active-child-cancellation"], limitations: ["Local child close does not prove remote descendants stopped.", "Unresolved internal model routes stay pending during matching pauses."] } : undefined,
+      pauseAdmission: input.enginePauses ? { paths: ["readiness", "foreground", "one-shot", "active-child-cancellation"], limitations: ["Local child close does not prove remote descendants stopped.", "Native backend and internal model routes are unverified and stay pending during applicable pauses."] } : undefined,
       displayName: input.displayName,
       enabled: input.enabled,
       models: MODELS,

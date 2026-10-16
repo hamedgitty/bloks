@@ -119,7 +119,9 @@ function prepareProfile(origin: HelperOrigin, value: ReviewProfile | null, direc
     // A fixed alias/fallback/nested/resume profile has unknown exact models.
     // One conservative route prevents an allowed primary hiding a forbidden
     // internal fallback. The same profile builds the actual argv below.
-    const routes: EngineRoute[] = [{ instanceId: profile.instanceId, driverKind: "claudeAgent", family: "claude", model: null }];
+    // Native settings/gateway provenance is not attested by an executable
+    // name or an auth status result. An unknown family cannot fail open.
+    const routes: EngineRoute[] = [{ instanceId: profile.instanceId, driverKind: "claudeAgent", family: null, model: null }];
     return { profile, additionalDirectories: [...new Set(additionalDirectories)].sort(), routes,
       fingerprint: digest({ ...profile, environment: profile.environment,
         executableIdentity: [executable.dev, executable.ino, executable.size, executable.mtimeMs, executable.ctimeMs] }) };

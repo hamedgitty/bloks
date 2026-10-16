@@ -270,3 +270,14 @@ test("disposed captured instance cannot start a prepared or later one-shot", asy
   await assert.rejects(captured("after reload",worker),e=>e instanceof EnginePauseError);
   assert.equal(f.launches.length,baseline,"disposed generation launched captured work");
 });
+
+
+test("unverified native backend provenance cannot use the CLI label to bypass a family restriction", async t => {
+  const f=await fixture(t);
+  assert.equal(await f.instance.generateText!("positive native route",worker),"A fake summary.");
+  const before=f.launches.length;
+  await f.policy.activate({kind:"owner"},{id:"unknown-native-family",agents:["worker"],selector:{family:"gemini"},until:2000,timeZone:"UTC"});
+  await assert.rejects(f.instance.generateText!("unknown native route",worker),e=>e instanceof EnginePauseError,"CLI label exempted an unverified native route");
+  assert.equal(f.launches.length,before,"unknown native backend crossed the real spawn boundary");
+  assert.equal(await f.instance.generateText!("unaffected scoped agent",other),"A fake summary.");
+});
