@@ -87,7 +87,7 @@ process.on('message',(m:any)=>{
  const port=20000+Math.floor(Math.random()*20000),url='http://127.0.0.1:'+port;
  const spawnHost=()=>spawn(process.execPath,[host],{env:{HOME:home,USERPROFILE:home,PATH:'/nonexistent',BLOKS_PORT:String(port),BLOKS_TEST_PARENT_PID:String(process.pid),BLOKS_RETRY_WAIT_MS:'60000',BLOKS_STATIC_DIR:''},stdio:['ignore','pipe','pipe','ipc']});
  let child=spawnHost();let logs='';
- const watch=()=>{child.stdout?.on('data',x=>logs+=x);child.stderr?.on('data',x=>logs+=x);child.on('message',(x:any)=>{pending.get(x.id)?.(x);pending.delete(x.id)})};
+ const watch=()=>{const launched=child;child.stdout?.on('data',x=>{if(child===launched)logs+=x});child.stderr?.on('data',x=>{if(child===launched)logs+=x});child.on('message',(x:any)=>{pending.get(x.id)?.(x);pending.delete(x.id)})};
  const pending=new Map<string,(x:any)=>void>();watch();
  const control=(op:string,args:Record<string,unknown>={})=>new Promise<any>((resolve,reject)=>{const id=randomUUID();pending.set(id,x=>x.error?reject(new Error(x.error)):resolve(x.value));child.send({id,op,...args})});
  const request=async(method:string,path:string,body?:unknown,token?:string)=>{
@@ -108,7 +108,8 @@ process.on('message',(m:any)=>{
   t.diagnostic('All '+pids().length+' recorded explicit fake child PIDs absent after teardown.');
   rmSync(host,{force:true});rmSync(home,{recursive:true,force:true,maxRetries:3,retryDelay:20});
  });
- await until(async()=>{if(child.exitCode!==null)throw new Error(logs.slice(-1200));try{return (await fetch(url+'/api/health')).ok}catch{return false}},'isolated HTTP host did not start').catch(error=>{throw new Error(error.message+' '+logs.slice(-2500))});
+ const ready=async()=>{if(child.exitCode!==null||child.signalCode!==null)throw new Error(logs.slice(-1200));if(!logs.includes('bloks server on '+url))return false;try{return (await fetch(url+'/api/health')).ok}catch{return false}};
+ await until(ready,'isolated HTTP host did not start').catch(error=>{throw new Error(error.message+' '+logs.slice(-2500))});
  const sender=(await request('POST','/api/bots',{name:'Synthetic sender'})).body.bot;
  const target=(await request('POST','/api/bots',{name:'Synthetic recipient'})).body.bot;
  await control('patch',{bot:target.id,patch:{hiredBy:sender.id}});
@@ -120,6 +121,6 @@ process.on('message',(m:any)=>{
  const calls=()=>existsSync(join(home,'calls.jsonl'))?readFileSync(join(home,'calls.jsonl'),'utf8').split('\n').filter(Boolean).map(x=>JSON.parse(x)):[];
  const accepted=async(body:Record<string,unknown>={text:'FINAL'})=>until(async()=>{const x=await say(body);return x.body.ok?x:null},'same submission never reached an accepted receipt');
  const command=(args:string[])=>new Promise<{code:number|null;out:string;err:string}>(resolve=>{const p=spawn(process.execPath,[cli,...args],{env:{HOME:home,PATH:'/nonexistent',BLOKS_URL:url,BLOKS_TOKEN:token},stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('exit',code=>resolve({code,out,err}))});
- const restart=async()=>{child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));child=spawnHost();watch();await until(async()=>{try{return (await fetch(url+'/api/health')).ok}catch{return false}})};
+ const restart=async()=>{child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));logs='';child=spawnHost();watch();await until(ready,'restarted isolated host did not listen')};
  return {home,url,token,sender,target,control,request,say,use,messages,calls,accepted,command,restart,logs:()=>logs};
 }
