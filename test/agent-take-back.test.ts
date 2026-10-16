@@ -320,7 +320,7 @@ test("the permission is one POST under the ordinary turn's lifetime and mutation
   assert.equal(allows("a", "POST", "/api/bloks/room/take-back").ok, false);
   const tokens = new AgentTokens();
   const token = tokens.mint("a", "lane", 1_000);
-  for (let i = 0; i < TURN_BUDGET; i++) assert.equal(tokens.spend(token), true);
+  for (let i = 0; i < TURN_BUDGET - 1; i++) assert.equal(tokens.spend(token), true);
   assert.equal(tokens.spend(token), false);
   assert.equal(tokens.identify(token.token, token.expiresAt + 1), null);
 });

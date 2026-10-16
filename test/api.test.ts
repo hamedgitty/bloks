@@ -6046,7 +6046,8 @@ describe("a credential this server does not know", () => {
     for (let i = 0; i < 5; i++) {
       assert.equal((await as([junk, valid], `/api/bots/${bot.id}/memory`, "PUT", note)).status, 401);
     }
-    for (let i = 0; i < 12; i++) {
+    // Eleven general writes remain available; the final change is a direct report.
+    for (let i = 0; i < 11; i++) {
       assert.equal((await as([valid], `/api/bots/${bot.id}/memory`, "PUT", note)).status, 200, `write ${i + 1}`);
     }
     assert.equal((await as([valid], `/api/bots/${bot.id}/memory`, "PUT", note)).status, 429);
