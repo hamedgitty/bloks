@@ -61,6 +61,8 @@ export type InstanceConfigMap = Record<InstanceId, InstanceConfig>;
 
 /** Fields every event carries, whatever its type. */
 export interface RuntimeEventBase {
+  codexItem?: import("./codex-text.ts").CodexItemText;
+  codexText?: import("./codex-text.ts").CodexText;
   eventId: string;
   provider: DriverKind;
   providerInstanceId?: InstanceId;
@@ -321,7 +323,7 @@ export interface ProviderAdapter {
    * would be said twice. Optional: an engine that cannot take input
    * mid-turn leaves it out and everything waits for the next turn.
    */
-  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[] }): Promise<boolean>;
+  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void }): Promise<boolean>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
   respondToRequest(
     threadId: ThreadId,

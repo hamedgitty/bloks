@@ -141,7 +141,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "model/list") return reply({ data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", isDefault: true, hidden: false }] });
   if (m.method === "skills/list") return reply({ data: [{ cwd: m.params.cwds[0], skills: [], errors: [] }] });
   if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? "native-" + process.pid; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }
-  if (m.method === "turn/steer") { reply(); return finish("TOLD " + m.params.input[0].text); }
+  if (m.method === "turn/steer") { reply({ turnId: turn }); return finish("TOLD " + m.params.input[0].text); }
   if (m.method !== "turn/start") return reply();
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });

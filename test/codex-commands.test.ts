@@ -56,6 +56,7 @@ async function setup(t: TestContext, script: Script = {}) {
             send({ method: "thread/compacted", params: { threadId: thread } });
             return;
           }
+          if (frame.method === "turn/steer") return reply({ turnId: "work-turn" });
           reply({});
           if (frame.method === "turn/start") {
             send({ method: "turn/started", params: { threadId: thread, turn: { id: "work-turn" } } });

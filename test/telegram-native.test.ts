@@ -142,6 +142,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? "native-" + process.pid; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }
   if (m.method === "turn/interrupt") { out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "interrupted" } } }); return reply(); }
   if (m.method === "turn/steer" && existsSync(root + "/scope-force-queue")) return out({ id: m.id, error: { code: -32000, message: "fixture cannot steer" } });
+  if (m.method === "turn/steer") return reply({ turnId: turn });
   if (m.method !== "turn/start") return reply();
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });

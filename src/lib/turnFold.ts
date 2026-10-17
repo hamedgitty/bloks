@@ -1,3 +1,4 @@
+import { progressIds } from "../../server/codex-text.ts";
 // A finished turn's work, folded into one line (GitHub 257).
 //
 // While an agent works, everything it does on the way is worth seeing:
@@ -242,12 +243,15 @@ export function turnRunning(
  * turn is still going (turnRunning): that one is left exactly as it is,
  * because nothing changes while a turn runs.
  */
-export function foldTurns(messages: readonly Message[], running: boolean): Folded {
+export function foldTurns(messages: readonly Message[], running: boolean, historyKnown = true): Folded {
+  let lastStart = -1;
+  for (let i = 0; i < messages.length; i++) if (startsTurn(messages[i]) && !messages[i].queued) lastStart = i;
+  const progress = progressIds(messages, (_m, index) => running && index > lastStart, historyKnown);
   const folds: Array<{ fold: TurnFold; before: number }> = [];
   const named = new Set<string>();
   let hold: SaidItem | null = null;
 
-  const turn = (a: number, b: number) => {
+  const turn = (a: number, b: number, onlyProgress = false) => {
     // What started it. Several can: a burst that waited goes as one turn.
     let h = a;
     while (h < b && startsTurn(messages[h])) h++;
@@ -257,14 +261,14 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
     const asker = first ? askerOf(first) : null;
     // the result: the last thing the agent said in it
     let reply = -1;
-    for (let j = h; j < b; j++) if (botWords(messages[j])) reply = j;
+    for (let j = h; j < b; j++) if (botWords(messages[j]) && !progress.has(messages[j].id)) reply = j;
     // The person's words in the middle of a turn never fold, so the work
     // on either side of them is a fold of its own.
     const parts: Array<{ start: number; from: number; ins: number[] }> = [{ start: a, from: messages[a].at, ins: [] }];
     for (let j = a; j < b; j++) {
       const m = messages[j];
       if (j >= h && personsWords(m)) parts.push({ start: j, from: m.at, ins: [] });
-      else if (j !== reply && tucks(m)) parts[parts.length - 1].ins.push(j);
+      else if (j !== reply && (onlyProgress ? progress.has(m.id) : tucks(m))) parts[parts.length - 1].ins.push(j);
     }
     let made = false;
     parts.forEach((part, k) => {
@@ -280,7 +284,7 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
       if (!fold) return;
       // above the result even when all of it came after: a commit made
       // once the summary was written is still how the turn got there
-      folds.push({ fold, before: mine && reply < part.ins[0] ? reply : part.ins[0] });
+      folds.push({ fold, before: !onlyProgress && mine && reply < part.ins[0] ? reply : part.ins[0] });
       made = true;
     });
     if (!made) return;
@@ -298,7 +302,7 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
       head = true;
     }
   }
-  if (!running && start < messages.length) turn(start, messages.length);
+  if (start < messages.length) turn(start, messages.length, running);
   return { rows: lay(messages, folds), named, hold };
 }
 
@@ -315,7 +319,12 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
  * room was opened with the agent already at work, and then only its
  * latest stretch is taken as still going).
  */
-export function foldRoom(messages: readonly Message[], working: ReadonlyMap<string, number | null>): Folded {
+export function foldRoom(messages: readonly Message[], working: ReadonlyMap<string, number | null>, historyKnown = true): Folded {
+  const progress = progressIds(messages, (m, index) => {
+    if (!m.from || !working.has(m.from)) return false;
+    const since = working.get(m.from);
+    return since === null || (typeof since === "number" && index >= since);
+  }, historyKnown);
   const open = new Map<string, number[]>();
   const stretches: Array<{ from: string; all: number[] }> = [];
   const close = (except?: string) => {
@@ -344,13 +353,11 @@ export function foldRoom(messages: readonly Message[], working: ReadonlyMap<stri
 
   const folds: Array<{ fold: TurnFold; before: number }> = [];
   for (const { from, all } of stretches) {
-    if (working.has(from)) {
-      const since = working.get(from) ?? null;
-      if (since === null ? latest.get(from) === all : all[all.length - 1] >= since) continue;
-    }
+    const since = working.get(from) ?? null;
+    const active = working.has(from) && (since === null ? latest.get(from) === all : all[all.length - 1] >= since);
     let reply = -1;
-    for (const j of all) if (botWords(messages[j])) reply = j;
-    const ins = all.filter((j) => j !== reply && tucks(messages[j]));
+    for (const j of all) if (botWords(messages[j]) && !progress.has(messages[j].id)) reply = j;
+    const ins = all.filter((j) => j !== reply && (active ? progress.has(messages[j].id) : tucks(messages[j])));
     if (!ins.length) continue;
     const fold = foldOver(messages, ins, {
       asker: null,

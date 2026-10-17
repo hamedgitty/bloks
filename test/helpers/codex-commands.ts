@@ -68,7 +68,7 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
     out({method:"item/completed",params:{threadId:thread,turnId:compact,item:{type:"contextCompaction",id:"manual"}}});return;
   }
   if(m.method==="turn/steer"){
-    if(spec.refuseSteer)return out({id:m.id,error:{code:-1,message:"Not taken"}});return reply();
+    if(spec.refuseSteer)return out({id:m.id,error:{code:-1,message:"Not taken"}});return reply({turnId:turn});
   }
   if(m.method!=="turn/start")return reply();
   turn="work-"+process.pid;reply({turn:{id:turn}});

@@ -945,7 +945,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     said,
     Boolean(bot.tasks?.some((t) => t !== openLane && t.state !== "idle")),
   );
-  const folded = useMemo(() => foldTurns(said, running), [said, running]);
+  const folded = useMemo(() => foldTurns(said, running, !bot.olderMessages), [said, running, bot.olderMessages]);
 
   // Approvals stacked up while the user was away. One or two are a
   // conversation; several are a queue, and a queue deserves queue
