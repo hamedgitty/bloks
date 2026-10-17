@@ -224,7 +224,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     const identity = frame.kind === "reply.settled"
       ? `reply:${frame.threadId}:${frame.botId}:${frame.turnId}`
       : frame.kind === "message" && message?.kind === "options" && (message.card?.requestId || message.card?.runId)
-        ? `request:${frame.threadId}:${message.card.requestId ?? message.card.runId}` : null;
+        ? `request:${frame.threadId}:${message.card.requestId ?? message.id}` : null;
     let seq = identity ? noticeSequences.get(identity) : undefined;
     if (seq === undefined) {
       seq = ++frameSeq;

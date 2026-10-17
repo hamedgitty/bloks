@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRemoteProxy } from "../electron/remote.mjs";
@@ -23,6 +23,9 @@ test("remote live notifications preserve freshness across both reconnect boundar
   });
   await new Promise<void>(r => relay.listen(0, "127.0.0.1", r));
   const proxy = await startRemoteProxy({ relayUrl: `http://127.0.0.1:${(relay.address() as { port: number }).port}`, relayToken: "fixture", deviceId, deviceToken: token }, { staticDir: folder });
+  const storeSource = readFileSync(new URL("../src/state/store.tsx", import.meta.url), "utf8");
+  const expression = storeSource.match(/take\(frame\._seq,\s*(`message:[^`]+`)/)?.[1]; assert.ok(expression);
+  const messageIdentity = new Function("frame", "msg", "return " + expression);
   const frames: any[] = [], notices: Notice[] = [], delivery = new NoticeDelivery();
   let watched = false, enabled = true, abort: AbortController | undefined, reading: Promise<void> | undefined;
   const wait = async (check: () => boolean, why: string) => {
@@ -48,7 +51,7 @@ test("remote live notifications preserve freshness across both reconnect boundar
             const frame = JSON.parse(block.slice(6)); frames.push(frame);
             if (frame.kind === "hello") { delivery.hello(frame._seq); continue; }
             const identity = frame.kind === "reply.settled" ? `reply:${frame.threadId}:${frame.botId}:${frame.turnId}`
-              : `message:${frame.threadId}:${frame.message?.card?.requestId ?? frame.message?.card?.runId ?? frame.message?.id}`;
+              : messageIdentity(frame, frame.message);
             if (!delivery.take(frame._seq, identity)) continue;
             const notice = noticeFor(frame.message, { replySettled: frame.kind === "reply.settled", focused: watched, selectedId: "bot", threadId: "lane", bot: { id: "bot", name: "Helper", notifications: enabled } });
             if (notice) notices.push(notice);
@@ -106,6 +109,20 @@ test("remote live notifications preserve freshness across both reconnect boundar
       await send(request, encryptedRequest); await send(result("first"), encryptedResult);
       await send(result("after-hello")); assert.equal(notices.length, 6);
       await send(result("after-relay")); assert.equal(notices.length, 7);
+    });
+    await t.test("distinct workflow approvals notify and the same cards stay consumed after reconnect", async () => {
+      const gate = (id: string, title: string) => ({ kind: "message", threadId: "lane", message: { id, at: 3, role: "bot", kind: "options", card: { runId: "same-run", title } } });
+      const first = gate("gate-one", "First gate"), second = gate("gate-two", "Second gate");
+      enabled = false;
+      const firstPayload = await send(first); const secondPayload = await send(second);
+      assert.deepEqual(notices.slice(7).map(n => n.body), ["First gate", "Second gate"], "second genuine remote approval was mistaken for replay");
+      assert.ok(notices.slice(7).every(n => n.urgent));
+      await send(first, firstPayload); await send(second, secondPayload); await send(first); await send(second);
+      assert.equal(notices.length, 9, "duplicate workflow card alerted again");
+      await disconnect(); const before = frames.length; await connect();
+      await wait(() => frames.slice(before).some(f => f.kind === "hello"), "no workflow reconnect hello");
+      await send(first); await send(second); assert.equal(notices.length, 9, "reconnect revived consumed workflow cards");
+      enabled = true;
     });
     assert.ok(frames.every(f => Number.isSafeInteger(f._seq)), "remote freshness must be explicit");
   } finally {

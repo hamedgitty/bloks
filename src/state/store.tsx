@@ -756,7 +756,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           speak(frame.threadId, msg);
           if (news && msg?.kind !== "text" && noticeDelivery.current.take(frame._seq,
-            `message:${frame.threadId}:${msg?.card?.requestId ?? msg?.card?.runId ?? msg?.id}`)) announce(frame.threadId, msg);
+            `message:${frame.threadId}:${msg?.card?.requestId ?? msg?.id}`)) announce(frame.threadId, msg);
           break;
         }
         case "reply.settled":

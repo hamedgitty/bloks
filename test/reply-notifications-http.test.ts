@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startHarness, type Harness } from "./helpers/server.ts";
+import { NoticeDelivery, noticeFor } from "../src/lib/notify.ts";
 
 const CLI = String.raw`#!__NODE__
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -152,4 +153,30 @@ test('deleting the chosen final during a running turn cannot recover its words a
  const current=(await h.json('/api/bots')).bots.find((x:any)=>x.id===b.id).messages.find((m:any)=>m.id===saved.id);
  assert.equal(current.deleted,true);assert.equal(current.text,'');
  assert.deepEqual(outcomes(b),[],'deleted final or earlier fallback text was republished');
+});
+
+
+test('separate approval steps in one actual workflow each remain news',async()=>{
+ const b=await bot('codex');
+ const {workflow}=await h.json('/api/workflows',{method:'POST',body:JSON.stringify({name:'Neutral two approvals',trigger:{kind:'manual'},steps:[{id:'one',action:'approve',text:'First choice?',targetId:b.id},{id:'two',action:'approve',text:'Second choice?',targetId:b.id}]})});
+ assert.ok(workflow?.id);
+ const {run}=await h.json(`/api/workflows/${workflow.id}/run`,{method:'POST',body:'{}'});assert.ok(run?.id);
+ const gates=()=>frames.filter(f=>f.kind==='message'&&f.message?.card?.runId===run.id);
+ await wait(()=>gates().length===1,'first approval missing');
+ await h.json(`/api/workflows/runs/${run.id}/answer`,{method:'POST',body:JSON.stringify({answer:'Approve'})});
+ await wait(()=>gates().length===2,'second approval missing');
+ const [first,second]=gates();assert.notEqual(first.message.id,second.message.id);assert.equal(first.message.card.runId,second.message.card.runId);
+ // Exercise the actual StoreProvider identity, not a copied expectation.
+ const source=readFileSync(new URL('../src/state/store.tsx',import.meta.url),'utf8');
+ const expression=source.match(/take\(frame\._seq,\s*(`message:[^`]+`)/)?.[1];assert.ok(expression);
+ const identity=new Function('frame','msg','return '+expression);
+ const d=new NoticeDelivery();d.hello(0);const notices=[];
+ for(const frame of [first,second,{...first,_seq:second._seq+1},{...second,_seq:second._seq+2}]){
+  if(d.take(frame._seq,identity(frame,frame.message))){
+   const notice=noticeFor(frame.message,{focused:false,selectedId:'',threadId:b.threadId,bot:{id:b.id,name:'Helper',notifications:false}});
+   if(notice)notices.push(notice);
+  }
+ }
+ assert.equal(notices.length,2,'second genuine approval was mistaken for a duplicate');
+ assert.ok(notices.every(n=>n.urgent),'workflow approvals keep their existing immediate attention');
 });
