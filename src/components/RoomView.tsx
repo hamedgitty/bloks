@@ -433,7 +433,9 @@ export function RoomView({ blok }: { blok: Blok }) {
   const seen = liveFrom.current;
   const live = new Map<string, number | null>();
   for (const m of working) live.set(m.id, seen ? (seen.has(m.id) ? (seen.get(m.id) ?? null) : said.length) : null);
-  liveFrom.current = live;
+  // Room history can arrive before the initial agent list. Those workers
+  // were not observed starting here, so keep their boundary unknown.
+  liveFrom.current = state.hydrated ? live : null;
   const liveKey = [...live].map(([id, since]) => `${id}:${since}`).join(" ");
   const folded = useMemo(() => foldRoom(said, live, !blok.olderMessages), [said, liveKey, blok.olderMessages]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleRows = useMemo(() => rowsFrom(folded.rows, start), [folded, start]);
