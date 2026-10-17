@@ -57,7 +57,7 @@ write(join(root, 'config.json'), JSON.stringify({
 write(join(root, 'bots.json'), JSON.stringify(['alpha', 'beta'].map((id) => ({
   id, name: id === 'alpha' ? (renderedFixture ? 'Alpha' : 'fixture-protected-value-123456') : 'Beta', title: 'Fixture', description: '',
   ...(renderedFixture ? { computer: 'sandbox', unread: false } : {}),
-  threadId: `${id}-lane`, activeTaskId: `${id}-lane`, tasks: [{ id: `${id}-lane`, title: 'General', createdAt: 1 }],
+  threadId: `${id}-lane`, activeTaskId: `${id}-lane`, tasks: [{ id: `${id}-lane`, title: 'General', resumeCursors: {}, createdAt: 1 }],
   createdAt: 1, modelSelection: { instanceId: 'codex', model: 'fixture-model' },
   skills: [], color: 'blue', shape: 'star', busy: false,
 }))));
