@@ -469,14 +469,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const itemPaths = new Map<string, string[]>();
       // set once turn/start goes out; usage reported before it is history
       let turnSent = false;
-      // Until a definite rejection or terminal result, a missing response
-      // cannot prove that the message was not accepted.
+      // Only an unanswered input can have uncertain admission. A JSON-RPC
+      // error rejects the input; a response or turn/started acknowledges it.
       let inputInFlight = false;
       let inputAcknowledged = false;
-      const uncertainInput = () => inputAcknowledged
-        ? "Codex accepted this message, but its final result was lost. Completion is uncertain; Bloks did not submit it again or hand it to a backup. Check the original session before resending."
-        : "Codex may have accepted this message, but its acknowledgement or final result was lost. Admission is uncertain; Bloks did not submit it again or hand it to a backup. Check the original session before resending.";
-      const rejectedInput = (error: unknown) => error instanceof RpcResponseError && (error.code === -32601 || error.code === -32602);
+      const uncertainInput = (detail: string) =>
+        "Codex may have accepted this message, but its acknowledgement was lost. Admission is uncertain; Bloks did not submit it again or hand it to a backup. Check the original session before resending. " + detail;
+      const rejectedInput = (error: unknown) => error instanceof RpcResponseError;
       // Codex's own names for the conversation and the turn running in it,
       // which turn/steer has to quote back
       let codexThread: string | null = null;
@@ -795,7 +794,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
           case "turn/started": {
             if (elsewhere(params)) break;
-            if (inputInFlight && !compacting) inputAcknowledged = true;
+            if (inputInFlight && !compacting) { inputAcknowledged = true; inputInFlight = false; }
             if (typeof params.turn?.id === "string") {
               codexTurn = params.turn.id;
               if (compacting && params.threadId === codexThread) requestedCompaction = params.turn.id;
@@ -869,13 +868,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       child.on("close", (code) => {
         if (finished) return;
         if (stopping) return finish(false, "interrupted");
+        const detail = describeEarlyExit(code, stderr, { name: "Codex", signIn: "run `codex login`" });
+        const uncertain = inputInFlight ? uncertainInput(detail) : undefined;
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
-          message: describeEarlyExit(code, stderr, { name: "Codex", signIn: "run `codex login`" }),
-          ...(inputInFlight ? { admissionUncertain: uncertainInput() } : {}),
+          message: detail,
+          ...(uncertain ? { admissionUncertain: uncertain } : {}),
         });
-        finish(false, "exit_before_result", undefined, inputInFlight ? uncertainInput() : undefined);
+        finish(false, "exit_before_result", undefined, uncertain);
       });
 
       const selectedSkills = async (names?: string[]): Promise<CodexSkill[]> => {
@@ -1100,29 +1101,32 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           } catch (error) {
             // An older app-server refusing the field costs the preference,
             // not the message. Other failures must not submit the words twice.
-            if (rejectedInput(error) && !inputAcknowledged) inputInFlight = false;
+            if (rejectedInput(error)) inputInFlight = false;
             if (finished || stopping || inputAcknowledged || !rejectedInput(error) || !turn.effort || !/effort|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
             delete turnParams.effort;
             inputInFlight = true;
             try {
               begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
             } catch (retryError) {
-              if (rejectedInput(retryError) && !inputAcknowledged) inputInFlight = false;
+              if (rejectedInput(retryError)) inputInFlight = false;
               throw retryError;
             }
           }
           inputAcknowledged = true;
+          inputInFlight = false;
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
           if (finished || stopping) return;
+          const detail = (error as Error).message;
+          const uncertain = inputInFlight ? uncertainInput(detail) : undefined;
           emit({
             ...envelope(threadId, turnId),
             type: "runtime.error",
-            message: inputInFlight ? uncertainInput() : (error as Error).message,
-            ...(inputInFlight ? { admissionUncertain: uncertainInput() } : {}),
+            message: detail,
+            ...(uncertain ? { admissionUncertain: uncertain } : {}),
             ...(error instanceof CodexSpeedUnavailable ? { preInputRefusal: error.refusal } : {}),
           });
-          finish(false, "rpc_error", error instanceof CodexSpeedUnavailable ? error.refusal : undefined, inputInFlight ? uncertainInput() : undefined);
+          finish(false, "rpc_error", error instanceof CodexSpeedUnavailable ? error.refusal : undefined, uncertain);
         }
       })();
 

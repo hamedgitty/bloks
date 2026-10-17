@@ -44,7 +44,7 @@ test("only serviceTiers priority advertises Fast, deprecated speed names do not"
 for (const speed of ["standard", "fast"] as const) for (const ack of [null, undefined, "fast", "other", speed === "fast" ? "default" : "priority"]) {
   test(`strict acknowledgement ${speed}/${ack}`, () => assert.throws(() => requireCodexTier({ serviceTier: ack }, speed), CodexSpeedUnavailable));
 }
-interface Spec { ack?: string | null; absent?: boolean; resumeError?: string; freshError?: boolean; fast?: boolean; additional?: boolean; holdOpen?: boolean; compactError?: boolean; freshAck?: string | null; }
+interface Spec { ack?: string | null; absent?: boolean; resumeError?: string; freshError?: boolean; fast?: boolean; additional?: boolean; holdOpen?: boolean; compactError?: boolean; freshAck?: string | null; turnError?: {code:number;message:string}; admission?: "exit-before" | "exit-after" | "exit-after-response" | "timeout"; }
 async function native(t: TestContext, spec: Spec = {}) {
   const frames: any[] = [], args: string[][] = [], events: RuntimeEvent[] = [];
   let release: (() => void) | undefined;
@@ -52,7 +52,9 @@ async function native(t: TestContext, spec: Spec = {}) {
     args.push(argv);
     const stdout = new PassThrough();
     const send = (m: unknown) => stdout.write(JSON.stringify(m) + "\n");
-    return Object.assign(new EventEmitter(), { stdout, stderr: new PassThrough(), kill() {}, stdin: new Writable({ write(chunk, _enc, done) {
+    const child = new EventEmitter();
+    const stderr = new PassThrough();
+    return Object.assign(child, { stdout, stderr, kill() {}, stdin: new Writable({ write(chunk, _enc, done) {
       const f = JSON.parse(String(chunk)); frames.push(f);
       if (f.method && f.id !== undefined) queueMicrotask(() => {
         let result: any = {};
@@ -62,6 +64,21 @@ async function native(t: TestContext, spec: Spec = {}) {
           if (f.method === "thread/resume" && spec.resumeError) { send({ id: f.id, error: { code: -32602, message: spec.resumeError } }); return; }
           if (f.method === "thread/start" && spec.freshError) { send({ id: f.id, error: { code: -32602, message: "unknown field serviceTier" } }); return; }
           result = { thread: { id: f.params.threadId ?? "fresh" }, model: "fixture", ...(spec.absent ? {} : { serviceTier: f.method === "thread/start" && "freshAck" in spec ? spec.freshAck : "ack" in spec ? spec.ack : f.params.serviceTier }) };
+        }
+        if (f.method === "turn/start") {
+          if (spec.turnError) { send({id:f.id,error:spec.turnError}); return; }
+          if (spec.admission === "timeout") return;
+          if (spec.admission === "exit-before" || spec.admission === "exit-after" || spec.admission === "exit-after-response") {
+            if (spec.admission === "exit-after-response") {
+              send({id:f.id,result:{turn:{id:"admitted"}}});
+              globalThis.setImmediate(() => { stderr.write("synthetic transport exit"); child.emit("close",7); }); return;
+            }
+            if (spec.admission === "exit-after") {
+              send({id:f.id,result:{turn:{id:"admitted"}}});
+              send({method:"turn/started",params:{threadId:"kept-cursor",turn:{id:"admitted"}}});
+            }
+            stderr.write("synthetic transport exit"); child.emit("close", 7); return;
+          }
         }
         const reply = () => {
           send({ id: f.id, result });
@@ -149,4 +166,24 @@ test("the admitted activity choice is copied before a caller can mutate its obje
  await h.start({codexSpeed:choice});for(let i=0;i<100&&!h.frames.some(f=>f.method==="thread/resume");i++)await setImmediate();
  choice.resolved="fast";choice.source="agent";choice.override="fast";h.release();await h.ended();
  const report=h.events.find(e=>e.type==="codex.speed");assert.equal(report?.type==="codex.speed"&&report.choice.resolved,"standard");assert.equal(report?.type==="codex.speed"&&report.choice.source,"workspace");
+});
+
+
+for (const code of [-32600,-32603]) test(`F1 RPC error ${code} is a definite rejection with original text`,async(t)=>{
+ const h=await native(t,{turnError:{code,message:"synthetic definite rejection"}});await h.start();const end=await h.ended();
+ assert.equal(end.type==="turn.completed"&&end.admissionUncertain,undefined,"RPC error response must not make admission uncertain");
+ assert.ok(h.events.some(e=>e.type==="runtime.error"&&e.message.includes("synthetic definite rejection")));
+ assert.equal(h.frames.filter(f=>f.method==="turn/start").length,1);
+});
+for (const admission of ["exit-before","exit-after","exit-after-response","timeout"] as const) test(`F1 admission window ${admission}`,async(t)=>{
+ const h=await native(t,{admission});if(admission==="timeout")t.mock.timers.enable({apis:["setTimeout"]});
+ await h.start();
+ if(admission==="timeout"){
+  for(let i=0;i<200&&!h.frames.some(f=>f.method==="turn/start");i++)await setImmediate();
+  assert.ok(h.frames.some(f=>f.method==="turn/start"));t.mock.timers.tick(60_000);
+ }
+ const end=await h.ended();const uncertain=end.type==="turn.completed"?end.admissionUncertain:undefined;
+ if(admission==="exit-after"||admission==="exit-after-response")assert.equal(uncertain,undefined,"acknowledged input must keep ordinary recovery");
+ else {assert.match(uncertain??"",/Admission is uncertain/);assert.match(uncertain??"",admission==="timeout"?/did not answer while starting the turn/:/synthetic transport exit/,"uncertainty must include the engine error or exit detail");}
+ assert.equal(h.frames.filter(f=>f.method==="turn/start").length,1,"unanswered input must not be replayed");
 });

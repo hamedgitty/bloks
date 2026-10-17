@@ -42,7 +42,7 @@ export function telegramReply(messages: readonly Message[], redact: (text: strin
  * Provider notices can quote credentials, and are not agent Markdown. */
 export function telegramFallback(messages: readonly Message[], redact: (text: string) => string): TelegramText {
   const notice = messages.findLast((m) => m.role === "bot" && m.kind === "notice" && m.text?.trim() &&
-    !m.deleted && !m.quiet && !m.compaction && m.phoneText !== "");
+    !m.deleted && !m.quiet && !m.compaction);
   const text = redact((notice?.phoneText ?? notice?.text)?.trim() ?? "") || "(the agent finished without saying anything)";
   return { text: clipTelegramText(text), markdown: false };
 }

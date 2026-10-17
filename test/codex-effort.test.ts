@@ -45,7 +45,7 @@ async function setup(t: TestContext, options: Options = {}) {
               effective.push(threadEffort);
             }
             queueMicrotask(() => {
-              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: -32602, message: error } } : { id: frame.id, result }) + "\n");
+              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: -32600, message: error } } : { id: frame.id, result }) + "\n");
               if (frame.method === "turn/start" && !error) {
                 stdout.write(JSON.stringify({ method: "turn/completed", params: { turn: { status: "completed" } } }) + "\n");
               }

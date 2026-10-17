@@ -207,6 +207,8 @@ export interface ModelSelection {
 /** One lane of an agent's parallel work, as the strip renders it. */
 export interface TaskSummary {
   id: string;
+  /** The immutable active dispatch, absent after it ends. */
+  codexDispatch?: import("../../server/codex-speed.ts").CodexSpeedStatus;
   title: string;
   state: "working" | "needs-you" | "idle";
   /** Something landed here that nobody has opened yet. */

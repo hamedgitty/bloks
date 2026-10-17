@@ -1358,6 +1358,8 @@ function fitTranscripts(lists: Message[][], tail = RELAY_TAIL): Array<{ messages
 const laneTurns = new Map<string, number>();
 /** Lanes whose goal is being judged right now, for the chip to say so. */
 const goalJudging = new Set<string>();
+/** The active choice survives client reloads, never transcript/history storage. */
+const codexDispatches = new Map<string, import("./codex-speed.ts").CodexSpeedStatus>();
 
 function clientBot(bot: BotRecord | null) {
   if (!bot) return bot;
@@ -1408,6 +1410,7 @@ function clientBot(bot: BotRecord | null) {
         id: task.id,
         title: task.title,
         state,
+        ...(task.busy && codexDispatches.has(task.id) ? { codexDispatch: codexDispatches.get(task.id) } : {}),
         unread: Boolean(task.unread),
         // when this lane last had anything in it, for the sidebar's times
         lastAt: said[last]?.at ?? task.createdAt,
@@ -2236,7 +2239,10 @@ bus.subscribe((event: RuntimeEvent) => {
 
   switch (event.type) {
     case "codex.speed":
-      pushMessage({ role: "bot", kind: "notice", event: true, phoneText: "", text: `Codex requested ${event.choice.resolved === "fast" ? "Fast" : "Standard"} (${event.choice.source === "agent" ? "agent override" : "workspace default"}) for this dispatch. Configured tier: ${event.configuredTier}. Actual tier: unverified.` });
+      if (turnStarted.has(event.threadId)) {
+        codexDispatches.set(event.threadId, { choice: { ...event.choice }, configuredTier: event.configuredTier, actualTier: event.actualTier });
+        broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+      }
       break;
     case "commands.updated":
       if (event.providerInstanceId && registry.get(event.providerInstanceId)?.driverKind === "claudeAgent") {
@@ -2814,6 +2820,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "turn.completed": {
+      codexDispatches.delete(event.threadId);
       const command = commandTurns.has(event.threadId);
       // a turn that failed on its length is asked again once it is folded
       // (runtime.error above), so it is not over yet as far as a goal goes
@@ -4414,6 +4421,7 @@ async function startClaimedTurn(
   laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
   // the busy flag holds the lane from here
   if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
+  codexDispatches.delete(task.id);
   turnStarted.set(task.id, Date.now());
   // every turn counts its calls from nothing, a backup's or a retry's too
   repeats.begin(task.id);
@@ -4462,6 +4470,7 @@ async function startClaimedTurn(
   // reaching its engine. Nothing is listening for a turn.completed that
   // was never going to come.
   const settleUnsent = (failure?: string) => {
+    codexDispatches.delete(task.id);
     claim.cancelPrimaryTry?.();
     commandTurns.delete(task.id);
     checkInTurns.delete(task.id);
@@ -7251,6 +7260,7 @@ function compactWhileIdle(bot: BotRecord, task: TaskRecord) {
   // whatever happens next, this quiet stretch has had its chance
   lastRequest.delete(task.id);
   store.setTaskBusy(task.id, true);
+  codexDispatches.delete(task.id);
   turnStarted.set(task.id, Date.now());
   turnTokens.delete(task.id);
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });

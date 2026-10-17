@@ -6,6 +6,12 @@ export interface CodexSpeedChoice {
   resolved: CodexSpeed;
   source: "workspace" | "agent";
 }
+/** Ephemeral metadata for the currently running dispatch, never a message. */
+export interface CodexSpeedStatus {
+  choice: CodexSpeedChoice;
+  configuredTier: "default" | "priority";
+  actualTier: null;
+}
 export const isCodexSpeed = (value: unknown): value is CodexSpeed => value === "standard" || value === "fast";
 export function resolveCodexSpeed(config: { codex?: { speed?: unknown } }, bot?: { codexSpeed?: unknown } | null): CodexSpeedChoice {
   const workspace = isCodexSpeed(config.codex?.speed) ? config.codex.speed : "standard";

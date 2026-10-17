@@ -22,11 +22,8 @@ test("saved default/override/clear survives restart and existing/new agents inhe
   await waitFor(() => opens(s).length === 6); assert.equal(opens(s).at(-1).params.serviceTier, "priority");
   await workspace(s, "standard"); await s.turn("live inherited Standard"); assert.equal(opens(s).at(-1).params.serviceTier, "default");
   assert.equal(s.stored().codexSpeed, null); assert.equal(s.stored().modelSelection.instanceId, "codex");
-  const notices = (await s.messages()).filter((m) => m.kind === "notice").map((m) => m.text).join("\n");
-  assert.match(notices, /Codex requested Fast \(workspace default\).*Actual tier: unverified/);
-  assert.match(notices, /Codex requested Standard \(agent override\)/);
-  const statuses=(await s.messages()).filter(m=>m.text?.startsWith("Codex requested "));
-  assert.ok(statuses.length>0&&statuses.every(m=>m.event===true&&m.phoneText===""), "speed metadata must stay distinct from an answer or error");
+  assert.equal((await s.messages()).some(m=>m.text?.startsWith("Codex requested ")),false,"speed status must never be stored as a chat message");
+  assert.ok((await s.current()).tasks.every((task:any)=>task.codexDispatch===undefined),"ended speed status must disappear");
 });
 
 test("queued work resolves at start; steering carries no tier and admitted turn keeps its choice", async (t) => {
@@ -129,5 +126,39 @@ test("unknown original admission sends one input and never retries or hands over
  assert.equal(opens(s).filter(c=>c.method==="thread/start").length,1,"uncertain original was handed to a fresh backup session");
  assert.equal(s.stored().tasks[0].resumeCursors.codex,cursor);
  const notices=(await s.messages()).filter(m=>m.kind==="notice").map(m=>m.text??"").join("\n");
- assert.match(notices,/Admission is uncertain/);assert.doesNotMatch(notices,/Trying again in a minute|picking this up|is out of usage/);
+ assert.match(notices,/Admission is uncertain/);assert.match(notices,/temporarily unavailable, limit exceeded/,"uncertain admission must retain the engine exit detail");assert.doesNotMatch(notices,/Trying again in a minute|picking this up|is out of usage/);
+});
+
+
+for (const [name, spec, detail] of [
+ ["draining", { turnError: { code: -32600, message: "Server is draining; retry after reconnecting" } }, "Server is draining; retry after reconnecting"],
+ ["not submitted", { turnError: { code: -32603, message: "failed to submit turn input: NotSubmitted" } }, "failed to submit turn input: NotSubmitted"],
+ ["exit after acknowledgement", { crashAfterStart: true }, "synthetic exit after acknowledgement"],
+] as const) test(`F1 ordinary recovery survives ${name}`, async (t) => {
+ const s=await codexCommands(t,{BLOKS_RETRY_WAIT_MS:"20"});await s.turn("warm");
+ await patch(s,s.bot.id,{backupSelection:{instanceId:"other",model:"gpt-6.1-sol"}});
+ const before=s.calls().filter(c=>c.method==="turn/start").length;s.spec(spec);
+ await s.say("recover original");
+ await waitFor(async()=> (await s.messages()).some(m=> /picking this up|Admission is uncertain|Completion is uncertain/.test(m.text??"")), "ordinary Codex recovery never reached the configured backup");
+ assert.doesNotMatch((await s.messages()).map(m=>m.text??"").join("\n"),/Admission is uncertain|Completion is uncertain/,"known rejection or acknowledged input must use ordinary recovery");
+ await s.settled();
+ assert.equal(s.calls().filter(c=>c.method==="turn/start").length,before+3,"ordinary recovery must retry once, then use the backup once");
+ const text=(await s.messages()).map(m=>m.text??"").join("\n");
+ assert.ok(text.includes(detail),"Codex's original error or exit text must remain visible");
+ assert.doesNotMatch(text,/Admission is uncertain|Completion is uncertain/);
+});
+
+
+test("P1 running metadata survives reload and preference edits, then disappears without transcript output",async(t)=>{
+ const s=await codexCommands(t);await s.say("HOLD running snapshot");
+ await waitFor(async()=>(await s.current()).tasks.find((task:any)=>task.id===s.bot.threadId)?.codexDispatch);
+ const active=()=>s.current().then(b=>b.tasks.find((task:any)=>task.id===s.bot.threadId));
+ const first=(await active()).codexDispatch;
+ assert.deepEqual(first,{choice:{default:"standard",override:null,resolved:"standard",source:"workspace"},configuredTier:"default",actualTier:null});
+ await workspace(s,"fast");await patch(s,s.bot.id,{codexSpeed:"fast"});
+ assert.deepEqual((await active()).codexDispatch,first,"owner reload must return the original active choice");
+ assert.equal((await s.messages()).some(m=>m.text?.startsWith("Codex requested ")),false);
+ s.gate();await s.settled();assert.equal((await active()).codexDispatch,undefined);
+ await s.turn("next dispatch");assert.equal((await active()).codexDispatch,undefined);
+ assert.equal((await s.messages()).some(m=>m.text?.startsWith("Codex requested ")),false,"Fast and override must not leave a status line either");
 });
