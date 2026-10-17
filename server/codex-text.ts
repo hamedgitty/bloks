@@ -43,18 +43,26 @@ export function itemProgress(message: { role?: string; kind?: string; codexText?
 }
 /** Presentation only, linear in the loaded history. No stored transitions or news. An incomplete page may omit a person join;
  * in that case retain ordinary visibility until the facts are loaded. */
-export function progressIds(history: readonly ProgressMessage[], isRunning: (message: ProgressMessage, index: number) => boolean, historyKnown = true): ReadonlySet<string> {
+export function progressIds(history: readonly ProgressMessage[], isRunning: (message: ProgressMessage, index: number) => boolean, headKnown = true, tailKnown = true): ReadonlySet<string> {
   const progress = new Set<string>();
-  if (!historyKnown) return progress;
+  if (!tailKnown) return progress;
+  const knownTurns = new Set<string>();
+  const knownLanes = new Set<string>();
   const joined = new Set<string>();
   const finals = new Set<string>();
   const lastCommentary = new Map<string, string>();
   const latest = new Map<string, string>();
   for (const m of history) {
+    // A committed new input bounds the direct lane's turn. In a room,
+    // a later native turn ID bounds that speaker even with an older page missing.
+    if (m.role === "user" && m.kind === "text" && !m.midTurn && !m.queued) knownLanes.add(m.from ?? "");
     if (m.role === "user" && m.midTurn && !m.queued && !m.agent && !m.via && m.joinedTurnId) joined.add(m.joinedTurnId);
     const c = m.codexText;
     if (!c || c.v !== 1 || !identity(c.turnId)) continue;
-    latest.set(m.from ?? "", c.turnId);
+    const lane = m.from ?? "";
+    const previous = latest.get(lane);
+    if (headKnown || knownLanes.has(lane) || (previous && previous !== c.turnId)) knownTurns.add(c.turnId);
+    latest.set(lane, c.turnId);
     if (m.text?.trim() && c.phase === "final_answer") finals.add(c.turnId);
     if (m.text?.trim() && c.phase === "commentary") lastCommentary.set(c.turnId, m.id);
   }
@@ -62,7 +70,7 @@ export function progressIds(history: readonly ProgressMessage[], isRunning: (mes
     const m = history[index];
     if (m.role !== "bot" || m.kind !== "text" || !itemProgress(m)) continue;
     const turn = m.codexText!.turnId;
-    if (joined.has(turn)) continue;
+    if (!knownTurns.has(turn) || joined.has(turn)) continue;
     const ended = !isRunning(m, index) || latest.get(m.from ?? "") !== turn;
     if (ended && !finals.has(turn) && lastCommentary.get(turn) === m.id) continue;
     progress.add(m.id);

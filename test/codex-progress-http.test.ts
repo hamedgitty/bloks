@@ -102,6 +102,14 @@ createInterface({input:process.stdin}).on('line',line => {
   await h.json(`/api/bloks/${personRoom.id}/messages`, { method: "POST", body: JSON.stringify({ text: "@Roomhelper NO_FINAL" }) });
   const personRoomRows = await until(async () => { const rows = (await h.json(`/api/bloks/${personRoom.id}/messages?limit=100`)).messages as Message[]; return rows.some(m => m.codexText?.itemId === "progress-2") ? rows : undefined; });
   assert.ok(personRoomRows.filter(m => m.codexText).every(m => m.codexText!.origin === "person"), "person-started room became quiet");
+  const interrupted = await bot("Stopped worker"); await agentSend(interrupted.id, "WORK_HOLD");
+  await until(async () => { const rows = await history(interrupted.id); return rows.some(m => m.codexText?.itemId === "progress-2") ? rows : undefined; });
+  await h.json(`/api/bots/${interrupted.id}/interrupt`, { method: "POST", body: JSON.stringify({ taskId: interrupted.threadId }) });
+  const stopped = await until(async () => { const found = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === interrupted.id); return !found.busy ? found : undefined; });
+  assert.equal(stopped.unread, false, "stopping progress-only work manufactured unread");
+  const stoppedHistory = await history(interrupted.id);
+  const stoppedVisible = foldTurns(stoppedHistory, false).rows.flatMap(r => r.kind === "said" ? r.items.map(x => x.message) : []);
+  assert.equal(stoppedVisible.at(-1)?.codexText?.itemId, "progress-2");
   const refuses = await bot("Queued input"); await agentSend(refuses.id, "REJECT_STEER");
   await until(async () => { const rows = await history(refuses.id); return rows.filter((m) => m.codexText).length === 2 ? rows : undefined; });
   const queued = await h.json(`/api/bots/${refuses.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Wait for next turn", joinedTurnId: "forged" }) });

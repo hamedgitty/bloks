@@ -54,7 +54,7 @@ test("restart/interruption and later attempts derive fallback, without mutating 
   const before = JSON.stringify(history);
   assert.deepEqual([...progressIds(history, () => true)], ["new"]);
   assert.deepEqual([...progressIds(history, () => false)], []);
-  assert.deepEqual([...progressIds(history, () => true, false)], [], "partial tail is conservatively full");
+  assert.deepEqual([...progressIds(history, () => true, true, false)], [], "partial tail is conservatively full");
   assert.equal(JSON.stringify(history), before);
   const emptyFinal = text("empty", "final_answer", "turn-a", { text: "  " });
   assert.deepEqual([...progressIds([text("last"), emptyFinal], () => false)], []);
@@ -93,6 +93,9 @@ test("truncated history cannot hide a person join that may be outside the page",
   assert.deepEqual(page(foldTurns(history, true, false)), ["before", "later"]);
   const room = history.map(m => ({ ...m, from: "one" }));
   assert.deepEqual(page(foldRoom(room, new Map([["one", 0]]), false)), ["before", "later"]);
+  assert.deepEqual(page(foldTurns([ask, ...history], true, false)), ["ask", "work(before,later)"], "unrelated older pages must not disable quiet progress in a complete new turn");
+  const newer = text("newer", "commentary", "later-turn", { from: "one" });
+  assert.deepEqual([...progressIds([...room, newer], () => true, false)], ["newer"], "native turn boundary provides the missing start fact for that speaker");
 });
 
 

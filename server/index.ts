@@ -2948,8 +2948,9 @@ bus.subscribe((event: RuntimeEvent) => {
       agentTokens.revokeTask(event.threadId);
       // A turn another agent started that ended well without a word to
       // the person leaves nothing to read; anything else marks the chat.
+      const codexAgentTurn = event.provider === "codex" && Boolean(origin && origin.turnId === event.turnId && origin.origin === "agent");
       const quietAgentTurn =
-        (replyingTo.has(event.threadId) || (event.provider === "codex" && origin && origin.turnId === event.turnId && origin.origin === "agent")) && event.ok !== false && !spokeInTurn.has(event.threadId);
+        (replyingTo.has(event.threadId) || codexAgentTurn) && (event.ok !== false || (codexAgentTurn && event.stopReason === "interrupted")) && !spokeInTurn.has(event.threadId);
       spokeInTurn.delete(event.threadId);
       if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
       if (quietAgentTurn || quietRun) {
