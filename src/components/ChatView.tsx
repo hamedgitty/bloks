@@ -653,8 +653,8 @@ function EngineBanner({ bot }: { bot: Bot }) {
  * truncated line of monospace.
  */
 function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
-  // a compaction is a fact about the conversation, marked like a date line
-  if (message.compaction) {
+  // Compactions and status events are facts, not engine failure warnings.
+  if (message.compaction || message.event) {
     return <div className="py-1 text-center text-[12px] text-muted-foreground">{message.text}</div>;
   }
   // The goal's own news. Set and done are not warnings, so they do not
