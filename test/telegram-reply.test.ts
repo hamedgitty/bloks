@@ -21,6 +21,7 @@ test("a turn without text or an error keeps the empty-answer fallback", () => {
     notice("person's words", { role: "user" }), notice("removed", { deleted: true }),
     notice("quiet", { quiet: true }), notice("   "),
     notice("compacted", { compaction: { before: 100, after: 50 } }),
+    notice("Codex requested Standard; actual tier unverified", { event: true, phoneText: "" }),
   ];
   assert.equal(fallback(excluded), "(the agent finished without saying anything)");
   assert.equal(fallback([notice("failure"), ...excluded]), "failure");

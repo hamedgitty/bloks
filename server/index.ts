@@ -2236,7 +2236,7 @@ bus.subscribe((event: RuntimeEvent) => {
 
   switch (event.type) {
     case "codex.speed":
-      pushMessage({ role: "bot", kind: "notice", text: `Codex requested ${event.choice.resolved === "fast" ? "Fast" : "Standard"} (${event.choice.source === "agent" ? "agent override" : "workspace default"}) for this dispatch. Configured tier: ${event.configuredTier}. Actual tier: unverified.` });
+      pushMessage({ role: "bot", kind: "notice", event: true, phoneText: "", text: `Codex requested ${event.choice.resolved === "fast" ? "Fast" : "Standard"} (${event.choice.source === "agent" ? "agent override" : "workspace default"}) for this dispatch. Configured tier: ${event.configuredTier}. Actual tier: unverified.` });
       break;
     case "commands.updated":
       if (event.providerInstanceId && registry.get(event.providerInstanceId)?.driverKind === "claudeAgent") {

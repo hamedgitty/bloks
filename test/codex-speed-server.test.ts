@@ -25,6 +25,8 @@ test("saved default/override/clear survives restart and existing/new agents inhe
   const notices = (await s.messages()).filter((m) => m.kind === "notice").map((m) => m.text).join("\n");
   assert.match(notices, /Codex requested Fast \(workspace default\).*Actual tier: unverified/);
   assert.match(notices, /Codex requested Standard \(agent override\)/);
+  const statuses=(await s.messages()).filter(m=>m.text?.startsWith("Codex requested "));
+  assert.ok(statuses.length>0&&statuses.every(m=>m.event===true&&m.phoneText===""), "speed metadata must stay distinct from an answer or error");
 });
 
 test("queued work resolves at start; steering carries no tier and admitted turn keeps its choice", async (t) => {

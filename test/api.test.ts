@@ -1454,7 +1454,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const notices = async (count: number) =>
       waitFor(async () => {
         const found = (await h2.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
-        const shown = found.messages.filter((m: any) => m.kind === "notice");
+        const shown = found.messages.filter((m: any) => m.kind === "notice" && !m.event);
         return !found.busy && shown.length >= count ? shown : null;
       });
 

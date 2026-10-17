@@ -164,7 +164,8 @@ export interface Message {
   chainHoldKey?: string;
   /** What a chat on the phone is told of this notice instead of its
    * text: the error alone, when the app's notice also says where to set
-   * a backup, which means nothing there (GitHub 284). */
+   * a backup, which means nothing there (GitHub 284). Empty excludes a
+   * status-only notice from phone fallback replies. */
   phoneText?: string;
   /** A notice marking where the engine compacted its own session, and by
    * how much. A line in the conversation, not a warning, and never news:
