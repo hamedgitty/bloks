@@ -435,7 +435,7 @@ export function RoomView({ blok }: { blok: Blok }) {
   for (const m of working) live.set(m.id, seen ? (seen.has(m.id) ? (seen.get(m.id) ?? null) : said.length) : null);
   liveFrom.current = live;
   const liveKey = [...live].map(([id, since]) => `${id}:${since}`).join(" ");
-  const folded = useMemo(() => foldRoom(said, live), [said, liveKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const folded = useMemo(() => foldRoom(said, live, !blok.olderMessages), [said, liveKey, blok.olderMessages]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleRows = useMemo(() => rowsFrom(folded.rows, start), [folded, start]);
   const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
 

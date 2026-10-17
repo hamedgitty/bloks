@@ -3865,6 +3865,8 @@ async function startClaimedTurn(
     fallback?: boolean;
     /** Another agent sent this message (see AgentNote). */
     from?: { botId: string; name: string };
+    /** Authenticated room post or an in-memory agent handoff, not a recovered queue. */
+    roomAgentStarted?: boolean;
     /** A routine started this turn; the transcript keeps its prompt alone. */
     routine?: Message["routine"];
     /** A queued message from another agent, already written and worded:
@@ -5035,7 +5037,7 @@ async function startClaimedTurn(
         sending.text = `${note}\n\n${sending.text}`;
         if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
       }
-      const textOrigin: { origin: CodexText["origin"]; turnId?: string } = { origin: opts.byYou ? "person" : !opts.recovery && !opts.routine && (opts.from || opts.answering) ? "agent" : opts.recovery ? "unknown" : "other" };
+      const textOrigin: { origin: CodexText["origin"]; turnId?: string } = { origin: opts.byYou ? "person" : !opts.recovery && !opts.routine && (opts.from || opts.answering || opts.roomAgentStarted) ? "agent" : opts.recovery ? "unknown" : "other" };
       if (engine.driverKind === "codex") codexOrigins.set(task.id, textOrigin);
       try {
         await engine.adapter.sendTurn(sending);
@@ -6397,6 +6399,7 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
     author.hops,
     requester,
     author.byYou,
+    Boolean(author.botId),
   );
   return message;
 }
@@ -6411,6 +6414,7 @@ async function dispatchRound(
   hops: number,
   requester?: string,
   byYou?: boolean,
+  agentStarted = false,
 ) {
   // While this loop runs, handoffs queue instead of firing. Otherwise the
   // lead would be pulled in the moment the first member reported, spend
@@ -6419,13 +6423,13 @@ async function dispatchRound(
   const queue = new Map<string, RoundTag>();
   dispatching.set(roomId, queue);
   try {
-    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou);
+    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou, agentStarted);
     // whoever was named while the room was busy speaks now, and anyone
     // they name in turn goes round again until the chain runs out
     for (let round = 0; round < MAX_AGENT_HOPS && queue.size; round++) {
       const waiting = [...queue].map(([id, tag]) => [id, tag.text, tag.hops] as const);
       queue.clear();
-      await speakInTurn(roomId, waiting, requester);
+      await speakInTurn(roomId, waiting, requester, undefined, true);
     }
     // Someone can still be named when the rounds run out: an agent that
     // said so into the room from a turn of its own elsewhere, late in the
@@ -6668,6 +6672,7 @@ async function speakInTurn(
   work: ReadonlyArray<readonly [botId: string, text: string, hops: number]>,
   requester?: string,
   byYou?: boolean,
+  agentStarted = false,
 ) {
   // In a shared room an agent speaks in the room's own lane, so what it is
   // doing elsewhere is no reason to skip it or to wait on it.
@@ -6685,7 +6690,7 @@ async function speakInTurn(
   for (const [member, text, hops] of ordered) {
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
-    await startTurn(member.id, text, { roomId, hops, requester, byYou }).catch((e) =>
+    await startTurn(member.id, text, { roomId, hops, requester, byYou, roomAgentStarted: agentStarted }).catch((e) =>
       waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
     );
     await waitForRoomTurn(member.id, roomId);
@@ -6857,7 +6862,7 @@ async function relayMentions(roomId: string, fromBotId: string, text: string, re
       queueRoomTag(target.id, roomId, text, requester, hops);
       continue;
     }
-    await startTurn(target.id, text, { roomId, hops, requester, chain }).catch((e) =>
+    await startTurn(target.id, text, { roomId, hops, requester, chain, roomAgentStarted: true }).catch((e) =>
       waitsForTurn(e) ? queueRoomTag(target.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
     );
   }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { codexItemText, codexTextFor, itemProgress, progressIds } from "../server/codex-text.ts";
 import { foldTurns, foldRoom, type Folded } from "../src/lib/turnFold.ts";
+import { towardYou } from "../server/activity.ts";
 import { noticeFor } from "../src/lib/notify.ts";
 import type { Message } from "../src/state/reducer.ts";
 
@@ -84,4 +85,49 @@ test("missing/malformed/new-version metadata and every other origin stay conserv
 test("a new accepted input with no assistant item cannot re-hide the previous terminal fallback", () => {
   const next: Message = { id: "next", at: 3, role: "user", kind: "text", text: "Another request" };
   assert.deepEqual(page(foldTurns([ask, text("old-last"), next], true)), ["work(ask)", "old-last", "next"]);
+});
+
+
+test("truncated history cannot hide a person join that may be outside the page", () => {
+  const history = [text("before"), text("later")];
+  assert.deepEqual(page(foldTurns(history, true, false)), ["before", "later"]);
+  const room = history.map(m => ({ ...m, from: "one" }));
+  assert.deepEqual(page(foldRoom(room, new Map([["one", 0]]), false)), ["before", "later"]);
+});
+
+
+test("bounded hostile metadata never quiets unknown text or unrelated card/activity owners", () => {
+  for (const phase of [null, undefined, 5, {}, "commentary\n", "x".repeat(65)]) {
+    const c = codexTextFor(codexItemText({ phase, questions: null }), "turn", "item", "agent");
+    assert.equal(c?.display, "full");
+  }
+  for (const bad of ["", "id\0", "x".repeat(257), 3, null]) assert.equal(codexTextFor(codexItemText({ phase: "commentary", questions: null }), bad, "item", "agent"), undefined);
+  const c = text("narration");
+  assert.equal(towardYou(c, true), false);
+  for (const kind of ["component", "artifact", "options", "activity"] as const) assert.equal(itemProgress({ ...c, kind }), false);
+  assert.equal(towardYou({ ...c, codexText: undefined }, true), true, "other engines and legacy text retain attention");
+});
+
+test("large history is immutable and visits each eligible item once without retained transition state", () => {
+  const history = Object.freeze(Array.from({ length: 10000 }, (_, i) => Object.freeze(text("p" + i))));
+  let visits = 0;
+  assert.equal(progressIds(history, () => { visits++; return true; }).size, 10000);
+  assert.equal(visits, 10000);
+  assert.equal(progressIds(history, () => false).size, 9999);
+  assert.equal(progressIds(history, () => true).size, 10000, "a previous ended render changed later rendering");
+});
+
+
+test("silent, component-only and cut-off histories create no text or transition mutation", () => {
+  assert.deepEqual(page(foldTurns([], false)), []);
+  const component = { ...text("result"), kind: "component" as const, text: undefined, component: { kind: "quote" as const, data: { text: "Safe result" } } };
+  assert.deepEqual(page(foldTurns([component], false)), ["result"]);
+  for (const status of ["complete", "failed", "interrupted", "restart"]) {
+    const history = [ask, text("last")];
+    const before = JSON.stringify(history);
+    assert.equal(page(foldTurns(history, false)).at(-1), "last", status);
+    assert.equal(JSON.stringify(history), before);
+  }
+  const history = [ask, text("old", "commentary", "old-turn"), text("next", "commentary", "new-turn"), { id: "delayed-join", at: 2, role: "user", kind: "text", midTurn: true, joinedTurnId: "old-turn", text: "Prior accepted words" } as Message];
+  assert.deepEqual([...progressIds(history, () => true)], ["next"], "old join revealed a newer attempt");
 });

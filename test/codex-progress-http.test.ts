@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { startHarness } from "./helpers/server.ts";
 import { progressIds, itemProgress } from "../server/codex-text.ts";
 import { foldTurns } from "../src/lib/turnFold.ts";
-import type { Message } from "../src/state/reducer.ts";
+import { initialState, reducer, type Message, type Bot, type AppState } from "../src/state/reducer.ts";
 
 const until = async <T>(read: () => Promise<T | undefined> | T | undefined) => {
   for (let n = 0; n < 150; n++) { const value = await read(); if (value !== undefined) return value; await new Promise((r) => setTimeout(r, 40)); }
@@ -34,6 +34,7 @@ createInterface({input:process.stdin}).on('line',line => {
   out({method:'turn/started',params:{threadId:thread,turn:{id:turn}}});
   if(input.includes('SENDER_HOLD')) { writeFileSync(${JSON.stringify(join(home, 'sender-token'))},process.env.BLOKS_TOKEN||''); return; }
   if(input.includes('ASYNC_FINAL')) item('async-answer','A visible answer','final_answer');
+  if(input.includes('EXPLICIT_Q')) item('explicit-question','Which neutral option?','commentary',[{question:'Which neutral option?'}]);
   item('progress-1','Checking the neutral sample'); item('progress-2','Still checking the neutral sample');
   if(input.includes('NO_FINAL')||input.includes('ASYNC_FINAL')) setTimeout(finish,80);
  }
@@ -41,7 +42,10 @@ createInterface({input:process.stdin}).on('line',line => {
 });
 `, { mode: 0o755 });
   writeFileSync(join(home, ".bloks/config.json"), JSON.stringify({ instances: { codex: { driver: "codex", config: { cli, fullAuto: false } } } }));
-  const h = await startHarness({ HOME: home, CODEX_HOME: join(home, ".codex"), SHELL: "/bin/sh" });
+  const tracePath = join(home, "attention.jsonl");
+  const h = await startHarness({ HOME: home, CODEX_HOME: join(home, ".codex"), SHELL: "/bin/sh",
+    NODE_OPTIONS: `--import=${new URL('./helpers/codex-progress-preload.mjs', import.meta.url).pathname}`,
+    BLOKS_PROGRESS_TRACE: tracePath });
   const abort = new AbortController();
   t.after(async () => { abort.abort(); await h.stop(); rmSync(home, { recursive: true, force: true }); });
   const frames: any[] = [];
@@ -57,6 +61,7 @@ createInterface({input:process.stdin}).on('line',line => {
   const token = await until(() => existsSync(join(home, "sender-token")) ? readFileSync(join(home, "sender-token"), "utf8") || undefined : undefined);
   const agentSend = (id: string, text: string) => h.json(`/api/bots/${id}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ text }) });
   const worker = await bot("Worker");
+  const initialHistory = await history(worker.id);
   await agentSend(worker.id, "WORK_HOLD");
   const before = await until(async () => { const rows = await history(worker.id); return rows.some((m) => m.codexText?.itemId === "progress-2") ? rows : undefined; });
   const progress = before.filter((m) => m.codexText);
@@ -70,16 +75,33 @@ createInterface({input:process.stdin}).on('line',line => {
   assert.equal(joined.midTurn, true); assert.equal(joined.joinedTurnId, progress[0].codexText!.turnId); assert.notEqual(joined.joinedTurnId, "forged");
   assert.equal(joined.codexText, undefined);
   assert.equal(progressIds(after, () => true).size, 0);
+  let replayed: AppState = { ...initialState, bots: [{ ...worker, messages: initialHistory } as Bot], bloks: [] };
+  const workerFrames = frames.filter(f => f.threadId === worker.threadId && f.kind === "message");
+  for (const f of [...workerFrames, ...workerFrames]) replayed = reducer(replayed, { type: "messageAdded", threadId: f.threadId, message: f.message });
+  assert.deepEqual(replayed.bots[0].messages.map(m => [m.id, m.codexText, m.joinedTurnId]), after.map(m => [m.id, m.codexText, m.joinedTurnId]), "actual SSE replay and stored reload disagree");
+  assert.deepEqual(progressIds(replayed.bots[0].messages, () => true), progressIds(after, () => true));
   assert.equal(frames.slice(startIndex).filter((f) => f.kind === "message.patch").length, 0);
-  for (const marker of ["NO_FINAL", "ASYNC_FINAL"]) {
+  for (const marker of ["NO_FINAL", "ASYNC_FINAL", "EXPLICIT_Q NO_FINAL"]) {
     const other = await bot(marker); await agentSend(other.id, marker);
     const rows = await until(async () => { const all = await h.json("/api/bots?messages=0"); const found = all.bots.find((b: any) => b.id === other.id); const rows = await history(other.id); return !found.busy && rows.some((m) => m.codexText) ? rows : undefined; });
     const saved = rows.filter((m) => m.codexText); assert.ok(saved.some(itemProgress));
+    if (marker.includes("EXPLICIT_Q")) { const q = saved.find(m => m.codexText!.itemId === "explicit-question")!; assert.equal(q.codexText!.questions, "present"); assert.equal(itemProgress(q), false); }
     const display = foldTurns(rows, false); const said = display.rows.flatMap((r) => r.kind === "said" ? r.items.map((x) => x.message) : []);
-    assert.equal(said.at(-1)?.codexText?.itemId, marker === "NO_FINAL" ? "progress-2" : "async-answer");
+    assert.equal(said.at(-1)?.codexText?.itemId, marker.includes("NO_FINAL") ? "progress-2" : "async-answer");
     const live = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === other.id);
     assert.equal(live.unread, marker !== "NO_FINAL", "fallback creates no unread; a normal final retains it");
   }
+  const roomWorker = await bot("Roomworker");
+  const { blok: room } = await h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Neutral room", memberIds: [sender.id, roomWorker.id] }) });
+  assert.ok(room?.id);
+  await h.json(`/api/bloks/${room.id}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ text: "@Roomworker NO_FINAL" }) });
+  const roomRows = await until(async () => { const rows = (await h.json(`/api/bloks/${room.id}/messages?limit=100`)).messages as Message[]; return rows.some(m => m.codexText?.itemId === "progress-2") ? rows : undefined; });
+  assert.ok(roomRows.filter(m => m.codexText).every(m => m.codexText!.origin === "agent"), "authenticated room origin was lost at dispatch");
+  const personRoomWorker = await bot("Roomhelper");
+  const { blok: personRoom } = await h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Personal room", memberIds: [sender.id, personRoomWorker.id] }) });
+  await h.json(`/api/bloks/${personRoom.id}/messages`, { method: "POST", body: JSON.stringify({ text: "@Roomhelper NO_FINAL" }) });
+  const personRoomRows = await until(async () => { const rows = (await h.json(`/api/bloks/${personRoom.id}/messages?limit=100`)).messages as Message[]; return rows.some(m => m.codexText?.itemId === "progress-2") ? rows : undefined; });
+  assert.ok(personRoomRows.filter(m => m.codexText).every(m => m.codexText!.origin === "person"), "person-started room became quiet");
   const refuses = await bot("Queued input"); await agentSend(refuses.id, "REJECT_STEER");
   await until(async () => { const rows = await history(refuses.id); return rows.filter((m) => m.codexText).length === 2 ? rows : undefined; });
   const queued = await h.json(`/api/bots/${refuses.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Wait for next turn", joinedTurnId: "forged" }) });
@@ -91,4 +113,9 @@ createInterface({input:process.stdin}).on('line',line => {
   const previews = frames.filter((f) => f.kind === "runtime" && f.event.type === "content.delta" && f.event.codexText?.display === "progress");
   assert.ok(previews.length >= 6, "private signal lost before the real SSE preview boundary");
   assert.equal(frames.filter((f) => f.kind === "message.patch").length, 0, "render-time transitions must not rewrite history");
+  const attention = readFileSync(tracePath, "utf8").trim().split("\n").map(x => JSON.parse(x));
+  const quietFrames = attention.filter(x => itemProgress(x.frame.message));
+  assert.ok(quietFrames.length >= 6);
+  assert.ok(quietFrames.every(x => x.wake === null && x.preview === null), "item-time progress escaped the real wake/preview boundary");
+  assert.ok(attention.some(x => x.frame.message?.codexText?.phase === "final_answer" && x.preview?.body === "A visible answer"), "ordinary final preview lost");
 });

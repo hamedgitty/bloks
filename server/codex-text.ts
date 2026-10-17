@@ -41,10 +41,11 @@ export function isProgressText(c: CodexText | null | undefined): boolean {
 export function itemProgress(message: { role?: string; kind?: string; codexText?: CodexText } | null | undefined): boolean {
   return message?.role === "bot" && message.kind === "text" && isProgressText(message.codexText);
 }
-/** Presentation only, linear in the loaded history. No stored transitions or news. */
-export function progressIds(history: readonly ProgressMessage[], isRunning: (message: ProgressMessage, index: number) => boolean, tailKnown = true): ReadonlySet<string> {
+/** Presentation only, linear in the loaded history. No stored transitions or news. An incomplete page may omit a person join;
+ * in that case retain ordinary visibility until the facts are loaded. */
+export function progressIds(history: readonly ProgressMessage[], isRunning: (message: ProgressMessage, index: number) => boolean, historyKnown = true): ReadonlySet<string> {
   const progress = new Set<string>();
-  if (!tailKnown) return progress;
+  if (!historyKnown) return progress;
   const joined = new Set<string>();
   const finals = new Set<string>();
   const lastCommentary = new Map<string, string>();

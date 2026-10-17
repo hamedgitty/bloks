@@ -243,10 +243,10 @@ export function turnRunning(
  * turn is still going (turnRunning): that one is left exactly as it is,
  * because nothing changes while a turn runs.
  */
-export function foldTurns(messages: readonly Message[], running: boolean): Folded {
+export function foldTurns(messages: readonly Message[], running: boolean, historyKnown = true): Folded {
   let lastStart = -1;
   for (let i = 0; i < messages.length; i++) if (startsTurn(messages[i]) && !messages[i].queued) lastStart = i;
-  const progress = progressIds(messages, (_m, index) => running && index > lastStart);
+  const progress = progressIds(messages, (_m, index) => running && index > lastStart, historyKnown);
   const folds: Array<{ fold: TurnFold; before: number }> = [];
   const named = new Set<string>();
   let hold: SaidItem | null = null;
@@ -319,12 +319,12 @@ export function foldTurns(messages: readonly Message[], running: boolean): Folde
  * room was opened with the agent already at work, and then only its
  * latest stretch is taken as still going).
  */
-export function foldRoom(messages: readonly Message[], working: ReadonlyMap<string, number | null>): Folded {
+export function foldRoom(messages: readonly Message[], working: ReadonlyMap<string, number | null>, historyKnown = true): Folded {
   const progress = progressIds(messages, (m, index) => {
     if (!m.from || !working.has(m.from)) return false;
     const since = working.get(m.from);
     return typeof since === "number" && index >= since;
-  });
+  }, historyKnown);
   const open = new Map<string, number[]>();
   const stretches: Array<{ from: string; all: number[] }> = [];
   const close = (except?: string) => {
