@@ -148,7 +148,7 @@ async function codexEvents(t: TestContext) {
         write(chunk, _encoding, done) {
           const frame = JSON.parse(String(chunk));
           if (frame.method && frame.id !== undefined) {
-            queueMicrotask(() => stdout.write(JSON.stringify({ id: frame.id, result: frame.method === "thread/start" ? { thread: { id: "codex-thread" } } : {} }) + "\n"));
+            queueMicrotask(() => stdout.write(JSON.stringify({ id: frame.id, result: frame.method === "thread/start" ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier } : {} }) + "\n"));
           }
           done();
         },

@@ -50,12 +50,12 @@ async function setup(t: TestContext, old: string, fresh: string) {
           if (frame.method && frame.id !== undefined) {
             queueMicrotask(() => {
               if (frame.method === "thread/resume") {
-                send({ id: frame.id, result: { thread: { id: old } } });
+                send({ id: frame.id, result: { thread: { id: old }, serviceTier: frame.params.serviceTier } });
                 // what the thread had already spent
                 send(usage(old, [212_084, 5_000], [212_084, 400]));
                 return;
               }
-              if (frame.method === "thread/start") return send({ id: frame.id, result: { thread: { id: fresh } } });
+              if (frame.method === "thread/start") return send({ id: frame.id, result: { thread: { id: fresh }, serviceTier: frame.params.serviceTier } });
               if (frame.method === "thread/compact/start") {
                 send({ id: frame.id, result: {} });
                 send({ method: "turn/started", params: { threadId: old, turn: { id: "compact-turn", status: "inProgress" } } });

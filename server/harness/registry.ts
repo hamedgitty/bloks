@@ -39,7 +39,7 @@ interface InstanceReport {
   driverKind: string;
   displayName: string;
   snapshot: ProviderSnapshot;
-  models: { default: string; options: Array<{ id: string; label: string }> };
+  models: import("../contracts.ts").ModelCatalog;
 }
 
 export class ProviderRegistry {

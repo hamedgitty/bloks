@@ -196,6 +196,7 @@ import {
   type GoalInput,
   type Verdict,
 } from "./goals.ts";
+import { resolveCodexSpeed, isCodexSpeed, codexSpeedRoute, REMOTE_CODEX_SPEED_REASON, CodexSpeedUnavailable, type CodexSpeedRefusal } from "./codex-speed.ts";
 import { codexSkillNames } from "./codex-skills.ts";
 import { reservedEnvName, usableSecrets } from "./env-names.ts";
 import * as discord from "./discord.ts";
@@ -1357,6 +1358,8 @@ function fitTranscripts(lists: Message[][], tail = RELAY_TAIL): Array<{ messages
 const laneTurns = new Map<string, number>();
 /** Lanes whose goal is being judged right now, for the chip to say so. */
 const goalJudging = new Set<string>();
+/** The active choice survives client reloads, never transcript/history storage. */
+const codexDispatches = new Map<string, import("./codex-speed.ts").CodexSpeedStatus>();
 
 function clientBot(bot: BotRecord | null) {
   if (!bot) return bot;
@@ -1407,6 +1410,7 @@ function clientBot(bot: BotRecord | null) {
         id: task.id,
         title: task.title,
         state,
+        ...(task.busy && codexDispatches.has(task.id) ? { codexDispatch: codexDispatches.get(task.id) } : {}),
         unread: Boolean(task.unread),
         // when this lane last had anything in it, for the sidebar's times
         lastAt: said[last]?.at ?? task.createdAt,
@@ -1559,7 +1563,7 @@ function recoverTurn(
   bot: BotRecord,
   laneId: string,
   roomId: string,
-  end: { ok: boolean; stopReason: string | null; pickingUp: boolean; rebuilt: boolean },
+  end: { ok: boolean; stopReason: string | null; pickingUp: boolean; rebuilt: boolean; preInputRefusal?: CodexSpeedRefusal; admissionUncertain?: string },
   say: (text: string, phoneText?: string) => void,
 ): boolean {
   const used = laneEngine.get(laneId);
@@ -1580,6 +1584,11 @@ function recoverTurn(
   trying?.reservation.finished();
   if (end.ok) trying?.returned?.();
   const command = commandTurns.delete(laneId);
+  if (end.admissionUncertain) {
+    say(end.admissionUncertain, end.admissionUncertain);
+    store.markLane(bot.id, laneId, true);
+    return false;
+  }
   // A model that answered can take work again, if it was asked after
   // the engine last ran out. A local command says nothing about quota,
   // but keeps the existing signed-in recovery.
@@ -1589,6 +1598,7 @@ function recoverTurn(
   }
   // a call that went silent is about the work, not the engine running
   // out, whatever words the stuck command happened to contain
+  const speedRefusal = end.preInputRefusal?.kind === "codex-speed";
   const failed =
     !end.ok &&
     !command &&
@@ -1596,13 +1606,14 @@ function recoverTurn(
     !end.pickingUp &&
     end.stopReason !== "interrupted" &&
     end.stopReason !== "tool_stalled" &&
-    !errors.some((said) => isContextError(said));
+    (speedRefusal || !errors.some((said) => isContextError(said)));
   // a failed turn that gave no reason of its own still says it failed,
   // or a turn that ends in silence reads as the agent not answering
   const explainSilence = () => {
     if (!end.ok && !errors.length && end.stopReason !== "interrupted" && !end.rebuilt) say(failedTurnNotice(end.stopReason));
   };
   if (!failed) {
+    if (speedRefusal) { say(end.preInputRefusal!.reason, end.preInputRefusal!.reason); return false; }
     showHeldErrors(bot, laneId, held);
     explainSilence();
     // 3. The backup answered: the conversation stays on it. An own engine
@@ -1615,11 +1626,11 @@ function recoverTurn(
   }
   const evidence = [...errors, end.stopReason ?? ""].join("\n");
   // an ACP engine says a refusal with its stop reason alone
-  const kind = failureOf(evidence) === "other" && end.stopReason === "refusal" ? "refusal" : failureOf(evidence);
+  const kind = speedRefusal ? "speed" : failureOf(evidence) === "other" && end.stopReason === "refusal" ? "refusal" : failureOf(evidence);
   // An engine that ran out rests, for every agent on it, since a limit
   // belongs to the account and not to one agent. A room's turn rests it
   // too: the agent's next turn there goes to its backup.
-  const out = outReason(evidence);
+  const out = speedRefusal ? null : outReason(evidence);
   const rest: Rest | null = out ? cooldowns.rest(used.instanceId, out, evidence) : null;
   // a refused session refuses every message after it, so it is never
   // resumed: the next turn, here or in a room, is told the conversation
@@ -1629,7 +1640,7 @@ function recoverTurn(
   const goesOn = Boolean(roomId === laneId && asked && fresh && !fresh.archivedAt && !wheel.heldBy(bot.id));
   const at = Date.now();
   const tried = [...(recovery?.tried ?? []), { selection: used, at, said }];
-  const told = (did: string) => failureNotes.set(laneId, { text: failureLine(used, at, said, did) });
+  const told = (did: string) => failureNotes.set(laneId, { text: speedRefusal ? `(A note from Bloks: this message was not submitted to ${engineName(used)} because ${said}. ${did})` : failureLine(used, at, said, did) });
   const notice = (text: string) => {
     const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
     broadcast({ kind: "message", threadId: laneId, message: shown });
@@ -1638,7 +1649,7 @@ function recoverTurn(
   // 1. Asked again once per message. Not a refusal in a session that was
   // already new and told the conversation: that would only repeat it. Not
   // an engine that is out either, which cannot answer before its reset.
-  if (goesOn && !recovery && !trying && kind !== "out" && !(kind === "refusal" && newSession)) {
+  if (goesOn && !recovery && !trying && kind !== "out" && kind !== "speed" && !(kind === "refusal" && newSession)) {
     notice(
       kind === "refusal"
         ? `${engineName(used)} declined this message: ${said}. Trying again in a new session, with the conversation so far.`
@@ -1657,7 +1668,8 @@ function recoverTurn(
   // asked. Whatever the failure was: the backup is an engine the person
   // chose for this agent, and the turn it takes is told what failed.
   const backup = fresh?.backupSelection ?? null;
-  const usable = goesOn && recovery?.stage !== "backup" ? backupFor(backup, used, Boolean(out)) : null;
+  let usable = goesOn && recovery?.stage !== "backup" ? backupFor(backup, used, Boolean(out)) : null;
+  if (speedRefusal && usable && codexSpeedRoute(registry.get(usable.instanceId)?.driverKind, usable.model) === "remote-unsupported") usable = null;
   if (usable) {
     // a rejected try of a rest this lane was told of says nothing new
     const alreadyTold = Boolean(trying && rest && !restIsNews(toldOfRest.get(laneId), rest));
@@ -1683,6 +1695,12 @@ function recoverTurn(
         ? "The error was shown in the room, and it was not asked again."
         : "The error was shown, and it was not asked again.",
   );
+  if (speedRefusal) {
+    const reason = end.preInputRefusal!.reason;
+    say(reason, reason);
+    store.markLane(bot.id, laneId, true);
+    return false;
+  }
   if (!goesOn) {
     showHeldErrors(bot, laneId, held);
     explainSilence();
@@ -2220,6 +2238,12 @@ bus.subscribe((event: RuntimeEvent) => {
   };
 
   switch (event.type) {
+    case "codex.speed":
+      if (turnStarted.has(event.threadId)) {
+        codexDispatches.set(event.threadId, { choice: { ...event.choice }, configuredTier: event.configuredTier, actualTier: event.actualTier });
+        broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+      }
+      break;
     case "commands.updated":
       if (event.providerInstanceId && registry.get(event.providerInstanceId)?.driverKind === "claudeAgent") {
         for (const laneId of claudeCatalogs.keys()) if (!store.taskByThread(laneId)) claudeCatalogs.delete(laneId);
@@ -2732,6 +2756,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const said = turnErrors.get(event.threadId) ?? [];
       if (said.length < 8) said.push(String(event.message ?? ""));
       turnErrors.set(event.threadId, said);
+      if (event.preInputRefusal || event.admissionUncertain) break;
       // The conversation being too big is the one failure this app should
       // fix rather than report. Our idea of a model's limit is a guess, so
       // when the provider disagrees, fold and try the same thing again
@@ -2740,6 +2765,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // and what folding would summarise is other people's.
       if (
         !commandTurns.has(event.threadId) &&
+        !event.preInputRefusal &&
         isContextError(event.message) &&
         !retriedForContext.has(event.threadId) &&
         laneRequester.get(event.threadId) !== MAIL_FROM_ANYONE
@@ -2787,13 +2813,14 @@ bus.subscribe((event: RuntimeEvent) => {
       // Out of credit, over a limit, signed out: nothing in this lane moves
       // until the person does something, so the lane says so with its dot
       // instead of waiting to be found (the app also raises a banner).
-      if (!inRoom && outReason(event.message)) {
+      if (!inRoom && !event.preInputRefusal && outReason(event.message)) {
         store.markLane(bot.id, event.threadId, true);
         broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
       }
       break;
     }
     case "turn.completed": {
+      codexDispatches.delete(event.threadId);
       const command = commandTurns.has(event.threadId);
       // a turn that failed on its length is asked again once it is folded
       // (runtime.error above), so it is not over yet as far as a goal goes
@@ -2917,10 +2944,10 @@ bus.subscribe((event: RuntimeEvent) => {
         bot,
         event.threadId,
         roomId,
-        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt) },
+        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt), preInputRefusal: event.preInputRefusal, admissionUncertain: event.admissionUncertain },
         (text, phoneText) => pushMessage({ role: "bot", kind: "notice", text, ...(phoneText ? { phoneText } : {}) }),
       );
-      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId);
+      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId, event.admissionUncertain ?? event.preInputRefusal?.reason);
       if (!pickingUp && !handedOver && !refolding) telegramWorking.get(event.threadId)?.ended();
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
@@ -2932,7 +2959,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // a turn asked again or handed to the backup is not over yet, so what
       // waits on how it ends (a routine's run, a workflow step, a meeting's
       // write-up, a mail's reply) waits for the attempt that ends it
-      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.stopReason ?? null, quiet: quietRun });
+      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.admissionUncertain ?? event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}) });
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
       agentTokens.revokeTask(event.threadId);
@@ -4394,6 +4421,7 @@ async function startClaimedTurn(
   laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
   // the busy flag holds the lane from here
   if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
+  codexDispatches.delete(task.id);
   turnStarted.set(task.id, Date.now());
   // every turn counts its calls from nothing, a backup's or a retry's too
   repeats.begin(task.id);
@@ -4442,6 +4470,7 @@ async function startClaimedTurn(
   // reaching its engine. Nothing is listening for a turn.completed that
   // was never going to come.
   const settleUnsent = (failure?: string) => {
+    codexDispatches.delete(task.id);
     claim.cancelPrimaryTry?.();
     commandTurns.delete(task.id);
     checkInTurns.delete(task.id);
@@ -4474,6 +4503,7 @@ async function startClaimedTurn(
   void (async () => {
     let tryAccepted = false;
     try {
+      if (codexSpeedRoute(instance.driverKind, selection.model) === "remote-unsupported") throw new CodexSpeedUnavailable(REMOTE_CODEX_SPEED_REASON);
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
       // A shared room hands the agent nothing of the owner's: no connected
       // apps, no MCP servers, no computer, no browser. What is left is the
@@ -5022,6 +5052,7 @@ async function startClaimedTurn(
         sending.text = `${note}\n\n${sending.text}`;
         if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
       }
+      sending.codexSpeed = resolveCodexSpeed(cfg, store.bot(bot.id));
       await engine.adapter.sendTurn(sending);
       tryAccepted = true;
       ownTry?.reservation.accepted();
@@ -5040,6 +5071,15 @@ async function startClaimedTurn(
       // A local command has not heard a pending engine handoff or CLI note.
       if (!command) store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
     } catch (e) {
+      if (e instanceof CodexSpeedUnavailable) {
+        // An early remote guard runs before preparation records an engine.
+        // Recovery still needs the refused selection to find its backup.
+        laneEngine.set(task.id, selection);
+        const frame = { eventId: newId(), provider: instance.driverKind, providerInstanceId: selection.instanceId, threadId: task.id, createdAt: new Date().toISOString() };
+        bus.publish({ ...frame, type: "runtime.error", message: e.message, preInputRefusal: e.refusal });
+        bus.publish({ ...frame, eventId: newId(), type: "turn.completed", ok: false, stopReason: "not_submitted", preInputRefusal: e.refusal });
+        return;
+      }
       const message = redactSecrets(e instanceof Error ? e.message : String(e));
       const failure = store.appendMessage(roomId, {
         role: "bot",
@@ -7220,11 +7260,12 @@ function compactWhileIdle(bot: BotRecord, task: TaskRecord) {
   // whatever happens next, this quiet stretch has had its chance
   lastRequest.delete(task.id);
   store.setTaskBusy(task.id, true);
+  codexDispatches.delete(task.id);
   turnStarted.set(task.id, Date.now());
   turnTokens.delete(task.id);
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
   instance.adapter
-    .sendTurn({ ...sent.input, threadId: task.id, text: "/compact", resumeCursor: cursor })
+    .sendTurn({ ...sent.input, codexSpeed: resolveCodexSpeed(cfg, store.bot(bot.id)), threadId: task.id, text: "/compact", resumeCursor: cursor })
     .catch(() => idleCompactionEnded(task.id));
   // Nobody asked for this turn, so it must not hold the lane, and the
   // messages queued behind it, for long. Stopped after a few minutes,
@@ -7275,7 +7316,7 @@ function compactThenSend(
     turnTokens.delete(laneId);
     const { handoff: _handoff, compactFirst: _compactFirst, ...same } = input;
     instance.adapter
-      .sendTurn({ ...same, text: "/compact" })
+      .sendTurn({ ...same, codexSpeed: resolveCodexSpeed(cfg, store.bot(bot.id)), text: "/compact" })
       .catch(() => idleCompacting.get(laneId) === run && idleCompactionEnded(laneId));
     stop = setTimeout(() => {
       if (idleCompacting.get(laneId) !== run) return;
@@ -10421,6 +10462,7 @@ const dispatching = new Map<string, Map<string, RoundTag>>();
 // ── reacting to changed settings ──────────────────────────────────────
 function configStatus() {
   return {
+    codex: { speed: resolveCodexSpeed(cfg).default },
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     speech: speech.speechConfigured(cfg),
@@ -11834,6 +11876,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         delete body.hidden;
       }
       const patch: Record<string, unknown> = {};
+      if (body.codexSpeed !== undefined) {
+        if (body.codexSpeed !== null && !isCodexSpeed(body.codexSpeed)) return json(res, 400, { error: "codexSpeed must be standard, fast or null" });
+        patch.codexSpeed = body.codexSpeed;
+      }
       // Read and unread are about the conversation on screen, not the whole
       // agent: another lane that pinged you stays unread until it is opened.
       if (typeof body.unread === "boolean") {
@@ -15560,6 +15606,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         taskId: asAgent.taskId,
         fingerprint: fingerprintFor(asAgent.botId),
         can: capabilities(),
+        codexSpeed: resolveCodexSpeed(cfg, bot),
       });
     }
     // The goal of the conversation this turn runs in, for `bloks goal`.
@@ -16815,6 +16862,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
+      if (body.codex !== undefined && (!isRecord(body.codex) || !isCodexSpeed(body.codex.speed) || Object.keys(body.codex).some((key) => key !== "speed"))) {
+        return json(res, 400, { error: "codex.speed must be standard or fast" });
+      }
       if (body.agents !== undefined && (!isRecord(body.agents) || !validTurnLimit(body.agents.turnLimit))) {
         return json(res, 400, { error: `agents.turnLimit must be a whole number from ${MIN_AGENT_CHAIN_LIMIT} to ${MAX_AGENT_CHAIN_LIMIT}` });
       }
@@ -16839,6 +16889,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       /** Sections that save themselves, so the empty-patch guard below
        * does not mistake a real write for an empty request. */
       let wroteSomething = false;
+      if (isRecord(body.codex)) {
+        patch.codex = { speed: body.codex.speed };
+      }
       let compactionLineChanged = false;
       if (body.speech && typeof body.speech === "object" && !Array.isArray(body.speech)) {
         const consent = (body.speech as Record<string, unknown>).useDiscoveredOpenAI;

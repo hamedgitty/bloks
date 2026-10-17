@@ -410,6 +410,7 @@ export interface BotRecord {
   /** How hard the engine should think, where the engine has the dial.
    * Unset means the engine's own default. */
   effort?: "low" | "medium" | "high";
+  codexSpeed?: import("./codex-speed.ts").CodexSpeed | null;
   mascotExpression?: BlokExpression | null;
   /** Set when the user uploaded their own picture for this agent. The
    * value is the upload time, so clients can cache-bust with it. Absent

@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { attachRpc, type RpcLink } from "../harness/jsonrpc-stdio.ts";
+import { attachRpc, RpcResponseError, type RpcLink } from "../harness/jsonrpc-stdio.ts";
 import { readCodexSkills, MAX_CODEX_SKILL_ITEMS, type CodexSkill } from "../codex-skills.ts";
 import type {
   DriverCreateInput,
@@ -40,6 +40,8 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
+
+import { CodexSpeedUnavailable, codexTier, codexTierError, requireCodexTier, resolveCodexSpeed } from "../codex-speed.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -79,12 +81,14 @@ export function catalogFromModelList(pages: any[]): ModelCatalog | null {
     for (const m of Array.isArray(page?.data) ? page.data : []) {
       const id = typeof m?.model === "string" && m.model ? m.model : typeof m?.id === "string" ? m.id : "";
       if (!id || m.hidden === true || options.some((o) => o.id === id)) continue;
-      options.push({ id, label: codexLabel(m.displayName, id) });
+      options.push({ id, label: codexLabel(m.displayName, id),
+        ...(Array.isArray(m.serviceTiers) ? { codexFast: m.serviceTiers.some((tier: any) => tier?.id === "priority") } : {}),
+      });
       if (m.isDefault === true && !defaultId) defaultId = id;
     }
   }
   if (!options.length) return null;
-  return { default: defaultId || options[0].id, options };
+  return { default: defaultId || options[0].id, options, checkedAt: Date.now() };
 }
 
 // ── a turn's own tokens ────────────────────────────────────────────────
@@ -354,6 +358,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       if (!catalog) return;
       models.options = catalog.options;
       models.default = catalog.default;
+      models.checkedAt = catalog.checkedAt;
     });
 
     type Answer = (behavior: string, message?: string, source?: string, reply?: boolean) => void;
@@ -399,6 +404,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
+      const speedChoice = Object.freeze({ ...(turn.codexSpeed ?? resolveCodexSpeed({})) });
+      const speed = speedChoice.resolved;
+      const capability = models.options.find((m) => m.id === (turn.model || models.default))?.codexFast;
+      if (speed === "fast" && capability === false && models.checkedAt && Date.now() - models.checkedAt < 300_000) {
+        throw new CodexSpeedUnavailable("The current Codex model catalog does not support Fast for this model.");
+      }
       if (running.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
 
@@ -417,6 +428,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // the environment and only its *name* appears in argv, so process
       // listings and diagnostics never see it.
       const appServerArgs = ["app-server"];
+      if (speed === "fast") appServerArgs.push("-c", "features.fast_mode=true");
       if (turn.integrations?.composio?.key) {
         env.BLOKS_COMPOSIO_KEY = turn.integrations.composio.key;
         if (turn.integrations.composio.url) env.BLOKS_COMPOSIO_URL = turn.integrations.composio.url;
@@ -457,6 +469,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const itemPaths = new Map<string, string[]>();
       // set once turn/start goes out; usage reported before it is history
       let turnSent = false;
+      // Only an unanswered input can have uncertain admission. A JSON-RPC
+      // error rejects the input; a response or turn/started acknowledges it.
+      let inputInFlight = false;
+      let inputAcknowledged = false;
+      const uncertainInput = (detail: string) =>
+        "Codex may have accepted this message, but its acknowledgement was lost. Admission is uncertain; Bloks did not submit it again or hand it to a backup. Check the original session before resending. " + detail;
+      const rejectedInput = (error: unknown) => error instanceof RpcResponseError;
       // Codex's own names for the conversation and the turn running in it,
       // which turn/steer has to quote back
       let codexThread: string | null = null;
@@ -500,14 +519,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         onNotify: (msg) => onAgentNotification(msg),
       });
 
-      const finish = (ok: boolean, stopReason: string | null) => {
+      const finish = (ok: boolean, stopReason: string | null, preInputRefusal?: import("../codex-speed.ts").CodexSpeedRefusal, admissionUncertain?: string) => {
         if (finished) return;
         finished = true;
         compacting?.(false);
         for (const answer of [...asks.values()]) answer("deny", "Bloks: the turn ended", "turn-ended");
         rpc.failPending(new Error("turn settled"));
         running.delete(threadId);
-        emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+        emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null, ...(preInputRefusal ? { preInputRefusal } : {}), ...(admissionUncertain ? { admissionUncertain } : {}) });
         abort();
       };
 
@@ -775,6 +794,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
           case "turn/started": {
             if (elsewhere(params)) break;
+            if (inputInFlight && !compacting) { inputAcknowledged = true; inputInFlight = false; }
             if (typeof params.turn?.id === "string") {
               codexTurn = params.turn.id;
               if (compacting && params.threadId === codexThread) requestedCompaction = params.turn.id;
@@ -848,12 +868,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       child.on("close", (code) => {
         if (finished) return;
         if (stopping) return finish(false, "interrupted");
+        const detail = describeEarlyExit(code, stderr, { name: "Codex", signIn: "run `codex login`" });
+        const uncertain = inputInFlight ? uncertainInput(detail) : undefined;
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
-          message: describeEarlyExit(code, stderr, { name: "Codex", signIn: "run `codex login`" }),
+          message: detail,
+          ...(uncertain ? { admissionUncertain: uncertain } : {}),
         });
-        finish(false, "exit_before_result");
+        finish(false, "exit_before_result", undefined, uncertain);
       });
 
       const selectedSkills = async (names?: string[]): Promise<CodexSkill[]> => {
@@ -930,7 +953,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // history of a long thread is tens of megabytes on one line,
             // which took long enough to read that the resume timed out
             // and the agent lost its session (GitHub 230).
-            const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard, excludeTurns: true };
+            const resumeParams: Record<string, unknown> = { threadId: cursor, ...guard, excludeTurns: true, serviceTier: codexTier(speed) };
             if (turn.model) resumeParams.model = turn.model;
             const resume = () => within(rpc.request("thread/resume", resumeParams), "reopening the conversation", "Codex");
             try {
@@ -940,10 +963,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               } catch (error) {
                 // an app-server older than the field says so; it still
                 // resumes, just with the history in the answer
+                if (codexTierError(error)) throw error;
                 if (!/exclude_?turns|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
                 delete resumeParams.excludeTurns;
                 resumed = await resume();
               }
+              requireCodexTier(resumed, speed);
               codexThread = resumed?.thread?.id ?? cursor;
               if (turn.compactOnly && (typeof resumed?.thread?.id !== "string" || codexThread !== cursor)) throw new Error("That Codex conversation is no longer available to compact.");
               reportedModel = resumed?.model ?? null;
@@ -951,6 +976,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             } catch (error) {
               // forgotten or unsupported; a fresh thread below. Anything
               // still to come about the old one is not about this turn.
+              if (codexTierError(error)) throw error instanceof CodexSpeedUnavailable ? error : new CodexSpeedUnavailable(`${String((error as Error)?.message ?? error)}. Update Codex if this CLI cannot accept and acknowledge serviceTier.`);
               abandoned.add(cursor);
               if (turn.compactOnly) throw error;
             }
@@ -1029,8 +1055,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               // default keeps the agent inside its workspace and asking.
               ...guard,
               ephemeral: false,
+              serviceTier: codexTier(speed),
             };
-            const started: any = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
+            let started: any;
+            try {
+              started = await within(rpc.request("thread/start", startParams), "opening a conversation", "Codex");
+            } catch (error) {
+              if (codexTierError(error)) throw new CodexSpeedUnavailable(`${(error as Error).message}. Update Codex if this CLI cannot accept serviceTier.`);
+              throw error;
+            }
+            requireCodexTier(started, speed);
             codexThread = started?.thread?.id ?? null;
             reportedModel = started?.model ?? null;
           }
@@ -1042,6 +1076,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             model: reportedModel ?? turn.model ?? null,
           });
 
+          emit({ ...envelope(threadId, turnId), type: "codex.speed", choice: speedChoice, configuredTier: codexTier(speed), actualTier: null });
           turnSent = true;
           // A cursor that did not lead back to its thread is a new thread
           // after all, and is told the story rather than only the words.
@@ -1060,24 +1095,38 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // (a response field). Stating it every turn covers resumes too.
           if (turn.effort) turnParams.effort = turn.effort;
           let begun: any;
+          inputInFlight = true;
           try {
             begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
           } catch (error) {
             // An older app-server refusing the field costs the preference,
             // not the message. Other failures must not submit the words twice.
-            if (finished || stopping || !turn.effort || !/effort|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
+            if (rejectedInput(error)) inputInFlight = false;
+            if (finished || stopping || inputAcknowledged || !rejectedInput(error) || !turn.effort || !/effort|unknown field/i.test(String((error as Error)?.message ?? ""))) throw error;
             delete turnParams.effort;
-            begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+            inputInFlight = true;
+            try {
+              begun = await within(rpc.request("turn/start", turnParams), "starting the turn", "Codex");
+            } catch (retryError) {
+              if (rejectedInput(retryError)) inputInFlight = false;
+              throw retryError;
+            }
           }
+          inputAcknowledged = true;
+          inputInFlight = false;
           if (typeof begun?.turn?.id === "string") codexTurn ??= begun.turn.id;
         } catch (error) {
           if (finished || stopping) return;
+          const detail = (error as Error).message;
+          const uncertain = inputInFlight ? uncertainInput(detail) : undefined;
           emit({
             ...envelope(threadId, turnId),
             type: "runtime.error",
-            message: (error as Error).message,
+            message: detail,
+            ...(uncertain ? { admissionUncertain: uncertain } : {}),
+            ...(error instanceof CodexSpeedUnavailable ? { preInputRefusal: error.refusal } : {}),
           });
-          finish(false, "rpc_error");
+          finish(false, "rpc_error", error instanceof CodexSpeedUnavailable ? error.refusal : undefined, uncertain);
         }
       })();
 

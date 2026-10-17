@@ -29,7 +29,7 @@ async function setup(t: TestContext, fullAuto = false) {
           if (frame.method && frame.id !== undefined) {
             queueMicrotask(() => stdout.write(JSON.stringify({
               id: frame.id,
-              result: frame.method === "thread/start" ? { thread: { id: "codex-thread" } } : {},
+              result: frame.method === "thread/start" ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier } : {},
             }) + "\n"));
           }
           done();

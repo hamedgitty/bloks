@@ -32,6 +32,8 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { BOAT_API } from "../boat.ts";
 
+import { codexSpeedRoute, CodexSpeedUnavailable, REMOTE_CODEX_SPEED_REASON } from "../codex-speed.ts";
+
 const DRIVER_KIND = "boxAgent";
 
 const MODELS = {
@@ -122,6 +124,7 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       const boxId = turn.integrations?.computer?.boxId;
+      if (codexSpeedRoute(DRIVER_KIND, turn.model || MODELS.default) === "remote-unsupported") throw new CodexSpeedUnavailable(REMOTE_CODEX_SPEED_REASON);
 
       if (!token) {
         throw new Error('box not configured. Add {"box":{"token":"…"}} to ~/.bloks/config.json');

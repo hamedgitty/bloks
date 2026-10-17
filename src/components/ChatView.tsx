@@ -1253,6 +1253,12 @@ export function ChatView({ bot }: { bot: Bot }) {
         </div>
       </div>
 
+      {openLane?.codexDispatch && (
+        <p data-codex-speed-status className="shrink-0 border-b px-3 py-1 text-[11px] text-muted-foreground md:px-4">
+          Codex: {openLane.codexDispatch.choice.resolved === "fast" ? "Fast" : "Standard"} ({openLane.codexDispatch.choice.source === "agent" ? "agent override" : "workspace default"}). Configured tier: {openLane.codexDispatch.configuredTier}. Actual tier: unverified.
+        </p>
+      )}
+
       {/* Messages. The strip repeats what the sidebar lists when it lists
           conversations, so it only shows when the sidebar does not, and
           only once there is more than one to choose between. */}

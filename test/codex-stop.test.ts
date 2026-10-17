@@ -32,7 +32,7 @@ async function setup(t: TestContext, holdInitialize = false, holdClose = false) 
         if (frame.id !== undefined && frame.method) queueMicrotask(() => {
           if (holdInitialize && children.length > 1 && frame.method === "initialize") return;
           const result = frame.method === "model/list" ? { data: [] }
-            : frame.method === "thread/start" ? { thread: { id: "native-thread" } }
+            : frame.method === "thread/start" ? { thread: { id: "native-thread" }, serviceTier: frame.params.serviceTier }
             : frame.method === "turn/start" ? { turn: { id: "native-turn" } } : {};
           send({ id: frame.id, result });
         });

@@ -6,7 +6,8 @@ import { antigravityLabel, catalogFromAgyModels } from "../server/drivers/antigr
 import { catalogFromModelList, codexLabel } from "../server/drivers/codex.ts";
 import { contextLimitFor } from "../server/context.ts";
 
-test("Codex's own model list becomes the picker, hidden models left out", () => {
+test("Codex's own model list becomes the picker, hidden models left out", (t) => {
+  t.mock.method(Date, "now", () => 1_000);
   const catalog = catalogFromModelList([
     {
       data: [
@@ -19,6 +20,7 @@ test("Codex's own model list becomes the picker, hidden models left out", () => 
     { data: [{ id: "gpt-5.5", model: "gpt-5.5", displayName: "GPT-5.5" }, { id: "gpt-6-sol", model: "gpt-6-sol" }] },
   ]);
   assert.deepEqual(catalog, {
+    checkedAt: 1_000,
     default: "gpt-6-sol",
     options: [
       { id: "gpt-6-sol", label: "GPT-6 Sol" },

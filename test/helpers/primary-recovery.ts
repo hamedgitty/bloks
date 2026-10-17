@@ -58,7 +58,7 @@ if (kind === "claudeAgent") {
     const m = JSON.parse(line); if (!m.method) return;
     const methods = read("methods-" + id + ".json", []); methods.push(m.method); write("methods-" + id + ".json", methods);
     if (m.method === "model/list") return out({ id: m.id, result: { data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1-Sol", isDefault: true }] } });
-    if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? thread; return out({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } }); }
+    if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? thread; return out({ id: m.id, result: { thread: { id: thread }, serviceTier: m.params.serviceTier, model: "gpt-6.1-sol" } }); }
     if (m.method === "thread/compact/start") {
       await later(take("/compact", thread));
       out({ id: m.id, result: {} });

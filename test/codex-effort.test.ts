@@ -36,7 +36,7 @@ async function setup(t: TestContext, options: Options = {}) {
               : frame.method === "turn/start" ? options.turnError || (options.rejectEffort && frame.params.effort ? "unknown field `effort`" : undefined)
               : undefined;
             const result = frame.method === "thread/start" || frame.method === "thread/resume"
-              ? { thread: { id: "codex-thread" }, model: "gpt-selected" }
+              ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier, model: "gpt-selected" }
               : frame.method === "turn/start" ? { turn: { id: "codex-turn" } } : {};
             if (frame.method === "turn/start" && !error) {
               // The server keeps its configured default until a turn overrides
@@ -45,7 +45,7 @@ async function setup(t: TestContext, options: Options = {}) {
               effective.push(threadEffort);
             }
             queueMicrotask(() => {
-              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: -32602, message: error } } : { id: frame.id, result }) + "\n");
+              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: -32600, message: error } } : { id: frame.id, result }) + "\n");
               if (frame.method === "turn/start" && !error) {
                 stdout.write(JSON.stringify({ method: "turn/completed", params: { turn: { status: "completed" } } }) + "\n");
               }

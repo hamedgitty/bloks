@@ -8,6 +8,7 @@ import { test, type TestContext } from "node:test";
 
 import { QUIET_ASK } from "../server/routines.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
+import { codexCommands } from "./helpers/codex-commands.ts";
 import { agentOn, idle, messagesOf, waitFor } from "./helpers/turns.ts";
 
 const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
@@ -210,4 +211,18 @@ test("a check-in that fails is not quiet, whatever it said", async (t) => {
   assert.equal(after.runs[0].quiet, undefined);
   assert.equal((await lane(h, bot)).unread, true, "a failed check-in is something to see");
   assert.ok((await messagesOf(h, bot)).every((m: any) => m.quiet === undefined));
+});
+
+test("F2 a native Codex quiet check-in stays folded, read and recorded quiet",async(t)=>{
+ const s=await codexCommands(t);await s.turn("warm");s.spec({answer:"QUIET"});
+ const {routine}=await s.post("/api/routines",{targetId:s.bot.id,targetKind:"agent",name:"Inbox",prompt:"Any news?",every:30,days:[]});
+ await s.h.json(`/api/bots/${s.bot.id}/tasks/${s.bot.threadId}`,{method:"PATCH",body:JSON.stringify({unread:false})});
+ const before=s.calls().filter(c=>c.method==="turn/start").length;
+ await s.post(`/api/routines/${routine.id}/run`);await waitFor(()=>s.calls().filter(c=>c.method==="turn/start").length>before);await s.settled();
+ await waitFor(async()=>(await s.h.json("/api/routines")).routines.find((r:any)=>r.id===routine.id)?.runs?.[0]?.state!=="running");
+ const run=(await s.h.json("/api/routines")).routines.find((r:any)=>r.id===routine.id).runs[0];
+ assert.equal(run.quiet,true,"native Codex check-in was not recorded quiet");assert.equal(run.state,"ok");
+ const lane=(await s.current()).tasks.find((x:any)=>x.id===s.bot.threadId);assert.equal(Boolean(lane.unread),false,"native quiet check-in marked the lane unread");
+ const messages=await s.messages();const prompt=messages.findIndex(m=>m.role==="user"&&m.text==="Any news?");assert.ok(prompt>=0);
+ assert.ok(messages.slice(prompt).every(m=>m.quiet),"native quiet check-in prompt and intervening metadata must fold");
 });

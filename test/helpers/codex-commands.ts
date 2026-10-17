@@ -33,7 +33,7 @@ const log = (m) => appendFileSync(root+"/calls.jsonl",JSON.stringify(m)+"\\n");
 let thread, turn, ended=false, total=0;
 const finish = () => {
   if(ended)return;ended=true;
-  out({method:"item/completed",params:{threadId:thread,turnId:turn,item:{type:"agentMessage",id:"answer",text:"ANSWER"}}});
+  out({method:"item/completed",params:{threadId:thread,turnId:turn,item:{type:"agentMessage",id:"answer",text:JSON.parse(readFileSync(root+"/spec.json","utf8")).answer??"ANSWER"}}});
   out({method:"turn/completed",params:{threadId:thread,turn:{id:turn,status:"completed"}}});
 };
 createInterface({input:process.stdin}).on("line",async (line)=>{
@@ -56,7 +56,8 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
   }
   if(m.method==="thread/start"||m.method==="thread/resume"){
     if(m.method==="thread/resume"&&spec.forgotten)return out({id:m.id,error:{code:-1,message:"forgotten"}});
-    thread=m.params.threadId??"native-"+process.pid;return reply({thread:{id:thread},model:"gpt-6.1-sol"});
+    if(m.method==="thread/resume"&&spec.tierError)return out({id:m.id,error:{code:-32602,message:spec.tierError}});
+    thread=m.params.threadId??"native-"+process.pid;return reply({thread:{id:thread}, ...(spec.tierAbsent?{}:{serviceTier:Object.hasOwn(spec,"tierAck")?spec.tierAck:m.params.serviceTier}),model:"gpt-6.1-sol"});
   }
   if(m.method==="thread/compact/start"){
     if(spec.compact==="reject")return out({id:m.id,error:{code:-1,message:"Compaction refused"}});
@@ -71,8 +72,12 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
     if(spec.refuseSteer)return out({id:m.id,error:{code:-1,message:"Not taken"}});return reply();
   }
   if(m.method!=="turn/start")return reply();
+  if(spec.captureCredential)appendFileSync(root+"/credentials.jsonl",JSON.stringify({botId:process.env.BLOKS_TOKEN,url:process.env.BLOKS_URL})+"\\n");
+  if(spec.turnError)return out({id:m.id,error:spec.turnError});
+  if(spec.unknownAdmission){process.stderr.write("temporarily unavailable, limit exceeded");process.exit(1);}
   turn="work-"+process.pid;reply({turn:{id:turn}});
   out({method:"turn/started",params:{threadId:thread,turn:{id:turn}}});
+  if(spec.crashAfterStart){process.stderr.write("synthetic exit after acknowledgement");process.exit(1);}
   const text=m.params.input.filter(i=>i.type==="text").map(i=>i.text).join("");
   if(spec.auto){
     total+=spec.used;

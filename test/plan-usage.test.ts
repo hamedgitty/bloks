@@ -229,7 +229,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (!m.method) return;
   if (m.method === "model/list") return send({ id: m.id, result: { data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1-Sol", isDefault: true, hidden: false }] } });
-  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: "thread-1" }, model: "gpt-6.1-sol" } });
+  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: "thread-1" }, serviceTier: m.params.serviceTier, model: "gpt-6.1-sol" } });
   if (m.method === "turn/start") {
     send({ id: m.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });

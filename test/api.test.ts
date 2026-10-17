@@ -1430,7 +1430,7 @@ const failure = { message: "exceeded retry limit, last status: 429 Too Many Requ
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (m.method === "model/list") return send({ id: m.id, result: { data: [{ id: "gpt-test", model: "gpt-test", displayName: "gpt-test", isDefault: true, hidden: false }] } });
-  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: "codex-thread" }, model: "gpt-test" } });
+  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: "codex-thread" }, serviceTier: m.params.serviceTier, model: "gpt-test" } });
   if (m.method === "turn/start") {
     send({ id: m.id, result: { turn: { id: "codex-turn", status: "inProgress" } } });
     const quietly = JSON.stringify(m.params.input).includes("quietly");
@@ -1454,7 +1454,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const notices = async (count: number) =>
       waitFor(async () => {
         const found = (await h2.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
-        const shown = found.messages.filter((m: any) => m.kind === "notice");
+        const shown = found.messages.filter((m: any) => m.kind === "notice" && !m.event);
         return !found.busy && shown.length >= count ? shown : null;
       });
 

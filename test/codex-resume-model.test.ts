@@ -33,7 +33,7 @@ async function setup(t: TestContext) {
             }
             const result =
               frame.method === "thread/start" || frame.method === "thread/resume"
-                ? { thread: { id: "codex-thread" }, model: threadModel }
+                ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier, model: threadModel }
                 : {};
             queueMicrotask(() => {
               stdout.write(JSON.stringify({ id: frame.id, result }) + "\n");
