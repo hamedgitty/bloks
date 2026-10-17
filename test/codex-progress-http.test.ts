@@ -18,27 +18,28 @@ test("real HTTP/SSE preserves item-time facts, accepted joins, terminal fallback
   mkdirSync(join(home, ".bloks"), { recursive: true });
   const cli = join(home, "codex-fake.mjs");
   writeFileSync(cli, `#!${process.execPath}
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 if (process.argv[2] === '--version') { console.log('codex-cli 0.162.1'); process.exit(0); }
 if (process.argv[2] === 'login') process.exit(0);
 const out = x => console.log(JSON.stringify(x));
-const thread = 'native-' + process.pid, turn = 'turn-' + process.pid; let rejectSteer=false;
+const thread = 'native-' + process.pid, turn = 'turn-' + process.pid; let rejectSteer=false, receiptMode='matched';
 const item = (id,text,phase='commentary',questions=null) => out({method:'item/completed',params:{threadId:thread,turnId:turn,item:{type:'agentMessage',id,text,phase,questions}}});
 const finish = () => out({method:'turn/completed',params:{threadId:thread,turn:{id:turn,status:'completed'}}});
 createInterface({input:process.stdin}).on('line',line => {
  const f=JSON.parse(line); if (f.id === undefined) return;
  const input=(f.params?.input||[]).filter(x=>x.type==='text').map(x=>x.text).join(' ');
- out(f.method==='turn/steer' && rejectSteer ? {id:f.id,error:{code:-32600,message:'Synthetic turn refused'}} : {id:f.id,result:f.method==='model/list'?{data:[]}:f.method==='thread/start'?{thread:{id:thread}}:f.method==='turn/start'?{turn:{id:turn}}:f.method==='turn/steer'?{turnId:turn}:{}});
- if (f.method==='turn/start') { rejectSteer=input.includes('REJECT_STEER');
+ if(f.method==='turn/start'||f.method==='turn/steer') appendFileSync(${JSON.stringify(join(home, 'heard.jsonl'))},JSON.stringify({method:f.method,input})+'\\n');
+ out(f.method==='turn/steer' && rejectSteer ? {id:f.id,error:{code:-32600,message:'Synthetic turn refused'}} : {id:f.id,result:f.method==='model/list'?{data:[]}:f.method==='thread/start'?{thread:{id:thread}}:f.method==='turn/start'?{turn:{id:turn}}:f.method==='turn/steer'?(receiptMode==='missing'?{}:{turnId:receiptMode==='mismatched'?'unexpected-turn':turn}):{}});
+ if (f.method==='turn/start') { rejectSteer=input.includes('REJECT_STEER'); receiptMode=input.includes('RECEIPT_missing')?'missing':input.includes('RECEIPT_mismatched')?'mismatched':'matched';
   out({method:'turn/started',params:{threadId:thread,turn:{id:turn}}});
   if(input.includes('SENDER_HOLD')) { writeFileSync(${JSON.stringify(join(home, 'sender-token'))},process.env.BLOKS_TOKEN||''); return; }
   if(input.includes('ASYNC_FINAL')) item('async-answer','A visible answer','final_answer');
   if(input.includes('EXPLICIT_Q')) item('explicit-question','Which neutral option?','commentary',[{question:'Which neutral option?'}]);
   item('progress-1','Checking the neutral sample'); item('progress-2','Still checking the neutral sample');
-  if(input.includes('NO_FINAL')||input.includes('ASYNC_FINAL')) setTimeout(finish,80);
+  if(input.includes('NO_FINAL')||input.includes('ASYNC_FINAL')||input.includes('UNIQUE_RECEIPT_')) setTimeout(finish,80);
  }
- if(f.method==='turn/steer' && !rejectSteer) setTimeout(()=>item('after-join','Continuing with your direction'),20);
+ if(f.method==='turn/steer' && !rejectSteer) { setTimeout(()=>item('after-join','Continuing with your direction'),20); if(receiptMode!=='matched') setTimeout(finish,80); }
 });
 `, { mode: 0o755 });
   writeFileSync(join(home, ".bloks/config.json"), JSON.stringify({ instances: { codex: { driver: "codex", config: { cli, fullAuto: false } } } }));
@@ -90,6 +91,24 @@ createInterface({input:process.stdin}).on('line',line => {
     assert.equal(said.at(-1)?.codexText?.itemId, marker.includes("NO_FINAL") ? "progress-2" : "async-answer");
     const live = (await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === other.id);
     assert.equal(live.unread, marker !== "NO_FINAL", "fallback creates no unread; a normal final retains it");
+  }
+  // An RPC success may have consumed the input even when its join identity
+  // cannot be verified. Never queue that input for a second delivery.
+  for (const mode of ["missing", "mismatched"]) {
+    const receiptWorker = await bot("Receipt " + mode);
+    await agentSend(receiptWorker.id, "RECEIPT_" + mode);
+    await until(async () => (await history(receiptWorker.id)).some(m => m.codexText?.itemId === "progress-2") ? true : undefined);
+    const unique = "UNIQUE_RECEIPT_" + mode;
+    const accepted = await h.json(`/api/bots/${receiptWorker.id}/messages`, { method: "POST", body: JSON.stringify({ text: unique }) });
+    await until(async () => (await history(receiptWorker.id)).some(m => m.codexText?.itemId === "after-join") ? true : undefined);
+    // Let the first turn finish and any automatic queued turn reach the fake.
+    await new Promise(r => setTimeout(r, 1000));
+    const deliveries = readFileSync(join(home, "heard.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(call => call.input.includes(unique));
+    assert.equal(deliveries.length, 1, mode + " successful steer was replayed through turn/start");
+    assert.equal(deliveries[0].method, "turn/steer");
+    assert.equal(accepted.steered, true); assert.notEqual(accepted.queued, true);
+    const saved = (await history(receiptWorker.id)).filter(m => m.text === unique);
+    assert.equal(saved.length, 1); assert.equal(saved[0].joinedTurnId, undefined, mode + " receipt stamped an unverified person join");
   }
   const roomWorker = await bot("Roomworker");
   const { blok: room } = await h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Neutral room", memberIds: [sender.id, roomWorker.id] }) });

@@ -885,8 +885,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         try {
           const expectedTurnId = codexTurn;
           const accepted = await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
-          if ((accepted as { turnId?: unknown } | null)?.turnId !== expectedTurnId) return false;
-          options?.onAccepted?.(turnId);
+          // A successful RPC may have consumed the words even if its receipt
+          // cannot verify the join identity. Do not queue them for replay.
+          if ((accepted as { turnId?: unknown } | null)?.turnId === expectedTurnId) options?.onAccepted?.(turnId);
           return true;
         } catch {
           for (const skill of skills) skillNamesSent.delete(skill.name);

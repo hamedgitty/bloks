@@ -323,7 +323,7 @@ export function foldRoom(messages: readonly Message[], working: ReadonlyMap<stri
   const progress = progressIds(messages, (m, index) => {
     if (!m.from || !working.has(m.from)) return false;
     const since = working.get(m.from);
-    return typeof since === "number" && index >= since;
+    return since === null || (typeof since === "number" && index >= since);
   }, historyKnown);
   const open = new Map<string, number[]>();
   const stretches: Array<{ from: string; all: number[] }> = [];

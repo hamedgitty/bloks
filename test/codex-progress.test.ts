@@ -134,3 +134,17 @@ test("silent, component-only and cut-off histories create no text or transition 
   const history = [ask, text("old", "commentary", "old-turn"), text("next", "commentary", "new-turn"), { id: "delayed-join", at: 2, role: "user", kind: "text", midTurn: true, joinedTurnId: "old-turn", text: "Prior accepted words" } as Message];
   assert.deepEqual([...progressIds(history, () => true)], ["next"], "old join revealed a newer attempt");
 });
+
+
+test("reopened rooms keep latest active turns quiet and end each speaker independently", () => {
+  const old = text("old-fallback", "commentary", "old-a", { from: "one" });
+  const a = text("active-a", "commentary", "new-a", { from: "one" });
+  const b = text("active-b", "commentary", "new-b", { from: "two" });
+  const history = [old, a, b];
+  const seen = foldRoom(history, new Map([["one", 0], ["two", 0]]));
+  const reopened = foldRoom(history, new Map([["one", null], ["two", null]]));
+  assert.deepEqual(page(reopened), page(seen), "room reopen must not promote active progress");
+  assert.ok(page(reopened).includes("old-fallback"), "a prior turn still gets its terminal fallback");
+  assert.deepEqual(page(foldRoom([a, b], new Map([["two", null]]))), ["active-a", "work(active-b)"], "one speaker ending must not expose the other");
+  assert.deepEqual(page(foldRoom([a, b], new Map([["one", null], ["two", null]]), false)), ["active-a", "active-b"], "missing history remains conservative");
+});

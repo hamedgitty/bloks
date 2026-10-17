@@ -299,7 +299,7 @@ async function codex(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), "bloks-steer-codex-"));
   const was = process.env.HOME;
   process.env.HOME = home;
-  const state = { refuse: false, wrongTurn: false, frames: [] as any[] };
+  const state = { refuse: false, wrongTurn: false, missingTurn: false, frames: [] as any[] };
   const stdout = new PassThrough();
   const peer = Object.assign(new EventEmitter(), {
     stdout,
@@ -318,7 +318,7 @@ async function codex(t: TestContext) {
                   result:
                     frame.method === "thread/start" ? { thread: { id: "codex-thread" } }
                     : frame.method === "turn/start" ? { turn: { id: "codex-turn-1" } }
-                    : frame.method === "turn/steer" ? { turnId: state.wrongTurn ? "another-native-turn" : "codex-turn-1" }
+                    : frame.method === "turn/steer" ? state.missingTurn ? {} : { turnId: state.wrongTurn ? "another-native-turn" : "codex-turn-1" }
                     : {},
                 };
           queueMicrotask(() => stdout.write(JSON.stringify(reply) + "\n"));
@@ -386,8 +386,11 @@ test("Codex acceptance callback carries the captured normalized turn only on a m
   assert.equal(await instance.adapter.steerTurn!("task-a", "Use second option", { onAccepted: (id) => joined.push(id) }), true);
   assert.deepEqual(joined, [started.turnId]);
   state.wrongTurn = true;
-  assert.equal(await instance.adapter.steerTurn!("task-a", "Mismatched receipt", { onAccepted: (id) => joined.push(id) }), false);
-  state.wrongTurn = false; state.refuse = true;
+  assert.equal(await instance.adapter.steerTurn!("task-a", "Mismatched receipt", { onAccepted: (id) => joined.push(id) }), true);
+  state.wrongTurn = false; state.missingTurn = true;
+  assert.equal(await instance.adapter.steerTurn!("task-a", "Missing receipt", { onAccepted: (id) => joined.push(id) }), true);
+  assert.deepEqual(joined, [started.turnId], "successful unverified receipts do not stamp a join");
+  state.missingTurn = false; state.refuse = true;
   assert.equal(await instance.adapter.steerTurn!("task-a", "Rejected", { onAccepted: (id) => joined.push(id) }), false);
   assert.deepEqual(joined, [started.turnId]);
 });
