@@ -232,8 +232,21 @@ export function ensureDirs() {
   }
 }
 
+/** The saved bytes last observed by this owner, before environment defaults.
+ * This is provenance, not a claim that a hand-edited file is current. Reads
+ * never refresh it, and a failed owner load/save leaves it unchanged. */
+let savedObservation: { value: AppConfig; observedAt: number; source: "owner-load" | "owner-save" } | null = null;
+function observedSaved(value: AppConfig, source: "owner-load" | "owner-save"): void {
+  savedObservation = { value: structuredClone(value), observedAt: Date.now(), source };
+}
+export function savedConfigObservation(): typeof savedObservation {
+  return savedObservation ? structuredClone(savedObservation) : null;
+}
+
 export function loadConfig(): AppConfig {
-  return withEnvironment(readSaved<AppConfig>(join(DATA_DIR, "config.json"), {}, isRecord));
+  const saved = readSaved<AppConfig>(join(DATA_DIR, "config.json"), {}, isRecord);
+  observedSaved(saved, "owner-load");
+  return withEnvironment(saved);
 }
 
 /** Also used on the result of a save: a successful write must not be
@@ -329,7 +342,9 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
   // this file holds API keys in plaintext, never leave it group/world
   // readable; every save is a new file made 0600, whatever the old one was
   beforeWrite?.();
-  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  const bytes = JSON.stringify(disk, null, 2);
+  writeFileAtomic(p, bytes, 0o600);
+  observedSaved(JSON.parse(bytes), "owner-save");
   return withEnvironment(disk as AppConfig);
 }
 
@@ -342,7 +357,9 @@ export function forgetSecret(name: string): AppConfig | null {
   const disk = readSaved<Record<string, any> | null>(p, null, isRecord);
   if (!disk || !isRecord(disk.secrets) || !Object.prototype.hasOwnProperty.call(disk.secrets, name)) return null;
   delete disk.secrets[name];
-  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  const bytes = JSON.stringify(disk, null, 2);
+  writeFileAtomic(p, bytes, 0o600);
+  observedSaved(JSON.parse(bytes), "owner-save");
   return withEnvironment(disk);
 }
 
@@ -354,7 +371,9 @@ export function disconnectProvider(kind: string): AppConfig {
   if (disk.providers) delete disk.providers[kind];
   // the legacy slot is the same credential under an older name
   if (kind === "grok") delete disk.xai;
-  writeFileAtomic(p, JSON.stringify(disk, null, 2), 0o600);
+  const bytes = JSON.stringify(disk, null, 2);
+  writeFileAtomic(p, bytes, 0o600);
+  observedSaved(JSON.parse(bytes), "owner-save");
   return withEnvironment(disk);
 }
 

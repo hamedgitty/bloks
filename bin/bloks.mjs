@@ -31,6 +31,21 @@ const COMMANDS = {
     about: "who this credential says you are",
     run: () => request("GET", "/api/agent/whoami"),
   },
+  settings: {
+    use: "settings [--category <category>] [--id <reference>] [--cursor <continuation>]",
+    about: "inspect safe settings observations and their owner controls. Device values are dated client reports; missing and expired observations stay unknown. This command never refreshes devices or changes settings",
+    run: (args) => {
+      const flags = parseFlags(args);
+      if (args.some((arg, i) => i % 2 === 0 && !["--category", "--id", "--cursor"].includes(arg)) || args.length % 2) {
+        throw new Error("settings accepts only --category, --id and --cursor with values");
+      }
+      const query = new URLSearchParams();
+      for (const key of ["category", "id", "cursor"]) {
+        if (flags[key]) query.set(key, flags[key]);
+      }
+      return request("GET", `/api/agent/settings${query.size ? `?${query}` : ""}`);
+    },
+  },
   goal: {
     use: "goal",
     about:

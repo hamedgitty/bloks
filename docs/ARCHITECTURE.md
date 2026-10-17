@@ -1266,6 +1266,42 @@ same list. Escape is handled once (`src/lib/useEscape.ts`): the most
 recently opened surface that asked for it closes, and Radix menus and
 dialogs keep their own.
 
+### Settings inspection
+
+`bloks settings` lists the available categories. `--category` reads one,
+with `--id` for an opaque record reference and `--cursor` for its next
+page. Its single `GET /api/agent/settings` returns safe saved values,
+effective values or unresolved policies, and the existing owner control.
+It uses already-loaded owner metadata, not a config reread, provider
+health or authentication probe. Credentials, commands, connection URLs
+and opaque maps are configured status only. Unknown fields stay excluded.
+Owner writes and the agents' existing never list remain closed. Members
+cannot use this route, including with a member credential on loopback;
+room visibility applies before totals, references and pagination.
+
+Pages have at most twenty rows and 32 KiB; permitted text has a 256
+codepoint bound and oversized values are omitted whole. Continuations
+are caller/category/selection bound within one server boot. Collections
+are live: membership is checked again on each page, deletion removes a
+record, and an insertion before the cursor may be missed. There is no
+persistent inspection snapshot store.
+
+Device values are dated, authenticated client observations, not proof of
+current UI. Committed mounted owners report actual changes and connection
+replacement through private per-window authority. Direct streams and
+Electron remote proxy windows have distinct bindings. Reports fully replace
+the device snapshot, making omitted fields unknown; old generations or
+reordered revisions cannot replace newer observations. A server-issued monotonic sixty-second
+lease bounds freshness; delayed receipt never extends it. Expiry keeps the
+last value and source/observation/receipt times but makes current freshness
+unknown, even when an idle window remains open. Observed close or device
+revocation invalidates authority immediately. There is no heartbeat,
+polling, read-triggered report, native prompt or provider action. Retained
+observations are bounded; capacity may reclaim the oldest closed or expired
+record. Missing or unsupported native fields stay unknown. Current idle
+desktop coverage and the private iPhone contract in issue 303 remain open
+dependencies; this public server/desktop slice does not complete ALL coverage.
+
 ## Approval modes
 
 An agent's `approvals` is `ask`, `edits`, `auto` or `full`, and new agents

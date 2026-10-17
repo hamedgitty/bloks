@@ -212,6 +212,11 @@ function readBody(req) {
 export async function startRemoteProxy(profile, { staticDir, port = 0, onState = () => {}, client } = {}) {
   const keys = deviceKeys(profile.deviceToken);
   const streams = new Set();
+  // Private per-renderer report bindings. These are not broadcast frames or
+  // profile preferences; the workspace capability never reaches the renderer.
+  const reportWindows = new Map();
+  let reportEpoch = 1;
+  let relayHadFailure = false;
   let stopped = false;
 
   const ask = async (request) => {
@@ -243,6 +248,45 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     return { status: reply.status, type: "application/json", bytes: Buffer.from(JSON.stringify(reply.body ?? null)) };
   };
 
+  const reportAsk = async (path, body) => {
+    const answer = await ask({ method: "POST", path, type: "application/json", bodyB64: Buffer.from(JSON.stringify(body)).toString("base64") });
+    return answer.status === 200 ? JSON.parse(answer.bytes.toString("utf8")) : { refused: answer.status };
+  };
+  const reportClose = (a) => {
+    if (a) void reportAsk("/api/settings/device-session", { action: "close", admission: a }).catch(() => {});
+  };
+  const retireReport = (window, notify = true) => {
+    window.open = false;
+    reportWindows.delete(window.localKey);
+    if (notify) reportClose(window.upstreamAdmission);
+  };
+  const localAdmission = (window, upstream) => {
+    window.upstreamAdmission = {
+      label: upstream.label, generation: upstream.generation, capability: upstream.capability,
+      issuedAt: upstream.issuedAt, lifetimeMs: upstream.lifetimeMs,
+    };
+    window.admission = {
+      label: upstream.label, generation: randomUUID(), capability: randomBytes(32).toString("base64url"),
+      issuedAt: upstream.issuedAt, lifetimeMs: upstream.lifetimeMs,
+    };
+    return window.admission;
+  };
+  const startReport = (stream) => {
+    if (stopped || stream.closed || stream.reportAttempt === reportEpoch) return;
+    stream.reportAttempt = reportEpoch;
+    if (reportWindows.size >= 4) {
+      stream.write('data: {"kind":"settings-report","unavailable":true}\n\n');
+      return;
+    }
+    const window = { localKey: randomBytes(32).toString("base64url"), open: true, busy: false, upstreamKey: null, upstreamAdmission: null, admission: null };
+    reportWindows.set(window.localKey, window);
+    stream.report = window;
+    // Admission is serialized with reporting by the renderer. This private
+    // local binding survives an ambiguous lost admission reply, so a later
+    // actual change can make one new attempt without an automatic retry.
+    stream.write(`data: ${JSON.stringify({ kind: "settings-report", windowKey: window.localKey })}\n\n`);
+  };
+
   const serveStatic = (req, res) => {
     const url = new URL(req.url, "http://x");
     let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, "");
@@ -262,6 +306,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
           headers: { accept: "text/event-stream", authorization: `Bearer ${profile.relayToken}` },
         });
         if (res.status === 401) {
+          for (const window of [...reportWindows.values()]) retireReport(window, false);
           onState({ connected: false, revoked: true });
           return;
         }
@@ -291,15 +336,22 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
               // dialled every second, forever.
               delay = 1_000;
               onState({ connected: outer.online !== false });
+              if (relayHadFailure) { reportEpoch++; relayHadFailure = false; }
               // the window starts over rather than resuming: frames the
               // relay did not carry cannot be replayed from here
-              for (const s of streams) s.write(`data: ${JSON.stringify({ kind: "hello", resumed: false })}\n\n`);
+              for (const s of streams) {
+                s.write(`data: ${JSON.stringify({ kind: "hello", resumed: false })}\n\n`);
+                startReport(s);
+              }
               continue;
             }
             if (outer.kind !== "frame" || typeof outer.payload !== "string") continue;
             if (peek(outer.payload)?.d !== profile.deviceId) continue;
             const frame = open(keys.open, outer.payload);
             if (!frame) continue;
+            // Private report controls never enter ordinary event fanout, even
+            // if a future workspace accidentally emits one on the relay.
+            if (frame.kind === "settings-report") continue;
             const text = `data: ${JSON.stringify(frame)}\n\n`;
             for (const s of streams) s.write(text);
           }
@@ -309,6 +361,8 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
         // window should not say connected while this dials it again
         throw new Error("the relay closed the line");
       } catch {
+        relayHadFailure = true;
+        for (const window of [...reportWindows.values()]) retireReport(window, false);
         onState({ connected: false });
       }
       if (stopped) return;
@@ -325,16 +379,72 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     }
     const url = new URL(req.url, "http://x");
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
+    const reportRoute = url.pathname === "/api/settings/device-session" || url.pathname === "/api/settings/device-report";
+    // A presented identity cannot be silently stripped and upgraded to this
+    // paired owner's authority. Existing ordinary proxy routes are unchanged.
+    if ((reportRoute || url.pathname === "/api/agent/settings" || url.pathname === "/api/events") &&
+        Object.keys(req.headers).some((name) => name === "authorization" || name.startsWith("x-bloks-relay") || name === "x-bloks-device" || name === "x-bloks-invite")) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "settings reporting requires this window's own connection" }));
+      return;
+    }
     if (url.pathname === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       res.write(`data: ${JSON.stringify({ kind: "hello", resumed: false })}\n\n`);
-      const stream = { write: (t) => { try { res.write(t); } catch {} } };
+      const stream = { closed: false, reportAttempt: 0, report: null, write: (t) => { try { res.write(t); } catch {} } };
       streams.add(stream);
+      startReport(stream);
       const keepalive = setInterval(() => stream.write(": keepalive\n\n"), 25_000);
       req.on("close", () => {
         clearInterval(keepalive);
+        stream.closed = true;
+        if (stream.report) retireReport(stream.report);
         streams.delete(stream);
       });
+      return;
+    }
+    if (reportRoute) {
+      if (req.method !== "POST") {
+        res.writeHead(405, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ error: "settings reporting requires POST" }));
+      }
+      let window;
+      let ownsBusy = false;
+      try {
+        const bytes = await readBody(req);
+        if (bytes.length > 16_384) throw new Error("oversized observation");
+        const body = JSON.parse(bytes.toString("utf8"));
+        window = typeof body?.windowKey === "string" ? reportWindows.get(body.windowKey) : null;
+        if (!window?.open || window.busy) throw new Error("unavailable window");
+        window.busy = true;
+        ownsBusy = true;
+        const before = window.admission?.generation;
+        if (url.pathname === "/api/settings/device-session" && body.action === "renew") {
+          const answer = await reportAsk(url.pathname, window.upstreamKey
+            ? { action: "renew", windowKey: window.upstreamKey } : { action: "open" });
+          if (!window.open || window.admission?.generation !== before) { reportClose(answer?.admission); throw new Error("obsolete window"); }
+          if (answer?.refused === 409) {
+            window.upstreamKey = null;
+            window.upstreamAdmission = null;
+            window.admission = null;
+          }
+          if (!answer?.admission) throw new Error("renewal unavailable");
+          if (answer.windowKey) window.upstreamKey = answer.windowKey;
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          return void res.end(JSON.stringify({ admission: localAdmission(window, answer.admission) }));
+        }
+        if (url.pathname !== "/api/settings/device-report" || !window.admission || !window.upstreamAdmission || body.admission?.generation !== before ||
+            body.admission?.label !== window.admission.label || body.admission?.capability !== window.admission.capability) throw new Error("invalid admission");
+        const answer = await reportAsk(url.pathname, {
+          admission: window.upstreamAdmission, sequence: body.sequence, snapshot: body.snapshot,
+        });
+        if (!answer?.ok || !window.open || window.admission.generation !== before) throw new Error("observation unavailable");
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify({ error: "settings observation was not accepted" }));
+      } finally { if (ownsBusy) window.busy = false; }
       return;
     }
     try {
@@ -374,6 +484,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     port: server.address().port,
     stop: () => {
       stopped = true;
+      for (const window of [...reportWindows.values()]) retireReport(window);
       server.close();
     },
   };

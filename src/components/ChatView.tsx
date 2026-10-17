@@ -1,3 +1,4 @@
+import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import BellOff from "lucide-react/dist/esm/icons/bell-off.mjs";
@@ -906,6 +907,8 @@ export function ChatView({ bot }: { bot: Bot }) {
     const saved = Number(localStorage.getItem("bloks-terminal-height"));
     return Number.isFinite(saved) && saved >= 140 ? saved : 260;
   });
+
+  useSettingsObservation({ "terminal.height": { status: "observed", value: terminalHeight }, "terminal.open": { status: "observed", value: terminalOpen } });
 
   const streaming = state.streaming[bot.threadId];
   const provisioning = state.provisioning[bot.id];

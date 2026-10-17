@@ -14,6 +14,7 @@
 import type {
   AnyProviderDriver,
   InstanceConfigMap,
+  InstanceConfig,
   InstanceId,
   ProviderInstance,
   ProviderSnapshot,
@@ -120,6 +121,14 @@ export class ProviderRegistry {
 
   get(instanceId: InstanceId): ProviderInstance | null {
     return this.entries_.get(instanceId)?.live ?? null;
+  }
+
+  /** A clone of the input already retained by this owner at its last load.
+   * No driver callback, config reread or health observation. This internal
+   * value contains credentials and must only reach an explicit projector. */
+  configuredInput(instanceId: InstanceId): InstanceConfig | null {
+    const bytes = this.built.get(instanceId);
+    return bytes === undefined ? null : JSON.parse(bytes) as InstanceConfig;
   }
 
   entries(): RegistryEntry[] {

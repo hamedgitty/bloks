@@ -6,6 +6,7 @@
 // The close button never leaves the top corner, and Escape always works.
 // The arrangement is remembered, because a layout you fixed once should
 // stay fixed.
+import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
 import GripHorizontal from "lucide-react/dist/esm/icons/grip-horizontal.mjs";
@@ -126,6 +127,13 @@ export function DesktopOverlay({
   onClose: () => void;
 }) {
   const [layout, setLayout] = useState<ChatLayout>(loadLayout);
+  useSettingsObservation({
+    "desktop.dock": { status: "observed", value: layout.dock },
+    "desktop.width": { status: "observed", value: layout.width },
+    "desktop.height": { status: "observed", value: layout.height },
+    "desktop.x": { status: "observed", value: layout.x },
+    "desktop.y": { status: "observed", value: layout.y },
+  });
   // pointer capture over an iframe dies the moment the cursor crosses
   // it; a shield div during any drag keeps the events coming
   const [dragging, setDragging] = useState(false);

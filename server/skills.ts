@@ -344,11 +344,29 @@ Approval: required before categorizing anything as personal or writing to an acc
 // than on every turn that lists the library.
 const warnedLong = new Set<string>();
 
+type ObservedSkill = Pick<Skill, "id" | "source"> & {
+  name: string | null; description: string | null; version: string | null;
+  body: boolean; registry: boolean; sha256: boolean;
+  omitted: string[];
+};
+type SkillReadStatus = "complete" | "partial" | "unavailable";
+let skillRead: SkillReadStatus = "unavailable";
+let skillObservation: { observedAt: number; invalidatedAt: number | null; omittedItems: number; items: ObservedSkill[] } | null = null;
+let skillReadAttempt: { at: number; status: SkillReadStatus } | null = null;
+
+/** Metadata from this owner's natural reads only. Does not load a library,
+ * read a file or claim that a hand-edited file is current. */
+export function observedSkillLibrary() {
+  return structuredClone({ lastObserved: skillObservation, lastAttempt: skillReadAttempt });
+}
+
 function readUserSkills(): Skill[] {
+  skillRead = "complete";
   let entries: string[];
   try {
     entries = readdirSync(SKILLS_DIR);
-  } catch {
+  } catch (error) {
+    skillRead = (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "complete" : "unavailable";
     return [];
   }
   const skills: Skill[] = [];
@@ -357,6 +375,7 @@ function readUserSkills(): Skill[] {
     const file = join(SKILLS_DIR, entry);
     try {
       if (statSync(file).size > MAX_SKILL_FILE_BYTES) {
+        skillRead = "partial";
         if (!warnedLong.has(file)) {
           warnedLong.add(file);
           console.warn(`[bloks] skipped skill ${entry}: the file is too large to read`);
@@ -391,6 +410,7 @@ function readUserSkills(): Skill[] {
         ...(parsed.sha256 ? { sha256: parsed.sha256 } : {}),
       });
     } catch {
+      skillRead = "partial";
       /* unreadable file, skip rather than fail the whole list */
     }
   }
@@ -405,7 +425,29 @@ export function listSkills(): Skill[] {
   const builtin = BUILTIN.filter((b) => !userIds.has(b.id)).map(
     (b): Skill => ({ ...b, source: "builtin" }),
   );
-  return [...builtin, ...user].sort((a, b) => a.name.localeCompare(b.name));
+  const skills = [...builtin, ...user].sort((a, b) => a.name.localeCompare(b.name));
+  const attempt = { at: Date.now(), status: skillRead };
+  skillReadAttempt = attempt;
+  if (skillRead === "complete") {
+    const cap = MAX_USER_SKILLS + BUILTIN.length;
+    skillObservation = {
+      observedAt: attempt.at, invalidatedAt: null, omittedItems: Math.max(0, skills.length - cap),
+      items: skills.slice(0, cap).map((s) => {
+        const omitted: string[] = [];
+        const text = (key: "name" | "description" | "version") => {
+          const value = s[key];
+          if (value === undefined) return null;
+          if ([...value].length > 256) { omitted.push(key); return null; }
+          return value;
+        };
+        return {
+          id: s.id, name: text("name"), description: text("description"), version: text("version"), source: s.source,
+          body: Boolean(s.body), registry: Boolean(s.registry), sha256: Boolean(s.sha256), omitted,
+        };
+      }),
+    };
+  }
+  return skills;
 }
 
 export function getSkills(ids: string[]): Skill[] {
@@ -478,6 +520,7 @@ export function installSkill(input: InstallInput): Skill {
   } catch {
     /* non-POSIX filesystem */
   }
+  if (skillObservation) skillObservation.invalidatedAt = Date.now();
   return {
     id,
     name,
@@ -494,6 +537,7 @@ export function deleteSkill(id: string): boolean {
   const slug = slugify(id);
   try {
     unlinkSync(join(SKILLS_DIR, `${slug}.md`));
+    if (skillObservation) skillObservation.invalidatedAt = Date.now();
     return true;
   } catch {
     return false;

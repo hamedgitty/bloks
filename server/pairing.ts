@@ -109,8 +109,8 @@ function isDevice(value: unknown): value is PairedDevice {
 /** The paired devices, digests and all, the owner's and members' both.
  * The relay link needs the digest to derive each device's key; nothing
  * else outside this file does. */
-export function pairedDevices(): PairedDevice[] {
-  return [...devices(), ...memberDevices()];
+export function pairedDevices(config?: AppConfig): PairedDevice[] {
+  return [...devices(config), ...memberDevices(config)];
 }
 
 /** Members' devices live in their own list: they do not count against the
@@ -118,8 +118,8 @@ export function pairedDevices(): PairedDevice[] {
  * guest's phone would read as one of the owner's own. */
 const MAX_MEMBER_DEVICES = 200;
 
-export function memberDevices(): PairedDevice[] {
-  const list = loadConfig().remote?.memberDevices;
+export function memberDevices(config: AppConfig = loadConfig()): PairedDevice[] {
+  const list = config.remote?.memberDevices;
   return Array.isArray(list)
     ? list.filter((d): d is PairedDevice => isDevice(d) && typeof d.personId === "string")
     : [];
@@ -264,10 +264,10 @@ export function claimPairing(
 
 /** The device a token belongs to, or null. Compares digests, not tokens,
  * so nothing reversible is held in memory either. */
-export function deviceForToken(token: string | null): PairedDevice | null {
+export function deviceForToken(token: string | null, config?: AppConfig): PairedDevice | null {
   if (!token) return null;
   const digest = sha256(token);
-  for (const device of pairedDevices()) {
+  for (const device of pairedDevices(config)) {
     if (typeof device?.hash === "string" && sameSecret(digest, device.hash)) {
       markSeen(device.id);
       return device;

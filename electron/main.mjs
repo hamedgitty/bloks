@@ -43,6 +43,7 @@ import { drainWait } from "./drain-wait.mjs";
 import { mayLookAgain, newestBeforeInstall, updateFrame } from "./update-check.mjs";
 import { markInstall, restartIntoUpdate, takeInstallMark, within } from "./update-restart.mjs";
 import { claimPairLink, startRemoteProxy } from "./remote.mjs";
+import { nativeSettingsObservation } from "./settings-observation.mjs";
 import { sameAppOrigin } from "./navigation.mjs";
 import { linkInArgv, teamLink } from "./links.mjs";
 import os from "node:os";
@@ -1457,6 +1458,12 @@ async function startRemote(profile) {
     return false;
   }
 }
+
+handle("settings:observation", (event) => nativeSettingsObservation({
+  window: BrowserWindow.fromWebContents(event.sender),
+  remote: Boolean(remoteProfile), shortcut: quickAccelerator, update: updaterState.state,
+  media: (kind) => systemPreferences.getMediaAccessStatus?.(kind),
+}));
 
 handle("remote:status", () =>
   remoteProfile ? { mode: "remote", host: remoteProfile.host, ...remoteState } : { mode: "local" },
