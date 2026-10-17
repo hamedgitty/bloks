@@ -90,6 +90,7 @@ for (const spec of [{ ack: null }, { absent: true }, { ack: "other" }, { ack: "p
   test(`N1 refuses before compact/input without losing cursor: ${JSON.stringify(spec)}`, async (t) => {
     const h = await native(t, spec); await h.start({ compactFirst: true, effort: "high" });
     const end = await h.ended(); assert.equal(end.type === "turn.completed" && end.preInputRefusal?.kind, "codex-speed");
+    if ("resumeError" in spec && end.type === "turn.completed") assert.match(end.preInputRefusal?.reason ?? "", /Update Codex/);
     assert.equal(h.frames.filter((f) => f.method === "thread/resume").length, 1);
     assert.equal(h.frames.filter((f) => ["thread/start", "thread/compact/start", "turn/start"].includes(f.method)).length, 0);
     assert.equal(h.events.some((e) => e.type === "session.started"), false);

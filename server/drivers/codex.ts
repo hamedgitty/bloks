@@ -975,7 +975,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             } catch (error) {
               // forgotten or unsupported; a fresh thread below. Anything
               // still to come about the old one is not about this turn.
-              if (codexTierError(error)) throw error instanceof CodexSpeedUnavailable ? error : new CodexSpeedUnavailable(String((error as Error)?.message ?? error));
+              if (codexTierError(error)) throw error instanceof CodexSpeedUnavailable ? error : new CodexSpeedUnavailable(`${String((error as Error)?.message ?? error)}. Update Codex if this CLI cannot accept and acknowledge serviceTier.`);
               abandoned.add(cursor);
               if (turn.compactOnly) throw error;
             }
