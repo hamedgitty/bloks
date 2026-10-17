@@ -139,3 +139,17 @@ test('an authenticated agent-origin unmarked reply uses the same settled policy'
   assert.ok((await h.json('/api/bots')).bots.find((b:any)=>b.id===receiver.id).messages.some((m:any)=>m.agent?.dir==='in'));
  } finally {writeFileSync(join(home,'release-codex'),'yes');await idle(sender);}
 });
+
+
+test('deleting the chosen final during a running turn cannot recover its words at settlement', async()=>{
+ plan('codex',[{items:[{text:'Earlier unmarked words'},{text:'Withdrawn final answer',phase:'final_answer'}],hold:true}]);
+ const b=await bot('codex');await send(b);
+ await wait(()=>frames.some(x=>x.kind==='message'&&x.threadId===b.threadId&&x.message.text==='Withdrawn final answer'),'no saved final');
+ const saved=frames.find(x=>x.kind==='message'&&x.threadId===b.threadId&&x.message.text==='Withdrawn final answer').message;
+ const removed=await h.json(`/api/threads/${b.threadId}/messages/${saved.id}`,{method:'DELETE'});
+ assert.equal(removed.message.deleted,true);assert.equal(removed.message.text,'');
+ writeFileSync(join(home,'release-codex'),'yes');await idle(b);await pause(100);
+ const current=(await h.json('/api/bots')).bots.find((x:any)=>x.id===b.id).messages.find((m:any)=>m.id===saved.id);
+ assert.equal(current.deleted,true);assert.equal(current.text,'');
+ assert.deepEqual(outcomes(b),[],'deleted final or earlier fallback text was republished');
+});

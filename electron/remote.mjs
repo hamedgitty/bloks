@@ -213,6 +213,28 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
   const keys = deviceKeys(profile.deviceToken);
   const streams = new Set();
   let stopped = false;
+  // The relay has no resume sequence. Give this proxy's live stream its
+  // own watermark, including hello, rather than disabling renderer freshness.
+  // Keep notification identities across relay and renderer reconnects: a
+  // replay keeps its original sequence and cannot become fresh attention.
+  let frameSeq = 0;
+  const noticeSequences = new Map();
+  const sequenced = (frame) => {
+    const message = frame.message;
+    const identity = frame.kind === "reply.settled"
+      ? `reply:${frame.threadId}:${frame.botId}:${frame.turnId}`
+      : frame.kind === "message" && message?.kind === "options" && (message.card?.requestId || message.card?.runId)
+        ? `request:${frame.threadId}:${message.card.requestId ?? message.card.runId}` : null;
+    let seq = identity ? noticeSequences.get(identity) : undefined;
+    if (seq === undefined) {
+      seq = ++frameSeq;
+      if (identity) {
+        noticeSequences.set(identity, seq);
+        if (noticeSequences.size > 512) noticeSequences.delete(noticeSequences.keys().next().value);
+      }
+    }
+    return { ...frame, _seq: seq };
+  };
 
   const ask = async (request) => {
     const payload = seal(keys.seal, profile.deviceId, {
@@ -293,14 +315,14 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
               onState({ connected: outer.online !== false });
               // the window starts over rather than resuming: frames the
               // relay did not carry cannot be replayed from here
-              for (const s of streams) s.write(`data: ${JSON.stringify({ kind: "hello", resumed: false })}\n\n`);
+              for (const s of streams) s.write(`data: ${JSON.stringify({ kind: "hello", resumed: false, _seq: frameSeq })}\n\n`);
               continue;
             }
             if (outer.kind !== "frame" || typeof outer.payload !== "string") continue;
             if (peek(outer.payload)?.d !== profile.deviceId) continue;
             const frame = open(keys.open, outer.payload);
             if (!frame) continue;
-            const text = `data: ${JSON.stringify(frame)}\n\n`;
+            const text = `data: ${JSON.stringify(sequenced(frame))}\n\n`;
             for (const s of streams) s.write(text);
           }
         }
@@ -327,7 +349,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
     if (url.pathname === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      res.write(`data: ${JSON.stringify({ kind: "hello", resumed: false })}\n\n`);
+      res.write(`data: ${JSON.stringify({ kind: "hello", resumed: false, _seq: frameSeq })}\n\n`);
       const stream = { write: (t) => { try { res.write(t); } catch {} } };
       streams.add(stream);
       const keepalive = setInterval(() => stream.write(": keepalive\n\n"), 25_000);

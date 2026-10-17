@@ -2944,7 +2944,14 @@ bus.subscribe((event: RuntimeEvent) => {
         ok: event.ok !== false, stopReason: event.stopReason,
         continues: pickingUp || handedOver || refolding, quiet: quietRun, maintenance: command,
       });
-      if (replyNotice) broadcast(replyNotice);
+      if (replyNotice) {
+        // Deletion may have withdrawn these words while the attempt ran.
+        // Revalidate this chosen record only, never fall back to older text.
+        const current = store.messagesFor(replyNotice.threadId).find((m) => m.id === replyNotice.message.id);
+        if (current?.role === "bot" && current.kind === "text" && !current.deleted && !current.quiet && current.text?.trim()) {
+          broadcast({ ...replyNotice, message: { ...replyNotice.message, text: current.text } });
+        }
+      }
       // a turn asked again or handed to the backup is not over yet, so what
       // waits on how it ends (a routine's run, a workflow step, a meeting's
       // write-up, a mail's reply) waits for the attempt that ends it
