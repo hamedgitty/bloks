@@ -2,6 +2,7 @@
 // <html>, index.html sets it before first paint so there is never a
 // flash, and this provider owns it from then on. "system" follows the
 // OS live via matchMedia.
+import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import {
   createContext,
   useCallback,
@@ -66,6 +67,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
   }, [theme]);
+
+  useSettingsObservation({ "theme.preference": { status: "observed", value: theme }, "theme.applied": { status: "observed", value: resolvedTheme } });
 
   const setTheme = useCallback((next: Theme) => {
     try {

@@ -84,6 +84,7 @@ export const RULES: Rule[] = [
   // The one route that exists for the command line itself. It is on the
   // list like everything else, because the guard runs before any route
   // does and a route nobody listed is a route nobody reaches.
+  { method: "GET", path: "/api/agent/settings", why: "inspect safe settings observations and their owner controls without changing them" },
   { method: "GET", path: "/api/agent/whoami", why: "find out who this credential says you are" },
   // The goal the person set for the conversation this turn runs in, if
   // any. Reading only: a goal starts turns unattended and can run a

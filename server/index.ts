@@ -17,6 +17,12 @@ import { extname, join, resolve, sep } from "node:path";
 import * as attachments from "./attachments.ts";
 import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, CHAIN_LIMIT_TITLE, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT } from "./agent-chain.ts";
 import { takeBackWaiting } from "./take-back.ts";
+import { SettingsWindows } from "./settings-windows.ts";
+import { SettingsPages } from "./settings-pages.ts";
+import { settingsAccess } from "./settings-access.ts";
+import { serveSettingsRead } from "./settings-read-http.ts";
+import { attachSettingsWindow, serveSettingsReport, readSettingsBody } from "./settings-report-http.ts";
+import { settingsCatalog } from "./settings-catalog.ts";
 import { telegramReply, type TelegramText } from "./telegram-reply.ts";
 import { TurnProgress } from "./telegram-progress.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
@@ -46,6 +52,7 @@ import {
   forgetSecret,
   instanceConfigs,
   loadConfig,
+  savedConfigObservation,
   saveConfig,
   AVATARS_DIR,
   EVENTS_DIR,
@@ -124,7 +131,7 @@ import {
   parseAgentFile,
   profileFromFile,
 } from "./agent-transfer.ts";
-import { deleteSkill, disclose, getSkills, installSkill, listSkills, skillsPrompt } from "./skills.ts";
+import { deleteSkill, disclose, getSkills, installSkill, listSkills, skillsPrompt, observedSkillLibrary } from "./skills.ts";
 import {
   CATALOG_TTL_MS,
   MAX_CATALOG_BYTES,
@@ -153,6 +160,7 @@ import {
   shouldCompact,
   summaryPrompt,
   BEFORE_TURN_CEILING,
+  BEFORE_TURN_AT,
   boundHandoff,
   compactBeforeTurn,
   handoffBudget,
@@ -1443,6 +1451,11 @@ function clientBot(bot: BotRecord | null) {
 
 // ── pushing events to open clients ─────────────────────────────────────
 const sseClients = new Set<ServerResponse>();
+const settingsWindows = new SettingsWindows();
+const settingsPages = new SettingsPages();
+const settingsTimeZone = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; }
+})();
 /** Members of shared rooms listening directly (not through the relay).
  * Kept apart from sseClients so no frame can reach one by accident: each
  * write goes through memberFrame first. */
@@ -11461,6 +11474,36 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const viaInvite = relayInviteFor(req);
   if (viaInvite) return serveInviteRequest(req, res, method, path, viaInvite);
   const viaRelay = relayDeviceFor(req);
+  if (path === "/api/agent/settings" || path === "/api/settings/device-session" || path === "/api/settings/device-report") {
+    const saved = savedConfigObservation();
+    if (!saved) return json(res, 503, { error: "settings observations are unavailable" });
+    const access = settingsAccess(req, saved.value, asAgent?.botId ?? null, viaRelay);
+    if (path !== "/api/agent/settings") {
+      return await serveSettingsReport(settingsWindows, access.reporter, path, method, () => readSettingsBody(req), res);
+    }
+    return serveSettingsRead(access.reader, method, url.searchParams, res, settingsPages, (category) => {
+      const compaction = beforeTurnSettings();
+      const at = compaction.at !== undefined && compaction.at > 0 && compaction.at < 1 ? Number(compaction.at) : BEFORE_TURN_AT;
+      const devices = pairedDevices(saved.value).filter((d) => !d.personId);
+      // Derive known revocations from the already-loaded owner observation.
+      // This neither polls a device nor refreshes a preference.
+      const known = new Set(devices.map((d) => d.id));
+      for (const window of settingsWindows.inspect().windows) {
+        if (window.source.deviceId && !known.has(window.source.deviceId)) settingsWindows.revoke(window.source.deviceId);
+      }
+      return settingsCatalog(category, {
+        agentId: asAgent?.botId ?? null,
+        workspace: { saved: saved.value, runtime: cfg, resolved: { beforeTurn: compaction.ceiling, beforeTurnAt: at, stallMinutes: stallLimitMs() / 60_000 }, redact: redactSecrets },
+        savedObservation: { source: saved.source, observedAt: saved.observedAt },
+        bots: store.bots, rooms: bloks.bloks, projects: projects.projects,
+        routines: routines.routines, watchers, workflows: workflows.workflows, hooks: webhooks.hooks, rules: policy.list(),
+        profileNotes: profileNotes.kept(), sidebarSections: sidebar.sectionOrder, skills: observedSkillLibrary(),
+        engines: registry.entries().map((entry) => ({ id: entry.instanceId, input: registry.configuredInput(entry.instanceId), loaded: Boolean(entry.live) })),
+        ownerDevices: devices, windows: settingsWindows.inspect(),
+        boot: { version: APP_VERSION, port: PORT, listening: BIND === "127.0.0.1" ? "loopback" : "network", timezone: settingsTimeZone, remoteEnabled: remoteEnabled(saved.value) },
+      }, settingsPages);
+    });
+  }
   // Loopback is not a boundary in a browser, see server/http-guard.ts.
   const local = viaRelay ? false : isLocalRequest(req);
   // A credential that was sent but is not one this server knows (a turn's
@@ -11549,6 +11592,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           if (entry.seq > since) res.write(entry.frame);
         }
       }
+      // Keep hello/replay ordering. Admission goes only to this direct owner
+      // response, outside the ring. Electron remote owns its proxy stream.
+      const saved = savedConfigObservation();
+      const reporter = saved && !viaRelay ? settingsAccess(req, saved.value, null, null).reporter : null;
+      const closeSettings = reporter?.role === "owner" ? attachSettingsWindow(settingsWindows, reporter.source, res) : () => {};
       sseClients.add(res);
       const keepalive = setInterval(() => {
         try {
@@ -11558,6 +11606,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       req.on("close", () => {
         clearInterval(keepalive);
         sseClients.delete(res);
+        closeSettings();
       });
       return;
     }
@@ -16708,6 +16757,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 400, { error: "enabled must be true or false" });
       }
       const saved = setRemoteEnabled(body.enabled);
+      if (!body.enabled) for (const device of pairedDevices(saved)) settingsWindows.revoke(device.id);
       Object.assign(cfg, saved);
       // pairing is the master switch for all remote access, the relay
       // included: turning it off drops the outbound line immediately
@@ -16761,6 +16811,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (method === "DELETE" && path === "/api/pair/devices") {
       if (!local) return json(res, 403, { error: "not from here" });
       const saved = revokeAll();
+      for (const window of settingsWindows.inspect().windows) if (window.source.deviceId) settingsWindows.revoke(window.source.deviceId);
       broadcast({ kind: "pairing", ...pairingStatus(saved) });
       return json(res, 200, { ok: true });
     }
@@ -16770,6 +16821,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const ok = revokeDevice(m[1], (saved) => {
         broadcast({ kind: "pairing", ...pairingStatus(saved) });
       });
+      if (ok) settingsWindows.revoke(m[1]);
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "no such device" });
     }
 

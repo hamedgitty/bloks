@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("bloks", {
   filePath: (file) => webUtils.getPathForFile(file),
   pickFolder: () => ipcRenderer.invoke("dialog:pick-folder"),
 
+  settingsObservation: () => ipcRenderer.invoke("settings:observation"),
   appVersion: () => ipcRenderer.invoke("app:version"),
   updateState: () => ipcRenderer.invoke("update:state"),
   updateCheck: () => ipcRenderer.invoke("update:check"),

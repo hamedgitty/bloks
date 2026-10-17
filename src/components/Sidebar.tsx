@@ -1,3 +1,4 @@
+import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import BellDot from "lucide-react/dist/esm/icons/bell-dot.mjs";
 import ClipboardCopy from "lucide-react/dist/esm/icons/clipboard-copy.mjs";
@@ -770,6 +771,13 @@ export function Sidebar() {
     } catch {
       return [];
     }
+  });
+  useSettingsObservation({
+    "sidebar.preference": { status: "observed", value: choice === null ? null : choice ? "rail" : "full" },
+    "sidebar.applied": { status: "observed", value: mobile ? "mobile" : rail ? "rail" : "full" },
+    "sidebar.foldsConfigured": { status: "observed", value: folded.length > 0 },
+    "conversations.preference": { status: "observed", value: conversations },
+    "conversations.applied": { status: "observed", value: conversations && !rail && !mobile },
   });
   const toggleFolded = (name: string) => {
     const next = folded.includes(name) ? folded.filter((n) => n !== name) : [...folded, name];

@@ -1,5 +1,6 @@
 // A room: several agents and you, in one transcript. Unlike a solo chat,
 // every line is attributed, because who said it is half the meaning.
+import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AlertTriangle from "lucide-react/dist/esm/icons/alert-triangle.mjs";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
@@ -320,6 +321,7 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [lens, setLens] = useState<"stream" | "forum">(
     () => (localStorage.getItem("bloks-room-lens") === "forum" ? "forum" : "stream"),
   );
+  useSettingsObservation({ "room.lens": { status: "observed", value: lens } });
   const setLensAnd = (next: "stream" | "forum") => {
     setLens(next);
     try {
