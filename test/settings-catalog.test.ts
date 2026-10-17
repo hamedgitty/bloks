@@ -66,3 +66,24 @@ test('device projection retains dated expired observations while excluding sourc
   for(const protectedValue of [secret,opened.windowKey,opened.admission.capability,opened.admission.generation])assert.ok(!text.includes(protectedValue));
   const native=page(pages,input,'device.native');assert.match(JSON.stringify(native),/native.mode/);assert.ok(!JSON.stringify(native).includes('theme.applied'));
 });
+
+
+test('F1 common short MCP and URL values preserve catalog names and descriptions while credentials remain redacted',()=>{
+  const input=fixture();
+  const cfg={...input.workspace.runtime as object,
+    composio:{key:secret,url:'https://example.test/mcp'},
+    custom:[{id:'endpoint',name:'Endpoint v1',url:'https://example.test/v1',keys:[{key:secret}]}],
+    mcpServers:[{id:'mcp',name:'github-mcp',transport:'stdio',command:'npx',args:['-y','mcp'],env:{TOKEN:secret}}],
+    remote:{devices:[{id:'a',hash:secret}]},
+  };
+  input.workspace={...input.workspace,saved:cfg,runtime:cfg};
+  input.bots=[{id:'agent',name:'Daily-yoga coach',description:'Runs npx tools and mcp servers',title:secret}];
+  const pages=new SettingsPages();
+  const fields=page(pages,input,'agent').body.rows[0]!.observation.fields as {id:string;effective:unknown}[];
+  assert.deepEqual(fields.find((f)=>f.id==='name')!.effective,{status:'value',value:'Daily-yoga coach'});
+  assert.deepEqual(fields.find((f)=>f.id==='description')!.effective,{status:'value',value:'Runs npx tools and mcp servers'});
+  assert.deepEqual(fields.find((f)=>f.id==='title')!.effective,{status:'value',value:'[redacted]'});
+  const mcp=page(pages,input,'workspace.apps',pages.reference('workspace.apps','mcp:mcp')).body.rows[0]!.observation.fields as {id:string;effective:unknown}[];
+  assert.deepEqual(mcp.find((f)=>f.id==='name')!.effective,{status:'value',value:'github-mcp'});
+  for(const [category] of SETTINGS_CATEGORIES)assert(!JSON.stringify(page(pages,input,category)).includes(secret),category);
+});

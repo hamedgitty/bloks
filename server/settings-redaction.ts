@@ -10,7 +10,9 @@ function values(raw:unknown):unknown[] {
 export function inspectionRedactor(...roots:unknown[]):(text:string)=>string {
   const protectedText=new Set<string>();
   const add=(raw:unknown)=>{
-    if(typeof raw!=="string" || !raw)return;
+    // Match the existing credential redactor: common short command/URL
+    // fragments must not rewrite permitted names and descriptions.
+    if(typeof raw!=="string" || raw.length<8)return;
     protectedText.add(raw);protectedText.add(encodeURIComponent(raw));
   };
   const map=(raw:unknown)=>{for(const value of values(raw))add(value);};

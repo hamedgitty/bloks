@@ -20,8 +20,9 @@ type ReporterOptions = {
 };
 
 /** Reports committed owners without changing preferences. One serialized
- * admission/report, one latest replacement and one finite native read. No
- * timers, retries, read-triggered work or acknowledgement feedback. */
+ * admission/report, one latest replacement and one finite native read.
+ * Actual changes reset a one-shot 250 ms settle, with no idle timer, retry,
+ * read-triggered work or acknowledgement feedback. */
 export class SettingsReporter {
   private readonly options: ReporterOptions;
   private transport: SettingsReportTransport | null = null;
@@ -34,6 +35,7 @@ export class SettingsReporter {
   private renewalAllowed = false;
   private busy = false;
   private scheduled = false;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private nativeBusy = false;
   private nativeRequested = false;
   private nativeValue: { epoch: number; revision: number; values: unknown } | null = null;
@@ -47,6 +49,8 @@ export class SettingsReporter {
   }
 
   disconnect() {
+    if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+    this.settleTimer = null;
     this.epoch++;
     this.transport = null;
     this.admission = null;
@@ -64,13 +68,17 @@ export class SettingsReporter {
     this.pending = true;
     this.renewalAllowed = true;
     this.nativeRequested = Boolean(this.options.native);
-    this.schedule();
+    if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      this.schedule();
+    }, 250);
   }
 
   private now() { return (this.options.monotonic ?? (() => performance.now()))(); }
 
   private schedule() {
-    if (this.scheduled) return;
+    if (this.scheduled || this.settleTimer !== null) return;
     this.scheduled = true;
     queueMicrotask(() => {
       this.scheduled = false;
@@ -96,10 +104,10 @@ export class SettingsReporter {
   }
 
   private async drain() {
-    if (this.busy || !this.transport) return;
+    if (this.busy || !this.transport || this.settleTimer !== null) return;
     this.busy = true;
     try {
-      while (this.transport && (this.pending || this.nativeRequested && !this.nativeBusy)) {
+      while (this.transport && this.settleTimer === null && (this.pending || this.nativeRequested && !this.nativeBusy)) {
         const transport: SettingsReportTransport = this.transport;
         const epoch = this.epoch;
         if (!this.admission || this.now() >= this.deadline) {
@@ -125,6 +133,7 @@ export class SettingsReporter {
           this.deadline = started + admitted.lifetimeMs;
           this.sequence = 0;
         }
+        if (this.settleTimer !== null) break;
         // Capture AFTER admission, not before a slow renewal. Changes while
         // it was pending are now represented by one latest complete snapshot.
         const revision = this.revision;

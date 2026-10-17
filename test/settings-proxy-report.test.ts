@@ -105,6 +105,11 @@ async function fixture() {
     gate: (action: string) => { const wait = deferred(); gate = { action, entered: false, wait }; return { entered: () => gate!.entered, release: wait.resolve }; },
     revoke: () => { revoked = true; windows.revoke("fixture-device"); },
     restart: () => { windows = new SettingsWindows({ monotonic: () => elapsed, wall: () => 1_700_000_000_000 + elapsed }); },
+    relayReady: () => streams.size > 0,
+    broadcastFence: () => {
+      const payload = seal(keyFromToken(deviceToken, "mac-to-phone"), "fixture-device", { kind: "fixture-fence" });
+      for (const s of streams) s.write(`data: ${JSON.stringify({ kind: "frame", payload })}\n\n`);
+    },
     broadcastPrivate: () => {
       const payload = seal(keyFromToken(deviceToken, "mac-to-phone"), "fixture-device", { kind: "settings-report", windowKey: "DO-NOT-FAN-OUT" });
       for (const s of streams) s.write(`data: ${JSON.stringify({ kind: "frame", payload })}\n\n`);
@@ -274,4 +279,29 @@ test("D3 delayed proxy report cannot renew its issuance deadline or replace its 
   assert.equal((await late).status, 409);
   assert.equal(f.windows().inspect().windows[0].freshness, "unknown");
   assert.deepEqual(f.windows().inspect().windows[0].lastReported, before);
+});
+
+
+test("F3 relay private controls never fan out to either renderer and both windows can still report", async (t) => {
+  const f = await fixture(); t.after(f.close);
+  const a = await stream(f.origin); t.after(a.stop);
+  const b = await stream(f.origin); t.after(b.stop);
+  const ca = await activate(f.origin, await a.control());
+  const cb = await activate(f.origin, await b.control());
+  await until(f.relayReady);
+  f.broadcastPrivate();
+  f.broadcastFence(); // ordered ordinary frame proves each stream passed the injected frame
+  for (const renderer of [a, b]) {
+    for (;;) {
+      const frame = await renderer.next();
+      assert.notEqual(frame.windowKey, "DO-NOT-FAN-OUT", "relay report capability reached a renderer stream");
+      if (frame.kind === "fixture-fence") break;
+    }
+    assert(!JSON.stringify(renderer.frames).includes("DO-NOT-FAN-OUT"));
+  }
+  assert.equal((await post(f.origin, "/api/settings/device-report", report(ca, "dark"))).status, 200);
+  assert.equal((await post(f.origin, "/api/settings/device-report", report(cb, "light"))).status, 200);
+  assert.deepEqual(f.windows().inspect().windows.map((row) => row.lastReported!.snapshot.values["theme.applied"]), [
+    { status: "observed", value: "dark" }, { status: "observed", value: "light" },
+  ]);
 });
