@@ -212,13 +212,18 @@ const ROOM_FRAMES = new Set(["room.people", "room.sharing", "room.typing", "room
  * how this member sees a room, or null when they are not in it.
  */
 export function memberFrame(payload: unknown, viewOf: (roomId: string) => MemberView | null): unknown | null {
-  const frame = payload as { kind?: string; threadId?: string; roomId?: string; message?: Message; moved?: boolean } | null;
+  const frame = payload as { kind?: string; threadId?: string; roomId?: string; message?: Message; moved?: boolean; botId?: string; turnId?: string } | null;
   if (!frame || typeof frame.kind !== "string") return null;
   if (frame.kind === "ping") return frame;
-  if (frame.kind === "message" || frame.kind === "message.patch") {
+  if (frame.kind === "message" || frame.kind === "message.patch" || frame.kind === "reply.settled") {
     const view = frame.threadId ? viewOf(frame.threadId) : null;
     if (!view || !frame.message) return null;
     const shown = memberMessage(frame.message, view);
+    if (frame.kind === "reply.settled") {
+      return shown && shown.kind === "text" && !shown.deleted
+        ? { kind: frame.kind, threadId: frame.threadId, botId: frame.botId, turnId: frame.turnId, message: shown }
+        : null;
+    }
     // a queued message that went moves to the end on a member's screen too
     return shown ? { kind: frame.kind, threadId: frame.threadId, message: shown, ...(frame.moved ? { moved: true } : {}) } : null;
   }

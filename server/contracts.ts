@@ -127,7 +127,7 @@ export type RuntimeEvent = RuntimeEventBase &
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | { type: "item.completed"; itemType: "tool"; ok: boolean }
-    | { type: "item.completed"; itemType: "assistant_text"; text: string }
+    | { type: "item.completed"; itemType: "assistant_text"; text: string; replyPhase?: import("./reply-notifications.ts").ReplyPhase }
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }
     | {
         type: "request.opened";
