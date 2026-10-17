@@ -1,3 +1,4 @@
+import { ReplyNotifications, settledReply } from "./reply-notifications.ts";
 // Bloks server: the harness host.
 //
 // The one rule the whole shape follows: clients hold no transports. The
@@ -2196,6 +2197,8 @@ function recoverPlan(messageId: string, botId: string) {
   return plan ? { plan, leadId: bot.id } : null;
 }
 
+const replyNotifications = new ReplyNotifications();
+
 bus.subscribe((event: RuntimeEvent) => {
   // Maintenance compaction (idle or before a turn) does not own a
   // command catalog: keep the latest agent turn's report.
@@ -2208,6 +2211,10 @@ bus.subscribe((event: RuntimeEvent) => {
   // lane is currently speaking.
   const roomId = activeRoom.get(event.threadId) ?? event.threadId;
   const inRoom = roomId !== event.threadId;
+  if (event.type === "turn.started") {
+    replyNotifications.start(event.threadId, event.turnId, roomId, bot.id,
+      store.taskByThread(event.threadId)?.task.goal?.status === "active");
+  }
 
   const pushMessage = (m: Omit<Message, "id" | "at">) => {
     const message = store.appendMessage(roomId, inRoom ? { ...m, from: bot.id } : m);
@@ -2251,13 +2258,14 @@ bus.subscribe((event: RuntimeEvent) => {
         // that reads it, before the turn has even ended.
         const quiet = !inRoom && checkInTurns.has(event.threadId) && isQuietReply(text);
         if (text) {
-          pushMessage({
+          const savedReply = pushMessage({
             role: "bot",
             kind: "text",
             text: houseStyle(text),
             ...(answering ? { afterAgent: answering } : {}),
             ...(quiet ? { quiet: true } : {}),
           });
+          replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase, event.syntheticText);
         }
         for (const component of components) {
           if (!mayRender(component.kind, bot.withoutComponents)) continue;
@@ -2794,6 +2802,9 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "turn.completed": {
+      // Capture before owner settlement or queue dispatch can replace this lane.
+      const endingReply = replyNotifications.take(event.threadId, event.turnId);
+      const endingCheckIn = checkInTurns.has(event.threadId);
       const command = commandTurns.has(event.threadId);
       // a turn that failed on its length is asked again once it is folded
       // (runtime.error above), so it is not over yet as far as a goal goes
@@ -2926,9 +2937,21 @@ bus.subscribe((event: RuntimeEvent) => {
       // folded away and announces nothing. One the person spoke into is
       // theirs now, and one that failed is something they should see.
       const quietRun =
-        checkInTurns.has(event.threadId) && !inRoom && event.ok !== false && !handedOver &&
+        endingCheckIn && !inRoom && event.ok !== false && !handedOver &&
         !turnsForYou.has(event.threadId) && foldQuietRun(event.threadId);
       checkInTurns.delete(event.threadId);
+      const replyNotice = settledReply(endingReply, {
+        ok: event.ok !== false, stopReason: event.stopReason,
+        continues: pickingUp || handedOver || refolding, quiet: quietRun, maintenance: command,
+      });
+      if (replyNotice) {
+        // Deletion may have withdrawn these words while the attempt ran.
+        // Revalidate this chosen record only, never fall back to older text.
+        const current = store.messagesFor(replyNotice.threadId).find((m) => m.id === replyNotice.message.id);
+        if (current?.role === "bot" && current.kind === "text" && !current.deleted && !current.quiet && current.text?.trim()) {
+          broadcast({ ...replyNotice, message: { ...replyNotice.message, text: current.text } });
+        }
+      }
       // a turn asked again or handed to the backup is not over yet, so what
       // waits on how it ends (a routine's run, a workflow step, a meeting's
       // write-up, a mail's reply) waits for the attempt that ends it

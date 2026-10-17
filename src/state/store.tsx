@@ -20,7 +20,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { CheckInHold, noticeFor } from "@/lib/notify";
+import { CheckInHold, NoticeDelivery, noticeFor } from "@/lib/notify";
 import { sendBotArchive } from "@/lib/botArchive";
 import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendMessage } from "@/lib/sendMessage";
@@ -580,37 +580,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    */
   /** Frames at or below this sequence are catch-up, not news. */
   const replayUntil = useRef(0);
-  /** When each thread last raised a banner, to keep a chatty turn to one. */
-  const lastBanner = useRef(new Map<string, number>());
+  const noticeDelivery = useRef(new NoticeDelivery());
   /** A check-in's replies, waiting for its turn to end (CheckInHold). */
   const checkIns = useRef(new CheckInHold<Message>());
 
-  const announce = useCallback((threadId: string, message: unknown) => {
+  const announce = useCallback((threadId: string, message: unknown, replySettled = false) => {
     const bridge = window.bloks;
     if (!bridge || !message) return;
     const current = stateRef.current;
     const bot = current.bots.find((b) => b.tasks?.some((t) => t.id === threadId));
     const room = current.bloks.find((r) => r.id === threadId);
     if (!bot && !room) return;
-    const text = (message as { text?: string }).text ?? "";
     const notice = noticeFor(message as never, {
+      replySettled,
       focused: document.hasFocus() && document.visibilityState === "visible",
       selectedId: current.selectedId,
       threadId,
       ...(bot ? { bot: { id: bot.id, name: bot.name, notifications: bot.notifications } } : {}),
       ...(room ? { room: { id: room.id, name: room.name } } : {}),
-      // a room line that named you is the one worth hearing about
-      mentionsUser: /(^|\s)@(you|me)\b/i.test(text),
       goalRunning: bot?.tasks?.find((t) => t.id === threadId)?.goal?.status === "active",
     });
     if (!notice) return;
-    // A single turn can settle several messages. The first one is the
-    // news; the rest would be the same news again, louder. An approval
-    // is exempt, because it is the one thing that is always worth saying.
-    const now = Date.now();
-    const previous = lastBanner.current.get(threadId) ?? 0;
-    if (!notice.urgent && now - previous < 4000) return;
-    lastBanner.current.set(threadId, now);
     if (bot?.avatarAt) notice.avatar = `/api/bots/${bot.id}/avatar?v=${bot.avatarAt}`;
     void bridge.notifyShow(notice).catch(() => {});
   }, []);
@@ -717,6 +707,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const connect = () => {
       if (!alive) return;
+      noticeDelivery.current.reconnect();
       es = new EventSource(lastSeq ? `/api/events?since=${lastSeq}` : "/api/events");
       es.onopen = () => rawDispatch({ type: "connected", value: true });
       es.onerror = () => {
@@ -743,6 +734,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // is news: a laptop opened after an hour should not fire an
           // hour of banners.
           replayUntil.current = typeof frame._seq === "number" ? frame._seq : 0;
+          noticeDelivery.current.hello(frame._seq);
           if (!frame.resumed) {
             // a server that could not resume may have restarted and begun
             // counting again, so its sequences say nothing about ours
@@ -763,9 +755,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           }
           speak(frame.threadId, msg);
-          if (news) announce(frame.threadId, msg);
+          if (news && msg?.kind !== "text" && noticeDelivery.current.take(frame._seq,
+            `message:${frame.threadId}:${msg?.card?.requestId ?? msg?.id}`)) announce(frame.threadId, msg);
           break;
         }
+        case "reply.settled":
+          // Saved-content snapshot only: no history insertion or speech.
+          if (noticeDelivery.current.take(frame._seq, `reply:${frame.threadId}:${frame.botId}:${frame.turnId}`)) {
+            announce(frame.threadId, frame.message, true);
+          }
+          break;
         case "message.patch":
           rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message, moved: frame.moved === true });
           break;
@@ -816,7 +815,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             const reported = checkIns.current.release(threadId);
             if (reported) {
               speak(threadId, reported);
-              announce(threadId, reported);
             }
           }
           break;

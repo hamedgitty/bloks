@@ -708,6 +708,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 ...envelope(threadId, turnId),
                 type: "item.completed",
                 itemType: "assistant_text",
+                ...(item.phase === "commentary" || item.phase === "final_answer" ? { replyPhase: item.phase } : {}),
                 text: item.text,
               });
             } else if (TOOL_ITEM_TYPES.has(item.type)) {

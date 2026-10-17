@@ -1,4 +1,4 @@
-// What the app does with a quiet check-in: never a banner, a held banner
+// What the app does with a quiet check-in: no quiet banner, held speech
 // for the replies of a check-in still running, one muted line for a run
 // of them in the chat, and nothing in the sidebar's preview.
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { lastSaid } from "../src/lib/preview.ts";
 import { quietLine, quietRunAt } from "../src/lib/transcript.ts";
 import type { Message } from "../src/state/reducer.ts";
 
-const ctx: NotifyContext = { focused: false, selectedId: "", threadId: "t1", bot: { id: "bot-1", name: "Sentry", notifications: true } };
+const ctx: NotifyContext = { replySettled: true, focused: false, selectedId: "", threadId: "t1", bot: { id: "bot-1", name: "Sentry", notifications: true } };
 
 describe("banners", () => {
   test("a quiet answer never raises one, whatever else is true", () => {
