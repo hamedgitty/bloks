@@ -506,7 +506,13 @@ describe("sweeping the store", () => {
     const dir = folder("sweep-batch", { "n.md": "0\n" });
     for (let turn = 1; turn <= 51; turn++) {
       await cp.begin("lane", "bot", dir);
-      writeFileSync(join(dir, "n.md"), `${turn}\n`);
+      // A different size every turn, the first included. File times can be
+      // coarser than a turn (a few milliseconds on Linux), and a photograph
+      // does not read a file again whose size and mtime have not moved. So
+      // "1" written in the same tick as the folder's "0" looked unchanged,
+      // the first turn kept no record, and the store ended one short of its
+      // sweep.
+      writeFileSync(join(dir, "n.md"), `${"n".repeat(turn + 1)}\n`);
       await cp.finish("lane");
       if (turn === 1) assert.ok(existsSync(stray), "one turn past the limit is not worth a sweep");
     }
