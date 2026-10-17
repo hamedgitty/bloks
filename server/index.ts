@@ -2265,7 +2265,7 @@ bus.subscribe((event: RuntimeEvent) => {
             ...(answering ? { afterAgent: answering } : {}),
             ...(quiet ? { quiet: true } : {}),
           });
-          replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase);
+          replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase, event.syntheticText);
         }
         for (const component of components) {
           if (!mayRender(component.kind, bot.withoutComponents)) continue;

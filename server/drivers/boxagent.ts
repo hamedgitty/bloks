@@ -242,6 +242,8 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
                   ...envelope(threadId, turnId),
                   type: "item.completed",
                   itemType: "assistant_text",
+                  // Keep the existing chat placeholder, but never announce it as provider text.
+                  ...(!final && !lastSpoken ? { syntheticText: true as const } : {}),
                   text: final || lastSpoken || "(finished)",
                 });
                 return settle(true, null);

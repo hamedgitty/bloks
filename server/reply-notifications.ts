@@ -22,9 +22,9 @@ export class ReplyNotifications {
     if (turnId) this.active.set(laneId, { turnId, threadId, botId, goalOwned });
   }
 
-  text(laneId: string, turnId: string | undefined, message: Message, phase?: ReplyPhase): void {
+  text(laneId: string, turnId: string | undefined, message: Message, phase?: ReplyPhase, synthetic = false): void {
     const a = this.active.get(laneId);
-    if (!a || a.turnId !== turnId || message.role !== "bot" || message.kind !== "text" || !message.text?.trim() || message.quiet || message.deleted) return;
+    if (synthetic || !a || a.turnId !== turnId || message.role !== "bot" || message.kind !== "text" || !message.text?.trim() || message.quiet || message.deleted) return;
     // Terminal presentation (PR314) is not final-answer provenance.
     if (phase === "commentary") return;
     const { id, at, role, kind, text, from, quiet, deleted } = message;
