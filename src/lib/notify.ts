@@ -1,3 +1,4 @@
+import { itemProgress, type CodexText } from "../../server/codex-text.ts";
 // What is worth interrupting somebody for.
 //
 // Agents work while you are elsewhere, which is the point of them; the
@@ -38,6 +39,7 @@ const ENGINE_OUT =
 
 /** The parts of a message this decision actually depends on. */
 export interface NotifiableMessage {
+  codexText?: CodexText;
   role?: string;
   kind?: string;
   text?: string;
@@ -93,7 +95,7 @@ function preview(text: string): string {
  * Null means stay quiet, which is the answer most of the time.
  */
 export function noticeFor(message: NotifiableMessage, ctx: NotifyContext): Notice | null {
-  if (message.role !== "bot" || message.quiet) return null;
+  if (message.role !== "bot" || message.quiet || itemProgress(message)) return null;
 
   const who = ctx.room ? ctx.room.name : (ctx.bot?.name ?? "An agent");
   const target = ctx.room ? ctx.room.id : (ctx.bot?.id ?? ctx.threadId);

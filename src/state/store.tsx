@@ -1,3 +1,4 @@
+import { itemProgress, isProgressText } from "../../server/codex-text.ts";
 // All of the app's state, and the only place it talks to anything.
 //
 // The split that matters: the reducer next door is pure and knows nothing
@@ -587,7 +588,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const announce = useCallback((threadId: string, message: unknown) => {
     const bridge = window.bloks;
-    if (!bridge || !message) return;
+    if (!bridge || !message || itemProgress(message as Message)) return;
     const current = stateRef.current;
     const bot = current.bots.find((b) => b.tasks?.some((t) => t.id === threadId));
     const room = current.bloks.find((r) => r.id === threadId);
@@ -619,7 +620,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * their chat is not the one on screen. Never a quiet check-in's: it
    * said nothing to you. */
   const speak = useCallback((threadId: string, message: Message | undefined) => {
-    if (message?.role !== "bot" || message.kind !== "text" || !message.text || message.quiet) return;
+    if (message?.role !== "bot" || message.kind !== "text" || !message.text || message.quiet || itemProgress(message)) return;
     const owner = stateRef.current.bots.find((b) => b.tasks?.some((t) => t.id === threadId));
     if (owner) maybeAutoSpeak(owner, message.text);
   }, []);
@@ -801,7 +802,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (event.type === "commands.updated") {
             rawDispatch({ type: "tick", key: `commands:${event.threadId}` });
           } else if (event.type === "content.delta" && event.streamKind === "assistant_text") {
-            rawDispatch({ type: "streamDelta", threadId: event.threadId, delta: event.delta });
+            if (!isProgressText(event.codexText)) rawDispatch({ type: "streamDelta", threadId: event.threadId, delta: event.delta });
           } else if (event.type === "turn.started") {
             rawDispatch({ type: "turnStarted", threadId: event.threadId });
           } else if (event.type === "turn.completed") {

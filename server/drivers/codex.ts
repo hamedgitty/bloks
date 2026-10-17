@@ -1,3 +1,4 @@
+import { codexItemText } from "../codex-text.ts";
 // Codex, driven through its app-server protocol.
 //
 // `codex app-server` is the CLI's headless mode: JSON-RPC over stdio, with
@@ -361,7 +362,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       turnId: string;
       abort: () => void;
       /** More words for this turn; false when Codex would not take them. */
-      steer: (text: string, options?: { skillNames?: string[] }) => Promise<boolean>;
+      steer: (text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void }) => Promise<boolean>;
       asks: Map<string, Answer>;
     }
     const running = new Map<string, RunningTurn>();
@@ -700,12 +701,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               if (!item.text?.trim()) break;
               emit({
                 ...envelope(threadId, turnId),
+                itemId: typeof item.id === "string" ? item.id : undefined,
+                codexItem: codexItemText(item),
                 type: "content.delta",
                 streamKind: "assistant_text",
                 delta: item.text,
               });
               emit({
                 ...envelope(threadId, turnId),
+                itemId: typeof item.id === "string" ? item.id : undefined,
+                codexItem: codexItemText(item),
                 type: "item.completed",
                 itemType: "assistant_text",
                 text: item.text,
@@ -871,14 +876,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // refuses the call if that turn has ended, so a refusal means the
       // words were not taken and can go to the next turn instead.
       const canSteer = () => Boolean(!finished && !compacting && codexThread && codexTurn && ![...compactionStarts.keys()].some((key) => requestedCompaction === null || !key.startsWith(`${requestedCompaction}\0`)));
-      const steer = async (text: string, options?: { skillNames?: string[] }) => {
+      const steer = async (text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void }) => {
         // during a compaction the turn running is the compaction's
         if (!canSteer()) return false;
         const skills = await selectedSkills(options?.skillNames);
         if (!canSteer()) return false;
         for (const skill of skills) skillNamesSent.add(skill.name);
         try {
-          await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId: codexTurn, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
+          const expectedTurnId = codexTurn;
+          const accepted = await rpc.request("turn/steer", { threadId: codexThread, expectedTurnId, input: [{ type: "text", text }, ...skills.map(({ name, path }) => ({ type: "skill", name, path }))] });
+          if ((accepted as { turnId?: unknown } | null)?.turnId !== expectedTurnId) return false;
+          options?.onAccepted?.(turnId);
           return true;
         } catch {
           for (const skill of skills) skillNamesSent.delete(skill.name);

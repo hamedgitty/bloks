@@ -1,3 +1,4 @@
+import { codexTextFor, itemProgress, isProgressText, type CodexText } from "./codex-text.ts";
 // Bloks server: the harness host.
 //
 // The one rule the whole shape follows: clients hold no transports. The
@@ -2007,6 +2008,7 @@ function wakeFor(payload: unknown): Wake | undefined {
   }
   if (p?.kind !== "message" || !p.message) return undefined;
   const message = p.message;
+  if (itemProgress(message)) return undefined;
   const owner = ownerClientDigest();
   const blok = p.threadId ? bloks.get(p.threadId) : null;
   const shared = blok?.sharing ? blok : null;
@@ -2061,6 +2063,7 @@ function previewOf(frame: unknown): WakePreview | null {
   const f = frame as { kind?: string; threadId?: string; message?: Message } | null;
   if (f?.kind !== "message" || !f.message || !f.threadId) return null;
   const m = f.message;
+  if (itemProgress(m)) return null;
   const bot = m.from ? store.bot(m.from) : store.botByThread(f.threadId);
   const room = bloks.get(f.threadId);
   const clip = (text: string) => (text.length > 178 ? `${text.slice(0, 177).trimEnd()}…` : text);
@@ -2200,6 +2203,12 @@ bus.subscribe((event: RuntimeEvent) => {
   // Maintenance compaction (idle or before a turn) does not own a
   // command catalog: keep the latest agent turn's report.
   if (idleCompacting.has(event.threadId)) return onIdleCompaction(event);
+  const origin = codexOrigins.get(event.threadId);
+  if (event.type === "turn.started" && event.provider === "codex" && origin) origin.turnId = event.turnId;
+  if (event.provider === "codex" && event.codexItem) {
+    const source = origin && origin.turnId && origin.turnId === event.turnId ? (turnsForYou.has(event.threadId) ? "person" : origin.origin) : "unknown";
+    event = { ...event, codexText: codexTextFor(event.codexItem, event.turnId, event.itemId, source) };
+  }
   broadcast({ kind: "runtime", event });
   const bot = store.botByThread(event.threadId);
   if (!bot) return;
@@ -2245,7 +2254,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // so an API model can answer with a chart like anybody else.
         const { components, text } = extractComponents(afterPlan);
         const answering = inRoom ? undefined : replyingTo.get(event.threadId);
-        if (answering && text) spokeInTurn.add(event.threadId);
+        if ((answering || inRoom) && text && !isProgressText(event.codexText)) spokeInTurn.add(event.threadId);
         // A check-in's QUIET is marked the moment it is said, so the frame
         // that carries it already says it is not news, to every client
         // that reads it, before the turn has even ended.
@@ -2255,6 +2264,7 @@ bus.subscribe((event: RuntimeEvent) => {
             role: "bot",
             kind: "text",
             text: houseStyle(text),
+            ...(event.codexText ? { codexText: event.codexText } : {}),
             ...(answering ? { afterAgent: answering } : {}),
             ...(quiet ? { quiet: true } : {}),
           });
@@ -2939,8 +2949,9 @@ bus.subscribe((event: RuntimeEvent) => {
       // A turn another agent started that ended well without a word to
       // the person leaves nothing to read; anything else marks the chat.
       const quietAgentTurn =
-        replyingTo.has(event.threadId) && event.ok !== false && !spokeInTurn.has(event.threadId);
+        (replyingTo.has(event.threadId) || (event.provider === "codex" && origin && origin.turnId === event.turnId && origin.origin === "agent")) && event.ok !== false && !spokeInTurn.has(event.threadId);
       spokeInTurn.delete(event.threadId);
+      if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
       if (quietAgentTurn || quietRun) {
         // nothing new here
       } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
@@ -3104,6 +3115,8 @@ const activeRoom = new Map<string, string>(); // taskId -> blokId
  * folded, waking after the Mac slept) is still answering them, and the
  * next turn that starts afresh says whose it is. */
 const turnsForYou = new Set<string>();
+// Identity/origin only, no terminal-message bookkeeping or stored rewrites.
+const codexOrigins = new Map<string, { origin: CodexText["origin"]; turnId?: string }>();
 
 /** Lanes running a quiet routine's turn (server/routines.ts, isQuiet),
  * from its start to its end. What such a turn says is held back from the
@@ -5022,7 +5035,14 @@ async function startClaimedTurn(
         sending.text = `${note}\n\n${sending.text}`;
         if (sending.handoff) sending.handoff = `${note}\n\n${sending.handoff}`;
       }
-      await engine.adapter.sendTurn(sending);
+      const textOrigin: { origin: CodexText["origin"]; turnId?: string } = { origin: opts.byYou ? "person" : !opts.recovery && !opts.routine && (opts.from || opts.answering) ? "agent" : opts.recovery ? "unknown" : "other" };
+      if (engine.driverKind === "codex") codexOrigins.set(task.id, textOrigin);
+      try {
+        await engine.adapter.sendTurn(sending);
+      } catch (error) {
+        if (codexOrigins.get(task.id) === textOrigin) codexOrigins.delete(task.id);
+        throw error;
+      }
       tryAccepted = true;
       ownTry?.reservation.accepted();
       // Keep an undelivered failure line, and never consume a newer failure.
@@ -9537,7 +9557,13 @@ async function steerOne(
   const words = from ? fromAgentPrompt(from, text) : text;
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
-  const took = await (names.length ? adapter.steerTurn(lane.id, words, { skillNames: names }) : adapter.steerTurn(lane.id, words)).catch(() => false);
+  const sourceTurnId = !from && options.personal !== false ? codexOrigins.get(lane.id)?.turnId : undefined;
+  let joinedTurnId: string | undefined;
+  const steerOptions = {
+    ...(names.length ? { skillNames: names } : {}),
+    ...(sourceTurnId ? { onAccepted: (acceptedTurnId: string) => { if (acceptedTurnId === sourceTurnId) joinedTurnId = sourceTurnId; } } : {}),
+  };
+  const took = await (names.length || sourceTurnId ? adapter.steerTurn(lane.id, words, steerOptions) : adapter.steerTurn(lane.id, words)).catch(() => false);
   if (!took) return null;
   const message = store.appendMessage(lane.id, {
     role: "user",
@@ -9546,6 +9572,7 @@ async function steerOne(
     // it joined a turn and did not start one, which the transcript could
     // not otherwise say once the turn is over (Message.midTurn)
     midTurn: true,
+    ...(joinedTurnId ? { joinedTurnId } : {}),
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
     ...(options.fromTelegram ? { fromTelegram: true } : {}),

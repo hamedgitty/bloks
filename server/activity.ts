@@ -1,3 +1,4 @@
+import { itemProgress } from "./codex-text.ts";
 // What is happening right now, and what it is costing.
 //
 // A workspace with ten agents in it accumulates work nobody is watching. A
@@ -246,6 +247,7 @@ function asked(message: Message): boolean {
  * routes the person speaks through say so themselves.
  */
 export function towardYou(message: Message, yourTurn: boolean): boolean {
+  if (itemProgress(message)) return false;
   if (asksYou(message)) return true;
   if (!yourTurn || message.role !== "bot" || message.agent || message.afterAgent || message.event) return false;
   return message.kind === "text" || message.kind === "component" || message.kind === "artifact";

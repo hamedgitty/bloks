@@ -299,7 +299,7 @@ async function codex(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), "bloks-steer-codex-"));
   const was = process.env.HOME;
   process.env.HOME = home;
-  const state = { refuse: false, frames: [] as any[] };
+  const state = { refuse: false, wrongTurn: false, frames: [] as any[] };
   const stdout = new PassThrough();
   const peer = Object.assign(new EventEmitter(), {
     stdout,
@@ -318,7 +318,7 @@ async function codex(t: TestContext) {
                   result:
                     frame.method === "thread/start" ? { thread: { id: "codex-thread" } }
                     : frame.method === "turn/start" ? { turn: { id: "codex-turn-1" } }
-                    : frame.method === "turn/steer" ? { turnId: "codex-turn-1" }
+                    : frame.method === "turn/steer" ? { turnId: state.wrongTurn ? "another-native-turn" : "codex-turn-1" }
                     : {},
                 };
           queueMicrotask(() => stdout.write(JSON.stringify(reply) + "\n"));
@@ -374,4 +374,41 @@ test("Codex takes the person's words through turn/steer, naming the turn it is r
   state.refuse = false;
   assert.equal(await instance.adapter.steerTurn!("task-a", "after the end"), false, "words were taken by a turn that had ended");
   assert.equal(state.frames.filter((f) => f.method === "turn/steer").length, 2, "a finished turn was still asked");
+});
+
+
+test("Codex acceptance callback carries the captured normalized turn only on a matching RPC receipt", async (t) => {
+  const { instance, state } = await codex(t);
+  const started = await instance.adapter.sendTurn({ threadId: "task-a", text: "Check neutral sample" });
+  assert.ok(await waitFor(() => state.frames.some((f) => f.method === "turn/start") ? true : null, 5_000));
+  for (let i = 0; i < 5; i++) await setImmediate();
+  const joined: string[] = [];
+  assert.equal(await instance.adapter.steerTurn!("task-a", "Use second option", { onAccepted: (id) => joined.push(id) }), true);
+  assert.deepEqual(joined, [started.turnId]);
+  state.wrongTurn = true;
+  assert.equal(await instance.adapter.steerTurn!("task-a", "Mismatched receipt", { onAccepted: (id) => joined.push(id) }), false);
+  state.wrongTurn = false; state.refuse = true;
+  assert.equal(await instance.adapter.steerTurn!("task-a", "Rejected", { onAccepted: (id) => joined.push(id) }), false);
+  assert.deepEqual(joined, [started.turnId]);
+});
+
+test("Codex completed items carry exact phase/question facts and item identity on preview and stored-text events", async (t) => {
+  const { instance, state, send } = await codex(t);
+  const events: import("../server/contracts.ts").RuntimeEvent[] = [];
+  instance.adapter.onEvent((event) => events.push(event));
+  await instance.adapter.sendTurn({ threadId: "task-a", text: "Check sample" });
+  assert.ok(await waitFor(() => state.frames.some((f) => f.method === "turn/start") ? true : null, 5_000));
+  for (const [id, phase, questions] of [
+    ["progress", "commentary", null], ["async-final", "final_answer", [{ title: "Which option?", options: null }]],
+    ["partial", "partial_answer", []], ["future", "future_phase", undefined],
+  ] as const) {
+    send({ method: "item/completed", params: { threadId: "codex-thread", turnId: "codex-turn-1", item: { type: "agentMessage", id, text: "UNCHANGED " + id, phase, questions, delivery: "async" } } });
+  }
+  for (let i = 0; i < 5; i++) await setImmediate();
+  const answers = events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text");
+  assert.deepEqual(answers.map((e) => [e.itemId, e.codexItem]), [
+    ["progress", { phase: "commentary", questions: "none" }], ["async-final", { phase: "final_answer", questions: "present" }],
+    ["partial", { phase: "partial_answer", questions: "none" }], ["future", { phase: "future_phase", questions: "unknown" }],
+  ]);
+  assert.deepEqual(events.filter((e) => e.type === "content.delta").map((e) => [e.itemId, e.codexItem]), answers.map((e) => [e.itemId, e.codexItem]));
 });
