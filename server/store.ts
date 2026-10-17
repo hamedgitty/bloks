@@ -198,10 +198,8 @@ export interface Message {
   /** `stopped`: the turn ended before this call reported back, so it
    * will never say whether it worked. */
   tool?: { name: string; command?: string; ok?: boolean; stopped?: boolean };
-  /** activity messages: this call was the 5th, 10th or 20th time its turn
-   * made the very same call (server/repeats.ts). On one row a turn, the
-   * latest to reach a higher mark; the row before it loses it. Beside
-   * `tool` rather than in it, because a call's result replaces `tool`. */
+  /** Legacy repeat metadata, retained for stored-history compatibility.
+   * New calls are not counted and the tool renderer ignores this field. */
   repeated?: number;
   /** screen messages: what the agent's desktop looked like, base64 */
   png?: string;

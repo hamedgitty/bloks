@@ -186,8 +186,8 @@ export interface Message {
   /** `stopped`: the turn ended before this call reported back, so it
    * will never say whether it worked. */
   tool?: { name: string; command?: string; ok?: boolean; stopped?: boolean };
-  /** activity messages: the turn had made this same call (same tool, same
-   * arguments) this many times, 5, 10 or 20, shown as a chip on its run. */
+  /** Legacy repeat metadata, retained for stored-history compatibility.
+   * New calls are not counted and the tool renderer ignores this field. */
   repeated?: number;
   /** screen messages: what the agent's desktop looked like, base64 */
   png?: string;

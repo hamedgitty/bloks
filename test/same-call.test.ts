@@ -1,6 +1,4 @@
-// A turn making the same call over and over: counted by what each call
-// asked for, said as a chip on the turn at 5, 10 and 20, and once at 20 as
-// a notice that the turn can be stopped. Never stopped for the person.
+// Signature compatibility and ordinary tool history without repeat warnings.
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -16,8 +14,7 @@ import { describe, test, type TestContext } from "node:test";
 import type { RuntimeEvent } from "../server/contracts.ts";
 import { acpSignature } from "../server/drivers/acp.ts";
 import { CodexDriver, codexSignature } from "../server/drivers/codex.ts";
-import { callSignature, REPEAT_MARKS, RepeatWatch } from "../server/repeats.ts";
-import { repeatedIn } from "../src/lib/tool-summary.ts";
+import { callSignature } from "../server/repeats.ts";
 import { startHarness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
 
@@ -66,71 +63,6 @@ describe("what a call asked for", () => {
     // every read would look like the same read
     assert.equal(acpSignature({ kind: "read", title: "Read File", rawInput: {} }), undefined);
     assert.equal(acpSignature({ kind: "read", title: "Read File" }), undefined);
-  });
-});
-
-describe("counting a turn's calls", () => {
-  test("the chat hears at 5, 10 and 20, and the chip moves up with it", () => {
-    const watch = new RepeatWatch();
-    watch.begin("lane");
-    const heard: Array<{ at: number; count: number; from: string | null; notice: boolean }> = [];
-    for (let i = 1; i <= 25; i++) {
-      const mark = watch.note("lane", "same");
-      if (!mark) continue;
-      heard.push({ at: i, count: mark.count, from: mark.moveFrom?.messageId ?? null, notice: mark.notice });
-      watch.chipAt("lane", { threadId: "lane", messageId: `m${i}` }, mark.count);
-    }
-    assert.deepEqual(heard, [
-      { at: 5, count: 5, from: null, notice: false },
-      { at: 10, count: 10, from: "m5", notice: false },
-      { at: 20, count: 20, from: "m10", notice: true },
-    ]);
-    assert.deepEqual([...REPEAT_MARKS], [5, 10, 20]);
-  });
-
-  test("a second call reaching a mark the chip already shows changes nothing", () => {
-    const watch = new RepeatWatch();
-    watch.begin("lane");
-    for (let i = 0; i < 10; i++) {
-      const mark = watch.note("lane", "a");
-      if (mark) watch.chipAt("lane", { threadId: "lane", messageId: `a${i}` }, mark.count);
-    }
-    for (let i = 0; i < 9; i++) assert.equal(watch.note("lane", "b"), null, `call ${i + 1} of b`);
-    // and the notice is said once a turn, whichever call gets there
-    for (let i = 0; i < 10; i++) {
-      const mark = watch.note("lane", "a");
-      if (mark) watch.chipAt("lane", { threadId: "lane", messageId: `a2-${i}` }, mark.count);
-    }
-    for (let i = 0; i < 11; i++) assert.equal(watch.note("lane", "b"), null);
-  });
-
-  test("each turn counts from nothing", () => {
-    const watch = new RepeatWatch();
-    watch.begin("lane");
-    for (let i = 0; i < 4; i++) watch.note("lane", "same");
-    watch.end("lane");
-    watch.begin("lane");
-    for (let i = 0; i < 4; i++) assert.equal(watch.note("lane", "same"), null);
-    assert.equal(watch.note("lane", "same")?.count, 5);
-  });
-
-  test("memory stays bounded, and a loop among many calls is still counted", () => {
-    const watch = new RepeatWatch();
-    watch.begin("lane");
-    let looped = 0;
-    for (let i = 0; i < 2_000; i++) {
-      watch.note("lane", `once-${i}`);
-      if (i % 50 === 0 && watch.note("lane", "loop")) looped++;
-    }
-    assert.ok(watch.callsIn("lane") <= 256, `${watch.callsIn("lane")} calls kept for one turn`);
-    assert.equal(looped, 3, "the call the turn keeps making is never the one forgotten");
-    for (let i = 0; i < 2_000; i++) watch.begin(`lane-${i}`);
-    assert.ok(watch.size <= 512, `${watch.size} turns kept`);
-  });
-
-  test("a run shows the highest mark among its rows", () => {
-    assert.equal(repeatedIn([{}, { repeated: 5 }, { repeated: 20 }, {}]), 20);
-    assert.equal(repeatedIn([{}, {}]), 0);
   });
 });
 
@@ -212,7 +144,7 @@ process.stdin.on("data", function take(c) {
   const calls = JSON.parse(readFileSync(${JSON.stringify(scene)}, "utf8"));
   calls.forEach((input, i) => {
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "tool-" + i, name: "Bash", input }] } });
-    out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-" + i, content: "1 failing" }] } });
+    out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-" + i, content: input.fixtureError ? "Synthetic command failure" : "Completed", is_error: input.fixtureError === true }] } });
   });
   out({ type: "assistant", message: { content: [{ type: "text", text: "Done" }] } });
   out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 1, session_id: "loop-session", result: "Done", total_cost_usd: 0 });
@@ -222,11 +154,34 @@ process.stdin.on("data", function take(c) {
   mkdirSync(join(home, ".bloks"));
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances: { claude: { driver: "claudeAgent", config: { cli } } } }));
   const h = await startHarness({ HOME: home });
+  const abort = new AbortController();
+  let reading: Promise<void> | undefined;
   t.after(async () => {
+    abort.abort();
+    await reading;
     await h.stop();
     rmSync(home, { recursive: true, force: true });
   });
-  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Ada" }) });
+  const stream = await h.fetch("/api/events", { signal: abort.signal });
+  const frames: any[] = [];
+  reading = (async () => {
+    let pending = "";
+    try {
+      const reader = stream.body!.getReader();
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        pending += new TextDecoder().decode(value);
+        let end: number;
+        while ((end = pending.indexOf("\n\n")) >= 0) {
+          const frame = pending.slice(0, end); pending = pending.slice(end + 2);
+          for (const line of frame.split("\n")) if (line.startsWith("data: ")) frames.push(JSON.parse(line.slice(6)));
+        }
+      }
+    } catch (e) { if (!abort.signal.aborted) throw e; }
+  })();
+  assert.ok(await waitFor(() => frames.some(f => f.kind === "hello")));
+  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Sample helper" }) });
   await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
   const ran = () => readFileSync(runs, "utf8").split("\n").filter(Boolean).length;
   const turn = async (calls: unknown[]) => {
@@ -243,44 +198,49 @@ process.stdin.on("data", function take(c) {
     );
   };
   const messages = async () => (await h.json(`/api/bots/${bot.id}/messages?limit=500`)).messages as any[];
-  return { turn, messages };
+  return { turn, messages, frames };
 }
 
 const same = (n: number) => Array.from({ length: n }, () => ({ command: "npm test", description: "Run the tests" }));
 const loopNotice = (m: any) => m.kind === "notice" && /same call 20 times/.test(m.text ?? "");
 
-test("a Claude Code turn going round in circles gets one chip, and at 20 one notice", async (t) => {
+test("more than twenty repeated, empty and distinct calls keep tool results without warnings", async (t) => {
   const f = await claudeFixture(t);
-  // twenty of the same command, with two others among them
-  await f.turn([...same(9), { command: "ls" }, ...same(11), { command: "git status" }]);
-  let all = await f.messages();
-  const activity = all.filter((m) => m.kind === "activity");
-  assert.equal(activity.length, 22);
-  const chipped = activity.filter((m) => m.repeated);
-  assert.equal(chipped.length, 1, "one chip a turn, moved up rather than left behind");
-  assert.equal(chipped[0].repeated, 20);
-  assert.equal(activity.indexOf(chipped[0]), 20, "on the twentieth of the same call");
-  const notices = all.filter(loopNotice);
-  assert.equal(notices.length, 1);
-  assert.match(notices[0].text, /Ada/);
-  assert.doesNotMatch(notices[0].text, /npm test|Bash/, "the notice reaches a shared room's members whole");
-  assert.ok(activity.every((m) => m.tool.ok === true), "nothing was stopped");
-
-  // the next turn counts from nothing: 12 of the same is a 10, not a 32
-  await f.turn(same(12));
-  all = await f.messages();
-  const second = all.filter((m) => m.kind === "activity").slice(22);
-  assert.deepEqual(second.filter((m) => m.repeated).map((m) => [second.indexOf(m), m.repeated]), [[9, 10]]);
-  assert.equal(all.filter(loopNotice).length, 1, "no second notice below 20");
-
-  // and four of the same is nothing at all
-  await f.turn(same(4));
-  all = await f.messages();
-  assert.equal(all.filter((m) => m.kind === "activity").slice(34).filter((m) => m.repeated).length, 0);
+  const calls = [...same(10), { command: "ls" }, ...same(12), {}, { command: "" }, { command: "node failing.js", fixtureError: true }];
+  await f.turn(calls);
+  const all = await f.messages();
+  const activity = all.filter(m => m.kind === "activity");
+  assert.equal(activity.length, calls.length, "every ordinary tool record is retained");
+  assert.equal(all.filter(loopNotice).length, 0, "no count-only stuck notice");
+  assert.ok(activity.every(m => m.repeated === undefined), "new activity has no repeat metadata");
+  assert.deepEqual(activity.map(m => m.tool.ok), calls.map(c => "fixtureError" in c ? false : true));
+  assert.equal(activity.at(-1).tool.command, "node failing.js", "failed outcome stays on its own item");
+  assert.ok(all.some(m => m.kind === "text" && m.text === "Done"), "ordinary answer retained");
+  assert.ok(await waitFor(() => f.frames.some(f => f.kind === "message.patch" && f.message.id === activity.at(-1).id && f.message.tool.ok === false)));
+  const ids = new Set(activity.map(m => m.id));
+  const appends = f.frames.filter(f => f.kind === "message" && ids.has(f.message?.id));
+  const patches = f.frames.filter(f => f.kind === "message.patch" && ids.has(f.message?.id));
+  assert.equal(appends.length, calls.length);
+  assert.equal(patches.length, calls.length, "exactly one required completion/error patch per tool, no repeat-driven patch");
+  for (let i = 0; i < activity.length; i++) {
+    const started = appends[i].message, saved = activity[i];
+    assert.equal(started.id, saved.id);
+    const own = patches.filter(f => f.message.id === started.id);
+    assert.equal(own.length, 1, "completion belongs to exactly one started tool");
+    assert.equal(own[0].message.tool.command, started.tool.command);
+    assert.equal(own[0].message.tool.name, started.tool.name);
+    assert.equal(own[0].message.tool.ok, saved.tool.ok);
+    assert.equal(own[0].message.repeated, undefined);
+  }
+  await f.turn(same(25));
+  const second = (await f.messages()).filter(m => m.kind === "activity").slice(activity.length);
+  assert.equal(second.length, 25);
+  assert.ok(second.every(m => m.repeated === undefined && m.tool.ok === true));
+  assert.equal((await f.messages()).filter(loopNotice).length, 0);
 });
 
-test("an API model's repeated call is counted the same way", async (t) => {
-  // one round of five identical calls to a tool the session does not have,
+test("an API model keeps repeated tool failures without a count warning", async (t) => {
+  // one round of twenty-five identical calls to a tool the session does not have,
   // then an answer
   let round = 0;
   const provider = createServer((req, res) => {
@@ -291,7 +251,7 @@ test("an API model's repeated call is counted the same way", async (t) => {
       if (req.url?.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "grok-4" }] }));
       if (round++ === 0) {
         const call = (i: number) => ({ id: `call-${i}`, type: "function", function: { name: "lookup", arguments: JSON.stringify({ query: "weather" }) } });
-        return res.end(JSON.stringify({ choices: [{ message: { role: "assistant", tool_calls: [0, 1, 2, 3, 4].map(call) } }] }));
+        return res.end(JSON.stringify({ choices: [{ message: { role: "assistant", tool_calls: Array.from({ length: 25 }, (_, i) => call(i)) } }] }));
       }
       res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Done." } }] }));
     });
@@ -314,6 +274,7 @@ test("an API model's repeated call is counted the same way", async (t) => {
   });
   assert.ok(settled, h.logs());
   const activity = settled.filter((m) => m.kind === "activity");
-  assert.equal(activity.length, 5);
-  assert.deepEqual(activity.map((m) => m.repeated ?? 0), [0, 0, 0, 0, 5]);
+  assert.equal(activity.length, 25);
+  assert.ok(activity.every(m => m.repeated === undefined && m.tool.ok === false), "unknown-tool errors remain visible");
+  assert.equal(settled.filter(loopNotice).length, 0, "no count-only stuck notice");
 });
