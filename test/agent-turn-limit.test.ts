@@ -173,10 +173,10 @@ test("a room holds at the chain bound and the hop bound, and chain titles beat e
   explanation(text);
   assert.match(text, /usage limit reached/);
   const ctx = { focused: false, selectedId: "elsewhere", threadId: "lane", bot: { id: "bot", name: "Bravo" } };
-  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, ctx)?.title, "Agents stopped at the limit");
-  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, goal: "blocked", text }, ctx)?.title, "Agents stopped at the limit");
+  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, ctx), null);
+  assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, goal: "blocked", text }, ctx), null);
   assert.equal(noticeFor({ role: "bot", kind: "notice", chainHeld: true, text }, { ...ctx, focused: true, selectedId: "bot" }), null);
-  assert.equal(noticeFor({ role: "bot", kind: "notice", text: "usage limit reached" }, ctx)?.title, "Bravo could not answer");
+  assert.equal(noticeFor({ role: "bot", kind: "notice", text: "usage limit reached" }, ctx), null);
   assert.equal(chainExcerpt("a\n" + "x".repeat(300), (s) => s).length, 160);
   const boundaryKey = "sk-" + "q".repeat(40);
   assert.equal(chainExcerpt("x".repeat(150) + boundaryKey, (words) => words.replace(boundaryKey, "[redacted]")), "x".repeat(150) + "[redacted]");
