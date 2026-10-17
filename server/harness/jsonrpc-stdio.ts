@@ -43,6 +43,11 @@ export interface RpcOptions {
   onFrame?: (message: any, direction: "in" | "out") => void;
 }
 
+export class RpcResponseError extends Error {
+  readonly code?: number;
+  constructor(message: string, code?: number) { super(message); this.name = "RpcResponseError"; this.code = code; }
+}
+
 export function attachRpc(options: RpcOptions): RpcLink {
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   let nextId = 1;
@@ -84,7 +89,7 @@ export function attachRpc(options: RpcOptions): RpcLink {
         // the error's data rides along: an ACP agent's SDK turns any
         // thrown error into a bare "Internal error" and puts what went
         // wrong in data.details
-        const error = new Error(frame.error.message ?? JSON.stringify(frame.error));
+        const error = new RpcResponseError(frame.error.message ?? JSON.stringify(frame.error), typeof frame.error.code === "number" ? frame.error.code : undefined);
         waiting.reject(frame.error.data === undefined ? error : Object.assign(error, { data: frame.error.data }));
       } else {
         waiting.resolve(frame.result);

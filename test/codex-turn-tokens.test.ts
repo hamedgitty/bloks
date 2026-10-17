@@ -49,7 +49,7 @@ async function setup(t: TestContext, thread: string) {
           if (frame.method && frame.id !== undefined) {
             const opens = frame.method === "thread/start" || frame.method === "thread/resume";
             queueMicrotask(() => {
-              send({ id: frame.id, result: opens ? { thread: { id: thread } } : {} });
+              send({ id: frame.id, result: opens ? { thread: { id: thread }, serviceTier: frame.params.serviceTier } : {} });
               if (frame.method === "thread/resume") for (const u of script.onResume) send(usage(thread, u));
               if (frame.method === "turn/start") {
                 for (const u of script.onTurn) send(usage(thread, u));

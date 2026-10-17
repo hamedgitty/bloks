@@ -46,6 +46,7 @@ export interface CustomEndpoint {
 }
 
 export interface AppConfig {
+  codex?: { speed?: import("./codex-speed.ts").CodexSpeed };
   /** The port to listen on when BLOKS_PORT does not say. Chosen by hand,
    * for a machine where the usual one is taken; the desktop app reads it
    * too, since an app opened from Finder never sees BLOKS_PORT. */
@@ -282,6 +283,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
   // that silently will not save, which is what happened the first time
   // compaction was added without it.
   for (const key of [
+    "codex",
     "xai",
     "composio",
     "box",

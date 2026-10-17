@@ -215,12 +215,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     state.threads += 1;
     thread = "thread-" + state.threads;
     save(state);
-    return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
+    return send({ id: m.id, result: { thread: { id: thread }, serviceTier: m.params.serviceTier, model: "gpt-6.1-sol" } });
   }
   if (m.method === "thread/resume") {
     if (${loseCompactedThread} && state.stopped) return send({ id: m.id, error: { code: -32000, message: "thread not found" } });
     thread = m.params.threadId;
-    return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
+    return send({ id: m.id, result: { thread: { id: thread }, serviceTier: m.params.serviceTier, model: "gpt-6.1-sol" } });
   }
   if (m.method === "thread/compact/start") {
     if (${refuseCompact}) return send({ id: m.id, error: { code: -32601, message: "unknown method thread/compact/start" } });

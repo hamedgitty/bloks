@@ -71,7 +71,7 @@ function fakeEngine(root: string, engine: string) {
     ' if (m.method === "initialized") return;',
     ' if (m.method === "model/list") return reply({ data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "Demo", isDefault: true, hidden: false }] });',
     ' if (m.method === "skills/list") return reply({ data: [{ cwd: m.params.cwds[0], skills: [], errors: [] }] });',
-    ' if (m.method === "thread/start" || m.method === "thread/resume") { thread = "fixture-thread"; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }',
+    ' if (m.method === "thread/start" || m.method === "thread/resume") { thread = "fixture-thread"; return reply({ thread: { id: thread }, serviceTier: m.params.serviceTier, model: "gpt-6.1-sol" }); }',
     ' if (m.method === "turn/interrupt") { reply(); out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "interrupted" } } }); return; }',
     ' if (m.method !== "turn/start") return reply();',
     ' turn = "fixture-turn-" + ++n; reply({ turn: { id: turn } });',

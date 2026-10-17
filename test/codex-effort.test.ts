@@ -36,7 +36,7 @@ async function setup(t: TestContext, options: Options = {}) {
               : frame.method === "turn/start" ? options.turnError || (options.rejectEffort && frame.params.effort ? "unknown field `effort`" : undefined)
               : undefined;
             const result = frame.method === "thread/start" || frame.method === "thread/resume"
-              ? { thread: { id: "codex-thread" }, model: "gpt-selected" }
+              ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier, model: "gpt-selected" }
               : frame.method === "turn/start" ? { turn: { id: "codex-turn" } } : {};
             if (frame.method === "turn/start" && !error) {
               // The server keeps its configured default until a turn overrides

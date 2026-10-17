@@ -15,6 +15,7 @@ import { ProviderMark } from "./ProviderIcons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
+import { CodexSpeedControl } from "./CodexSpeed";
 import { EngineReport } from "./EngineReport";
 import { EngineSetupActions, EngineUpdateNote } from "./EngineSetup";
 
@@ -239,6 +240,7 @@ export function EnginesPanel() {
 
   return (
     <>
+      <CodexSpeedControl />
       <div className="mt-4 overflow-hidden rounded-2xl border bg-card">
         <div className="px-4 pb-3 pt-4">
           <div className="flex items-baseline justify-between gap-2">

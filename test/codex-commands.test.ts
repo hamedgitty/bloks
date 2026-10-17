@@ -24,7 +24,7 @@ async function setup(t: TestContext, script: Script = {}) {
       stdin: new Writable({ write(chunk, _encoding, done) {
         const frame = JSON.parse(String(chunk)); frames.push({ ...frame, child: children.length - 1 });
         const reply = (result: unknown) => send({ id: frame.id, result });
-        const refuse = (message: string) => send({ id: frame.id, error: { code: -32601, message } });
+        const refuse = (message: string) => send({ id: frame.id, error: { code: message === "conversation missing" ? -32000 : -32602, message } });
         if (frame.id !== undefined && frame.method) queueMicrotask(() => {
           if (frame.method === "model/list") return reply({ data: [] });
           if (frame.method === "skills/list") {
@@ -36,9 +36,9 @@ async function setup(t: TestContext, script: Script = {}) {
             if (script.resume === "reject") return refuse("conversation missing");
             if (script.resume === "legacy" && frame.params.excludeTurns) return refuse("unknown field excludeTurns");
             if (script.resumeFallbackFails) return refuse("conversation missing");
-            return reply({ thread: { id: script.resume === "forgotten" ? "replacement" : thread } });
+            return reply({ thread: { id: script.resume === "forgotten" ? "replacement" : thread }, serviceTier: frame.params.serviceTier });
           }
-          if (frame.method === "thread/start") return reply({ thread: { id: thread } });
+          if (frame.method === "thread/start") return reply({ thread: { id: thread }, serviceTier: frame.params.serviceTier });
           if (frame.method === "thread/compact/start") {
             if (script.compact === "reject") return refuse("compact refused");
             reply({});

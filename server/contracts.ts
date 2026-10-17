@@ -98,10 +98,14 @@ export type RuntimeEvent = RuntimeEventBase &
     | { type: "commands.updated"; cwd: string | null; catalog: import("./agent-commands.ts").ClaudeCatalog }
     | { type: "session.exited"; reason?: string }
     | { type: "turn.started" }
+    | { type: "codex.speed"; choice: import("./codex-speed.ts").CodexSpeedChoice; configuredTier: "default" | "priority"; actualTier: null }
     | {
         type: "turn.completed";
         ok: boolean;
         stopReason?: string | null;
+        preInputRefusal?: import("./codex-speed.ts").CodexSpeedRefusal;
+        /** No acknowledgement or terminal result: do not replay this input. */
+        admissionUncertain?: string;
         cost?: number | null;
         denials?: string[];
       }
@@ -169,7 +173,7 @@ export type RuntimeEvent = RuntimeEventBase &
         before: number | null;
         after: number | null;
       }
-    | { type: "runtime.error"; message: string }
+    | { type: "runtime.error"; message: string; preInputRefusal?: import("./codex-speed.ts").CodexSpeedRefusal; admissionUncertain?: string }
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
@@ -177,6 +181,8 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 // ── running a turn ─────────────────────────────────────────────────────
 
 export interface SendTurnInput {
+  /** Captured at actual dispatch, never changed by steering. */
+  codexSpeed?: import("./codex-speed.ts").CodexSpeedChoice;
   threadId: ThreadId;
   text: string;
   model?: string;
@@ -374,7 +380,8 @@ export interface PlanUsage {
 
 export interface ModelCatalog {
   default: string;
-  options: Array<{ id: string; label: string }>;
+  options: Array<{ id: string; label: string; codexFast?: boolean }>;
+  checkedAt?: number;
   /** Where the list came from, said in the picker, when it is not the
    * engine reporting it live (a list built into Bloks, for one). */
   note?: string;

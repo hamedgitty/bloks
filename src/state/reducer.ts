@@ -262,6 +262,7 @@ export interface Bot {
   seniority?: number;
   /** Reasoning effort for engines that have the dial. */
   effort?: "low" | "medium" | "high";
+  codexSpeed?: import("../../server/codex-speed.ts").CodexSpeed | null;
   mascotExpression?: BlokExpression | null;
   /** Upload time of the user's own photo for this agent; absent means
    * the pixel avatar. Doubles as the cache-buster. */
@@ -334,6 +335,7 @@ export interface Bot {
 /** What the server admits about stored credentials: whether each one
  * exists, and never the value. */
 export interface ConfigStatus {
+  codex?: { speed: import("../../server/codex-speed.ts").CodexSpeed };
   xai?: { configured: boolean   /** Whether this workspace has been through the welcome. */
   setupDone?: boolean;
 };
@@ -478,7 +480,8 @@ export interface InstanceInfo {
   };
   models: {
     default: string;
-    options: Array<{ id: string; label: string }>;
+    options: Array<{ id: string; label: string; codexFast?: boolean }>;
+    checkedAt?: number;
     /** Where the list came from, when it is not the engine reporting it live. */
     note?: string;
     /** The engine takes any model id, so one typed in can be used. */
@@ -787,6 +790,7 @@ export type Action =
           | "skillIds"
           | "seniority"
           | "effort"
+          | "codexSpeed"
           | "mascotExpression"
           | "pinned"
           | "hidden"

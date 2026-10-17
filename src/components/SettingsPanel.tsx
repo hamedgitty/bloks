@@ -18,6 +18,7 @@ import {
   BLOK_EXPRESSIONS,
   BLOK_SHAPES,
 } from "@/lib/mascot";
+import { CodexSpeedControl } from "./CodexSpeed";
 import { ModelPicker } from "./ModelPicker";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { VoiceCard } from "./Voice";
@@ -475,6 +476,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               })}
             </div>
           </div>
+
+          <CodexSpeedControl bot={bot} />
 
           <div className="rounded-2xl border bg-card p-4">
             <div className="text-[13.5px] font-semibold text-foreground">Reasoning effort</div>

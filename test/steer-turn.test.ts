@@ -316,7 +316,7 @@ async function codex(t: TestContext) {
               : {
                   id: frame.id,
                   result:
-                    frame.method === "thread/start" ? { thread: { id: "codex-thread" } }
+                    frame.method === "thread/start" ? { thread: { id: "codex-thread" }, serviceTier: frame.params.serviceTier }
                     : frame.method === "turn/start" ? { turn: { id: "codex-turn-1" } }
                     : frame.method === "turn/steer" ? { turnId: "codex-turn-1" }
                     : {},

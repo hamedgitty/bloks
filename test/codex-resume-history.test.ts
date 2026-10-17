@@ -44,14 +44,14 @@ async function setup(t: TestContext, resumeWorks: boolean, fresh: string) {
           if (frame.method && frame.id !== undefined) {
             queueMicrotask(() => {
               if (frame.method === "thread/resume") {
-                if (resumeWorks) send({ id: frame.id, result: { thread: { id: "old-thread" } } });
+                if (resumeWorks) send({ id: frame.id, result: { thread: { id: "old-thread" }, serviceTier: frame.params.serviceTier } });
                 else send({ id: frame.id, error: { code: -32000, message: "the thread could not be loaded" } });
                 return;
               }
               if (frame.method === "thread/start") {
                 // the old thread's restored usage, ahead of the new thread
                 send(usage("old-thread", 397_541_922, 2_000_000));
-                send({ id: frame.id, result: { thread: { id: fresh } } });
+                send({ id: frame.id, result: { thread: { id: fresh }, serviceTier: frame.params.serviceTier } });
                 return;
               }
               send({ id: frame.id, result: {} });
