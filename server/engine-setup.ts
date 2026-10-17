@@ -18,6 +18,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { widenPath } from "./path.ts";
+import { shellFor } from "./terminal.ts";
 
 export interface EngineSetup {
   /** What runs, shown to the person before and after, so nothing about
@@ -79,9 +80,13 @@ export function explainInstallFailure(log: string, code: number | null): string 
 }
 
 /** The person's own shell, as a login shell, so the install sees what
- * their Terminal sees: nvm's node, brew's npm, their PATH. */
+ * their Terminal sees: nvm's node, brew's npm, their PATH. The terminal
+ * panel already knows how to pick one, and its fallback matters here: a
+ * server started without SHELL (a systemd unit, a container) is common on
+ * Linux, where /bin/zsh is usually not installed, and spawning a shell
+ * that is not there read as every install failing with exit 1. */
 function loginShell(): string {
-  return process.env.SHELL && process.env.SHELL.startsWith("/") ? process.env.SHELL : "/bin/zsh";
+  return shellFor(process.platform, process.env);
 }
 
 export function installEngine(kind: string): Promise<InstallResult> {

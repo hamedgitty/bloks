@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
-import { ENGINE_SETUP, explainInstallFailure, installEngine } from "../server/engine-setup.ts";
+import { ENGINE_SETUP, explainInstallFailure, installEngine, runSetupScript } from "../server/engine-setup.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
 describe("engine setup", () => {
@@ -44,6 +44,28 @@ describe("engine setup", () => {
     } finally {
       delete ENGINE_SETUP.testOk;
       delete ENGINE_SETUP.testNoNode;
+    }
+  });
+
+  // A server started by systemd or in a container often has no SHELL at
+  // all, and an account's shell can be nologin. Either used to send every
+  // install to /bin/zsh or to nologin, which on Linux failed with exit 1
+  // and a log that said nothing.
+  test("an install still finds a shell when SHELL is missing or cannot run", { skip: process.platform === "win32" }, async () => {
+    const saved = process.env.SHELL;
+    try {
+      delete process.env.SHELL;
+      const unset = await runSetupScript("echo ran without SHELL");
+      assert.equal(unset.ok, true, unset.log);
+      assert.match(unset.log, /ran without SHELL/);
+
+      process.env.SHELL = "/usr/sbin/nologin";
+      const nologin = await runSetupScript("echo ran past nologin");
+      assert.equal(nologin.ok, true, nologin.log);
+      assert.match(nologin.log, /ran past nologin/);
+    } finally {
+      if (saved === undefined) delete process.env.SHELL;
+      else process.env.SHELL = saved;
     }
   });
 
