@@ -205,6 +205,16 @@ test("commands reach stdin alone, keep the session and defer memory, personal no
   assert.equal(final.text, "next ordinary");
 });
 
+test("native commands ignore supplied reply context", async (t) => {
+  const s = await setup(t);
+  await s.turn("hello");
+  const count = s.calls().length + 1;
+  await s.say("/context", { replyTo: { author: "Sample author", excerpt: "Earlier sample", id: "app-ref" } });
+  await until(async () => s.calls().length >= count && !(await s.busy()), "command did not settle");
+  assert.equal(s.calls().at(-1)!.text, "/context");
+  assert.ok((await s.messages()).some((m) => m.text === "/context" && m.replyTo?.id === "app-ref"));
+});
+
 test("a local /compact error is shown, frees the lane, and never hands over", async (t) => {
   const s = await setup(t);
   s.spec({ localError: true });

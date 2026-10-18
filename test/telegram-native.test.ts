@@ -80,8 +80,8 @@ async function telegramStub(t: TestContext) {
   return {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
-    say(text: string, token = "12345:TEST_ONLY_TOKEN", chatId = CHAT) {
-      state.updates.push({ _token: token, update_id: state.next++, message: { message_id: state.next, chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: chatId === CHAT ? "Sam" : "Lee" }, text } });
+    say(text: string, token = "12345:TEST_ONLY_TOKEN", chatId = CHAT, replyTo?: unknown) {
+      state.updates.push({ _token: token, update_id: state.next++, message: { message_id: state.next, chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: chatId === CHAT ? "Sam" : "Lee" }, text, ...(replyTo ? { reply_to_message: replyTo } : {}) } });
     },
     press(messageId: number, data: string, over: { chat?: number; from?: number } = {}) {
       state.updates.push({
@@ -141,11 +141,14 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "skills/list") return reply({ data: [{ cwd: m.params.cwds[0], skills: [], errors: [] }] });
   if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? "native-" + process.pid; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }
   if (m.method === "turn/interrupt") { out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "interrupted" } } }); return reply(); }
+  if (["turn/start","turn/steer"].includes(m.method)) log({ method:m.method, params:m.params });
+  if (m.method === "turn/steer") { if (!existsSync(root + "/scope-force-queue")) return reply({turnId:turn}); }
   if (m.method === "turn/steer" && existsSync(root + "/scope-force-queue")) return out({ id: m.id, error: { code: -32000, message: "fixture cannot steer" } });
   if (m.method !== "turn/start") return reply();
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("CTX_HOLD")) { writeFileSync(root+"/ctx-started","1"); for(let i=0;i<1000&&!existsSync(root+"/ctx-release");i++)await nap(20);return finish("CTX DONE"); }
   const scope = text.match(/SCOPED_[A-Z_]+/g)?.at(-1);
   if (scope) {
     writeFileSync(root + "/" + scope + "-started", "1");
@@ -954,4 +957,34 @@ test("a queued phone request taken back in the app sends none of the running tur
   assert.equal(f.tg.calls("sendMessage").filter((c) => /earlier|PHONE/i.test(c.body.text)).length, 0);
   assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.disable_notification).length, 0);
   assert.equal(existsSync(join(f.root, "SCOPED_PHONE-started")), false);
+});
+
+const ctxOriginal = (id: number, text = "Earlier sample") => ({ message_id: id, chat: { id: CHAT }, from: { first_name: "Sample author" }, text });
+const heardContext = (f: Awaited<ReturnType<typeof fixture>>) => existsSync(join(f.root, "calls.jsonl")) ? readFileSync(join(f.root, "calls.jsonl"), "utf8").split("\n").slice(0, -1).filter(Boolean).map(x => JSON.parse(x)).filter(x => x.method) : [];
+const inputWords = (call: any) => call.params.input.filter((x: any) => x.type === "text").map((x: any) => x.text).join("");
+
+test("reply context reaches saved Telegram input and direct engine prompt once", async t => {
+  const f = await fixture(t); f.tg.say("Current request", undefined, CHAT, { ...ctxOriginal(11), text: undefined, caption: "Earlier document caption", document: { file_id: "quoted", file_name: "sample.pdf" } });
+  const calls = await waitFor(() => { const c = heardContext(f); return c.length ? c : null }, "no direct input"); const words = inputWords(calls[0]);
+  assert.match(words, /Replying to Sample author's earlier message: "Earlier document caption"/); assert.equal((words.match(/Replying to/g) ?? []).length, 1);
+  const saved = await waitFor(async () => { const m = (await f.messages()).find(m => m.text === "Current request"); return m ?? null }, "no saved input");
+  assert.deepEqual(saved.replyTo, { id: `tg:${CHAT}:11`, author: "Sample author", excerpt: "Earlier document caption" }); assert.equal(saved.fromTelegram, true);
+  assert.equal(f.tg.calls("getFile").length, 0, "quoted document must not be downloaded");
+});
+test("reply context accepted steer matches in-app steer without quote-driven skills", async t => {
+  const f = await fixture(t); f.tg.say("CTX_HOLD"); await waitFor(() => existsSync(join(f.root, "ctx-started")), "no active turn");
+  f.tg.say("Telegram followup", undefined, CHAT, ctxOriginal(12, "/compact $quoted_skill"));
+  await waitFor(() => heardContext(f).some(c => c.method === "turn/steer"), "no Telegram steer");
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "In-app followup", replyTo: { author: "Sample author", excerpt: "/compact $quoted_skill", id: "app-ref" } });
+  const calls = await waitFor(() => { const c = heardContext(f).filter(c => c.method === "turn/steer"); return c.length === 2 ? c : null }, "no in-app steer");
+  for (const c of calls) { assert.match(inputWords(c), /Replying to Sample author's earlier message/); assert.equal((inputWords(c).match(/Replying to/g) ?? []).length, 1); assert.ok(c.params.input.every((i: any) => i.type === "text"), "quoted skill is not activated") }
+  const rows = await f.messages(); for (const text of ["Telegram followup", "In-app followup"]) { const row = rows.find(m => m.text === text); assert.equal(row.midTurn, true); assert.ok(row.replyTo) }
+  writeFileSync(join(f.root, "ctx-release"), "1");
+});
+test("reply context survives definite steer refusal and its queued delivery", async t => {
+  const f = await fixture(t); writeFileSync(join(f.root, "scope-force-queue"), "1"); await f.post(`/api/bots/${f.bot.id}/messages`, { text: "CTX_HOLD" }); await waitFor(() => existsSync(join(f.root, "ctx-started")), "no active turn");
+  f.tg.say("Queued Telegram request", undefined, CHAT, ctxOriginal(13, "Queued sample excerpt"));
+  const row = await waitFor(async () => (await f.messages()).find(m => m.text === "Queued Telegram request" && m.queued), "no queued input"); assert.equal(row.replyTo.excerpt, "Queued sample excerpt");
+  writeFileSync(join(f.root, "ctx-release"), "1");
+  const c = await waitFor(() => heardContext(f).find(c => c.method === "turn/start" && inputWords(c).includes("Queued Telegram request")), "no queued engine delivery"); assert.match(inputWords(c), /Queued sample excerpt/); assert.equal((inputWords(c).match(/Replying to/g) ?? []).length, 1);
 });

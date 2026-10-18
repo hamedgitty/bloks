@@ -3574,6 +3574,11 @@ function replyRef(raw: any): ReplyRef | undefined {
   return { ...(typeof raw.id === "string" ? { id: raw.id.slice(0, 40) } : {}), author, excerpt };
 }
 
+/** One display-only reply prefix at each engine boundary; saved words stay raw. */
+function withReply(text: string, ref?: ReplyRef): string {
+  return ref ? `(Replying to ${ref.author}'s earlier message: "${ref.excerpt}")\n\n${text}` : text;
+}
+
 /** An agent's main conversation, General when it is still there. Not by
  * title (an agent renames its own lane with `bloks rename`) and not by
  * threadId (it follows whatever lane the person opened): the oldest lane
@@ -4673,9 +4678,7 @@ async function startClaimedTurn(
           resumeCursors: task.resumeCursors,
           hasUserTurn: transcript.some((m) => m.role === "user"),
         });
-      let turnText = !command && opts.replyTo
-        ? `(Replying to ${opts.replyTo.author}'s earlier message: "${opts.replyTo.excerpt}")\n\n${text}`
-        : text;
+      let turnText = command ? text : withReply(text, opts.replyTo);
       // In the turn's words, ahead of the person's, and never in the
       // system prompt, which a resumed session keeps byte for byte for
       // its cache (server/standing-prompt.ts).
@@ -8457,7 +8460,8 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
       rewriteTelegramCard(card);
       runtime.typing.get(chatId)?.now();
     },
-    deliver(chatId, text) {
+    deliver(chatId, text, suppliedReply) {
+      const replyTo = replyRef(suppliedReply);
       const intake = (runtime.intake.get(chatId) ?? Promise.resolve()).then(async () => {
         if (!currentTelegram(runtime)) return;
         const bot = store.bot(botId);
@@ -8470,19 +8474,19 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
         // joins that answer when steered, or gets one for its queued turn.
         // Neither path starts the normal busy wait and sends a second copy.
         if (bot && lane?.busy && telegramReturns.answering(lane.id, chatId, binding)) {
-          if (!(await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null)) && currentTelegram(runtime)) {
-            queueOnLane(bot.id, lane.id, text, { telegramReply: queuedTelegramReply(chatId, binding), fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+          if (!(await steerLane(bot, lane, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null)) && currentTelegram(runtime)) {
+            queueOnLane(bot.id, lane.id, text, { replyTo, telegramReply: queuedTelegramReply(chatId, binding), fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
             drainSteer(lane.id);
           }
           return;
         }
-        if (bot && lane && runtime.turns.has(chatId) && (await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null))) return;
+        if (bot && lane && runtime.turns.has(chatId) && (await steerLane(bot, lane, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } }).catch(() => null))) return;
         const turn = (runtime.turns.get(chatId) ?? Promise.resolve()).then(async () => {
           if (!currentTelegram(runtime)) return;
           if (!bot) return telegramSay(runtime, chatId, "There is no agent here to answer yet, so that did not reach anyone.");
           // The reply goes back to the chat that asked, and the exchange lands
           // in the agent's own thread like any other conversation.
-          const answer = await answerOverTelegram(bot.id, text, chatId, runtime).catch(
+          const answer = await answerOverTelegram(bot.id, text, chatId, runtime, replyTo).catch(
             (error: unknown): TelegramAnswer => ({ text: `Could not answer: ${redactSecrets((error as Error).message)}`, markdown: false, files: [] }),
           );
           await telegramSay(runtime, chatId, answer.text, answer.markdown);
@@ -8621,7 +8625,7 @@ for (const bot of store.bots) startTelegramBot(bot.id);
  * how a turn that ran tools and then answered comes back as the answer
  * rather than as the running commentary, with whatever files it left.
  */
-async function answerOverTelegram(botId: string, text: string, chatId: number, runtime: TelegramRuntime): Promise<TelegramAnswer> {
+async function answerOverTelegram(botId: string, text: string, chatId: number, runtime: TelegramRuntime, replyTo?: ReplyRef): Promise<TelegramAnswer> {
   const bot = store.bot(botId);
   if (!bot) throw new Error("that agent is gone");
   const laneId = activeLaneOf(bot);
@@ -8634,7 +8638,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
   // queued message, with the chat that asked saved as its return address.
   if (drain.on) {
     if (telegramLive.get(botId)?.generation === runtime.generation) telegramLive.delete(botId);
-    queueOnLane(botId, laneId, text, { telegramReply: queuedTelegramReply(chatId, { botId, generation: runtime.generation }), waitsFor: "restart", fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+    queueOnLane(botId, laneId, text, { replyTo, telegramReply: queuedTelegramReply(chatId, { botId, generation: runtime.generation }), waitsFor: "restart", fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     return {
       text: "Your message is saved. The answer will come here once Bloks is back, and it will also be in the app.",
       markdown: false,
@@ -8677,9 +8681,9 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
   const lane = bot.tasks.find((t) => t.id === laneId);
   if (lane && laneWaits(lane) && !wheel.heldBy(botId) && !bot.archivedAt) {
     try {
-      const steered = await steerLane(bot, lane, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+      const steered = await steerLane(bot, lane, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       if (!steered && !currentTelegram(runtime)) throw new Error("the Telegram connection changed");
-      const sent = steered ?? queueOnLane(botId, laneId, text, { fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+      const sent = steered ?? queueOnLane(botId, laneId, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       requestId = sent.id;
       progress.observe();
       // the turn may have ended while its engine was asked
@@ -8693,7 +8697,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
     }
   }
   try {
-    await startTurn(botId, text, { byYou: true, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
+    await startTurn(botId, text, { replyTo, byYou: true, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
     progress.observe();
     // Longer than an ordinary wait, because a card forwarded to the
     // phone is answered on the phone's schedule, not the app's.
@@ -9534,7 +9538,7 @@ async function steerOne(
   if (!adapter?.steerTurn) return null;
   if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   const { from } = options;
-  const words = from ? fromAgentPrompt(from, text) : text;
+  const words = withReply(from ? fromAgentPrompt(from, text) : text, options.replyTo);
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const took = await (names.length ? adapter.steerTurn(lane.id, words, { skillNames: names }) : adapter.steerTurn(lane.id, words)).catch(() => false);
@@ -9647,11 +9651,12 @@ function lastReportFor(laneId: string): string | null {
 /** Stored words stay unchanged; engines hear who started the message. */
 function storedPrompt(message: Message): string {
   const text = message.text ?? "";
-  if (message.agent?.dir === "in") {
-    return fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text);
-  }
-  return message.via === "routine" && message.routine && !(message.commandInstance && commandFor(text, message.commandInstance))
-    ? fromRoutinePrompt(message.routine, text) : text;
+  const command = Boolean(message.commandInstance && commandFor(text, message.commandInstance));
+  const words = message.agent?.dir === "in"
+    ? fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text)
+    : message.via === "routine" && message.routine && !command
+      ? fromRoutinePrompt(message.routine, text) : text;
+  return command ? words : withReply(words, message.replyTo);
 }
 
 /** `yours` says the person wrote it, which moves the agent up the

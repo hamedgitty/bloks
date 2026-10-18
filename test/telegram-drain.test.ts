@@ -66,8 +66,8 @@ async function telegramStub(t: TestContext) {
   return {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
-    push(text: string, chatId = CHAT) {
-      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: "Sam" }, text } });
+    push(text: string, chatId = CHAT, replyTo?: unknown) {
+      state.updates.push({ update_id: state.next++, message: { chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: "Sam" }, text, ...(replyTo ? { reply_to_message: replyTo } : {}) } });
     },
     pushFile(chatId = CHAT) {
       state.updates.push({ update_id: state.next++, message: { chat: { id: chatId, type: "private" }, from: { id: chatId, is_bot: false, first_name: "Sam" }, caption: "FILE_REQUEST",
@@ -160,9 +160,9 @@ setTimeout(() => process.exit(0), 50);
     dataRoot, tg, engine, bot, env,
     get h() { return h; },
     async reboot() { await h.crash(); h = await startHarness(env); return h; },
-    async queue(text = "DRAIN_REQUEST") {
+    async queue(text = "DRAIN_REQUEST", replyTo?: unknown) {
       await h.json("/api/maintenance/drain", { method: "POST", body: JSON.stringify({ seconds: 60 }) });
-      tg.push(text);
+      tg.push(text, CHAT, replyTo);
       const message = await waitFor(async () => (await messagesOf(h, bot)).find((m) => m.role === "user" && m.text === text));
       assert.ok(message, "drain intake did not save the message");
       assert.ok(await waitFor(() => tg.state.accepted.some((m) => saved(m.text))), "no saved notice");
@@ -744,4 +744,32 @@ test("requesting an owner pairing word preserves the same bot's queued request",
   assert.ok(await waitFor(() => f.tg.answers().length === 1));
   assert.equal(f.engine.state.calls.length, 1);
   assert.equal(f.tg.answers()[0].text, "ANSWER");
+});
+
+const replyOriginal = (id: number, text: string) => ({ message_id: id, chat: { id: CHAT }, from: { first_name: "Sample author" }, text });
+function bothReplyContexts(raw: string) {
+  assert.ok(raw.indexOf("First referenced excerpt") < raw.indexOf("Second referenced excerpt"), "references keep input order");
+  assert.equal((raw.match(/First referenced excerpt/g) ?? []).length, 1); assert.equal((raw.match(/Second referenced excerpt/g) ?? []).length, 1);
+}
+test("reply context two queued Telegram inputs survive drain restart in order", async t => {
+  const f = await fixture(t); await f.queue("First queued request", replyOriginal(11, "First referenced excerpt")); await f.queue("Second queued request", replyOriginal(12, "Second referenced excerpt"));
+  f.engine.state.immediate = true; await f.reboot(); assert.ok(await waitFor(() => f.engine.state.calls.length ? true : null)); const body = JSON.parse(f.engine.state.calls[0]); bothReplyContexts(body.messages.at(-1).content);
+  const prior = body.messages.slice(0, -1).filter((m: any) => m.role === "user");
+  // assembleTranscript excludes the final saved user input, which is delivered
+  // as the current turn. The earlier queued input also remains in history.
+  const first = prior.find((m: any) => m.content.includes("First queued request"));
+  assert.ok(first); assert.equal((first.content.match(/First referenced excerpt/g) ?? []).length, 1);
+  assert.equal(prior.some((m: any) => m.content.includes("Second queued request")), false);
+  const rows = await messagesOf(f.h, f.bot); assert.deepEqual(rows.filter(m => m.fromTelegram).map(m => m.replyTo?.id), [`tg:${CHAT}:11`, `tg:${CHAT}:12`]);
+});
+test("reply context queued inputs join cutoff recovery without losing their excerpts", async t => {
+  const f = await fixture(t, `if(n===1){say("Working");await nap(15000);}else say("Recovered");`);
+  await f.h.json(`/api/bots/${f.bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Initial work" }) }); assert.ok(await waitFor(() => { try { return Number(readFileSync(join(f.dataRoot, "spawns"), "utf8")) === 1 } catch { return false } }));
+  await f.queue("First queued request", replyOriginal(11, "First referenced excerpt")); await f.queue("Second queued request", replyOriginal(12, "Second referenced excerpt")); await f.reboot();
+  assert.ok(await waitFor(() => { try { return readFileSync(join(f.dataRoot, "heard-2"), "utf8").includes("Second queued request") } catch { return false } })); bothReplyContexts(readFileSync(join(f.dataRoot, "heard-2"), "utf8"));
+});
+test("reply context is retained in the next fresh API transcript", async t => {
+  const f = await fixture(t); f.engine.state.immediate = true; f.tg.push("First input", CHAT, replyOriginal(11, "Earlier transcript excerpt")); assert.ok(await waitFor(() => f.tg.answers().length === 1 ? true : null));
+  f.tg.push("Second input"); assert.ok(await waitFor(() => f.engine.state.calls.length === 2 ? true : null));
+  const body = JSON.parse(f.engine.state.calls[1]); const old = body.messages.find((m: any) => m.role === "user" && String(m.content).includes("First input")); assert.match(old.content, /Replying to Sample author's earlier message: "Earlier transcript excerpt"/); assert.equal((old.content.match(/Replying to/g) ?? []).length, 1);
 });
