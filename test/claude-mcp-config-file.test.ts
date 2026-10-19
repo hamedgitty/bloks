@@ -23,7 +23,7 @@ function fakeClaude(home: string, seen: string): string {
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const value = (flag) => args[args.indexOf(flag) + 1];
 const mcpFile = value("--mcp-config");

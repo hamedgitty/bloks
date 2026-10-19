@@ -25,7 +25,7 @@ test("a Claude Code agent is never sent /goal, reads its goal, and cannot set on
     `#!${process.execPath}
 import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 if (args[args.indexOf("--output-format") + 1] === "text") {
   let asked = "";

@@ -301,16 +301,20 @@ test("Claude question, secret and connection tools stay in the owner's chat", as
   assert.equal(f.sent(LEE).some((m) => m.body.text.includes("Synthetic service key") || m.body.text.includes("Which day?") || m.body.reply_markup), false);
 });
 
-test("a Claude person's late ask stays refused after its turn ends", async (t) => {
+test("a finished Claude person's process cannot retain late text or permission authority", async (t) => {
   const f = await personFixture(t, "claude");
   await f.post(`/api/bots/${f.bot.id}/messages`, { text: "OWNER_BEFORE" }); await f.idle();
   const savedLane = () => JSON.parse(readFileSync(join(f.root, ".bloks/bots.json"), "utf8")).find((b: any) => b.id === f.bot.id).tasks[0];
   const cursor = savedLane().resumeCursors.claude;
   assert.equal(typeof cursor, "string");
   await f.admit("FAKE_LATE");
-  const answer = await until(() => f.records().find((r) => r.lateAnswer)?.lateAnswer, "the late person ask was not settled");
+  await until(() => f.records().find((r) => r.lateReady), "the no-send probe never reached the broker");
+  await f.idle();
   assert.equal(f.records().find((r) => r.lateReady)?.lateReady.behavior, "deny", "the broker did not acknowledge the invalid no-send probe before result");
-  assert.equal(answer.behavior, "deny");
+  const pid = f.records().find(r => r.person && r.text.includes("FAKE_LATE")).pid;
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the person's ended process was still alive");
+  const answer = f.records().find(r => r.lateAnswer)?.lateAnswer;
+  assert.notEqual(answer?.behavior, "allow", "an ended turn retained permission authority");
   assert.equal(existsSync(join(f.root, "effect")), false);
   assert.equal((await f.messages()).some((m) => m.card?.title === "Approval needed"), false);
   assert.equal((await f.messages()).some((m) => m.text === "LATE_PERSON_TEXT"), false);

@@ -110,7 +110,7 @@ async function fixture(t: TestContext, nativeScript?: string) {
     }));
     writeFileSync(join(dataRoot, "fake-claude.mjs"), `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (process.argv[2] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const root = ${JSON.stringify(dataRoot)};
 const n = (existsSync(root + "/spawns") ? Number(readFileSync(root + "/spawns", "utf8")) : 0) + 1;

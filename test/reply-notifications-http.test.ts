@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 const dir=__DIR__, kind='__KIND__', slot='__SLOT__';
 const out=x=>console.log(JSON.stringify(x));
-if(process.argv.includes('--version')){console.log(kind==='codex'?'codex-cli 9.9.9':'9.9.9 (Claude Code)');process.exit();}
+if(process.argv.includes('--version')){console.log(kind==='codex'?'codex-cli 9.9.9':'2.1.299 (Claude Code)');process.exit();}
 if(process.argv.includes('login')){console.log('Logged in using ChatGPT');process.exit();}
 if(process.argv.includes('auth')){out({loggedIn:true});process.exit();}
 const run=async(start)=>{

@@ -152,7 +152,7 @@ test("an agent's say to a busy lane names the drain first but stays unmarked", a
   writeFileSync(cli, `#!${process.execPath}
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const home = ${JSON.stringify(home)};
-if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (process.argv[2] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", async c => {

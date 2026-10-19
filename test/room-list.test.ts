@@ -36,7 +36,7 @@ test("room tails keep metadata, access and every omitted history message", async
   // A real, bounded turn supplies its agent credential. No external engine.
   writeFileSync(cli, `#!${process.execPath}
 import { writeFileSync } from "node:fs";
-if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (process.argv[2] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.on("SIGTERM", () => process.exit(0));
 let input = "";

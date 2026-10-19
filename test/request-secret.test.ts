@@ -84,7 +84,7 @@ test("a full-access Claude agent is told about request_secret, and `bloks secret
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const prompt = readFileSync(args[args.indexOf("--append-system-prompt-file") + 1], "utf8");
 const mcp = readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8");

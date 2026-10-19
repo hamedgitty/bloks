@@ -24,7 +24,7 @@ async function fixture(t: TestContext, answer: "claude" | "codex" = "codex") {
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 const root = ${JSON.stringify(f.root)};
 const args = process.argv.slice(2);
-if(args[0]==="--version"){console.log("9.9.9 (Claude Code)");process.exit(0);}
+if(args[0]==="--version"){console.log("2.1.299 (Claude Code)");process.exit(0);}
 if(args[0]==="auth"){console.log(JSON.stringify({loggedIn:true}));process.exit(0);}
 const out=f=>console.log(JSON.stringify(f));
 const wait=gate=>new Promise(resolve=>{const timer=setInterval(()=>{if(existsSync(root+"/"+gate)){clearInterval(timer);resolve();}},20);});

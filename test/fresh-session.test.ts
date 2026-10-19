@@ -37,7 +37,7 @@ test("a fresh session after this turn: no resume, no replay, transcript kept, ow
     `#!${process.execPath}
 import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 const argv = process.argv.slice(2);
-if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (argv[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));

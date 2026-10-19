@@ -20,7 +20,7 @@ test("an agent's message is attributed, recorded on both sides, and opens as one
     `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));

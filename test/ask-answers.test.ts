@@ -11,7 +11,7 @@
 // take, and a card the engine closed first stays on screen and says why.
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,7 +33,7 @@ function claudeHome(): string {
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
 let buf = "";
@@ -336,20 +336,27 @@ test("a closed card put aside in another of the agent's conversations stays put 
 });
 
 test("an answer goes to the engine that asked, whatever the agent has been moved to since", async (t) => {
-  // Something a Claude Code turn left running asks after the turn's
-  // result. The lane no longer reads as running on anything by then, so
-  // the answer was sent to the agent's engine of the moment, which had
-  // never heard of the question.
+  // A live request belongs to its original turn even if preferences change.
+  // Finished turns no longer retain a broker or background authority.
   const f = await fixture(t);
-  await f.say("ASK-AFTERWARDS");
-  assert.ok(await f.idle(), "the turn never ended");
+  await f.say("OWN-QUESTION");
   const asked = await f.card();
   await f.h.fetch(`/api/bots/${f.bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "spare", model: "claude-sonnet-5" } }) });
 
   const sent = await f.respond(asked.card.requestId, { behavior: "answer", message: "Keep" });
   assert.equal(sent.outcome, "delivered");
-  const told = await waitFor(() => (existsSync(join(f.home, "afterwards.txt")) ? readFileSync(join(f.home, "afterwards.txt"), "utf8") : null));
-  assert.equal(told, "Keep");
+  assert.equal(await f.heard(), "Keep");
+  assert.ok(await f.idle(), "the original turn never ended");
+});
+
+test("a finished Claude process cannot leave an answerable background question", async t => {
+  const f = await fixture(t);
+  await f.say("ASK-AFTERWARDS");
+  assert.ok(await f.idle(), "the turn never ended");
+  assert.equal((await f.messages()).some(m => m.card?.requestId && !m.card.answered), false);
+  const next = await f.say("carry on without it");
+  assert.ok(!next.queued && !next.steered);
+  assert.ok(await f.idle());
 });
 
 test("a Codex question takes a choice, and takes being put aside", async (t) => {

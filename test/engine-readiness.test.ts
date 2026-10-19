@@ -36,7 +36,7 @@ const waitFor = async <T,>(check: () => Promise<T | null | undefined> | T | null
 const fakeClaude = (loggedIn: boolean, token: string, release: string) => `#!${process.execPath}
 import { existsSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: ${loggedIn} })); process.exit(${loggedIn ? 0 : 1}); }
 let input = "";
 process.stdin.resume();

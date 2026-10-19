@@ -36,7 +36,7 @@ test("stopping another agent, reading a room, and reading a recalled message in 
     `#!${process.execPath}
 import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.on("SIGTERM", () => process.exit(143));
 let input = "";

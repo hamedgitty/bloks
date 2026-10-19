@@ -39,7 +39,7 @@ async function fixture(t: TestContext, path: Path, outcome: Outcome) {
   writeFileSync(cli, `#!${process.execPath}
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 const args=process.argv.slice(2), home=${JSON.stringify(home)}, path=${JSON.stringify(path)}, outcome=${JSON.stringify(outcome)};
-if(args[0]==="--version"){console.log("9.9.9 (Claude Code)");process.exit(0);}
+if(args[0]==="--version"){console.log("2.1.299 (Claude Code)");process.exit(0);}
 if(args[0]==="auth"){console.log(JSON.stringify({loggedIn:true}));process.exit(0);}
 const emit=f=>console.log(JSON.stringify(f));
 const publish=(phase,extra={})=>{const name=${JSON.stringify(records)}+"/"+process.pid+"-"+phase+".json";writeFileSync(name+".part",JSON.stringify({phase,args,pid:process.pid,cwd:process.cwd(),...extra}));renameSync(name+".part",name);};

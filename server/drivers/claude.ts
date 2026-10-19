@@ -4,8 +4,9 @@
 // prompt goes in on stdin as a stream-json message, and a sequence of
 // stream-json events comes back on stdout. Stdin stays open while the
 // turn runs, so the person can say more and the agent reads it after the
-// step it is on (GitHub 213); closing it is what lets a -p process end,
-// so it is closed at the first result. Continuity across turns is the
+// step it is on (GitHub 213). Supported CLIs attribute completion to each
+// accepted input; older versions close input at the first result.
+// Continuity across turns is the
 // CLI's own `--resume`, keyed on a session id it hands us in its first
 // event, which we store as the thread's resume cursor.
 //
@@ -74,10 +75,15 @@ import { appendNative } from "./native.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses } from "./engine-processes.ts";
+import { EngineProcesses, signalGroup } from "./engine-processes.ts";
+import { TurnProcess } from "./turn-process.ts";
+import { ClaudeInputs } from "./claude-inputs.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
 const sessionCosts = new SessionCosts();
+/** An unconfirmed owner survives instance replacement. A settings reload
+ * must not make the same lane runnable beside its predecessor. */
+const processOwners = new Map<string, TurnProcess>();
 
 const DRIVER_KIND = "claudeAgent";
 
@@ -262,12 +268,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     // turns can start, and refresh with the normal health check after a CLI
     // update. An older or unrecognised CLI keeps its existing arguments.
     let snapshotOffSupported = false;
+    let attributedCompletionSupported = false;
     const readVersion = () => new Promise<string | null>((resolve) => {
       execFile(config.cli, ["--version"], { timeout: 8_000, windowsHide: true }, (error, stdout) => {
         const version = error ? null : stdout.trim();
         const parts = version?.match(/^(\d+)\.(\d+)\.(\d+)(?:\s|$)/);
         const [major, minor, patch] = parts?.slice(1).map(Number) ?? [];
         snapshotOffSupported = major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 257)));
+        attributedCompletionSupported = major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 300)));
         resolve(version);
       });
     });
@@ -281,6 +289,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     interface RunningTurn {
       turnId: string;
       abort: () => void;
+      cleanup: () => Promise<boolean>;
       /** More words for this turn, or false when it can no longer take them. */
       steer: (text: string, onDispatch?: () => void) => boolean;
       broker?: AskBroker;
@@ -288,12 +297,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     /** At most one turn per thread. A second send while one is live is a
      * caller bug, not a queue to manage. */
     const running = new Map<string, RunningTurn>();
-    /** Brokers of turns that have ended while their process runs on. A
-     * background task or subagent can still ask for permission after the
-     * result, and its answer has to reach the broker it asked, not the
-     * next turn's (which has never heard of it). Each is closed when its
-     * process exits. */
-    const afterTurn = new Map<string, Set<AskBroker>>();
     /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
     const engines = new EngineProcesses();
 
@@ -310,9 +313,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (running.has(threadId)) throw new Error("a turn is already running on this thread");
+      if (running.has(threadId) || processOwners.has(threadId)) throw new Error("a turn is already running on this thread");
 
       const turnId = newId();
+      // A health refresh cannot change the protocol of an already running CLI.
+      const attributed = attributedCompletionSupported;
+      const inputs = attributed ? new ClaudeInputs() : null;
+      let sealed = false;
+      let closingBroker = false;
+      let completionTimer: ReturnType<typeof setTimeout> | null = null;
+      let checkCompletion = () => {};
       const resume = !turn.person && typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       // Tool calls the engine has started and not yet reported back on,
@@ -352,6 +362,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               ? "bypassPermissions"
               : config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
       ];
+      if (attributed) argv.push("--include-partial-messages");
       // Resuming continues the CLI's own session; otherwise name the new
       // one ourselves so the id exists before its first event arrives.
       if (resume) {
@@ -495,13 +506,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let personReady = !turn.person;
       const broker = createAskBroker({
         socketPath,
-        ...(turn.person ? { onReply: (input: unknown) => {
+        ...(turn.person ? { onReply: async (input: unknown) => {
+          if (sealed) throw new Error("This turn has ended.");
           if (!personReady) throw personTurnHold("Claude's startup permissions have not been verified.");
-          return turn.person!.reply(input);
+          const response = await turn.person!.reply(input);
+          if (sealed) throw new Error("This turn has ended.");
+          return response;
         } } : {}),
         onAsk: (ask) => {
+          if (sealed) { broker.answer(ask.id, "deny", "This turn has ended."); return; }
           if (!personReady) { broker.answer(ask.id, "deny", "The person's permissions have not been verified."); return; }
           asking++;
+          inputs?.setAsking(true);
           lastSign = Date.now();
           emit({
             ...envelope(threadId, turnId),
@@ -513,9 +529,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             summary: summarise(ask),
             choices: askChoices(ask.input),
           });
+          checkCompletion();
         },
         onResolve: (resolved) => {
+          // Closing this turn's already-open cards is part of the selected
+          // terminal outcome, not new authority for a late broker callback.
+          if (sealed && !closingBroker) return;
           asking = Math.max(0, asking - 1);
+          inputs?.setAsking(asking > 0);
           // the call only starts running once it has its answer
           lastSign = Date.now();
           emit({
@@ -525,6 +546,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             behavior: resolved.behavior,
             source: resolved.source,
           });
+          checkCompletion();
         },
       });
       if (!bypass) argv.push("--permission-prompt-tool", "mcp__bloks__approve");
@@ -581,6 +603,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       engines.add(child);
 
       let finished = false;
+      let finishing = false;
       let exited = false;
       // the session this process reports for, from its init frame
       let sessionId: string | null = resume;
@@ -605,33 +628,45 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let resetsAt: number | null = null;
       let watch: ReturnType<typeof setInterval> | null = null;
       let quiet: ReturnType<typeof setInterval> | null = null;
+      const release = () => {
+        if (!finished || !owner.confirmed) return;
+        if (running.get(threadId)?.turnId === turnId) running.delete(threadId);
+        if (processOwners.get(threadId) === owner) processOwners.delete(threadId);
+      };
+      const owner = new TurnProcess(child, { onConfirmed: release });
+      processOwners.set(threadId, owner);
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
-        if (finished) return;
-        finished = true;
+        if (finishing) return;
+        finishing = true;
+        // Seal synchronously, including buffered lines and broker continuations.
+        sealed = true;
         if (watch) clearInterval(watch);
         if (quiet) clearInterval(quiet);
-        if (broker && !exited && !abandoned) {
-          broker.retire();
-          const kept = afterTurn.get(threadId) ?? new Set<AskBroker>();
-          kept.add(broker);
-          afterTurn.set(threadId, kept);
-        } else {
-          broker?.close();
-        }
-        if (privateDir) {
-          try {
-            rmSync(privateDir, { recursive: true, force: true });
-          } catch {
-            /* tmpdir cleanup owns stragglers */
+        if (completionTimer) clearTimeout(completionTimer);
+        closingBroker = true;
+        try { broker.close(); } finally { closingBroker = false; }
+        closeInput();
+        void owner.end().then((confirmed) => {
+          if (!confirmed) {
+            emit({ ...envelope(threadId, turnId), type: "runtime.error",
+              message: "Claude Code did not finish stopping its process and helpers. This session cannot start another turn until they have ended." });
           }
-        }
-        running.delete(threadId);
-        emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost });
+          if (privateDir) {
+            try { rmSync(privateDir, { recursive: true, force: true }); } catch { /* tmpdir cleanup */ }
+          }
+          finished = true;
+          release();
+          emit({ ...envelope(threadId, turnId), type: "turn.completed",
+            ok: confirmed && ok, stopReason: confirmed ? stopReason : "interrupted", cost });
+        });
       };
 
       /** End the turn on a result frame, charging only this turn's share
        * of the session's running total (GitHub 137). */
-      const settle = (frame: any) => {
+      const settle = (frame: any, selected = false) => {
+        if (sealed && !selected) return;
+        // Select before accounting callbacks can admit another steer.
+        sealed = true;
         // A turn that never spoke as the assistant, /compact for one, still
         // made requests, and the result is the only place they are counted.
         // No context size: what /compact read is not what the session holds
@@ -657,27 +692,84 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
         // A limit can also arrive as a successful result whose text is
         // only the notice, with nothing before it that we recognised.
-        if (!outNotice && isLimitNotice(frame.result)) {
-          const said: string = frame.result.trim();
+        const outcome = inputs?.failureResult ?? frame;
+        if (!outNotice && isLimitNotice(outcome.result)) {
+          const said: string = outcome.result.trim();
           outNotice = said;
           emit({ ...envelope(threadId, turnId), type: "runtime.error", message: said });
         }
         // a failed turn's own words say why ("usage limit reached"),
         // which is what a backup engine and a routine's log need
+        const providerError = outcome.is_error === true || (Array.isArray(outcome.errors) && outcome.errors.length > 0);
         let why: string | null =
-          outNotice ?? (frame.is_error === true && typeof frame.result === "string" && frame.result.trim() ? frame.result.trim() : null);
+          outNotice ?? (providerError
+            ? (typeof outcome.result === "string" && outcome.result.trim() ? outcome.result.trim()
+              : Array.isArray(outcome.errors) ? outcome.errors.filter((v: unknown) => typeof v === "string").join(" ") : null)
+            : null);
         // the model declining the message, said only by the stop reason:
         // a failed turn, in words failover.ts reads as a refusal
-        const declined = frame.stop_reason === "refusal";
+        const declined = outcome.stop_reason === "refusal";
         if (!why && declined) why = "The provider declined this message (stop reason: refusal).";
         // the reset the rate limit gave, in the shape failover.ts reads
         // first: "resets 3pm" alone leaves the day and the zone to guess
         if (why && resetsAt && outReason(why)) why = `${why.slice(0, 380)}|${resetsAt}`;
         finish(
-          frame.is_error !== true && !outNotice && !declined,
-          why?.slice(0, 400) ?? frame.stop_reason ?? frame.terminal_reason ?? null,
+          !providerError && !outNotice && !declined,
+          why?.slice(0, 400) ?? outcome.stop_reason ?? outcome.terminal_reason ?? null,
           total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null,
         );
+      };
+
+      const accountChild = (frame: any) => {
+        const usage = frame.type === "assistant" ? frame.message?.usage : null;
+        if (!usage) return;
+        reportedUsage = true;
+        const ttl = cacheTtlOf(usage);
+        emit({ ...envelope(threadId, turnId), type: "thread.token-usage.updated",
+          input: (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0),
+          output: usage.output_tokens || 0, ...(ttl ? { cacheTtl: ttl } : {}) });
+      };
+      checkCompletion = () => {
+        if (!inputs || sealed) return;
+        if (completionTimer) clearTimeout(completionTimer);
+        completionTimer = null;
+        const expired = inputs.poll();
+        if (expired.expired.length) {
+          sealed = true;
+          emit({ ...envelope(threadId, turnId), type: "runtime.error",
+            message: "Claude Code did not answer while waiting for this input's request or completion for 900 seconds, so this turn was stopped. " +
+              "Send the message again; if it keeps happening, run the Claude Code CLI once in a terminal to see what it is waiting for." });
+          stopping = true;
+          const result = inputs.selectedResult;
+          if (result) settle(result, true); else finish(false, "interrupted");
+          return;
+        }
+        const failed = inputs.failedTerminal;
+        if (failed) {
+          sealed = true;
+          const result = inputs.selectedResult;
+          if (result?.is_error) settle(result, true);
+          else {
+            emit({ ...envelope(threadId, turnId), type: "runtime.error", message: failed });
+            stopping = true;
+            if (result) settle(result, true); else finish(false, "interrupted");
+          }
+          return;
+        }
+        if (inputs.ready) {
+          held = inputs.selectedResult;
+          if (!steered) { settle(held); return; }
+          quiet ??= setInterval(() => {
+            if (sealed || !inputs.ready || Date.now() - lastSign < STEER_QUIET_MS) return;
+            settle(inputs.selectedResult);
+          }, 1_000);
+          quiet.unref?.();
+        }
+        const wait = inputs.nextWaitMs;
+        if (wait !== null) {
+          completionTimer = setTimeout(checkCompletion, Math.max(1, wait));
+          completionTimer.unref?.();
+        }
       };
 
       const initializeId = newId();
@@ -694,14 +786,40 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const consume = (raw: string) => {
         // A person leaves no background authority behind: late frames
         // cannot become the next owner's text, session or approvals.
-        if (abandoned || (turn.person && finished)) return;
-        lastSign = Date.now();
+        if (abandoned || sealed) return;
         let frame: any;
         try {
           frame = JSON.parse(raw);
         } catch {
           return; // a log line, not protocol
         }
+        // Partial frames are deliberately unused, even for activity clocks.
+        if (frame.type === "stream_event") return;
+        // Native child text/errors/tools cannot impersonate the parent.
+        // Keep usage, without changing the parent's context or activity.
+        if (frame.parent_tool_use_id != null) {
+          appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: frame });
+          accountChild(frame);
+          return;
+        }
+        if (inputs && frame.type === "command_lifecycle") {
+          if (inputs.terminal(frame)) { lastSign = Date.now(); checkCompletion(); }
+          return;
+        }
+        if (inputs && frame.type === "system" && frame.subtype === "status" && frame.status === "requesting") {
+          if (inputs.requesting(frame)) { lastSign = Date.now(); checkCompletion(); }
+          return;
+        }
+        if (inputs && frame.type === "result") {
+          if (inputs.result(frame)) {
+            appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: frame });
+            lastSign = Date.now();
+            checkCompletion();
+          }
+          return;
+        }
+        if (["assistant", "user", "result"].includes(frame.type) ||
+            (frame.type === "system" && ["init", "thinking_tokens", "compact_boundary", "task_notification"].includes(frame.subtype))) lastSign = Date.now();
         // initialize also returns account, models, pid and session state.
         // None of those belong in Bloks' logs, transcript or event stream.
         if (frame.type === "control_response") {
@@ -728,8 +846,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 try { checkPersonClaudeInit(frame, Object.keys(mcpServers)); }
                 catch (error) {
                   personReady = false;
+                  sealed = true;
                   emit({ ...envelope(threadId, turnId), type: "runtime.error", message: (error as Error).message });
-                  abort(); finish(false, "person_guard"); return;
+                  finish(false, "person_guard"); return;
                 }
               }
               initSkills = frame.skills;
@@ -897,7 +1016,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             if (steered) {
               held = frame;
               quiet ??= setInterval(() => {
-                if (finished || Date.now() - lastSign < STEER_QUIET_MS) return;
+                if (sealed || Date.now() - lastSign < STEER_QUIET_MS) return;
                 if (held) settle(held);
               }, 1_000);
               quiet.unref?.();
@@ -925,6 +1044,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       });
 
       child.on("error", (error) => {
+        if (sealed) return;
+        sealed = true;
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -943,12 +1064,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const endStopped = () => finish(false, stalled ? "tool_stalled" : "interrupted");
 
       const ended = (code: number | null) => {
-        if (finished) return;
+        if (sealed) return;
+        if (inputs && !inputs.exited()) {
+          sealed = true;
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: describeEarlyExit(code, stderr, { name: "Claude Code", signIn: "run `claude` once in a terminal" }) });
+          stopping = true;
+          const result = inputs.selectedResult;
+          if (result) settle(result, true); else finish(false, "interrupted");
+          return;
+        }
+        if (inputs?.selectedResult) return settle(inputs.selectedResult);
         if (stopping) return endStopped();
         // a held result was the whole turn after all
         if (held) return settle(held);
         // Exiting without a `result` frame means it never got as far as
         // answering, so stderr is the only thing that can explain it.
+        sealed = true;
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -962,11 +1093,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       child.on("close", (code) => {
         exited = true;
-        const kept = afterTurn.get(threadId);
-        if (broker && kept?.delete(broker)) {
-          broker.close();
-          if (!kept.size) afterTurn.delete(threadId);
-        }
         ended(code);
       });
 
@@ -976,58 +1102,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // and then stop waiting on it.
       child.on("exit", (code) => {
         const late = setTimeout(() => {
-          if (finished) return;
+          if (sealed) return;
           abandoned = true;
           ended(code);
         }, STOP_GRACE_MS);
         late.unref?.();
       });
 
-      const signal = (sig: NodeJS.Signals) => {
-        try {
-          process.kill(-child.pid!, sig);
-        } catch {
-          // no process group (already reaped, or platform quirk)
-          try {
-            child.kill(sig);
-          } catch {
-            /* gone */
-          }
-        }
-      };
-
-      // SIGTERM, then SIGKILL, then the turn ends whether or not the
-      // process let go. A CLI stuck in a tool call sat through SIGTERM
-      // for two hours (GitHub 146), and a process blocked in a read the
-      // kernel will not interrupt survives SIGKILL too, until the read
-      // returns. Whatever it says after that is dropped.
       const abort = () => {
-        if (finished || stopping) return;
+        if (sealed || stopping) return;
         stopping = true;
-        signal("SIGTERM");
-        const kill = setTimeout(() => {
-          if (!exited) signal("SIGKILL");
-        }, STOP_GRACE_MS);
-        kill.unref?.();
-        const giveUp = setTimeout(() => {
-          if (finished) return;
-          abandoned = true;
-          endStopped();
-        }, STOP_GRACE_MS * 2);
-        giveUp.unref?.();
+        const result = inputs?.selectedResult ?? held;
+        if (result) settle(result); else endStopped();
       };
 
       // A call gone silent ends the turn, and says which call it was.
       const limitMs = typeof turn.stallMs === "number" ? turn.stallMs : DEFAULT_STALL_MINUTES * 60_000;
       if (limitMs > 0) {
         watch = setInterval(() => {
-          if (finished || stopping) return;
+          if (sealed || stopping) return;
           const now = Date.now();
           if (!isStalled({ open: openCalls.size, asking, lastSign, now, limitMs })) return;
           const oldest = [...openCalls.values()].sort((a, b) => a.since - b.since)[0];
           stalled = describeStall(oldest, now - lastSign);
+          sealed = true;
+          stopping = true;
           emit({ ...envelope(threadId, turnId), type: "runtime.error", message: stalled });
-          abort();
+          const result = inputs?.selectedResult ?? held;
+          if (result) settle(result, true); else endStopped();
         }, Math.max(250, Math.min(15_000, limitMs / 4)));
         watch.unref?.();
       }
@@ -1040,21 +1142,58 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         inputOpen = false;
         child.stdin.end();
       }
-      const say = (text: string, onDispatch?: () => void) => {
+      const inputFailed = () => {
+        if (sealed) return;
+        sealed = true;
+        emit({ ...envelope(threadId, turnId), type: "runtime.error",
+          message: "Claude Code stopped accepting input, so this turn was stopped. Send the message again." });
+        stopping = true;
+        const result = inputs?.selectedResult ?? held;
+        if (result) settle(result, true); else finish(false, "interrupted");
+      };
+      const say = (text: string, onDispatch?: () => void): boolean => {
         // Over stdin, never argv: a pasted document would blow past
         // ARG_MAX, and argv is readable by every process on the machine.
-        const message = { type: "user", message: { role: "user", content: text } };
-        onDispatch?.();
-        child.stdin.write(JSON.stringify(message) + "\n");
+        if (sealed || !inputOpen || child.stdin.destroyed || !child.stdin.writable) return false;
+        const id = inputs ? newId() : null;
+        const message = { type: "user", message: { role: "user", content: text }, ...(id ? { uuid: id } : {}) };
+        if (id) inputs!.register(id);
+        // Reserved-report admission must run immediately before the effect.
+        try { onDispatch?.(); } catch (error) {
+          if (id) inputs!.forget(id);
+          throw error;
+        }
+        try {
+          child.stdin.write(JSON.stringify(message) + "\n", (error) => {
+            if (!error || sealed) return;
+            if (id) inputs!.forget(id);
+            inputFailed();
+          });
+        } catch (error) {
+          if (id) inputs!.forget(id);
+          inputFailed();
+          throw error;
+        }
         appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: message });
-      };
-      const steer = (text: string, onDispatch?: () => void) => {
-        if (finished || stopping || exited || !inputOpen) return false;
-        say(text, () => { onDispatch?.(); steered = true; });
+        checkCompletion();
         return true;
       };
+      const steer = (text: string, onDispatch?: () => void) => {
+        if (sealed || stopping || exited || !inputOpen) return false;
+        const previous = steered;
+        try {
+          const accepted = say(text, () => { onDispatch?.(); steered = true; });
+          if (!accepted) steered = previous;
+          return accepted;
+        } catch (error) { steered = previous; throw error; }
+      };
 
-      running.set(threadId, { turnId, abort, steer, broker });
+      running.set(threadId, { turnId, abort, steer, broker, cleanup: () => {
+        // Disposal's instance-wide helper may have forgotten this leader
+        // after its exit. Its resistant owned helpers still need escalation.
+        if (!owner.confirmed) signalGroup(child, "SIGKILL");
+        return owner.end();
+      } });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
       // Bare metadata request: does not change permissions, hooks or tools.
@@ -1072,7 +1211,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           try {
             const metadata = await withDeadline(personInitialized);
             for (;;) {
-              if (finished || stopping) return;
+              if (sealed || stopping) return;
               const id = newId();
               const response = new Promise<any>((resolve) => startupReplies.set(id, resolve));
               child.stdin.write(JSON.stringify({ type: "control_request", request_id: id, request: { subtype: "mcp_status" } }) + "\n");
@@ -1081,16 +1220,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               if (checkPersonClaudeStatus(metadata.current_permission_mode, status.response, Object.keys(mcpServers), personTools)) break;
               await new Promise((resolve) => setTimeout(resolve, 100));
             }
-            if (finished || stopping) return;
+            if (sealed || stopping) return;
             personReady = true;
-            say(turn.text);
+            if (!say(turn.text)) inputFailed();
           } catch (error) {
-            if (finished) return;
+            if (sealed) return;
+            sealed = true;
             emit({ ...envelope(threadId, turnId), type: "runtime.error", message: (error as Error).message });
-            abort(); finish(false, "person_guard");
+            finish(false, "person_guard");
           }
         })();
-      } else say(turn.text);
+      } else if (!say(turn.text)) inputFailed();
 
       return { turnId };
     };
@@ -1148,9 +1288,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 
         respondToRequest: async (threadId, requestId, decision) => {
-          // the running turn's broker first, then any finished turn's whose
-          // process is still at work and asked after its result
-          const brokers = [running.get(threadId)?.broker, ...(afterTurn.get(threadId) ?? [])].filter(
+          const brokers = [running.get(threadId)?.broker].filter(
             (b): b is AskBroker => b !== undefined,
           );
           if (!brokers.length) throw new Error("nothing on this thread is waiting to be answered");
@@ -1163,8 +1301,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
         stopAll: async () => {
           for (const turn of running.values()) turn.abort();
-          for (const kept of afterTurn.values()) for (const b of kept) b.close();
-          afterTurn.clear();
         },
 
         onEvent: (listener) => {
@@ -1238,9 +1374,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }),
 
       dispose: async () => {
-        for (const turn of running.values()) turn.abort();
+        const turns = [...running.values()];
+        for (const turn of turns) turn.abort();
         listeners.clear();
         await engines.end();
+        await Promise.all(turns.map(turn => turn.cleanup()));
       },
     };
   },

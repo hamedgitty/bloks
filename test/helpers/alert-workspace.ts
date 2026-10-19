@@ -42,7 +42,7 @@ export async function alertWorkspace(t: TestContext, staticDir = "") {
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 const argv = process.argv.slice(2);
-if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (argv[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const send = (v) => console.log(JSON.stringify(v));
 let input = "", began = false;

@@ -79,7 +79,8 @@ process.stdin.on("data", (chunk) => (input += chunk));
   out({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet-5" });
   out({ type: "assistant", message: { content: [{ type: "text", text: "Answered " + calls.length }] } });
   out({ type: "result", subtype: "success", is_error: false, num_turns: 1,
-    duration_api_ms: 1, session_id: sessionId, result: "Answered " + calls.length });
+    duration_api_ms: 1, session_id: sessionId, result: "Answered " + calls.length, user_message_uuid: JSON.parse(input.trim()).uuid });
+  if (JSON.parse(input.trim()).uuid) out({ type: "command_lifecycle", command_uuid: JSON.parse(input.trim()).uuid, state: "completed" });
 });
 `, { mode: 0o755 });
   mkdirSync(join(home, ".bloks"), { recursive: true });

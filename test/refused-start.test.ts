@@ -36,7 +36,7 @@ function claudeHome(): string {
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const home = ${JSON.stringify(home)};
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 // a one-shot call, which is what a fold is; a turn streams json
 if (args[args.indexOf("--output-format") + 1] === "text") {

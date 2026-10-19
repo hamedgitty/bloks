@@ -1378,7 +1378,7 @@ describe("defaults for new agents", () => {
       cli,
       `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(() => {
@@ -1485,7 +1485,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 import { appendFileSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 const argv = process.argv.slice(2);
-if (argv[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (argv[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const note = (line) => appendFileSync(${JSON.stringify(log)}, JSON.stringify(line) + "\\n");
 const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8"));
@@ -1545,7 +1545,7 @@ process.stdin.resume();
       `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 appendFileSync(${JSON.stringify(seen)}, JSON.stringify(args) + "\\n");
 process.stdin.resume();
@@ -1600,7 +1600,7 @@ process.stdin.resume();
       `#!${process.execPath}
 import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(async () => {
@@ -5007,7 +5007,7 @@ describe("the command line an agent drives", () => {
 import { execFileSync } from "node:child_process";
 import { renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(async () => {
@@ -5892,7 +5892,7 @@ async function heldTurn(t: { after: (fn: () => unknown) => void }) {
     `#!${process.execPath}
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 process.stdin.resume();
 ((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; if (typeof input !== "undefined") input = next; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(async () => {

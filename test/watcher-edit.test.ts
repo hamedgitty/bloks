@@ -110,7 +110,7 @@ test("an actual agent edits saved watchers through the CLI with ownership and ap
 import { renameSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let line = "";
 process.stdin.on("data", async (chunk) => {

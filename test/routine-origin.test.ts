@@ -46,7 +46,7 @@ async function native(t: TestContext) {
   const cli = join(home, "fake-claude.mjs");
   writeFileSync(cli, `#!${process.execPath}
 import { appendFileSync, existsSync } from "node:fs";
-if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (process.argv[2] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 const take = async (chunk) => {

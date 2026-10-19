@@ -36,7 +36,7 @@ if(args[0]==='--version'){console.log(kind==='codex'?'codex-cli 0.160.0':'2.1.29
 if(args[0]==='login'){console.log('Logged in using ChatGPT');process.exit(0)}
 if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true}));process.exit(0)}
 const out=f=>process.stdout.write(JSON.stringify(f)+'\\n');
-const log=f=>appendFileSync(join(root,'engine.jsonl'),JSON.stringify(f)+'\\n');
+const log=f=>appendFileSync(join(root,'engine.jsonl'),JSON.stringify({pid:process.pid,...f})+'\\n');
 const person=process.env.BLOKS_TOKEN?.startsWith('blr_');
 let thread='fixture-'+process.pid,turn='turn-'+process.pid;
 let guard,working=false,late=false,lateAfterEnd;

@@ -19,7 +19,7 @@ export async function controlledChain(t: TestContext, config: Record<string, unk
   }));
   writeFileSync(cli, `#!${process.execPath}
 import { appendFileSync, existsSync } from "node:fs";
-if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (process.argv[2] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const home = ${JSON.stringify(home)};
 const out = (frame) => console.log(JSON.stringify(frame));

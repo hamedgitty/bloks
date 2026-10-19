@@ -274,7 +274,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     `#!${process.execPath}
 import { writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
 let buf = "";
@@ -304,7 +304,7 @@ process.stdin.on("data", (c) => {
     out,
     `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
 let started = false;

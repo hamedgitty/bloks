@@ -14,7 +14,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const kind = "__KIND__", dir = "__DIR__", id = "__ID__";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log(kind === "codex" ? "codex-cli 9.9.9" : "9.9.9 (Claude Code)"); process.exit(); }
+if (args[0] === "--version") { console.log(kind === "codex" ? "codex-cli 9.9.9" : "2.1.299 (Claude Code)"); process.exit(); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(); }
 if (args[0] === "login") { console.log("Logged in using ChatGPT"); process.exit(); }
 const read = (name, otherwise) => existsSync(dir + "/" + name) ? JSON.parse(readFileSync(dir + "/" + name, "utf8")) : otherwise;

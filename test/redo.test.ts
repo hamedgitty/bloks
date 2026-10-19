@@ -296,7 +296,7 @@ describe("redo, on an engine that takes words mid-turn", () => {
     const cli = `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const home = ${JSON.stringify(home)};
 const n = (existsSync(home + "/spawns") ? Number(readFileSync(home + "/spawns", "utf8")) : 0) + 1;

@@ -21,7 +21,7 @@ const SHARED_ROOM = "backup-shared-fixture";
 const FAKE_CLAUDE = `#!${process.execPath}
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const home = "__HOME__";
 const read = (file, otherwise) => existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : otherwise;
@@ -237,7 +237,7 @@ if (process.argv[2] !== "--version") process.exit(1);
 fs.writeFileSync(${JSON.stringify(started)}, "");
 const until = Date.now() + 7000;
 const tick = () => fs.existsSync(${JSON.stringify(gate)}) || Date.now() > until
-  ? (console.log("9.9.9 (Claude Code)"), process.exit(0)) : setTimeout(tick, 25);
+  ? (console.log("2.1.299 (Claude Code)"), process.exit(0)) : setTimeout(tick, 25);
 tick();
 `, { mode: 0o755 });
     config.instances.slow = { driver: "claudeAgent", config: { cli: slow } };
