@@ -92,7 +92,9 @@ test("completion cancels pending posts and ignores even a late text with no next
 test("an empty completion is not confused with an adjacent later turn", async () => {
   const rows = [row("request", "user")];
   const f = fixture(rows);
+  assert.equal(f.turn.completed, false);
   f.turn.ended();
+  assert.equal(f.turn.completed, true, "an empty span still proves completion");
   rows.push(row("later", "user"), row("Later reply.", "bot"));
   f.turn.observe();
   assert.equal(f.answer(), "(the agent finished without saying anything)");

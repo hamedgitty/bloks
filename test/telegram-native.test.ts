@@ -149,6 +149,35 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("TIMEOUT_")) {
+    if (text.includes("TIMEOUT_RETRY") && !existsSync(root + "/timeout-retried")) {
+      writeFileSync(root + "/timeout-retried", "1");
+      return finish(null, "temporary synthetic failure");
+    }
+    if (text.includes("TIMEOUT_LATER")) {
+      writeFileSync(join(deliverables(), "later.txt"), "later work");
+      writeFileSync(root + "/timeout-later-started", "1");
+      for (let i = 0; i < 3000 && !existsSync(root + "/timeout-later-release"); i++) await nap(20);
+      return finish("LATER RESULT");
+    }
+    if (text.includes("TIMEOUT_FILES")) writeFileSync(join(deliverables(), "earlier.txt"), "request work");
+    writeFileSync(root + "/timeout-started", "1");
+    say("timeout-note", "Checking the sample."); tool("timeout-tool", "git status");
+    if (existsSync(root + "/timeout-card-delayed")) {
+      for (let i = 0; i < 3000 && !existsSync(root + "/timeout-card-release"); i++) await nap(20);
+    }
+    if (existsSync(root + "/timeout-question")) {
+      const result = await ask(990, "item/tool/requestUserInput", { itemId: "late-question", questions: [{ id: "day", question: "Which day?" }] });
+      writeFileSync(root + "/timeout-card-answer", JSON.stringify(result));
+    }
+    if (existsSync(root + "/timeout-approval")) {
+      const result = await ask(991, "item/commandExecution/requestApproval", { itemId: "late-approval", command: "remove sample output" });
+      writeFileSync(root + "/timeout-card-answer", JSON.stringify(result));
+    }
+    for (let i = 0; i < 3000 && !existsSync(root + "/timeout-release"); i++) await nap(20);
+    if (text.includes("TIMEOUT_EMPTY")) return finish(null);
+    return finish("REQUEST RESULT");
+  }
   if (text.includes("CTX_HOLD")) { writeFileSync(root+"/ctx-started","1"); for(let i=0;i<1000&&!existsSync(root+"/ctx-release");i++)await nap(20);return finish("CTX DONE"); }
   const scope = text.match(/SCOPED_[A-Z_]+/g)?.at(-1);
   if (scope) {
@@ -158,6 +187,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       return finish("ASIDE DONE");
     }
     if (scope === "SCOPED_MAIN_HOLD") {
+      if (existsSync(root + "/timeout-behind-files")) writeFileSync(join(deliverables(), "behind.txt"), "earlier work");
       writeFileSync(root + "/scope-force-queue", "1");
       say("other-note", "An earlier request's note.");
       let late = false;
@@ -305,7 +335,7 @@ process.stdin.once("data", async (input) => {
   return cli;
 }
 
-async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
+async function fixture(t: TestContext, engine: "codex" | "claude" = "codex", clock = false) {
   const root = mkdtempSync(join(tmpdir(), "bloks-telegram-native-"));
   mkdirSync(join(root, ".bloks"), { recursive: true });
   writeFileSync(join(root, ".bloks/config.json"), JSON.stringify({ instances: {
@@ -314,7 +344,7 @@ async function fixture(t: TestContext, engine: "codex" | "claude" = "codex") {
   }, secrets: { TEST_NOTICE: "fixture-stored-secret-123" } }));
   const tg = await telegramStub(t);
   const env = {
-    HOME: root, NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
+    HOME: root, NODE_OPTIONS: `--import=${preload}${clock ? ` --import=${new URL("./helpers/telegram-clock.mjs", import.meta.url).href}` : ""}`, BLOKS_TEST_TELEGRAM_URL: tg.url,
     OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", ELEVENLABS_API_KEY: "",
   };
   let h: Awaited<ReturnType<typeof startHarness>>;
@@ -900,7 +930,7 @@ test("unpairing without disabling retires an in-flight answer by generation", as
   assert.equal(f.tg.sent().some((call) => call.body.text === "OLD_UNPAIRED_ANSWER"), false, "the unpaired chat received its retired answer");
 });
 
-test("normal waitForIdle never picks up a later turn's answer or notes", async (t) => {
+test("a normal phone request finishes independently of another busy lane", async (t) => {
   const f = await fixture(t);
   const { bot } = await f.post("/api/bots/" + f.bot.id + "/tasks", { title: "Aside" });
   const aside = bot.tasks.find((task: any) => task.id !== f.bot.threadId)!;
@@ -910,7 +940,8 @@ test("normal waitForIdle never picks up a later turn's answer or notes", async (
   await waitFor(() => existsSync(join(f.root, "SCOPED_HOLD-started")), "the aside never started");
   f.tg.say("SCOPED_PHONE");
   await waitFor(async () => (await f.messages()).some((m) => m.text === "PHONE FINAL"), "the consuming turn did not end");
-  assert.equal(f.tg.calls("sendMessage").filter((c) => c.body.text === "PHONE FINAL").length, 0, "waitForIdle is held by the other lane");
+  await waitFor(() => f.tg.calls("sendMessage").some(c => c.body.text === "PHONE FINAL"), "the other lane held the phone answer", 3_000);
+  assert.equal(existsSync(join(f.root, "aside-release")), false);
   await f.post("/api/bots/" + f.bot.id + "/messages", { text: "SCOPED_LATER", taskId: f.bot.threadId });
   await waitFor(async () => (await f.messages()).some((m) => m.text === "LATER FINAL"), "the later turn never spoke");
   writeFileSync(join(f.root, "aside-release"), "1");
@@ -993,4 +1024,183 @@ test("reply context survives definite steer refusal and its queued delivery", as
   const row = await waitFor(async () => (await f.messages()).find(m => m.text === "Queued Telegram request" && m.queued), "no queued input"); assert.equal(row.replyTo.excerpt, "Queued sample excerpt");
   writeFileSync(join(f.root, "ctx-release"), "1");
   const c = await waitFor(() => heardContext(f).find(c => c.method === "turn/start" && inputWords(c).includes("Queued Telegram request")), "no queued engine delivery"); assert.match(inputWords(c), /Queued sample excerpt/); assert.equal((inputWords(c).match(/Replying to/g) ?? []).length, 1);
+});
+
+// Move only the real fixture server's wall clock. Its ordinary 250ms
+// waiter still runs, so restoring either old deadline causes phone output.
+async function jumpPastWait(f: Awaited<ReturnType<typeof fixture>>, minutes: number) {
+  writeFileSync(join(f.root, "telegram-clock-offset"), String(minutes * 60_000));
+  await sleep(900);
+}
+const phoneReturns = (f: Awaited<ReturnType<typeof fixture>>) => f.tg.calls("sendMessage").filter(c =>
+  !c.body.disable_notification && c.body.text !== "Sent." && !/^(Paired\.|Your agent has a question|Approval needed)/.test(c.body.text));
+
+for (const branch of ["started", "steered"] as const) for (const minutes of [19, 25]) test(`timeout: ${branch} request at ${minutes} minutes retains phone ownership until real completion`, async t => {
+  const f = await fixture(t, "codex", true);
+  const cardKind = branch === "started" ? "question" : "approval";
+  writeFileSync(join(f.root, `timeout-${cardKind}`), "1");
+  if (branch === "started") f.tg.say("TIMEOUT_HOLD");
+  else {
+    writeFileSync(join(f.root, "timeout-card-delayed"), "1");
+    await f.post(`/api/bots/${f.bot.id}/messages`, { text: "TIMEOUT_HOLD" });
+    await waitFor(() => existsSync(join(f.root, "timeout-started")), "the app turn never started");
+    f.tg.say("Please return this result");
+    await waitFor(async () => (await f.messages()).some(m => m.fromTelegram && m.midTurn), "the phone request never steered");
+    writeFileSync(join(f.root, "timeout-card-release"), "1");
+  }
+  const card = await cardIn(f, branch === "started" ? "Your agent has a question" : "Approval needed");
+  await jumpPastWait(f, minutes);
+  assert.deepEqual(phoneReturns(f), [], "a running request was falsely returned at the deadline");
+  if (branch === "started") {
+    f.tg.say("Thursday");
+    await waitFor(() => existsSync(join(f.root, "timeout-card-answer")), "the late typed phone answer lost its owner");
+    assert.match(readFileSync(join(f.root, "timeout-card-answer"), "utf8"), /Thursday/);
+  } else {
+    f.tg.press(card.id, card.body.reply_markup.inline_keyboard[0][0].callback_data);
+    await waitFor(() => existsSync(join(f.root, "timeout-card-answer")), "the late approval lost its owner");
+    assert.match(readFileSync(join(f.root, "timeout-card-answer"), "utf8"), /accept/);
+  }
+  f.tg.say("Additional sample detail");
+  await waitFor(() => heardContext(f).some(c => c.method === "turn/steer" && inputWords(c).includes("Additional sample detail")), "the late follow-up did not steer");
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  const final = await waitFor(() => phoneReturns(f).find(c => c.body.text === "REQUEST RESULT"), "the real result never returned to the phone");
+  assert.equal(final.body.chat_id, CHAT);
+  await sleep(400);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+  for (const note of f.tg.sent().filter(c => c.body.disable_notification)) {
+    assert.ok(f.tg.state.deleted.some(d => d.id === note.id && d.at <= final.at), "progress must be deleted before the answer");
+  }
+});
+
+test("timeout: an intermediate failure retains the request through its retry", async t => {
+  const f = await fixture(t, "codex", true);
+  f.tg.say("TIMEOUT_RETRY");
+  await waitFor(() => existsSync(join(f.root, "timeout-retried")), "the initial failure never ran");
+  await waitFor(() => existsSync(join(f.root, "timeout-started")), "the logical turn never retried");
+  await jumpPastWait(f, 25);
+  assert.deepEqual(phoneReturns(f), [], "an intermediate failure settled the phone request");
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  await waitFor(() => phoneReturns(f).some(c => c.body.text === "REQUEST RESULT"), "no retry result");
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+});
+
+test("timeout: an empty captured end returns before immediately queued work ends", async t => {
+  const f = await fixture(t, "codex", true);
+  f.tg.say("TIMEOUT_EMPTY");
+  await waitFor(() => existsSync(join(f.root, "timeout-started")), "the phone turn never started");
+  writeFileSync(join(f.root, "scope-force-queue"), "1");
+  const queued = await f.post(`/api/bots/${f.bot.id}/messages`, { text: "TIMEOUT_LATER" });
+  assert.equal(queued.queued, true);
+  // Remove the note too: this really is an empty captured answer.
+  const note = (await f.messages()).find(m => m.text === "Checking the sample.");
+  await f.h.json(`/api/threads/${f.bot.threadId}/messages/${note.id}`, { method: "DELETE" });
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  await waitFor(() => existsSync(join(f.root, "timeout-later-started")), "the later turn never started");
+  await waitFor(() => phoneReturns(f).some(c => c.body.text === "(the agent finished without saying anything)"), "the captured empty end waited for later work", 3_000);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["(the agent finished without saying anything)"]);
+  writeFileSync(join(f.root, "timeout-later-release"), "1");
+  await sleep(500);
+  assert.equal(phoneReturns(f).some(c => c.body.text === "LATER RESULT"), false);
+});
+
+test("timeout: files use the captured request while later work runs during progress cleanup", async t => {
+  const f = await fixture(t, "codex", true);
+  f.tg.say("TIMEOUT_FILES");
+  await waitFor(() => existsSync(join(f.root, "timeout-started")), "the phone turn never started");
+  await jumpPastWait(f, 25);
+  // The existing progress timer still uses real elapsed time; wait for
+  // its note before holding the actual deletion request.
+  await waitFor(() => f.tg.sent().some(c => c.body.disable_notification), "no progress note", 25_000);
+  f.tg.state.holdDelete = true;
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  await waitFor(() => f.tg.state.deleteReleases.length > 0, "cleanup did not hold");
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "TIMEOUT_LATER" });
+  await waitFor(() => existsSync(join(f.root, "timeout-later-started")), "the later turn never started");
+  writeFileSync(join(f.root, "timeout-later-release"), "1");
+  await waitFor(async () => (await f.messages()).some(m => m.kind === "artifact" && m.artifact.name === "later.txt"), "later file never committed");
+  f.tg.state.holdDelete = false;
+  f.tg.state.deleteReleases.splice(0).forEach(release => release());
+  await waitFor(() => f.tg.calls("sendDocument").length > 0, "the request file never returned");
+  assert.deepEqual(f.tg.calls("sendDocument").map(c => c.body.document.name), ["earlier.txt"]);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+  assert.ok(f.tg.state.deleted.every(d => d.at <= phoneReturns(f)[0].at));
+});
+
+test("timeout: pre-engine failure captures its response before queued work starts", async t => {
+  const f = await fixture(t, "codex", true);
+  const slow = join(f.root, "slow-engine.cjs");
+  writeFileSync(slow, `#!${process.execPath}
+const fs = require("node:fs");
+if (process.argv[2] !== "--version") process.exit(1);
+fs.writeFileSync(${JSON.stringify(join(f.root, "timeout-version-started"))}, "1");
+const until = Date.now() + 7000;
+const tick = () => {
+  if (fs.existsSync(${JSON.stringify(join(f.root, "timeout-version-release"))}) || Date.now() > until) { console.log("2.1.300 (Claude Code)"); process.exit(0); }
+  setTimeout(tick, 20);
+};
+tick();
+`, { mode: 0o755 });
+  const configPath = join(f.root, ".bloks", "config.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  config.instances.slow = { driver: "claudeAgent", config: { cli: slow } };
+  writeFileSync(configPath, JSON.stringify(config));
+  const rebuild = f.post("/api/providers/grok/connect", { key: "test-key", url: f.tg.url });
+  await waitFor(() => existsSync(join(f.root, "timeout-version-started")), "the fixture rebuild never held");
+  f.tg.say("NEVER_REACH_ENGINE");
+  await waitFor(async () => (await f.messages()).some(m => m.fromTelegram && m.text === "NEVER_REACH_ENGINE"), "the request was not admitted");
+  await waitFor(async () => (await f.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === f.bot.id)?.tasks.find((lane: any) => lane.id === f.bot.threadId)?.state === "working", "the admitted request never became busy");
+  const queued = await f.post(`/api/bots/${f.bot.id}/messages`, { text: "TIMEOUT_LATER" });
+  assert.equal(queued.queued, true);
+  await f.post(`/api/bots/${f.bot.id}/interrupt`, { taskId: f.bot.threadId });
+  writeFileSync(join(f.root, "timeout-version-release"), "1");
+  await rebuild;
+  await waitFor(() => existsSync(join(f.root, "timeout-later-started")), "queued work never started");
+  const answer = await waitFor(() => phoneReturns(f)[0], "the pre-engine failure waited for later work", 3_000);
+  assert.match(answer.body.text, /Stopped before Planning had started on it/, JSON.stringify({ messages: await f.messages(), calls: heardContext(f) }));
+  const starts = heardContext(f).filter(c => c.method === "turn/start");
+  assert.equal(starts.length, 1, "only the queued work may reach the engine");
+  assert.match(inputWords(starts[0]), /TIMEOUT_LATER/);
+  writeFileSync(join(f.root, "timeout-later-release"), "1");
+  await sleep(500);
+  assert.equal(phoneReturns(f).length, 1);
+});
+
+test("timeout: retiring a long wait stops its notes and leaves the next connection's cards intact", async t => {
+  const f = await fixture(t, "codex", true);
+  f.tg.say("TIMEOUT_HOLD");
+  await waitFor(() => existsSync(join(f.root, "timeout-started")), "no phone turn");
+  await jumpPastWait(f, 25);
+  assert.deepEqual(phoneReturns(f), []);
+  const response = await f.post(`/api/bots/${f.bot.id}/telegram`, { unpair: true });
+  assert.equal(response.enabled, true);
+  await sleep(350); // the retired wait's ordinary tick must exit
+  const count = f.tg.calls("sendMessage").length;
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  await waitFor(async () => (await f.messages()).some(m => m.text === "REQUEST RESULT"), "the app work was lost on unpairing");
+  await sleep(350);
+  assert.equal(f.tg.calls("sendMessage").length, count, "retired work sent progress or a final to the old chat");
+  const paired = await f.post(`/api/bots/${f.bot.id}/telegram`, { pair: true });
+  f.tg.say(paired.pairing);
+  await waitFor(() => f.tg.calls("sendMessage").filter(c => c.body.text.startsWith("Paired.")).length === 2, "no new pairing");
+  f.tg.say("QUESTION please");
+  const card = await cardIn(f, "Your agent has a question");
+  f.tg.press(card.id, card.body.reply_markup.inline_keyboard[1][0].callback_data);
+  await waitFor(() => f.tg.calls("sendMessage").some(c => c.body.text === "PICKED Blue"), "stale ownership took the next card answer");
+  assert.equal(f.tg.calls("sendMessage").some(c => c.body.text === "REQUEST RESULT"), false);
+});
+
+test("timeout: queued file selection excludes the work waited behind", async t => {
+  const f = await fixture(t, "codex", true);
+  writeFileSync(join(f.root, "timeout-behind-files"), "1");
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "SCOPED_MAIN_HOLD" });
+  await waitFor(() => existsSync(join(f.root, "scope-force-queue")), "the earlier turn never started");
+  f.tg.say("TIMEOUT_FILES");
+  await waitFor(async () => (await f.messages()).some(m => m.text === "TIMEOUT_FILES" && m.queued), "the phone request never queued");
+  writeFileSync(join(f.root, "main-release"), "1");
+  await waitFor(() => existsSync(join(f.root, "timeout-started")), "the consuming turn never started");
+  writeFileSync(join(f.root, "timeout-release"), "1");
+  await waitFor(() => f.tg.calls("sendDocument").length > 0, "the request's file never returned");
+  assert.deepEqual(f.tg.calls("sendDocument").map(c => c.body.document.name), ["earlier.txt"]);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+  assert.ok((await f.messages()).some(m => m.artifact?.name === "behind.txt"), "the earlier work must have committed its own file");
 });

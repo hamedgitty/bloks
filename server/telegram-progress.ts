@@ -57,12 +57,17 @@ export class TurnProgress {
     if (note && botWords(note) && note.text) this.progress.note(note.text);
   }
 
-  /** Capture before another turn can start, even if waitForIdle or the
+  /** Capture before another turn can start, even if the waiter or the
    * answer send itself has to wait. A still-queued request is not this turn. */
   ended(): void {
     if (!this.taken() || this.finished) return;
     this.finished = replySpan(this.messages(), this.requestId());
     void this.stop();
+  }
+
+  /** Empty output is still a completed request. */
+  get completed(): boolean {
+    return this.finished !== undefined;
   }
 
   answerSpan(): readonly Message[] {
