@@ -2,7 +2,7 @@
 // keep real time; no production clock option or external service is involved.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-if (process.argv[1]?.endsWith("/server/index.ts")) {
+if (process.argv[1]?.replaceAll("\\", "/").endsWith("/server/index.ts")) {
   const now = Date.now;
   const file = join(process.env.HOME, "telegram-clock-offset");
   Date.now = () => {
