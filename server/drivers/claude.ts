@@ -1144,6 +1144,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       }
       const inputFailed = () => {
         if (sealed) return;
+        // A failed spawn has no stdin recipient. Let its error listener
+        // preserve the CLI/install error and ordinary startup recovery.
+        if (!child.pid) return;
         sealed = true;
         emit({ ...envelope(threadId, turnId), type: "runtime.error",
           message: "Claude Code stopped accepting input, so this turn was stopped. Send the message again." });

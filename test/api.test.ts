@@ -1471,11 +1471,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     assert.match(second[1].text, /429 Too Many Requests/);
   });
 
-  test("a permission asked after its turn ended still gets the answer the log records", async (t) => {
-    // A Claude Code process can work on after its result (a background
-    // task, a subagent) and ask again over the same connection. Auto mode
-    // recorded an allow, but the answer went to a broker that was gone,
-    // and fifteen minutes later the ask was denied by its timeout.
+  test("live permission delivery survives, while a finished process cannot ask for another approval", async (t) => {
+    // Auto mode answers the live ask. Parent settlement ends its process
+    // and broker before a background continuation can ask again.
     const home = mkdtempSync(join(tmpdir(), "bloks-late-ask-"));
     const log = join(home, "answers.log");
     const cli = join(home, "fake-claude.mjs");
@@ -1488,6 +1486,7 @@ const argv = process.argv.slice(2);
 if (argv[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (argv[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const note = (line) => appendFileSync(${JSON.stringify(log)}, JSON.stringify(line) + "\\n");
+note({ pid: process.pid });
 const cfg = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8"));
 const socketPath = cfg.mcpServers.bloks.args.at(-1);
 process.stdin.resume();
@@ -1531,9 +1530,11 @@ process.stdin.resume();
     });
     await h2.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "start" }) });
     const answers = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-    const late = await waitFor(async () => answers().find((a: any) => a.answer === "after-turn") ?? null, 8_000);
+    assert.ok(await waitFor(async () => answers().some((a: any) => a.answer === "during-turn") &&
+      !(await h2.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id)?.busy, 8_000), "the live ask or cleanup never settled");
     assert.equal(answers().find((a: any) => a.answer === "during-turn")?.behavior, "allow");
-    assert.equal(late?.behavior, "allow", "the ask made after the turn ended was never answered");
+    assert.throws(() => process.kill(answers().find((a: any) => a.pid).pid, 0), { code: "ESRCH" });
+    assert.equal(answers().some((a: any) => a.answer === "after-turn"), false, "the ended process retained approval authority");
   });
 
   test("full access takes Claude Code's own prompts off, and every other mode keeps them", async (t) => {

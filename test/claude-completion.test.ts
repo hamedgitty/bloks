@@ -21,6 +21,7 @@ async function fixture(t: TestContext, version = "2.1.300 (Claude Code)") {
   const stdout = new PassThrough();
   const state = { version, confirmExit: true, failWrite: false, synchronous: null as null | ((f: any) => void), spawns: 0, args: [] as string[] };
   const peer = Object.assign(new EventEmitter(), {
+    pid: 2_147_483_647,
     stdout, stderr: new PassThrough(), exitCode: null as number | null, signalCode: null as string | null,
     stdin: new Writable({ write(chunk, _encoding, done) {
       const frame = JSON.parse(String(chunk));
@@ -49,6 +50,10 @@ async function fixture(t: TestContext, version = "2.1.300 (Claude Code)") {
     return peer;
   });
   t.mock.method(fs, "appendFileSync", (_path: unknown, line: any) => { native.push(JSON.parse(String(line))); });
+  t.mock.method(process, "kill", (pid: number) => {
+    assert.equal(pid, -peer.pid, "only the synthetic peer group may be inspected/signalled");
+    throw Object.assign(new Error("no real fixture group"), { code: "ESRCH" });
+  });
   syncBuiltinESMExports();
   const { ClaudeDriver } = await import("../server/drivers/claude.ts");
   const instance = await ClaudeDriver.create({ instanceId: "claude", displayName: "Claude", enabled: true,
@@ -324,7 +329,10 @@ test("unconfirmed cleanup retains its lane barrier across instance disposal and 
   assert.equal(f.ends().length, 1);
   assert.equal(f.ends()[0].ok, false);
   assert.match(f.errors()[0].message, /did not finish stopping/);
-  await f.instance.dispose();
+  const disposing = f.instance.dispose();
+  t.mock.timers.tick(1_500); // the instance-wide helper's bounded shutdown wait
+  await f.flush();
+  await disposing;
   const replacement = await f.driver.create({ instanceId: "claude", displayName: "Claude", enabled: true,
     environment: {}, config: { cli: "fixture-claude", permissionMode: "bypassPermissions" } as any });
   t.after(() => replacement.dispose());
