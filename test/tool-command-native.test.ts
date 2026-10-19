@@ -56,7 +56,7 @@ function fakeEngine(root: string, engine: string) {
     "const calls = " + JSON.stringify(calls.map((call) => engine === "codex" && typeof call.command === "string" && call.command.trim() ? { ...call, command: wrap(call.command, call.id) } : call)) + ";",
     'const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");',
     "const nap = (ms) => new Promise((r) => setTimeout(r, ms));",
-    'if (process.argv[2] === "--version") { console.log("9.9.9"); process.exit(0); }',
+    'if (process.argv[2] === "--version") { console.log(' + JSON.stringify(engine === "claude" ? "2.1.299 (Claude Code)" : "9.9.9") + '); process.exit(0); }',
     'if (process.argv[2] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }',
     'if (process.argv[2] === "auth") { out({ loggedIn: true }); process.exit(0); }',
     'process.stdin.on("end", () => process.exit(0));',

@@ -59,7 +59,7 @@ function fakeClaude(home: string) {
 import { appendFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const [first] = process.argv.slice(2);
-if (first === "--version") { console.log("2.1.300 (Claude Code)"); process.exit(0); }
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 let input = "";
 process.stdin.on("data", (c) => (input += c));
