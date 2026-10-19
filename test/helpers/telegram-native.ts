@@ -142,6 +142,18 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "thread/start" || m.method === "thread/resume") { thread = m.params.threadId ?? "native-" + process.pid; return reply({ thread: { id: thread }, model: "gpt-6.1-sol" }); }
   if (m.method === "turn/interrupt") { out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "interrupted" } } }); return reply(); }
   if (["turn/start","turn/steer"].includes(m.method)) log({ method:m.method, params:m.params });
+  const rapid = m.method === "turn/steer" && JSON.stringify(m.params.input).match(/RAPID_(?:INPUT|EMPTY|REFUSE)/)?.[0];
+  if (rapid) {
+    if (rapid === "RAPID_INPUT") writeFileSync(join(deliverables(), "rapid.txt"), "rapid request work");
+    const receipt = rapid === "RAPID_REFUSE" ? { id: m.id, error: { code: -32000, message: "fixture cannot steer" } } : { id: m.id, result: { turnId: turn } };
+    const frames = [receipt];
+    if (rapid !== "RAPID_EMPTY") frames.push({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "rapid-final", text: rapid === "RAPID_REFUSE" ? "EARLIER RESULT" : "RAPID FINAL" } } });
+    frames.push({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
+    // One atomic pipe write: the receipt and completion precede the
+    // awaiting caller's microtask that saves its accepted input row.
+    process.stdout.write(frames.map(frame => JSON.stringify(frame)).join("\\n") + "\\n");
+    return;
+  }
   if (m.method === "turn/steer") { if (!existsSync(root + "/scope-force-queue")) return reply({turnId:turn}); }
   if (m.method === "turn/steer" && existsSync(root + "/scope-force-queue")) return out({ id: m.id, error: { code: -32000, message: "fixture cannot steer" } });
   if (m.method === "turn/steer") return reply({ turnId: turn });
@@ -149,6 +161,8 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("DELIVERY_BARRIER")) return finish("DELIVERY DONE");
+  if (text.includes("RAPID_REFUSE")) return finish("QUEUED RESULT");
   if (text.includes("TIMEOUT_")) {
     if (text.includes("TIMEOUT_RETRY") && !existsSync(root + "/timeout-retried")) {
       writeFileSync(root + "/timeout-retried", "1");

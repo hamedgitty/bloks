@@ -9674,10 +9674,12 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
   const lane = bot.tasks.find((t) => t.id === laneId);
   if (lane && (laneWaits(lane) || pauseHolding(bot, laneId)) && !wheel.heldBy(botId) && !bot.archivedAt) {
     try {
+      progress.joining();
       const steered = await steerLane(bot, lane, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       if (!steered && !currentTelegram(runtime)) throw new Error("the Telegram connection changed");
       const sent = steered ?? queueOnLane(botId, laneId, text, { replyTo, fromTelegram: true, telegramBinding: { botId, generation: runtime.generation } });
       requestId = sent.id;
+      progress.joined(Boolean(steered));
       progress.observe();
       // the turn may have ended while its engine was asked
       if (!steered) drainSteer(laneId);

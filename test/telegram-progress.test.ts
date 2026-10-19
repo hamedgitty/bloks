@@ -181,3 +181,36 @@ test("a following stored tool confirms the last text, without showing its name",
   assert.equal(f.calls[0].text, "Checking.");
   await f.turn.stop();
 });
+
+test("a tentative end before the steer receipt is confirmed once, including empty output", async () => {
+  for (const empty of [false, true]) {
+    const rows = [row("older", "user"), row("older output", "bot")];
+    const f = fixture(rows);
+    f.turn.joining();
+    if (!empty) rows.push(row("rapid final", "bot"));
+    f.turn.ended();
+    assert.equal(f.turn.completed, false, "a pending receipt cannot confirm delivery");
+    rows.push(row("request", "user", { midTurn: true }));
+    // Work after the captured end must never replace it.
+    rows.push(row("later", "user"), row("later output", "bot"));
+    f.turn.joined(true);
+    assert.equal(f.turn.completed, true);
+    assert.equal(f.answer(), empty ? "(the agent finished without saying anything)" : "rapid final");
+    await f.turn.stop();
+  }
+});
+
+test("a refused steer discards its tentative end and waits for the queued consuming turn", async () => {
+  const rows = [row("older", "user")];
+  const f = fixture(rows);
+  f.turn.joining(); rows.push(row("older output", "bot")); f.turn.ended();
+  const request = row("request", "user", { queued: true });
+  rows.push(request); f.turn.joined(false);
+  assert.equal(f.turn.completed, false);
+  f.turn.observe();
+  request.queued = false; request.deliveredAt = Date.now();
+  rows.push(row("our queued final", "bot")); f.turn.observe(); f.turn.ended();
+  assert.equal(f.turn.completed, true);
+  assert.equal(f.answer(), "our queued final");
+  await f.turn.stop();
+});

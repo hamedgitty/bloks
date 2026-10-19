@@ -10,6 +10,7 @@ export class TurnProgress {
   private pending?: string;
   private closed = false;
   private finished?: Message[];
+  private join?: { after?: string; accepted: boolean };
   private progress: Progress;
   private messages: () => readonly Message[];
   private requestId: () => string | undefined;
@@ -20,6 +21,31 @@ export class TurnProgress {
     this.messages = messages;
     this.requestId = requestId;
     this.startedAt = startedAt;
+  }
+
+  /** A steer can finish before its successful RPC resumes the caller and
+   * saves the input row. Keep one intake boundary until that decision. */
+  joining(): void {
+    this.join = { after: this.messages().findLast(m => !m.queued && !m.unsent)?.id, accepted: false };
+  }
+
+  joined(accepted: boolean): void {
+    if (!this.join) return;
+    if (!accepted) {
+      this.join = undefined;
+      this.finished = undefined; // the old turn did not consume this request
+    } else {
+      this.join.accepted = true;
+      if (this.finished !== undefined) void this.stop();
+    }
+  }
+
+  private span(): Message[] {
+    if (!this.join) return replySpan(this.messages(), this.requestId());
+    const rows = this.messages();
+    const at = this.join.after === undefined ? -1 : rows.findIndex(m => m.id === this.join!.after);
+    if (this.join.after !== undefined && at < 0) return [];
+    return rows.slice(at + 1).filter(m => !m.queued && !m.unsent);
   }
 
   private taken(): Message | undefined {
@@ -38,7 +64,7 @@ export class TurnProgress {
       const start = request.midTurn ? this.startedAt() ?? request.at : request.deliveredAt ?? this.startedAt() ?? request.at;
       this.progress.startAt(start);
     }
-    const span = replySpan(this.messages(), request.id);
+    const span = this.span();
     const after = this.lastSeen ? span.findIndex((m) => m.id === this.lastSeen) + 1 : 0;
     for (const m of span.slice(after)) {
       if (botWords(m) && m.text) {
@@ -60,19 +86,20 @@ export class TurnProgress {
   /** Capture before another turn can start, even if the waiter or the
    * answer send itself has to wait. A still-queued request is not this turn. */
   ended(): void {
-    if (!this.taken() || this.finished) return;
-    this.finished = replySpan(this.messages(), this.requestId());
-    void this.stop();
+    if (this.finished !== undefined || (!this.taken() && !this.join)) return;
+    this.finished = this.span();
+    // A refusal discards this tentative end and queues a different turn.
+    if (this.join?.accepted !== false) void this.stop();
   }
 
   /** Empty output is still a completed request. */
   get completed(): boolean {
-    return this.finished !== undefined;
+    return this.finished !== undefined && this.join?.accepted !== false;
   }
 
   answerSpan(): readonly Message[] {
     if (!this.taken()) return [];
-    return this.finished ?? replySpan(this.messages(), this.requestId());
+    return this.finished ?? this.span();
   }
 
   stop(): Promise<void> {

@@ -101,8 +101,12 @@ test("timeout: files use the captured request while later work runs during progr
   f.tg.state.holdDelete = false;
   f.tg.state.deleteReleases.splice(0).forEach(release => release());
   await waitFor(() => f.tg.calls("sendDocument").length > 0, "the request file never returned");
+  // This next request is serialized after every file in the prior return.
+  // Its answer proves the whole batch has arrived, not just its first file.
+  f.tg.say("DELIVERY_BARRIER");
+  await waitFor(() => phoneReturns(f).some(c => c.body.text === "DELIVERY DONE"), "the return batch never finished");
   assert.deepEqual(f.tg.calls("sendDocument").map(c => c.body.document.name), ["earlier.txt"]);
-  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT", "DELIVERY DONE"]);
   assert.ok(f.tg.state.deleted.every(d => d.at <= phoneReturns(f)[0].at));
 });
 
@@ -180,7 +184,39 @@ test("timeout: queued file selection excludes the work waited behind", async t =
   await waitFor(() => existsSync(join(f.root, "timeout-started")), "the consuming turn never started");
   writeFileSync(join(f.root, "timeout-release"), "1");
   await waitFor(() => f.tg.calls("sendDocument").length > 0, "the request's file never returned");
+  // This next request is serialized after every file in the prior return.
+  // Its answer proves the whole batch has arrived, not just its first file.
+  f.tg.say("DELIVERY_BARRIER");
+  await waitFor(() => phoneReturns(f).some(c => c.body.text === "DELIVERY DONE"), "the return batch never finished");
   assert.deepEqual(f.tg.calls("sendDocument").map(c => c.body.document.name), ["earlier.txt"]);
-  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT"]);
+  assert.deepEqual(phoneReturns(f).map(c => c.body.text), ["REQUEST RESULT", "DELIVERY DONE"]);
   assert.ok((await f.messages()).some(m => m.artifact?.name === "behind.txt"), "the earlier work must have committed its own file");
+});
+
+for (const mode of ["INPUT", "EMPTY", "REFUSE"] as const) test(`timeout: coalesced steer receipt and terminal frames (${mode}) retain the exact request`, async t => {
+  const f = await fixture(t, "codex", true);
+  await f.post(`/api/bots/${f.bot.id}/messages`, { text: "TIMEOUT_HOLD" });
+  await waitFor(async () => (await f.messages()).some(m => m.text === "Checking the sample."), "the initial work never spoke");
+  f.tg.say(`RAPID_${mode}`);
+  const expected = mode === "INPUT" ? "RAPID FINAL" : mode === "EMPTY" ? "(the agent finished without saying anything)" : "QUEUED RESULT";
+  const final = await waitFor(() => phoneReturns(f).find(c => c.body.text === expected), "the coalesced request never returned its own terminal result", 5_000);
+  assert.equal(final.body.chat_id, CHAT);
+  const messages = await f.messages();
+  const request = messages.find(m => m.fromTelegram && m.text === `RAPID_${mode}`);
+  assert.ok(request);
+  if (mode === "REFUSE") {
+    assert.equal(request.midTurn, undefined);
+    assert.ok(request.deliveredAt, "the refused input must consume its own queued turn");
+    assert.equal(phoneReturns(f).some(c => c.body.text === "EARLIER RESULT"), false);
+  } else {
+    assert.equal(request.midTurn, true);
+    if (mode === "INPUT") assert.ok(messages.findIndex(m => m.text === "RAPID FINAL") < messages.indexOf(request), "the fixture must hit final-before-saved-input ordering");
+  }
+  if (mode === "INPUT") {
+    await waitFor(() => f.tg.calls("sendDocument").length > 0, "the pre-receipt file was lost");
+    f.tg.say("DELIVERY_BARRIER");
+    await waitFor(() => phoneReturns(f).some(c => c.body.text === "DELIVERY DONE"), "rapid file batch never finished");
+    assert.deepEqual(f.tg.calls("sendDocument").map(c => c.body.document.name), ["rapid.txt"]);
+  }
+  assert.equal(phoneReturns(f).filter(c => c.body.text === expected).length, 1);
 });
