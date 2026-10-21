@@ -113,7 +113,7 @@ process.stdin.on("data", (c) => (input += c));
 
   const { messages } = await h.json(`/api/bots/${bot.id}/messages?thread=${general}&limit=100`);
   assert.ok(messages.some((m: any) => /REMEMBER-THE-PELICAN/.test(m.text ?? "")), "the transcript lost the earlier turns");
-  assert.ok(messages.some((m: any) => m.kind === "notice" && /fresh session/.test(m.text ?? "")), "the chat does not say a fresh session started");
+  assert.equal(messages.filter((m: any) => m.kind === "notice" && m.sessionReset).length, 1, "the completed reset leaves one persistent marker");
 
   // and the session after that resumes the new one, as normal
   await say("one more", before + 2);

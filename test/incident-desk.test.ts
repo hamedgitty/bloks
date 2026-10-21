@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 import { startHarness, type Harness } from "./helpers/server.ts";
+import { controlledChain } from "./helpers/agent-chain.ts";
+import { noticeFor } from "../src/lib/notify.ts";
 import { agentOn, idle, messagesOf, waitFor } from "./helpers/turns.ts";
 
 let h: Harness;
@@ -251,4 +253,32 @@ test("switched off, the desk raises nothing", async () => {
   assert.equal((await listed()).length, before);
   assert.ok(!(await messagesOf(h, off)).some((m) => m.incident));
   await desk({ enabled: true });
+});
+
+for (const onlyMarker of [false, true]) test(`a reset marker is never claimed by an incident (${onlyMarker ? "marker only" : "preceding error"})`, async (t) => {
+  const c = await controlledChain(t);
+  const lead = await c.hire("Review lead");
+  await c.h.json("/api/config", { method: "PUT", body: JSON.stringify({ incidents: { enabled: true, lead: lead.id } }) });
+  const worker = await agentOn(c.h, failingPort, "Sample worker");
+  await c.h.json(`/api/bots/${worker.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Prepare the sample" }) });
+  const leadTurn = await c.turnAfter(0);
+  const incident = await waitFor(async () => (await c.h.json("/api/incidents")).incidents.find((i: any) => i.where.laneId === worker.threadId && i.state === "with-lead"));
+  assert.ok(incident); assert.ok(await idle(c.h, worker));
+  const prior = await messagesOf(c.h, worker);
+  const error = prior.findLast((m) => m.kind === "notice" && !m.deleted);
+  assert.ok(error, "the actual engine failure left no notice");
+  if (onlyMarker) for (const row of prior.filter((m) => m.kind === "notice")) {
+    assert.equal((await c.h.fetch(`/api/threads/${worker.threadId}/messages/${row.id}`, { method: "DELETE" })).status, 200);
+  }
+  assert.equal((await c.h.fetch(`/api/bots/${worker.id}/tasks/${worker.threadId}/fresh`, { method: "POST" })).status, 200);
+  const marker = (await messagesOf(c.h, worker)).findLast((m) => m.sessionReset);
+  assert.ok(marker);
+  assert.equal((await c.agent(leadTurn, `/api/incidents/${incident.id}/tell`, { text: "Please check the sample service." })).status, 202);
+  const after = await messagesOf(c.h, worker);
+  assert.deepEqual(after.find((m) => m.id === marker.id), marker, "the failure mutated the reset's identity, words or flag");
+  const card = after.find((m) => m.incident?.kind === "needs-you"); assert.ok(card);
+  assert.equal(card.id === error.id, !onlyMarker);
+  assert.notEqual(card.id, marker.id); assert.equal(card.sessionReset, undefined);
+  assert.ok(noticeFor(card, { focused: false, selectedId: "", threadId: worker.threadId, bot: { id: worker.id, name: "Sample worker" } })?.urgent);
+  await c.finish(leadTurn, lead);
 });

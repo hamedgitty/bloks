@@ -662,6 +662,9 @@ export function IntentNote({ message, fresh }: { message: Message; fresh?: boole
 }
 
 export function Notice({ message, fresh }: { message: Message; fresh?: boolean }) {
+  if (message.sessionReset) {
+    return <div className="whitespace-pre-line py-2 text-center text-small leading-relaxed text-muted-foreground">{message.text}</div>;
+  }
   // a compaction is a fact about the conversation, marked like a date
   // line, and so is a standing intent saying who it brought in
   if (message.compaction || (message.intent && message.event)) {

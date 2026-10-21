@@ -198,6 +198,9 @@ export interface Message {
   event?: boolean;
   /** Where the engine compacted its session: a line, not a warning. */
   compaction?: { before: number | null; after: number | null; idle?: boolean };
+  /** A completed fresh-session reset: persistent transcript information,
+   * not a warning, reply, or new attention. */
+  sessionReset?: boolean;
   kind:
     | "text"
     | "options"

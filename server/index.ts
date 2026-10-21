@@ -2263,10 +2263,10 @@ function clientBot(bot: BotRecord | null) {
       // only a reading from its current engine counts. See context.ts.
       const fill = laneContext(bot, task);
       const said = store.messagesFor(task.id);
-      // a compaction marker is not something happening in the lane, and
-      // nor is a quiet check-in
+      // Maintenance markers and quiet check-ins do not advance the lane
+      // past the last thing said to the person.
       let last = said.length - 1;
-      while (last >= 0 && (said[last].compaction || said[last].quiet)) last--;
+      while (last >= 0 && (said[last].compaction || said[last].sessionReset || said[last].quiet)) last--;
       return {
         id: task.id,
         title: task.title,
@@ -9268,7 +9268,7 @@ const closeAfterTurn = new Set<string>();
  * ends, so the reset waits for that (GitHub 139). */
 const freshAfterTurn = new Set<string>();
 
-/** Starts the fresh session an agent asked for, and says so in the chat. */
+/** Completes a requested fresh session, leaving its neutral marker in the chat. */
 function freshIfAsked(laneId: string) {
   if (!freshAfterTurn.delete(laneId)) return;
   startFresh(laneId);
@@ -9283,7 +9283,8 @@ function startFresh(laneId: string) {
   const notice = store.appendMessage(laneId, {
     role: "bot",
     kind: "notice",
-    text: `${found.bot.name} starts its next turn here in a fresh session, without the earlier context. Everything above stays in the conversation.`,
+    sessionReset: true,
+    text: "Session reset. You can keep chatting.\nChat history and saved memory are kept. The new session may not include earlier messages.",
   });
   broadcast({ kind: "message", threadId: laneId, message: notice });
 }
@@ -11158,7 +11159,7 @@ function failureNoticeIn(threadId: string, at: number): Message | null {
     const m = said[i];
     if (m.role === "user" && !m.queued && !m.unsent) return null;
     if (m.role !== "bot" || m.kind !== "notice" || m.deleted) continue;
-    if (m.incident || m.failing || m.compaction || m.event || m.goal || m.chainHeld) continue;
+    if (m.incident || m.failing || m.compaction || m.sessionReset || m.event || m.goal || m.chainHeld) continue;
     if (Math.abs((m.at ?? 0) - at) > 10 * 60_000) return null;
     return m;
   }

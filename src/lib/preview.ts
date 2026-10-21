@@ -18,13 +18,13 @@ import { toolLabel } from "./tool-summary.ts";
  * the newest message, which would hide the reply the row's dot is about.
  * Nor is a quiet check-in, for the same reason: one every half hour would
  * keep the row saying QUIET over whatever was last said to you. The
- * server reads a lane's time past both the same way. */
-export function lastSaid<M extends { queued?: boolean; unsent?: boolean; compaction?: unknown; quiet?: boolean }>(
+ * server reads a lane's time past those and session resets the same way. */
+export function lastSaid<M extends { queued?: boolean; unsent?: boolean; compaction?: unknown; sessionReset?: boolean; quiet?: boolean }>(
   messages: readonly M[],
 ): M | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (!m.queued && !m.unsent && !m.compaction && !m.quiet) return m;
+    if (!m.queued && !m.unsent && !m.compaction && !m.sessionReset && !m.quiet) return m;
   }
   return undefined;
 }

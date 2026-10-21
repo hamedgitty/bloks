@@ -1,5 +1,6 @@
 // A room: several agents and you, in one transcript. Unlike a solo chat,
 // every line is attributed, because who said it is half the meaning.
+import { Notice } from "./chat/Bubble";
 import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react";
@@ -499,6 +500,8 @@ function RoomMessage({
       />
     );
   }
+
+  if (message.kind === "notice" && message.sessionReset) return <Notice message={message} />;
 
   if (message.kind === "notice" && (message.event || message.compaction)) {
     return <div className="py-1 text-center text-small text-muted-foreground">{message.text}</div>;

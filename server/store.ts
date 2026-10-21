@@ -190,6 +190,9 @@ export interface Message {
    * how much. A line in the conversation, not a warning, and never news:
    * it marks nothing unread and is not carried into a linked channel. */
   compaction?: { before: number | null; after: number | null; idle?: boolean };
+  /** A completed fresh-session reset: persistent transcript information,
+   * not a warning, reply, or new attention. */
+  sessionReset?: boolean;
   /** Which person wrote a user message in a shared room: a person id from
    * server/people.ts. Absent means the owner, which is every message
    * written before rooms could be shared. */
