@@ -34,6 +34,16 @@ const TOKEN = process.env.BLOKS_TOKEN || "";
 
 /** Everything this understands, and what each one is for. */
 const COMMANDS = {
+  reply: {
+    use: "reply <text...>",
+    about: "reply to the group message that started this turn, with no target; every member sees it",
+    run: (args) => {
+      const token = process.env.BLOKS_REPLY_TOKEN || (TOKEN.startsWith("blr_") ? TOKEN : "");
+      const path = process.env.BLOKS_REPLY_PATH;
+      if (!token || !path) throw new Error("this turn has no bound reply to a sender");
+      return request("POST", path, { text: args.join(" ") }, token);
+    },
+  },
   whoami: {
     use: "whoami",
     about: "who this credential says you are",
@@ -1000,12 +1010,12 @@ function unreachable(error) {
   );
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, credential = TOKEN) {
   const response = await fetch(`${BASE}${path}`, {
     method,
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${TOKEN}`,
+      authorization: `Bearer ${credential}`,
       // the workspace refuses anything that does not look like it came
       // from this machine, and this is what says so
       origin: BASE,
@@ -1059,7 +1069,7 @@ try {
   }
   // named, since the likeliest cause is an engine that kept the turn's
   // environment from this shell, and that is something a person can fix
-  if (!TOKEN) throw new Error("no credential in this environment (BLOKS_TOKEN is not set), so there is nobody to act as");
+  if (!TOKEN && !(name === "reply" && process.env.BLOKS_REPLY_TOKEN)) throw new Error("no credential in this environment (BLOKS_TOKEN is not set), so there is nobody to act as");
   const result = await command.run(args);
   process.stdout.write(`${JSON.stringify(result ?? { ok: true }, null, 2)}\n`);
 } catch (error) {

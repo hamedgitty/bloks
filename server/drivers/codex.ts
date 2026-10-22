@@ -44,6 +44,8 @@ import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
 import { CODEX_PERSON_HOLD, CODEX_PERSON_NEXT, personTurnHold } from "../person-turn.ts";
 import { CodexSpeedUnavailable, type CodexSpeedRefusal, FAST_TIER, fastRefusal, requireFastTier, resolveCodexSpeed } from "../codex-speed.ts";
+import { createAskBroker, type AskBroker } from "../harness/ask-broker.ts";
+import { makeCodexReplyFolder } from "../person-turn.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -195,7 +197,7 @@ function rememberTotal(thread: string, total: TokenCount) {
 // and on every start, resume and fork, so a thread carried on has this
 // turn's credential and not the one it started with.
 
-const SHELL_NAMES = ["BLOKS_CLI", "BLOKS_URL", "BLOKS_TOKEN"] as const;
+const SHELL_NAMES = ["BLOKS_CLI", "BLOKS_URL", "BLOKS_TOKEN", "BLOKS_REPLY_TOKEN", "BLOKS_REPLY_PATH"] as const;
 
 /**
  * The thread config that hands the bloks command to the shell, or null
@@ -500,9 +502,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // This turn's credential, kept out of everything written down: the
       // native copy (appendNative takes it out), and any error that quotes
       // back the thread config carrying it (shellConfig).
-      const turnToken = typeof turn.env?.BLOKS_TOKEN === "string" && turn.env.BLOKS_TOKEN ? turn.env.BLOKS_TOKEN : null;
+      const hiddenTokens = [turn.env?.BLOKS_TOKEN, turn.env?.BLOKS_REPLY_TOKEN].filter((value): value is string => typeof value === "string" && value.length > 0);
       const hide = <T>(text: T): T =>
-        turnToken && typeof text === "string" && text.includes(turnToken) ? (text.split(turnToken).join("[redacted]") as T) : text;
+        (typeof text === "string" ? hiddenTokens.reduce((safe, token) => safe.split(token).join("[redacted]"), text) : text) as T;
+
+      let ownerReplyFolder: ReturnType<typeof makeCodexReplyFolder> | undefined;
+      let replyBroker: AskBroker | undefined;
 
       // The connectors, over the stdio bridge, because this CLI mounts
       // MCP servers as child processes and nothing else. The key rides
@@ -512,6 +517,20 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // Fast stated for this process, so a host config that switched the
       // feature off does not quietly turn the request into Standard
       if (fast) appServerArgs.push("-c", "features.fast_mode=true");
+      if (turn.reply && !turn.person) {
+        ownerReplyFolder = makeCodexReplyFolder();
+        const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
+        const helper = fileURLToPath(new URL(`../permission-proxy.${ext}`, import.meta.url));
+        replyBroker = createAskBroker({ socketPath: ownerReplyFolder.socketPath,
+          onAsk: (ask) => replyBroker?.answer(ask.id, "deny", "This server only replies to the sender."), onResolve: () => {},
+          onReply: (input) => turn.reply!.reply(input) });
+        const prefix = "mcp_servers.bloks_reply";
+        appServerArgs.push("-c", `${prefix}.command=${JSON.stringify(process.execPath)}`,
+          "-c", `${prefix}.args=${JSON.stringify([helper, ownerReplyFolder.socketPath])}`,
+          "-c", `${prefix}.default_tools_approval_mode="approve"`,
+          "-c", `${prefix}.env.ELECTRON_RUN_AS_NODE="1"`,
+          "-c", `${prefix}.env.BLOKS_PUBLISH="reply_to_sender"`);
+      }
       if (turn.integrations?.composio?.key) {
         env.BLOKS_COMPOSIO_KEY = turn.integrations.composio.key;
         if (turn.integrations.composio.url) env.BLOKS_COMPOSIO_URL = turn.integrations.composio.url;
@@ -534,6 +553,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         windowsHide: true,
       });
       engines.add(child);
+      child.once("close", () => { replyBroker?.close(); ownerReplyFolder?.close(); });
 
       const asks = new Map<string, Answer>();
       const rpcAsks = new Map<unknown, { requestId: string; providerThreadId: unknown }>();
@@ -592,7 +612,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (dir === "out" && (msg.method === "skills/list" || msg.method === "config/read")) { quietCalls.add(msg.id); return; }
           if (dir === "in" && !msg.method && quietCalls.has(msg.id)) { quietCalls.delete(msg.id); return; }
           if (msg.method === "skills/changed") return;
-          appendNative(threadId, { dir, source: NATIVE_SOURCE, msg }, undefined, turnToken);
+          appendNative(threadId, { dir, source: NATIVE_SOURCE, msg }, undefined, hiddenTokens);
         },
         onRequest: (msg) => onAgentRequest(msg),
         onNotify: (msg) => onAgentNotification(msg),

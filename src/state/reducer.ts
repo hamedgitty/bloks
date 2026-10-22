@@ -102,10 +102,11 @@ export interface Message {
   /** Said in this agent's own chat in a turn another agent's message
    * started: shown in full, with a link to the exchange. Not sent to it. */
   afterAgent?: { peerId: string; peerName: string };
-  telegramPerson?: { personId: string; name: string; requester: string };
+  telegramPerson?: { personId: string; name: string; requester: string; group?: { title: string } };
   /** Said on Telegram by someone the owner gave full access to this agent:
    * a turn with the agent's own tools, answered in their own chat. */
-  telegramDelegate?: { personId: string; name: string; requester: string };
+  telegramDelegate?: { personId: string; name: string; requester: string; group?: { title: string } };
+  telegramGroup?: { name: string; group: { title: string } };
   telegramSent?: { personId: string; name: string; state: "sending" | "sent" | "uncertain" | "failed" };
   /** The user's selection on a decision component. */
   decisionChoice?: number;

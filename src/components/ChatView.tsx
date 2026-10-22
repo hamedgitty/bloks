@@ -113,10 +113,14 @@ const isReply = (m: Message) =>
 
 /** Typed here and sent, rather than said for you by a routine, a goal,
  * a watcher, another agent or someone on Telegram. */
-const sentByYou = (m: Message) => m.role === "user" && !m.via && !m.agent && !m.telegramPerson && !m.telegramDelegate;
+const sentByYou = (m: Message) => m.role === "user" && !m.via && !m.agent && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup;
 
 /** Somebody on Telegram who is not the owner, let in or given full access. */
-const telegramSpeaker = (m: Message) => m.telegramPerson ?? m.telegramDelegate;
+const telegramSpeaker = (m: Message) => {
+  const sender = m.telegramPerson ?? m.telegramDelegate ?? m.telegramGroup;
+  const group = m.telegramPerson?.group ?? m.telegramGroup?.group;
+  return sender ? { personId: "personId" in sender ? sender.personId : "owner", name: sender.name + (group ? " in " + group.title : "") } : undefined;
+};
 
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
@@ -697,7 +701,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               <LandMark on={lit === m.id} />
             {/* in a group the bubble names its sender; with one agent, a
                 line over the words says whose they are */}
-            {!group && m.telegramPerson && <div className="mb-1 text-small text-muted-foreground">Message from {m.telegramPerson.name} (Telegram)</div>}
+            {!group && (m.telegramPerson || m.telegramGroup) && <div className="mb-1 text-small text-muted-foreground">Message from {telegramSpeaker(m)!.name} (Telegram)</div>}
             {!group && m.telegramDelegate && <div className="mb-1 text-small text-muted-foreground">Message from {m.telegramDelegate.name} (Telegram, full access)</div>}
             {!group && m.role === "user" && m.author && <div className="mb-1 text-small font-medium text-muted-foreground">{personName(m.author)}</div>}
             {m.telegramSent && <div className="mb-1 text-small text-muted-foreground">To {m.telegramSent.name} (Telegram): {m.telegramSent.state === "sent" ? "sent" : m.telegramSent.state === "sending" ? "sending" : m.telegramSent.state === "failed" ? "failed" : "delivery uncertain"}</div>}

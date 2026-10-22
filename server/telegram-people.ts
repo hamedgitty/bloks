@@ -11,14 +11,15 @@ export interface TelegramPerson {
   /** Their @username when they have one. A first name is chosen freely
    * and two strangers can share it; the id and username tell them apart. */
   username?: string;
-  chatId: number;
+  /** Learned only from a private message, never from a group knock. */
+  chatId?: number;
   state: "pending" | "allowed" | "declined" | "removed";
   /** When they were declined or taken out, so the oldest closed record
    * is the one forgotten when there are too many. */
   closedAt?: number;
   grant: string;
   cardId?: string;
-  first?: { text: string; messageId?: number };
+  first?: { text: string; messageId?: number; destination?: TelegramDestination };
   /** Persist before sending, so a failure is not retried on every knock. */
   notice?: "sending" | "sent" | "uncertain";
   cardSend?: "sending" | "sent" | "uncertain";
@@ -29,19 +30,53 @@ export interface TelegramPerson {
    * tools, engine and permissions, and are answered in their own chat.
    * Only while they are let in, and only ever set by the owner. */
   full?: boolean;
+  holdAudience?: string;
 }
 
 /** Server-created. It is never read from a message-create or edit body. */
-export interface TelegramSender {
+export interface TelegramDestination {
+  chatId: number;
+  messageId?: number;
+  group?: { title: string; threadId?: number };
+}
+
+export interface TelegramSender extends TelegramDestination {
   botId: string;
   bindingGeneration: string;
   personId: string;
   userId: number;
   name: string;
   grant: string;
-  chatId: number;
-  messageId?: number;
   requester: string;
+}
+
+/** Owner trust is independent of the group this particular turn answers. */
+export interface TelegramOwnerGroup extends TelegramDestination {
+  owner: true;
+  botId: string;
+  bindingGeneration: string;
+  userId: number;
+  name: string;
+  requester: "owner";
+  group: { title: string; threadId?: number };
+}
+
+export type TelegramReplySender = TelegramSender | TelegramOwnerGroup;
+
+export function telegramAudience(sender?: TelegramDestination & { botId: string; bindingGeneration: string }): string {
+  return sender?.group ? JSON.stringify([sender.botId, sender.bindingGeneration, sender.chatId, sender.group.threadId ?? null]) : "private";
+}
+
+export function telegramSenderLabel(sender: TelegramReplySender): string {
+  return sender.group ? `${sender.name} in ${sender.group.title}` : sender.name;
+}
+
+export function validTelegramDestination(destination: TelegramDestination): boolean {
+  if (destination.group && (typeof destination.group !== "object" || Array.isArray(destination.group) ||
+    typeof destination.group.title !== "string" || !destination.group.title.trim())) return false;
+  return Number.isSafeInteger(destination.chatId) && (destination.group ? destination.chatId < 0 : destination.chatId > 0) &&
+    (!destination.group || (Number.isSafeInteger(destination.messageId) && destination.messageId! > 0 &&
+      (destination.group.threadId === undefined || (Number.isSafeInteger(destination.group.threadId) && destination.group.threadId > 0))));
 }
 
 export interface TelegramUpgradeNotice {
@@ -74,8 +109,9 @@ export function isPrivateTelegramHuman(message: Incoming): boolean {
     Number.isSafeInteger(message.fromId) && message.fromId! > 0 && Number.isSafeInteger(message.chatId) && message.chatId > 0;
 }
 
-export function knockTelegram(state: AgentTelegram, message: Incoming): { person?: TelegramPerson; fresh: boolean; capped: boolean; forget?: string[] } {
-  if (!isPrivateTelegramHuman(message)) return { fresh: false, capped: false };
+export function knockTelegram(state: AgentTelegram, message: Incoming, group?: TelegramDestination): { person?: TelegramPerson; fresh: boolean; capped: boolean; forget?: string[] } {
+  if (group ? !group.group || !validTelegramDestination(group) || group.chatId !== message.chatId ||
+    (message.chatType !== "group" && message.chatType !== "supergroup") || message.fromBot !== false || message.anonymous || message.automaticForward || !Number.isSafeInteger(message.fromId) || message.fromId! <= 0 : !isPrivateTelegramHuman(message)) return { fresh: false, capped: false };
   const known = state.people?.[String(message.fromId)];
   if (known) return { person: known, fresh: false, capped: false };
   const active = activeTelegramPeople(state);
@@ -90,8 +126,8 @@ export function knockTelegram(state: AgentTelegram, message: Incoming): { person
   const text = message.text.slice(0, MAX_TELEGRAM_REPLY_CHARS) + (message.media ? "\n(Media was not downloaded before admission. Ask the sender to send it again.)" : "");
   const username = telegramUsername(message.fromUsername);
   return { fresh: true, capped: false, ...(forget.length ? { forget } : {}), person: {
-    id: randomUUID(), userId: message.fromId!, name: telegramPersonName(message.from), ...(username ? { username } : {}), chatId: message.chatId,
-    state: "pending", grant: randomUUID(), first: { text, ...(message.messageId ? { messageId: message.messageId } : {}) },
+    id: randomUUID(), userId: message.fromId!, name: telegramPersonName(message.from), ...(username ? { username } : {}), ...(!group ? { chatId: message.chatId } : {}),
+    state: "pending", grant: randomUUID(), first: { text, ...(message.messageId ? { messageId: message.messageId } : {}), destination: group ?? { chatId: message.chatId, messageId: message.messageId } },
   } };
 }
 
@@ -106,23 +142,37 @@ export function telegramNamesakes(state: AgentTelegram | undefined, person: Pick
   return Object.values(state?.people ?? {}).filter((p) => p.id !== person.id && p.name.toLocaleLowerCase() === name);
 }
 
-export function telegramSender(botId: string, state: AgentTelegram, person: TelegramPerson, messageId?: number): TelegramSender {
-  const requester = "telegram:" + createHash("sha256").update(JSON.stringify([botId, state.generation, person.id, person.grant, person.chatId])).digest("hex").slice(0, 32);
-  return { botId, bindingGeneration: state.generation, personId: person.id, userId: person.userId, name: person.name, grant: person.grant, chatId: person.chatId, ...(messageId ? { messageId } : {}), requester };
+export function telegramSender(botId: string, state: AgentTelegram, person: TelegramPerson, messageId?: number, destination?: TelegramDestination): TelegramSender {
+  const requester = "telegram:" + createHash("sha256").update(JSON.stringify([botId, state.generation, person.id, person.grant])).digest("hex").slice(0, 32);
+  return { botId, bindingGeneration: state.generation, personId: person.id, userId: person.userId, name: person.name, grant: person.grant, ...(destination ?? { chatId: person.chatId!, ...(messageId ? { messageId } : {}) }), requester };
 }
 
 export function telegramSenderCurrent(state: AgentTelegram | undefined, sender: TelegramSender): boolean {
   const person = state?.people?.[String(sender.userId)];
   return Boolean(state?.enabled && state.token && state.generation === sender.bindingGeneration &&
     person?.state === "allowed" && person.id === sender.personId && person.grant === sender.grant &&
-    person.chatId === sender.chatId && telegramSender(sender.botId, state, person).requester === sender.requester);
+    validTelegramDestination(sender) && (sender.group || person.chatId === sender.chatId) &&
+    (telegramSender(sender.botId, state, person).requester === sender.requester ||
+      // Pending private messages from PR2 remain person turns. Their old
+      // requester included the learned private chat, which groups do not.
+      (!sender.group && "telegram:" + createHash("sha256").update(JSON.stringify([sender.botId, state.generation, person.id, person.grant, person.chatId])).digest("hex").slice(0, 32) === sender.requester)));
+}
+
+export function telegramOwnerGroupCurrent(state: AgentTelegram | undefined, sender: TelegramOwnerGroup): boolean {
+  return Boolean(state?.enabled && state.token && state.generation === sender.bindingGeneration &&
+    sender.owner === true && sender.requester === "owner" && Number.isSafeInteger(sender.userId) && sender.userId > 0 && sender.userId === state.ownerUserId &&
+    sender.group && validTelegramDestination(sender));
+}
+
+export function telegramReplySenderCurrent(state: AgentTelegram | undefined, sender: TelegramReplySender): boolean {
+  return "owner" in sender ? telegramOwnerGroupCurrent(state, sender) : telegramSenderCurrent(state, sender);
 }
 
 /** A sender who still holds the owner's grant of full access: the same
  * person, grant, chat and connection, and that grant still full. Every
  * change to it makes a new grant, so a sender from before is not one. */
 export function telegramDelegateCurrent(state: AgentTelegram | undefined, sender: TelegramSender): boolean {
-  return telegramSenderCurrent(state, sender) && state?.people?.[String(sender.userId)]?.full === true;
+  return !sender.group && telegramSenderCurrent(state, sender) && state?.people?.[String(sender.userId)]?.full === true;
 }
 
 /** The same person under the same grant, or both nobody: whose words may

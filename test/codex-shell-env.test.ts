@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -243,4 +245,59 @@ test("an error that quotes the credential is said without it", async (t) => {
   assert.deepEqual(h.notices(), ["stream failed near [redacted]"]);
   assert.ok(!JSON.stringify(h.events).includes(token));
   assert.ok(!h.native().includes(token));
+});
+
+test("a group reply credential reaches the shell under include_only and both credentials are redacted", async (t) => {
+  const token = credential(), replyToken = credential().replace("blk_", "blr_");
+  const h = await setup(t, {
+    includeOnly: ["PATH"],
+    during: () => [{ method: "error", params: { message: token + " and " + replyToken, willRetry: false } }],
+  });
+  await h.turn({ env: { ...envFor(token), BLOKS_REPLY_TOKEN: replyToken, BLOKS_REPLY_PATH: "/api/bots/sample/telegram/reply" } });
+  const [start] = h.sent("thread/start");
+  assert.equal(start.config[SET + "BLOKS_REPLY_TOKEN"], replyToken);
+  assert.equal(start.config[SET + "BLOKS_REPLY_PATH"], "/api/bots/sample/telegram/reply");
+  assert.deepEqual(start.config["shell_environment_policy.include_only"], ["PATH", "BLOKS_CLI", "BLOKS_URL", "BLOKS_TOKEN", "BLOKS_REPLY_TOKEN", "BLOKS_REPLY_PATH"]);
+  const written = h.native();
+  const errors = JSON.stringify(h.notices());
+  for (const secret of [token, replyToken]) {
+    assert.ok(!written.includes(secret), "a group credential reached the native log");
+    assert.ok(!errors.includes(secret), "a group credential reached an error");
+    assert.ok(!JSON.stringify(h.argv).includes(secret), "a group credential reached argv");
+  }
+  assert.ok(written.includes("BLOKS_REPLY_TOKEN"));
+  assert.ok(errors.includes("[redacted]"));
+});
+
+
+test("the real targetless CLI uses both credentials carried by the current Codex shell policy", async (t) => {
+  const normal = credential(), reply = credential().replace("blk_", "blr_");
+  const requests: string[] = [];
+  const replyPath = "/api/bots/sample/telegram/reply";
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk);
+    const expected = req.url === "/api/agent/whoami" ? normal : req.url === replyPath ? reply : null;
+    if (!expected || req.headers.authorization !== "Bearer " + expected) { res.statusCode = 403; return res.end(JSON.stringify({ error: "wrong route credential" })); }
+    requests.push(req.url!);
+    if (req.url === replyPath) assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), { text: "Neutral group answer" });
+    res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const cli = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const h = await setup(t, { includeOnly: ["PATH"] });
+  await h.turn({ env: { BLOKS_CLI: cli, BLOKS_URL: base, BLOKS_TOKEN: normal, BLOKS_REPLY_TOKEN: reply, BLOKS_REPLY_PATH: replyPath } });
+  const config = h.sent("thread/start")[0].config;
+  // Apply the returned set/include_only policy to the actual child command.
+  // No direct turn.env inheritance can mask a missing forwarding entry.
+  const set = Object.fromEntries(Object.entries(config).filter(([key]) => key.startsWith(SET)).map(([key, value]) => [key.slice(SET.length), String(value)]));
+  const included: string[] = config["shell_environment_policy.include_only"];
+  const env = Object.fromEntries(Object.entries({ PATH: process.env.PATH!, ...set }).filter(([key]) => included.includes(key)));
+  for (const args of [["whoami"], ["reply", "Neutral group answer"]]) {
+    const output = await new Promise<string>((resolve, reject) => childProcess.execFile(process.execPath, [cli, ...args], { env, timeout: 10_000 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+    assert.equal(JSON.parse(output).ok, true);
+    assert.ok(!output.includes(normal) && !output.includes(reply));
+  }
+  assert.deepEqual(requests, ["/api/agent/whoami", replyPath]);
 });

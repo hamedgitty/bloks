@@ -292,8 +292,10 @@ export interface Message {
    * access (GitHub 320): their turn runs as the agent's own, and its
    * answer goes to their chat. Never read from a client body. */
   telegramDelegate?: import("./telegram-people.ts").TelegramSender;
+  /** A verified owner's group destination, independent of owner trust. */
+  telegramGroup?: import("./telegram-people.ts").TelegramOwnerGroup;
   /** Explicit reply, kept in the owner's transcript with its send result. */
-  telegramSent?: { personId: string; name: string; state: "sending" | "sent" | "uncertain" | "failed" };
+  telegramSent?: { personId: string; name: string; audience?: string; state: "sending" | "sent" | "uncertain" | "failed" };
   /** Server-only: the Claude instance that accepted this queued text.
    * Null means it was accepted on another engine; absent is a legacy queue.
    * Derive command dispatch from the current text, including after edits. */

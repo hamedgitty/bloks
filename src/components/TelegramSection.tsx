@@ -404,6 +404,9 @@ export function TelegramSection({ botId }: { botId?: string }) {
           </div>
         </div>
       )}
+      {status?.configured && <p className="mt-3 text-small text-muted-foreground">
+        In groups, mention this bot or reply to one of its messages. Mentions need privacy mode off or the bot to be an admin. Group replies are visible to every member, including people you have not let in. Group requests stay restricted; full access applies only in private chats.
+      </p>}
       {status?.admissionFull && <p className="mt-2 text-small text-warning">The waiting list is full. Decide on someone waiting, or take someone out, to make room.</p>}
       {status?.upgradeNotices?.some((n) => ["uncertain", "failed"].includes(n.state)) && <p className="mt-2 text-small text-warning">Some old chats may not know their pairing ended. Ask those people to message the bot to be let in again.</p>}
 

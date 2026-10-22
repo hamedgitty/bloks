@@ -614,10 +614,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let personReady = !turn.person;
       const broker = createAskBroker({
         socketPath,
-        ...(turn.person ? { onReply: async (input: unknown) => {
+        ...(turn.person || turn.reply ? { onReply: async (input: unknown) => {
           if (sealed) throw new Error("This turn has ended.");
           if (!personReady) throw personTurnHold("Claude's startup permissions have not been verified.");
-          const response = await turn.person!.reply(input);
+          const response = await (turn.person ?? turn.reply)!.reply(input);
           if (sealed) throw new Error("This turn has ended.");
           return response;
         } } : {}),
@@ -671,7 +671,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       mcpServers.bloks = {
         command: process.execPath,
         args: [PERMISSION_HELPER, socketPath],
-        env: { ...RUN_AS_NODE, ...(turn.person ? { BLOKS_PUBLISH: personTools.join(",") } : messageTools ? { BLOKS_PUBLISH: messageTools.join(",") } : bypass ? { BLOKS_PUBLISH: askingTools.join(",") } : {}) },
+        env: { ...RUN_AS_NODE, ...(turn.person ? { BLOKS_PUBLISH: personTools.join(",") } : turn.reply ? { BLOKS_PUBLISH: [...(messageTools ?? (bypass ? askingTools : ["approve", "request_connection", "request_secret", "ask_user"])), "reply_to_sender"].join(",") } : messageTools ? { BLOKS_PUBLISH: messageTools.join(",") } : bypass ? { BLOKS_PUBLISH: askingTools.join(",") } : {}) },
       };
       allowed.push("mcp__bloks");
 

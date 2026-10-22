@@ -34,7 +34,7 @@ export interface AgentToken {
   /** Changes made so far on this credential. */
   spent: number;
   /** This credential can only reply to its turn's Telegram sender. */
-  reply?: { sender: import("./telegram-people.ts").TelegramSender; turn: number; attempted?: Set<string> };
+  reply?: { sender: import("./telegram-people.ts").TelegramReplySender; turn: number; attempted?: Set<string> };
   /** Only the final direct submission, retained through normal renewal. */
   report?: ReservedReport;
   /** This credential can only message one person on somebody's behalf
@@ -401,7 +401,7 @@ export class AgentTokens {
     return minted;
   }
 
-  mintReply(botId: string, taskId: string, now: number, sender: import("./telegram-people.ts").TelegramSender, turn: number): AgentToken {
+  mintReply(botId: string, taskId: string, now: number, sender: import("./telegram-people.ts").TelegramReplySender, turn: number): AgentToken {
     const minted: AgentToken = { token: `blr_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, reply: { sender, turn } };
     this.byToken.set(minted.token, minted);
     return minted;

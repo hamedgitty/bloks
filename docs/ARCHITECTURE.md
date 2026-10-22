@@ -1561,20 +1561,27 @@ sends the single-use pairing word to the bot in a private chat, kept by
 its user id (`ownerUserId`), since a chat id or a display name says
 where a message came from and not who wrote it. The word is made with
 the system's random source and is good once. Another person's first private
-message creates one owner-only admission card and one waiting notice. Let
+or addressed group message creates one owner-only admission card and one waiting notice. Group notices reply to the captured addressing message and topic; the first admitted message keeps that destination. A private chat is learned only from a private message. Let
 in, Not now and Take out are per person and per bot. The card names them
 beyond the first name they chose: their Telegram user id, their @username
 when they have one, what they wrote, and anyone else on the bot with the
 same name; marks that reorder or hide text are stripped from the name. The
 first message is bounded and media is not downloaded before admission.
-Declining tells the person once; later messages do not create another
-knock. Group messages are not admitted by this version. Guest mail and
+Declining tells a private sender once; a group decline causes no later group
+notice or invented DM. Later messages do not create another knock. Guest mail and
 shared rooms keep their own paths.
 
-An admitted person's message is labelled with their name and Telegram,
+An admitted person's message is labelled with their name, Telegram and its
+group when present,
 and runs in the agent's first conversation with its own requester. It waits
-behind an owner or another person's turn; only the same requester can steer
-its running turn. Each queued segment retains that requester and its grant.
+behind an owner or another person's turn; only the same requester and audience
+can steer its running turn. The audience includes the group and topic, or
+private. Each queued segment retains that requester, audience and grant.
+The owner's app words, private DM and another agent's say cannot join an
+owner group turn. Queues, fallback, retry, Continue and restart retain their
+server-created group provenance; a stale return never becomes private owner
+input. A merged segment replies to its last addressing message, and later
+steers keep that anchor.
 Taking someone out or retiring a bot transport revokes pending words,
 approvals and reply capabilities before interrupting that person's turn.
 An owner's turn is left alone. Admission is bounded to 100 waiting or let-in
@@ -1602,6 +1609,55 @@ denied, their turn stopped and its credential revoked, and nothing more of
 it reaches them; what is done stays done. The conversation and memory are
 still one, shared with the owner, which the settings say before the grant
 is given. During a drain they are asked to send again rather than held.
+
+Groups accept only an outer mention entity whose whole UTF16 slice matches
+this bot's username (case-insensitive), a text mention of its numeric bot id,
+or a reply to an ordinary message from this bot in the same chat.
+`/cmd@this_bot`, external replies, quotes and forwarded entities do not
+address it. Bots, anonymous sender chats and automatic forwards are ignored.
+An unaddressed update advances the polling offset without a transcript entry,
+knock, file fetch or logged message text. Replied-to context is bounded and
+labelled with its actual author; media there is described, not fetched or
+transcribed. The owner's quote of an unadmitted member remains owner trust;
+that member's own addressed message only knocks.
+
+Albums are decided as a whole by sender, chat and media-group id before any
+download, so a caption addressing the bot does not lose the other photos.
+Pending group albums are bounded to 128 and 32 parts each. A let-in member
+keeps the same person guards in a group. Its unasked file reads can reach
+every member through an explicit reply, including people never let in.
+
+Full access applies only to the private delegate route. Non-owner group
+turns stay restricted even for a privately full-granted person. Their
+history matches both the sender and private/group/topic audience; stored
+explicit replies without an audience are legacy private replies.
+
+An owner group turn keeps the owner's normal context, cursor, settings and
+permissions. Its normal agent token does not gain a group reply route.
+A separate reply-only `blr_` token binds the verified owner id, bot,
+generation, lane, turn, group, topic and addressing message. Claude and Codex
+mount the native `reply_to_sender` tool, and a tool-capable API engine uses
+the same bound function. Codex keeps the owner's home and mounts only the
+new reply server in approve mode through its per-turn overrides, with a
+fresh 0700 socket folder removed on close. Other process engines can use the
+targetless `bloks reply` command with the separate reply credential. An
+engine with neither tools nor a process holds visibly in the app. A bound
+callback does not make an active owner turn a person turn. Current terminal
+sealing and owned-process cleanup still refuse new asks, replies or other
+turn effects after completion.
+
+Only an explicit reply reaches a group; chat text, cards, progress and files
+do not. Every group member sees it. The owner's context and permissions may
+therefore inform what it sends. The outgoing `reply_parameters` has only
+the anchor's `message_id`; `message_thread_id` carries its topic. A deleted
+anchor fails visibly, without retrying as a plain group post or a DM.
+
+[Telegram privacy mode](https://core.telegram.org/bots/features#privacy-mode)
+does not deliver mentions: it delivers commands meant for the bot, general
+commands when it was the last bot to post, inline messages through it and
+replies to messages meant for it. Privacy mode off, or admin status, is
+needed for mentions; Telegram then supplies every group message, which Bloks
+drops when unaddressed.
 
 A person turn uses the existing untrusted approval path, including on a
 full-access agent, and runs only on Claude Code. Claude starts a fresh

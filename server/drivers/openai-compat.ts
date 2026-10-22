@@ -30,6 +30,7 @@ import { tagHeaders, type CallTags } from "../bloks-ai.ts";
 import { appendNative } from "./native.ts";
 import { BOAT_API } from "../boat.ts";
 import { callSignature } from "../repeats.ts";
+import { PERSON_REPLY_TOOL } from "../person-turn.ts";
 
 export interface CompatConfig {
   url: string;
@@ -761,6 +762,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         const computer = turn.integrations?.computer;
         const sandbox = turn.integrations?.sandbox;
         const tools = toolSchemas(Boolean(computer), Boolean(sandbox));
+        if (turn.reply) tools.push({ type: "function", function: { name: PERSON_REPLY_TOOL.name, description: PERSON_REPLY_TOOL.description, parameters: PERSON_REPLY_TOOL.inputSchema } });
         // The connectors, as callable tools rather than a rumor. The CLI
         // engines mount Composio's MCP server themselves; API models have
         // no MCP client, so the harness is theirs: list the meta-tools
@@ -841,7 +843,10 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
 
             let result: string;
             let ok = true;
-            if (name === "ask_user") {
+            if (name === "reply_to_sender" && turn.reply) {
+              try { result = await turn.reply.reply(args); }
+              catch (error) { result = error instanceof Error ? error.message : "Reply failed"; ok = false; }
+            } else if (name === "ask_user") {
               result = await askUser(threadId, turnId, args);
             } else if (name === "request_connection") {
               result = await requestConnection(threadId, turnId, args);
@@ -1152,7 +1157,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         snapshot,
         adapter: {
           provider: spec.kind,
-          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true },
+          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true, replyToSender: Boolean(spec.tools) },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
           respondToRequest: async (threadId, requestId, decision) => {

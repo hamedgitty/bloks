@@ -163,6 +163,8 @@ test("a sender holds full access only under the grant it was given with", () => 
   assert.equal(telegramDelegateCurrent(state, sender), true);
   assert.equal(telegramDelegateCurrent({ ...state, people: { "20202": { ...person } } }, sender), false, "restricted again");
   assert.equal(telegramDelegateCurrent({ ...state, people: { "20202": { ...person, full: true, grant: "g2" } } }, sender), false, "a new grant");
+  const groupSender = telegramSender("agent", state, person, 4, { chatId: -7001, messageId: 4, group: { title: "Planning" } });
+  assert.equal(telegramDelegateCurrent(state, groupSender), false, "a private full-access grant must not authorize group delegation");
   assert.equal(telegramDelegateCurrent({ ...state, generation: "other" }, sender), false, "another connection");
   assert.equal(sameTelegramDelegate(sender, { ...sender, messageId: 7 }), true);
   assert.equal(sameTelegramDelegate(sender, undefined), false);

@@ -256,7 +256,8 @@ function WaitingRow({
 
 /** Who queued a message in an agent's conversation, or null for you. */
 export function waitingSender(m: Message): string | null {
-  if (m.telegramPerson) return `${m.telegramPerson.name} (Telegram)`;
+  const sender = m.telegramPerson ?? m.telegramGroup;
+  if (sender) return sender.name + (sender.group ? " in " + sender.group.title : "") + " (Telegram)";
   if (m.telegramDelegate) return `${m.telegramDelegate.name} (Telegram)`;
   if (m.agent?.dir === "in") return m.agent.peerName;
   switch (m.via) {

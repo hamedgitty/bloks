@@ -296,6 +296,8 @@ export interface SendTurnInput {
   /** A let-in Telegram person. Fresh native session, owner-only approvals
    * and a turn-bound reply tool, even on a full-access agent. */
   person?: import("./person-turn.ts").PersonTurn;
+  /** A bound reply does not make an owner group turn untrusted. */
+  reply?: { reply(input: unknown): Promise<string> };
   cwd?: string;
   /** Folders the agent may edit without asking, beyond its cwd. The
    * harness grants its own workspace (memory lives there) so an agent
@@ -363,6 +365,8 @@ export interface ProviderAdapter {
      * turn (API engines); false for session-cursor engines, which need
      * the harness to replay history after an engine switch. */
     replaysNatively?: boolean;
+    /** An API engine can call the harness's bound sender-reply function. */
+    replyToSender?: boolean;
     /** Takes `compactFirst` on a turn (see SendTurnInput). */
     compactsFirst?: boolean;
     /** The reasoning effort levels this driver passes on to its engine,

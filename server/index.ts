@@ -31,8 +31,9 @@ import { inspectionRedactor } from "./settings-redaction.ts";
 import { telegramReply, type TelegramText } from "./telegram-reply.ts";
 import { TurnProgress } from "./telegram-progress.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramBotName, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
-import { isPrivateTelegramHuman, knockTelegram, migrateTelegramPeople, sameTelegramDelegate, telegramDelegateCurrent, telegramNamesakes, telegramPersonHandle, telegramSender, telegramSenderCurrent, TELEGRAM_PEOPLE_UPGRADE, type TelegramPerson, type TelegramSender } from "./telegram-people.ts";
+import { isPrivateTelegramHuman, knockTelegram, migrateTelegramPeople, sameTelegramDelegate, telegramDelegateCurrent, telegramNamesakes, telegramPersonHandle, telegramSender, telegramSenderCurrent, telegramOwnerGroupCurrent, telegramReplySenderCurrent, telegramAudience, telegramSenderLabel, TELEGRAM_PEOPLE_UPGRADE, type TelegramPerson, type TelegramSender, type TelegramOwnerGroup, type TelegramDestination, type TelegramReplySender } from "./telegram-people.ts";
 import { CODEX_PERSON_HOLD, CODEX_PERSON_NEXT, personReplyText, personTurnHold } from "./person-turn.ts";
+import { TelegramGroupMessages, telegramQuotedContext } from "./telegram-groups.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { legacyToolTitle } from "./tool-command.ts";
 import * as box from "./box.ts";
@@ -4012,7 +4013,8 @@ bus.subscribe((event: RuntimeEvent) => {
       // a person with full access is named too, so the owner reading the
       // card in the app knows whose request it is
       const delegateAsking = laneTelegramDelegate.get(event.threadId);
-      const askedBy = telegramPerson?.name ?? delegateAsking?.name ?? (byMail ? `an email from ${mailFrom || "someone not on your list"}` : byMember ? people.person(requester!)?.name : undefined);
+      const telegramGroup = laneTelegramGroup.get(event.threadId);
+      const askedBy = (telegramPerson ? telegramSenderLabel(telegramPerson) : undefined) ?? delegateAsking?.name ?? (telegramGroup ? telegramSenderLabel(telegramGroup) : undefined) ?? (byMail ? `an email from ${mailFrom || "someone not on your list"}` : byMember ? people.person(requester!)?.name : undefined);
 
       // A decision made here (the wheel, a rule, a mode) that could not
       // reach the agent allowed nothing: the ask it answered is gone. Say
@@ -4142,6 +4144,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const message = pushMessage({
         role: "bot",
         kind: "options",
+        ...(telegramGroup ? { telegramGroup } : {}),
         card: {
           // An engine's own question tool arrives labelled a permission,
           // because what it literally asks is whether it may ask. Read
@@ -4150,7 +4153,7 @@ bus.subscribe((event: RuntimeEvent) => {
           title: asking ? "Your agent has a question" : "Approval needed",
           // a question for a stranger's mail says so too: its answer is
           // emailed to them
-          subtitle: askedBy && (telegramPerson || delegateAsking || !asking || byMail) ? `${event.summary ?? ""} (${asking ? "for" : "asked for by"} ${askedBy})`.trim() : event.summary,
+          subtitle: askedBy && (telegramPerson || telegramGroup || delegateAsking || !asking || byMail) ? `${event.summary ?? ""} (${asking ? "for" : "asked for by"} ${askedBy})`.trim() : event.summary,
           options: event.choices?.length ? event.choices : asking ? [] : ["Allow", "Deny"],
           requestId: event.requestId,
           // a person, who may not then approve what they asked for
@@ -4194,7 +4197,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // and can answer each one in the app.
         const delegate = laneTelegramDelegate.get(event.threadId);
         const delegateChat = delegate && !byMail && !telegramPerson && telegramDelegateCurrent(telegramBinding(bot.id), delegate) ? delegate.chatId : undefined;
-        const chatId = !runtime ? undefined : delegate ? delegateChat : ownerChat === undefined ? undefined : telegramPerson ? ownerChat : byMail || address?.generation !== runtime.generation || address.chatId !== ownerChat ? undefined : ownerChat;
+        const chatId = !runtime ? undefined : delegate ? delegateChat : ownerChat === undefined ? undefined : (telegramPerson || telegramGroup) ? ownerChat : byMail || address?.generation !== runtime.generation || address.chatId !== ownerChat ? undefined : ownerChat;
         if (chatId !== undefined && runtime) {
           const requestId = event.requestId;
           // Allow or Deny only for what is really an approval. A question
@@ -4203,14 +4206,14 @@ bus.subscribe((event: RuntimeEvent) => {
           // the rest.
           const yesOrNo = !asking;
           const waitingAsk = { requestId, botId: bot.id, options: message.card?.options ?? [], permission: yesOrNo };
-          if (telegramPerson) runtime.personAsks.set(requestId, { ...waitingAsk, chatId });
+          if (telegramPerson || telegramGroup) runtime.personAsks.set(requestId, { ...waitingAsk, chatId });
           else runtime.asks.set(chatId, waitingAsk);
           const { title, subtitle, options } = message.card ?? {};
           const forwarded = telegramCards.forward({ title, subtitle, options, requestId, botId: bot.id, generation: runtime.generation, chatId, permission: yesOrNo });
           void telegram
-            .post(runtime.token, chatId, telegramPerson ? forwarded.text.replace("Reply with your answer.", "Reply to this card with your answer, or answer it in the app.") + (options?.length ? "\n\nTap a button, or reply to this card. Ordinary messages stay in your conversation." : "") : forwarded.text, forwarded.keyboard, false, () => Boolean(currentTelegram(runtime)))
+            .post(runtime.token, chatId, (telegramPerson || telegramGroup) ? forwarded.text.replace("Reply with your answer.", "Reply to this card with your answer, or answer it in the app.") + (options?.length ? "\n\nTap a button, or reply to this card. Ordinary messages stay in your conversation." : "") : forwarded.text, forwarded.keyboard, false, () => Boolean(currentTelegram(runtime)))
             .then((messageId) => {
-              const waiting = telegramPerson ? runtime.personAsks.get(requestId) : runtime.asks.get(chatId);
+              const waiting = telegramPerson || telegramGroup ? runtime.personAsks.get(requestId) : runtime.asks.get(chatId);
               if (waiting?.requestId === requestId) waiting.messageId = messageId;
               // answered before Telegram said which message it is
               const late = messageId === undefined ? undefined : telegramCards.sent(requestId, messageId);
@@ -5555,19 +5558,24 @@ function commandFor(text: string, instanceId: string): string | null {
 }
 function queuedCommand(laneId: string, item: { messageId?: string }): string | undefined {
   const m = item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
-  if (!m?.text || m.deleted || m.agent || (m.via && m.via !== "routine") || m.commandInstance === null) return undefined;
+  if (!m?.text || m.deleted || m.agent || m.telegramGroup || m.telegramPerson || (m.via && m.via !== "routine") || m.commandInstance === null) return undefined;
   const accepted = m.commandInstance ?? (store.botByThread(laneId) ? acceptingNative(store.botByThread(laneId)!, laneId) : undefined);
   return accepted && commandFor(m.text, accepted) ? accepted : undefined;
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
-function queuedSegment<T extends { messageId?: string; text?: string; requester?: string; telegramPerson?: TelegramSender }>(laneId: string, items: T[], continuation = false, requester?: string) {
+function queuedSegment<T extends { messageId?: string; text?: string; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup }>(laneId: string, items: T[], continuation = false, requester?: string) {
   const alive = items.filter((item) => steerWords(laneId, item) !== null);
   // A person with full access runs as the owner but is a sender of their
   // own: their words and anyone else's are never one burst.
   const said = (item: T) => item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
   const trust = (item: T) => item.telegramPerson?.requester ?? item.requester ?? said(item)?.telegramPerson?.requester ?? delegateTrust(said(item)?.telegramDelegate) ?? "owner";
   const wanted = continuation ? requester ?? "owner" : alive[0] ? trust(alive[0]) : "owner";
-  const split = alive.findIndex((item) => trust(item) !== wanted);
+  const audience = (item: T) => {
+    const message = item.messageId ? store.messagesFor(laneId).find((m) => m.id === item.messageId) : undefined;
+    return telegramAudience(item.telegramPerson ?? message?.telegramPerson ?? item.telegramGroup ?? message?.telegramGroup);
+  };
+  const wantedAudience = continuation ? laneAudience.get(laneId) ?? "private" : alive[0] ? audience(alive[0]) : "private";
+  const split = alive.findIndex((item) => trust(item) !== wanted || audience(item) !== wantedAudience);
   const prefix = split < 0 ? alive : alive.slice(0, split);
   const first = prefix.findIndex((item) => queuedCommand(laneId, item));
   const size = first < 0 ? prefix.length : first === 0 && !continuation ? 1 : first;
@@ -5733,6 +5741,7 @@ async function startClaimedTurn(
      * Telegram (laneTelegramDelegate). A turn going on with another reads
      * it from the conversation instead. */
     telegramDelegate?: TelegramSender;
+    telegramGroup?: TelegramOwnerGroup;
     /** This turn picks up one that was cut off (server/cut-off.ts). */
     carriedOn?: boolean;
     /** This turn asks again what the lane's last turn was asked, after
@@ -5771,9 +5780,12 @@ async function startClaimedTurn(
   if (opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding)) throw new Error("This agent's Telegram connection changed before the message could start.");
   const personRequester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(opts.taskId ?? bot.threadId) : undefined);
   const personSource = opts.telegramPerson ?? (personRequester?.startsWith("telegram:") ? senderForRequester(personRequester, opts.taskId ?? bot.threadId) : undefined);
-  if (opts.carriedOn && !personSource) {
+  const groupSource = opts.telegramGroup ?? (opts.fallback || opts.retry || opts.carriedOn ? groupForLane(opts.taskId ?? bot.threadId) : undefined);
+  if (groupSource && (groupSource.botId !== botId || !telegramOwnerGroupCurrent(telegramBinding(botId), groupSource))) throw new Error("The owner group destination is no longer valid. It was not recovered as private owner input.");
+  if (groupSource) opts = { ...opts, telegramGroup: groupSource };
+  if (opts.carriedOn && !personSource && !groupSource) {
     const last = [...store.messagesFor(opts.taskId ?? bot.threadId)].reverse().find((m) => m.role === "user" && !m.deleted && !m.queued);
-    if (last?.telegramPerson || (last?.fromTelegram && (!last.telegramBinding || !telegramConnectionCurrent(last.telegramBinding)))) throw new Error("The old Telegram turn has no current verified sender. It was not recovered as the owner.");
+    if (last?.telegramPerson || last?.telegramGroup || (last?.fromTelegram && (!last.telegramBinding || !telegramConnectionCurrent(last.telegramBinding)))) throw new Error("The old Telegram turn has no current verified sender. It was not recovered as the owner.");
   }
   if (personRequester?.startsWith("telegram:") && !personSource) throw new Error("The Telegram person's identity could not be recovered. This turn was not run as the owner.");
   if (personSource && (!store.bot(personSource.botId) || personSource.botId !== botId || !telegramSenderCurrent(telegramBinding(botId), personSource))) throw new Error("This Telegram person was removed or their connection changed before the message could start.");
@@ -5867,10 +5879,10 @@ async function startClaimedTurn(
       // already in the conversation, or a note from Bloks itself, so it
       // waits as a note: in memory, like every note in the queue
       const entry = steerQueues.get(task.id) ?? { botId: bot.id, items: [] };
-      entry.items.push({ text, ...(opts.chain ? { chain: opts.chain } : {}), ...(opts.chainTask ? { chainTask: opts.chainTask } : {}) });
+      entry.items.push({ text, ...(opts.chain ? { chain: opts.chain } : {}), ...(opts.chainTask ? { chainTask: opts.chainTask } : {}), ...(personSource ? { telegramPerson: personSource, requester: personSource.requester } : {}), ...(groupSource ? { telegramGroup: groupSource } : {}) });
       steerQueues.set(task.id, entry);
     } else {
-      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false, chain: opts.chain, chainTask: opts.chainTask, admission: opts.admission, onQueued: opts.onQueued });
+      queueOnLane(bot.id, task.id, text, { replyTo: opts.replyTo, from: opts.from, routine: opts.routine, personal: opts.byYou === true && opts.personal !== false, chain: opts.chain, chainTask: opts.chainTask, admission: opts.admission, onQueued: opts.onQueued, ...(opts.fromTelegram ? { fromTelegram: true } : {}), ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}), ...(personSource ? { telegramPerson: personSource } : {}), ...(groupSource ? { telegramGroup: groupSource } : {}) });
     }
     return;
   }
@@ -5926,7 +5938,7 @@ async function startClaimedTurn(
 
   const own = bot.modelSelection;
   const ownRest = cooldowns.of(own.instanceId);
-  const directCommandInstance = !personSource && !opts.from && !opts.presetMessage ? acceptingNative(bot, task.id) : undefined;
+  const directCommandInstance = !personSource && !groupSource && !opts.from && !opts.presetMessage ? acceptingNative(bot, task.id) : undefined;
   // Keep Claude's existing room/direct-command behavior. Codex's new
   // command path is for the person's own input in an agent lane.
   const directCommandAllowed = registry.get(directCommandInstance ?? "")?.driverKind === "claudeAgent" || (opts.byYou && opts.personal !== false && !opts.roomId);
@@ -5957,6 +5969,7 @@ async function startClaimedTurn(
   if (bot.solo && bot.solo.by !== "owner" && !workspacePeople.limits.engineAllowed(bot.solo.by, selection.instanceId)) {
     throw Object.assign(new Error(`${bot.name} is set to an engine you may not use in this workspace. Pick another in its settings, or ask the owner or an admin.`), { status: 403 });
   }
+  if (groupSource && !runsAProcess(instance.driverKind) && !instance.adapter.capabilities.replyToSender) throw new Error("This engine cannot reply in Telegram groups. Choose an engine with reply tools or a process in the agent settings.");
   // The pause door above, asked of the engine actually chosen: no try of
   // a resting engine and no queued command reaches one that is paused.
   const pausedHere = pausedOn(bot, selection);
@@ -6124,6 +6137,7 @@ async function startClaimedTurn(
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
       ...(personSource ? { telegramPerson: personSource } : {}),
+      ...(groupSource ? { telegramGroup: groupSource } : {}),
     });
     opts.admission?.accepted("sent");
     if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
@@ -6188,7 +6202,7 @@ async function startClaimedTurn(
       // what they said and what was sent to them. The owner's words, the
       // agent's answers to the owner and the lane's summary of both stay
       // the owner's. The owner's next turn still hears the person's.
-      .filter((m) => !personSource || personsOwn(m, personSource.personId))
+      .filter((m) => !personSource || personsOwn(m, personSource))
       .map((m) => ({
         role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         // in a team conversation several people write: each line says whose
@@ -6367,7 +6381,7 @@ async function startClaimedTurn(
     deskTurns.delete(task.id);
   };
   const stillHeld = wheel.heldBy(bot.id);
-  if (personSource && !telegramSenderCurrent(telegramBinding(botId), personSource)) {
+  if ((personSource && !telegramSenderCurrent(telegramBinding(botId), personSource)) || (groupSource && !telegramOwnerGroupCurrent(telegramBinding(botId), groupSource))) {
     unmark();
     throw new Error("This Telegram person was removed while the turn was being prepared.");
   }
@@ -6392,6 +6406,9 @@ async function startClaimedTurn(
   // record of the turn it picks up).
   const requester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? turnPerson ?? "owner";
   laneRequester.set(task.id, requester);
+  laneAudience.set(task.id, telegramAudience(personSource ?? groupSource));
+  if (groupSource) laneTelegramGroup.set(task.id, groupSource);
+  else laneTelegramGroup.delete(task.id);
   // somebody else's turn in a mail's lane: what it says is not emailed
   if (!opts.answersMail && !opts.carriedOn && !opts.fallback && !opts.retry) mailAnswering.delete(task.id);
   askedLast.set(task.id, requester);
@@ -6839,6 +6856,9 @@ async function startClaimedTurn(
         const told = await story(true);
         turnText = freshTurnText(told.turns, turnText, { left: told.left, why: "session" });
       }
+      // Claude resumes the owner's cached system prompt. Say this turn's
+      // audience in the new words, so it cannot be lost on that resume.
+      if (groupSource) turnText = `(This turn was addressed in ${JSON.stringify(groupSource.group.title)} on Telegram. Only reply_to_sender reaches that group, and every member sees it, including people never let in. Chat text and the final answer stay in the app. Keep private words private. You retain the owner's context and permissions. The reply anchor is fixed for this turn. A process engine without a native reply tool uses node "$BLOKS_CLI" reply "text", which reads the separate bound reply credential.)\n\n${turnText}`;
       // a fresh story already carries what the catch-up would
       if (missed && !engineFresh) turnText = catchUpText(missed.turns, missed.by, turnText);
       // Notes for the owner's next turn (files undone, a stalled call, a
@@ -6875,6 +6895,7 @@ async function startClaimedTurn(
           : messageRoute === "cli"
             ? agentTokens.mintMessenger(bot.id, task.id, Date.now())
             : null;
+      const replyCredential = personSource ? credential : groupSource ? agentTokens.mintReply(bot.id, task.id, Date.now(), groupSource, laneTurns.get(task.id) ?? 0) : null;
 
       // A session that has run the CLI before may have run it from a copy
       // of Bloks that is no longer where it was. Said once, in the turn
@@ -6999,6 +7020,7 @@ async function startClaimedTurn(
                 BLOKS_URL: `http://127.0.0.1:${PORT}`,
                 BLOKS_TOKEN: credential.token,
                 BLOKS_CLI: AGENT_CLI,
+                ...(replyCredential ? { BLOKS_REPLY_TOKEN: replyCredential.token, BLOKS_REPLY_PATH: `/api/bots/${bot.id}/telegram/reply` } : {}),
               },
             }
           : {}),
@@ -7015,6 +7037,7 @@ async function startClaimedTurn(
         ...(!owners && !sharing ? { untrusted: true } : {}),
         ...(personSource && credential ? { person: { reply: (input: unknown) => replyToTelegramPerson(credential, input) } } : {}),
         ...(messageRoute === "tool" ? { messagePerson: true } : {}),
+        ...(groupSource && replyCredential ? { reply: { reply: (input: unknown) => replyToTelegramPerson(replyCredential, input) } } : {}),
         text: turnText,
         ...(command && instance.driverKind === "codex" ? { compactOnly: true } : {}),
         ...(skillNames.length ? { skillNames } : {}),
@@ -7060,7 +7083,8 @@ async function startClaimedTurn(
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : "") +
           (credential && !personSource && !credential.messenger ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
-          (personSource ? `\n\nThis turn answers ${JSON.stringify(personSource.name)} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +
+          (personSource ? `\n\nThis turn answers ${JSON.stringify(telegramSenderLabel(personSource))} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +
+          (personSource?.group ? `\n\nThis is an addressed Telegram group turn. Only reply_to_sender reaches the group, and every member can see the reply, including people never let in. Chat text, progress, cards and the final answer stay in the app. The reply is bound to the addressing message; later words do not move it. The files you can read without asking can therefore reach every group member if you send their contents.` : "") +
           (project && !guestMail ? `\n\n${briefFor(project)}` : "") +
           (bloksAiTurn ? `\n\n${IDENTITY_LINE}` : "") +
           // Last on purpose. The same asks sit higher up, in the house
@@ -7080,6 +7104,7 @@ async function startClaimedTurn(
           text: _text,
           transcript: _transcript,
           env: _env,
+          reply: _reply,
           resumeCursor: _cursor,
           handoff: _handoff,
           compactFirst: _compactFirst,
@@ -7128,7 +7153,7 @@ async function startClaimedTurn(
       // and its tools ran (GitHub 220). It is dropped instead, said so,
       // and the lane is left as if it had never been asked.
       const connectionChanged = opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding);
-      const senderChanged = personSource && !telegramSenderCurrent(telegramBinding(bot.id), personSource);
+      const senderChanged = personSource ? !telegramSenderCurrent(telegramBinding(bot.id), personSource) : groupSource && !telegramOwnerGroupCurrent(telegramBinding(bot.id), groupSource);
       // A stop pressed while this was getting ready is the same kind of
       // thing: there was nothing to interrupt then, so it ends here.
       const stopped = stoppedGettingReady.delete(task.id);
@@ -7244,7 +7269,7 @@ async function startClaimedTurn(
         broadcast({ kind: "message", threadId: roomId, message });
         return message;
       });
-      if (personSource) tellTelegramPersonHeld(personSource, message);
+      if (personSource || groupSource) tellTelegramPersonHeld((personSource ?? groupSource)!, message);
       settleUnsent(`Could not answer: ${message}`);
     } finally {
       if (!tryAccepted) claim.cancelPrimaryTry?.();
@@ -7377,6 +7402,8 @@ function delegateWords(sender: TelegramSender, text: string): string {
 }
 
 const DELEGATE_GONE = "This person's full access on Telegram was taken back, or their connection changed, before the message could start.";
+const laneTelegramGroup = new Map<string, TelegramOwnerGroup>();
+const laneAudience = new Map<string, string>();
 
 /** Who asked for each lane's latest turn, kept after it ends: a backup
  * engine picking the turn up, or the same words asked again after a
@@ -10920,7 +10947,7 @@ async function foldAfterTurn(botId: string, threadId: string): Promise<void> {
  * would come back as the owner's, ahead of turns that may run in full
  * access. */
 function summarisedText(m: Message): string {
-  return m.telegramPerson || m.telegramDelegate || m.telegramSent ? storedPrompt(m) : m.text!;
+  return m.telegramPerson || m.telegramDelegate || m.telegramGroup || m.telegramSent ? storedPrompt(m) : m.text!;
 }
 
 /**
@@ -12370,6 +12397,7 @@ interface TelegramRuntime {
   abort: AbortController;
   inbox: telegram.Inbox;
   personInboxes: Map<string, telegram.Inbox>;
+  groups: TelegramGroupMessages;
   /** Chats refused once, remembered for the life of the connection, so
    * somebody who found the bot and keeps typing gets one answer rather
    * than one per message. */
@@ -12390,7 +12418,7 @@ interface TelegramRuntime {
   turns: Map<number, Promise<void>>;
   /** Each chat's messages, taken in the order they came: asking an engine
    * to take one mid-turn is a round trip, and the next must not pass it. */
-  intake: Map<number, Promise<void>>;
+  intake: Map<number | string, Promise<void>>;
   /** This connection's share of telegramWorking, to stop when it goes. */
   working: Set<TelegramWaiter>;
 }
@@ -12451,6 +12479,10 @@ function liveTelegram(botId: string): TelegramRuntime | undefined {
   return runtime && currentTelegram(runtime) ? runtime : undefined;
 }
 
+function groupForLane(laneId: string): TelegramOwnerGroup | undefined {
+  return laneTelegramGroup.get(laneId) ?? [...store.messagesFor(laneId)].reverse().find((m) => m.role === "user" && !m.deleted && !m.unsent && !m.queued)?.telegramGroup;
+}
+
 function senderForRequester(requester: string, laneId: string): TelegramSender | undefined {
   return laneTelegramPerson.get(laneId)?.requester === requester ? laneTelegramPerson.get(laneId) :
     [...store.messagesFor(laneId)].reverse().find((m) => m.telegramPerson?.requester === requester && !m.deleted && !m.unsent && !m.queued)?.telegramPerson;
@@ -12479,7 +12511,8 @@ async function replyToTelegramPerson(credential: AgentToken, input: unknown): Pr
   const sender = credential.reply?.sender;
   const current = () => Boolean(sender && agentTokens.identify(credential.token, Date.now(), turnAlive) === credential &&
     laneTurns.get(credential.taskId) === credential.reply?.turn && laneRequester.get(credential.taskId) === sender.requester &&
-    store.bot(credential.botId) && telegramSenderCurrent(telegramBinding(credential.botId), sender));
+    (laneAudience.get(credential.taskId) ?? "private") === telegramAudience(sender) &&
+    store.bot(credential.botId) && telegramReplySenderCurrent(telegramBinding(credential.botId), sender));
   if (!sender || !current()) throw new Error("This reply credential is no longer valid for this sender and turn.");
   const runtime = liveTelegram(credential.botId);
   if (!runtime) throw new Error("This agent's Telegram connection is unavailable.");
@@ -12490,14 +12523,14 @@ async function replyToTelegramPerson(credential: AgentToken, input: unknown): Pr
   // Spend and record before dispatch. A transport timeout never authorizes
   // another attempt whose first delivery might already have succeeded.
   attempted.add(digest);
-  const message = store.appendMessage(credential.taskId, { role: "bot", kind: "text", text, telegramSent: { personId: sender.personId, name: sender.name, state: "sending" } });
+  const message = store.appendMessage(credential.taskId, { role: "bot", kind: "text", text, telegramSent: { personId: "owner" in sender ? "owner" : sender.personId, name: telegramSenderLabel(sender), audience: telegramAudience(sender), state: "sending" } });
   broadcast({ kind: "message", threadId: credential.taskId, message });
   try {
-    await telegram.replyText(runtime.token, sender.chatId, text, sender.messageId, current);
+    await telegram.replyText(runtime.token, sender.chatId, text, sender.messageId, current, sender.group?.threadId);
     const patched = store.patchMessage(credential.taskId, message.id, { telegramSent: { ...message.telegramSent!, state: "sent" } });
     if (patched) broadcast({ kind: "message.patch", threadId: credential.taskId, message: patched });
-    if (telegramBinding(credential.botId)?.people?.[String(sender.userId)]?.holdReported) updateTelegramPerson(credential.botId, sender.userId, sender.grant, { holdReported: undefined });
-    return "Sent to the person who started this turn.";
+    if (!("owner" in sender)) updateTelegramPerson(credential.botId, sender.userId, sender.grant, { holdReported: undefined, holdAudience: undefined });
+    return sender.group ? "Sent to the addressed group message." : "Sent to the person who started this turn.";
   } catch (error) {
     const failed = error instanceof telegram.TelegramError && error.status >= 400 && error.status < 500;
     const patched = store.patchMessage(credential.taskId, message.id, { telegramSent: { ...message.telegramSent!, state: failed ? "failed" : "uncertain" } });
@@ -12508,13 +12541,23 @@ async function replyToTelegramPerson(credential: AgentToken, input: unknown): Pr
 
 /** A neutral service notice is the one exception to explicit agent replies.
  * It explains a hold without carrying any of the conversation to the sender. */
-function tellTelegramPersonHeld(sender: TelegramSender, why: string): void {
+function tellTelegramPersonHeld(sender: TelegramReplySender, why: string): void {
   const state = telegramBinding(sender.botId);
   const person = state?.people?.[String(sender.userId)];
-  if (!telegramSenderCurrent(state, sender) || !person || person.holdReported) return;
-  updateTelegramPerson(sender.botId, sender.userId, sender.grant, { holdReported: why.slice(0, MAX_DESCRIPTION_CHARS) });
+  if (!telegramReplySenderCurrent(state, sender)) return;
+  if (!("owner" in sender)) {
+    if (!person || (person.holdReported && (person.holdAudience ?? "private") === telegramAudience(sender))) return;
+    updateTelegramPerson(sender.botId, sender.userId, sender.grant, { holdReported: why.slice(0, MAX_DESCRIPTION_CHARS), holdAudience: telegramAudience(sender) });
+  }
   const runtime = liveTelegram(sender.botId);
-  if (runtime) void telegramSay(runtime, sender.chatId, "This agent cannot answer from Telegram yet. The owner can see why in the agent's chat.");
+  if (runtime) void telegramDestinationNotice(runtime, sender, "This agent cannot answer from Telegram yet. The owner can see why in the agent's chat.");
+}
+
+/** A group service notice is an anchored reply too, never a later DM or
+ * an unprompted group post. Errors do not authorize a wider fallback. */
+async function telegramDestinationNotice(runtime: TelegramRuntime, destination: TelegramDestination, text: string): Promise<void> {
+  if (destination.group) await telegram.replyText(runtime.token, destination.chatId, text, destination.messageId, () => Boolean(currentTelegram(runtime)), destination.group.threadId).catch(() => {});
+  else await telegramSay(runtime, destination.chatId, text);
 }
 
 function telegramAdmissionCard(botId: string, person: TelegramPerson): Message | undefined {
@@ -12541,6 +12584,7 @@ function admissionWords(bot: BotRecord, person: TelegramPerson): string {
   const engine = registry.get(bot.modelSelection.instanceId)?.driverKind;
   return [
     `${telegramPersonHandle(person)} wants to message ${bot.name} on Telegram.`,
+    person.first?.destination?.group ? "They addressed this agent in " + person.first.destination.group.title + ". Every group member sees an explicit reply, including people not let in. Group requests remain restricted; private full access does not apply here." : "",
     namesakes.length ? `Someone else here is also called ${person.name} (${namesakes.map(telegramPersonHandle).join("; ")}). Check the id before letting this one in.` : "",
     person.first?.text ? `They wrote: "${person.first.text.slice(0, 280).replace(/\s+/g, " ").trim()}"` : "",
     "Let in only people you trust: they get answers from this agent, which can read files in its working folder. Anything else it does asks you first.",
@@ -12589,7 +12633,7 @@ async function decideTelegramAdmission(botId: string, personId: string, action: 
   if (runtime && person.telegramCardId && state.ownerChatId !== undefined) void telegram.edit(runtime.token, state.ownerChatId, person.telegramCardId, `${person.name} (${telegramPersonHandle(person)}): ${said}.`).catch(() => {});
   // Each write after an await is made to the record as it is then, and
   // only while it is still this decision's.
-  if (runtime && action === "decline" && updateTelegramPerson(botId, person.userId, next.grant, { notice: "sending" })) {
+  if (runtime && action === "decline" && person.chatId !== undefined && !person.first?.destination?.group && updateTelegramPerson(botId, person.userId, next.grant, { notice: "sending" })) {
     await telegramSay(runtime, person.chatId, "Not now. The owner has not let you in.");
     updateTelegramPerson(botId, person.userId, next.grant, { notice: "sent" });
   }
@@ -12651,39 +12695,40 @@ function deliverFirstTelegramPerson(botId: string, person: TelegramPerson): void
   // this person was taken out
   const current = state?.people?.[String(person.userId)];
   if (!state || state.ownerUserId === undefined || !current || current.grant !== person.grant || current.state !== "allowed" || !current.first) return;
-  const source = telegramSender(botId, state, current, current.first.messageId);
+  const destination = current.first.destination ?? (current.chatId === undefined ? undefined : { chatId: current.chatId, messageId: current.first.messageId });
+  if (!destination) return;
+  const source = telegramSender(botId, state, current, current.first.messageId, destination);
   const text = current.first.text || "The person sent media before admission. Ask them to send it again.";
   updateTelegramPerson(botId, current.userId, current.grant, { first: undefined });
   deliverTelegramPerson(source, text);
 }
 
-function deliverTelegramPerson(sender: TelegramSender, text: string): void {
-  if (!telegramSenderCurrent(telegramBinding(sender.botId), sender)) return;
+function deliverTelegramPerson(sender: TelegramReplySender, text: string): void {
+  if (!telegramReplySenderCurrent(telegramBinding(sender.botId), sender)) return;
   const bot = store.bot(sender.botId);
   const lane = bot?.tasks[0];
   if (!bot || !lane) return;
   // Serialized with the owner's steer attempts, but never folded into them.
   const runtime = liveTelegram(bot.id);
   if (!runtime) return;
-  const intake = (runtime.intake.get(sender.chatId) ?? Promise.resolve()).then(async () => {
-    if (!telegramSenderCurrent(telegramBinding(bot.id), sender)) return;
+  const intakeKey = sender.group ? JSON.stringify([sender.requester, telegramAudience(sender)]) : sender.chatId;
+  const provenance = "owner" in sender ? { telegramGroup: sender } : { telegramPerson: sender, personal: false };
+  const intake = (runtime.intake.get(intakeKey) ?? Promise.resolve()).then(async () => {
+    if (!telegramReplySenderCurrent(telegramBinding(bot.id), sender)) return;
     if (lane.busy && laneRequester.get(lane.id) === sender.requester) {
-      if (await steerTelegramPerson(bot, lane, sender, text)) return;
+      if (await steerLane(bot, lane, text, { ...provenance, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration } })) return;
     }
-    queueOnLane(bot.id, lane.id, text, { telegramPerson: sender, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration }, personal: false });
+    queueOnLane(bot.id, lane.id, text, { ...provenance, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration } });
     drainSteer(lane.id);
   });
-  runtime.intake.set(sender.chatId, intake);
-  void intake.finally(() => { if (runtime.intake.get(sender.chatId) === intake) runtime.intake.delete(sender.chatId); }).catch(() => {});
-}
-
-async function steerTelegramPerson(bot: BotRecord, lane: TaskRecord, sender: TelegramSender, text: string): Promise<boolean> {
-  return Boolean(await steerLane(bot, lane, text, { telegramPerson: sender, personal: false, fromTelegram: true, telegramBinding: { botId: bot.id, generation: sender.bindingGeneration } }));
+  runtime.intake.set(intakeKey, intake);
+  void intake.finally(() => { if (runtime.intake.get(intakeKey) === intake) runtime.intake.delete(intakeKey); }).catch(() => {});
 }
 
 async function takeTelegramIncoming(runtime: TelegramRuntime, message: telegram.Incoming): Promise<void> {
   const state = currentTelegram(runtime);
   if (!state) return;
+  if (message.chatType === "group" || message.chatType === "supergroup") return runtime.groups.take(message);
   const decision = telegram.decide(inboxState(state), message);
   if (decision.kind === "pair" || decision.kind === "press" || decision.kind === "deliver") return runtime.inbox.take(message);
   // A tap in the chat of a person with full access, by them, is theirs to
@@ -12694,7 +12739,23 @@ async function takeTelegramIncoming(runtime: TelegramRuntime, message: telegram.
     return;
   }
   if (!isPrivateTelegramHuman(message)) return;
-  const knock = knockTelegram(state, message);
+  const person = await takeTelegramKnock(runtime, message);
+  if (!person) return;
+  const source = telegramSender(runtime.botId, telegramBinding(runtime.botId)!, person, message.messageId);
+  if (state.ownerUserId === undefined) return tellTelegramPersonHeld(source, "The owner needs to pair this bot first.");
+  await personInbox(runtime, person).take(message);
+}
+
+async function takeTelegramKnock(runtime: TelegramRuntime, message: telegram.Incoming, destination?: TelegramDestination): Promise<TelegramPerson | undefined> {
+  let state = currentTelegram(runtime);
+  if (!state) return;
+  const known = state.people?.[String(message.fromId)];
+  if (!destination && known && known.chatId !== message.chatId) {
+    updateTelegramPerson(runtime.botId, known.userId, known.grant, { chatId: message.chatId });
+    runtime.personInboxes.delete(known.id);
+    state = currentTelegram(runtime)!;
+  }
+  const knock = knockTelegram(state, message, destination);
   // room again since the last full inbox: the next full one is said again
   if (!knock.capped && knock.fresh && state.admissionFull) saveTelegramBinding(runtime.botId, { ...state, admissionFull: undefined });
   if (knock.capped) {
@@ -12722,14 +12783,11 @@ async function takeTelegramIncoming(runtime: TelegramRuntime, message: telegram.
     const card = telegramAdmissionCard(runtime.botId, person);
     if (card) updateTelegramPerson(runtime.botId, person.userId, person.grant, { cardId: card.id });
     await forwardTelegramAdmission(runtime, person);
-    if (currentTelegram(runtime)?.people?.[String(person.userId)]?.state === "pending") await telegramSay(runtime, person.chatId, "The owner has been asked to let you in. Please wait for their answer.");
+    if (currentTelegram(runtime)?.people?.[String(person.userId)]?.state === "pending") await telegramDestinationNotice(runtime, destination ?? { chatId: person.chatId!, messageId: message.messageId }, "The owner has been asked to let you in. Please wait for their answer.");
     updateTelegramPerson(runtime.botId, person.userId, person.grant, { notice: "sent" });
     return;
   }
-  if (person.state !== "allowed") return;
-  const source = telegramSender(runtime.botId, state, person, message.messageId);
-  if (state.ownerUserId === undefined) return tellTelegramPersonHeld(source, "The owner needs to pair this bot first.");
-  await personInbox(runtime, person).take(message);
+  return person.state === "allowed" ? person : undefined;
 }
 
 /** Which grant, and which access, each person's inbox was made for. */
@@ -12751,24 +12809,49 @@ function personInbox(runtime: TelegramRuntime, person: TelegramPerson): telegram
   if (!inbox) {
     const state = currentTelegram(runtime)!;
     const source = telegramSender(runtime.botId, state, person);
+    inbox = telegramSenderInbox(runtime, source);
+    inboxGrants.set(inbox, grant);
+    runtime.personInboxes.set(person.id, inbox);
+  }
+  return inbox;
+}
+
+function telegramSenderInbox(runtime: TelegramRuntime, source: TelegramReplySender): telegram.Inbox {
     const active = () => {
-      if (!currentTelegram(runtime) || !telegramSenderCurrent(telegramBinding(runtime.botId), source)) throw new Error("This Telegram person or connection changed.");
+      if (!currentTelegram(runtime) || !telegramReplySenderCurrent(telegramBinding(runtime.botId), source)) throw new Error("This Telegram sender or connection changed.");
     };
-    inbox = new telegram.Inbox({
-      state: () => ({ chatIds: [person.chatId] }),
-      send: async (chatId, text) => { active(); await telegramSay(runtime, chatId, text); },
+    return new telegram.Inbox({
+      state: () => { active(); return { chatIds: [source.chatId] }; },
+      send: async (_chatId, text) => { active(); await telegramDestinationNotice(runtime, source, text); },
       pair: async () => {}, refuse: async () => {}, waiting: () => undefined, answer: async () => {}, press: async () => {},
       download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
       transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
       saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
       saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
       saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
-      deliver: (_chatId, text, _replyTo, origin) => { active(); deliverTelegramPerson({ ...source, ...(origin?.messageId ? { messageId: origin.messageId } : {}) }, text); },
+      deliver: (_chatId, text, _replyTo, origin) => { active(); deliverTelegramPerson({ ...source, ...(origin?.messageId ? { messageId: origin.messageId } : {}) }, text + (source.group && origin ? telegramQuotedContext(origin) : "")); },
     });
-    inboxGrants.set(inbox, grant);
-    runtime.personInboxes.set(person.id, inbox);
+}
+
+async function takeTelegramGroup(runtime: TelegramRuntime, parts: telegram.Incoming[], destination: TelegramDestination): Promise<void> {
+  const state = currentTelegram(runtime), message = parts[0];
+  if (!state || !message || !destination.group) return;
+  let sender: TelegramReplySender;
+  if (message.fromId === state.ownerUserId) {
+    sender = { ...destination, group: destination.group, owner: true, botId: runtime.botId, bindingGeneration: runtime.generation,
+      userId: message.fromId!, name: message.from, requester: "owner" };
+  } else {
+    const firstText = parts.map((part) => part.text).filter(Boolean).join("\n\n") + telegramQuotedContext(message);
+    const person = await takeTelegramKnock(runtime, { ...message, text: firstText }, destination);
+    if (!person) return;
+    sender = telegramSender(runtime.botId, telegramBinding(runtime.botId)!, person, destination.messageId, destination);
+    if (state.ownerUserId === undefined) return tellTelegramPersonHeld(sender, "The owner needs to pair this bot first.");
   }
-  return inbox;
+  // A fresh inbox binds media failures and their service notices to this
+  // album's anchor. Reusing one would send a later failure to an old post.
+  const inbox = telegramSenderInbox(runtime, sender);
+  if (parts.some((part) => part.album)) await inbox.takeAlbum(parts);
+  else await inbox.take(message);
 }
 
 function saveTelegram(next: TelegramConfig): void {
@@ -12914,7 +12997,7 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
   const runtime: TelegramRuntime = {
     botId, generation: state.generation, token: state.token!, abort: new AbortController(),
     refused: new Set(), asks: new Map(), personAsks: new Map(), typing: new Map(), turns: new Map(), intake: new Map(), working: new Set(),
-    inbox: null as unknown as telegram.Inbox, personInboxes: new Map(),
+    inbox: null as unknown as telegram.Inbox, personInboxes: new Map(), groups: null as unknown as TelegramGroupMessages,
   };
   const active = () => {
     const current = currentTelegram(runtime);
@@ -12997,6 +13080,7 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
       deliverOverTelegram(runtime, chatId, text, replyRef(suppliedReply));
     },
   });
+  runtime.groups = new TelegramGroupMessages(() => currentTelegram(runtime), (parts, destination) => takeTelegramGroup(runtime, parts, destination));
   return runtime;
 }
 
@@ -13090,7 +13174,7 @@ function fullAccessInbox(runtime: TelegramRuntime, person: TelegramPerson): tele
     if (!sender()) throw new Error("This person's full access or the Telegram connection changed.");
   };
   return new telegram.Inbox({
-    state: () => ({ chatIds: [person.chatId] }),
+    state: () => ({ chatIds: person.chatId === undefined ? [] : [person.chatId] }),
     send: async (chatId, text) => { if (sender()) await telegramSay(runtime, chatId, text); },
     pair: async () => {}, refuse: async () => {},
     download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
@@ -13138,6 +13222,7 @@ function startTelegramBot(botId: string): void {
   if (previous && currentTelegram(previous) && !movedAway()) return;
   if (previous) {
     previous.abort.abort();
+    previous.groups.close();
     dropQueuedTelegram(botId, previous.generation);
     for (const typing of previous.typing.values()) void typing.stop().catch(() => {});
     for (const waiter of previous.working) forgetTelegramWaiter(waiter);
@@ -13889,6 +13974,7 @@ function plantConnectorCards(
       role: "bot",
       kind: "connector",
       ...(laneTelegramPerson.get(threadId) ? { telegramPerson: laneTelegramPerson.get(threadId) } : {}),
+      ...(laneTelegramGroup.get(threadId) ? { telegramGroup: laneTelegramGroup.get(threadId) } : {}),
       connector: { slug, label: connectorLabel(slug), status: "needs-auth", resumeKey: requestId },
     });
     broadcast({ kind: "message", threadId, message });
@@ -13927,6 +14013,7 @@ function plantSecretCard(
     role: "bot",
     kind: "secret",
     ...(laneTelegramPerson.get(threadId) ? { telegramPerson: laneTelegramPerson.get(threadId) } : {}),
+      ...(laneTelegramGroup.get(threadId) ? { telegramGroup: laneTelegramGroup.get(threadId) } : {}),
     secret: {
       envName,
       label,
@@ -14028,7 +14115,8 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
   void startTurn(
     botId,
     `${names} ${live.length === 1 ? "is" : "are"} now connected. Continue the task you were working on before asking for the connection.`,
-    { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(live[0].telegramPerson ? { telegramPerson: live[0].telegramPerson, requester: live[0].telegramPerson.requester } : {}) },
+    { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(live[0].telegramPerson ? { telegramPerson: live[0].telegramPerson, requester: live[0].telegramPerson.requester } : {}),
+      ...(live[live.length - 1].telegramGroup ? { telegramGroup: live[live.length - 1].telegramGroup } : {}) },
   ).catch((e) => {
     // The cards are already marked resumed, and this guard only fires
     // once, so a swallowed refusal leaves the task parked on a
@@ -14068,18 +14156,18 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // (agentChain), which a restart forgets along with the rest of memory.
 const steerQueues = new Map<
   string,
-  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number; chainTask?: ChainTask; requester?: string; telegramPerson?: TelegramSender }> }
+  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number; chainTask?: ChainTask; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup }> }
 >();
 
 /** What one waiting item says now, or null for a message that no longer
  * says anything: taken back, rewound, or gone from the lane. A message
  * from another agent is framed the way it would have been when it was
  * queued, with who it is from and how to answer. */
-function steerWords(laneId: string, item: { messageId?: string; text?: string; telegramPerson?: TelegramSender }): string | null {
+function steerWords(laneId: string, item: { messageId?: string; text?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup }): string | null {
   const m = item.messageId ? store.messagesFor(laneId).find((msg) => msg.id === item.messageId) : undefined;
-  const sender = item.telegramPerson ?? m?.telegramPerson;
+  const sender = item.telegramPerson ?? m?.telegramPerson ?? item.telegramGroup ?? m?.telegramGroup;
   const delegate = m?.telegramDelegate;
-  if ((sender && !telegramSenderCurrent(telegramBinding(sender.botId), sender)) || (delegate && !telegramDelegateCurrent(telegramBinding(delegate.botId), delegate))) {
+  if ((sender && !telegramReplySenderCurrent(telegramBinding(sender.botId), sender)) || (delegate && !telegramDelegateCurrent(telegramBinding(delegate.botId), delegate))) {
     if (m?.queued) {
       const removed = store.patchMessage(laneId, m.id, { queued: false, unsent: true });
       if (removed) broadcast({ kind: "message.patch", threadId: laneId, message: removed });
@@ -14245,6 +14333,7 @@ function queueOnLane(
     telegramBinding?: Message["telegramBinding"];
     telegramPerson?: TelegramSender;
     telegramDelegate?: TelegramSender;
+    telegramGroup?: TelegramOwnerGroup;
     personal?: boolean;
     waitsFor?: Message["waitsFor"];
     waitsUntil?: number;
@@ -14281,6 +14370,7 @@ function queueOnLane(
     ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
     ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
     ...(options.telegramDelegate ? { telegramDelegate: options.telegramDelegate } : {}),
+    ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance } : {}),
     ...(options.delivery ? { delivery: options.delivery } : {}),
   });
@@ -14327,7 +14417,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -14354,7 +14444,7 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
   if (commandTurns.has(lane.id) || (!options.telegramPerson && !options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
@@ -14364,12 +14454,14 @@ async function steerOne(
   if (claimedLanes.has(lane.id)) return null;
   // Bloks compacting a quiet session is not a turn anybody is talking in
   if (idleCompacting.has(lane.id)) return null;
-  if ((activeRoom.get(lane.id) ?? lane.id) !== lane.id || (laneRequester.get(lane.id) ?? "owner") !== (options.telegramPerson?.requester ?? "owner")) return null;
+  if ((activeRoom.get(lane.id) ?? lane.id) !== lane.id || (laneRequester.get(lane.id) ?? "owner") !== (options.telegramPerson?.requester ?? "owner") ||
+    (laneAudience.get(lane.id) ?? "private") !== telegramAudience(options.telegramPerson ?? options.telegramGroup)) return null;
   if (options.telegramPerson && !telegramSenderCurrent(telegramBinding(bot.id), options.telegramPerson)) return null;
   // A turn a person with full access asked for takes only their words,
   // and their words join only a turn of theirs (GitHub 320).
   if (!sameTelegramDelegate(laneTelegramDelegate.get(lane.id), options.telegramDelegate)) return null;
   if (options.telegramDelegate && !telegramDelegateCurrent(telegramBinding(bot.id), options.telegramDelegate)) return null;
+  if (options.telegramGroup && !telegramOwnerGroupCurrent(telegramBinding(bot.id), options.telegramGroup)) return null;
   const waiting = steerQueues.get(lane.id)?.items ?? [];
   // Words of the person's that are waiting only because they could not
   // go in either, so these would overtake them. Not ones that wait on
@@ -14401,6 +14493,11 @@ async function steerOne(
   // must retain uncertainty, rather than queue a second delivery.
   const took = options.admission ? await taking : await taking.catch(() => false);
   if (!took) return null;
+  // A steer joins this turn. Its stored return keeps this turn's fixed
+  // anchor too, so a restart cannot move the reply to the later words.
+  options = { ...options,
+    ...(options.telegramPerson?.group ? { telegramPerson: laneTelegramPerson.get(lane.id) ?? options.telegramPerson } : {}),
+    ...(options.telegramGroup ? { telegramGroup: laneTelegramGroup.get(lane.id) ?? options.telegramGroup } : {}) };
   options.admission?.accepted("steered");
   // A message that was waiting goes in as itself: moved to where the
   // turn hears it, as a waiting message always is, and marked as joined.
@@ -14420,6 +14517,7 @@ async function steerOne(
     ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
     ...(options.telegramDelegate ? { telegramDelegate: options.telegramDelegate } : {}),
     ...(options.delivery ? { delivery: options.delivery } : {}),
+    ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
   });
   if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
   // what the turn says from here on is an answer to the person too, and
@@ -14517,14 +14615,16 @@ function lastReportFor(laneId: string): string | null {
 
 /** A Telegram person's own part of a conversation: their messages and
  * the replies sent to them, never the owner's side of it. */
-function personsOwn(message: Message, personId: string): boolean {
-  return message.telegramPerson?.personId === personId || message.telegramSent?.personId === personId;
+function personsOwn(message: Message, sender: TelegramSender): boolean {
+  return (message.telegramPerson?.personId === sender.personId && telegramAudience(message.telegramPerson) === telegramAudience(sender)) ||
+    (message.telegramSent?.personId === sender.personId && (message.telegramSent.audience ?? "private") === telegramAudience(sender));
 }
 
 /** Stored words stay unchanged; engines hear who started the message. */
 function storedPrompt(message: Message): string {
   if (message.telegramSent) return `(Explicit Telegram reply to ${JSON.stringify(message.telegramSent.name)}, ${message.telegramSent.state}.)\n\n${message.text ?? ""}`;
-  if (message.telegramPerson) return `(Message from ${JSON.stringify(message.telegramPerson.name)} (Telegram). This person is not the owner; only the owner can approve actions.)\n\n${message.text ?? ""}`;
+  if (message.telegramGroup) return `(Message from the verified owner ${JSON.stringify(telegramSenderLabel(message.telegramGroup))} on Telegram. A group reply must be explicit; private words stay private.)\n\n${message.text ?? ""}`;
+  if (message.telegramPerson) return `(Message from ${JSON.stringify(telegramSenderLabel(message.telegramPerson))} (Telegram). This person is not the owner; only the owner can approve actions.)\n\n${message.text ?? ""}`;
   const text = message.text ?? "";
   const command = Boolean(message.commandInstance && commandFor(text, message.commandInstance));
   const words = message.agent?.dir === "in"
@@ -14950,7 +15050,8 @@ function drainSteer(threadId: string) {
   const byYou = said.some((m) => m && !m.telegramPerson && !m.telegramDelegate && !m.agent && !m.via) || (said.every((m) => !m) && !alive[0].item.telegramPerson && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
   const telegramBinding = said.find((message) => message?.telegramBinding)?.telegramBinding;
-  const telegramPerson = said[0]?.telegramPerson ?? alive[0].item.telegramPerson;
+  const telegramPerson = [...said].reverse().find((m) => m?.telegramPerson)?.telegramPerson ?? [...alive].reverse().find((entry) => entry.item.telegramPerson)?.item.telegramPerson;
+  const telegramGroup = [...said].reverse().find((m) => m?.telegramGroup)?.telegramGroup ?? [...alive].reverse().find((entry) => entry.item.telegramGroup)?.item.telegramGroup;
   // a burst is one sender's (queuedSegment), so its first says whose
   const telegramDelegate = telegramPerson ? undefined : said[0]?.telegramDelegate;
   const requester = telegramPerson?.requester ?? alive[0].item.requester;
@@ -14961,9 +15062,9 @@ function drainSteer(threadId: string) {
   const incidentNotes = said.flatMap((m) => (m?.via === "incident" && m.incident ? [m.incident.id] : []));
   const incidentQuiet = incidentNotes.length > 0 && incidentNotes.length === said.length;
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, telegramPerson, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, telegramPerson, telegramGroup, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
     for (const id of incidentNotes) deskTurnEnded(id, false);
-    if (telegramPerson) tellTelegramPersonHeld(telegramPerson, (e as Error).message);
+    if (telegramPerson || telegramGroup) tellTelegramPersonHeld((telegramPerson ?? telegramGroup)!, (e as Error).message);
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
     // Delivered already, so no turn will end for it: a phone request
     // among these is answered with why, here.
@@ -19969,10 +20070,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // Two cards saved back to back: the first one's resume is still
         // running. This one waits for it rather than being refused.
         const entry = steerQueues.get(threadId) ?? { botId: bot.id, items: [] };
-        entry.items.push({ text: note, ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}) });
+        entry.items.push({ text: note, ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}),
+          ...(card.telegramGroup ? { telegramGroup: card.telegramGroup } : {}) });
         steerQueues.set(threadId, entry);
       } else if (!already) {
-        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}) }).catch((e) => {
+        void startTurn(bot.id, note, { taskId: threadId, presetMessage: true, byYou: turnsForYou.has(threadId), ...(card.telegramPerson ? { telegramPerson: card.telegramPerson, requester: card.telegramPerson.requester } : {}),
+          ...(card.telegramGroup ? { telegramGroup: card.telegramGroup } : {}) }).catch((e) => {
           // Same reason as the connector resume: the mark is what stops
           // this firing twice, so leaving it set after a refusal parks
           // the task on a secret that has already been saved.

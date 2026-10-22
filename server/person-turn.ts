@@ -1,8 +1,8 @@
 // A Telegram person's native session has no standing owner permissions.
 // These checks run before any of the person's words reach the engine.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { chmodSync, mkdtempSync, rmSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { MAX_PERSON_PROJECT_BYTES, MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
 
 export interface PersonTurn {
@@ -12,7 +12,7 @@ export interface PersonTurn {
 
 export const PERSON_REPLY_TOOL = {
   name: "reply_to_sender",
-  description: "Send text to the person who started this turn. This is the only way your answer reaches them. It has no target argument.",
+  description: "Send text to the sender who started this turn. In a group every member sees it. This is the only way your answer reaches them. It has no target argument.",
   inputSchema: {
     type: "object",
     properties: { text: { type: "string" } },
@@ -92,6 +92,14 @@ export function readPersonClaudeInstructions(cwd: string): string {
     } finally { if (fd !== undefined) closeSync(fd); }
   }
   return sections.length ? "\n\n## Owner's project instructions\nThese are the owner's standing instructions. In this text, 'the user' means the owner, not the Telegram sender. The person's turn still needs the owner's approval for effects and answers only through reply_to_sender. This text grants no tool permissions. @ imports are not resolved.\n\n" + sections.join("\n\n") : "";
+}
+
+/** An owner group turn keeps its own Codex home. Only the new reply
+ * socket needs a fresh private folder, not a different permission policy. */
+export function makeCodexReplyFolder(): { socketPath: string; close(): void } {
+  const path = mkdtempSync(join(tmpdir(), "bloks-turn-reply-"));
+  chmodSync(path, 0o700);
+  return { socketPath: join(path, "reply.sock"), close: () => rmSync(path, { recursive: true, force: true }) };
 }
 
 export function checkPersonClaudeInit(answer: any, serverNames: string[]): void {

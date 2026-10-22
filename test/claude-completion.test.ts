@@ -74,8 +74,8 @@ async function fixture(t: TestContext, version = "2.1.300 (Claude Code)") {
     rmSync(home, { recursive: true, force: true });
   });
   const send = (frame: any) => stdout.write(JSON.stringify(frame) + "\n");
-  const start = async () => {
-    await instance.adapter.sendTurn({ threadId: "completion-fixture", text: "First", stallMs: 0 });
+  const start = async (extra: Record<string, unknown> = {}) => {
+    await instance.adapter.sendTurn({ threadId: "completion-fixture", text: "First", stallMs: 0, ...extra });
     return frames.find(f => f.type === "user").uuid;
   };
   const steer = async () => {
@@ -359,4 +359,16 @@ test("terminal accounting callbacks cannot admit a steer after the selected resu
   assert.equal(await attempted, false);
   assert.equal(f.frames.filter(v => v.type === "user").length, 1);
   assert.equal(f.ends().length, 1);
+});
+
+
+test("an owner reply callback retains normal message-person and asking tools", async t => {
+  const f = await fixture(t);
+  await f.start({ messagePerson: true, reply: { reply: async () => "Sent" } });
+  const configPath = f.state.args[f.state.args.indexOf("--mcp-config") + 1];
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const names = config.mcpServers.bloks.env.BLOKS_PUBLISH.split(",");
+  for (const name of ["message_person", "reply_to_sender", "ask_user", "request_secret"]) assert.ok(names.includes(name), name + " was lost when the reply capability was added");
+  assert.equal(names.includes("approve"), false, "the reply callback changed full owner trust");
+  assert.equal(f.state.args.includes("--setting-sources"), false, "the reply callback made an owner into a restricted person");
 });

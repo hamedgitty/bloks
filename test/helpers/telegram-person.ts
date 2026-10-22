@@ -31,6 +31,7 @@ import {appendFileSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createConnection} from 'node:net';
 import {createInterface} from 'node:readline';
+import {spawnSync} from 'node:child_process';
 const root=${JSON.stringify(root)},kind=${JSON.stringify(kind)},args=process.argv.slice(2);
 if(args[0]==='--version'){console.log(kind==='codex'?'codex-cli 0.160.0':'2.1.291 (Claude Code)');process.exit(0)}
 if(args[0]==='login'){console.log('Logged in using ChatGPT');process.exit(0)}
@@ -38,12 +39,15 @@ if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true}));process.exit(0
 const out=f=>process.stdout.write(JSON.stringify(f)+'\\n');
 const log=f=>appendFileSync(join(root,'engine.jsonl'),JSON.stringify({pid:process.pid,...f})+'\\n');
 const person=process.env.BLOKS_TOKEN?.startsWith('blr_');
+const groupOwner=!person&&Boolean(process.env.BLOKS_REPLY_TOKEN);
 let thread='fixture-'+process.pid,turn='turn-'+process.pid;
 let guard,working=false,late=false,lateAfterEnd;
 const pending=new Map();
 const broker=(frame)=>new Promise((resolve,reject)=>{
  let socket;
- socket=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks.args[1];
+ if(kind==='claude')socket=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks.args[1];
+ else if(groupOwner){const prefix='mcp_servers.bloks_reply.args=';socket=JSON.parse(args.find(a=>a.startsWith(prefix)).slice(prefix.length))[1]}
+ else throw new Error('Restricted Codex person fixture must never start');
  const connection=createConnection(socket);connection.on('error',reject);connection.on('connect',()=>connection.write(JSON.stringify({...frame,id:'fixture-'+Math.random()})+'\\n'));
  createInterface({input:connection}).once('line',line=>{connection.end();resolve(JSON.parse(line))});
 });
@@ -51,7 +55,7 @@ const reply=()=>broker({t:'reply',input:{text:'Hello Lee'}});
 async function work(text){
  const systemFile=args.indexOf('--append-system-prompt-file');
  const system=systemFile<0?'':readFileSync(args[systemFile+1],'utf8');
- log({kind,person,text,token:process.env.BLOKS_TOKEN,url:process.env.BLOKS_URL,guard,args,system});
+ log({kind,person,groupOwner,codexHome:process.env.CODEX_HOME,replyToken:process.env.BLOKS_REPLY_TOKEN,replyPath:process.env.BLOKS_REPLY_PATH,text,token:process.env.BLOKS_TOKEN,url:process.env.BLOKS_URL,guard,args,system});
  const scenario=text.match(/FAKE_([A-Z]+)\\s*$/)?.[1];
  if(kind==='claude'&&scenario==='LATE'){
    late=true;
@@ -76,11 +80,22 @@ async function work(text){
          out({type:'result',subtype:'success',is_error:false,result:'Private transcript only.'});
          return;
        }
+       if(answer.id==='late-reply'){log({lateReply:answer});connection.end();resolve();return}
        if(answer.id!=='late-person')return;
-       log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');connection.end();resolve();
+       log({lateAnswer:answer});if(answer.behavior==='allow')writeFileSync(join(root,'effect'),'late effect');
+       if(groupOwner)connection.write(JSON.stringify({t:'reply',id:'late-reply',input:{text:'LATE_GROUP_REPLY'}})+'\\n');
+       else{connection.end();resolve()}
      });
    });
    return;
+ }
+ if(kind==='claude'&&scenario==='TERMINAL'){
+   const socket=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks.args[1];
+   log({terminalSocket:socket});
+   const answer=await broker({t:'ask',tool:'Bash',input:{command:'touch synthetic-active-marker'}});
+   log({activeOwnerAsk:answer});
+   if(answer.behavior==='allow')writeFileSync(join(root,'active-effect'),'active owner allowed');
+   while(!existsSync(join(root,'finish-terminal')))await new Promise(r=>setTimeout(r,30));
  }
  if(scenario==='HOLD'){
    writeFileSync(join(root,'held'),'1');
@@ -103,7 +118,10 @@ async function work(text){
    log({secretAnswer:await broker({t:'ask',kind:'question',tool:'request_secret',input:{name:'Synthetic service key'}})});
    log({connectionAnswer:await broker({t:'ask',kind:'question',tool:'request_connection',input:{apps:['synthetic_service']}})});
  }
- if(person&&scenario!=='TEXT')log({reply:await reply()});
+ if(groupOwner&&scenario==='CLI'){
+   const said=spawnSync(process.execPath,[process.env.BLOKS_CLI,'reply','Hello group from CLI'],{env:process.env,encoding:'utf8'});
+   log({cliReply:{status:said.status,stdout:said.stdout,stderr:said.stderr,error:said.error?String(said.error):undefined}});
+ }else if((person||groupOwner)&&scenario!=='TEXT')log({reply:await reply()});
  if(kind==='codex'){
    out({method:'item/completed',params:{threadId:thread,turnId:turn,item:{id:'answer',type:'agentMessage',text:person?'Private transcript only.':'Owner answer.'}}});
    out({method:'turn/completed',params:{threadId:thread,turn:{id:turn,status:'completed'}}});
@@ -159,6 +177,7 @@ export interface PersonFixtureOptions {
   cli?: string;
   env?: Record<string, string>;
   seed?: (root: string) => void;
+  files?: Record<string, Uint8Array>;
 }
 
 /** Claude Code is the engine a person's turn runs on; a Codex agent holds it. */
@@ -174,13 +193,18 @@ export async function personFixture(t: TestContext, kind: "codex" | "claude" = "
   const stub = createServer((req, res) => {
     const parts: Buffer[] = []; req.on("data", (b) => parts.push(b)); req.on("end", () => {
       const method = req.url!.split("/").pop(); const body = JSON.parse(Buffer.concat(parts).toString() || "{}");
+      if (req.url?.startsWith("/file/")) {
+        const id = method!.replace(/\.png$/, ""); calls.push({ method: "file", body: { file_id: id } });
+        const bytes = options.files?.[id];
+        res.statusCode = bytes ? 200 : 404; res.setHeader("content-type", "image/png"); return res.end(bytes ? Buffer.from(bytes) : "missing");
+      }
       const call: any = { method, body }; calls.push(call); res.setHeader("content-type", "application/json");
       if (method === "sendMessage" && sendFailures.has(body.text)) {
         const fault = sendFailures.get(body.text)!;
         if (fault === "disconnect") { req.socket.destroy(); return; }
         res.statusCode = fault; res.end(JSON.stringify({ ok: false, description: "synthetic refusal", error_code: fault })); return;
       }
-      const result = method === "getMe" ? { id: 12345, is_bot: true, username: "PlanningBot" } : method === "getUpdates" ? updates.filter((u) => u.update_id >= body.offset) : method === "sendMessage" ? { message_id: ++messageId } : true;
+      const result = method === "getMe" ? { id: 12345, is_bot: true, username: "PlanningBot" } : method === "getUpdates" ? updates.filter((u) => u.update_id >= body.offset) : method === "sendMessage" ? { message_id: ++messageId } : method === "getFile" && options.files?.[body.file_id] ? { file_path: `${body.file_id}.png` } : true;
       if (method === "sendMessage") call.messageId = (result as { message_id: number }).message_id;
       setTimeout(() => res.end(JSON.stringify({ ok: true, result })), method === "getUpdates" ? 25 : 0);
     });
@@ -200,7 +224,9 @@ export async function personFixture(t: TestContext, kind: "codex" | "claude" = "
   const configured = await ownerJson(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: kind, model: kind === "codex" ? "gpt-6.1-sol" : "claude-sonnet-5" }, approvals: "full" }) });
   assert.equal(configured.bot.approvals, "full");
   function say(text: string, fromId = SAM, extra: any = {}) {
-    updates.push({ update_id: next++, message: { message_id: next, chat: { id: fromId, type: "private" }, from: { id: fromId, is_bot: false, first_name: fromId === SAM ? "Sam" : "Lee" }, text, ...extra } });
+    const update = { update_id: next++, message: { message_id: next, chat: { id: fromId, type: "private" }, from: { id: fromId, is_bot: false, first_name: fromId === SAM ? "Sam" : "Lee" }, text, ...extra } };
+    updates.push(update);
+    return update.message.message_id as number;
   }
   const pair = await post(`/api/bots/${bot.id}/telegram`, { token: "12345:TEST_ONLY_TOKEN", pair: true });
   assert.ok(pair.pairing); say(pair.pairing);

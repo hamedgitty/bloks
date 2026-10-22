@@ -58,14 +58,16 @@ export function appendNative(
   threadId: string,
   entry: { dir: "in" | "out"; source: string; msg: unknown },
   dir: string = NATIVE_DIR,
-  hidden?: string | null,
+  hidden?: string | readonly string[] | null,
 ) {
   try {
     const path = join(dir, `${threadId}.ndjson`);
     let line = JSON.stringify({ at: new Date().toISOString(), ...entry, msg: slimFrame(entry.msg) }) + "\n";
     // found in the text as written: a credential is base64url, which JSON
     // never escapes, so no spelling of it is missed
-    if (hidden && line.includes(hidden)) line = line.split(hidden).join("[redacted]");
+    for (const token of typeof hidden === "string" ? [hidden] : hidden ?? []) {
+      if (token && line.includes(token)) line = line.split(token).join("[redacted]");
+    }
     let size = sizes.get(path);
     // The count can run high (the slimming pass shrinks files under it),
     // so it is checked against the disk before anything is moved. A file
