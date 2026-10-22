@@ -1639,7 +1639,11 @@ generation, lane, turn, group, topic and addressing message. Claude and Codex
 mount the native `reply_to_sender` tool, and a tool-capable API engine uses
 the same bound function. Codex keeps the owner's home and mounts only the
 new reply server in approve mode through its per-turn overrides, with a
-fresh 0700 socket folder removed on close. Other process engines can use the
+fresh 0700 socket folder removed on close. Its Unix path must fit the
+platform byte limit, and an actual connection verifies listener readiness
+before the tool is advertised. Unavailable endpoints fail visibly before
+engine input, including Windows where this private-filesystem endpoint is
+not supported. Other process engines can use the
 targetless `bloks reply` command with the separate reply credential. An
 engine with neither tools nor a process holds visibly in the app. A bound
 callback does not make an active owner turn a person turn. Current terminal

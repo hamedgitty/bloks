@@ -2,6 +2,8 @@
 // These checks run before any of the person's words reach the engine.
 import { chmodSync, mkdtempSync, rmSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { createConnection } from "node:net";
+import { socketPathFits } from "./harness/ask-broker.ts";
 import { join, resolve } from "node:path";
 import { MAX_PERSON_PROJECT_BYTES, MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
 
@@ -96,10 +98,31 @@ export function readPersonClaudeInstructions(cwd: string): string {
 
 /** An owner group turn keeps its own Codex home. Only the new reply
  * socket needs a fresh private folder, not a different permission policy. */
-export function makeCodexReplyFolder(): { socketPath: string; close(): void } {
-  const path = mkdtempSync(join(tmpdir(), "bloks-turn-reply-"));
-  chmodSync(path, 0o700);
-  return { socketPath: join(path, "reply.sock"), close: () => rmSync(path, { recursive: true, force: true }) };
+export function makeCodexReplyFolder(options: { platform?: NodeJS.Platform; tempDir?: string } = {}): { socketPath: string; close(): void } {
+  const platform = options.platform ?? process.platform;
+  // This endpoint relies on a private filesystem directory. Do not publish
+  // a normal file path as a Windows pipe or assume Unix permissions there.
+  if (platform === "win32") throw new Error("Codex group replies cannot start a protected native endpoint on Windows. Choose another engine for this group request.");
+  const path = mkdtempSync(join(options.tempDir ?? tmpdir(), "bloks-turn-reply-"));
+  const close = () => rmSync(path, { recursive: true, force: true });
+  try {
+    chmodSync(path, 0o700);
+    const socketPath = join(path, "reply.sock");
+    if (!socketPathFits(socketPath, platform === "linux" ? 108 : 104)) throw new Error("Codex group reply socket path is too long. Choose an engine with another reply route or use a shorter temporary folder.");
+    return { socketPath, close };
+  } catch (error) { close(); throw error; }
+}
+
+/** Verify the new reply listener before publishing it to a native engine.
+ * The generic broker's error policy is unchanged for existing callers. */
+export function checkCodexReplyEndpoint(socketPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const failed = () => { clearTimeout(timer); socket.destroy(); reject(new Error("Codex group reply endpoint could not listen. The native reply tool was not started.")); };
+    const timer = setTimeout(failed, 2_000);
+    socket.once("error", failed);
+    socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(); });
+  });
 }
 
 export function checkPersonClaudeInit(answer: any, serverNames: string[]): void {

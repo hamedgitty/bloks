@@ -10,8 +10,9 @@ import childProcess from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -300,4 +301,27 @@ test("the real targetless CLI uses both credentials carried by the current Codex
     assert.ok(!output.includes(normal) && !output.includes(reply));
   }
   assert.deepEqual(requests, ["/api/agent/whoami", replyPath]);
+});
+
+
+test("a refused group listener stops Codex before advertising the native reply tool", { skip: process.platform === "win32" }, async (t) => {
+  const temp = mkdtempSync(join(tmpdir(), "bloks-reply-start-"));
+  const previous = process.env.TMPDIR;
+  process.env.TMPDIR = temp;
+  t.after(() => { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; rmSync(temp, { recursive: true, force: true }); });
+  const create = net.createServer;
+  t.mock.method(net, "createServer", ((...args: any[]) => {
+    const server = (create as any)(...args);
+    t.mock.method(server, "listen", () => {
+      queueMicrotask(() => server.emit("error", Object.assign(new Error("synthetic listener refusal"), { code: "EACCES" })));
+      return server;
+    });
+    return server;
+  }) as any);
+  syncBuiltinESMExports();
+  const h = await setup(t);
+  await assert.rejects(h.turn({ env: envFor(credential()), reply: { reply: async () => "must not run" } }), /group reply endpoint could not listen/);
+  assert.equal(h.sent("turn/start").length, 0);
+  assert.equal(h.argv.some(args => args.some(arg => arg.includes("mcp_servers.bloks_reply"))), false);
+  assert.deepEqual(readdirSync(temp), [], "failed listener folder leaked");
 });

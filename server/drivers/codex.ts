@@ -45,7 +45,7 @@ import { EngineProcesses } from "./engine-processes.ts";
 import { CODEX_PERSON_HOLD, CODEX_PERSON_NEXT, personTurnHold } from "../person-turn.ts";
 import { CodexSpeedUnavailable, type CodexSpeedRefusal, FAST_TIER, fastRefusal, requireFastTier, resolveCodexSpeed } from "../codex-speed.ts";
 import { createAskBroker, type AskBroker } from "../harness/ask-broker.ts";
-import { makeCodexReplyFolder } from "../person-turn.ts";
+import { checkCodexReplyEndpoint, makeCodexReplyFolder } from "../person-turn.ts";
 
 const DRIVER_KIND = "codex";
 const NATIVE_SOURCE = "codex.app-server";
@@ -521,9 +521,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         ownerReplyFolder = makeCodexReplyFolder();
         const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
         const helper = fileURLToPath(new URL(`../permission-proxy.${ext}`, import.meta.url));
-        replyBroker = createAskBroker({ socketPath: ownerReplyFolder.socketPath,
-          onAsk: (ask) => replyBroker?.answer(ask.id, "deny", "This server only replies to the sender."), onResolve: () => {},
-          onReply: (input) => turn.reply!.reply(input) });
+        try {
+          replyBroker = createAskBroker({ socketPath: ownerReplyFolder.socketPath,
+            onAsk: (ask) => replyBroker?.answer(ask.id, "deny", "This server only replies to the sender."), onResolve: () => {},
+            onReply: (input) => turn.reply!.reply(input) });
+          await checkCodexReplyEndpoint(ownerReplyFolder.socketPath);
+        } catch (error) { replyBroker?.close(); ownerReplyFolder.close(); throw error; }
         const prefix = "mcp_servers.bloks_reply";
         appServerArgs.push("-c", `${prefix}.command=${JSON.stringify(process.execPath)}`,
           "-c", `${prefix}.args=${JSON.stringify([helper, ownerReplyFolder.socketPath])}`,
@@ -545,13 +548,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         );
       }
 
-      const child = spawn(config.cli, appServerArgs, {
-        cwd: turn.cwd ?? homedir(),
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: OWN_GROUP,
-        windowsHide: true,
-      });
+      const child = (() => {
+        try { return spawn(config.cli, appServerArgs, {
+          cwd: turn.cwd ?? homedir(),
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+          detached: OWN_GROUP,
+          windowsHide: true,
+        }); }
+        catch (error) { replyBroker?.close(); ownerReplyFolder?.close(); throw error; }
+      })();
       engines.add(child);
       child.once("close", () => { replyBroker?.close(); ownerReplyFolder?.close(); });
 

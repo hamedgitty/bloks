@@ -14722,7 +14722,10 @@ async function sendWaitingNow(bot: BotRecord, lane: TaskRecord): Promise<"steere
   const said = (id?: string) => (id ? store.messagesFor(lane.id).find((m) => m.id === id) : undefined);
   const yours = (steerQueues.get(lane.id)?.items ?? []).filter((item) => {
     const m = said(item.messageId);
-    return m && m.role === "user" && m.queued && !m.deleted && !m.agent && !m.via && !m.telegramPerson && m.text;
+    // This bulk action is private app input. Telegram senders and group
+    // audiences retain their own queued provenance and delivery path.
+    return m && m.role === "user" && m.queued && !m.deleted && !m.agent && !m.via &&
+      !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup && m.text;
   });
   if (!lane.busy || !yours.length) return "nothing";
   if (laneInstance(bot, lane.id)?.adapter.steerTurn) {
