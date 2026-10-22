@@ -240,6 +240,44 @@ for (const tail of ['## Next heading', '- Next item', '> Next quotation', '---']
   assert.deepEqual(ds[1]!.chunks, messages(tail, true));
 });
 
+for (const marker of ['.', ')']) {
+  test(`ordered ${marker} list after a table stays on the legacy route without a blank line`, async (t) => {
+    const tail = `1${marker} First\n2${marker} Second`;
+    assert.deepEqual(deliveries(table + '\n' + tail, true), [
+      ...deliveries(table, true), { chunks: messages(tail, true) },
+    ]);
+    const calls = record(t);
+    await send('T', 42, table + '\n' + tail, true);
+    assert.deepEqual(calls.map((call) => call.method), ['sendRichMessage', 'sendMessage']);
+    assert.equal(calls[0]!.body.rich_message.html, rich(table)[0]);
+    assert.equal(calls[1]!.body.text, messages(tail, true)[0]!.html);
+  });
+
+  test(`ordered ${marker} list content cannot become a table heading`, () => {
+    const input = `1${marker} First | Value\n--- | ---\nSample | 12`;
+    assert.deepEqual(deliveries(input, true), [{ chunks: messages(input, true) }]);
+  });
+
+  test(`explicit pipe cells can contain ordered ${marker} text in headers and rows`, () => {
+    const html = rich(`| 1${marker} First | Value |\n| --- | --- |\n| 2${marker} Second | 12 |`)[0]!;
+    assert.match(html, /<th align="left">1[.)] First<\/th>/);
+    assert.match(html, /<td align="left">2[.)] Second<\/td>/);
+  });
+}
+
+for (const tail of ['0. Zero', '123456789) Last', '  2. Indented', '1.\tTab', '1)', '2.']) test(`ordered-list marker bounds end a table (${JSON.stringify(tail)})`, () => {
+  assert.deepEqual(deliveries(table + '\n' + tail, true), [
+    ...deliveries(table, true), { chunks: messages(tail, true) },
+  ]);
+});
+
+for (const text of ['1.25', '2)text', '1234567890. First']) test(`numeric text without a valid list marker remains a table cell (${text})`, () => {
+  const input = `${text} | Value\n--- | ---\n${text} | 12`;
+  const html = rich(input)[0]!;
+  assert.ok(html.includes(`>${text}</th>`));
+  assert.ok(html.includes(`>${text}</td>`));
+});
+
 for (const input of ['```md\n' + table, '~~~\n' + table + '\n```\n' + table, '```\n' + table + '\n~~~\n' + table]) test('unclosed or mixed fences remain exactly on the existing route', () => {
   assert.deepEqual(deliveries(input, true), [{ chunks: messages(input, true) }]);
 });

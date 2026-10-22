@@ -547,6 +547,8 @@ export interface Delivery {
 const RICH_TABLE_BYTES = 30_000;
 const RICH_TABLE_ROWS = 400;
 const TABLE_COLUMNS = 20;
+// A list marker is a block boundary, not a short table row or heading.
+const ORDERED_LIST = /^ {0,3}[0-9]{1,9}[.)](?:[ \t]+|$)/;
 
 /** Split only unescaped pipes, including inside code spans as GFM does.
  * Keep empty cells: dropping one would shift every later cell left. */
@@ -629,7 +631,7 @@ export function deliveries(text: string, markdown: boolean): Delivery[] {
     }
     const opened = FENCE.exec(source);
     if (opened) { fence = opened[1]!; continue; }
-    if (/^\s/.test(source) || /^\s/.test(lines[i + 1]!) || HEADING.test(source) || BULLET.test(source) || /^ {0,3}>/.test(source)) continue;
+    if (/^\s/.test(source) || /^\s/.test(lines[i + 1]!) || HEADING.test(source) || BULLET.test(source) || ORDERED_LIST.test(source) || /^ {0,3}>/.test(source)) continue;
     const pipeHeader = tableCells(source);
     const pipeDelimiter = tableCells(lines[i + 1]!);
     // At least one structural pipe distinguishes a one-column table
@@ -643,7 +645,7 @@ export function deliveries(text: string, markdown: boolean): Delivery[] {
     const cells = [header];
     while (end < lines.length) {
       const row = lines[end]!;
-      if (!row.trim() || /^(?: {4}| *\t)/.test(row) || FENCE.test(row) || HEADING.test(row) || BULLET.test(row) || /^ {0,3}>/.test(row) || /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(row)) break;
+      if (!row.trim() || /^(?: {4}| *\t)/.test(row) || FENCE.test(row) || HEADING.test(row) || BULLET.test(row) || ORDERED_LIST.test(row) || /^ {0,3}>/.test(row) || /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(row)) break;
       const next = tableCells(row) ?? [row.trim()];
       cells.push(next);
       end++;
