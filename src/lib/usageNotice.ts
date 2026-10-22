@@ -1,4 +1,4 @@
-// The notice in the composer about a limit, in words: Bloks AI's own,
+// The notice beside the composer about a limit, in words: Bloks AI's own,
 // or an engine's plan running out (server/plan-usage.ts). The server
 // decides what applies to the conversation, how bad it is and what it is
 // called; this says when it resets, and remembers which ones the person
@@ -50,6 +50,13 @@ export function noticeToShow(notices: UsageNotice[], dismissed: readonly string[
   return notices.find((n) => !dismissed.includes(n.id)) ?? null;
 }
 
+/** Name only the reported source, not the conversation's selected engine. */
+export function noticeSource(notice: Pick<UsageNotice, "source" | "kind">, engines: readonly { instanceId: string; displayName: string }[]): string {
+  if (notice.source === "bloks-ai") return "Bloks AI allowance";
+  const name = engines.find((engine) => engine.instanceId === notice.source)?.displayName?.trim() || "Unknown engine";
+  return `${name} ${notice.kind === "spend" ? "spending limit" : "plan usage"}`;
+}
+
 /** A day as a count, for telling today from tomorrow in one time zone. */
 function dayNumber(at: number, timeZone?: string): number {
   const parts = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "numeric", day: "numeric", ...(timeZone ? { timeZone } : {}) }).formatToParts(new Date(at));
@@ -64,7 +71,7 @@ function dayNumber(at: number, timeZone?: string): number {
  * zone. Null when nobody said, or the reset has already gone by.
  */
 export function resetLine(resetsAt: number | null, now: number, format: { locale?: string; timeZone?: string } = {}): string | null {
-  if (resetsAt === null || !Number.isFinite(resetsAt) || resetsAt <= now) return null;
+  if (resetsAt === null || !Number.isFinite(resetsAt) || resetsAt <= now || !Number.isFinite(new Date(resetsAt).getTime())) return null;
   if (resetsAt - now < 24 * 60 * 60_000) {
     const days = dayNumber(resetsAt, format.timeZone) - dayNumber(now, format.timeZone);
     if (days === 0) return "Resets today";
@@ -78,15 +85,13 @@ export function resetLine(resetsAt: number | null, now: number, format: { locale
   return `Resets ${date}`;
 }
 
-/**
- * The second line, whatever the notice: a spending limit says how much
- * of it is used and when its month tops up ("84% used · Tops up Nov 1"),
- * the rest when they reset (resetLine). Null when there is nothing to say.
- */
-export function noticeLine(notice: Pick<UsageNotice, "kind" | "usedPercent" | "resetsAt">, now: number, format: { locale?: string; timeZone?: string } = {}): string | null {
-  if (notice.kind !== "spend") return resetLine(notice.resetsAt, now, format);
-  const used = `${Math.round(notice.usedPercent)}% used`;
-  if (notice.resetsAt === null || !Number.isFinite(notice.resetsAt) || notice.resetsAt <= now) return used;
+/** Reported usage and reset/top-up timing; never invent an unavailable value. */
+export function noticeLine(notice: Pick<UsageNotice, "kind" | "usedPercent" | "resetsAt">, now: number, format: { locale?: string; timeZone?: string } = {}): string {
+  const used = Number.isFinite(notice.usedPercent) && notice.usedPercent >= 0 && notice.usedPercent <= 100
+    ? `${Math.round(notice.usedPercent)}% used`
+    : "Usage unknown";
+  if (notice.kind !== "spend") return `${used} · ${resetLine(notice.resetsAt, now, format) ?? "Reset time unknown"}`;
+  if (notice.resetsAt === null || !Number.isFinite(notice.resetsAt) || notice.resetsAt <= now || !Number.isFinite(new Date(notice.resetsAt).getTime())) return `${used} · Top-up time unknown`;
   const date = new Intl.DateTimeFormat(format.locale, {
     month: "short",
     day: "numeric",

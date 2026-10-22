@@ -884,7 +884,7 @@ export function Composer({
   return (
     <ComposerShell
       notices={notices}
-      top={<UsageNotice bot={bot} />}
+      status={<UsageNotice bot={bot} />}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}

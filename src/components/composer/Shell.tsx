@@ -2,10 +2,9 @@
 //
 // The tray, then the box: one skinny row at rest, a button at each end
 // of the words, and whatever rides with the next message (a reply, the
-// files, a rehearsal) inside the box above them. A limit coming sits at
-// the very top of the box, since it is about the next message too. Under the box, outside
-// it, a quiet row of what the message runs with. None of it knows about
-// agents: an agent's Composer fills it in, and a room can fill in the same
+// files, a rehearsal) inside the box above them. Under the box, outside
+// it, a compact usage status and a quiet row of what the message runs with.
+// None of it knows about agents: an agent's Composer fills it in, and a room can fill in the same
 // frame with its own field, its @ list and its own send, and look like the
 // same app doing the same job.
 import { useEffect, useRef, type ComponentProps, type DragEvent, type ReactNode, type RefObject } from "react";
@@ -171,7 +170,7 @@ export function useDismiss(open: boolean, close: () => void, portal?: RefObject<
 
 export function ComposerShell({
   notices,
-  top,
+  status,
   popover,
   chips,
   children,
@@ -185,8 +184,8 @@ export function ComposerShell({
 }: {
   /** What the tray says, in any order: it sorts them. */
   notices: Notice[];
-  /** Inside the box, above everything else in it. */
-  top?: ReactNode;
+  /** Usage status outside the writing box, beside its run controls. */
+  status?: ReactNode;
   /** A list over the box, such as `/` or `@`. */
   popover?: ReactNode;
   /** What the next message carries besides its words. */
@@ -220,7 +219,6 @@ export function ComposerShell({
           )}
         >
           {popover && <div className="absolute inset-x-0 bottom-full z-20 mb-2">{popover}</div>}
-          {top}
           {chips && <div className="flex flex-wrap gap-1.5 px-3 pt-3">{chips}</div>}
           {/* The buttons sit on the last line of the words, so a box grown
               for a long message keeps them where the thumb already is. */}
@@ -230,6 +228,7 @@ export function ComposerShell({
             {trail && <div className="flex shrink-0 items-center gap-1">{trail}</div>}
           </div>
         </div>
+        {status}
         {below && (
           // relative: the popovers in this row hang from it, so they line
           // up with the box's edge whichever word opened them

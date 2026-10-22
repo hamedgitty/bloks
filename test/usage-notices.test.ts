@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
 import { startFakeCredits, type FakeCredits } from "./helpers/fake-credits.ts";
-import { noticeLine, noticeToShow, readDismissed, readNotices, resetLine, saveDismissed, withDismissed, type UsageNotice } from "../src/lib/usageNotice.ts";
+import { noticeLine, noticeSource, noticeToShow, readDismissed, readNotices, resetLine, saveDismissed, withDismissed, type UsageNotice } from "../src/lib/usageNotice.ts";
 
 const LICENCE = `blok_live_${"e".repeat(32)}`;
 
@@ -208,13 +208,13 @@ test("the second line says the day it resets, in the person's own time zone", ()
   assert.equal(resetLine(Date.UTC(2026, 9, 20, 23, 0), NOW, tokyo), "Resets tomorrow", "8 AM the next morning there");
 });
 
-test("a spending limit's second line says how much is used and when it tops up; the rest say when they reset", () => {
+test("the status reports usage and reset or top-up timing without inventing unknown values", () => {
   const utc = { locale: "en-US", timeZone: "UTC" };
   const nov = Date.UTC(2026, 10, 1, 0, 0);
   assert.equal(noticeLine({ kind: "spend", usedPercent: 84, resetsAt: nov }, NOW, utc), "84% used · Tops up Nov 1");
-  assert.equal(noticeLine({ kind: "spend", usedPercent: 100, resetsAt: null }, NOW, utc), "100% used");
-  assert.equal(noticeLine({ usedPercent: 84, resetsAt: nov }, NOW, utc), "Resets Nov 1", "every other notice is unchanged");
-  assert.equal(noticeLine({ usedPercent: 84, resetsAt: null }, NOW, utc), null);
+  assert.equal(noticeLine({ kind: "spend", usedPercent: 100, resetsAt: null }, NOW, utc), "100% used · Top-up time unknown");
+  assert.equal(noticeLine({ usedPercent: 84, resetsAt: nov }, NOW, utc), "84% used · Resets Nov 1");
+  assert.equal(noticeLine({ usedPercent: 84, resetsAt: null }, NOW, utc), "84% used · Reset time unknown");
   // a kind this app has never heard of reads as any other notice
   assert.equal(readNotices({ notices: [{ ...NOTICE, kind: "spend" }] })[0].kind, "spend");
 });
@@ -254,4 +254,27 @@ test("what was put away is kept on this device, newest last, and only so many", 
   assert.deepEqual(readDismissed({ getItem: () => "{not json" }), []);
   assert.deepEqual(readDismissed({ getItem: () => '["a", 4, null, "b"]' }), ["a", "b"]);
   assert.deepEqual(readDismissed(null), []);
+});
+
+test("notice identity names its reported engine and allowance, including missing and literal names", () => {
+  const engines = [{ instanceId: "claude", displayName: "Claude Code" }, { instanceId: "codex", displayName: "Codex" }];
+  assert.equal(noticeSource(NOTICE, engines), "Claude Code plan usage");
+  assert.equal(noticeSource({ source: "codex" }, engines), "Codex plan usage");
+  assert.equal(noticeSource({ source: "bloks-ai" }, engines), "Bloks AI allowance");
+  assert.equal(noticeSource({ source: "claude", kind: "spend" }, engines), "Claude Code spending limit");
+  assert.equal(noticeSource({ source: "missing" }, engines), "Unknown engine plan usage");
+  assert.equal(noticeSource({ source: undefined as any }, engines), "Unknown engine plan usage");
+  assert.equal(noticeSource(NOTICE, [{ instanceId: "claude", displayName: "  " }]), "Unknown engine plan usage");
+  assert.equal(noticeSource(NOTICE, [{ instanceId: "claude", displayName: "<script>literal</script>" }]), "<script>literal</script> plan usage");
+});
+
+test("invalid percentages and missing or unusable reset dates remain unknown", () => {
+  const format = { locale: "en-US", timeZone: "UTC" };
+  for (const usedPercent of [NaN, Infinity, -1, 101, undefined as any]) {
+    assert.equal(noticeLine({ usedPercent, resetsAt: null }, NOW, format), "Usage unknown · Reset time unknown");
+  }
+  for (const resetsAt of [null, NaN, Infinity, 1e100, NOW - 1]) {
+    assert.equal(noticeLine({ usedPercent: 0, resetsAt }, NOW, format), "0% used · Reset time unknown");
+    assert.equal(noticeLine({ kind: "spend", usedPercent: 100, resetsAt }, NOW, format), "100% used · Top-up time unknown");
+  }
 });
