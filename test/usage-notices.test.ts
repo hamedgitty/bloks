@@ -224,7 +224,7 @@ test("only whole notices are read, and the first not put away is shown", () => {
   assert.deepEqual(readNotices({ notices: [stop, NOTICE] }), [stop, NOTICE]);
   for (const body of [null, {}, { notices: "x" }, { error: "not found" }]) assert.deepEqual(readNotices(body), []);
   assert.deepEqual(
-    readNotices({ notices: [null, { ...NOTICE, level: "danger" }, { ...NOTICE, usedPercent: "60" }, { ...NOTICE, resetsAt: "soon" }, NOTICE] }),
+    readNotices({ notices: [null, { ...NOTICE, level: "danger" }, { ...NOTICE, usedPercent: "60" }, { ...NOTICE, usedPercent: undefined }, { ...NOTICE, resetsAt: "soon" }, NOTICE] }),
     [NOTICE],
   );
   assert.equal(noticeToShow([stop, NOTICE], []), stop);
@@ -263,7 +263,10 @@ test("notice identity names its reported engine and allowance, including missing
   assert.equal(noticeSource({ source: "bloks-ai" }, engines), "Bloks AI allowance");
   assert.equal(noticeSource({ source: "claude", kind: "spend" }, engines), "Claude Code spending limit");
   assert.equal(noticeSource({ source: "missing" }, engines), "Unknown engine plan usage");
-  assert.equal(noticeSource({ source: undefined as any }, engines), "Unknown engine plan usage");
+  for (const source of [undefined, null, 4, { id: "claude" }]) {
+    assert.equal(noticeSource({ source: source as any }, engines), "Unknown engine plan usage");
+  }
+  assert.equal(noticeSource(NOTICE, [{ instanceId: "claude" } as any]), "Unknown engine plan usage");
   assert.equal(noticeSource(NOTICE, [{ instanceId: "claude", displayName: "  " }]), "Unknown engine plan usage");
   assert.equal(noticeSource(NOTICE, [{ instanceId: "claude", displayName: "<script>literal</script>" }]), "<script>literal</script> plan usage");
 });

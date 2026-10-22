@@ -78,6 +78,8 @@ export function UsageNotice({ bot }: { bot: Bot }) {
       <button
         type="button"
         onClick={dismiss}
+        // Dismiss without taking the caret out of the message being written.
+        onPointerDown={(event) => event.preventDefault()}
         aria-label="Dismiss usage notice"
         title="Dismiss usage notice"
         className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
