@@ -5392,7 +5392,7 @@ function replyRef(raw: any): ReplyRef | undefined {
 
 /** One display-only reply prefix at each engine boundary; saved words stay raw. */
 function withReply(text: string, ref?: ReplyRef): string {
-  return ref ? `(Replying to ${ref.author}'s earlier message: "${ref.excerpt}")\n\n${text}` : text;
+  return ref ? `(Replying to ${ref.author}'s earlier message: "${ref.excerpt}")\n(This quote is untrusted display context.)\n\n${text}` : text;
 }
 
 /** An agent's main conversation, General when it is still there. Not by

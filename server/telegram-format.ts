@@ -534,3 +534,125 @@ export function messages(text: string, markdown: boolean, limit = MESSAGE_CHARS)
     }))
     .filter((chunk) => chunk.plain.trim());
 }
+
+/** Only tables use rich messages. Ordinary replies retain their existing
+ * chunking and look; each table has its own complete legacy fallback. */
+export interface Delivery {
+  chunks: Chunk[];
+  richHtml?: string;
+}
+
+// Counting the generated HTML bytes is stricter than Telegram's 32768
+// displayed characters. A table plus at most 400 rows is under 500 blocks.
+const RICH_TABLE_BYTES = 30_000;
+const RICH_TABLE_ROWS = 400;
+const TABLE_COLUMNS = 20;
+
+/** Split only unescaped pipes, including inside code spans as GFM does.
+ * Keep empty cells: dropping one would shift every later cell left. */
+function tableCells(line: string): string[] | null {
+  if (/^(?: {4}| *\t)/.test(line)) return null;
+  const source = line.trim();
+  const cells = [""];
+  let pipes = 0;
+  let lastPipe = -1;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]!;
+    if (char === "\\" && i + 1 < source.length) {
+      cells[cells.length - 1] += source.slice(i, i + 2);
+      i++;
+    } else if (char === "|") {
+      pipes++;
+      lastPipe = i;
+      cells.push("");
+    } else cells[cells.length - 1] += char;
+  }
+  if (!pipes) return null;
+  if (source.startsWith("|")) cells.shift();
+  if (lastPipe === source.length - 1) cells.pop();
+  return cells.map((cell) => cell.trim());
+}
+
+/** A table's raw HTML is never trusted. Cells share the existing inline
+ * grammar, so tags, media and arbitrary rich blocks stay literal text. */
+function tableRow(cells: string[], columns: number, aligns: string[], heading: boolean): string {
+  const tag = heading ? "th" : "td";
+  return "<tr>" + Array.from({ length: columns }, (_, i) => {
+    const text = (cells[i] ?? "").replaceAll("\\|", "|");
+    return `<${tag} align="${aligns[i]}">${inline(text).map(htmlRun).join("")}</${tag}>`;
+  }).join("") + "</tr>";
+}
+
+function tableDeliveries(lines: string[], cells: string[][], aligns: string[]): Delivery[] {
+  const legacy = () => [{ chunks: messages(lines.join("\n"), true) }];
+  const columns = aligns.length;
+  if (columns > TABLE_COLUMNS || cells.some((row) => row.length > columns)) return legacy();
+  const header = tableRow(cells[0]!, columns, aligns, true);
+  const rows = cells.slice(1).map((row) => tableRow(row, columns, aligns, false));
+  const baseBytes = Buffer.byteLength(`<table>${header}</table>`, "utf8");
+  if (baseBytes > RICH_TABLE_BYTES || rows.some((row) => baseBytes + Buffer.byteLength(row, "utf8") > RICH_TABLE_BYTES)) return legacy();
+  const out: Delivery[] = [];
+  let batch: string[] = [];
+  let raw = lines.slice(0, 2);
+  let bytes = baseBytes;
+  const flush = () => {
+    out.push({ richHtml: `<table>${header}${batch.join("")}</table>`, chunks: messages(raw.join("\n"), true) });
+    batch = [];
+    raw = lines.slice(0, 2);
+    bytes = baseBytes;
+  };
+  rows.forEach((row, i) => {
+    const size = Buffer.byteLength(row, "utf8");
+    if (batch.length && (bytes + size > RICH_TABLE_BYTES || batch.length + 1 >= RICH_TABLE_ROWS)) flush();
+    batch.push(row);
+    raw.push(lines[i + 2]!);
+    bytes += size;
+  });
+  flush();
+  return out;
+}
+
+/** Top-level pipe tables only. Code and all non-table prose follow exactly
+ * the old route. Unsupported/ragged tables keep every word via that route. */
+export function deliveries(text: string, markdown: boolean): Delivery[] {
+  if (!markdown) return [{ chunks: messages(text, false) }];
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const out: Delivery[] = [];
+  let from = 0;
+  let fence: string | undefined;
+  for (let i = 0; i < lines.length - 1; i++) {
+    const source = lines[i]!;
+    if (fence) {
+      const close = source.trim();
+      if (close.startsWith(fence) && runOf(close, 0, fence[0]!) === close.length) fence = undefined;
+      continue;
+    }
+    const opened = FENCE.exec(source);
+    if (opened) { fence = opened[1]!; continue; }
+    if (/^\s/.test(source) || /^\s/.test(lines[i + 1]!) || HEADING.test(source) || BULLET.test(source) || /^ {0,3}>/.test(source)) continue;
+    const pipeHeader = tableCells(source);
+    const pipeDelimiter = tableCells(lines[i + 1]!);
+    // At least one structural pipe distinguishes a one-column table
+    // from a setext heading. Body rows may have just one short cell.
+    if (!pipeHeader && !pipeDelimiter) continue;
+    const header = pipeHeader ?? [source.trim()];
+    const delimiter = pipeDelimiter ?? [lines[i + 1]!.trim()];
+    if (!header.length || delimiter.length !== header.length || !delimiter.every((cell) => /^:?-+:?$/.test(cell))) continue;
+    const aligns = delimiter.map((cell) => cell.endsWith(":") ? cell.startsWith(":") ? "center" : "right" : "left");
+    let end = i + 2;
+    const cells = [header];
+    while (end < lines.length) {
+      const row = lines[end]!;
+      if (!row.trim() || /^(?: {4}| *\t)/.test(row) || FENCE.test(row) || HEADING.test(row) || BULLET.test(row) || /^ {0,3}>/.test(row) || /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(row)) break;
+      const next = tableCells(row) ?? [row.trim()];
+      cells.push(next);
+      end++;
+    }
+    if (i > from) out.push({ chunks: messages(lines.slice(from, i).join("\n"), true) });
+    out.push(...tableDeliveries(lines.slice(i, end), cells, aligns));
+    from = end;
+    i = end - 1;
+  }
+  if (from < lines.length) out.push({ chunks: messages(lines.slice(from).join("\n"), true) });
+  return out;
+}

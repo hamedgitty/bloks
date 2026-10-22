@@ -67,7 +67,7 @@ async function telegramStub(t: TestContext) {
         }
         return reply({ id: Number(token.split(":")[0]), is_bot: true, username: "PlanningBot" });
       }
-      if (["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return reply({ message_id: ++state.messageId });
+      if (["sendMessage", "sendRichMessage", "sendPhoto", "sendDocument"].includes(method)) return reply({ message_id: ++state.messageId });
       if (method === "deleteMessage") {
         const finish = () => { state.deleted.push({ id: body.message_id, at: Date.now() }); reply(true); };
         if (state.holdDelete) return void state.deleteReleases.push(finish);
@@ -99,7 +99,7 @@ async function telegramStub(t: TestContext) {
     /** Each sendMessage, with the message id the stub gave it. */
     sent() {
       let id = 100;
-      return state.calls.flatMap((c) => (["sendMessage", "sendPhoto", "sendDocument"].includes(c.method) ? [{ ...c, id: ++id }] : []));
+      return state.calls.flatMap((c) => (["sendMessage", "sendRichMessage", "sendPhoto", "sendDocument"].includes(c.method) ? [{ ...c, id: ++id }] : []));
     },
   };
 }
@@ -163,6 +163,12 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  if (text.includes("NATIVE_TABLE_REPLY")) {
+    say("table-note", "Checking the sample table.");
+    tool("table-check", "sample-check");
+    await nap(21_500);
+    return finish("**Before**\\n\\n| Item | Price | Note |\\n| --- | --- | --- |\\n| [Sample A](https://example.com/a-(b)) | **12** | |\\n\\n- After");
+  }
   if (text.includes("DELIVERY_BARRIER")) return finish("DELIVERY DONE");
   if (text.includes("RAPID_REFUSE")) return finish("QUEUED RESULT");
   if (text.includes("TIMEOUT_")) {

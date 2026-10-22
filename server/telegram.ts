@@ -24,7 +24,7 @@
 //   the pairing closes behind it.
 import { IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./attachments.ts";
 import { clamp, MAX_MESSAGE_CHARS, MAX_TELEGRAM_REPLY_CHARS } from "./limits.ts";
-import { messages } from "./telegram-format.ts";
+import { deliveries } from "./telegram-format.ts";
 import { clipTelegramText, TELEGRAM_MESSAGE_CHARS } from "./telegram-reply.ts";
 import { randomInt } from "node:crypto";
 
@@ -201,6 +201,63 @@ function replyDisplay(value: unknown, limit: number): string | undefined {
   return value.slice(0, 4096).replace(/\s+/g, " ").trim().slice(0, limit) || undefined;
 }
 
+/** RichText wrappers contain only display text. Unknown fields, media and
+ * nested messages never become part of the excerpt. */
+const RICH_TEXT_WRAPPERS = new Set([
+  "bold", "italic", "underline", "strikethrough", "spoiler", "date_time",
+  "text_mention", "subscript", "superscript", "marked", "code", "url",
+  "email_address", "phone_number", "bank_card_number", "mention", "hashtag",
+  "cashtag", "bot_command", "anchor_link", "reference", "reference_link",
+]);
+
+/** Supplied rich messages have no ordinary message.text. Bounds apply to
+ * visited nodes, nesting, input text inspected and the final excerpt. */
+function richReplyText(value: unknown): string | undefined {
+  const rich = value as { blocks?: unknown } | null;
+  if (!rich || !Array.isArray(rich.blocks)) return undefined;
+  let nodes = 512;
+  let input = 4096;
+  let text = "";
+  const write = (part: string) => { text += part.slice(0, 200 - text.length); };
+  const append = (value: unknown, depth = 0): void => {
+    if (--nodes < 0 || depth > 16 || text.length >= 200) return;
+    if (typeof value === "string") {
+      const part = value.slice(0, input);
+      input -= part.length;
+      write(part.replace(/\s+/g, " "));
+    } else if (Array.isArray(value)) {
+      for (let i = 0; i < value.length && nodes > 0 && text.length < 200; i++) append(value[i], depth + 1);
+    } else if (value && typeof value === "object") {
+      const part = value as Record<string, unknown>;
+      if (RICH_TEXT_WRAPPERS.has(String(part.type))) append(part.text, depth + 1);
+      else if (part.type === "custom_emoji") append(part.alternative_text, depth + 1);
+    }
+  };
+  for (const block of rich.blocks.slice(0, 50)) {
+    if (nodes <= 0 || text.length >= 200) break;
+    nodes--;
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "table" && Array.isArray(b.cells)) {
+      let rows = 0;
+      for (const row of b.cells.slice(0, 400)) {
+        if (nodes <= 0 || text.length >= 200) break;
+        nodes--;
+        if (!Array.isArray(row)) continue;
+        if (rows++) write("; ");
+        for (let i = 0; i < Math.min(row.length, 20) && nodes > 0 && text.length < 200; i++) {
+          nodes--;
+          if (i) write(" | ");
+          const cell = row[i];
+          if (cell && typeof cell === "object" && !Array.isArray(cell)) append(cell.text);
+        }
+      }
+    } else if (["paragraph", "heading", "pre", "footer"].includes(String(b.type))) append(b.text);
+    write(" ");
+  }
+  return replyDisplay(text, 200);
+}
+
 /** Telegram supplies the original for same-chat replies. Never fetch its media,
  * walk nested replies or infer a target from a quote/forward/external reply. */
 function replyOf(message: Record<string, any>, chatId: number): ReplyRef | undefined {
@@ -219,6 +276,7 @@ function replyOf(message: Record<string, any>, chatId: number): ReplyRef | undef
   const filename = replyDisplay(replied.document?.file_name, 160);
   const excerpt = replyDisplay(message.quote?.text, 200)
     ?? replyDisplay(replied.text, 200) ?? replyDisplay(replied.caption, 200)
+    ?? richReplyText(replied.rich_message)
     ?? (media ? `[${media}${media === "File" && filename ? `: ${filename}` : ""}]` : "[Message content unavailable]");
   const id = Number.isSafeInteger(chatId) && chatId !== 0 && Number.isSafeInteger(replied.message_id) && replied.message_id > 0
     ? `tg:${chatId}:${replied.message_id}` : undefined;
@@ -450,10 +508,10 @@ export async function whoAmI(token: string, signal?: AbortSignal): Promise<{ id:
 
 /** One message. A long reply is several in a row, and being asked to
  * wait between them should not cost the reply its tail. */
-function sendOne(token: string, body: Record<string, unknown>, canSend?: () => boolean): Promise<unknown> {
+function sendOne(token: string, body: Record<string, unknown>, canSend?: () => boolean, method = "sendMessage"): Promise<unknown> {
   return patiently(() => {
     if (canSend && !canSend()) throw new Error("the Telegram connection changed");
-    return call(token, "sendMessage", body);
+    return call(token, method, body);
   });
 }
 
@@ -518,30 +576,63 @@ export async function answerPress(token: string, pressId: string, text?: string)
   await call(token, "answerCallbackQuery", { callback_query_id: pressId, ...(text ? { text: text.slice(0, 190) } : {}) }, 5_000);
 }
 
+/** Rich sends and their fallback must confirm admission before accounting.
+ * A malformed success is uncertain, never permission to send it again. */
+function confirmReply(value: unknown): void {
+  const body = value as { ok?: unknown; result?: { message_id?: unknown } } | null;
+  const id = body?.result?.message_id;
+  if (body?.ok !== true || typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("Telegram did not confirm the reply. Do not send it again automatically.");
+  }
+}
+
 /**
  * Say something in a chat, all of it, in as many messages as it takes.
  *
  * With `markdown`, which is how agents write, it is shown formatted. If
  * Telegram will not take a message's formatting it answers 400, and that
  * message goes again as plain text with its links written out, so a
- * reply is never lost to its markup. Each message is sent only after the
- * one before it, so they arrive in order, and a failure stops the rest
+ * reply is never lost to its markup. Tables use generated rich HTML, with
+ * legacy fallback only after a definite 400/404 rejection. Each message
+ * follows the one before it, and a failure stops the rest
  * rather than leaving a gap nobody can see.
  */
 export async function send(token: string, chatId: number, text: string, markdown = false, accepted?: () => void, canSend?: () => boolean): Promise<void> {
-  for (const chunk of messages(text, markdown)) {
-    if (chunk.html === undefined) {
-      await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
+  for (const delivery of deliveries(text, markdown)) {
+    if (delivery.richHtml !== undefined) {
+      let fallback = false;
+      let result: unknown;
+      try {
+        result = await sendOne(token, { chat_id: chatId, rich_message: { html: delivery.richHtml } }, canSend, "sendRichMessage");
+      } catch (error) {
+        // Catch only the request's definite rejection. Neither validation
+        // nor a caller callback can turn confirmation into a resend.
+        if (!(error instanceof TelegramError) || ![400, 404].includes(error.status)) throw error;
+        fallback = true;
+      }
+      if (!fallback) {
+        confirmReply(result);
+        accepted?.();
+        continue;
+      }
+    }
+    // This is only the rejected rich chunk's fallback, already packed to
+    // ordinary limits. Never rewind an earlier accepted chunk or part.
+    for (const chunk of delivery.chunks) {
+      let result: unknown;
+      if (chunk.html === undefined) {
+        result = await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
+      } else {
+        try {
+          result = await sendOne(token, { chat_id: chatId, text: chunk.html, parse_mode: "HTML" }, canSend);
+        } catch (error) {
+          if (!(error instanceof TelegramError) || error.status !== 400) throw error;
+          result = await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
+        }
+      }
+      if (delivery.richHtml !== undefined) confirmReply(result);
       accepted?.();
-      continue;
     }
-    try {
-      await sendOne(token, { chat_id: chatId, text: chunk.html, parse_mode: "HTML" }, canSend);
-    } catch (error) {
-      if (!(error instanceof TelegramError) || error.status !== 400) throw error;
-      await sendOne(token, { chat_id: chatId, text: chunk.plain }, canSend);
-    }
-    accepted?.();
   }
 }
 

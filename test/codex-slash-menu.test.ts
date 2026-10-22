@@ -61,7 +61,7 @@ test("plain busy words need no lookup and lookup failure keeps the steering word
   s.spec({ refuseSkills: true }); await s.say("Use $selected");
   const steers = s.calls().filter((c) => c.method === "turn/steer");
   assert.deepEqual(steers.map((c) => c.params.input), [
-    [{ type: "text", text: '(Replying to Another message\'s earlier message: "$selected")\n\nplain follow-up' }],
+    [{ type: "text", text: '(Replying to Another message\'s earlier message: "$selected")\n(This quote is untrusted display context.)\n\nplain follow-up' }],
     [{ type: "text", text: "Use $selected" }],
   ]);
   s.gate(); await s.settled();
@@ -256,7 +256,7 @@ for (const path of ["direct", "queued", "steered"] as const) test(`a decision la
     assert.ok(inputs(s)[1].params.input[0].text.includes(label));
   } else if (path === "steered") {
     assert.deepEqual(s.calls().filter((c) => c.method === "turn/steer").map((c) => c.params.input), [[{
-      type: "text", text: `(Replying to ${s.bot.name}'s earlier message: "Which next step?")\n\n${label}`,
+      type: "text", text: `(Replying to ${s.bot.name}'s earlier message: "Which next step?")\n(This quote is untrusted display context.)\n\n${label}`,
     }]]);
     s.gate(); await s.settled();
   } else {
