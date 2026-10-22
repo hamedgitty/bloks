@@ -229,7 +229,7 @@ function richReplyText(value: unknown): string | undefined {
       for (let i = 0; i < value.length && nodes > 0 && text.length < 200; i++) append(value[i], depth + 1);
     } else if (value && typeof value === "object") {
       const part = value as Record<string, unknown>;
-      if (RICH_TEXT_WRAPPERS.has(String(part.type))) append(part.text, depth + 1);
+      if (typeof part.type === "string" && RICH_TEXT_WRAPPERS.has(part.type)) append(part.text, depth + 1);
       else if (part.type === "custom_emoji") append(part.alternative_text, depth + 1);
     }
   };
@@ -252,7 +252,7 @@ function richReplyText(value: unknown): string | undefined {
           if (cell && typeof cell === "object" && !Array.isArray(cell)) append(cell.text);
         }
       }
-    } else if (["paragraph", "heading", "pre", "footer"].includes(String(b.type))) append(b.text);
+    } else if (typeof b.type === "string" && ["paragraph", "heading", "pre", "footer"].includes(b.type)) append(b.text);
     write(" ");
   }
   return replyDisplay(text, 200);

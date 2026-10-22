@@ -372,3 +372,11 @@ test('reply extraction bounds empty nodes and input text, ignores unknown shapes
   const selected = parseUpdates({ result: [{ update_id: 1, message: { message_id: 9, chat: { id: 42 }, text: 'Current', from: { id: 42, first_name: 'Sam' }, quote: { text: 'Selected text wins' }, reply_to_message: { message_id: 8, text: 'Plain wins before rich', rich_message: data } } }] })[0]!;
   assert.equal(selected.replyTo!.excerpt, 'Selected text wins');
 });
+
+
+test('malformed rich type fields are ignored without coercing their arrays', (t) => {
+  const type = Array(10000).fill('not a type');
+  t.mock.method(type, 'toString', () => { assert.fail('unknown type array was coerced'); });
+  const data = { blocks: [{ type, text: 'Ignored block text' }, { type: 'table', cells: [[{ text: { type, text: 'Ignored cell text' } }]] }] };
+  assert.equal(reply(data)!.excerpt, '[Message content unavailable]');
+});
