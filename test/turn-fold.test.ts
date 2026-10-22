@@ -525,16 +525,16 @@ describe("the line", () => {
     assert.equal(workedFor(65 * 60_000), "1 hr 5 min");
   });
 
-  test("counts commands when every call was one, and steps when the turn also read or edited", () => {
+  test("counts commands when every call was one, and tool actions when the turn also read or edited", () => {
     fresh();
     const commands = foldsOf(foldTurns([me("ask"), tool("t1", "Bash"), tool("t2", "git status --short"), says("reply")], false))[0];
     assert.equal(line(commands), "worked 3 min · 2 commands");
     fresh();
     const mixed = foldsOf(foldTurns([me("ask"), tool("t1", "Bash"), tool("t2", "Read"), tool("t3", "Edit"), says("reply")], false))[0];
-    assert.equal(line(mixed), "worked 4 min · 3 steps");
+    assert.equal(line(mixed), "worked 4 min · 3 tool actions");
     fresh();
     const one = foldsOf(foldTurns([me("ask"), tool("t1", "Read"), says("reply")], false))[0];
-    assert.equal(line(one), "worked 2 min · 1 step");
+    assert.equal(line(one), "worked 2 min · 1 tool action");
   });
 
   test("is time, counts and names only: never a word of what was said", () => {

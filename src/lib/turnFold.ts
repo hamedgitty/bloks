@@ -441,13 +441,13 @@ export function workedFor(ms: number): string {
  * What the line counts: "worked 8 min", "27 commands", "4 files". Time,
  * counts and nothing else, in lower case for whoever joins them. Tool
  * calls are commands when every one of them was (`kindOf` is
- * tool-summary's), and steps when the turn also read, searched or
- * edited, since calling a file it read a command would be wrong.
+ * tool-summary's), and tool actions when the turn also read,
+ * searched or edited. Goal steps count whole turns, not these tool rows.
  */
 export function foldWords(fold: TurnFold, kindOf: (name: string) => string): string[] {
   const words = [`worked ${workedFor(fold.ms)}`];
   if (fold.tools.length) {
-    words.push(count(fold.tools.length, fold.tools.every((name) => kindOf(name) === "command") ? "command" : "step"));
+    words.push(count(fold.tools.length, fold.tools.every((name) => kindOf(name) === "command") ? "command" : "tool action"));
   }
   if (fold.files) words.push(count(fold.files, "file"));
   return words;
