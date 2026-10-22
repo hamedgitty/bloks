@@ -51,6 +51,8 @@ import { gridHours } from "@/lib/dayGrid";
 import { checkInBand, foldQuietRuns, intervalShort } from "@/lib/checkIns";
 import { AUTOMATIONS_LIST, AUTOMATIONS_LIST_SIZE, useColumnFolded } from "@/lib/sideColumn";
 import { ShowColumn, SideColumn } from "./SideColumn";
+import { Markdownish } from "./Markdown";
+import { runElapsed, runSource } from "@/lib/routineDetails";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -882,8 +884,10 @@ function MonthGrid({
  * it say", and until this existed the honest answer was that nobody
  * knew. Each row carries the agent's own first words, so the list is
  * readable without opening the lane behind it. */
-function RunHistory({ runs }: { runs?: RoutineRun[] }) {
+function RunHistory({ routine }: { routine: Routine }) {
+  const { state, dispatch } = useStore();
   const [open, setOpen] = useState<string | null>(null);
+  const runs = routine.runs;
   if (!runs?.length) {
     return (
       <div className="mt-4 border-t pt-3 text-small text-muted-foreground">
@@ -896,7 +900,7 @@ function RunHistory({ runs }: { runs?: RoutineRun[] }) {
       <div className="mb-1.5 text-small font-medium text-muted-foreground">
         Recent runs
       </div>
-      <div className="max-h-[190px] overflow-y-auto">
+      <div>
         {foldQuietRuns(runs).map((row) => {
           // a stretch of quiet check-ins is one row: they ran, and nothing needed you
           if ("quiet" in row) {
@@ -924,53 +928,77 @@ function RunHistory({ runs }: { runs?: RoutineRun[] }) {
           const { run } = row;
           const showing = open === run.id;
           const detail = run.error ?? run.summary ?? "";
+          const source = runSource(routine, run, state.bots, state.bloks);
           return (
-            <button
-              key={run.id}
-              onClick={() => setOpen(showing ? null : run.id)}
-              className="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/60"
-            >
-              <span
-                className={cn(
-                  "mt-[5px] size-1.5 shrink-0 rounded-full",
-                  run.state === "ok"
-                    ? "bg-success"
-                    : run.state === "failed"
-                      ? "bg-destructive"
-                      : "animate-pulse bg-brand",
-                )}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-baseline justify-between gap-2">
-                  <span className="text-small tabular-nums text-foreground">
-                    {new Date(run.startedAt).toLocaleString([], {
-                      month: "short",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
+            <div key={run.id}>
+              <button
+                onClick={() => setOpen(showing ? null : run.id)}
+                aria-expanded={showing}
+                aria-controls={`routine-run-${run.id}`}
+                className="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/60"
+              >
+                <span
+                  className={cn(
+                    "mt-[5px] size-1.5 shrink-0 rounded-full",
+                    run.state === "ok"
+                      ? "bg-success"
+                      : run.state === "failed"
+                        ? "bg-destructive"
+                        : "animate-pulse bg-brand",
+                  )}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-baseline justify-between gap-x-2">
+                    <span className="text-small tabular-nums text-foreground">
+                      {new Date(run.startedAt).toLocaleString([], {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <span className="shrink-0 text-caption text-muted-foreground">
+                      {runElapsed(run)}
+                    </span>
                   </span>
-                  <span className="shrink-0 text-caption text-muted-foreground">
-                    {run.state === "running"
-                      ? "running"
-                      : run.endedAt
-                        ? `${Math.max(1, Math.round((run.endedAt - run.startedAt) / 1000))}s`
-                        : ""}
+                  {detail && !showing && (
+                    <span className={cn("mt-0.5 block truncate text-small leading-relaxed", run.error ? "text-destructive" : "text-muted-foreground")}>
+                      {detail}
+                    </span>
+                  )}
+                  <span className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground">
+                    <ChevronRight size={12} className={cn("shrink-0", showing && "rotate-90")} />
+                    {showing ? "Hide details" : "Show details"}
                   </span>
                 </span>
-                {detail && (
-                  <span
-                    className={cn(
-                      "mt-0.5 block text-small leading-relaxed",
-                      showing ? "" : "truncate",
-                      run.error ? "text-destructive" : "text-muted-foreground",
-                    )}
-                  >
-                    {detail}
-                  </span>
-                )}
-              </span>
-            </button>
+              </button>
+              {showing && (
+                <div id={`routine-run-${run.id}`} className="min-w-0 space-y-2 pb-3 pl-5 text-small [overflow-wrap:anywhere]">
+                  <div className="text-caption text-muted-foreground">{run.error ? "Saved error excerpt" : "Saved result excerpt"}</div>
+                  {detail ? (
+                    <div className={run.error ? "whitespace-pre-wrap text-destructive" : "text-foreground/80"}>
+                      {run.error ? detail : <Markdownish text={detail} />}
+                    </div>
+                  ) : (
+                    <div className="text-muted-foreground">No excerpt was saved.</div>
+                  )}
+                  {source ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        dispatch({ type: "select", id: source.id });
+                        if (source.kind === "agent") dispatch({ type: "selectTask", botId: source.id, taskId: source.taskId });
+                      }}
+                    >
+                      Open source conversation
+                    </Button>
+                  ) : (
+                    <div className="text-muted-foreground">Source conversation unavailable.{detail ? " Only the saved excerpt is available here." : ""}</div>
+                  )}
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -1009,7 +1037,10 @@ function RoutineDetails({
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/30" onClick={onClose}>
       <div
-        className="w-[400px] max-w-[92vw] animate-pop-in rounded-2xl border bg-popover p-4 shadow-2xl sm:p-5"
+        role="dialog"
+        aria-label={routine.name || "Routine details"}
+        aria-modal="true"
+        className="max-h-[85dvh] w-[440px] max-w-[92vw] overflow-y-auto animate-pop-in rounded-2xl border bg-popover p-4 shadow-2xl [overflow-wrap:anywhere] sm:p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3">
@@ -1022,29 +1053,18 @@ function RoutineDetails({
           )}
           <div className="min-w-0 flex-1">
             <div className="text-ui font-semibold leading-snug text-foreground">
-              {routine.name || routine.prompt}
+              {routine.name || "Routine"}
             </div>
-            {routine.name && (
-              <div className="mt-0.5 line-clamp-2 text-small text-muted-foreground">
-                {routine.prompt}
-              </div>
-            )}
             <div className="mt-0.5 text-small text-muted-foreground">
               {target?.name} ·{" "}
               {routine.every
                 ? routine.summary
-                : `${daysLabel} at ${routine.time} · ${routine.durationMin ?? 30} min${routine.quiet ? " · quiet" : ""}`}
+                : `${daysLabel} at ${routine.time}${routine.quiet ? " · quiet" : ""}`}
               {runsOnLabel ? ` · ${runsOnLabel}` : ""}
             </div>
             {routine.quiet && (
               <div className="mt-0.5 text-small text-muted-foreground/80">
                 Stays silent when nothing needs you.
-              </div>
-            )}
-            {routine.lastReport && (
-              <div className="mt-1.5 line-clamp-3 text-small leading-relaxed text-foreground/80" title={routine.lastReport.summary}>
-                <span className="text-muted-foreground">Last reported: </span>
-                {routine.lastReport.summary}
               </div>
             )}
             {routine.enabled && routine.suspended === "archived" && (
@@ -1111,7 +1131,19 @@ function RoutineDetails({
             Delete
           </Button>
         </div>
-        <RunHistory runs={routine.runs} />
+        <details open className="mt-4 border-t pt-3">
+          <summary className="cursor-pointer text-small font-medium text-muted-foreground">Instructions</summary>
+          <div className="mt-2 whitespace-pre-wrap text-small leading-relaxed text-foreground/80">{routine.prompt}</div>
+        </details>
+        {routine.lastReport && (
+          <section className="mt-4 min-w-0 border-t pt-3">
+            <div className="mb-2 text-small font-medium text-muted-foreground">Last reported · saved excerpt</div>
+            <div className="text-small leading-relaxed text-foreground/80">
+              <Markdownish text={routine.lastReport.summary} />
+            </div>
+          </section>
+        )}
+        <RunHistory routine={routine} />
       </div>
     </div>
   );
