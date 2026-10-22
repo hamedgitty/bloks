@@ -186,7 +186,8 @@ const WINDOW = 258_400;
  * compacts the way the real one does (a turn of its own), or is refused
  * with `refuseCompact`, the way an app-server without it answers.
  */
-function fakeCodex(home: string, refuseCompact = false, loseCompactedThread = false): string {
+type CodexContextScript = { childUsed?: number; recoverReadings?: boolean; keepInterrupted?: boolean };
+function fakeCodex(home: string, refuseCompact = false, loseCompactedThread = false, context: CodexContextScript = {}): string {
   const cli = join(home, "fake-codex.mjs");
   writeFileSync(
     cli,
@@ -203,6 +204,8 @@ const stateFile = HOME + "/codex-state.json";
 const load = () => (existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : { threads: 0, small: {} , total: {} });
 const save = (s) => writeFileSync(stateFile, JSON.stringify(s));
 let thread = null;
+const context = (native, used, window) => ({ method: "thread/tokenUsage/updated", params: { threadId: native, tokenUsage: { last: { inputTokens: used }, modelContextWindow: window } } });
+const opening = (reply) => process.stdout.write([reply, context("child", 9, 90), context(thread, null, 1000), context(thread, 120, 1000), context(thread, 180, 2000), context(thread, 220, null), context("child", 10, 100)].map(m => JSON.stringify(m)+"\\n").join(""));
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (!m.method) return;
@@ -215,12 +218,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     state.threads += 1;
     thread = "thread-" + state.threads;
     save(state);
-    return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
+    const opened = { id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } };
+    if (${Boolean(context.recoverReadings)} && state.stopped) return opening(opened);
+    return send(opened);
   }
   if (m.method === "thread/resume") {
     if (${loseCompactedThread} && state.stopped) return send({ id: m.id, error: { code: -32000, message: "thread not found" } });
     thread = m.params.threadId;
-    return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
+    const opened = { id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } };
+    if (${Boolean(context.recoverReadings)} && state.stopped) return opening(opened);
+    return send(opened);
   }
   if (m.method === "thread/compact/start") {
     if (${refuseCompact}) return send({ id: m.id, error: { code: -32601, message: "unknown method thread/compact/start" } });
@@ -235,20 +242,23 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (m.method === "turn/start") {
     send({ id: m.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "turn/started", params: { threadId: thread, turn: { id: "turn-1", status: "inProgress" } } });
-    if (${loseCompactedThread} && state.small[thread] && !state.stopped) {
+    if (${loseCompactedThread || Boolean(context.keepInterrupted)} && state.small[thread] && !state.stopped) {
       state.stopped = true;
       save(state);
       return send({ method: "turn/completed", params: { threadId: thread, turn: { id: "turn-1", status: "interrupted" } } });
     }
     const base = state.small[thread] || !text.includes("BIG") ? 40000 : 170000;
     let total = state.total[thread] ?? 0;
-    for (let i = 0; i < ${TOOL_CALLS}; i++) {
+    for (let i = 0; i < (${Boolean(context.recoverReadings)} && state.stopped ? 0 : ${TOOL_CALLS}); i++) {
       send({ method: "item/started", params: { threadId: thread, item: { type: "commandExecution", id: "c" + i, command: "ls" } } });
       total += base + i * 100;
       send({ method: "thread/tokenUsage/updated", params: { threadId: thread, turnId: "turn-1", tokenUsage: {
         total: { inputTokens: total, outputTokens: (i + 1) * 50 },
         last: { inputTokens: base + i * 100, outputTokens: 50 },
         modelContextWindow: ${WINDOW},
+      } } });
+      if (${context.childUsed !== undefined}) send({ method: "thread/tokenUsage/updated", params: { threadId: "child", turnId: "child-turn", tokenUsage: {
+        total: { inputTokens: total, outputTokens: (i + 1) * 50 }, last: { inputTokens: ${context.childUsed ?? 0}, outputTokens: 50 }, modelContextWindow: 900000,
       } } });
       send({ method: "item/completed", params: { threadId: thread, item: { type: "commandExecution", id: "c" + i, status: "completed" } } });
     }
@@ -265,10 +275,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   return cli;
 }
 
-async function codexHome(opts: { refuseCompact?: boolean; instances?: string[]; loseCompactedThread?: boolean } = {}) {
+async function codexHome(opts: { refuseCompact?: boolean; instances?: string[]; loseCompactedThread?: boolean } & CodexContextScript = {}) {
   const home = mkdtempSync(join(tmpdir(), "bloks-pressure-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
-  const cli = fakeCodex(home, opts.refuseCompact, opts.loseCompactedThread);
+  const cli = fakeCodex(home, opts.refuseCompact, opts.loseCompactedThread, opts);
   const instances = Object.fromEntries((opts.instances ?? ["codex"]).map((id) => [id, { driver: "codex", config: { cli } }]));
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances }));
   const h = await startHarness({ HOME: home });
@@ -297,6 +307,51 @@ const methodsAfter = (log: any[], from: number) =>
     .filter((m) => m !== "initialized");
 
 describe("a Codex lane with a long context and two dozen tool calls a turn", () => {
+  for (const highParent of [true, false]) test(`child context cannot ${highParent ? "suppress" : "trigger"} pre-turn compaction`, async t => {
+    const { home, h, log } = await codexHome({ childUsed: highParent ? 10_000 : 300_000 });
+    t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Context check" }) });
+    await h.json(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+    await turn(h, bot.id, highParent ? "BIG: check the document" : "Check the document");
+    const expected = (highParent ? 170_000 : 40_000) + (TOOL_CALLS - 1) * 100;
+    const lane = (await botOf(h, bot.id)).tasks.find((l: any) => l.id === bot.threadId);
+    assert.equal(lane.context.used, expected, "a child replaced the parent's context");
+    assert.equal(lane.context.modelLimit, WINDOW, "a child's window replaced the parent's");
+    const saved = JSON.parse(readFileSync(join(home, ".bloks/bots.json"), "utf8")).find((b: any) => b.id === bot.id);
+    assert.equal(saved.tasks.find((l: any) => l.id === bot.threadId).reading.used, expected);
+    const spent = Array.from({ length: TOOL_CALLS }, (_, i) => (highParent ? 170_000 : 40_000) + i * 100).reduce((a, b) => a + b, 0);
+    assert.equal((await h.json("/api/usage?days=1")).total.input, spent, "child accounting restatements must remain deduplicated");
+    const start = log().length;
+    await turn(h, bot.id, "Apply the document changes");
+    const order = methodsAfter(log(), start);
+    assert.equal(order.includes("thread/compact/start"), highParent);
+    if (highParent) {
+      assert.ok(order.indexOf("thread/compact/start") < order.indexOf("turn/start"));
+      const marker = (await messagesOf(h, bot.id)).find(m => m.compaction);
+      assert.deepEqual(marker.compaction, { before: expected, after: 40_000 });
+    }
+  });
+
+  for (const replaced of [false, true]) test(`coalesced ${replaced ? "replacement" : "same-parent recovery"} readings respect a saved pending marker`, async t => {
+    const { home, h, log } = await codexHome({ recoverReadings: true, loseCompactedThread: replaced, keepInterrupted: !replaced });
+    t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });
+    const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Recovery check" }) });
+    await h.json(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+    await turn(h, bot.id, "BIG: prepare the document");
+    const count = log().filter(l => l.method === "turn/start").length;
+    await h.json(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Compact then stop" }) });
+    assert.ok(await waitFor(async () => log().filter(l => l.method === "turn/start").length > count && !(await botOf(h, bot.id)).busy, 15_000));
+    const pending = (await messagesOf(h, bot.id)).find(m => m.compaction);
+    assert.equal(pending.compaction.after, null);
+    await turn(h, bot.id, "Continue checking the document");
+    assert.equal((await messagesOf(h, bot.id)).find(m => m.id === pending.id).compaction.after, replaced ? null : 120);
+    const lane = (await botOf(h, bot.id)).tasks.find((l: any) => l.id === bot.threadId);
+    assert.equal(lane.context.used, 220); assert.equal(lane.context.modelLimit, 2_000);
+    const saved = JSON.parse(readFileSync(join(home, ".bloks/bots.json"), "utf8")).find((b: any) => b.id === bot.id).tasks.find((l: any) => l.id === bot.threadId);
+    assert.equal(saved.reading.used, 220); assert.equal(saved.reading.window, 2_000);
+    assert.equal(saved.pendingCompaction, undefined);
+  });
+
   test("an interrupted compactFirst marker is not resolved by a failed resume's new thread", async (t) => {
     const { home, h, log } = await codexHome({ loseCompactedThread: true });
     t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });

@@ -725,6 +725,56 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const elsewhere = (params: any) =>
         typeof params.threadId === "string" && codexThread !== null && params.threadId !== codexThread;
 
+      type ContextReading = ReturnType<typeof contextReading>;
+      // A reply and usage can share one stdout chunk, before the await
+      // that selects codexThread runs. Keep bounded numeric summaries,
+      // never guess which thread is the parent. The first positive used
+      // resolves a pending marker; merged fields retain partial updates.
+      const openingReadings = new Map<string, { first: ContextReading | null; latest: ContextReading }>();
+      function applyReading(reading: ContextReading) {
+        if (reading.used !== null) lastUsed = reading.used;
+        if (!compacting && (reading.used !== null || reading.window !== null)) {
+          emit({ ...envelope(threadId, turnId), type: "context.reading", ...reading });
+        }
+      }
+      function noteContext(params: any) {
+        const id = params.threadId;
+        if (typeof id !== "string" || !id || id.length > 256 || /[\x00-\x1f\x7f]/.test(id)) return;
+        const reading = contextReading(params.tokenUsage);
+        if (reading.used === null && reading.window === null) return;
+        if (codexThread !== null) {
+          if (id === codexThread) applyReading(reading);
+          return;
+        }
+        const was = openingReadings.get(id);
+        // At capacity, an already-admitted parent keeps its updates. A
+        // parent first seen later is unknown until selection, not a child.
+        if (!was && openingReadings.size >= 64) return;
+        const latest = { used: reading.used ?? was?.latest.used ?? null, window: reading.window ?? was?.latest.window ?? null };
+        openingReadings.set(id, { first: was?.first ?? (reading.used !== null ? { ...latest } : null), latest });
+      }
+      let sessionAnnounced = false;
+      function announceSession(model: string | null) {
+        if (sessionAnnounced) return;
+        sessionAnnounced = true;
+        // Bind the server's cursor before a buffered request can resolve
+        // a marker belonging to the session this turn just replaced.
+        emit({
+          ...envelope(threadId, turnId),
+          type: "session.started",
+          sessionId: codexThread,
+          model: model ?? turn.model ?? null,
+        });
+      }
+      function takeOpeningReadings(model: string | null) {
+        lastUsed = null;
+        const pending = codexThread ? openingReadings.get(codexThread) : undefined;
+        openingReadings.clear();
+        if (pending) announceSession(model);
+        if (pending?.first) applyReading(pending.first);
+        if (pending && (!pending.first || pending.latest.used !== pending.first.used || pending.latest.window !== pending.first.window)) applyReading(pending.latest);
+      }
+
       // ── the agent narrating what it is doing ──
       function compactionItem(params: any, completed: boolean) {
         const item = params.item;
@@ -842,11 +892,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // changes between turns of one thread (GitHub 224). Not while
             // compacting, when the latest request is the compaction
             // reading the old context, about to be replaced.
-            const reading = contextReading(params.tokenUsage);
-            if (reading.used !== null) lastUsed = reading.used;
-            if (!compacting && (reading.used !== null || reading.window !== null)) {
-              emit({ ...envelope(threadId, turnId), type: "context.reading", ...reading });
-            }
+            noteContext(params);
             const total = tokenCount(params.tokenUsage?.total);
             if (!total) break;
             const thread = typeof params.threadId === "string" ? params.threadId : null;
@@ -1131,6 +1177,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               if (turn.compactOnly && (typeof resumed?.thread?.id !== "string" || codexThread !== cursor)) throw new Error("That Codex conversation is no longer available to compact.");
               reportedModel = resumed?.model ?? null;
               carriedOn = true;
+              takeOpeningReadings(reportedModel);
             } catch (error) {
               // Fast that was not had: refused, and the session kept
               if (error instanceof CodexSpeedUnavailable) throw error;
@@ -1192,6 +1239,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               tokenBase = null;
               carried = spent;
               codexThread = null;
+              sessionAnnounced = false;
+              lastUsed = null;
+              openingReadings.clear();
               carriedOn = false;
               // said, since the agent loses its own history here and the
               // message has already waited for the compaction
@@ -1227,14 +1277,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             if (typeof started?.serviceTier === "string") configuredTier = started.serviceTier;
             codexThread = started?.thread?.id ?? null;
             reportedModel = started?.model ?? null;
+            takeOpeningReadings(reportedModel);
           }
 
-          emit({
-            ...envelope(threadId, turnId),
-            type: "session.started",
-            sessionId: codexThread,
-            model: reportedModel ?? turn.model ?? null,
-          });
+          announceSession(reportedModel);
           emit({ ...envelope(threadId, turnId), type: "codex.speed", choice: speedChoice, configuredTier, actualTier: null });
 
           turnSent = true;
