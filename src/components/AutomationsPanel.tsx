@@ -987,8 +987,8 @@ function RunHistory({ routine }: { routine: Routine }) {
                       variant="secondary"
                       size="sm"
                       onClick={() => {
-                        dispatch({ type: "select", id: source.id });
-                        if (source.kind === "agent") dispatch({ type: "selectTask", botId: source.id, taskId: source.taskId });
+                        if (source.kind === "agent") dispatch({ type: "select", id: source.id, lane: source.taskId });
+                        else dispatch({ type: "select", id: source.id });
                       }}
                     >
                       Open source conversation
