@@ -12,10 +12,10 @@ import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import { after, test, type TestContext } from "node:test";
@@ -113,7 +113,7 @@ async function setup(t: TestContext, fake: Fake = {}) {
   };
   const notices = () => events.flatMap((e) => (e.type === "runtime.error" ? [e.message] : []));
   const completed = () => events.flatMap((e) => (e.type === "turn.completed" ? [e] : []));
-  return { frames, argv, events, turn, sent, native, notices, completed };
+  return { instance, lane, frames, argv, events, turn, sent, native, notices, completed };
 }
 
 test("a new thread and a resumed one carry this turn's values for the shell, and nothing more", async (t) => {
@@ -325,3 +325,71 @@ test("a refused group listener stops Codex before advertising the native reply t
   assert.equal(h.argv.some(args => args.some(arg => arg.includes("mcp_servers.bloks_reply"))), false);
   assert.deepEqual(readdirSync(temp), [], "failed listener folder leaked");
 });
+
+
+for (const action of ["interrupt", "stopAll", "dispose"] as const) {
+  test(`pending group readiness is owned by ${action} and cannot resume over a replacement`, { skip: process.platform === "win32" }, async (t) => {
+    const h = await setup(t);
+    await h.instance.catalogReady;
+    let reached!: () => void;
+    const ready = new Promise<void>(resolve => { reached = resolve; });
+    let release!: () => void, socket!: net.Socket, endpoint = "";
+    let closed = false, brokerClosed = false;
+    const createServer = net.createServer;
+    t.mock.method(net, "createServer", ((...args: any[]) => {
+      const server = (createServer as any)(...args) as net.Server;
+      server.once("close", () => { brokerClosed = true; });
+      return server;
+    }) as any);
+    const connect = net.createConnection;
+    t.mock.method(net, "createConnection", ((...args: any[]) => {
+      const client = (connect as any)(...args) as net.Socket;
+      if (typeof args[0] === "string" && args[0].includes("bloks-turn-reply-")) {
+        socket = client; endpoint = args[0];
+        client.once("close", () => { closed = true; });
+        const emit = client.emit.bind(client);
+        t.mock.method(client, "emit", ((event: string, ...values: any[]) => {
+          if (event === "connect") { release = () => { emit(event, ...values); }; reached(); return true; }
+          return emit(event, ...values);
+        }) as any);
+      }
+      return client;
+    }) as any);
+    syncBuiltinESMExports();
+    let settled = 0;
+    const sending = h.instance.adapter.sendTurn({
+      threadId: h.lane, text: "STOP_BEFORE_ENGINE", cwd: home,
+      reply: { reply: async () => { assert.fail("pending readiness replied"); } },
+    }).then(() => { settled++; return null; }, error => { settled++; return error as Error; });
+    await ready;
+    assert.equal(h.instance.adapter.hasSession(h.lane), true);
+    assert.equal(h.argv.some(args => args.some(arg => arg.includes("mcp_servers.bloks_reply"))), false);
+    assert.equal(h.sent("turn/start").length, 0);
+    if (action === "interrupt") await h.instance.adapter.interruptTurn(h.lane);
+    else if (action === "stopAll") await h.instance.adapter.stopAll();
+    else await h.instance.dispose();
+    assert.match((await sending)?.message ?? "", /Stopped before Codex started/);
+    for (let i = 0; i < 100 && (!closed || !brokerClosed); i++) await setImmediate();
+    assert.equal(closed, true, "pending probe socket survived cancellation");
+    assert.equal(socket.destroyed, true);
+    assert.equal(brokerClosed, true, "pending broker listener survived cancellation");
+    assert.equal(existsSync(dirname(endpoint)), false, "pending broker folder survived cancellation");
+    await assert.rejects(new Promise<void>((resolve, reject) => {
+      const client = connect(endpoint);
+      client.once("connect", () => { client.destroy(); resolve(); });
+      client.once("error", reject);
+    }), /ENOENT|ECONNREFUSED/);
+    assert.equal(h.instance.adapter.hasSession(h.lane), false);
+    assert.equal(settled, 1);
+    if (action !== "dispose") await h.turn({ text: "REPLACEMENT_WORDS" });
+    const before = h.frames.length, events = h.events.length, processes = h.argv.length;
+    release(); // Deliver the held connect notification after the owner retired.
+    await setImmediate();
+    assert.equal(settled, 1);
+    assert.equal(h.frames.length, before);
+    assert.equal(h.events.length, events);
+    assert.equal(h.argv.length, processes, "cancelled readiness spawned a process");
+    assert.equal(h.sent("turn/start").some(p => JSON.stringify(p).includes("STOP_BEFORE_ENGINE")), false);
+    assert.equal(h.completed().length, action === "dispose" ? 0 : 1, "preflight added a second terminal result");
+  });
+}

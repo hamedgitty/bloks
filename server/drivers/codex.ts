@@ -521,12 +521,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         ownerReplyFolder = makeCodexReplyFolder();
         const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
         const helper = fileURLToPath(new URL(`../permission-proxy.${ext}`, import.meta.url));
+        // Readiness is part of this turn, before a process exists. Use
+        // the same interrupt/dispose ownership as the running process.
+        const readiness = new AbortController();
+        const pending: RunningTurn = {
+          turnId, abort: () => readiness.abort(new Error("Stopped before Codex started.")),
+          steer: async () => false, asks: new Map(),
+        };
+        running.set(threadId, pending);
         try {
           replyBroker = createAskBroker({ socketPath: ownerReplyFolder.socketPath,
             onAsk: (ask) => replyBroker?.answer(ask.id, "deny", "This server only replies to the sender."), onResolve: () => {},
             onReply: (input) => turn.reply!.reply(input) });
-          await checkCodexReplyEndpoint(ownerReplyFolder.socketPath);
+          await checkCodexReplyEndpoint(ownerReplyFolder.socketPath, readiness.signal);
         } catch (error) { replyBroker?.close(); ownerReplyFolder.close(); throw error; }
+        finally { if (running.get(threadId) === pending) running.delete(threadId); }
         const prefix = "mcp_servers.bloks_reply";
         appServerArgs.push("-c", `${prefix}.command=${JSON.stringify(process.execPath)}`,
           "-c", `${prefix}.args=${JSON.stringify([helper, ownerReplyFolder.socketPath])}`,

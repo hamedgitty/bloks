@@ -115,13 +115,24 @@ export function makeCodexReplyFolder(options: { platform?: NodeJS.Platform; temp
 
 /** Verify the new reply listener before publishing it to a native engine.
  * The generic broker's error policy is unchanged for existing callers. */
-export function checkCodexReplyEndpoint(socketPath: string): Promise<void> {
+export function checkCodexReplyEndpoint(socketPath: string, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
     const socket = createConnection(socketPath);
-    const failed = () => { clearTimeout(timer); socket.destroy(); reject(new Error("Codex group reply endpoint could not listen. The native reply tool was not started.")); };
-    const timer = setTimeout(failed, 2_000);
-    socket.once("error", failed);
-    socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(); });
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+      socket.destroy();
+      if (error) reject(error); else resolve();
+    };
+    const cancel = () => finish(signal!.reason);
+    const timer = setTimeout(() => finish(new Error("Codex group reply endpoint could not listen. The native reply tool was not started.")), 2_000);
+    socket.once("error", () => finish(new Error("Codex group reply endpoint could not listen. The native reply tool was not started.")));
+    socket.once("connect", () => finish());
+    signal?.addEventListener("abort", cancel, { once: true });
   });
 }
 
