@@ -44,8 +44,8 @@ importers:
         specifier: ^1.2.16
         version: 1.2.16(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@trycua/cua-driver':
-        specifier: ^0.34.0
-        version: 0.34.0
+        specifier: ^0.36.0
+        version: 0.36.0
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -1261,40 +1261,40 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@trycua/cua-driver-darwin-arm64@0.34.0':
-    resolution: {integrity: sha512-UhzOe86Q1cJpl8lagOCgMnnekzbZz7hnvmBU4hDc7apUqnv6BBAJJz2e1DE4CUkNCCF2tkZSHA6xUncTYdnylA==}
+  '@trycua/cua-driver-darwin-arm64@0.36.0':
+    resolution: {integrity: sha512-CqgARIvNERbHLOolvTNQ/cnK63YAPH8C0G+ovPgGNVosXIeTdaWQZ3bwrmslbwXosFdY6gMMKNVURWAN1Tq4RA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@trycua/cua-driver-darwin-x64@0.34.0':
-    resolution: {integrity: sha512-v4Pj3BuQ48d713uIhNjSP5F9hD2zoKtMfJWfii2lx35fJNwJImhDZccxbDjDnAVjIrGICqviGVCrLTq1OiDSaA==}
+  '@trycua/cua-driver-darwin-x64@0.36.0':
+    resolution: {integrity: sha512-dFbljuGbF+VT4sz5zSEiC3oWlUfQO+XHNicxOscQHtLkOtHL+cqRHsAO6UuAldjJj6Vx6B4i84nVjxwjzvnFfA==}
     cpu: [x64]
     os: [darwin]
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.34.0':
-    resolution: {integrity: sha512-RUygHOF8D20sLgJ1NrVmsb13I3W+XDcOvEnFt5/YTHsXoyWaj2KPneY3mUTONH0/ya25KbVOmI6vObdVZetMyA==}
+  '@trycua/cua-driver-linux-arm64-gnu@0.36.0':
+    resolution: {integrity: sha512-N2VnKi8nQeI7lULdgcpgd38drrr61j3gLwgoy0nwZEjeuF0K3iE/PlnXmD5kvh09fQncQiWmbp6JBJRIPVHt8g==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-linux-x64-gnu@0.34.0':
-    resolution: {integrity: sha512-MUe05gFjB9AK1BgMnQQBgRQFBeu6jzBAO7kpc5QbybtcwzbGiXlDDvrtirrWJ+AYJFqvaewE3DPdwT+aC7UL7A==}
+  '@trycua/cua-driver-linux-x64-gnu@0.36.0':
+    resolution: {integrity: sha512-5zBv0CJDJFSjLT3EmujJIrZRXHKPj4U35j8ZJnYzArxzKNN1qyagpzz6i0o4rnoiBs+NLJakJaUAgPJDHpzVdw==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.34.0':
-    resolution: {integrity: sha512-xlrck9tP1fD9AQpbWyuF6axnQHRYv8hM+iV7j5vI8yP3HCQl3bsGmvXa9r230d6A7zGqr5dHvbVPFw8y5gVvnQ==}
+  '@trycua/cua-driver-win32-arm64-msvc@0.36.0':
+    resolution: {integrity: sha512-qKDJEuU6ybXRG/EH4Nbg8TR0ECgzy1ib+2mKSppyhyg/TCjlT0Aj4f/XvO7nQRjPJNukiqiHOMQQAaXKBquxiA==}
     cpu: [arm64]
     os: [win32]
 
-  '@trycua/cua-driver-win32-x64-msvc@0.34.0':
-    resolution: {integrity: sha512-BzdQ9rSOvekEdHLwEpYOaNAYRVXwav9cNnaR4traNmKPLkr+IvhQZv5K6CDGMM20O2S9q7lHG6k8n6jHA4zqHg==}
+  '@trycua/cua-driver-win32-x64-msvc@0.36.0':
+    resolution: {integrity: sha512-0xr9zeQgYgRs8dseiOffD9aQUNFA00mpheyEZe5zgU6pAPEobDdjmVD/BsFFs32zv8xdyn4dmmhILEhJ9uq0jQ==}
     cpu: [x64]
     os: [win32]
 
-  '@trycua/cua-driver@0.34.0':
-    resolution: {integrity: sha512-MJs5+z6dM9UnqXZuKCE9uNZPA12QZOI+7wiKjk2ZmTtGox7Scvx1w+7fv6B1CTQV+3/ZR8fVmfEILbq/90WbVg==}
+  '@trycua/cua-driver@0.36.0':
+    resolution: {integrity: sha512-ibEFpsMVJZGB317ry9gyMHo4c5N9uqu9h9OPdnStjC1bBlC1xj7pvYFUTT5zTNshVBQ+gwtVJtp+ghwqhQVDiQ==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -1331,9 +1331,6 @@ packages:
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
-
-  '@types/node@26.6.4':
-    resolution: {integrity: sha512-ldVPDCzj7fsaGZrLB0NuHuTvJcsNasysBAqMolr/cgxrLd1xbqxIr3XJiPnHHJUCxj5sNF1vnRj9aWnrVh5Jcg==}
 
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
@@ -3811,35 +3808,35 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 7.3.6(@types/node@26.6.5)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  '@trycua/cua-driver-darwin-arm64@0.34.0':
+  '@trycua/cua-driver-darwin-arm64@0.36.0':
     optional: true
 
-  '@trycua/cua-driver-darwin-x64@0.34.0':
+  '@trycua/cua-driver-darwin-x64@0.36.0':
     optional: true
 
-  '@trycua/cua-driver-linux-arm64-gnu@0.34.0':
+  '@trycua/cua-driver-linux-arm64-gnu@0.36.0':
     optional: true
 
-  '@trycua/cua-driver-linux-x64-gnu@0.34.0':
+  '@trycua/cua-driver-linux-x64-gnu@0.36.0':
     optional: true
 
-  '@trycua/cua-driver-win32-arm64-msvc@0.34.0':
+  '@trycua/cua-driver-win32-arm64-msvc@0.36.0':
     optional: true
 
-  '@trycua/cua-driver-win32-x64-msvc@0.34.0':
+  '@trycua/cua-driver-win32-x64-msvc@0.36.0':
     optional: true
 
-  '@trycua/cua-driver@0.34.0':
+  '@trycua/cua-driver@0.36.0':
     dependencies:
       '@ubjs/core': 0.31.0-3
       '@ubjs/node': 0.31.0-3
     optionalDependencies:
-      '@trycua/cua-driver-darwin-arm64': 0.34.0
-      '@trycua/cua-driver-darwin-x64': 0.34.0
-      '@trycua/cua-driver-linux-arm64-gnu': 0.34.0
-      '@trycua/cua-driver-linux-x64-gnu': 0.34.0
-      '@trycua/cua-driver-win32-arm64-msvc': 0.34.0
-      '@trycua/cua-driver-win32-x64-msvc': 0.34.0
+      '@trycua/cua-driver-darwin-arm64': 0.36.0
+      '@trycua/cua-driver-darwin-x64': 0.36.0
+      '@trycua/cua-driver-linux-arm64-gnu': 0.36.0
+      '@trycua/cua-driver-linux-x64-gnu': 0.36.0
+      '@trycua/cua-driver-win32-arm64-msvc': 0.36.0
+      '@trycua/cua-driver-win32-x64-msvc': 0.36.0
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -3866,7 +3863,7 @@ snapshots:
     dependencies:
       '@types/http-cache-semantics': 4.2.0
       '@types/keyv': 3.1.4
-      '@types/node': 26.6.4
+      '@types/node': 26.6.5
       '@types/responselike': 1.0.3
 
   '@types/debug@4.1.13':
@@ -3877,23 +3874,19 @@ snapshots:
 
   '@types/fs-extra@9.0.13':
     dependencies:
-      '@types/node': 26.6.4
+      '@types/node': 26.6.5
 
   '@types/http-cache-semantics@4.2.0': {}
 
   '@types/keyv@3.1.4':
     dependencies:
-      '@types/node': 26.6.4
+      '@types/node': 26.6.5
 
   '@types/ms@2.1.0': {}
 
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
-
-  '@types/node@26.6.4':
-    dependencies:
-      undici-types: 8.9.0
 
   '@types/node@26.6.5':
     dependencies:
@@ -3913,7 +3906,7 @@ snapshots:
 
   '@types/responselike@1.0.3':
     dependencies:
-      '@types/node': 26.6.4
+      '@types/node': 26.6.5
 
   '@types/trusted-types@2.0.7':
     optional: true
@@ -4564,7 +4557,7 @@ snapshots:
       es6-error: 4.1.1
       matcher: 3.0.0
       roarr: 2.15.4
-      semver: 7.8.5
+      semver: 7.7.4
       serialize-error: 7.0.1
     optional: true
 
@@ -4840,11 +4833,11 @@ snapshots:
 
   node-abi@4.33.0:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-api-version@0.2.1:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-gyp@12.4.0:
     dependencies:
@@ -4853,7 +4846,7 @@ snapshots:
       graceful-fs: 4.2.11
       nopt: 9.0.0
       proc-log: 6.1.0
-      semver: 7.8.5
+      semver: 7.7.4
       tar: 7.5.22
       tinyglobby: 0.2.17
       undici: 6.28.0
