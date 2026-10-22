@@ -392,6 +392,9 @@ export function codexSignature(item: any): string | undefined {
     case "mcpToolCall":
       return callSignature(item.type, { server: item.server, tool: item.tool ?? item.name, arguments: item.arguments });
     case "webSearch":
+      // An opening item may not know its query yet. Unknown asks are
+      // still activity, but are not evidence of an identical request.
+      if (typeof item.query !== "string" || !item.query.trim()) return undefined;
       return callSignature(item.type, { query: item.query });
     default:
       return undefined;

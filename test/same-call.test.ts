@@ -57,6 +57,17 @@ describe("what a call asked for", () => {
     assert.equal(codexSignature({ type: "reasoning" }), undefined);
   });
 
+  test("Codex web searches need a usable opening query, not a call id or action", () => {
+    for (const query of [undefined, null, "", " \t\n", 12, false, [], {}]) {
+      assert.equal(codexSignature({ type: "webSearch", id: "search", query, action: null }), undefined);
+    }
+    const query = "weather tomorrow";
+    const expected = callSignature("webSearch", { query });
+    assert.equal(codexSignature({ type: "webSearch", query }), expected);
+    assert.equal(codexSignature({ type: "webSearch", query: " weather   tomorrow ", id: "other", status: "completed", action: { type: "search" }, output: "different" }), expected);
+    assert.notEqual(codexSignature({ type: "webSearch", query: "train times" }), expected);
+  });
+
   test("ACP: from the call's own arguments, and none from an empty set of them", () => {
     const one = acpSignature({ kind: "execute", title: "ls", rawInput: { command: "ls -la", cwd: "/w" } });
     assert.ok(one);
@@ -186,6 +197,156 @@ test("Codex says what each command asked for on the call it starts", async (t) =
   assert.ok(calls[0].signature, "no signature on a Codex command");
   assert.equal(calls[0].signature, calls[1].signature);
   assert.notEqual(calls[2].signature, calls[0].signature);
+});
+
+test("Codex preserves unknown search starts without counting later completion identity", async (t) => {
+  const { peer, events } = await codexEvents(t);
+  for (let i = 0; i < 24; i++) {
+    const id = `search-${i}`;
+    peer.send({ method: "item/started", params: { threadId: "codex-thread", item: { id, type: "webSearch", query: "", action: null } } });
+    peer.send({ method: "item/completed", params: { threadId: "codex-thread", item: { id, type: "webSearch", query: `request ${i}`, action: { type: "search", query: `request ${i}` } } } });
+  }
+  for (let i = 0; i < 2; i++) {
+    peer.send({ method: "item/started", params: { threadId: "codex-thread", item: { id: `known-${i}`, type: "webSearch", query: "weather tomorrow" } } });
+  }
+  await setImmediate();
+  const calls = events.filter((e): e is Extract<RuntimeEvent, { type: "item.started" }> => e.type === "item.started");
+  assert.equal(calls.length, 26);
+  assert.deepEqual(calls.slice(0, 24).map((e) => [e.itemId, e.title, e.signature]), Array.from({ length: 24 }, (_, i) => [`search-${i}`, "web_search", undefined]));
+  assert.equal(calls[24].signature, callSignature("webSearch", { query: "weather tomorrow" }));
+  assert.equal(calls[25].signature, calls[24].signature);
+  assert.equal(events.filter((e) => e.type === "item.completed" && e.itemType === "tool").length, 0, "completion-only identity is not backfilled or counted");
+});
+
+type SearchCall = { query?: unknown; command?: string; failed?: boolean };
+
+// Actual HTTP/server/driver path, with a local app-server stand-in and a
+// persistent throwaway HOME so saved rows can be checked after a restart.
+async function codexFixture(t: TestContext) {
+  const home = mkdtempSync(join(tmpdir(), "bloks-search-repeat-"));
+  const scene = join(home, "calls.json");
+  const runs = join(home, "runs.txt");
+  const cli = join(home, "fake-codex.mjs");
+  writeFileSync(scene, "[]");
+  writeFileSync(runs, "");
+  writeFileSync(cli, `#!${process.execPath}
+import { appendFileSync, readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("codex-cli 9.9.9"); process.exit(0); }
+if (args[0] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+const thread = "search-thread";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (m.id === undefined) return;
+  if (m.method === "model/list") return send({ id: m.id, result: { data: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1-Sol", isDefault: true }] } });
+  if (m.method === "thread/start" || m.method === "thread/resume") return send({ id: m.id, result: { thread: { id: thread }, model: "gpt-6.1-sol" } });
+  if (m.method !== "turn/start") return send({ id: m.id, result: {} });
+  send({ id: m.id, result: { turn: { id: "search-turn", status: "inProgress" } } });
+  send({ method: "turn/started", params: { threadId: thread, turn: { id: "search-turn", status: "inProgress" } } });
+  const calls = JSON.parse(readFileSync(${JSON.stringify(scene)}, "utf8"));
+  calls.forEach((call, i) => {
+    const id = "tool-" + i;
+    const item = call.command === undefined ? { id, type: "webSearch", query: call.query, action: null } : { id, type: "commandExecution", command: call.command, cwd: "/w" };
+    send({ method: "item/started", params: { threadId: thread, item } });
+    send({ method: "item/completed", params: { threadId: thread, item: { ...item, query: "request " + i, action: { type: "search", query: "request " + i }, status: call.failed ? "failed" : "completed" } } });
+  });
+  send({ method: "item/completed", params: { threadId: thread, item: { type: "agentMessage", id: "answer", text: "Done." } } });
+  send({ method: "turn/completed", params: { threadId: thread, turn: { id: "search-turn", status: "completed" } } });
+  appendFileSync(${JSON.stringify(runs)}, "ran\\n");
+});
+`, { mode: 0o755 });
+  mkdirSync(join(home, ".bloks"));
+  writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances: { codex: { driver: "codex", config: { cli } } } }));
+  let h = await startHarness({ HOME: home });
+  t.after(async () => {
+    await h.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Ada" }) });
+  assert.ok((await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) })).ok);
+  const ran = () => readFileSync(runs, "utf8").split("\n").filter(Boolean).length;
+  const messages = async () => (await h.json(`/api/bots/${bot.id}/messages?limit=500`)).messages as any[];
+  return {
+    messages,
+    async turn(calls: SearchCall[]) {
+      writeFileSync(scene, JSON.stringify(calls));
+      const before = ran();
+      assert.ok((await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Check these requests" }) })).ok);
+      assert.ok(await waitFor(async () => {
+        if (ran() <= before) return false;
+        const { bots } = await h.json("/api/bots?messages=0");
+        const found = bots.find((b: any) => b.id === bot.id);
+        return found && !found.busy && !found.tasks?.some((task: any) => task.settling);
+      }), h.logs());
+    },
+    async reload() {
+      await h.stop();
+      h = await startHarness({ HOME: home });
+      return messages();
+    },
+  };
+}
+
+const unknownSearches = () => Array.from({ length: 24 }, () => ({ query: "", action: null }));
+const knownSearches = (n: number) => Array.from({ length: n }, () => ({ query: "weather tomorrow" }));
+
+test("unknown Codex search starts stay visible without a repeat warning, including saved rows", async (t) => {
+  const f = await codexFixture(t);
+  await f.turn(unknownSearches());
+  const all = await f.messages();
+  const activity = all.filter((m) => m.kind === "activity");
+  assert.equal(activity.length, 24);
+  assert.ok(activity.every((m) => m.tool.name === "web_search"));
+  assert.equal(activity.filter((m) => m.repeated).length, 0);
+  assert.equal(all.filter(loopNotice).length, 0);
+  const saved = await f.reload();
+  assert.deepEqual(saved.filter((m) => m.kind === "activity"), activity);
+  assert.equal(saved.filter(loopNotice).length, 0);
+});
+
+test("known Codex searches keep 5, 10 and 20 marks and one early notice on the correct row", async (t) => {
+  const f = await codexFixture(t);
+  let offset = 0;
+  for (const n of [5, 10, 24]) {
+    await f.turn(knownSearches(n));
+    const all = await f.messages();
+    const activity = all.filter((m) => m.kind === "activity").slice(offset);
+    offset += n;
+    const mark = n === 24 ? 20 : n;
+    assert.equal(activity.length, n);
+    assert.deepEqual(activity.filter((m) => m.repeated).map((m) => [activity.indexOf(m), m.repeated]), [[mark - 1, mark]]);
+    assert.equal(all.filter(loopNotice).length, n === 24 ? 1 : 0);
+  }
+  const before = await f.messages();
+  assert.deepEqual(await f.reload(), before);
+});
+
+test("unknown Codex searches neither increment nor reset known counts; distinct queries stay distinct", async (t) => {
+  const f = await codexFixture(t);
+  await f.turn([...knownSearches(4), ...unknownSearches(), ...knownSearches(1)]);
+  let all = await f.messages();
+  const activity = all.filter((m) => m.kind === "activity");
+  assert.deepEqual(activity.filter((m) => m.repeated).map((m) => [activity.indexOf(m), m.repeated]), [[28, 5]]);
+  assert.equal(all.filter(loopNotice).length, 0);
+  await f.turn(Array.from({ length: 24 }, (_, i) => ({ query: `request ${i}` })));
+  all = await f.messages();
+  assert.equal(all.filter((m) => m.kind === "activity").slice(29).filter((m) => m.repeated).length, 0);
+  assert.equal(all.filter(loopNotice).length, 0);
+});
+
+test("Codex command repeats and failed completion association stay intact", async (t) => {
+  const f = await codexFixture(t);
+  await f.turn(Array.from({ length: 20 }, (_, i) => ({ command: "npm test", failed: i === 19 })));
+  const all = await f.messages();
+  const activity = all.filter((m) => m.kind === "activity");
+  assert.equal(activity.length, 20);
+  assert.ok(activity.slice(0, 19).every((m) => m.tool.ok === true && m.tool.command === "npm test"));
+  assert.equal(activity[19].tool.ok, false);
+  assert.equal(activity[19].repeated, 20);
+  assert.equal(all.filter(loopNotice).length, 1);
+  assert.deepEqual(await f.reload(), all);
 });
 
 // A stand-in Claude Code that plays each turn's tool calls from a file.
