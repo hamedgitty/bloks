@@ -374,9 +374,9 @@ test('reply extraction bounds empty nodes and input text, ignores unknown shapes
 });
 
 
-test('malformed rich type fields are ignored without coercing their arrays', (t) => {
+test('malformed rich type fields are ignored without coercing their arrays', () => {
   const type = Array(10000).fill('not a type');
-  t.mock.method(type, 'toString', () => { assert.fail('unknown type array was coerced'); });
+  Object.defineProperty(type, 'toString', { value: () => { assert.fail('unknown type array was coerced'); } });
   const data = { blocks: [{ type, text: 'Ignored block text' }, { type: 'table', cells: [[{ text: { type, text: 'Ignored cell text' } }]] }] };
   assert.equal(reply(data)!.excerpt, '[Message content unavailable]');
 });
