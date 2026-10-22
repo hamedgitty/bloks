@@ -156,3 +156,61 @@ test("a child compact boundary never becomes a parent compaction", () => {
     assert.equal(readCompactBoundary({ ...parent, parent_tool_use_id: child }), null);
   }
 });
+
+
+test("a Codex cursor change invalidates the matching reading, including the first attributed session", () => {
+  for (const previous of [undefined, "old-parent"]) {
+    const store = new Store(() => by);
+    const bot = store.createBot({ name: "Reading origin" });
+    const lane = bot.tasks[0];
+    const reading = () => store.taskByThread(lane.id)!.task.reading;
+    if (previous) store.setResumeCursor(lane.id, by.instanceId, previous);
+    store.noteReading(lane.id, by, { used: 600, window: 1_000 });
+    assert.equal(store.setResumeCursor(lane.id, by.instanceId, "new-parent", { invalidateReading: true }), true);
+    assert.equal(lane.reading, undefined);
+    assert.equal(new Store(() => by).taskByThread(lane.id)?.task.reading, undefined, "the invalidation must be saved");
+    store.noteReading(lane.id, by, { used: null, window: 2_000 });
+    assert.equal(reading()?.used, 0, "a new window does not inherit the old request");
+    store.noteReading(lane.id, by, { used: 120, window: null });
+    assert.equal(reading()?.used, 120);
+    assert.equal(reading()?.window, 2_000);
+    store.setResumeCursor(lane.id, by.instanceId, "another-parent", { invalidateReading: true });
+    store.noteReading(lane.id, by, { used: 220, window: null });
+    assert.equal(reading()?.window, null, "a new request does not inherit the old window");
+  }
+});
+
+test("same-session recovery retains its reading and pending first-after link", () => {
+  const { store, lane, marker } = fixture();
+  const was = { ...lane.reading! };
+  assert.equal(store.setResumeCursor(lane.id, by.instanceId, "session-one", { invalidateReading: true }), false);
+  assert.deepEqual(lane.reading, was);
+  assert.equal(store.resolveCompaction(lane.id, by, 120)?.message.id, marker.id);
+});
+
+test("replacement reading invalidation preserves pending-marker session matching", () => {
+  const { store, lane, marker } = fixture();
+  store.setResumeCursor(lane.id, by.instanceId, "replacement", { invalidateReading: true });
+  assert.equal(lane.reading, undefined);
+  store.noteReading(lane.id, by, { used: 120, window: null });
+  assert.equal(store.resolveCompaction(lane.id, by, 120), null);
+  assert.equal(store.messagesFor(lane.id).find(m => m.id === marker.id)?.compaction?.after, null);
+});
+
+test("another instance and engines that do not opt in keep their readings", () => {
+  const { store, lane } = fixture();
+  const was = { ...lane.reading! };
+  assert.equal(store.setResumeCursor(lane.id, "other", "new-parent", { invalidateReading: true }), false);
+  assert.deepEqual(lane.reading, was);
+  assert.equal(store.setResumeCursor(lane.id, by.instanceId, "new-parent"), false);
+  assert.deepEqual(lane.reading, was, "usage published before a non-Codex open reply remains valid");
+});
+
+test("null and non-string cursors keep existing reading behavior even with opt-in", () => {
+  const { store, lane } = fixture();
+  const was = { ...lane.reading! };
+  for (const cursor of [null, 1, {}, ["session"]]) {
+    assert.equal(store.setResumeCursor(lane.id, by.instanceId, cursor, { invalidateReading: true }), false);
+    assert.deepEqual(lane.reading, was);
+  }
+});

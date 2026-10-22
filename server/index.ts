@@ -3737,7 +3737,9 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
-        if (!laneTelegramPerson.has(event.threadId)) store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
+        if (!laneTelegramPerson.has(event.threadId) && store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId, {
+          invalidateReading: registry.get(event.providerInstanceId)?.driverKind === "codex",
+        })) broadcast({ kind: "bot", bot: clientBot(bot) });
         cutOff.session(event.threadId, event.providerInstanceId, event.sessionId);
         noteOwnSession(event.sessionId);
       }
@@ -10822,7 +10824,9 @@ function onIdleCompaction(event: RuntimeEvent) {
       break;
     case "session.started":
       if (event.sessionId && event.providerInstanceId) {
-        store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId);
+        if (store.setResumeCursor(event.threadId, event.providerInstanceId, event.sessionId, {
+          invalidateReading: registry.get(event.providerInstanceId)?.driverKind === "codex",
+        })) broadcast({ kind: "bot", bot: clientBot(bot) });
         noteOwnSession(event.sessionId);
       }
       break;

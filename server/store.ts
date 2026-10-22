@@ -1080,11 +1080,17 @@ export class Store {
   }
 
   /** Cursors are per-lane: the thread that produced the session owns it. */
-  setResumeCursor(threadId: string, instanceId: string, cursor: unknown) {
+  setResumeCursor(threadId: string, instanceId: string, cursor: unknown, options: { invalidateReading?: boolean } = {}): boolean {
     const found = this.taskByThread(threadId);
-    if (!found) return;
+    if (!found) return false;
+    // Only an engine that binds its session before publishing readings
+    // can invalidate at this boundary. Other engines may report on open.
+    const invalidated = options.invalidateReading === true && typeof cursor === "string"
+      && cursor !== found.task.resumeCursors[instanceId] && found.task.reading?.instanceId === instanceId;
+    if (invalidated) delete found.task.reading;
     found.task.resumeCursors[instanceId] = cursor;
     this.saveBots();
+    return invalidated;
   }
 
   setTelegramExchangePending(threadId: string, pending: boolean) {
