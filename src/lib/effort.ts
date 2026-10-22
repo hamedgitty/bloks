@@ -58,7 +58,7 @@ export function effortLevels(instance: EffortEngine | undefined, model?: string)
 
 /** A picker's choices: the engine's own, then each level it has. */
 export function effortOptions(levels: readonly Effort[]): Array<{ value: Effort | undefined; label: string }> {
-  return [{ value: undefined, label: "Default" }, ...levels.map((value) => ({ value, label: EFFORT_LABELS[value] }))];
+  return [{ value: undefined, label: "Use engine setting" }, ...levels.map((value) => ({ value, label: EFFORT_LABELS[value] }))];
 }
 
 /**

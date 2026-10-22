@@ -125,6 +125,23 @@ for (const resumed of [false, true]) {
   });
 }
 
+// This checks the Bloks transport contract, not Codex's implementation of
+// persisted settings. In Codex 0.162.1 a cold resume with a stated model
+// skips restoring persisted effort; no-model/live-fork resumes differ.
+test("returning to the engine setting still states the model on resume and omits the effort override", async (t) => {
+  const h = await setup(t);
+  await h.turn({ model: "gpt-selected", effort: "high" });
+  await h.turn({ model: "gpt-selected", resumeCursor: "codex-thread" });
+  const [resume] = sent(h.frames, "thread/resume");
+  assert.equal(resume.model, "gpt-selected");
+  assert.equal(resume.threadId, "codex-thread");
+  const [explicit, inherited] = sent(h.frames, "turn/start");
+  assert.equal(explicit.effort, "high");
+  assert.equal("effort" in inherited, false);
+  assert.equal("reasoningEffort" in inherited, false);
+  assert.deepEqual(inherited.input, explicit.input);
+});
+
 test("a later preference overrides the effort already held by the resumed thread", async (t) => {
   const h = await setup(t);
   await h.turn({ effort: "high" });

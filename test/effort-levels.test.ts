@@ -112,7 +112,7 @@ test("the desktop's levels and clamp are the server's", () => {
 test("the labels are plain words", () => {
   assert.deepEqual(Object.values(server.EFFORT_LABELS), ["Low", "Medium", "High", "Extra high", "Max"]);
   assert.deepEqual(desktop.effortOptions(["low", "xhigh"]), [
-    { value: undefined, label: "Default" },
+    { value: undefined, label: "Use engine setting" },
     { value: "low", label: "Low" },
     { value: "xhigh", label: "Extra high" },
   ]);
@@ -123,7 +123,7 @@ test("a picker shows the level a saved one runs at, and says so", () => {
   const quiet = { instanceId: "quiet", displayName: "OpenCode", efforts: [], models: { default: "q", options: [] } };
   const moved = desktop.effortChoice([grok], { instanceId: "grok", model: "g" }, "max");
   assert.equal(moved.value, "high");
-  assert.deepEqual(moved.options.map((o) => o.label), ["Default", "Low", "Medium", "High"]);
+  assert.deepEqual(moved.options.map((o) => o.label), ["Use engine setting", "Low", "Medium", "High"]);
   assert.equal(moved.note, "Saved as Max. Grok CLI has no Max, so it runs at High.");
   assert.equal(desktop.effortChoice([grok], { instanceId: "grok", model: "g" }, "medium").note, null);
   // an engine with no dial offers nothing, and keeps what was saved
