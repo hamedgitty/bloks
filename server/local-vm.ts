@@ -46,6 +46,8 @@ const GUEST_HOME = "/home/cua/workspace";
 const SOCKET = "/run/user/1000/bloks-cua.sock";
 const DRIVER_BIN = "/usr/local/libexec/bloks/cua-driver";
 const VIEWER_HOST_PORT = 6080;
+/** Where the desktop viewer is served, for the app to allow framing it. */
+export const VIEWER_ORIGIN = `http://127.0.0.1:${VIEWER_HOST_PORT}`;
 const VIEWER_GUEST_PORT = 6901;
 
 // exact-version driver wheels, one per architecture, checksum-verified
@@ -332,7 +334,7 @@ async function viewerUrl(runtime: string): Promise<string | null> {
   } else if (env && typeof env === "object") {
     password = (env as Record<string, string>).VNC_PW ?? null;
   }
-  const base = `http://127.0.0.1:${VIEWER_HOST_PORT}/vnc.html`;
+  const base = `${VIEWER_ORIGIN}/vnc.html`;
   // the password rides in the fragment, which never leaves the browser
   return password ? `${base}#autoconnect=true&resize=scale&password=${password}` : base;
 }

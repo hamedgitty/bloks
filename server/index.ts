@@ -399,6 +399,7 @@ import {
   vmScreenshot,
   vmStatus,
   vmStop,
+  VIEWER_ORIGIN,
 } from "./local-vm.ts";
 import { widenPath } from "./path.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
@@ -607,6 +608,9 @@ const SECURITY_HEADERS = {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
+    // the Local VM's desktop viewer, published on loopback only; without
+    // it the viewer opens as a blank page
+    `frame-src 'self' ${VIEWER_ORIGIN}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'none'",

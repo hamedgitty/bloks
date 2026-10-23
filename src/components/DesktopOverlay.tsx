@@ -19,6 +19,10 @@ import { api, useStore, type Bot } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { platformOf } from "@/lib/shortcuts";
+
+// room for the traffic lights, which sit over this header on a Mac
+const isElectron = navigator.userAgent.includes("Electron");
 
 type Dock = "left" | "right" | "bottom" | "float";
 
@@ -319,9 +323,12 @@ export function DesktopOverlay({
   );
 
   return (
-    <div className="fixed inset-0 z-[60] flex animate-fade-in flex-col bg-background">
-      <div className="flex h-[48px] shrink-0 items-center justify-between border-b px-3">
-        <div className="flex items-center gap-2">
+    // The window's drag strips under this overlay still take clicks in
+    // the desktop app, whatever covers them: everything here opts out,
+    // and this header is the drag strip instead, its buttons clickable.
+    <div className="fixed inset-0 z-[60] flex animate-fade-in flex-col bg-background [-webkit-app-region:no-drag]">
+      <div className="titlebar-drag flex h-[48px] shrink-0 items-center justify-between border-b px-3">
+        <div className={cn("flex items-center gap-2", isElectron && platformOf() === "mac" && "pl-[66px]")}>
           <AgentAvatar bot={bot} size={26} />
           <span className="text-ui font-semibold text-foreground">
             {bot.name}'s desktop
