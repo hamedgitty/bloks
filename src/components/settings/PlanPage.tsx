@@ -75,7 +75,7 @@ import {
   type Offer,
   type PlanSnapshot,
 } from "@/lib/plan";
-import { clearPlanNews, loadPlan, openOffer, openSite, usePlan } from "@/lib/planClient";
+import { clearPlanNews, loadPlan, openOffer, openSite, planAccessVersion, refusePlan, usePlan } from "@/lib/planClient";
 import { HealthLine, SecretField, type Health } from "../ConnectionKit";
 import { BloksAiSettings, useBloksAi } from "../CreditsSection";
 import { BlockBurst } from "../members/BlockBurst";
@@ -88,11 +88,17 @@ const CLOUD_KEY = /^blok_live_[0-9a-f]{32}$/;
 const easeOut = [0.23, 1, 0.32, 1] as const;
 const OPTIONS_ID = "plan-options";
 
+class PlanRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
   const body = await res.json().catch(() => ({}));
   // the service's own words: a refused card says why better than we can
-  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  if (!res.ok) throw new PlanRequestError(body.error ?? `${res.status} ${res.statusText}`, res.status);
   return body as T;
 }
 
@@ -1264,6 +1270,15 @@ export function PlanPage() {
   const [managing, setManaging] = useState(false);
   const [manageError, setManageError] = useState<string | null>(null);
   const [ready, setReady] = useState<string | null>(null);
+  const mounted = useRef(false);
+  const manageRequest = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      manageRequest.current++;
+    };
+  }, []);
   // No machine action or local-only observer until the server says so.
   const here = snapshot ? keyIsHere(snapshot) : false;
   const relay = useRelayPlan(snapshot?.accountAt ?? snapshot?.ownerPlan ?? null, here);
@@ -1292,24 +1307,30 @@ export function PlanPage() {
   // window opened once the link is back, so then the link waits here to
   // be pressed.
   const manage = async () => {
+    const request = ++manageRequest.current;
+    const access = planAccessVersion();
+    const ownsAction = () => mounted.current && manageRequest.current === request && planAccessVersion() === access;
     setManaging(true);
     setManageError(null);
     setReady(null);
     try {
       const said = await call<{ url: string; manageAt: "portal" | "link" }>("/api/plan/manage", { method: "POST" });
+      if (!ownsAction()) return;
       if (said.manageAt === "link") {
         const go = await confirm({
           title: "Manage billing with Link",
           body: "Link handled the payment for this plan, so billing is managed there. You'll sign in to Link with the email you paid with.",
           confirmLabel: "Open Link",
         });
-        if (!go) return;
+        if (!go || !ownsAction()) return;
       }
       if (!openSite(said.url)) setReady(said.url);
     } catch (e) {
-      setManageError(e instanceof Error ? e.message : String(e));
+      if (!ownsAction()) return;
+      if (e instanceof PlanRequestError && (e.status === 401 || e.status === 403)) refusePlan(e.status);
+      else setManageError(e instanceof Error ? e.message : String(e));
     } finally {
-      setManaging(false);
+      if (mounted.current && manageRequest.current === request) setManaging(false);
     }
   };
 
@@ -1368,7 +1389,17 @@ export function PlanPage() {
         />
       )}
       {!free && snapshot.account && <WhatYouHave snapshot={snapshot} relay={relay} ai={ai} here={here} />}
-      {/* Hosting and the offers are the key's, and stay on its computer */}
+      {!here && hosting && (
+        <SettingsGroup title="Hosting entitlement">
+          <SettingRow
+            label={hosting.name}
+            description="Included in this subscription. This does not say where this workspace runs."
+            control={<HealthLine tone={snapshot.account?.hosting?.state ? hosting.tone : "off"} label={snapshot.account?.hosting?.state ? hosting.label : "Status unknown"} />}
+          />
+          {old && <p className="text-small text-muted-foreground">{old}</p>}
+        </SettingsGroup>
+      )}
+      {/* Machine controls and offers stay on the key's computer. */}
       {here &&
         (hostingCard ? (
           <MoveToHostingCard snapshot={snapshot} appPlan={appPlan} />

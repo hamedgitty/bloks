@@ -186,22 +186,37 @@ test("member, admin and room-guest credentials cannot read or manage the owner's
 
 test("unknown, revoked and other-workspace credentials never become the local owner, and hostile origins stay outside", async (t) => {
   const { h, site, data, config } = await fixture(t);
+  assert.equal((await remote(h, "/api/plan?fresh=1")).status, 200);
+  const cacheFile = join(data, "plan-cache.json");
+  const configFile = join(data, "config.json");
+  const accountBefore = readFileSync(cacheFile, "utf8");
+  const configBefore = readFileSync(configFile, "utf8");
+  const callsBefore = site.bearers.length;
+  const denied = async (answer: Response, status: number) => {
+    assert.equal(answer.status, status);
+    assert.match(answer.headers.get("cache-control") ?? "", /no-store/, "an early auth refusal may not be cached");
+    noSecret(await answer.text());
+  };
   for (const token of ["fixture-unknown", "fixture-other-workspace-owner"]) {
     assert.equal((await remote(h, "/api/plan", "GET", token)).status, 401);
-    assert.equal((await localBearer(h, token, "/api/plan/manage", "POST")).status, 401);
+    for (const path of ["/api/plan", "/api/plan?fresh=1"]) await denied(await localBearer(h, token, path), 401);
+    await denied(await localBearer(h, token, "/api/plan/manage", "POST"), 401);
   }
   for (const authorization of ["", "Basic fixture-owner", "Bearer", "Bearer fixture-owner wrong-envelope"]) {
-    assert.equal((await h.fetch("/api/plan/manage", { method: "POST", headers: { authorization } })).status, 401,
-      "a malformed Authorization header became an uncredentialed local owner");
+    await denied(await h.fetch("/api/plan/manage", { method: "POST", headers: { authorization } }), 401);
   }
-  assert.equal((await h.fetchAs("https://unrelated.example", "/api/plan")).status, 403);
-  assert.equal((await h.fetchAs("https://unrelated.example", "/api/plan/manage", { method: "POST", headers: { authorization: `Bearer ${OWNER}` } })).status, 403);
-  assert.equal((await remote(h, "/api/plan")).status, 200);
-  const before = site.bearers.length;
-  writeFileSync(join(data, "config.json"), JSON.stringify({ ...config, remote: { ...config.remote, devices: [] } }));
+  for (const path of ["/api/plan", "/api/plan?fresh=1"]) await denied(await h.fetchAs("https://unrelated.example", path), 403);
+  await denied(await h.fetchAs("https://unrelated.example", "/api/plan/manage", { method: "POST", headers: { authorization: `Bearer ${OWNER}` } }), 403);
+  assert.equal(site.bearers.length, callsBefore, "a rejected identity contacted the account service");
+  assert.equal(readFileSync(cacheFile, "utf8"), accountBefore, "a rejected request changed the cached account");
+  assert.equal(readFileSync(configFile, "utf8"), configBefore, "a rejected request changed the host licence or settings");
+  writeFileSync(configFile, JSON.stringify({ ...config, remote: { ...config.remote, devices: [] } }));
   assert.equal((await remote(h, "/api/plan")).status, 401);
-  assert.equal((await localBearer(h, OWNER, "/api/plan/manage", "POST")).status, 401);
-  assert.equal(site.bearers.length, before);
+  for (const path of ["/api/plan", "/api/plan?fresh=1"]) await denied(await localBearer(h, OWNER, path), 401);
+  await denied(await localBearer(h, OWNER, "/api/plan/manage", "POST"), 401);
+  assert.equal(site.bearers.length, callsBefore, "a revoked credential contacted the account service");
+  assert.equal(readFileSync(cacheFile, "utf8"), accountBefore);
+  assert.deepEqual(JSON.parse(readFileSync(configFile, "utf8")).credits, JSON.parse(configBefore).credits);
 });
 
 test("a malformed person identity on a recognized device is never interpreted as the owner", async (t) => {
@@ -456,32 +471,49 @@ test("management service failure details never escape through a server response 
 });
 
 test("remote Plan reads update host entitlements without emitting a desktop account that can trigger Hosting", async (t) => {
-  const { h, home, data, site } = await fixture(t, { preload: (root) => `
+  const relay = await sealedRelay();
+  t.after(() => relay.stop());
+  const { h, home, data, site } = await fixture(t, { relay: relay.url, preload: (root) => `
 import { appendFileSync } from "node:fs";
 process.parentPort = {
   postMessage(message) { appendFileSync(${JSON.stringify(join(root, "fixture-ipc.jsonl"))}, JSON.stringify(message) + "\\n"); },
   on(_event, listener) { queueMicrotask(() => listener({ data: { kind: "licence", key: ${JSON.stringify(SITE_LICENCE)} } })); },
 };
 ` });
+  await relay.connection;
+  const ui = join(home, "fixture-ipc-ui");
+  mkdirSync(ui);
+  writeFileSync(join(ui, "index.html"), "<!doctype html><title>Fixture</title>");
+  const lan = await startLanProxy({ lan: new URL(h.url).host, deviceToken: OWNER, deviceId: "owner-device" }, { staticDir: ui });
+  const sealed = await startRemoteProxy({ relayUrl: relay.url, relayToken: "fixture-relay-client", deviceId: "owner-device", deviceToken: OWNER }, { staticDir: ui });
+  t.after(() => { lan.stop(); sealed.stop(); });
   const frames = () => readFileSync(join(home, "fixture-ipc.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  // The synthetic licence handoff may establish entitlements at startup.
-  // Set a different verified baseline so this read must change the host.
-  site.setAccount(SITE_LICENCE, { plan: "cloud" });
-  const baseline = await h.json("/api/plan?fresh=1");
-  assert.equal(baseline.ownerPlan, "cloud");
-  assert.equal(baseline.licence.kept, true);
-  site.setAccount(SITE_LICENCE, { plan: "team" });
-  const before = frames().length;
-  const remoteRead = await localBearer(h, OWNER, "/api/plan?fresh=1");
-  assert.equal(remoteRead.status, 200);
-  const remoteBody = await remoteRead.json();
-  assert.equal(remoteBody.ownerPlan, "team");
-  assert.equal(remoteBody.sameComputer, false);
-  assert.equal(remoteBody.licence.kept, false, "an app-shared key was offered to the remote device");
-  assert.equal(JSON.parse(readFileSync(join(data, "owner-plan.json"), "utf8")).plan, "team");
-  const remoteFrames = frames().slice(before);
-  assert.ok(remoteFrames.some((frame) => frame.kind === "desktop.plan" && frame.plan === "team"), "host entitlement update was suppressed");
-  assert.equal(remoteFrames.filter((frame) => frame.kind === "desktop.account").length, 0);
+  const readers: Array<[string, () => Promise<Response>]> = [
+    ["owner loopback bearer", () => localBearer(h, OWNER, "/api/plan?fresh=1")],
+    ["LAN desktop", () => fetch(`http://127.0.0.1:${lan.port}/api/plan?fresh=1`)],
+    ["sealed desktop", () => fetch(`http://127.0.0.1:${sealed.port}/api/plan?fresh=1`)],
+  ];
+  for (const [label, read] of readers) {
+    // Establish a different verified baseline so each read must change
+    // the host, even if the synthetic licence handoff already ran.
+    site.setAccount(SITE_LICENCE, { plan: "cloud" });
+    const baseline = await h.json("/api/plan?fresh=1");
+    assert.equal(baseline.ownerPlan, "cloud");
+    assert.equal(baseline.licence.kept, true);
+    site.setAccount(SITE_LICENCE, { plan: "team" });
+    const before = frames().length;
+    const remoteRead = await read();
+    assert.equal(remoteRead.status, 200, label);
+    assert.match(remoteRead.headers.get("cache-control") ?? "", /no-store/, label);
+    const remoteBody = await remoteRead.json();
+    assert.equal(remoteBody.ownerPlan, "team", label);
+    assert.equal(remoteBody.sameComputer, false, label);
+    assert.equal(remoteBody.licence.kept, false, `${label} was offered an app-shared key`);
+    assert.equal(JSON.parse(readFileSync(join(data, "owner-plan.json"), "utf8")).plan, "team", label);
+    const remoteFrames = frames().slice(before);
+    assert.ok(remoteFrames.some((frame) => frame.kind === "desktop.plan" && frame.plan === "team"), `${label} suppressed the host entitlement update`);
+    assert.equal(remoteFrames.filter((frame) => frame.kind === "desktop.account").length, 0, `${label} emitted a Hosting account trigger`);
+  }
   const afterRemote = frames().length;
   const localRead = await h.fetch("/api/plan?fresh=1");
   assert.equal(localRead.status, 200);
@@ -515,4 +547,34 @@ test("desktop LAN transport exceptions keep fresh Plan and manage failures out o
     assert.doesNotMatch(body, /PRIVATE-TRANSPORT-DETAIL/);
   }
   assert.deepEqual(paths, ["http://127.0.0.1:9/api/plan?fresh=1", "http://127.0.0.1:9/api/plan/manage"]);
+});
+
+
+test("desktop sealed transport exceptions keep fresh Plan and manage failures out of caches", async (t) => {
+  const ui = mkdtempSync(join(tmpdir(), "bloks-plan-relay-down-ui-"));
+  writeFileSync(join(ui, "index.html"), "<!doctype html><title>Fixture</title>");
+  t.after(() => rmSync(ui, { recursive: true, force: true }));
+  let asks = 0;
+  const relay = createServer((req, res) => {
+    if (req.url === "/space/client/stream") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      return void res.end('data: {"kind":"hello","online":true}\n\n');
+    }
+    if (req.url === "/space/client/ask") { asks++; return void req.socket.destroy(); }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  t.after(() => { relay.closeAllConnections(); relay.close(); });
+  const relayUrl = `http://127.0.0.1:${(relay.address() as { port: number }).port}`;
+  const app = await startRemoteProxy({ relayUrl, relayToken: "fixture-relay-client", deviceToken: OWNER, deviceId: "owner-device" }, { staticDir: ui });
+  t.after(() => app.stop());
+  for (const [path, method] of [["/api/plan?fresh=1", "GET"], ["/api/plan/manage", "POST"]] as const) {
+    const answer = await fetch(`http://127.0.0.1:${app.port}${path}`, { method });
+    assert.equal(answer.status, 502);
+    assert.match(answer.headers.get("cache-control") ?? "", /no-store/);
+    const body = await answer.text();
+    noSecret(body);
+    assert.deepEqual(JSON.parse(body), { error: "the other computer could not be reached" });
+  }
+  assert.equal(asks, 2, "a transport failure retried an explicit management action");
 });

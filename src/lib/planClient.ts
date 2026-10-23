@@ -35,6 +35,19 @@ const set = (patch: Partial<PlanState>) => {
 };
 
 let asking: Promise<PlanSnapshot | null> | null = null;
+let accessVersion = 0;
+
+/** Pending page actions belong to the authorization under which they began. */
+export function planAccessVersion() {
+  return accessVersion;
+}
+
+/** A refusal from either Plan operation also supersedes pending reads. */
+export function refusePlan(status: 401 | 403) {
+  accessVersion++;
+  asking = null;
+  set({ loading: false, ...failedLook(state.snapshot, status), news: null });
+}
 
 /** Asks the server, fresh when somebody may just have changed it. */
 export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
@@ -45,7 +58,8 @@ export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
     .then(async (res) => {
       if (asking !== run) return state.snapshot;
       if (!res.ok) {
-        set({ loading: false, ...failedLook(state.snapshot, res.status), ...([401, 403].includes(res.status) ? { news: null } : {}) });
+        if (res.status === 401 || res.status === 403) refusePlan(res.status);
+        else set({ loading: false, ...failedLook(state.snapshot, res.status) });
         return state.snapshot;
       }
       const snapshot = (await res.json()) as PlanSnapshot;
