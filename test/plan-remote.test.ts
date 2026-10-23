@@ -68,10 +68,10 @@ test("the owner's own device reads the plan and opens billing, on the network an
   const here = await h.json("/api/plan");
   assert.equal(here.account.plan, "team");
   assert.equal(here.sameComputer, true);
-  // the owner's own credential presented here is still the owner here
+  // An owner credential remains portable, not a local-window credential.
   const ownCredential = await h.fetch("/api/plan", { headers: { authorization: `Bearer ${OWNER_TOKEN}` } });
   assert.equal(ownCredential.status, 200);
-  assert.equal((await ownCredential.json()).sameComputer, true);
+  assert.equal((await ownCredential.json()).sameComputer, false);
 
   // A billing link is made only when somebody presses for it, and each
   // press asks bloks.dev for one once.

@@ -73,7 +73,7 @@ export interface PlanSnapshot {
   /** Whether this was asked on the computer the workspace runs on. False
    * for the owner's own paired devices, which see the plan and open
    * billing but leave the key, Hosting and the offers to that computer.
-   * Absent from an older server, which answered only its own window. */
+   * Older servers may omit it; that does not grant machine controls. */
   sameComputer?: boolean;
 }
 
@@ -81,7 +81,7 @@ export interface PlanSnapshot {
  * entering, replacing or removing it, Hosting, and the offers, which go
  * to bloks.dev with that key attached. */
 export function keyIsHere(snapshot: Pick<PlanSnapshot, "sameComputer">): boolean {
-  return snapshot.sameComputer !== false;
+  return snapshot.sameComputer === true;
 }
 
 /** Why the page has no plan to show: this device is not shown it, or it
@@ -106,11 +106,11 @@ export function failedLook(
   kept: PlanSnapshot | null,
   status: number | null,
 ): { snapshot: PlanSnapshot | null; stale: boolean; problem: PlanProblem | null } {
-  if (status === 403) {
+  if (status === 401 || status === 403) {
     return {
       snapshot: null,
       stale: false,
-      problem: { kind: "refused", words: "Your plan shows on the computer this workspace runs on. Update Bloks there to see it here too." },
+      problem: { kind: "refused", words: "Only the authorized owner can view this workspace's subscription. Check this device's connection and update Bloks on the computer this workspace runs on." },
     };
   }
   if (kept) return { snapshot: kept, stale: true, problem: null };

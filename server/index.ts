@@ -17651,6 +17651,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method ?? "GET";
+  if (path === "/api/plan" || path.startsWith("/api/plan/")) res.setHeader("cache-control", "no-store");
   // The virtual desktop's viewer on a hosted workspace, by its ticket.
   if (path.startsWith("/hosted/desktop/")) return proxyDesktop(req, res, path, url.search);
   // Reply bearers are checked before open webhook routes too. A spent
@@ -19370,20 +19371,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // computer: forgetting the key, and the way into a hosted workspace,
     // whose link is sealed for this computer alone.
     if (path === "/api/plan" || path.startsWith("/api/plan/")) {
-      if (asAgent || namesMember()) return json(res, 403, { error: "your plan is the owner's" });
+      // A device bearer stays a device on loopback too. Only the local
+      // window without credentials owns this computer's key and Hosting.
+      const device = caller ?? deviceForToken(bearerToken(req));
+      const windowHere = local && req.headers.authorization === undefined;
+      const pairedOwner = device && device.personId === undefined;
       const anywhere = (method === "GET" && path === "/api/plan") || (method === "POST" && path === "/api/plan/manage");
-      if (!local && !(anywhere && ownerDevice)) {
+      if (asAgent || (!windowHere && !(anywhere && pairedOwner))) {
         return json(res, 403, { error: "that is done on the computer this workspace runs on" });
       }
-      const answered = await planRoute(method, path, url.searchParams, planDeps, planAccount);
+      const answered = await planRoute(method, path, url.searchParams, planDeps, planAccount, windowHere);
       if (answered) {
         if (method === "GET" && path === "/api/plan") {
           // the app starts a move to Hosting once it is running, and the
           // page is often the first to hear (somebody back from checkout)
-          tellDesktopAccount(answered.body);
+          if (windowHere) tellDesktopAccount(answered.body);
           // whether the key and Hosting can be changed from where this was
           // asked, so a page elsewhere leaves them out rather than failing
-          return json(res, answered.status, { ...(answered.body as Record<string, unknown>), sameComputer: local });
+          return json(res, answered.status, { ...(answered.body as Record<string, unknown>), sameComputer: windowHere });
         }
         return json(res, answered.status, answered.body);
       }

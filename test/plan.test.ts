@@ -215,7 +215,8 @@ test("a fresh look says a change once, up with a moment and down plainly", () =>
 test("the key, Hosting and the offers are offered only where the key is kept (GitHub 357)", () => {
   assert.equal(keyIsHere({ sameComputer: true }), true);
   assert.equal(keyIsHere({ sameComputer: false }), false, "a device elsewhere was offered the key's controls");
-  assert.equal(keyIsHere({}), true, "an older server answered only its own window");
+  assert.equal(keyIsHere({}), false, "an older answer cannot grant machine controls");
+  for (const value of [null, "true", 1, {}]) assert.equal(keyIsHere({ sameComputer: value } as unknown as PlanSnapshot), false);
 });
 
 test("a look that did not land never reads as no plan", () => {
@@ -233,9 +234,11 @@ test("a look that did not land never reads as no plan", () => {
   assert.equal(first.problem?.kind, "unreachable");
   assert.match(first.problem!.words, /couldn't read your plan/);
   // a refusal is this device not being shown the plan at all
-  const refused = failedLook(shown, 403);
-  assert.equal(refused.snapshot, null);
-  assert.equal(refused.stale, false);
-  assert.equal(refused.problem?.kind, "refused");
-  assert.match(refused.problem!.words, /computer this workspace runs on/);
+  for (const status of [401, 403]) {
+    const refused = failedLook(shown, status);
+    assert.equal(refused.snapshot, null);
+    assert.equal(refused.stale, false);
+    assert.equal(refused.problem?.kind, "refused");
+    assert.match(refused.problem!.words, /computer this workspace runs on/);
+  }
 });

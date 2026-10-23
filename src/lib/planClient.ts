@@ -35,21 +35,38 @@ const set = (patch: Partial<PlanState>) => {
 };
 
 let asking: Promise<PlanSnapshot | null> | null = null;
+let accessVersion = 0;
+
+/** Pending page actions belong to the authorization under which they began. */
+export function planAccessVersion() {
+  return accessVersion;
+}
+
+/** A refusal from either Plan operation also supersedes pending reads. */
+export function refusePlan(status: 401 | 403) {
+  accessVersion++;
+  asking = null;
+  set({ loading: false, ...failedLook(state.snapshot, status), news: null });
+}
 
 /** Asks the server, fresh when somebody may just have changed it. */
 export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
   if (asking && !fresh) return asking;
-  const before: PlanKey | null = state.snapshot ? planKey(state.snapshot) : null;
+  const before: PlanKey | null = state.snapshot && (state.snapshot.account || !state.snapshot.licence.present) ? planKey(state.snapshot) : null;
   set({ loading: true });
   const run = fetch(`/api/plan${fresh ? "?fresh=1" : ""}`, { headers: { accept: "application/json" } })
     .then(async (res) => {
+      if (asking !== run) return state.snapshot;
       if (!res.ok) {
-        set({ loading: false, ...failedLook(state.snapshot, res.status) });
+        if (res.status === 401 || res.status === 403) refusePlan(res.status);
+        else set({ loading: false, ...failedLook(state.snapshot, res.status) });
         return state.snapshot;
       }
       const snapshot = (await res.json()) as PlanSnapshot;
-      const change = fresh ? planChange(before, planKey(snapshot)) : null;
-      set({ snapshot, loading: false, problem: null, stale: false, ...(change ? { news: { ...change, at: Date.now() } } : {}) });
+      if (asking !== run) return state.snapshot;
+      const known = snapshot.account || !snapshot.licence.present;
+      const change = fresh && known ? planChange(before, planKey(snapshot)) : null;
+      set({ snapshot, loading: false, problem: null, stale: false, ...(!known ? { news: null } : change ? { news: { ...change, at: Date.now() } } : {}) });
       if (change) {
         if (change.up) toast.success(change.words, { id: "plan-change" });
         else toast(change.words, { id: "plan-change" });
@@ -57,6 +74,7 @@ export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
       return snapshot;
     })
     .catch(() => {
+      if (asking !== run) return state.snapshot;
       // what was shown stays shown, and the page says it could not look
       set({ loading: false, ...failedLook(state.snapshot, null) });
       return state.snapshot;

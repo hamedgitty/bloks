@@ -473,6 +473,7 @@ export async function planRoute(
   query: URLSearchParams,
   deps: PlanRouteDeps,
   plan: PlanAccount,
+  localWindow: boolean,
 ): Promise<{ status: number; body: unknown } | null> {
   if (path === "/api/plan" && method === "GET") {
     const fresh = query.get("fresh") === "1";
@@ -490,7 +491,7 @@ export async function planRoute(
     return {
       status: 200,
       body: {
-        licence: { present: Boolean(licence), masked: maskLicence(licence), kept: Boolean(licence) && deps.kept() },
+        licence: { present: Boolean(licence), masked: maskLicence(licence), kept: localWindow && Boolean(licence) && deps.kept() },
         account,
         accountState: answer?.state ?? "none",
         accountAt: answer?.at ?? null,
