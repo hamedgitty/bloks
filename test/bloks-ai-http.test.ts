@@ -127,7 +127,13 @@ test("each turn says what work it is: an engineer's is coding, anyone else's gen
 test("a shared room member's turn carries their hash and never their name; the owner's carries none", async (t) => {
   const { fake, h, aya } = await setUp(t);
   const bot = await hire(h, { name: "Dee" });
-  assert.equal((await h.fetch(`/api/bloks/${ROOM}`, { method: "PATCH", body: JSON.stringify({ memberIds: [bot.id] }) })).status, 200);
+  // a room holds two agents at least; with only the lead answering, Dee
+  // (first of two equals) takes every turn, one per message
+  const quiet = await hire(h, { name: "Eli" });
+  assert.equal(
+    (await h.fetch(`/api/bloks/${ROOM}`, { method: "PATCH", body: JSON.stringify({ memberIds: [bot.id, quiet.id], leadOnly: true }) })).status,
+    200,
+  );
 
   await h.fetch(`/api/bloks/${ROOM}/messages`, { method: "POST", body: JSON.stringify({ text: "owner here, what is next?" }) });
   assert.ok(await waitFor(() => fake.tags.length >= 1, 20_000), "the owner's turn reached the service");

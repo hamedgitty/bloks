@@ -61,6 +61,22 @@ export const REPORT_UNCERTAIN: ReportResponse = {
   body: { ok: false, uncertain: true, note: "This direct message may have been accepted. Retry only the same submission to check its receipt; do not send it again elsewhere." },
 };
 
+/** Why a different direct message is refused once the kept-back one is
+ * taken. "Occupied by another submission" read as a send still in flight,
+ * worth waiting on or retrying, when the first had long been delivered
+ * and the turn had nothing left to spend (GitHub 369). So it says which:
+ * delivered, maybe delivered, or still on its way, and that nothing from
+ * this request went anywhere. */
+export function keptBackRefusal(report: ReservedReport): string {
+  if (report.accepted) {
+    return "this turn has made its twelve changes and its one kept-back message was already delivered, so this message was not sent. Put what it says in your reply; a message to another agent can go in a later turn.";
+  }
+  if (report.dispatched) {
+    return "this turn's one kept-back message may already have been delivered, so this message was not sent. Retry that first message with the same words and destination to check its receipt; do not send a replacement.";
+  }
+  return "this turn's one kept-back message is still being sent, so this message was not sent. Retry that first message with the same words and destination to check on it; do not send a replacement.";
+}
+
 /** How long a credential lasts without its turn vouching for it. A turn
  * that is still running renews it (see `alive` below): long turns are
  * ordinary work now, an hour of comparing quotes in a browser, and an

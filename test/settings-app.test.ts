@@ -183,8 +183,10 @@ test('S1-S5 actual index routes and real CLI use owner metadata without read-tri
     }
     assert.equal(cursor, null, 'byte-bounded pages did not finish');
     assert.equal(rows.length, 25); assert.equal(new Set(rows.map((r: { reference: string }) => r.reference)).size, 25);
+    // a room holds two agents at least, so alpha's seat goes to two others
+    const third = (await (await request('/api/bots', undefined, 'POST', { name: 'Gamma' })).json()).bot.id;
     for (let i = 0; i < 25; i++) {
-      assert.equal((await request(`/api/bloks/room-${i}`, undefined, 'PATCH', { memberIds: ['beta'] })).status, 200);
+      assert.equal((await request(`/api/bloks/room-${i}`, undefined, 'PATCH', { memberIds: ['beta', third] })).status, 200);
     }
     const lost = await read('room', tokens.alpha!, `&cursor=${alpha.continuation}`);
     assert.equal(lost.total, 0); assert.deepEqual(lost.rows, []); assert.equal(lost.continuation, null);

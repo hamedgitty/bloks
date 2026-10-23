@@ -15,7 +15,9 @@ test('twelve general mutations leave one ordinary CLI report and bound every sub
  assert.equal((await f.messages()).filter(m=>m.text==='FINAL').length,1);
  assert.equal((await f.messages(f.sender)).filter(m=>m.agent?.dir==='out'&&m.text==='FINAL').length,1);
  assert.equal((await f.control('token',{token:f.token})).spent,13);
- assert.equal((await f.say({text:'different'})).status,429);
+ const later=await f.say({text:'different'});assert.equal(later.status,429);
+ // delivered already, so it says so: not a send still in flight (GitHub 369)
+ assert.match(later.body.error,/kept-back message was already delivered, so this message was not sent/);assert.doesNotMatch(later.body.error,/occupied/);
  assert.equal((await f.say({text:'self'},f.sender.id)).status,429);
 });
 
@@ -89,7 +91,7 @@ for(const phase of ['before-persist','before-persist-status','after-persist','af
   assert.equal(result.status,phase==='before-persist'?500:409);assert.equal((await f.control('token',{token:f.token})).report,undefined);
   await f.control('fault',{mode:''});assert.equal((await f.accepted()).body.ok,true);
  }else if(phase==='after-persist'){
-  assert.equal(result.body.uncertain,true);assert.deepEqual(await f.say(),result);assert.equal((await f.say({text:'OTHER'})).status,429);
+  assert.equal(result.body.uncertain,true);assert.deepEqual(await f.say(),result);const other=await f.say({text:'OTHER'});assert.equal(other.status,429);assert.match(other.body.error,/may already have been delivered/);
   assert.equal((await f.messages()).filter(m=>m.text==='FINAL').length,1);
   assert.equal((await f.messages(f.sender)).find(m=>m.agent?.dir==='out')?.agent.status,'uncertain');
  }else {assert.equal(result.body.ok,true);assert.deepEqual(await f.say(),result);if(phase==='after-queue')assert.equal(result.body.queued,true)}

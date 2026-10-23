@@ -39,6 +39,14 @@ function isPart(answer) {
   );
 }
 
+/** Whether an answer carries any of what a part says about itself, so
+ * it is read as a part, and has to be a whole one. */
+function saysPart(answer) {
+  return answer.size !== undefined || answer.parts !== undefined || answer.part !== undefined || answer.tag !== undefined;
+}
+
+const UNFIT = "the file came back in parts that do not fit together. Open it again.";
+
 /** Parts as one run of bytes, for a caller that wants them that way. */
 function joinBytes(pieces) {
   let length = 0;
@@ -68,14 +76,21 @@ function joinBytes(pieces) {
  */
 export async function gatherParts(askPart, { join = joinBytes, gone = () => false, maxBytes = RAW_PARTS_MAX_BYTES } = {}) {
   const first = await askPart(0);
-  if (!isPart(first) || first.part !== 0 || first.parts === 1) return first;
+  // A refusal, or an answer with nothing of a part about it (a computer
+  // too old to send parts, a read that was never cut up), is handed back
+  // as it came. One that says it is a part is held to it, a part of one
+  // included: that shortcut once returned whatever size and bytes it
+  // claimed, unread (GitHub 371).
+  if (first?.status !== 200 || !saysPart(first)) return first;
+  if (!isPart(first) || first.part !== 0) return refusal(502, UNFIT);
   const { size, parts, tag } = first;
   // what the first part says has to hold together before anything more
   // is asked for: no more than the most there can be, and as many parts
   // as the first one's length makes of the whole
   if (size > maxBytes) return refusal(413, "too large to open through Bloks Cloud");
+  if (parts === 1) return first.bytes.byteLength === size ? first : refusal(502, UNFIT);
   const length = first.bytes.byteLength;
-  if (!length || Math.ceil(size / length) !== parts) return refusal(502, "the file came back in parts that do not fit together. Open it again.");
+  if (!length || Math.ceil(size / length) !== parts) return refusal(502, UNFIT);
   const pieces = [first.bytes];
   let have = length;
   for (let part = 1; part < parts; part++) {
@@ -85,11 +100,11 @@ export async function gatherParts(askPart, { join = joinBytes, gone = () => fals
     // not the next part is not something to join to this one
     if (!isPart(next) && next?.status !== 200) return next;
     if (!isPart(next) || next.part !== part || next.tag !== tag || next.size !== size || next.parts !== parts) {
-      return refusal(502, "the file came back in parts that do not fit together. Open it again.");
+      return refusal(502, UNFIT);
     }
     pieces.push(next.bytes);
     have += next.bytes.byteLength;
   }
-  if (have !== size) return refusal(502, "the file came back in parts that do not fit together. Open it again.");
+  if (have !== size) return refusal(502, UNFIT);
   return { status: first.status, type: first.type, bytes: join(pieces, first.type), size };
 }

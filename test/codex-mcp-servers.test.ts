@@ -25,7 +25,7 @@ const home = mkdtempSync(join(tmpdir(), "bloks-codex-mcp-"));
 process.env.HOME = home;
 process.env.BLOKS_DATA_DIR = "";
 mkdirSync(join(home, ".bloks", "native"), { recursive: true });
-const { CodexDriver, SERVERS_REFUSED_NOTICE, SHELL_REFUSED_NOTICE, leftOutNotice } = await import("../server/drivers/codex.ts");
+const { CodexDriver, SERVERS_REFUSED_NOTICE, SHELL_REFUSED_NOTICE, leftOutNotice, serverConfig } = await import("../server/drivers/codex.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 type Servers = NonNullable<NonNullable<SendTurnInput["integrations"]>["mcpServers"]>;
@@ -339,4 +339,35 @@ test("a refusal about something else is still the turn failing", async (t) => {
   assert.equal(h.sent("thread/start").length, 1, "not asked again without the servers");
   assert.deepEqual(h.notices(), ["model not found"]);
   assert.equal(h.completed()[0]?.type === "turn.completed" && h.completed()[0].ok, false);
+});
+
+test("a server whose address, arguments or environment Codex could not use is left out and named, never mounted half right (GitHub 372)", () => {
+  const key = credential();
+  const read = (server: Record<string, unknown>) => serverConfig([{ name: "Home", ...server } as Servers[number]], { approve: false });
+  // the report's three controls
+  for (const [server, why] of [
+    [{ transport: "http", url: "https://" }, /no http or https address/],
+    [{ transport: "http", url: "https://exa mple.com/mcp" }, /no http or https address/],
+    [{ transport: "stdio", command: "run", args: ["first", 7, "last"] }, /arguments must each be plain text/],
+    [{ transport: "stdio", command: "run", args: "first last" }, /arguments must each be plain text/],
+    [{ transport: "stdio", command: "run", args: ["a\0b"] }, /arguments must each be plain text/],
+    [{ transport: "stdio", command: "run", env: { "BAD=NAME": key } }, /is not a name an environment variable can have/],
+    [{ transport: "stdio", command: "run", env: { TOKEN: `value\0${key}` } }, /the value of TOKEN has a character no environment can carry/],
+    [{ transport: "stdio", command: "run\0x" }, /command has a character/],
+  ] as const) {
+    const got = read(server);
+    assert.deepEqual(got.config, {}, `${JSON.stringify(server)} was mounted`);
+    assert.equal(got.leftOut.length, 1);
+    assert.match(got.leftOut[0], why);
+    // the reason names the field, never what is in it
+    assert.equal(got.leftOut[0].includes(key), false);
+  }
+  // and good ones still mount as they were given
+  const http = read({ transport: "http", url: "https://ha.local:8123/mcp", headers: { Authorization: `Bearer ${key}` } });
+  assert.deepEqual(http.leftOut, []);
+  assert.deepEqual(Object.values(http.config), [{ url: "https://ha.local:8123/mcp", http_headers: { Authorization: `Bearer ${key}` } }]);
+  const stdio = read({ transport: "stdio", command: "npx", args: ["-y", "server"], env: { HA_TOKEN: key } });
+  assert.deepEqual(stdio.leftOut, []);
+  assert.deepEqual(Object.values(stdio.config), [{ command: "npx", args: ["-y", "server"], env: { HA_TOKEN: key } }]);
+  assert.deepEqual(Object.values(read({ transport: "stdio", command: "npx" }).config), [{ command: "npx", args: [] }]);
 });

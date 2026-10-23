@@ -9,6 +9,10 @@
 // The other door is the team library: a whole team, premade, saved from a
 // room of your own, scouted from a project folder or from the gallery,
 // hired seat by seat in its own dialog.
+//
+// The picker and the drawing of the room are shared with a room's own
+// Agents dialog (room/RoomAgentsDialog.tsx), so a team is chosen the same
+// way before a room opens and after.
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { Check } from "@/components/icons";
@@ -30,6 +34,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/plural";
 import { roomLead } from "@/lib/roomLead";
+import { MAX_MEMBERS, roomCandidates, togglePicked } from "@/lib/roomEdit";
 
 interface GalleryTeam {
   slug: string;
@@ -46,8 +51,6 @@ interface SavedTeam {
   savedAt: number;
 }
 
-const MAX_MEMBERS = 8;
-
 /** Lists longer than this get a search box; shorter ones read at a glance. */
 const SEARCH_ABOVE = 8;
 
@@ -55,21 +58,24 @@ const settle = { type: "spring", duration: 0.32, bounce: 0.15 } as const;
 
 export function NewRoomDialog() {
   const { state, dispatch } = useStore();
+  // A fresh start from a room arrives filled in with its team, its crown,
+  // who answers and its folder (src/lib/roomEdit.ts); the room it came
+  // from is not touched. Read once, as the dialog opens.
+  const [preset] = useState(state.newRoomPreset);
   const [tab, setTab] = useState<"agents" | "library">("agents");
-  const [name, setName] = useState("");
-  const [picked, setPicked] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [leadOnly, setLeadOnly] = useState(false);
+  const [name, setName] = useState(preset?.name ?? "");
+  const [picked, setPicked] = useState<string[]>(preset?.memberIds ?? []);
+  const [leadOnly, setLeadOnly] = useState(preset?.leadOnly ?? false);
   // the member whose crown was tapped; until then the most senior leads
-  const [leadId, setLeadId] = useState<string | null>(null);
-  const [folder, setFolder] = useState("");
+  const [leadId, setLeadId] = useState<string | null>(preset?.leadId ?? null);
+  const [folder, setFolder] = useState(preset?.cwd ?? "");
   // the error count when Create was pressed, or false while not creating
   const [creating, setCreating] = useState<number | false>(false);
   const [hiring, setHiring] = useState<HireableTeam | null>(null);
   const [saved, setSaved] = useState<SavedTeam[] | null>(null);
   const [scoutError, setScoutError] = useState<string | null>(null);
 
-  const agents = state.bots.filter((b) => !b.hidden);
+  const agents = roomCandidates(state.bots);
   const close = () => dispatch({ type: "toggleNewRoom", open: false });
 
   /** Point at a project folder; its shape proposes the roster. */
@@ -160,11 +166,7 @@ export function NewRoomDialog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.teamLink]);
 
-  const modelLabel = (bot: Bot) => {
-    const instance = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId);
-    const option = instance?.models.options.find((o) => o.id === bot.modelSelection.model);
-    return option?.label ?? (bot.modelSelection.model || instance?.models.default || "Default");
-  };
+  const modelLabel = useModelLabel();
 
   // in the order they were picked, which is the order the room lists them
   const chosen = useMemo(
@@ -176,10 +178,7 @@ export function NewRoomDialog() {
   const lead = useMemo(() => roomLead(chosen, leadId), [chosen, leadId]);
   const defaultName = chosen.map((a) => a.name).join(" + ");
 
-  const toggle = (id: string) =>
-    setPicked((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : prev.length >= MAX_MEMBERS ? prev : [...prev, id],
-    );
+  const toggle = (id: string) => setPicked((prev) => togglePicked(prev, id));
 
   const create = () => {
     if (picked.length < 2 || creating !== false) return;
@@ -200,9 +199,6 @@ export function NewRoomDialog() {
     if (creating !== false && state.errorAt !== creating) setCreating(false);
   }, [creating, state.errorAt]);
 
-  const q = query.trim().toLowerCase();
-  const shown = q ? agents.filter((a) => `${a.name} ${a.title}`.toLowerCase().includes(q)) : agents;
-
   return (
     <Dialog open onOpenChange={(open) => !open && close()}>
       <DialogContent className="flex max-h-[min(860px,92vh)] w-[calc(100vw-24px)] max-w-[960px] flex-col gap-0 overflow-hidden p-0">
@@ -210,7 +206,9 @@ export function NewRoomDialog() {
           <div className="min-w-0">
             <DialogTitle className="text-heading">New room</DialogTitle>
             <DialogDescription className="mt-0.5">
-              Agents work together here. Tap a crown to choose the lead.
+              {preset
+                ? `A fresh start with the same team. ${preset.from} stays as it is.`
+                : "Agents work together here. Tap a crown to choose the lead."}
             </DialogDescription>
           </div>
           <Segmented
@@ -244,84 +242,16 @@ export function NewRoomDialog() {
                   autoFocus
                   className="h-10 rounded-xl text-lead"
                 />
-                <div className="mb-2.5 mt-6 flex items-center justify-between gap-3">
-                  <span className="text-body font-medium text-muted-foreground">
-                    Members
-                    <span className="ml-1.5 tabular-nums text-muted-foreground/80">
-                      {picked.length ? `${picked.length} of ${MAX_MEMBERS}` : `up to ${MAX_MEMBERS}`}
-                    </span>
-                  </span>
-                  {agents.length > SEARCH_ABOVE && (
-                    <label className="flex h-8 w-[200px] items-center gap-2 rounded-full border bg-card px-3 transition-colors duration-150 focus-within:border-ring/50">
-                      <Search size={13} className="shrink-0 text-muted-foreground" />
-                      <input
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Find an agent"
-                        aria-label="Find an agent"
-                        className="min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground"
-                      />
-                    </label>
-                  )}
-                </div>
               </div>
-              <div role="group" aria-label="Members" className="grid grid-cols-1 gap-1.5 px-6 pb-6 sm:grid-cols-2">
-                {shown.map((agent) => {
-                  const on = picked.includes(agent.id);
-                  const full = !on && picked.length >= MAX_MEMBERS;
-                  const crownable = on && picked.length > 1;
-                  const isLead = crownable && lead?.id === agent.id;
-                  return (
-                    // The crown is a button of its own beside the tile, not
-                    // inside it: one press picks the member, the other the lead.
-                    <div key={agent.id} className="relative min-w-0">
-                    <button
-                      role="checkbox"
-                      aria-checked={on}
-                      disabled={full}
-                      onClick={() => toggle(agent.id)}
-                      className={cn(
-                        "group relative flex w-full min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left outline-none transition-[border-color,background-color,scale,opacity] duration-150 ease-out active:scale-[0.985] disabled:opacity-45",
-                        on ? "border-brand bg-brand-soft" : "bg-card hover:border-foreground/20 hover:bg-accent/40",
-                        crownable && "pr-12",
-                      )}
-                    >
-                      <span className="relative shrink-0">
-                        <AgentAvatar bot={agent} size={34} />
-                        <span
-                          className={cn(
-                            "absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full ring-2 transition-[opacity,scale] duration-150 ease-out",
-                            on ? "scale-100 bg-brand-ink text-brand-foreground opacity-100 ring-brand-soft" : "scale-75 opacity-0 ring-card",
-                          )}
-                        >
-                          <Check size={10} strokeWidth={3} />
-                        </span>
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-ui font-medium text-foreground">{agent.name}</span>
-                        <span className="block truncate text-small text-muted-foreground">{agent.title || "No stated role"}</span>
-                      </span>
-                      <span className="max-w-[96px] shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
-                        {modelLabel(agent)}
-                      </span>
-                    </button>
-                    {crownable && (
-                      <CrownButton
-                        on={isLead}
-                        name={agent.name}
-                        onPick={() => setLeadId(agent.id)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2"
-                      />
-                    )}
-                    </div>
-                  );
-                })}
-                {shown.length === 0 && (
-                  <p className="col-span-full py-6 text-center text-body text-muted-foreground">
-                    {agents.length ? `No agent matches “${query.trim()}”.` : "No agents yet. Try the team library."}
-                  </p>
-                )}
-              </div>
+              <MemberPicker
+                className="mt-6"
+                agents={agents}
+                picked={picked}
+                onToggle={toggle}
+                lead={lead}
+                onLead={setLeadId}
+                modelLabel={modelLabel}
+              />
             </div>
 
             {/* the room, taking shape */}
@@ -504,13 +434,136 @@ export function NewRoomDialog() {
   );
 }
 
+/** What each agent runs on, as a picker labels it: the model's own name
+ * where the engine gives one. */
+export function useModelLabel(): (bot: Bot) => string {
+  const { state } = useStore();
+  return (bot: Bot) => {
+    const instance = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId);
+    const option = instance?.models.options.find((o) => o.id === bot.modelSelection.model);
+    return option?.label ?? (bot.modelSelection.model || instance?.models.default || "Default");
+  };
+}
+
+/**
+ * The agents to choose from, as tiles: a tap puts one in or takes it out,
+ * and the crown beside a picked one makes it the lead. An archived member
+ * of a room that exists is listed so it can be taken out, says so, and
+ * never wears the crown, since it cannot answer.
+ */
+export function MemberPicker({
+  agents,
+  picked,
+  onToggle,
+  lead,
+  onLead,
+  modelLabel,
+  className,
+}: {
+  agents: Bot[];
+  picked: string[];
+  onToggle: (id: string) => void;
+  lead: Bot | null;
+  onLead: (id: string) => void;
+  modelLabel: (bot: Bot) => string;
+  /** For the heading, which sits under whatever comes before it. */
+  className?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shown = q ? agents.filter((a) => `${a.name} ${a.title}`.toLowerCase().includes(q)) : agents;
+  return (
+    <>
+      <div className={cn("mb-2.5 flex items-center justify-between gap-3 px-6", className)}>
+        <span className="text-body font-medium text-muted-foreground">
+          Members
+          <span className="ml-1.5 tabular-nums text-muted-foreground/80">
+            {picked.length ? `${picked.length} of ${MAX_MEMBERS}` : `up to ${MAX_MEMBERS}`}
+          </span>
+        </span>
+        {agents.length > SEARCH_ABOVE && (
+          <label className="flex h-8 w-[200px] items-center gap-2 rounded-full border bg-card px-3 transition-colors duration-150 focus-within:border-ring/50">
+            <Search size={13} className="shrink-0 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Find an agent"
+              aria-label="Find an agent"
+              className="min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+        )}
+      </div>
+      <div role="group" aria-label="Members" className="grid grid-cols-1 gap-1.5 px-6 pb-6 sm:grid-cols-2">
+        {shown.map((agent) => {
+          const on = picked.includes(agent.id);
+          const full = !on && picked.length >= MAX_MEMBERS;
+          const crownable = on && picked.length > 1 && !agent.archivedAt;
+          const isLead = crownable && lead?.id === agent.id;
+          return (
+            // The crown is a button of its own beside the tile, not
+            // inside it: one press picks the member, the other the lead.
+            <div key={agent.id} className="relative min-w-0">
+            <button
+              role="checkbox"
+              aria-checked={on}
+              disabled={full}
+              onClick={() => onToggle(agent.id)}
+              className={cn(
+                "group relative flex w-full min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left outline-none transition-[border-color,background-color,scale,opacity] duration-150 ease-out active:scale-[0.985] disabled:opacity-45",
+                on ? "border-brand bg-brand-soft" : "bg-card hover:border-foreground/20 hover:bg-accent/40",
+                crownable && "pr-12",
+              )}
+            >
+              <span className="relative shrink-0">
+                <AgentAvatar bot={agent} size={34} />
+                <span
+                  className={cn(
+                    "absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full ring-2 transition-[opacity,scale] duration-150 ease-out",
+                    on ? "scale-100 bg-brand-ink text-brand-foreground opacity-100 ring-brand-soft" : "scale-75 opacity-0 ring-card",
+                  )}
+                >
+                  <Check size={10} strokeWidth={3} />
+                </span>
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ui font-medium text-foreground">{agent.name}</span>
+                <span className="block truncate text-small text-muted-foreground">
+                  {agent.archivedAt ? "Archived" : agent.title || "No stated role"}
+                </span>
+              </span>
+              <span className="max-w-[96px] shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                {modelLabel(agent)}
+              </span>
+            </button>
+            {crownable && (
+              <CrownButton
+                on={isLead}
+                name={agent.name}
+                onPick={() => onLead(agent.id)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2"
+              />
+            )}
+            </div>
+          );
+        })}
+        {shown.length === 0 && (
+          <p className="col-span-full py-6 text-center text-body text-muted-foreground">
+            {agents.length ? `No agent matches “${query.trim()}”.` : "No agents yet. Try the team library."}
+          </p>
+        )}
+      </div>
+    </>
+  );
+}
+
 /**
  * The room as it will open: its name, its lead on top with the crown,
  * the others beneath. Members arrive and leave in place, and the crown
  * moves when a more senior agent joins or another is crowned, so the
  * shape of the org chart is seen changing rather than re-read.
  */
-function RoomPreview({
+export function RoomPreview({
   name,
   chosen,
   lead,

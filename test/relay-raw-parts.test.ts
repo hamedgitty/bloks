@@ -60,6 +60,30 @@ describe("the parts loop, alone", () => {
     assert.equal(await gatherParts(async () => one), one);
   });
 
+  test("a part of one is held to what it says, and is not a way past the limit (GitHub 371)", async () => {
+    const part = (fields: Partial<RawAnswer>) => ({ status: 200, type: "application/octet-stream", bytes: new Uint8Array([1]), size: 1, parts: 1, part: 0, tag: "t", ...fields }) as RawAnswer;
+    const status = async (answer: RawAnswer) => (await gatherParts(async () => answer)).status;
+    // the report's own control: one byte that says it is over 50 MB
+    assert.equal(await status(part({ size: 52_428_801 })), 413);
+    // a size the bytes do not match, either way
+    assert.equal(await status(part({ size: 2 })), 502);
+    assert.equal(await status(part({ size: 0 })), 502);
+    // a first answer that is not part 0, or whose numbers are not numbers
+    assert.equal(await status(part({ part: 1 })), 502);
+    assert.equal(await status(part({ parts: "1" as unknown as number })), 502);
+    assert.equal(await status(part({ size: 1.5 })), 502);
+    assert.equal(await status(part({ tag: undefined })), 502);
+    assert.equal(await status(part({ parts: 0 })), 502);
+    // and the good ones still pass: a whole part of one, an empty file
+    const good = part({});
+    assert.equal(await gatherParts(async () => good), good);
+    const empty = part({ bytes: new Uint8Array(0), size: 0 });
+    assert.equal(await gatherParts(async () => empty), empty);
+    // an answer with no part fields at all is an older computer's, as it came
+    const legacy = { status: 200, type: "image/png", bytes: new Uint8Array([9, 9]) };
+    assert.equal(await gatherParts(async () => legacy), legacy);
+  });
+
   test("a refusal partway is handed back, and parts that do not belong together are not joined", async () => {
     const file = new Uint8Array(12);
     const changed = { status: 412, type: "application/json", bytes: encode({ error: "the file changed while it was being opened. Open it again.", changed: true }) };

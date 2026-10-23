@@ -661,6 +661,18 @@ export interface Blok {
   olderMessages?: number;
 }
 
+/** A New room dialog filled in before it opens: a room's team, ready to
+ * start again in a room of their own (src/lib/roomEdit.ts). `from` names
+ * the room it came from, which is left as it is. */
+export interface NewRoomPreset {
+  name: string;
+  memberIds: string[];
+  leadId: string | null;
+  leadOnly: boolean;
+  cwd?: string;
+  from: string;
+}
+
 /** How a shared room behaves, owner's choice. See server/bloks.ts. */
 export interface RoomSharing {
   since: number;
@@ -766,6 +778,9 @@ export interface AppState {
    * to one (a card about one that stopped for failing). */
   routinesFocus: AutomationsFocus | null;
   newRoomOpen: boolean;
+  /** What the New room dialog opens filled in with, when something asked
+   * for more than an empty one: a fresh start from a room (src/lib/roomEdit.ts). */
+  newRoomPreset: NewRoomPreset | null;
   /** The sheet of every keyboard shortcut (⌘/). */
   shortcutsOpen: boolean;
   /** The project the app is looking through, or null for everything.
@@ -843,7 +858,9 @@ export type Action =
   | { type: "moveSections"; order: string[] }
   /** `onFailed`: the send did not go, so the box can have it back. */
   | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
-  | { type: "toggleNewRoom"; open?: boolean }
+  /** `preset` fills the dialog in as it opens; any toggle without one
+   * leaves it empty, so a preset never outlives the dialog it was for. */
+  | { type: "toggleNewRoom"; open?: boolean; preset?: NewRoomPreset }
   | { type: "openTeamLink"; slug: string | null }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "engineUpdates"; updates: Record<string, { installed: string; latest: string }> }
@@ -1077,8 +1094,10 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "openTeamLink":
       return { ...state, teamLink: action.slug, newRoomOpen: action.slug ? true : state.newRoomOpen };
-    case "toggleNewRoom":
-      return { ...state, newRoomOpen: action.open ?? !state.newRoomOpen };
+    case "toggleNewRoom": {
+      const open = action.open ?? !state.newRoomOpen;
+      return { ...state, newRoomOpen: open, newRoomPreset: open ? (action.preset ?? null) : null };
+    }
     case "rehearsalsChanged":
       return { ...state, rehearsalsTick: state.rehearsalsTick + 1 };
     case "openMeeting":
@@ -1543,6 +1562,7 @@ export const initialState: AppState = {
   routinesTab: null,
   routinesFocus: null,
   newRoomOpen: false,
+  newRoomPreset: null,
   shortcutsOpen: false,
   projectId: (() => {
     try {

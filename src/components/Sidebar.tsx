@@ -47,6 +47,7 @@ import {
 } from "@/lib/sections";
 import { refreshCheckup, riskyCount, useSecurityCheckup } from "@/lib/securityCheckup";
 import { ConversationRows, LaneRing, WaitingRow } from "./SidebarParts";
+import { RoomRename } from "./room/RoomRename";
 import { CHAT_SIDEBAR, useChatSidebar } from "@/lib/chatSidebar";
 import { CHAT_COLUMN } from "@/lib/sideColumn";
 import { SideColumn } from "./SideColumn";
@@ -229,15 +230,19 @@ function filingOf(kind: "agent" | "room", row: Bot | Blok): FilingState {
 }
 
 /** Right-click on a row. A room's menu is the part of an agent's that
- * applies to a room: where it sits in the sidebar. */
+ * applies to a room: where it sits in the sidebar, and its name, which
+ * is edited on the row itself as a conversation's title is. */
 function RowMenu({
   menu,
   onClose,
   onFile,
+  onRename,
 }: {
   menu: MenuState;
   onClose: () => void;
   onFile: (filing: FilingState) => void;
+  /** A room's row becomes a field for its name. */
+  onRename: (roomId: string) => void;
 }) {
   const { state, dispatch } = useStore();
   const bot = menu.kind === "agent" ? state.bots.find((b) => b.id === menu.id) : undefined;
@@ -264,7 +269,7 @@ function RowMenu({
   const general = bot?.tasks?.[0];
 
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - (bot ? 372 : 100));
+  const top = Math.min(menu.y, window.innerHeight - (bot ? 372 : 140));
   const left = Math.min(menu.x, window.innerWidth - 220);
 
   const item = (
@@ -310,7 +315,12 @@ function RowMenu({
       style={{ top, left }}
       className="fixed z-40 w-[208px] animate-pop-in rounded-xl border bg-popover p-1 shadow-lg shadow-(color:--shadow-color)"
     >
-      {!bot ? [pin, move] : [
+      {!bot ? [
+        pin,
+        move,
+        divider("d1"),
+        item(<Pencil size={15} className="text-muted-foreground" />, "Rename…", () => onRename(filing.id)),
+      ] : [
         pin,
         // the agent stands for General, so that is the conversation it marks
         item(
@@ -515,11 +525,16 @@ function RoomListItem({
   blok,
   onMenu,
   onDrag,
+  renaming,
+  onRenamed,
 }: {
   blok: Blok;
   onMenu?: (menu: MenuState) => void;
   /** Given in the full list, where a row can be dragged to a place. */
   onDrag?: (row: FilingState | null) => void;
+  /** The name is a field, from the row's menu. */
+  renaming?: boolean;
+  onRenamed?: (next: string | null) => void;
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === blok.id;
@@ -529,6 +544,47 @@ function RoomListItem({
   const last = lastSaid(blok.messages);
   // working in this room, as the room itself shows it (workingInRoom)
   const working = members.filter((m) => workingInRoom(m, blok.id));
+
+  const faces = (
+    <span className="flex size-[42px] shrink-0 items-center justify-center rounded-xl bg-muted">
+      <span className="flex -space-x-1.5">
+        {members.slice(0, 3).map((m) => (
+          <AgentAvatar
+            key={m.id}
+            bot={m}
+            size={18}
+            className="rounded-md ring-2 ring-muted"
+          />
+        ))}
+      </span>
+    </span>
+  );
+  const preview = (
+    <div className="mt-px truncate text-body text-muted-foreground">
+      {working.length
+        ? `${working.map((m) => m.name).join(", ")} working…`
+        : last
+          ? previewLine(last)
+          : plural(members.length, "agent")}
+    </div>
+  );
+
+  // A field cannot sit inside the row's button, so while the name is
+  // being edited the row is a plain box of the same shape.
+  if (renaming) {
+    return (
+      <div
+        data-sidebar-row={blok.id}
+        className={cn("flex w-full items-center gap-3 rounded-xl px-2.5 py-2", selected ? "bg-accent" : "bg-accent/60")}
+      >
+        {faces}
+        <div className="min-w-0 flex-1">
+          <RoomRename name={blok.name} onDone={(next) => onRenamed?.(next)} className="block w-full text-ui font-medium" />
+          {preview}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <button
@@ -545,18 +601,7 @@ function RoomListItem({
         selected ? "bg-accent" : "hover:bg-accent/60",
       )}
     >
-      <span className="flex size-[42px] shrink-0 items-center justify-center rounded-xl bg-muted">
-        <span className="flex -space-x-1.5">
-          {members.slice(0, 3).map((m) => (
-            <AgentAvatar
-              key={m.id}
-              bot={m}
-              size={18}
-              className="rounded-md ring-2 ring-muted"
-            />
-          ))}
-        </span>
-      </span>
+      {faces}
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5 truncate text-ui font-medium text-foreground">
@@ -569,13 +614,7 @@ function RoomListItem({
             </span>
           )}
         </div>
-        <div className="mt-px truncate text-body text-muted-foreground">
-          {working.length
-            ? `${working.map((m) => m.name).join(", ")} working…`
-            : last
-              ? previewLine(last)
-              : plural(members.length, "agent")}
-        </div>
+        {preview}
       </div>
     </button>
   );
@@ -641,6 +680,8 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   const [conversations, setConversations] = useConversationsView();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [filing, setFiling] = useState<FilingState | null>(null);
+  // the room whose row is a field for its name
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const sidebar = useChatSidebar();
   // Phone-narrow windows have no room for two columns, so the sidebar
@@ -931,7 +972,17 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
           <div data-row={row.id} className="relative flex flex-col">
             {line && <DropLine edge={line} />}
             {row.kind === "room" ? (
-              <RoomListItem blok={row.room} onMenu={setMenu} onDrag={fileDrag} />
+              <RoomListItem
+                blok={row.room}
+                onMenu={setMenu}
+                onDrag={fileDrag}
+                renaming={renaming === row.room.id}
+                onRenamed={(next) => {
+                  setRenaming(null);
+                  // shown at once, here and in the room's header
+                  if (next) dispatch({ type: "patchRoom", blokId: row.room.id, patch: { name: next } });
+                }}
+              />
             ) : (
               <>
                 <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
@@ -1146,7 +1197,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
         </div>
       </div>
 
-      {menu && <RowMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} />}
+      {menu && <RowMenu menu={menu} onClose={() => setMenu(null)} onFile={setFiling} onRename={setRenaming} />}
       {filing && <SectionPicker filing={filing} onClose={() => setFiling(null)} />}
       {showArchived && <ArchivedAgents onClose={() => setShowArchived(false)} />}
     </>

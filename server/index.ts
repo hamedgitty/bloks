@@ -211,7 +211,7 @@ import {
   updateCount,
   type RegistryEntry,
 } from "./skill-registry.ts";
-import { REPORT_UNCERTAIN, type ReservedReport, type ReportResponse, AgentTokens, allows, capabilities, CLI_FROM_ENV, cliBriefing, cliMovedNote, messageHint, runsAProcess, secretHint, type AgentToken } from "./agent-cli.ts";
+import { REPORT_UNCERTAIN, type ReservedReport, type ReportResponse, AgentTokens, allows, capabilities, keptBackRefusal, CLI_FROM_ENV, cliBriefing, cliMovedNote, messageHint, runsAProcess, secretHint, type AgentToken } from "./agent-cli.ts";
 import {
   CACHE_LIFETIME_MS,
   COMPACT_AT,
@@ -18877,7 +18877,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // The omitted selector is stable, even if General or lane state changes.
         const identity = JSON.stringify([m[1], text, requestedTask ?? null, replyTo ?? null, now, ...(named.name ? [named.name] : [])]);
         if (asAgent.report) {
-          if (asAgent.report.identity !== identity) return json(res, 429, { error: "this turn's direct reporting slot is occupied by another submission" });
+          if (asAgent.report.identity !== identity) return json(res, 429, { error: keptBackRefusal(asAgent.report) });
           const receipt = asAgent.report.response;
           return json(res, receipt.status, receipt.body);
         }
@@ -21725,20 +21725,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     if (method === "POST" && path === "/api/bloks") {
       const body = await readBody(req);
+      // counted once each: the same agent named twice is one agent, and
+      // was a way to open a room of one
       const memberIds = Array.isArray(body.memberIds)
-        ? (body.memberIds as unknown[]).filter(
+        ? [...new Set((body.memberIds as unknown[]).filter(
             (id): id is string => typeof id === "string" && roomMayHold(id),
-          )
+          ))]
         : [];
       if (memberIds.length < 2) {
         return json(res, 400, { error: "a room needs at least two agents" });
       }
-      if (memberIds.length > MAX_MEMBERS) {
-        return json(res, 400, { error: `a room holds at most ${MAX_MEMBERS} agents` });
-      }
       // Whoever opened it is in it. An agent that left itself off the
       // roster would have made a room it cannot speak in.
       if (asAgent && !memberIds.includes(asAgent.botId)) memberIds.unshift(asAgent.botId);
+      // and the limit holds with it in
+      if (memberIds.length > MAX_MEMBERS) {
+        return json(res, 400, { error: `a room holds at most ${MAX_MEMBERS} agents` });
+      }
       const lead = readLeadId(body, memberIds, Boolean(asAgent));
       if (!lead.ok) return json(res, lead.status, { error: lead.error });
       const blok = bloks.create(clamp(body.name, MAX_NAME_CHARS) ?? "", memberIds, asAgent ? 0 : Date.now(), lead.leadId ?? null);
@@ -21756,7 +21759,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: { name?: string; memberIds?: string[]; leadOnly?: boolean; leadId?: string | null; cwd?: string; archived?: boolean } = {};
-      if (typeof body.name === "string") patch.name = body.name;
+      // A name sent is a name kept or a refusal. A blank one used to be
+      // taken and quietly ignored, which read as a rename that worked.
+      if ("name" in body && body.name !== undefined) {
+        const name = clamp(body.name, MAX_NAME_CHARS);
+        if (!name) return json(res, 400, { error: "a room needs a name" });
+        patch.name = name;
+      }
       if (typeof body.leadOnly === "boolean") patch.leadOnly = body.leadOnly;
       if (typeof body.archived === "boolean") patch.archived = body.archived;
       // its section, its pin and its place, by the same reading as an agent's
@@ -21773,10 +21782,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.path ?? undefined;
       }
+      // The roster a new room is held to, held to again when it changes:
+      // two at least, MAX_MEMBERS at most, counted once each. A ninth used
+      // to be cut off without a word, and a roster of one was taken,
+      // which a new room has never been. Whoever is in it already stays
+      // if the edit keeps them, roomMayHold or not: that says who may be
+      // put in a room, and a member's solo agent its maker put there is
+      // not the owner's to drop by adding someone else.
       if (Array.isArray(body.memberIds)) {
-        patch.memberIds = (body.memberIds as unknown[]).filter(
-          (id): id is string => typeof id === "string" && roomMayHold(id),
-        );
+        const room = bloks.get(m[1]);
+        if (!room) return json(res, 404, { error: "no such room" });
+        const memberIds = [
+          ...new Set(
+            (body.memberIds as unknown[]).filter(
+              (id): id is string =>
+                typeof id === "string" && (roomMayHold(id) || (room.memberIds.includes(id) && Boolean(store.bot(id)))),
+            ),
+          ),
+        ];
+        if (memberIds.length < 2) {
+          return json(res, 400, { error: "a room needs at least two agents" });
+        }
+        if (memberIds.length > MAX_MEMBERS) {
+          return json(res, 400, { error: `a room holds at most ${MAX_MEMBERS} agents` });
+        }
+        // A crowned lead the new roster leaves out goes with them, and the
+        // room is back on seniority, the way a room made without a crown
+        // is (BlokStore.patch), unless this request crowns someone else.
+        patch.memberIds = memberIds;
       }
       if ("leadId" in body) {
         const room = bloks.get(m[1]);

@@ -255,6 +255,18 @@ const SERVER_KEY = "mcp_servers.u_";
 /** A header name as HTTP allows it. Codex quietly drops any other, which
  * would leave a server short of the very header that carries its key. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** A name an environment variable can have on every system Codex runs on. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** An http or https address with somewhere to go. */
+function webAddress(url: string): boolean {
+  try {
+    const read = new URL(url);
+    return (read.protocol === "http:" || read.protocol === "https:") && read.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 /** Shorter than this, a value is no key, and taking it out of everything
  * written down would take every "1" and "true" with it. */
@@ -311,7 +323,10 @@ export function serverConfig(servers: readonly AttachedServer[] | undefined, opt
     let values: string[];
     if (transport === "http") {
       const url = typeof server.url === "string" ? server.url.trim() : "";
-      if (!/^https?:\/\//i.test(url)) {
+      // read as an address, not only by how it starts: "https://" alone
+      // was mounted as one and failed inside Codex with nothing said
+      // here (GitHub 372)
+      if (!webAddress(url)) {
         leftOut.push(`${label}: it has no http or https address`);
         continue;
       }
@@ -329,8 +344,25 @@ export function serverConfig(servers: readonly AttachedServer[] | undefined, opt
         leftOut.push(`${label}: it has no command to run`);
         continue;
       }
+      if (server.command.includes("\0")) {
+        leftOut.push(`${label}: its command has a character no command line can carry`);
+        continue;
+      }
+      // Every argument as given or none of them: one dropped quietly is a
+      // different command line from the one the person wrote (GitHub 372).
+      const given: unknown = server.args;
+      if (given !== undefined && (!Array.isArray(given) || given.some((arg) => typeof arg !== "string" || arg.includes("\0")))) {
+        leftOut.push(`${label}: its arguments must each be plain text`);
+        continue;
+      }
       const env = filled(server.env);
-      const args = Array.isArray(server.args) ? server.args.filter((arg) => typeof arg === "string") : [];
+      // by name only: a value here can be a key, and this line is shown
+      const badEnv = Object.entries(env ?? {}).find(([key, value]) => !ENV_NAME.test(key) || value.includes("\0"));
+      if (badEnv) {
+        leftOut.push(ENV_NAME.test(badEnv[0]) ? `${label}: the value of ${badEnv[0]} has a character no environment can carry` : `${label}: "${badEnv[0].replace(/[\x00-\x1f\x7f]/g, "").slice(0, 40)}" is not a name an environment variable can have`);
+        continue;
+      }
+      const args = (given as string[] | undefined) ?? [];
       table = { command: server.command, args, ...(env ? { env } : {}) };
       values = Object.values(env ?? {});
     } else {

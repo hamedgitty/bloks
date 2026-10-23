@@ -21,6 +21,7 @@ import {
   matches,
   runsAProcess,
   secretHint,
+  keptBackRefusal,
 } from "../server/agent-cli.ts";
 
 const ME = "bot-me";
@@ -339,6 +340,16 @@ describe("the credential itself", () => {
     const claim = tokens.claimReport(minted, "report", 2);
     assert.equal(minted.report, claim);
     assert.throws(() => tokens.claimReport(minted, "another", 2), (e: any) => e.status === 429, "the kept-back slot is one message");
+  });
+
+  test("a message refused after the kept-back one says which state that one is in, and that nothing went (GitHub 369)", () => {
+    const base = { identity: "x", response: { status: 202, body: {} } };
+    const delivered = keptBackRefusal({ ...base, dispatched: true, accepted: true });
+    assert.match(delivered, /already delivered, so this message was not sent/);
+    assert.match(delivered, /later turn/);
+    assert.match(keptBackRefusal({ ...base, dispatched: true, accepted: false }), /may already have been delivered, so this message was not sent/);
+    assert.match(keptBackRefusal({ ...base, dispatched: false, accepted: false }), /still being sent, so this message was not sent/);
+    for (const said of [delivered, keptBackRefusal({ ...base, dispatched: false, accepted: false })]) assert.doesNotMatch(said, /occupied|[\u2013\u2014]/);
   });
 
   test("expired credentials do not pile up", () => {

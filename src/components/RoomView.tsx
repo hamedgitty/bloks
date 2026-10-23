@@ -17,6 +17,8 @@ import { Download } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { Users } from "@/components/icons";
 import { UserPlus } from "@/components/icons";
+import { Pencil } from "@/components/icons";
+import { Plus } from "@/components/icons";
 import type { RoomPerson } from "@/state/reducer";
 import { SharePanel } from "./SharePanel";
 import { api, useStore, workingInRoom, type Blok, type Bot, type Message } from "@/state/store";
@@ -70,6 +72,9 @@ import { useHoldPlace } from "@/lib/useHoldPlace";
 import { foldHolding, foldRoom, lastFoldKey, rowsFrom } from "@/lib/turnFold";
 import { confirm } from "@/components/ui/confirm";
 import { onAsk, peekRoomAsk, takeAsk } from "@/lib/chatAsk";
+import { freshStartPreset } from "@/lib/roomEdit";
+import { RoomRename } from "./room/RoomRename";
+import { RoomAgentsDialog } from "./room/RoomAgentsDialog";
 
 /** A reaction in a room is the cheapest thing anyone can say, and often
  * the right thing: agreeing with a plan should not wake six agents. */
@@ -669,6 +674,9 @@ export function RoomView({ blok }: { blok: Blok }) {
   const [forwarding, setForwarding] = useState<{ message: Message; author: string } | null>(null);
   const [showRoutines, setShowRoutines] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  // the name in the header, while it is a field
+  const [renaming, setRenaming] = useState(false);
+  const [editingAgents, setEditingAgents] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   // The crown goes to whoever the server would actually route to: the
@@ -953,6 +961,19 @@ export function RoomView({ blok }: { blok: Blok }) {
     }).catch(() => {});
   };
 
+  // Shown at once in the header and the sidebar, and taken back with the
+  // reason if the server says no (src/lib/roomPatch.ts).
+  const rename = (next: string | null) => {
+    setRenaming(false);
+    if (next) dispatch({ type: "patchRoom", blokId: blok.id, patch: { name: next } });
+  };
+
+  // A room is one conversation, so starting clean is a new room with the
+  // same team, opened in the New room dialog to be looked over first.
+  // This one, and everything said in it, stays where it is.
+  const freshStart = () =>
+    dispatch({ type: "toggleNewRoom", open: true, preset: freshStartPreset(blok, state.bots) });
+
   // One stretch of the room as its rows: what stays in the open, or a
   // fold's work once it is opened. Who spoke last and a run of tool calls
   // are read within the stretch, since rows with a fold between them are
@@ -1027,7 +1048,11 @@ export function RoomView({ blok }: { blok: Blok }) {
             <Users size={15} />
           </span>
           <span className="min-w-0">
-            <span className="block truncate text-ui font-semibold text-foreground">{blok.name}</span>
+            {renaming ? (
+              <RoomRename name={blok.name} onDone={rename} className="-ml-1.5 block w-[min(360px,55vw)] text-ui font-semibold" />
+            ) : (
+              <span className="block truncate text-ui font-semibold text-foreground">{blok.name}</span>
+            )}
             {/* the lead first, crowned, so a phone without the faces on
                 the right still says who has the final call */}
             <span className="flex min-w-0 items-center gap-1 text-small text-muted-foreground">
@@ -1060,10 +1085,11 @@ export function RoomView({ blok }: { blok: Blok }) {
           <RoomFolderButton blok={blok} />
           <GroupCallButton blok={blok} members={answering} />
           {/* What you reach for while reading stays in the header: people,
-              the folder, a call and how to read it. Tidying the room
-              (routines, saving or exporting the team, lead-only, closing
-              it) is a menu, at every width, so the header never becomes a
-              toolbar of look-alike icons. */}
+              the folder, a call and how to read it. Changing the room (its
+              name, its agents, a fresh start) and tidying it (routines,
+              saving or exporting the team, lead-only, closing it) is a
+              menu, at every width, so the header never becomes a toolbar
+              of look-alike icons. */}
           <Button
             variant="ghost"
             size="icon"
@@ -1079,6 +1105,9 @@ export function RoomView({ blok }: { blok: Blok }) {
           </Button>
           <RoomMenu
             blok={blok}
+            onRename={() => setRenaming(true)}
+            onAgents={() => setEditingAgents(true)}
+            onFreshStart={freshStart}
             justSaved={justSaved}
             onRoutines={() => setShowRoutines(true)}
             onSave={saveToLibrary}
@@ -1271,6 +1300,7 @@ export function RoomView({ blok }: { blok: Blok }) {
           onClose={() => setShowRoutines(false)}
         />
       )}
+      {editingAgents && <RoomAgentsDialog blok={blok} onClose={() => setEditingAgents(false)} />}
     </main>
   );
 }
@@ -1351,14 +1381,17 @@ function RoomFolderButton({ blok }: { blok: Blok }) {
 }
 
 /**
- * The room's management actions, for a window too narrow to show them.
+ * The room's management actions, at every width.
  *
- * Only below sm: a desktop header has room for the buttons and they are
- * quicker there. The same handlers either way, so what the menu does and
- * what the buttons do cannot come apart.
+ * Changing the room itself comes first: its name, who is in it, and a
+ * fresh start with the same team, since a room is one conversation and
+ * has no "New conversation" of its own. Tidying it follows.
  */
 function RoomMenu({
   blok,
+  onRename,
+  onAgents,
+  onFreshStart,
   justSaved,
   onRoutines,
   onSave,
@@ -1370,6 +1403,11 @@ function RoomMenu({
   onClose,
 }: {
   blok: Blok;
+  /** Turns the name in the header into a field. */
+  onRename: () => void;
+  onAgents: () => void;
+  /** The New room dialog, filled in with this room's team. */
+  onFreshStart: () => void;
   justSaved: boolean;
   onRoutines: () => void;
   onSave: () => void;
@@ -1382,6 +1420,9 @@ function RoomMenu({
   onLead: (id: string | null) => void;
   onClose: () => void;
 }) {
+  // The rename starts once the menu has gone: closing hands focus back to
+  // the menu's button, which would take it straight out of the new field.
+  const renameNext = useRef(false);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1389,7 +1430,29 @@ function RoomMenu({
           <MoreHorizontal size={16} />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[210px]">
+      <DropdownMenuContent
+        align="end"
+        className="min-w-[210px]"
+        onCloseAutoFocus={(e) => {
+          if (!renameNext.current) return;
+          renameNext.current = false;
+          e.preventDefault();
+          onRename();
+        }}
+      >
+        <DropdownMenuItem onClick={() => (renameNext.current = true)}>
+          <Pencil size={15} />
+          Rename…
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onAgents}>
+          <Users size={15} />
+          Agents…
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onFreshStart}>
+          <Plus size={15} />
+          New room with these agents…
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onRoutines}>
           <CalendarClock size={15} />
           Routines
