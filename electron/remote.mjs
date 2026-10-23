@@ -665,6 +665,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
       const type = answer.type ?? "application/octet-stream";
       res.writeHead(answer.status, {
         "content-type": type,
+        ...((url.pathname === "/api/plan" || url.pathname.startsWith("/api/plan/")) ? { "cache-control": "no-store" } : {}),
         "x-content-type-options": "nosniff",
         // A file the API returns as itself (an agent's HTML artifact, an
         // app's page) is sandboxed by the server so it cannot run as this
@@ -816,6 +817,7 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
       const type = answer.headers.get("content-type") ?? "application/octet-stream";
       res.writeHead(answer.status, {
         "content-type": type,
+        ...((url.pathname === "/api/plan" || url.pathname.startsWith("/api/plan/")) ? { "cache-control": "no-store" } : {}),
         "x-content-type-options": "nosniff",
         // a file served as itself stays sandboxed off this origin, as the
         // owner's server would have had it

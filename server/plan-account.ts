@@ -458,19 +458,15 @@ export interface PlanRouteDeps {
 
 const ENDED = new Set(["canceled", "cancelled", "incomplete_expired", "unpaid"]);
 
-/**
- * GET /api/plan, POST /api/plan/manage, POST /api/plan/hosting/link and
- * DELETE /api/plan/licence. The caller has already made sure it is this
- * computer's own window asking, never an agent's credential and never a
- * paired device: the plan, the way to billing and the way into a hosted
- * workspace are the owner's.
- */
+/** The caller authenticates the owner and admits only view/manage from
+ * paired devices. Key and hosting operations remain local-window-only. */
 export async function planRoute(
   method: string,
   path: string,
   query: URLSearchParams,
   deps: PlanRouteDeps,
   plan: PlanAccount,
+  local: boolean,
 ): Promise<{ status: number; body: unknown } | null> {
   if (path === "/api/plan" && method === "GET") {
     const fresh = query.get("fresh") === "1";
@@ -488,7 +484,8 @@ export async function planRoute(
     return {
       status: 200,
       body: {
-        licence: { present: Boolean(licence), masked: maskLicence(licence), kept: Boolean(licence) && deps.kept() },
+        capabilities: { licence: local, hosting: local },
+        licence: { present: Boolean(licence), masked: maskLicence(licence), kept: local && Boolean(licence) && deps.kept() },
         account,
         accountState: answer?.state ?? "none",
         accountAt: answer?.at ?? null,

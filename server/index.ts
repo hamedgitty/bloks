@@ -19261,18 +19261,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, { enabled: false, connected: false, spaceId: null });
     }
 
-    // The Plan page (server/plan-account.ts): the membership on the
-    // licence, the offers on it, the way to billing, and forgetting the
-    // key. This computer's own window only: never an agent, whose
-    // business the person's billing is not, and never a paired device,
-    // since the answer is read with the licence itself.
+    // The owner may read and open billing from a paired device too. A
+    // device credential never inherits the local window's machine controls,
+    // even on loopback, and a member's credential never speaks as the owner.
     if (path === "/api/plan" || path.startsWith("/api/plan/")) {
-      if (asAgent || !local) return json(res, 403, { error: "your plan is shown on this computer only" });
-      const answered = await planRoute(method, path, url.searchParams, planDeps, planAccount);
+      const device = caller ?? deviceForToken(bearerToken(req));
+      const windowHere = local && req.headers.authorization === undefined;
+      const ownerDevice = device && device.personId === undefined;
+      const portable = (method === "GET" && path === "/api/plan") || (method === "POST" && path === "/api/plan/manage");
+      if (asAgent || device?.personId || (!windowHere && (!ownerDevice || !portable))) {
+        return noStore(res, 403, { error: "Only the owner can read or manage this workspace's subscription. Key and hosting controls require its local window." });
+      }
+      const answered = await planRoute(method, path, url.searchParams, planDeps, planAccount, windowHere);
       if (answered) {
-        // the app starts a move to Hosting once it is running, and the page
-        // is often the first to hear (somebody back from checkout)
-        if (method === "GET" && path === "/api/plan") tellDesktopAccount(answered.body);
+        // Only the local window shares the account with this app's other
+        // workspaces. A connected client's own app may use a different key.
+        if (windowHere && method === "GET" && path === "/api/plan") tellDesktopAccount(answered.body);
+        res.setHeader("cache-control", "no-store");
         return json(res, answered.status, answered.body);
       }
     }

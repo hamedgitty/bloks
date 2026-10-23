@@ -54,6 +54,8 @@ export interface Account {
 
 /** GET /api/plan, as this computer's server answers it. */
 export interface PlanSnapshot {
+  /** Absent on older local servers. Paired clients may view/manage only. */
+  capabilities?: { licence: boolean; hosting: boolean };
   licence: { present: boolean; masked: string | null; kept: boolean };
   account: Account | null;
   /** live: just asked. cached: the last answer, since bloks.dev could not

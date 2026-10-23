@@ -106,7 +106,7 @@ export type BloksAi = ReturnType<typeof useBloksAi>;
 /** The choices that are the person's: connecting a key on a machine that
  * activated Cloud before Bloks AI existed, background work, and a team's
  * daily caps. */
-export function BloksAiSettings({ ai }: { ai: BloksAi }) {
+export function BloksAiSettings({ ai, canConnect = true }: { ai: BloksAi; canConnect?: boolean }) {
   const [key, setKey] = useState("");
   const status = ai.status;
   if (!status || !status.offered) return <TeamSignInNotice className="mb-9" />;
@@ -117,7 +117,7 @@ export function BloksAiSettings({ ai }: { ai: BloksAi }) {
     <>
       {status.teamSignInWarning && <TeamSignInNotice className="mb-6" />}
       <SettingsGroup title="Bloks AI" footnote={status.fromEnvironment ? "This machine came with its own Bloks AI token." : undefined}>
-        {status.needsKey && (
+        {canConnect && status.needsKey && (
           <SettingRow label="Connect Bloks AI" description="The same key you activated Cloud with." rowId="connect-bloks-ai" error={ai.error}>
             <div className="mt-3 flex items-start gap-2">
               <SecretField

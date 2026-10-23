@@ -2822,9 +2822,17 @@ licence as the bearer, for the account and the offers on that plan;
 pressed; `POST /api/plan/hosting/link` asks for a pairing link to the
 hosted workspace on the licence, for the managed hosting that is coming
 (see Hosted mode); and `DELETE /api/plan/licence` forgets the key here
-and takes the workspace offline. These answer this computer's own window
-only, never an agent or a paired device, since the answer is read with
-the licence itself. The key never comes back to the page, only masked. What
+and takes the workspace offline. Reading the plan and explicitly opening
+management also answer authenticated owner devices over LAN or the sealed
+relay, using the host's licence. Agents and member credentials never reach
+these routes, including a member credential presented on loopback. Licence
+removal and hosting links remain exclusive to the host's uncredentialed local
+window. `capabilities.licence` and `capabilities.hosting` describe those local
+controls; the desktop hides remote key, hosting and local-key offer actions.
+Plan responses are not cached by HTTP clients; failed refreshes visibly label
+previously loaded details, and authorization refusal clears them. Native
+phone and deployed web adoption remains a separate client contract (#357).
+The key never comes back to the page, only masked. What
 the site sends is read as unknowns and checked one field at a time, with
 strings bounded and stripped of control and direction characters, and a
 price is shown as the site wrote it, never worked out here. The last good

@@ -259,7 +259,8 @@ function PlanCard({
   manageError: string | null;
   onChanged: () => void;
 }) {
-  const key = planKey(snapshot, appPlanOf(useWorkspaces()));
+  const appPlan = appPlanOf(useWorkspaces());
+  const key = planKey(snapshot, snapshot.capabilities?.licence === false ? undefined : appPlan);
   const account = snapshot.account;
   const status = account ? statusOf(account) : null;
   const stale = staleWords(snapshot);
@@ -271,7 +272,7 @@ function PlanCard({
       <div className="p-6 max-sm:p-5">
         <Headline
           glyph={key}
-          name={planName(key)}
+          name={account ? planName(key) : "Subscription details unavailable"}
           pill={pill && <HealthLine tone={pill.tone} label={pill.label} />}
           facts={
             facts.length > 0 &&
@@ -321,7 +322,7 @@ function PlanCard({
           </p>
         )}
       </div>
-      <KeyFooter snapshot={snapshot} onChanged={onChanged} />
+      {snapshot.capabilities?.licence !== false && <KeyFooter snapshot={snapshot} onChanged={onChanged} />}
     </section>
   );
 }
@@ -655,6 +656,7 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
   const go = (page: string) => dispatch({ type: "toggleAppSettings", open: true, page });
   const key = planKey(snapshot, appPlanOf(useWorkspaces()));
   const account = snapshot.account;
+  const localLicence = snapshot.capabilities?.licence !== false;
   const team = snapshot.ownerPlan === "team" || account?.plan === "team";
   const spaces = relay?.spaces ?? null;
   const members = snapshot.members;
@@ -748,7 +750,7 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
           status.refused ? (
             <span className="text-warning">{status.refused.message}</span>
           ) : status.needsKey ? (
-            "Connect it below with your key"
+            localLicence ? "Connect it below with your key" : "Key controls are available in the host's local window"
           ) : (
             <>
               {[status.low && !empty ? "Running low" : null, resets ? `Resets ${shortDate(resets)}` : null, extra]
@@ -757,9 +759,9 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
                 .join("")}
               {/* the site's own page, so the key rides along in the
                   fragment and nobody types it again there */}
-              <button type="button" title={TOP_UP_WORDS} className={link} onClick={() => void openOffer(status.checkoutUrl)}>
+              {localLicence && <button type="button" title={TOP_UP_WORDS} className={link} onClick={() => void openOffer(status.checkoutUrl)}>
                 Top up
-              </button>
+              </button>}
             </>
           )
         }
@@ -785,7 +787,7 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
     <SettingsGroup
       title="What you have"
       action={
-        locked &&
+        localLicence && locked &&
         ladder.some((o) => o.onSale && o.cta) && (
           <button type="button" className={cn(link, "inline-flex items-center gap-0.5 text-small")} onClick={toOptions}>
             Upgrade
@@ -805,11 +807,11 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
 /** Hosting, once the licence has it, in the place the way to it held:
  * the machine's row, and room under it for what follows the row (moving
  * the agents onto the machine), handed in as `below`. */
-function HostingGroup({ hosting, state, below }: { hosting: NonNullable<ReturnType<typeof hostingWords>>; state: string | null; below?: React.ReactNode }) {
+function HostingGroup({ hosting, state, below, controls = true }: { hosting: NonNullable<ReturnType<typeof hostingWords>>; state: string | null; below?: React.ReactNode; controls?: boolean }) {
   return (
     <section aria-label="Hosting" className="mb-9 last:mb-0">
       <SettingsGroup title="Hosting" className={below ? "mb-3" : "mb-0"}>
-        <HostingRow hosting={hosting} state={state} />
+        <HostingRow hosting={hosting} state={state} controls={controls} />
       </SettingsGroup>
       {below}
     </section>
@@ -859,7 +861,7 @@ function countdown(until: number, now: number): string {
  * everywhere else, for the phone to scan. Nothing here needs a terminal
  * on the machine, which nobody has.
  */
-function HostingRow({ hosting, state }: { hosting: NonNullable<ReturnType<typeof hostingWords>>; state: string | null }) {
+function HostingRow({ hosting, state, controls }: { hosting: NonNullable<ReturnType<typeof hostingWords>>; state: string | null; controls: boolean }) {
   const workspaces = useWorkspaces();
   const listed = workspaces.available ? workspaces.workspaces.find((w) => w.kind === "hosted") : undefined;
   const canList = Boolean(window.bloks?.workspaceHosted);
@@ -925,7 +927,7 @@ function HostingRow({ hosting, state }: { hosting: NonNullable<ReturnType<typeof
 
   return (
     <SettingRow label={hosting.name} description={hosting.line} control={<HealthLine tone={hosting.tone} label={hosting.label} />}>
-      {running && (
+      {running && controls && (
         <div className="mt-3 flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
             {listed ? (
@@ -1183,7 +1185,9 @@ function PlanSkeleton() {
 
 export function PlanPage() {
   const { snapshot, problem, news, loading } = usePlan();
-  const appPlan = appPlanOf(useWorkspaces());
+  const workspaces = useWorkspaces();
+  const appPlan = appPlanOf(workspaces);
+  const workspace = currentWorkspace(workspaces);
   const ai = useBloksAi();
   const [managing, setManaging] = useState(false);
   const [manageError, setManageError] = useState<string | null>(null);
@@ -1229,7 +1233,7 @@ export function PlanPage() {
         <SettingsGroup>
           <SettingsEmpty
             icon={<Lock size={18} />}
-            title="Your plan isn't here"
+            title="Subscription unavailable"
             body={problem}
             action={
               <Button size="sm" variant="secondary" onClick={() => void loadPlan(true)}>
@@ -1249,23 +1253,34 @@ export function PlanPage() {
   const hosting = hostingWords(snapshot.account?.hosting ?? null);
   // the way to Hosting, for a licence known to have none (an account that
   // could not be read at all might have it)
-  const hostingCard = free || (snapshot.account !== null && !hosting);
+  const localLicence = snapshot.capabilities?.licence !== false;
+  const localHosting = snapshot.capabilities?.hosting !== false;
+  const hostingCard = localHosting && (free || (snapshot.account !== null && !hosting));
   return (
     <div className="@container">
+      {snapshot.capabilities?.licence === false && (
+        <p className="mb-3 text-small text-muted-foreground">
+          {workspace?.name ? `Subscription for ${workspace.name}` : "This workspace's subscription"}{snapshot.account?.email ? ` · ${snapshot.account.email}` : ""}
+          {snapshot.licence.masked ? ` · ${snapshot.licence.masked}` : ""}
+        </p>
+      )}
+      {problem && <p role="status" className="mb-4 text-small text-muted-foreground">{problem} <TryAgain busy={loading} /></p>}
       <AnimatePresence>{news?.up && <PlanMoment key={news.at} words={news.words} at={news.at} />}</AnimatePresence>
       {free ? (
-        <FreeCard onActivated={changed} />
+        localLicence ? <FreeCard onActivated={changed} /> : (
+          <SettingsEmpty icon={<Lock size={18} />} title="No subscription key reported" body="This workspace reports no subscription key. Key changes are available only in its host's local window." />
+        )
       ) : (
         <PlanCard snapshot={snapshot} loading={loading} onManage={() => void manage()} managing={managing} manageError={manageError} onChanged={changed} />
       )}
-      {!free && <WhatYouHave snapshot={snapshot} relay={relay} ai={ai} />}
+      {!free && snapshot.account && <WhatYouHave snapshot={snapshot} relay={relay} ai={ai} />}
       {hostingCard ? (
         <MoveToHostingCard snapshot={snapshot} appPlan={appPlan} />
       ) : (
-        hosting && <HostingGroup hosting={hosting} state={snapshot.account?.hosting?.state ?? null} below={<HostingMove />} />
+        hosting && <HostingGroup hosting={hosting} state={snapshot.account?.hosting?.state ?? null} controls={localHosting} below={localHosting ? <HostingMove /> : undefined} />
       )}
-      {!free && bloksAiShown(ai, snapshot.account) && <BloksAiSettings ai={ai} />}
-      <YourOptions snapshot={snapshot} loading={loading} retryShown={retryShown} hostingCard={hostingCard} />
+      {!free && bloksAiShown(ai, snapshot.account) && <BloksAiSettings ai={ai} canConnect={localLicence} />}
+      {localLicence && <YourOptions snapshot={snapshot} loading={loading} retryShown={retryShown} hostingCard={hostingCard} />}
     </div>
   );
 }
