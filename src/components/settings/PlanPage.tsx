@@ -260,7 +260,7 @@ function PlanCard({
   onChanged: () => void;
 }) {
   const appPlan = appPlanOf(useWorkspaces());
-  const key = planKey(snapshot, snapshot.capabilities?.licence === false ? undefined : appPlan);
+  const key = planKey(snapshot, snapshot.capabilities?.licence === true ? appPlan : undefined);
   const account = snapshot.account;
   const status = account ? statusOf(account) : null;
   const stale = staleWords(snapshot);
@@ -322,7 +322,7 @@ function PlanCard({
           </p>
         )}
       </div>
-      {snapshot.capabilities?.licence !== false && <KeyFooter snapshot={snapshot} onChanged={onChanged} />}
+      {snapshot.capabilities?.licence === true && <KeyFooter snapshot={snapshot} onChanged={onChanged} />}
     </section>
   );
 }
@@ -656,7 +656,7 @@ function WhatYouHave({ snapshot, relay, ai }: { snapshot: PlanSnapshot; relay: R
   const go = (page: string) => dispatch({ type: "toggleAppSettings", open: true, page });
   const key = planKey(snapshot, appPlanOf(useWorkspaces()));
   const account = snapshot.account;
-  const localLicence = snapshot.capabilities?.licence !== false;
+  const localLicence = snapshot.capabilities?.licence === true;
   const team = snapshot.ownerPlan === "team" || account?.plan === "team";
   const spaces = relay?.spaces ?? null;
   const members = snapshot.members;
@@ -1253,12 +1253,12 @@ export function PlanPage() {
   const hosting = hostingWords(snapshot.account?.hosting ?? null);
   // the way to Hosting, for a licence known to have none (an account that
   // could not be read at all might have it)
-  const localLicence = snapshot.capabilities?.licence !== false;
-  const localHosting = snapshot.capabilities?.hosting !== false;
+  const localLicence = snapshot.capabilities?.licence === true;
+  const localHosting = snapshot.capabilities?.hosting === true;
   const hostingCard = localHosting && (free || (snapshot.account !== null && !hosting));
   return (
     <div className="@container">
-      {snapshot.capabilities?.licence === false && (
+      {snapshot.capabilities?.licence !== true && (
         <p className="mb-3 text-small text-muted-foreground">
           {workspace?.name ? `Subscription for ${workspace.name}` : "This workspace's subscription"}{snapshot.account?.email ? ` · ${snapshot.account.email}` : ""}
           {snapshot.licence.masked ? ` · ${snapshot.licence.masked}` : ""}

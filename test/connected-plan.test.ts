@@ -2,12 +2,14 @@
 // and the desktop's sealed relay path. All accounts, devices and links
 // here belong to disposable loopback fixtures, never a billing service.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
+import { keyFromToken, open, peek, seal } from "../server/relay-crypto.ts";
 import { startLanProxy, startRemoteProxy } from "../electron/remote.mjs";
 import { controlledChain } from "./helpers/agent-chain.ts";
 import { startFakeSite, SITE_LICENCE } from "./helpers/fake-site.ts";
@@ -21,7 +23,7 @@ const device = (id: string, token: string, personId?: string) => ({
   ...(personId ? { personId } : {}),
 });
 
-async function fixture(t: TestContext, options: { relay?: string } = {}) {
+async function fixture(t: TestContext, options: { relay?: string; preload?: (home: string) => string; fault?: boolean } = {}) {
   const site = await startFakeSite();
   t.after(() => site.close());
   site.setAccount(SITE_LICENCE, { plan: "team", hosting: { tier: "standard", state: "active" } });
@@ -43,7 +45,25 @@ async function fixture(t: TestContext, options: { relay?: string } = {}) {
       ...(role === "guest" ? {} : { role, joinedAt: 1, invitedBy: "owner" }) })),
     memberships: [], invites: [], knocks: [],
   }));
-  const h = await startHarness({ HOME: home, BLOKS_SITE_URL: site.base, BLOKS_CREDITS_URL: `${site.base}/api/ai`,
+  let siteBase = site.base;
+  if (options.fault) {
+    const front = createServer(async (req, res) => {
+      let body = ""; for await (const chunk of req) body += chunk;
+      if (req.url === "/api/cloud/manage") {
+        res.writeHead(503, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ error: `PRIVATE-SERVICE-DETAIL ${SITE_LICENCE}`, url: `${site.base}/portal/PRIVATE-PORTAL-MARKER` }));
+      }
+      const answer = await fetch(site.base + req.url, { method: req.method, headers: req.headers as Record<string, string>, ...(body ? { body } : {}) });
+      res.writeHead(answer.status, { "content-type": "application/json" }); res.end(await answer.text());
+    });
+    await new Promise<void>((resolve) => front.listen(0, "127.0.0.1", resolve));
+    siteBase = `http://127.0.0.1:${(front.address() as { port: number }).port}`;
+    t.after(() => { front.closeAllConnections(); front.close(); });
+  }
+  const preload = options.preload ? join(home, "fixture-preload.mjs") : null;
+  if (preload) writeFileSync(preload, options.preload!(home));
+  const h = await startHarness({ HOME: home, BLOKS_SITE_URL: siteBase,
+    ...(preload ? { NODE_OPTIONS: `--import=${preload}` } : {}), BLOKS_CREDITS_URL: `${site.base}/api/ai`,
     BLOKS_LOOPBACK_ONLY: "1" });
   t.after(async () => { await h.stop(); rmSync(home, { recursive: true, force: true }); });
   return { h, site, home, data, config };
@@ -126,6 +146,10 @@ test("only local requests without any bearer retain licence and hosting actions;
   assert.equal(bearer.status, 200);
   assert.match(bearer.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual((await bearer.json()).capabilities, { licence: false, hosting: false });
+  const managedHere = await localBearer(h, OWNER, "/api/plan/manage", "POST");
+  assert.equal(managedHere.status, 200);
+  assert.match(managedHere.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal((await managedHere.json()).url, `${site.base}/portal/session-1`);
   const before = site.bearers.length;
   for (const [method, path] of remoteForbidden) {
     assert.equal((await remote(h, path, method)).status, 403, `${method} ${path} opened remotely`);
@@ -244,6 +268,16 @@ test("the actual desktop proxy carries the owner's Plan and action-only manageme
   for (const [method, path] of remoteForbidden) assert.equal((await ask(path, { method })).status, 403, `${method} ${path}`);
   assert.equal(site.bearers.length, before);
   noSecret(h.logs(), `${site.base}/portal/session-1`);
+  site.down(true);
+  for (const [path, method] of [["/api/plan?fresh=1", "GET"], ["/api/plan/manage", "POST"]] as const) {
+    const failed = await ask(path, { method });
+    assert.equal(failed.status, method === "GET" ? 200 : 502);
+    assert.match(failed.headers.get("cache-control") ?? "", /no-store/);
+    const body = await failed.json();
+    if (method === "GET") assert.equal(body.accountState, "cached");
+    else assert.equal(body.url, undefined);
+    noSecret(JSON.stringify(body), `${site.base}/portal/session-1`);
+  }
 });
 
 test("an actual agent turn cannot use Plan even when its request is local", async (t) => {
@@ -271,7 +305,7 @@ test("the desktop LAN proxy keeps Plan replies private and retains the paired ow
   const app = await startLanProxy({ lan: new URL(h.url).host, deviceToken: OWNER, deviceId: "owner-device" }, { staticDir: ui });
   t.after(() => app.stop());
   const ask = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${app.port}${path}`, init);
-  const shown = await ask("/api/plan");
+  const shown = await ask("/api/plan?fresh=1");
   assert.equal(shown.status, 200);
   assert.match(shown.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual((await shown.json()).capabilities, { licence: false, hosting: false });
@@ -281,4 +315,182 @@ test("the desktop LAN proxy keeps Plan replies private and retains the paired ow
   assert.equal((await manage.json()).url, `${site.base}/portal/session-1`);
   assert.equal((await ask("/api/plan/licence", { method: "DELETE" })).status, 403);
   assert.equal((await ask("/api/plan/hosting/link", { method: "POST" })).status, 403);
+  site.down(true);
+  const failed = await ask("/api/plan/manage", { method: "POST" });
+  assert.equal(failed.status, 502);
+  assert.match(failed.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal((await failed.json()).url, undefined);
+  const cached = await ask("/api/plan?fresh=1");
+  assert.match(cached.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal((await cached.json()).accountState, "cached");
+});
+
+// Observe the relay's actual HTTP wire without decrypting it there. The
+// request replay below is byte-identical ciphertext from the desktop.
+async function observedRelay(t: TestContext) {
+  const relay = await sealedRelay();
+  const wire: string[] = [];
+  const asks: string[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      wire.push(`${req.method} ${req.url}\n${body}`);
+      if (req.url === "/space/client/ask") asks.push(body);
+      const next = httpRequest(relay.url + req.url, { method: req.method, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.on("data", (chunk) => { wire.push(String(chunk)); res.write(chunk); });
+        answer.on("end", () => res.end());
+      });
+      next.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      next.end(body);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { server.closeAllConnections(); server.close(); await relay.stop(); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return { url, connection: relay.connection, wire, asks };
+}
+
+test("sealed management replays do not mint a second link; a revoked relay device never becomes the local owner", { timeout: 60_000 }, async (t) => {
+  const relay = await observedRelay(t);
+  const { h, site, data, config } = await fixture(t, { relay: relay.url });
+  await relay.connection;
+  const stopEvents = await events(h, t);
+  const ui = mkdtempSync(join(tmpdir(), "bloks-plan-replay-ui-"));
+  writeFileSync(join(ui, "index.html"), "<!doctype html><title>Fixture</title>");
+  t.after(() => rmSync(ui, { recursive: true, force: true }));
+  const app = await startRemoteProxy({ relayUrl: relay.url, relayToken: "fixture-relay-client", deviceId: "owner-device", deviceToken: OWNER }, { staticDir: ui });
+  t.after(() => app.stop());
+  const ask = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${app.port}${path}`, init);
+  const first = await ask("/api/plan/manage", { method: "POST" });
+  assert.equal(first.status, 200);
+  const portal = (await first.json()).url;
+  assert.equal(portal, `${site.base}/portal/session-1`);
+  assert.equal(site.bearers.length, 1);
+  const captured = relay.asks.find((text) => {
+    const request = open(keyFromToken(OWNER, "phone-to-mac"), peek(JSON.parse(text).payload)!) as { path?: string } | null;
+    return request?.path === "/api/plan/manage";
+  });
+  assert.ok(captured, "the desktop did not use the sealed manage route");
+  const replay = await fetch(`${relay.url}/space/client/ask`, { method: "POST", headers: { "content-type": "application/json" }, body: captured });
+  const replayed = await replay.json();
+  assert.equal((open(keyFromToken(OWNER, "mac-to-phone"), peek(replayed.payload)!) as { status: number }).status, 409);
+  assert.equal(site.bearers.length, 1, "a repeated nonce contacted billing twice");
+  const fresh = await ask("/api/plan/manage", { method: "POST" });
+  assert.equal(fresh.status, 200);
+  assert.equal(site.bearers.length, 2, "a fresh explicit action was not served exactly once");
+  await fresh.arrayBuffer();
+  const shown = await ask("/api/plan?fresh=1");
+  assert.equal(shown.status, 200);
+  noSecret(await shown.text(), portal);
+  noSecret(JSON.stringify(await h.json("/api/bots?messages=1")), portal);
+  noSecret(await stopEvents(), portal);
+  noSecret(retainedText(data), portal);
+  noSecret(h.logs(), portal);
+  noSecret(relay.wire.join("\n"), portal);
+  // Drop the device in the real registry, then send an otherwise valid,
+  // fresh envelope using its former key, never a forged internal header.
+  writeFileSync(join(data, "config.json"), JSON.stringify({ ...config, remote: { ...config.remote, devices: [] } }));
+  const before = site.bearers.length;
+  const payload = seal(keyFromToken(OWNER, "phone-to-mac"), "owner-device", { method: "POST", path: "/api/plan/manage", ts: Date.now(), nonce: randomUUID() });
+  const revoked = await fetch(`${relay.url}/space/client/ask`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload }) });
+  assert.deepEqual(await revoked.json(), { payload: "" }, "a revoked device was still given a sealed answer");
+  assert.equal(site.bearers.length, before);
+});
+
+test("real restricted reply, delegate and messenger credentials cannot read or manage the Plan", async (t) => {
+  const trace = "fixture-restricted-tokens.json";
+  const { h, site, home } = await fixture(t, { preload: (root) => `
+import { writeFileSync } from "node:fs";
+import { AgentTokens } from ${JSON.stringify(new URL("../server/agent-cli.ts", import.meta.url).href)};
+const identify = AgentTokens.prototype.identify;
+let made = false;
+AgentTokens.prototype.identify = function (...args) {
+  if (!made) {
+    made = true;
+    const now = Date.now();
+    const owner = { owner: true, botId: "fixture", bindingGeneration: "fixture", userId: 1, name: "Fixture", requester: "owner", chatId: -1, group: { title: "Fixture" } };
+    const delegate = { botId: "fixture", bindingGeneration: "fixture", personId: "fixture-delegate", userId: 2, name: "Fixture", grant: "fixture", requester: "fixture-delegate", chatId: 2 };
+    writeFileSync(${JSON.stringify(join(root, trace))}, JSON.stringify({
+      reply: this.mintReply("fixture", "fixture-lane", now, owner, 1).token,
+      delegate: this.mintReply("fixture", "fixture-lane", now, delegate, 1).token,
+      messenger: this.mintMessenger("fixture", "fixture-lane", now).token,
+    }));
+  }
+  return identify.apply(this, args);
+};
+` });
+  const tokens = JSON.parse(readFileSync(join(home, trace), "utf8"));
+  for (const [kind, token] of Object.entries(tokens)) {
+    assert.match(String(token), kind === "messenger" ? /^blm_/ : /^blr_/);
+    for (const [method, path] of [["GET", "/api/plan"], ["GET", "/api/plan?fresh=1"], ["POST", "/api/plan/manage"], ["POST", "/api/plan/hosting/link"], ["DELETE", "/api/plan/licence"]] as const) {
+      const refused = await localBearer(h, String(token), path, method);
+      assert.equal(refused.status, 403, `${kind} ${method} ${path}`);
+      assert.match((await refused.json()).error, /only (reply|message)/, "the genuine restricted credential was not identified");
+    }
+  }
+  assert.deepEqual(site.bearers, []);
+});
+
+test("management service failure details never escape through a server response or retained state", async (t) => {
+  const { h, data } = await fixture(t, { fault: true });
+  const stopEvents = await events(h, t);
+  for (const token of [undefined, OWNER]) {
+    const answer = await h.fetch("/api/plan/manage", { method: "POST", ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}) });
+    assert.equal(answer.status, 502);
+    assert.match(answer.headers.get("cache-control") ?? "", /no-store/);
+    assert.deepEqual(await answer.json(), { error: "bloks.dev couldn't open billing just now. Try again in a moment." });
+  }
+  const publicText = [h.logs(), retainedText(data), await stopEvents()].join("\n");
+  noSecret(publicText);
+  assert.doesNotMatch(publicText, /PRIVATE-SERVICE-DETAIL|PRIVATE-PORTAL-MARKER/);
+});
+
+test("remote Plan reads update host entitlements without emitting a desktop account that can trigger Hosting", async (t) => {
+  const { h, home, data } = await fixture(t, { preload: (root) => `
+import { appendFileSync } from "node:fs";
+process.parentPort = {
+  postMessage(message) { appendFileSync(${JSON.stringify(join(root, "fixture-ipc.jsonl"))}, JSON.stringify(message) + "\\n"); },
+  on() {},
+};
+` });
+  const frames = () => readFileSync(join(home, "fixture-ipc.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const before = frames().length;
+  const remoteRead = await localBearer(h, OWNER, "/api/plan?fresh=1");
+  assert.equal(remoteRead.status, 200);
+  assert.equal((await remoteRead.json()).ownerPlan, "team");
+  assert.equal(JSON.parse(readFileSync(join(data, "owner-plan.json"), "utf8")).plan, "team");
+  const remoteFrames = frames().slice(before);
+  assert.ok(remoteFrames.some((frame) => frame.kind === "desktop.plan" && frame.plan === "team"), "host entitlement update was suppressed");
+  assert.equal(remoteFrames.filter((frame) => frame.kind === "desktop.account").length, 0);
+  const afterRemote = frames().length;
+  assert.equal((await h.fetch("/api/plan?fresh=1")).status, 200);
+  const localFrames = frames().slice(afterRemote).filter((frame) => frame.kind === "desktop.account");
+  assert.equal(localFrames.length, 1, "the local window lost its own desktop account report");
+  assert.equal(localFrames[0].plan, "team");
+});
+
+test("desktop LAN transport exceptions keep fresh Plan and manage failures out of caches", async (t) => {
+  const ui = mkdtempSync(join(tmpdir(), "bloks-plan-unreachable-ui-"));
+  writeFileSync(join(ui, "index.html"), "<!doctype html><title>Fixture</title>");
+  t.after(() => rmSync(ui, { recursive: true, force: true }));
+  const paths: string[] = [];
+  const app = await startLanProxy({ lan: "127.0.0.1:9", deviceToken: OWNER, deviceId: "owner-device" }, {
+    staticDir: ui,
+    fetcher: async (input) => {
+      paths.push(String(input));
+      throw new Error(`PRIVATE-TRANSPORT-DETAIL ${SITE_LICENCE}`);
+    },
+  });
+  t.after(() => app.stop());
+  for (const [path, method] of [["/api/plan?fresh=1", "GET"], ["/api/plan/manage", "POST"]] as const) {
+    const answer = await fetch(`http://127.0.0.1:${app.port}${path}`, { method });
+    assert.equal(answer.status, 503);
+    assert.match(answer.headers.get("cache-control") ?? "", /no-store/);
+    const body = await answer.text();
+    noSecret(body);
+    assert.doesNotMatch(body, /PRIVATE-TRANSPORT-DETAIL/);
+  }
+  assert.deepEqual(paths, ["http://127.0.0.1:9/api/plan?fresh=1", "http://127.0.0.1:9/api/plan/manage"]);
 });

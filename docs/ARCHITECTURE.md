@@ -2828,7 +2828,8 @@ relay, using the host's licence. Agents and member credentials never reach
 these routes, including a member credential presented on loopback. Licence
 removal and hosting links remain exclusive to the host's uncredentialed local
 window. `capabilities.licence` and `capabilities.hosting` describe those local
-controls; the desktop hides remote key, hosting and local-key offer actions.
+controls; missing or malformed capability flags grant no machine controls.
+The desktop hides remote key, hosting and local-key offer actions.
 Plan responses are not cached by HTTP clients; failed refreshes visibly label
 previously loaded details, and authorization refusal clears them. Native
 phone and deployed web adoption remains a separate client contract (#357).
