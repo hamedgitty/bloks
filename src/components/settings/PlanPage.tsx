@@ -268,10 +268,10 @@ function oldWords(snapshot: PlanSnapshot, stale: boolean): string | null {
  * the key: said once, where the key's own row is on that computer. */
 const ELSEWHERE = "Your Bloks key, Hosting and add-ons are managed on the computer this workspace runs on.";
 
-function Elsewhere() {
+function Elsewhere({ known = true }: { known?: boolean }) {
   return (
     <footer data-setting-row="bloks-key" className="border-t bg-muted/30 px-6 py-3 text-pretty text-small text-muted-foreground transition-colors duration-700 max-sm:px-5">
-      {ELSEWHERE}
+      {known ? ELSEWHERE : "Update Bloks on the computer this workspace runs on to check which plan controls are available here."}
     </footer>
   );
 }
@@ -311,8 +311,8 @@ function PlanCard({
   onReadyOpened: () => void;
   onChanged: () => void;
 }) {
-  const key = planKey(snapshot, appPlanOf(useWorkspaces()));
   const account = snapshot.account;
+  const key = account ? planKey(snapshot) : null;
   const status = account ? statusOf(account) : null;
   const refused = snapshot.accountState === "refused";
   const pill: { tone: Health; label: string } | null = refused ? { tone: "issue", label: "Key not recognised" } : status ? { tone: status.tone, label: status.label } : null;
@@ -321,8 +321,8 @@ function PlanCard({
     <section aria-label="Your plan" className="mb-9 overflow-hidden rounded-2xl border bg-card">
       <div className="p-6 max-sm:p-5">
         <Headline
-          glyph={key}
-          name={planName(key)}
+          glyph={key ?? "unknown"}
+          name={key ? planName(key) : "Subscription details unavailable"}
           pill={pill && <HealthLine tone={pill.tone} label={pill.label} />}
           facts={
             facts.length > 0 &&
@@ -375,7 +375,7 @@ function PlanCard({
         )}
         {stale && <OldLine words={stale} loading={loading} className="mt-4" />}
       </div>
-      {here ? <KeyFooter snapshot={snapshot} onChanged={onChanged} /> : <Elsewhere />}
+      {here ? <KeyFooter snapshot={snapshot} onChanged={onChanged} /> : <Elsewhere known={typeof snapshot.sameComputer === "boolean"} />}
     </section>
   );
 }
@@ -389,7 +389,7 @@ const SELF_HOSTED_POINTS = [
   "Everything stays on this computer",
 ];
 
-function FreeCard({ onActivated, stale, loading, here }: { onActivated: () => void; stale: string | null; loading: boolean; here: boolean }) {
+function FreeCard({ onActivated, stale, loading, here, authorityKnown }: { onActivated: () => void; stale: string | null; loading: boolean; here: boolean; authorityKnown: boolean }) {
   const [open, setOpen] = useState(false);
   if (!here) {
     return (
@@ -398,7 +398,7 @@ function FreeCard({ onActivated, stale, loading, here }: { onActivated: () => vo
           <Headline glyph="free" name="Self-hosted" facts="This workspace runs on its own engines and keys." />
           {stale && <OldLine words={stale} loading={loading} className="mt-4" />}
         </div>
-        <Elsewhere />
+        <Elsewhere known={authorityKnown} />
       </section>
     );
   }
@@ -1257,18 +1257,27 @@ function PlanSkeleton() {
 
 export function PlanPage() {
   const { snapshot, problem, stale, news, loading } = usePlan();
-  const appPlan = appPlanOf(useWorkspaces());
+  const workspaces = useWorkspaces();
+  const appPlan = appPlanOf(workspaces);
+  const workspace = currentWorkspace(workspaces);
   const ai = useBloksAi();
   const [managing, setManaging] = useState(false);
   const [manageError, setManageError] = useState<string | null>(null);
   const [ready, setReady] = useState<string | null>(null);
-  // before the first answer, as before: only an answer says elsewhere
-  const here = snapshot ? keyIsHere(snapshot) : true;
+  // No machine action or local-only observer until the server says so.
+  const here = snapshot ? keyIsHere(snapshot) : false;
   const relay = useRelayPlan(snapshot?.accountAt ?? snapshot?.ownerPlan ?? null, here);
 
   useEffect(() => {
     void loadPlan();
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) {
+      setReady(null);
+      setManageError(null);
+    }
+  }, [snapshot]);
 
   const changed = useCallback(() => {
     void loadPlan(true);
@@ -1335,9 +1344,15 @@ export function PlanPage() {
   const hostingCard = free || (snapshot.account !== null && !hosting);
   return (
     <div className="@container">
+      {!here && (
+        <p className="mb-3 text-small text-muted-foreground">
+          {workspace?.name ? `Subscription for ${workspace.name}` : "This workspace's subscription"}{snapshot.account?.email ? ` · ${snapshot.account.email}` : ""}
+          {snapshot.licence.masked ? ` · ${snapshot.licence.masked}` : ""}
+        </p>
+      )}
       <AnimatePresence>{news?.up && <PlanMoment key={news.at} words={news.words} at={news.at} here={here} />}</AnimatePresence>
       {free ? (
-        <FreeCard onActivated={changed} stale={old} loading={loading} here={here} />
+        <FreeCard onActivated={changed} stale={old} loading={loading} here={here} authorityKnown={typeof snapshot.sameComputer === "boolean"} />
       ) : (
         <PlanCard
           snapshot={snapshot}
@@ -1352,7 +1367,7 @@ export function PlanPage() {
           onChanged={changed}
         />
       )}
-      {!free && <WhatYouHave snapshot={snapshot} relay={relay} ai={ai} here={here} />}
+      {!free && snapshot.account && <WhatYouHave snapshot={snapshot} relay={relay} ai={ai} here={here} />}
       {/* Hosting and the offers are the key's, and stay on its computer */}
       {here &&
         (hostingCard ? (
@@ -1361,7 +1376,7 @@ export function PlanPage() {
           hosting && <HostingGroup hosting={hosting} state={snapshot.account?.hosting?.state ?? null} below={<HostingMove />} />
         ))}
       {!free && bloksAiShown(ai, snapshot.account) && <BloksAiSettings ai={ai} keyHere={here} />}
-      {here && <YourOptions snapshot={snapshot} loading={loading} retryShown={retryShown} hostingCard={hostingCard} />}
+      {here && (free || snapshot.account) && <YourOptions snapshot={snapshot} loading={loading} retryShown={retryShown} hostingCard={hostingCard} />}
     </div>
   );
 }

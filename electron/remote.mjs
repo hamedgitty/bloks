@@ -634,6 +634,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
       return;
     }
     const url = new URL(req.url, "http://x");
+    if (url.pathname === "/api/plan" || url.pathname.startsWith("/api/plan/")) res.setHeader("cache-control", "no-store");
     const ticket = DESKTOP_PATH.exec(url.pathname)?.[1];
     if (ticket) return passDesktop(req, res, ticket, url);
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
@@ -796,6 +797,7 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
       return;
     }
     const url = new URL(req.url, "http://x");
+    if (url.pathname === "/api/plan" || url.pathname.startsWith("/api/plan/")) res.setHeader("cache-control", "no-store");
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
     if (url.pathname === "/api/events") {
       // the owner's computer's own stream, passed through as it comes; the

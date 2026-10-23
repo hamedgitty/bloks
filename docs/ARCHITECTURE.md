@@ -2859,8 +2859,17 @@ plan and the billing link also answer the owner's own paired devices, so
 the owner of a workspace on a server elsewhere can see the plan and open
 billing from a device of theirs; the answer says `sameComputer: false`
 there, and the page leaves out the key, Hosting and the offers, which
-stay with this computer's own window. The key never comes back to the
-page, only masked. What the site sends is read as unknowns and checked
+stay with this computer's own window. A device bearer stays portable even
+on loopback; only the uncredentialed local window reports
+`sameComputer: true` and retains key and Hosting actions. Missing or
+malformed `sameComputer` never grants those actions; older servers show
+an update explanation. Remote reads still refresh the host's entitlement
+cache and gates without sending its automatic-Hosting account signal.
+Plan responses are `no-store`, including through the desktop proxies.
+Authorization refusal clears previous details, newer reads supersede older
+ones, and an unavailable account is not guessed from the client app's plan.
+The key never comes back to the page, only masked. What the site sends is
+read as unknowns and checked
 one field at a time, with strings bounded and stripped of control and
 direction characters, and a price is shown as the site wrote it, never
 worked out here. The last good
