@@ -1062,6 +1062,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const item = params.item ?? {};
             if (item.type === "contextCompaction") { compactionItem(params, true); break; }
             if (item.type === "agentMessage") {
+              if (elsewhere(params)) break;
               if (!item.text?.trim()) break;
               // read once, so the streamed text and the stored text agree
               const codexItem = codexItemText(item);

@@ -9,7 +9,7 @@ import { test, type TestContext } from "node:test";
 import type { RuntimeEvent } from "../server/contracts.ts";
 import { COMPACT_LIMIT_MS, CodexDriver } from "../server/drivers/codex.ts";
 
-type Script = { compact?: "reject" | "failed" | "error" | "hold"; resume?: "reject" | "forgotten" | "legacy"; resumeFallbackFails?: boolean; skills?: "reject" | "hold"; late?: boolean; holdTurn?: boolean; onTurn?: (send: (frame: unknown) => void, thread: string) => void };
+type Script = { onOpen?: (send: (frame: unknown) => void, thread: string) => void; compact?: "reject" | "failed" | "error" | "hold"; resume?: "reject" | "forgotten" | "legacy"; resumeFallbackFails?: boolean; skills?: "reject" | "hold"; late?: boolean; holdTurn?: boolean; onTurn?: (send: (frame: unknown) => void, thread: string) => void };
 async function setup(t: TestContext, script: Script = {}) {
   const frames: any[] = [], children: any[] = [], native: any[] = [];
   const thread = "native-" + crypto.randomUUID();
@@ -25,6 +25,11 @@ async function setup(t: TestContext, script: Script = {}) {
         const frame = JSON.parse(String(chunk)); frames.push({ ...frame, child: children.length - 1 });
         const reply = (result: unknown) => send({ id: frame.id, result });
         const refuse = (message: string) => send({ id: frame.id, error: { code: -32601, message } });
+        const opened = (selected: string) => {
+          const chunk: unknown[] = [{ id: frame.id, result: { thread: { id: selected } } }];
+          script.onOpen?.(notification => chunk.push(notification), selected);
+          stdout.write(chunk.map(value => JSON.stringify(value) + "\n").join(""));
+        };
         if (frame.id !== undefined && frame.method) queueMicrotask(() => {
           if (frame.method === "model/list") return reply({ data: [] });
           if (frame.method === "skills/list") {
@@ -36,9 +41,9 @@ async function setup(t: TestContext, script: Script = {}) {
             if (script.resume === "reject") return refuse("conversation missing");
             if (script.resume === "legacy" && frame.params.excludeTurns) return refuse("unknown field excludeTurns");
             if (script.resumeFallbackFails) return refuse("conversation missing");
-            return reply({ thread: { id: script.resume === "forgotten" ? "replacement" : thread } });
+            return opened(script.resume === "forgotten" ? "replacement" : thread);
           }
-          if (frame.method === "thread/start") return reply({ thread: { id: thread } });
+          if (frame.method === "thread/start") return opened(thread);
           if (frame.method === "thread/compact/start") {
             if (script.compact === "reject") return refuse("compact refused");
             reply({});
@@ -287,4 +292,70 @@ test("the completed compaction id set is bounded without forgetting a replay", a
     send({ method: "item/completed", params: item("0") });
   } });
   await h.turn(); assert.equal(markers(h).length, 256);
+});
+
+
+const assistantEvents = (events: RuntimeEvent[]) => events.filter(e => e.type === "content.delta" ||
+  (e.type === "item.completed" && e.itemType === "assistant_text"));
+const stableEvent = ({ eventId, createdAt, ...event }: RuntimeEvent) => event;
+
+for (const mode of ["new", "resume", "replacement"] as const) test(`only the selected ${mode} thread supplies assistant text, even with a shared item id`, async t => {
+  let selected = "";
+  const h = await setup(t, { resume: mode === "replacement" ? "forgotten" : undefined, holdTurn: true, onTurn(send, thread) {
+    selected = mode === "replacement" ? "replacement" : thread;
+    const item = (native: string, text: string, phase: string, id?: string) => send({ method: "item/completed", params: {
+      threadId: native, turnId: "work-turn", item: { type: "agentMessage", id, text, phase, questions: null },
+    } });
+    item("child-thread", "CHILD_BEFORE", "final_answer", "shared");
+    item(selected, "Parent progress.", "commentary", "shared");
+    item("child-thread", "CHILD_FINAL_AFTER_COMMENTARY", "final_answer", "shared");
+    item("child-thread", "CHILD_FUTURE", "future_phase");
+    for (const native of [selected, "child-thread"]) send({ method: "item/agentMessage/delta", params: {
+      threadId: native, turnId: "work-turn", itemId: "shared", delta: "RAW_DELTA_IGNORED",
+    } });
+    item(selected, "Parent result.", "final_answer", "result");
+    item("child-thread", "CHILD_AFTER", "commentary", "result");
+    send({ method: "turn/completed", params: { threadId: selected, turn: { id: "work-turn", status: "completed" } } });
+  } });
+  await h.turn(mode === "new" ? {} : { resumeCursor: h.thread });
+  const start = h.events.find(e => e.type === "turn.started")!;
+  const envelope = { provider: "codex", threadId: "lane", turnId: start.turnId };
+  assert.deepEqual(assistantEvents(h.events).map(stableEvent), [
+    { ...envelope, itemId: "shared", codexItem: { phase: "commentary", questions: "none" }, type: "content.delta", streamKind: "assistant_text", delta: "Parent progress." },
+    { ...envelope, itemId: "shared", codexItem: { phase: "commentary", questions: "none" }, type: "item.completed", itemType: "assistant_text", replyPhase: "commentary", text: "Parent progress." },
+    { ...envelope, itemId: "result", codexItem: { phase: "final_answer", questions: "none" }, type: "content.delta", streamKind: "assistant_text", delta: "Parent result." },
+    { ...envelope, itemId: "result", codexItem: { phase: "final_answer", questions: "none" }, type: "item.completed", itemType: "assistant_text", replyPhase: "final_answer", text: "Parent result." },
+  ]);
+  assert.equal(h.events.filter(e => e.type === "turn.completed" && e.ok).length, 1);
+  assert.equal(h.events.find(e => e.type === "session.started")?.sessionId, selected);
+  assert.equal(calls(h, "thread/resume").length, mode === "new" ? 0 : 1);
+});
+
+test("unattributed agent text retains compatibility while the empty thread string is elsewhere", async t => {
+  const h = await setup(t, { holdTurn: true, onTurn(send, thread) {
+    for (const [id, native] of [["absent", undefined], ["null", null], ["number", 7], ["object", {}], ["empty", ""]] as const) {
+      send({ method: "item/completed", params: { ...(native === undefined ? {} : { threadId: native }),
+        item: { type: "agentMessage", id, text: id, phase: "future_phase" },
+      } });
+    }
+    send({ method: "turn/completed", params: { threadId: thread, turn: { id: "work-turn", status: "completed" } } });
+  } });
+  await h.turn();
+  const events = assistantEvents(h.events);
+  assert.equal(events.length, 8);
+  assert.deepEqual(events.map(e => e.itemId), ["absent", "absent", "null", "null", "number", "number", "object", "object"]);
+  assert.ok(events.every(e => e.threadId === "lane" && e.codexItem?.phase === "future_phase"));
+});
+
+test("a response and notification in the opening chunk retain pre-selection permissive text", async t => {
+  const h = await setup(t, { onOpen(send) {
+    // The reply resolved its promise, but the selecting await has not run.
+    send({ method: "item/completed", params: { threadId: "unselected-thread", item: {
+      type: "agentMessage", id: "opening", text: "Opening compatibility.", phase: "final_answer",
+    } } });
+  } });
+  await h.turn();
+  const events = assistantEvents(h.events);
+  assert.equal(events.length, 4, "opening compatibility and the ordinary parent answer each emit a pair");
+  assert.deepEqual(events.map(e => e.itemId), ["opening", "opening", "answer", "answer"]);
 });
