@@ -179,7 +179,7 @@ test("without a credential for the shell the servers still go, alone", async (t)
   const { servers } = attached();
   await h.turn({ integrations: { mcpServers: servers } });
   const [start] = h.sent("thread/start");
-  assert.deepEqual(Object.keys(start.config).sort(), ["mcp_servers.u_files", "mcp_servers.u_home_assistant"]);
+  assert.deepEqual(Object.keys(start.config).sort(), ["features.goals", "mcp_servers.u_files", "mcp_servers.u_home_assistant"]);
   // read for the person's own server names, which these keep clear of
   assert.equal(h.sent("config/read").length, 1);
 });
@@ -308,7 +308,7 @@ test("a Codex that will not take the servers still gets its thread and the shell
   await h.turn({ env: { BLOKS_TOKEN: token }, integrations: { mcpServers: servers } });
   const starts = h.sent("thread/start");
   assert.equal(starts.length, 2, "asked again, once, without the servers");
-  assert.deepEqual(Object.keys(starts[1].config), [`${SET}BLOKS_TOKEN`], "the shell's part is kept");
+  assert.deepEqual(Object.keys(starts[1].config), ["features.goals", `${SET}BLOKS_TOKEN`], "the shell's part is kept");
   assert.equal(h.sent("turn/start").length, 1, "the words went in");
   assert.deepEqual(h.notices(), [SERVERS_REFUSED_NOTICE]);
 

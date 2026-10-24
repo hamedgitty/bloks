@@ -37,6 +37,8 @@ const BASE = "http://127.0.0.1:4100";
 const credential = () => `blk_${randomBytes(24).toString("base64url")}`;
 const envFor = (token: string) => ({ BLOKS_CLI: CLI, BLOKS_URL: BASE, BLOKS_TOKEN: token });
 const SET = "shell_environment_policy.set.";
+/** Codex's own goals, off in every thread config (GitHub 380). */
+const GOALS_OFF = { "features.goals": false };
 
 interface Fake {
   /** The person's include_only, as config/read reports it. */
@@ -123,20 +125,20 @@ test("a new thread and a resumed one carry this turn's values for the shell, and
 
   await h.turn({ env: envFor(first) });
   const [start] = h.sent("thread/start");
-  assert.deepEqual(start.config, { [`${SET}BLOKS_CLI`]: CLI, [`${SET}BLOKS_URL`]: BASE, [`${SET}BLOKS_TOKEN`]: first });
+  assert.deepEqual(start.config, { ...GOALS_OFF, [`${SET}BLOKS_CLI`]: CLI, [`${SET}BLOKS_URL`]: BASE, [`${SET}BLOKS_TOKEN`]: first });
 
   // the next turn has a credential of its own, and the resumed thread
   // gets that one, not the one it started with
   await h.turn({ env: envFor(second), resumeCursor: "codex-thread" });
   const [resume] = h.sent("thread/resume");
   assert.equal(resume.threadId, "codex-thread");
-  assert.deepEqual(resume.config, { [`${SET}BLOKS_CLI`]: CLI, [`${SET}BLOKS_URL`]: BASE, [`${SET}BLOKS_TOKEN`]: second });
+  assert.deepEqual(resume.config, { ...GOALS_OFF, [`${SET}BLOKS_CLI`]: CLI, [`${SET}BLOKS_URL`]: BASE, [`${SET}BLOKS_TOKEN`]: second });
   assert.ok(!JSON.stringify(resume).includes(first), "an old turn's credential is never handed on");
 
   // Dotted keys only: a `set` table of the person's own is added to, not
   // replaced, and inherit, exclude and the rest of the policy stay theirs
   for (const params of [start, resume]) {
-    assert.ok(Object.keys(params.config).every((key) => key.startsWith(SET)), Object.keys(params.config).join(", "));
+    assert.ok(Object.keys(params.config).every((key) => key in GOALS_OFF || key.startsWith(SET)),Object.keys(params.config).join(", "));
   }
   assert.ok(h.completed().every((e) => e.type === "turn.completed" && e.ok));
 
@@ -194,7 +196,7 @@ test("a turn without a credential sends nothing for the shell", async (t) => {
   const h = await setup(t);
   await h.turn({});
   assert.equal(h.sent("config/read").length, 0);
-  assert.equal("config" in h.sent("thread/start")[0], false);
+  assert.deepEqual(h.sent("thread/start")[0].config, GOALS_OFF);
 });
 
 test("a Codex that will not take the config still gets its thread, and the conversation hears it once", async (t) => {
@@ -213,14 +215,14 @@ test("a Codex that will not take the config still gets its thread, and the conve
   const starts = h.sent("thread/start");
   assert.equal(starts.length, 2, "asked again, once, without the config");
   assert.ok(starts[0].config);
-  assert.equal("config" in starts[1], false);
+  assert.deepEqual(starts[1].config, GOALS_OFF, "only the shell's part is dropped");
   assert.equal(h.sent("turn/start").length, 1, "the words went in");
   assert.deepEqual(h.notices(), [SHELL_REFUSED_NOTICE]);
 
   await h.turn({ env: envFor(second), resumeCursor: "codex-thread" });
   const resumes = h.sent("thread/resume");
   assert.equal(resumes.length, 2);
-  assert.equal("config" in resumes[1], false);
+  assert.deepEqual(resumes[1].config, GOALS_OFF);
   assert.equal(h.sent("thread/start").length, 2, "the thread was kept, not replaced");
   assert.deepEqual(h.notices(), [SHELL_REFUSED_NOTICE], "said once, not every turn");
   assert.ok(h.completed().every((e) => e.type === "turn.completed" && e.ok));

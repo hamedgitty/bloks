@@ -75,7 +75,7 @@ async function setup(t: TestContext, canFork: boolean) {
 test("a thread from before Bloks is forked, and the fork is what resumes", async (t) => {
   const h = await setup(t, true);
   await h.turn({ resumeCursor: ORIGINAL, forkFrom: ORIGINAL, handoff: "the story, then: carry on" });
-  assert.deepEqual(h.sent("thread/fork"), [{ threadId: ORIGINAL }]);
+  assert.deepEqual(h.sent("thread/fork"), [{ threadId: ORIGINAL, config: { "features.goals": false } }]);
   assert.deepEqual(h.sent("thread/resume").map((p) => p.threadId), ["forked-thread"]);
   assert.deepEqual(h.sessions(), ["forked-thread"], "the lane's cursor becomes the fork");
   assert.equal(h.sent("turn/start")[0].input[0].text, "carry on", "a carried-on session is not told what it has");

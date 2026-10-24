@@ -232,6 +232,18 @@ export const SHELL_REFUSED_NOTICE =
   "This Codex would not take the setting Bloks uses to hand its command line to the agent's shell, so it carried on without it. " +
   "Where this project's Codex config narrows shell_environment_policy, the agent's commands cannot reach Bloks. Updating Codex should fix it.";
 
+// ── Codex's own goals ──────────────────────────────────────────────────
+//
+// An agent could give itself a goal with Codex's create_goal tool, on by
+// default, and Codex then starts a turn of its own to carry on with it
+// straight after each one ends. Bloks ends the process there, so that
+// turn was cut off every time, and the next one opened told to keep
+// working toward a goal nobody was holding (GitHub 380). So the thread's
+// config turns Codex's goals off, on every start, resume and fork, and a
+// thread that already has one has it cleared once, when it is resumed.
+
+const GOALS_OFF = { "features.goals": false } as const;
+
 // ── the agent's own MCP servers ────────────────────────────────────────
 //
 // The servers attached to an agent under Settings, Apps and keys were
@@ -616,6 +628,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     const toldShellRefused = new Set<string>();
     /** The same for the agent's MCP servers (SERVERS_REFUSED_NOTICE). */
     const toldServersRefused = new Set<string>();
+    /** Codex threads already asked to clear a goal of Codex's own. */
+    const goalsCleared = new Set<string>();
     /** What each conversation was last told Codex could not be handed
      * (leftOutNotice), so it hears again only when that changes. */
     const toldLeftOut = new Map<string, string>();
@@ -1330,7 +1344,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             toldLeftOut.set(threadId, leftOut);
             emit({ ...envelope(threadId, turnId), type: "runtime.error", message: leftOutNotice(own.leftOut) });
           }
-          const threadConfig = () => (shell || servers ? { ...shell, ...servers } : null);
+          // Codex's goals off (GOALS_OFF), dropped only by a Codex that
+          // takes no thread config at all
+          let goals: Record<string, unknown> | null = GOALS_OFF;
+          const threadConfig = () => (shell || servers || goals ? { ...goals, ...shell, ...servers } : null);
 
           // A Codex that will not take that config still gets its thread,
           // without the part it refused, and the conversation is told once
@@ -1359,7 +1376,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 const all = CONFIG_REFUSED.test(said);
                 const shellOut = Boolean(shell) && (all || SHELL_REFUSED.test(said));
                 const serversOut = Boolean(servers) && (all || SERVERS_REFUSED.test(said));
-                if (!params.config || (!shellOut && !serversOut)) throw error;
+                const goalsOut = Boolean(goals) && all;
+                if (!params.config || (!shellOut && !serversOut && !goalsOut)) throw error;
+                if (goalsOut) goals = null;
                 if (shellOut) {
                   shell = null;
                   shellDropped = true;
@@ -1439,6 +1458,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               reportedModel = resumed?.model ?? null;
               carriedOn = true;
               takeOpeningReadings(reportedModel);
+              // A goal set before its goals were turned off would still
+              // be there, waiting. Clearing it is all it needs; a Codex
+              // without the method, or with goals off for good, says no,
+              // and then there is nothing to clear.
+              if (goals && codexThread && !goalsCleared.has(codexThread)) {
+                goalsCleared.add(codexThread);
+                try {
+                  await within(rpc.request("thread/goal/clear", { threadId: codexThread }), "clearing its goal", "Codex", PROBE_TIMEOUT_MS);
+                } catch {
+                  /* nothing to clear */
+                }
+              }
             } catch (error) {
               // Fast that was not had: refused, and the session kept
               if (error instanceof CodexSpeedUnavailable) throw error;
