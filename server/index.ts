@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
-import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT, agentTaskBudget, validTaskBudget, chainPast, taskFor, taskName, chainHoldText, MIN_TASK_BUDGET, MAX_TASK_BUDGET, type ChainBound, type ChainTask } from "./agent-chain.ts";
+import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT, agentTaskBudget, validTaskBudget, chainPast, taskFor, taskName, chainHoldText, heldSay, heldSaysText, withHeldSay, MIN_TASK_BUDGET, MAX_TASK_BUDGET, type ChainBound, type ChainTask, type HeldSay } from "./agent-chain.ts";
 import { takeBackWaiting } from "./take-back.ts";
 import { DeviceSettings, type ReportSource } from "./settings-devices.ts";
 import { CONTEXT_MS, EMPTY_STATE, FRESH_WAIT_MS, Whereabouts, cleanState, crossingWords, hearsWhere, parsePlace, placePending, placeStep, placeWords, precisionWords, readSeen, agoWords, sideOf, DEFAULT_RADIUS, type LocationState, type SharedLocation } from "./location.ts";
@@ -1204,6 +1204,9 @@ const engineAskedAt = new Map<string, number>();
  * agent can tell the person, check what the failed attempt already did,
  * and report it if that is how it works. */
 const failureNotes = new Map<string, { text: string }>();
+/** The held messages (takeHeldSays) each lane's latest turn opened with,
+ * for a retry or a backup going on with that turn to hear again. */
+const heldRiding = new Map<string, string>();
 type PrimaryTry = { reservation: NonNullable<ReturnType<Cooldowns["reserve"]>>; returned?: () => void };
 const primaryTries = new Map<string, PrimaryTry>();
 function cancelPrimaryTry(laneId: string, trying = primaryTries.get(laneId)) {
@@ -6954,6 +6957,21 @@ async function startClaimedTurn(
         ? whereabouts.contextLine({ name: cfg.profile?.name, cli: credential && !credential.messenger && !credential.reply ? cliCommand : null })
         : null;
       if (whereNow) turnText = `${whereNow}\n\n${turnText}`;
+      // Messages held at the chain limit for this agent go in with this
+      // turn, whatever started it, and are taken as they go, so no later
+      // turn hears them again (GitHub 376). Only the owner's own turns hear
+      // them: they are agents' words in the owner's workspace. A retry or
+      // a backup going on with this same turn hears them again, since the
+      // engine that was told them may never have read them.
+      if (!command && ownersOwn && !groupSource) {
+        const again = opts.retry || opts.fallback ? heldRiding.get(task.id) : undefined;
+        const taken = takeHeldSays(bot.id);
+        const held = [again, taken.length ? heldSaysText(taken, (at) => clockTime(at)) : ""].filter(Boolean).join("\n\n");
+        if (held) {
+          heldRiding.set(task.id, held);
+          turnText = `${held}\n\n${turnText}`;
+        } else heldRiding.delete(task.id);
+      } else if (!opts.retry && !opts.fallback) heldRiding.delete(task.id);
       // what a new session is told instead, if the engine cannot carry it on
       const unprefaced = turnText;
       if (carriedOver) {
@@ -9485,10 +9503,24 @@ function chainHeld(subject: string): string {
 /** A chain held at MAX_AGENT_CHAIN, recorded once in the conversation
  * and marked unread. Its owner can review the stop without interrupting
  * the person, who has not been asked to decide anything. */
-function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string) {
+function chainNotice(bot: BotRecord, laneId: string, text: string, key?: string, held?: HeldSay) {
   const last = store.messagesFor(laneId).at(-1);
-  if (last?.kind === "notice" && (key ? last.chainHeld && last.chainHoldKey === key : last.text === text)) return;
-  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, chainHeld: true, ...(key ? { chainHoldKey: key } : {}) });
+  // where the held words wait, so the agent's next turn finds them
+  // without reading every conversation it has (takeHeldSays)
+  const keep = () => {
+    const now = store.bot(bot.id);
+    if (held && now && !now.heldSaysIn?.includes(laneId)) store.patchBot(bot.id, { heldSaysIn: [...(now.heldSaysIn ?? []), laneId] });
+  };
+  if (last?.kind === "notice" && (key ? last.chainHeld && last.chainHoldKey === key : last.text === text)) {
+    // the same stop, said once; the words it held are kept all the same
+    if (!held) return;
+    const patched = store.patchMessage(laneId, last.id, { heldSays: withHeldSay(last.heldSays, held) });
+    if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+    keep();
+    return;
+  }
+  const notice = store.appendMessage(laneId, { role: "bot", kind: "notice", text, chainHeld: true, ...(key ? { chainHoldKey: key } : {}), ...(held ? { heldSays: [held] } : {}) });
+  keep();
   store.markLane(bot.id, laneId, true);
   broadcast({ kind: "message", threadId: laneId, message: notice });
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -9510,10 +9542,41 @@ function chainRefusal(bot: BotRecord, laneId: string, chain: AgentChain, words: 
     { bound, limit, budget, task }, chainExcerpt(words, redactSecrets),
   ));
   const key = JSON.stringify([chain.sender.botId, bot.id, chain.depth, limit, bound, budget]);
-  chainNotice(bot, laneId, text, key);
+  // The words themselves wait on the notice for the recipient's next turn,
+  // whatever starts it (takeHeldSays). They start nothing, wake nobody, and
+  // go in once (GitHub 376). Redacted as the notice is: they sit beside it,
+  // on every screen and phone that shows it.
+  chainNotice(bot, laneId, text, key, heldSay(chain.sender, redactSecrets(words), Date.now()));
   // the person's notice says where the limit is set; the agent's says to
   // wrap up, and nothing about lifting it
-  return Object.assign(new Error(chainAgentRefusal(bot.name, limit, bound === "budget" && budget !== null ? budget : undefined)), { status: 429 });
+  return Object.assign(new Error(chainAgentRefusal(bot.name, limit, bound === "budget" && budget !== null ? budget : undefined, true)), { status: 429 });
+}
+
+/**
+ * The messages held at the chain limit for this agent that no turn of its
+ * own has taken yet, from every one of its conversations, oldest first,
+ * each marked taken as it is read here. A turn that hears them is one
+ * that started for another reason: nothing here starts a turn, so held
+ * words can only ride a turn something else asked for, and each rides
+ * exactly one (GitHub 376). Marking them taken is a quiet patch: it marks
+ * nothing unread and wakes nobody.
+ */
+function takeHeldSays(botId: string): HeldSay[] {
+  const bot = store.bot(botId);
+  if (!bot?.heldSaysIn?.length) return [];
+  const now = Date.now();
+  const taken: HeldSay[] = [];
+  for (const laneId of bot.heldSaysIn) {
+    if (!bot.tasks.some((t) => t.id === laneId)) continue;
+    for (const m of store.messagesFor(laneId)) {
+      if (!m.chainHeld || !m.heldSays?.some((s) => !s.delivered)) continue;
+      taken.push(...m.heldSays.filter((s) => !s.delivered));
+      const patched = store.patchMessage(laneId, m.id, { heldSays: m.heldSays.map((s) => (s.delivered ? s : { ...s, delivered: now })) });
+      if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+    }
+  }
+  store.patchBot(bot.id, { heldSaysIn: undefined });
+  return taken.sort((a, b) => a.at - b.at);
 }
 
 /** Conversations an agent asked to close from inside its own turn there.

@@ -5,6 +5,7 @@
 import { mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
+import type { HeldSay } from "./agent-chain.ts";
 import type { ChangesSummary } from "./checkpoints.ts";
 import type { TelegramReply } from "./telegram-returns.ts";
 import { readSaved, writeFileAtomic } from "./atomic-write.ts";
@@ -189,6 +190,13 @@ export interface Message {
   chainHeld?: boolean;
   /** Direct hold dedupe, excluding the redacted excerpt. */
   chainHoldKey?: string;
+  /** The messages a direct hold kept from this conversation's agent,
+   * whole or cut at MAX_HELD_SAY_CHARS (server/agent-chain.ts). Each
+   * goes in with the agent's next turn that starts for any other reason,
+   * once, and is marked `delivered` then; none starts a turn or wakes
+   * anyone (GitHub 376). On disk with the conversation, so a restart
+   * keeps what has not gone yet. */
+  heldSays?: HeldSay[];
   /** What a chat on the phone is told of this notice instead of its
    * text: the error alone, when the app's notice also says where to set
    * a backup, which means nothing there (GitHub 284). */
@@ -512,6 +520,9 @@ export interface BotRecord {
   shape?: BlokShape;
   /** Named capabilities; folded into the provider persona. */
   skills?: string[];
+  /** Conversations of this agent's with a hold notice whose held words
+   * (Message.heldSays) no turn has taken yet, so a turn looks only there. */
+  heldSaysIn?: string[];
   /** Library skills this agent has attached, by id (see server/skills.ts). */
   skillIds?: string[];
   /** How senior this agent is in a room, 1 to 5. The most senior member

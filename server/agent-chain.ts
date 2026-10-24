@@ -158,7 +158,61 @@ function heldText(what: string, reached: string, excerpt?: string): string {
 /** The agent wraps up without assuming the person must continue the task.
  * A hold on one task's run reads as the limit it is, so it is not taken
  * as a hint to call the same work by another name. */
-export function chainAgentRefusal(recipient: string, limit: number, budget?: number): string {
+export function chainAgentRefusal(recipient: string, limit: number, budget?: number, kept = false): string {
   const reached = budget === undefined ? `the limit of ${turns(limit)}` : `the budget of ${budget} turns in a row for separate tasks`;
-  return `${recipient} did not get this message: agents reached ${reached}. Finish this turn and report any unfinished work.`;
+  // kept: it goes in with the recipient's next turn, which it never starts
+  const later = kept ? ` It is kept for ${recipient}'s next turn, whenever something else starts one; it does not start one.` : "";
+  return `${recipient} did not get this message: agents reached ${reached}. Finish this turn and report any unfinished work.${later}`;
+}
+
+/** The most of one held message an agent is given later (heldSaysText);
+ * past it, the start, and how much was left out. */
+export const MAX_HELD_SAY_CHARS = 4_000;
+/** The most held messages one hold notice keeps: a loop held at the
+ * limit cannot grow a conversation without bound. The newest are kept. */
+export const MAX_HELD_SAYS = 20;
+
+/**
+ * A message held at the chain limit, kept on the hold notice in the
+ * recipient's conversation (GitHub 376). It is never delivered as a
+ * message and never starts a turn: it goes in with the recipient's next
+ * turn that starts for any other reason, once, at that turn's own place
+ * in the chain, so it cannot carry a chain past the limit.
+ */
+export interface HeldSay {
+  /** The sending agent's id and name. */
+  from: string;
+  name: string;
+  at: number;
+  /** The words, cut at MAX_HELD_SAY_CHARS. */
+  text: string;
+  /** How many characters were cut, if any. */
+  cut?: number;
+  /** When a turn of the recipient's took it. */
+  delivered?: number;
+}
+
+export function heldSay(from: { botId: string; name: string }, words: string, at: number): HeldSay {
+  const cut = Math.max(0, words.length - MAX_HELD_SAY_CHARS);
+  return { from: from.botId, name: chainName(from.name), at, text: cut ? words.slice(0, MAX_HELD_SAY_CHARS) : words, ...(cut ? { cut } : {}) };
+}
+
+/** A notice's held messages with one more, the newest MAX_HELD_SAYS kept. */
+export function withHeldSay(held: readonly HeldSay[] | undefined, say: HeldSay): HeldSay[] {
+  return [...(held ?? []), say].slice(-MAX_HELD_SAYS);
+}
+
+/** What a turn opens with for messages held from it: who sent each, when,
+ * and the words. Said as a record, not a request: nothing here started
+ * the turn, and the agent decides whether any of it needs doing now. */
+export function heldSaysText(says: readonly HeldSay[], time: (at: number) => string): string {
+  const one = says.length === 1;
+  const head = one
+    ? "(A message to you was held at the limit of consecutive agent turns and not delivered then. It is here so you know of it; it did not start this turn.)"
+    : `(${says.length} messages to you were held at the limit of consecutive agent turns and not delivered then. They are here so you know of them; they did not start this turn.)`;
+  const items = says.map((s) => {
+    const cut = s.cut ? `\n[${s.cut} more characters were left out]` : "";
+    return `From ${s.name} at ${time(s.at)}:\n${s.text}${cut}`;
+  });
+  return [head, ...items].join("\n\n");
 }
