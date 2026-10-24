@@ -32,29 +32,46 @@ export const NEEDS_MAC = "This needs Bloks running on a Mac.";
 export type ComputerMode = "cloud" | "sandbox" | "local" | "off";
 const MODES: readonly ComputerMode[] = ["cloud", "sandbox", "local", "off"];
 
+/** Whether an agent can work the screen of the computer Bloks runs on.
+ * That goes through cua-driver, which Bloks ships and starts only on a
+ * Mac (electron/cua.mjs), so anywhere else "This computer" would be a
+ * choice that quietly gives the agent nothing (GitHub 377). */
+export function ownScreenWorks(platform: string = process.platform): boolean {
+  return platform === "darwin";
+}
+
 /** Where an agent may act, as a settings screen offers it. On a hosted
  * workspace "local" is this machine: its browser and its virtual
- * desktop. */
-export function computerChoices(hosted: boolean): Array<{ id: ComputerMode; label: string }> {
-  return hosted
-    ? [
-        { id: "local", label: "This machine" },
-        { id: "off", label: "Off" },
-      ]
-    : [
-        { id: "cloud", label: "Cloud box" },
-        { id: "sandbox", label: "Local VM" },
-        { id: "local", label: "This computer" },
-        { id: "off", label: "Off" },
-      ];
+ * desktop. Off a Mac this computer's own screen is not offered, since
+ * nothing here can work it; the Local VM and the cloud box still are. */
+export function computerChoices(hosted: boolean, platform: string = process.platform): Array<{ id: ComputerMode; label: string }> {
+  if (hosted) {
+    return [
+      { id: "local", label: "This machine" },
+      { id: "off", label: "Off" },
+    ];
+  }
+  return [
+    { id: "cloud", label: "Cloud box" },
+    { id: "sandbox", label: "Local VM" },
+    ...(ownScreenWorks(platform) ? [{ id: "local" as const, label: "This computer" }] : []),
+    { id: "off", label: "Off" },
+  ];
 }
+
+/** What working this computer's own screen needs, said where it is
+ * asked for off a Mac. */
+export const OWN_SCREEN_NEEDS_MAC =
+  "Agents can work this computer's own screen only when Bloks runs on a Mac. Choose the Local VM or a cloud box instead.";
 
 /** Why an agent's computer cannot be set to `value`, or null when it can.
  * Null is automatic and is always allowed. On a Mac nothing is refused
  * here, as before hosted mode existed: what a phone already sends keeps
- * working. A hosted workspace holds the value to what it offers. */
-export function computerRefusal(value: unknown, hosted: boolean): string | null {
-  if (value === null || !hosted) return null;
+ * working. Elsewhere this computer's own screen is refused, since nothing
+ * could work it. A hosted workspace holds the value to what it offers. */
+export function computerRefusal(value: unknown, hosted: boolean, platform: string = process.platform): string | null {
+  if (value === null) return null;
+  if (!hosted) return value === "local" && !ownScreenWorks(platform) ? OWN_SCREEN_NEEDS_MAC : null;
   if (typeof value !== "string" || !MODES.includes(value as ComputerMode)) {
     return "computer is local, off or null on a hosted workspace";
   }
@@ -62,6 +79,29 @@ export function computerRefusal(value: unknown, hosted: boolean): string | null 
     return "This workspace is hosted, so it is the agents' computer already: its browser and its virtual desktop. The cloud box and the Local VM are not offered here.";
   }
   return null;
+}
+
+/** Why a turn has no computer: the agent's own setting is off, the turn
+ * is someone else's and the owner's computer is not lent to it, or
+ * nothing the agent could be given was there. */
+export type NoComputer = "off" | "withheld" | "none";
+
+/** What an agent with no computer is told about it. Told nothing, an
+ * agent asked "can you see the Local VM?" could only answer that there
+ * is no computer, and the person was left to guess why (GitHub 377). So
+ * it is told what it could have and where the person gives it. */
+export function noComputerLine(why: NoComputer, o: { hosted: boolean; platform?: string }): string {
+  if (why === "withheld") {
+    return " You have no computer on this turn: your owner did not start it, so their computer is not lent to it.";
+  }
+  const off = why === "off" ? "You have no computer: it is switched off in your settings." : "You have no computer on this turn.";
+  // a hosted machine is always the computer unless the setting is off
+  if (o.hosted) return why === "off" ? ` ${off} If a task needs one, say so; the person can switch it on there, under Computer.` : "";
+  const platform = o.platform ?? process.platform;
+  const choices = ownScreenWorks(platform)
+    ? "This computer (their own Mac, once Bloks has macOS's Accessibility and Screen Recording permissions), Local VM (a free Linux desktop in a container here, set up in Settings, under Local VM), or Cloud box"
+    : `Local VM (a free Linux desktop in a container here, set up in Settings, under Local VM) or Cloud box. Working their own ${platform === "win32" ? "Windows PC" : "computer"}'s screen needs Bloks running on a Mac, so it is not offered here`;
+  return ` ${off} If a task needs one, or you are asked whether you can see a computer, say so plainly and how to give you one: in your settings, under Computer, the person picks ${choices}.`;
 }
 
 const NOT_HERE = "This workspace is hosted, so it is the agents' computer already: its browser and its virtual desktop.";

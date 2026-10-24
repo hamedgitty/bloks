@@ -18,7 +18,7 @@ import {
   teamSignInWarning,
   topUpsLine,
 } from "../src/lib/credits.ts";
-import { computerOptions } from "../src/lib/hosted.ts";
+import { computerOptions, offersThisComputer } from "../src/lib/hosted.ts";
 import { keysToEnter, kindLabel } from "../src/lib/backups.ts";
 import { computerChoices } from "../server/hosted.ts";
 import { CREDITS_KIND } from "../server/credits.ts";
@@ -96,7 +96,10 @@ test("the team warning shows on a hosted team for agents on a personal sign-in, 
 
 test("both doors offer the computers the server says, and a Mac's four otherwise", () => {
   assert.deepEqual(computerOptions(computerChoices(true)).map(([id]) => id), ["local", "off"]);
-  assert.deepEqual(computerOptions(computerChoices(false)), computerOptions(undefined), "the app's own list is the server's for a Mac");
+  assert.deepEqual(computerOptions(computerChoices(false, "darwin")), computerOptions(undefined), "the app's own list is the server's for a Mac");
+  assert.equal(offersThisComputer(computerChoices(false, "darwin")), true);
+  assert.equal(offersThisComputer(computerChoices(false, "win32")), false, "a PC's own screen is not offered, so Automatic does not promise it");
+  assert.equal(offersThisComputer(computerChoices(true, "linux")), true, "a hosted machine is its own computer");
   assert.deepEqual(computerOptions([]).map(([id]) => id), ["cloud", "sandbox", "local", "off"], "an older server sends none");
 });
 

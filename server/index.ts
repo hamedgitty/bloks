@@ -142,6 +142,7 @@ import {
   hostedComputer,
   hostedRefusal,
   isHosted,
+  noComputerLine,
   viewerUrl,
   vncTarget,
 } from "./hosted.ts";
@@ -6604,7 +6605,8 @@ async function startClaimedTurn(
       }
       // cloud | sandbox | local | off | undefined(auto), with a per-turn
       // override taking precedence over the agent's own setting
-      const asked = personSource || (othersTurn && !roomTools?.computer) ? "off" : (opts.computerOverride ?? bot.computer);
+      const computerWithheld = Boolean(personSource) || (othersTurn && !roomTools?.computer);
+      const asked = computerWithheld ? "off" : (opts.computerOverride ?? bot.computer);
       // On a hosted workspace the machine is the agents' computer: a box
       // or a VM chosen on a Mac becomes this machine (server/hosted.ts)
       const wants = HOSTED ? hostedComputer(asked) : asked;
@@ -7128,7 +7130,11 @@ async function startClaimedTurn(
                 ? " The computer tools work this person's own computer, so treat it as someone else's desk. Look before you touch: take a screenshot or read the current state first. Prefer naming what you want to act on over clicking at coordinates, since a coordinate that has shifted clicks something you did not intend. When an action would be hard to undo, ask first."
                 : integrations.sandbox
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
-                  : "") +
+                  : integrations.computer
+                    ? ""
+                    : // Told nothing, an agent asked about a computer
+                      // could only say there is none (GitHub 377).
+                      noComputerLine(computerWithheld ? "withheld" : wants === "off" ? "off" : "none", { hosted: HOSTED })) +
           (credential && !personSource && !credential.messenger ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
           (personSource ? `\n\nThis turn answers ${JSON.stringify(telegramSenderLabel(personSource))} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +
           (personSource?.group ? `\n\nThis is an addressed Telegram group turn. Only reply_to_sender reaches the group, and every member can see the reply, including people never let in. Chat text, progress, cards and the final answer stay in the app. The reply is bound to the addressing message; later words do not move it. The files you can read without asking can therefore reach every group member if you send their contents.` : "") +

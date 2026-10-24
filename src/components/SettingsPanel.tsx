@@ -67,7 +67,7 @@ import { plural } from "@/lib/plural";
 import { stamp } from "@/lib/when";
 import { thisComputer } from "@/lib/thisComputer";
 import { sameEngineBackup } from "@/lib/backupChoice";
-import { computerOptions } from "@/lib/hosted";
+import { computerOptions, offersThisComputer } from "@/lib/hosted";
 import { useEscape } from "@/lib/useEscape";
 import { EngineSuggestionCard, useEngineReport } from "./EngineReport";
 import { APPROVAL_MODES, ApprovalsChooser, confirmWidening, RULES_AND_MODES, type ApprovalMode } from "./ApprovalsChooser";
@@ -1164,6 +1164,9 @@ function ComputerRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void }) {
   // and the server says which; the Computer panel reads the same list.
   const hosted = Boolean(state.config?.hosted?.on);
   const options = computerOptions(state.config?.hosted?.computers);
+  // Off a Mac there is no "this computer" for Automatic to fall back on,
+  // so it falls back on nothing, and choosing starts at the Local VM.
+  const ownScreen = offersThisComputer(state.config?.hosted?.computers);
   return (
     <SettingRow
       label="Computer"
@@ -1172,25 +1175,30 @@ function ComputerRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void }) {
           ? "This machine's browser and virtual desktop, or none."
           : bot.computer
             ? "Where it gets a desktop and a terminal."
-            : "Uses your cloud box if you have one, otherwise this computer."
+            : ownScreen
+              ? "Uses your cloud box if you have one, otherwise this computer."
+              : "Uses your cloud box if you have one, otherwise none."
       }
       control={
         <label className="flex items-center gap-2 text-body text-muted-foreground">
           Automatic
           <Switch
             checked={!bot.computer}
-            onCheckedChange={(on) => patch({ computer: on ? null : "local" })}
+            onCheckedChange={(on) => patch({ computer: on ? null : ownScreen || hosted ? "local" : "sandbox" })}
             aria-label="Choose the computer automatically"
           />
         </label>
       }
     >
       {/* Auto's fallback should never be a surprise: with no box
-          configured it means "this Mac", and the person deciding deserves
-          to know that at the moment they decide it. */}
+          configured it means "this Mac", or nothing at all off a Mac, and
+          the person deciding deserves to know that at the moment they
+          decide it. */}
       {!hosted && !bot.computer && !state.config?.box?.configured && (
         <Note>
-          No cloud box is set up, so Automatic uses this computer.{" "}
+          {ownScreen
+            ? "No cloud box is set up, so Automatic uses this computer."
+            : "No cloud box is set up, so Automatic gives it no computer. Turn Automatic off and choose Local VM for a free Linux desktop here."}{" "}
           <button
             className="font-medium text-foreground underline-offset-2 hover:underline"
             onClick={() => dispatch({ type: "toggleComputer", open: true })}

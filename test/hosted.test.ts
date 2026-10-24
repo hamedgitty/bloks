@@ -10,12 +10,15 @@ import { connect } from "node:net";
 
 import {
   DesktopTickets,
+  OWN_SCREEN_NEEDS_MAC,
   TICKET_IDLE_MS,
   computerChoices,
   computerRefusal,
   desktopRequest,
   hostedComputer,
   hostedRefusal,
+  noComputerLine,
+  ownScreenWorks,
   publicDoor,
   viewerUrl,
   vncTarget,
@@ -24,13 +27,51 @@ import { startHarness } from "./helpers/server.ts";
 
 test("hosted offers this machine and off, and refuses a box or a VM", () => {
   assert.deepEqual(computerChoices(true).map((c) => c.id), ["local", "off"]);
-  assert.deepEqual(computerChoices(false).map((c) => c.id), ["cloud", "sandbox", "local", "off"]);
+  assert.deepEqual(computerChoices(false, "darwin").map((c) => c.id), ["cloud", "sandbox", "local", "off"]);
   assert.match(computerRefusal("cloud", true) ?? "", /agents' computer already/);
   assert.match(computerRefusal("sandbox", true) ?? "", /Local VM/);
   assert.equal(computerRefusal("local", true), null);
   assert.equal(computerRefusal(null, true), null);
-  assert.equal(computerRefusal("cloud", false), null, "on a Mac nothing changes");
+  assert.equal(computerRefusal("cloud", false, "darwin"), null, "on a Mac nothing changes");
+  assert.equal(computerRefusal("local", false, "darwin"), null);
   assert.ok(computerRefusal("moon", true), "and nonsense is refused on a hosted workspace");
+});
+
+// GitHub 377: on Windows "This computer" was offered, and Automatic fell
+// back on it, but nothing there can work the PC's own screen (cua-driver
+// ships for macOS only), so the agent quietly had no computer at all.
+test("off a Mac this computer's own screen is neither offered nor accepted, and the Local VM still is", () => {
+  for (const platform of ["win32", "linux"]) {
+    assert.deepEqual(computerChoices(false, platform).map((c) => c.id), ["cloud", "sandbox", "off"], platform);
+    assert.equal(computerRefusal("local", false, platform), OWN_SCREEN_NEEDS_MAC, platform);
+    assert.equal(computerRefusal("sandbox", false, platform), null, platform);
+    assert.equal(computerRefusal("cloud", false, platform), null, platform);
+    assert.equal(computerRefusal(null, false, platform), null, "Automatic is always allowed");
+  }
+  assert.equal(ownScreenWorks("darwin"), true);
+  assert.equal(ownScreenWorks("win32"), false);
+  assert.deepEqual(computerChoices(true, "linux").map((c) => c.id), ["local", "off"], "a hosted machine is still its own computer");
+});
+
+test("an agent with no computer is told so, and how the person gives it one", () => {
+  const pc = noComputerLine("none", { hosted: false, platform: "win32" });
+  assert.match(pc, /no computer on this turn/);
+  assert.match(pc, /in your settings, under Computer/);
+  assert.match(pc, /Local VM/);
+  assert.match(pc, /Cloud box/);
+  assert.match(pc, /Windows PC's screen needs Bloks running on a Mac/);
+  assert.doesNotMatch(pc, /This computer \(/, "a PC is not offered its own screen");
+
+  const mac = noComputerLine("none", { hosted: false, platform: "darwin" });
+  assert.match(mac, /This computer \(their own Mac/);
+  assert.match(mac, /Local VM/);
+  assert.doesNotMatch(mac, /needs Bloks running on a Mac/);
+
+  assert.match(noComputerLine("off", { hosted: false, platform: "win32" }), /switched off in your settings/);
+  assert.match(noComputerLine("withheld", { hosted: false, platform: "darwin" }), /your owner did not start it/);
+  assert.doesNotMatch(noComputerLine("withheld", { hosted: false }), /under Computer/, "someone else's turn is not told to change the owner's settings");
+  assert.equal(noComputerLine("none", { hosted: true }), "", "a hosted machine is the computer");
+  assert.match(noComputerLine("off", { hosted: true }), /switched off/);
 });
 
 test("a box or a VM chosen on a Mac becomes this machine once hosted, and off stays off", () => {

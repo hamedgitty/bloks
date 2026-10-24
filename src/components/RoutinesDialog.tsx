@@ -38,6 +38,7 @@ import { Slider, type SliderStop } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { ThisComputer, thisComputer } from "@/lib/thisComputer";
+import { offersThisComputer } from "@/lib/hosted";
 import {
   CHECK_IN_EVERY,
   checkInBand,
@@ -508,6 +509,9 @@ function CreateForm({
   const [quiet, setQuiet] = useState(false);
   const [durationMin, setDurationMin] = useState(30);
   const [runsOn, setRunsOn] = useState<"" | "cloud" | "local" | "off">("");
+  // off a Mac a routine cannot work this computer's screen either
+  const { state } = useStore();
+  const ownScreen = offersThisComputer(state.config?.hosted?.computers);
   const [thread, setThread] = useState("");
   const [part, setPart] = useState<Part>("when");
   const [more, setMore] = useState(false);
@@ -978,7 +982,7 @@ function CreateForm({
                           options={[
                             { value: "", label: "Usual", title: `Wherever ${target.name} runs` },
                             { value: "cloud", label: "Cloud" },
-                            { value: "local", label: ThisComputer() },
+                            ...(ownScreen ? [{ value: "local" as const, label: ThisComputer() }] : []),
                             { value: "off", label: "None", title: "No computer" },
                           ]}
                         />

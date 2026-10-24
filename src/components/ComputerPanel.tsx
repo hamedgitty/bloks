@@ -38,7 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { thisComputer } from "@/lib/thisComputer";
-import { computerOptions } from "@/lib/hosted";
+import { computerOptions, offersThisComputer } from "@/lib/hosted";
 import { useEscape } from "@/lib/useEscape";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
@@ -128,6 +128,7 @@ type Phase =
   | "ready"
   | "local"
   | "local-unavailable"
+  | "no-own-screen"
   | "hosted"
   | "off"
   | "error";
@@ -243,6 +244,9 @@ function LocalVmCard({ bot }: { bot: Bot }) {
 export function ComputerPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const hosted = Boolean(state.config?.hosted?.on);
+  // Off a Mac nothing can work this computer's own screen, so the server
+  // leaves it out of the choices and Automatic never falls back on it.
+  const ownScreen = offersThisComputer(state.config?.hosted?.computers);
   useEscape(() => dispatch({ type: "toggleComputer", open: false }));
   const [phase, setPhase] = useState<Phase>("checking");
   const [boxState, setBoxState] = useState<string | null>(null);
@@ -273,14 +277,14 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       return;
     }
     if (bot.computer === "local") {
-      setPhase(isElectron ? "local" : "local-unavailable");
+      setPhase(!ownScreen ? "no-own-screen" : isElectron ? "local" : "local-unavailable");
       return;
     }
     // or left to decide for itself
     api(`/api/bots/${bot.id}/computer`)
       .then((status) => {
         if (!alive) return;
-        const autoLocal = bot.computer !== "cloud" && isElectron;
+        const autoLocal = bot.computer !== "cloud" && isElectron && ownScreen;
         if (!status.configured) {
           setPhase(autoLocal ? "local" : "unconfigured");
           return;
@@ -304,7 +308,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     return () => {
       alive = false;
     };
-  }, [bot.id, bot.computer, retry, hosted]);
+  }, [bot.id, bot.computer, retry, hosted, ownScreen]);
 
   // a bot switch must never paint the previous agent's screen, even for
   // one frame; the reset happens during render, before anything shows
@@ -395,6 +399,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     starting: "Starting your agent's computer…",
     unconfigured: "No cloud computer configured",
     "local-unavailable": "Local preview needs the desktop app",
+    "no-own-screen": "Agents can work this computer's own screen only on a Mac. Choose Local VM below.",
     off: "This agent's computer is off",
     error: "Couldn't reach the computer",
   };
@@ -467,7 +472,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {phase === "unconfigured" && (
           <div className="mt-3 rounded-2xl border bg-card p-4">
             <div className="mb-3 text-body leading-relaxed text-muted-foreground">
-              Add a Boat API key to give this agent a cloud computer.
+              {ownScreen
+                ? "Add a Boat API key to give this agent a cloud computer."
+                : "Add a Boat API key to give this agent a cloud computer, or choose Local VM below for a free Linux desktop here."}
             </div>
             <ApiKeyRow
               bare
@@ -528,19 +535,29 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             <div>
               <div className="text-body text-foreground">Automatic</div>
               <div className="text-small text-muted-foreground">
-                {hosted ? "This machine" : "Cloud box if there is one, else this computer"}
+                {hosted
+                  ? "This machine"
+                  : ownScreen
+                    ? "Cloud box if there is one, else this computer"
+                    : "Cloud box if there is one, else none"}
               </div>
             </div>
             <Switch
               checked={!bot.computer}
               onCheckedChange={(on) =>
-                dispatch({ type: "updateBot", botId: bot.id, patch: { computer: on ? null : "local" } })
+                dispatch({
+                  type: "updateBot",
+                  botId: bot.id,
+                  patch: { computer: on ? null : ownScreen || hosted ? "local" : "sandbox" },
+                })
               }
             />
           </div>
           {!hosted && !bot.computer && !state.config?.box?.configured && (
             <div className="mt-2 rounded-xl bg-muted/60 px-3 py-2 text-small text-muted-foreground">
-              No cloud box yet, so this computer is used.
+              {ownScreen
+                ? "No cloud box yet, so this computer is used."
+                : "No cloud box yet, so it has no computer. Turn Automatic off and choose Local VM."}
             </div>
           )}
           <div
