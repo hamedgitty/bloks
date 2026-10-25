@@ -69,6 +69,7 @@ export interface MemberMessage {
   from?: string;
   queued?: boolean;
   deleted?: boolean;
+  quiet?: boolean;
   event?: boolean;
   tool?: { name: string; ok?: boolean };
   card?: MemberCard;

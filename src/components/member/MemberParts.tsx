@@ -17,8 +17,9 @@ import { cardState, speaker, type MemberCard, type MemberMessage } from "@/lib/m
 import { receiptsAt, runs, senderOf, type Said } from "@/lib/participants";
 import { useReadPosition, useReads } from "@/lib/readReceipts";
 import { GroupMessage, PersonAvatar, SeenBy } from "@/components/chat/Group";
-import { richText } from "@/components/chat/Bubble";
+import { QuietCheckIns, richText } from "@/components/chat/Bubble";
 import { formatTime } from "@/state/store";
+import { quietRunAt } from "@/lib/transcript";
 
 export function AgentFace({ agent, size }: { agent: { id: string; name: string; color: string; shape: string | null }; size: number }) {
   return (
@@ -95,7 +96,7 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
   // Shared with other people (a room, a team conversation): every
   // message a bubble, a run as one, and "Seen by" under where each other
   // person has read to (src/lib/participants.ts).
-  const isBubble = (m: MemberMessage) => m.kind === "text" && !m.deleted;
+  const isBubble = (m: MemberMessage) => m.kind === "text" && !m.deleted && !m.quiet;
   const said = shown as unknown as Array<MemberMessage & Said>;
   const place = shared ? runs(said, isBubble) : null;
   const reads = useReads(shared ? threadId : null);
@@ -125,9 +126,13 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
         {header}
         {!shown.length && !streaming && empty}
         {shown.map((m, i) => {
+          if (m.quiet) {
+            const run = quietRunAt(shown, i);
+            return run ? <QuietCheckIns key={m.id} messages={run} /> : null;
+          }
           const fresh = !first.current && !seen.current.has(m.id);
           const prev = shown[i - 1];
-          const sameSpeaker = prev && prev.role === "user" && m.role === "user" && prev.author === m.author && m.at - prev.at < 5 * 60_000;
+          const sameSpeaker = prev && !prev.quiet && prev.role === "user" && m.role === "user" && prev.author === m.author && m.at - prev.at < 5 * 60_000;
           return (
             <Line
               key={m.id}

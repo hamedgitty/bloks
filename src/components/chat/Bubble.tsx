@@ -147,7 +147,7 @@ export function Rewound({ messages }: { messages: Message[] }) {
 /** A run of quiet check-ins as one muted line. It opens to show what was
  * asked and answered, for whoever wants to see that the routine really is
  * running, and stays out of the way otherwise. */
-export function QuietCheckIns({ messages }: { messages: Message[] }) {
+export function QuietCheckIns({ messages }: { messages: Array<Pick<Message, "id" | "at" | "role" | "text"> & { kind: string }> }) {
   const [open, setOpen] = useState(false);
   const words = messages.filter((m) => m.kind === "text" && m.text);
   return (
