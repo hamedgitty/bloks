@@ -213,6 +213,7 @@ const COMMANDS = {
       if (!kind) throw new Error("watch needs --folder, --page, --feed, --check, --arrive or --leave");
       if (flags.arrive && flags.leave) throw new Error("watch takes one of --arrive or --leave");
       if (!flags.do) throw new Error('watch needs --do "what to do when it changes"');
+      if (flags.once !== undefined && flags.once !== "true" && flags.once !== "false") throw new Error("--once is true or false");
       const asked = flags.every ? Number(flags.every) : undefined;
       if (kind === "place" && flags.radius !== undefined && !Number.isFinite(Number(flags.radius))) throw new Error("--radius needs a number of metres");
       const filed = await request("POST", "/api/watchers", {
@@ -226,10 +227,10 @@ const COMMANDS = {
           ? {
               when: flags.leave ? "leave" : "arrive",
               ...(flags.radius !== undefined ? { radius: Number(flags.radius) } : {}),
-              ...(flags.once === "true" ? { once: true } : {}),
-              ...(flags.until ? { until: flags.until } : {}),
             }
           : {}),
+        ...(Object.hasOwn(flags, "once") ? { once: flags.once === "true" } : {}),
+        ...(Object.hasOwn(flags, "until") ? { until: flags.until } : {}),
         ...(flags.thread ? { thread: flags.thread } : {}),
         mode: flags.rehearse ? "rehearse" : "act",
       });
@@ -271,6 +272,7 @@ const COMMANDS = {
         }
       }
       const flags = parseFlags(rest);
+      if (flags.once !== undefined && flags.once !== "true" && flags.once !== "false") throw new Error("--once is true or false");
       const targets = kinds.filter((kind) => Object.hasOwn(flags, kind));
       if (targets.length > 1) throw new Error("edit-watch takes only one of --folder, --page, --feed, --check, --arrive or --leave");
       const body = {};

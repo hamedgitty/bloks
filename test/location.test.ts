@@ -364,9 +364,9 @@ describe("places", () => {
     assert.equal(cleanWatcher({ kind: "place", target: "Toronto", when: "stay", botId: "b1", instruction: "x" }, ok, NOW).ok, false);
     assert.equal(cleanWatcher({ kind: "place", target: "Toronto", until: "2020-01-01", botId: "b1", instruction: "x" }, ok, NOW).ok, false, "a time already past");
     assert.equal(cleanWatcher({ kind: "place", target: "Toronto", until: "soonish", botId: "b1", instruction: "x" }, ok, NOW).ok, false);
-    // the place fields are a place's alone
+    // Place geometry stays local to places; lifetime is common.
     const page = cleanWatcher({ kind: "page", target: "https://x.y", when: "leave", once: true, botId: "b1", instruction: "x" }, ok, NOW);
-    assert.ok(page.ok && page.value.when === undefined && page.value.once === undefined);
+    assert.ok(page.ok && page.value.when === undefined && page.value.once === true);
   });
 
   test("the agent is told who crossed, where the phone said, how long ago, and how exactly", () => {

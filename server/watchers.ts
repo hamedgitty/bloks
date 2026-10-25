@@ -71,9 +71,9 @@ export interface Watcher {
   when?: "arrive" | "leave";
   /** Places given by coordinates: how near counts as there, in metres. */
   radius?: number;
-  /** Places only: act once, then be done. */
+  /** Act once, then be done. */
   once?: boolean;
-  /** Places only: stop waiting after this time (epoch milliseconds). */
+  /** Stop waiting after this time (epoch milliseconds). */
   until?: number;
   /** Finished on its own: it acted once as asked, or its time ran out.
    * Switched off at the same moment; switching it on again clears this. */
@@ -464,11 +464,11 @@ export function watcherTurn(w: Pick<Watcher, "kind" | "target" | "instruction" |
   ].join("\n");
 }
 
-/** The fields only a place watcher has, said again by every change. */
-export type PlaceFields = Pick<Watcher, "when" | "radius" | "once" | "until">;
+/** Place-specific fields, validated separately from the common lifetime. */
+export type PlaceFields = Pick<Watcher, "when" | "radius">;
 
 export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: string) => boolean, now = Date.now()):
-  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled" | "thread"> & PlaceFields }
+  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled" | "thread" | "once" | "until"> & PlaceFields }
   | { ok: false; error: string } {
   const kind = raw.kind;
   if (kind !== "folder" && kind !== "page" && kind !== "feed" && kind !== "check" && kind !== "place") return { ok: false, error: "kind is folder, page, feed, check or place" };
@@ -495,18 +495,18 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
     const point = parsePlace(target)?.kind === "point";
     const asked = raw.radius === undefined || raw.radius === null ? DEFAULT_RADIUS : Number(raw.radius);
     if (!Number.isFinite(asked)) return { ok: false, error: "a radius is a number of metres" };
-    let until: number | undefined;
-    if (raw.until !== undefined && raw.until !== null && raw.until !== "") {
-      until = typeof raw.until === "number" ? raw.until : Date.parse(String(raw.until));
-      if (!Number.isFinite(until)) return { ok: false, error: "until is a date and time, like 2026-10-24T18:00" };
-      if (until <= now) return { ok: false, error: "until is already past" };
-    }
     place = {
       when,
       ...(point ? { radius: Math.min(MAX_RADIUS, Math.max(MIN_RADIUS, Math.round(asked))) } : {}),
-      ...(raw.once === true ? { once: true } : {}),
-      ...(until !== undefined ? { until: Math.round(until) } : {}),
     };
+  }
+  if (raw.once !== undefined && typeof raw.once !== "boolean") return { ok: false, error: "once is true or false" };
+  let until: number | undefined;
+  if (raw.until !== undefined && raw.until !== null && raw.until !== "") {
+    if (typeof raw.until !== "number" && typeof raw.until !== "string") return { ok: false, error: "until is a date and time, like 2026-10-24T18:00" };
+    until = typeof raw.until === "number" ? raw.until : Date.parse(raw.until);
+    if (!Number.isFinite(until)) return { ok: false, error: "until is a date and time, like 2026-10-24T18:00" };
+    if (until <= now) return { ok: false, error: "until is already past" };
   }
   const instruction = String(raw.instruction ?? "").trim();
   if (!instruction) return { ok: false, error: "say what the agent should do when it changes" };
@@ -520,6 +520,8 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
     ok: true,
     value: {
       ...place,
+      ...(raw.once === true ? { once: true } : {}),
+      ...(until !== undefined ? { until: Math.round(until) } : {}),
       botId,
       kind,
       target,

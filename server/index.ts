@@ -7774,6 +7774,9 @@ function suspendedFor(botId: string): boolean {
 const folderWatches = new Map<string, import("node:fs").FSWatcher>();
 const settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const checking = new Set<string>();
+// A reopened lifetime or changed target must not inherit an older look's
+// result or completion. No persisted revision or extra timer is needed.
+const watcherRuns = new WeakMap<Watcher, object>();
 /**
  * Folder watchers whose own turn has not ended yet: the lane it was given
  * and the message that asked for it. A turn that files or renames what it
@@ -7814,7 +7817,8 @@ function disarmWatcher(id: string) {
  * the minute tick is only a fallback for events the filesystem drops. */
 function armWatcher(w: Watcher) {
   disarmWatcher(w.id);
-  if (w.kind !== "folder" || !w.enabled || suspendedFor(w.botId) || movedAway()) return;
+  if (movedAway() || watcherFinished(w)) return;
+  if (w.kind !== "folder" || !w.enabled || suspendedFor(w.botId)) return;
   try {
     const fw = watch(w.target, { recursive: true }, () => {
       clearTimeout(settleTimers.get(w.id));
@@ -7951,6 +7955,8 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
 async function checkWatcher(id: string, manual = false): Promise<{ fired: boolean; note: string }> {
   const w = watchers.find((x) => x.id === id);
   if (!w) return { fired: false, note: "no such watcher" };
+  if (movedAway()) return { fired: false, note: "This workspace moved, so its watchers look where it runs now, not here." };
+  if (watcherFinished(w)) return { fired: false, note: "This watcher is done. Switch it on to watch again." };
   // Not a look that failed: no look at all. Recording one as an error
   // every few minutes kept an archived agent's watcher busy and red,
   // and moved its last look on for work nobody was there to do.
@@ -7959,10 +7965,11 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
   // Stopped for failing (countLook): only a look by hand, or the person
   // changing it, starts it again.
   if (w.failing && !manual) return { fired: false, note: "It stopped looking after failing again and again. Change it, or look by hand, to start it again." };
-  // the live copy of this workspace is on another machine, which looks
-  if (movedAway()) return { fired: false, note: "This workspace moved, so its watchers look where it runs now, not here." };
   if (checking.has(id)) return { fired: false, note: "already looking" };
   checking.add(id);
+  const run = watcherRuns.get(w);
+  const current = () => watchers.includes(w) && watcherRuns.get(w) === run;
+  const superseded = { fired: false, note: "This look belongs to an earlier watcher lifetime or target." };
   try {
     const bot = store.bot(w.botId);
     if (!bot) throw new Error("its agent is gone");
@@ -8025,11 +8032,6 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       what = outcome.what;
     } else if (w.kind === "place") {
       const now = Date.now();
-      // its time ran out: done, whatever the last reading says
-      if (w.until && now >= w.until) {
-        finishWatcher(w, "until");
-        return { fired: false, note: "Its time ran out, so it stopped watching." };
-      }
       const place = parsePlace(w.target);
       if (!place) throw new Error("that place cannot be read; give it by name or as latitude,longitude");
       const at = whereabouts.usable();
@@ -8065,6 +8067,8 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       }
       next.seenItems = [...new Set([...items.map((i) => i.id), ...(w.seenItems ?? [])])].slice(0, 400);
     }
+    if (!current()) return superseded;
+    if (watcherFinished(w)) return { fired: false, note: "Its time ran out, so it stopped watching." };
     w.lastCheck = Date.now();
     w.lastError = undefined;
     // a look that worked: the count of failures starts over, and an
@@ -8077,7 +8081,11 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     let ownEnded = false;
     if (what) {
       if (mayFire(w, Date.now())) {
+        // Final synchronous lifetime check: once dispatched, accepted
+        // queued work and asynchronous startup may outlive the deadline.
+        if (watcherFinished(w)) return { fired: false, note: "Its time ran out, so it stopped watching." };
         await fireWatcher(w, bot, what);
+        if (!current()) return { fired: true, note: "Dispatched before this watcher was reopened or changed." };
         fired = true;
         ownEnded = w.kind === "folder" && w.mode !== "rehearse" && !ownTurns.has(w.id);
         // asked to act once: that was the once
@@ -8091,6 +8099,8 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     if (next.seenItems) w.seenItems = next.seenItems;
     return { fired, note: fired ? "changed, and the agent is on it" : what ? w.lastError ?? "" : manual ? "no change since the last look" : "" };
   } catch (e) {
+    if (!current()) return superseded;
+    if (watcherFinished(w)) return { fired: false, note: "Its time ran out, so it stopped watching." };
     w.lastError = redactSecrets((e as Error).message).slice(0, 200);
     w.lastCheck = Date.now();
     watcherFailed(w, w.lastError);
@@ -8176,6 +8186,7 @@ setInterval(() => {
   if (movedAway()) return;
   const now = Date.now();
   for (const w of watchers) {
+    if (watcherFinished(w, now)) continue;
     if (!w.enabled || w.failing || suspendedFor(w.botId) || w.kind === "place") continue;
     if ((w.lastCheck ?? 0) + w.every * 60_000 <= now) void checkWatcher(w.id);
   }
@@ -8243,13 +8254,25 @@ function placesStartOver() {
   }
 }
 
-/** A place watcher that has done what it was for: acted once as asked, or
+/** A watcher that has done what it was for: acted once as asked, or
  * reached its time. Off, and marked done, so the lists say finished rather
  * than paused; switching it on again clears both. */
 function finishWatcher(w: Watcher, why: "once" | "until") {
+  // The first terminal reason wins, including a sweep during dispatch.
+  if (w.done) return;
   w.enabled = false;
   w.done = { at: Date.now(), why };
   disarmWatcher(w.id);
+}
+
+/** Lifetime maintenance is independent of whether its target may run. */
+function watcherFinished(w: Watcher, now = Date.now()): boolean {
+  if (w.done) return true;
+  if (w.until === undefined || now < w.until) return false;
+  finishWatcher(w, "until");
+  saveWatchers();
+  broadcast({ kind: "watchers" });
+  return true;
 }
 
 /** Why where the owner is may not be told to this agent in this
@@ -22723,7 +22746,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         (id) => Boolean(store.bot(id)),
       );
       if (!checked.ok) return json(res, 400, { error: checked.error });
-      if (checked.value.kind === "place" && !Object.hasOwn(body, "until") && until !== undefined) checked.value.until = until;
+      if (!Object.hasOwn(body, "until") && until !== undefined) checked.value.until = until;
       const placeRefused = checked.value.kind === "place" && w.kind !== "place" ? locationRefusal(checked.value.botId, asAgent?.taskId) : null;
       if (placeRefused) return json(res, 403, { error: placeRefused });
       const renamed = checked.value.thread !== w.thread || checked.value.botId !== w.botId;
@@ -22732,15 +22755,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const moved = checked.value.target !== w.target || checked.value.kind !== w.kind;
       const owner = store.bot(checked.value.botId);
       const couldRun = checkAllowed(w, owner?.approvals);
+      if (reopened || moved) {
+        watcherRuns.set(w, {});
+        ownTurns.delete(w.id);
+      }
       Object.assign(w, checked.value);
       // an empty filter, or a watcher that is no longer a page, has none
       if (!checked.value.mentions) delete w.mentions;
-      // and what only a place has goes when it is not one, or is not said
+      // Omitted lifetime fields survive; explicit false/empty clears them.
       if (checked.value.radius === undefined) delete w.radius;
       if (!checked.value.once) delete w.once;
       if (checked.value.until === undefined) delete w.until;
       if (checked.value.when === undefined) delete w.when;
-      if (reopened || w.kind !== "place") delete w.done;
+      if (reopened) delete w.done;
       if (moved) {
         delete w.seen;
         delete w.seenItems;
