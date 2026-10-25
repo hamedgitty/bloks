@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { RoomTagQueues } from "../server/room-tags.ts";
 import { waitFor } from "./helpers/chat-interactions.ts";
@@ -191,4 +194,19 @@ test("the hop limit still ends the chain when a handoff waited for a busy agent"
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   // his own task, then the same four room turns as without the wait
   assert.equal(r.calls.length, 5, `chain ran ${r.calls.length - 1} room turns`);
+});
+
+
+test("requested room lines retain provenance through restart without joining agent handoffs", t => {
+  const home = mkdtempSync(join(tmpdir(), "bloks-room-provenance-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const file = join(home, "lines.json"), now = Date.now();
+  const q = new RoomTagQueues(file);
+  q.add("a", "r", "Agent handoff", "owner", 1, now);
+  q.add("a", "r", "Person request", "owner", 0, now, true);
+  q.add("a", "r", "Person addition", "owner", 0, now, true);
+  const restored = new RoomTagQueues(file), [agent, person] = restored.of("a");
+  assert.equal(agent.byYou, undefined); assert.deepEqual(agent.texts, ["Agent handoff"]);
+  assert.equal(person.byYou, true); assert.deepEqual(person.texts, ["Person request", "Person addition"]);
+  restored.take("a", agent); assert.deepEqual(new RoomTagQueues(file).of("a"), [person]);
 });

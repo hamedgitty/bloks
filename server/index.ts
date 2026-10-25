@@ -42,6 +42,7 @@ import { ENGINE_SETUP, installEngine, openSignIn, runSetupScript } from "./engin
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
 import { ReplyNotifications, settledFrame, settledReply } from "./reply-notifications.ts";
+import { TextPreview } from "./text-preview.ts";
 import { LiveActivities } from "./live-activities.ts";
 import { deviceKey, seal } from "./relay-crypto.ts";
 import * as scout from "./scout.ts";
@@ -3691,6 +3692,20 @@ function recoverPlan(messageId: string, botId: string) {
 }
 
 const replyNotifications = new ReplyNotifications();
+const textPreview = new TextPreview();
+const NO_ANSWER = "The agent ended this turn without an answer.";
+// Protocol words, presentation and meaningful output are separate facts.
+// One record per active attempt; no earlier turn is a fallback answer.
+type TurnOutput = { turnId?: string; protocol: string; report: string; useful: boolean };
+const turnOutputs = new Map<string, TurnOutput>();
+function noteOutput(output: TurnOutput | undefined, message: Message) {
+  if (!output || message.role !== "bot" || message.deleted || message.quiet) return;
+  if (message.kind === "text" && message.text && !message.agent) {
+    output.report = message.text;
+    if (!itemProgress(message)) output.useful = true;
+  } else if (["artifact", "changes", "component", "options", "secret", "connector"].includes(message.kind) ||
+    (message.kind === "notice" && !message.compaction && !message.sessionReset)) output.useful = true;
+}
 
 bus.subscribe((event: RuntimeEvent) => {
   // Maintenance compaction (idle or before a turn) does not own a
@@ -3702,7 +3717,23 @@ bus.subscribe((event: RuntimeEvent) => {
     const source = origin && origin.turnId && origin.turnId === event.turnId ? (turnsForYou.has(event.threadId) ? "person" : origin.origin) : "unknown";
     event = { ...event, codexText: codexTextFor(event.codexItem, event.turnId, event.itemId, source) };
   }
-  broadcast({ kind: "runtime", event });
+  if (event.type === "turn.started") {
+    textPreview.start(event);
+    turnOutputs.set(event.threadId, { turnId: event.turnId, protocol: "", report: "", useful: false });
+  }
+  const output = event.type === "item.completed" && event.itemType === "assistant_text" ? (() => {
+    const { plan, text } = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE || laneTelegramPerson.has(event.threadId)
+      ? { plan: null, text: event.text } : extractTeamPlan(event.text);
+    return { plan, ...extractComponents(text) };
+  })() : null;
+  if (event.type === "content.delta") {
+    const shown = textPreview.delta(event);
+    if (shown) broadcast({ kind: "runtime", event: shown });
+  } else {
+    if (output) textPreview.complete(event);
+    if (!output || !isQuietReply(output.text)) broadcast({ kind: "runtime", event });
+    if (event.type === "turn.completed" || event.type === "session.exited") textPreview.end(event);
+  }
   const bot = store.botByThread(event.threadId);
   if (!bot) return;
 
@@ -3755,30 +3786,13 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.completed":
       if (event.itemType === "assistant_text") {
-        // a lead may have proposed a team; the plan becomes a card the
-        // user approves, never something that happens on its own. Never
-        // from a stranger's mail, which would be writing the agents the
-        // owner hires and the brief they start on.
-        const { plan, text: afterPlan } =
-          laneRequester.get(event.threadId) === MAIL_FROM_ANYONE || laneTelegramPerson.has(event.threadId) ? { plan: null, text: event.text } : extractTeamPlan(event.text);
-        // Components an engine wrote into its own answer. The CLI is the
-        // route for engines with a shell; this is the one for the rest,
-        // so an API model can answer with a chart like anybody else.
-        const { components, text } = extractComponents(afterPlan);
+        const { plan, components, text } = output!;
+        const running = turnOutputs.get(event.threadId);
+        if (running && running.turnId === event.turnId && text) running.protocol = text;
         const answering = inRoom ? undefined : replyingTo.get(event.threadId);
-        // Nobody is waiting on what this turn says (unaskedTurn), so the
-        // bare quiet word from it is silence: never written, never news,
-        // and the turn ends as one that said nothing (GitHub 363). A
-        // check-in's QUIET is its own, below.
-        const unasked = !inRoom && !checkInTurns.has(event.threadId) && unaskedTurn(event.threadId);
-        const silent = unasked && isQuietReply(text);
-        if ((answering || inRoom || unasked) && text && !silent && !isProgressText(event.codexText)) spokeInTurn.add(event.threadId);
-        if (silent) quietEnds.set(event.threadId, text);
-        else if (text) quietEnds.delete(event.threadId);
-        // A check-in's QUIET is marked the moment it is said, so the frame
-        // that carries it already says it is not news, to every client
-        // that reads it, before the turn has even ended.
-        const quiet = !inRoom && checkInTurns.has(event.threadId) && isQuietReply(text);
+        // The marker is protocol, never a message, regardless of origin.
+        const silent = isQuietReply(text);
+        if (text && !silent && !isProgressText(event.codexText)) spokeInTurn.add(event.threadId);
         if (text && !silent) {
           const said = houseStyle(text);
           // The reply's interface, settled and checked, for a client
@@ -3791,7 +3805,6 @@ bus.subscribe((event: RuntimeEvent) => {
             ...(ui ? { ui } : {}),
             ...(event.codexText ? { codexText: event.codexText } : {}),
             ...(answering ? { afterAgent: answering } : {}),
-            ...(quiet ? { quiet: true } : {}),
           });
           replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase, event.syntheticText);
         }
@@ -4431,11 +4444,21 @@ bus.subscribe((event: RuntimeEvent) => {
     case "turn.completed": {
       // Capture before owner settlement or queue dispatch can replace this lane.
       const endingReply = replyNotifications.take(event.threadId, event.turnId);
-      const endingCheckIn = checkInTurns.has(event.threadId);
+      const endingOutput = turnOutputs.get(event.threadId);
+      const endedOutput = endingOutput && endingOutput.turnId === event.turnId ? { ...endingOutput } : { protocol: "", report: "", useful: false };
+      if (endingOutput && endingOutput.turnId === event.turnId) turnOutputs.delete(event.threadId);
+      let owesAnswer = turnsForYou.has(event.threadId) || lastAsked.get(event.threadId)?.routine?.manual === true ||
+        Boolean(laneTelegramPerson.has(event.threadId) || laneTelegramDelegate.has(event.threadId) || laneTelegramGroup.has(event.threadId) || mailAnswering.has(event.threadId)) ||
+        store.taskByThread(event.threadId)?.task.goal?.status === "active";
       // The bare quiet word this turn ended on, kept out of the chat. What
       // reads a turn's last words (settleOwners) still reads it.
-      const quietWord = quietEnds.get(event.threadId);
-      quietEnds.delete(event.threadId);
+      const quietWord = isQuietReply(endedOutput.protocol) ? endedOutput.protocol : undefined;
+      const joining = steerAttempts.get(event.threadId);
+      const endMessage: typeof pushMessage = (message) => {
+        const saved = pushMessage(message);
+        noteOutput(endedOutput, saved);
+        return saved;
+      };
       codexDispatches.delete(event.threadId);
       const command = commandTurns.has(event.threadId);
       // a turn that failed on its length is asked again once it is folded
@@ -4497,9 +4520,9 @@ bus.subscribe((event: RuntimeEvent) => {
       // the final frame stops being a live preview and becomes part of
       // the conversation
       const frame = stopScreenPoller(bot.id);
-      if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
+      if (frame) endMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
       drivingMac.delete(bot.id);
-      sweepArtifacts(bot.id, event.threadId, pushMessage);
+      sweepArtifacts(bot.id, event.threadId, endMessage);
       // what the turn changed in the agent's memory, into its journal
       try {
         const remembered = memoryJournal.finish(event.threadId);
@@ -4536,14 +4559,14 @@ bus.subscribe((event: RuntimeEvent) => {
         .then(async (record) => {
           if (record) turnLog.attachCheckpoint(loggedTurn.id, record.id);
           if (rehearsing) {
-            await settleRehearsalTurn(rehearsing, record, event.ok !== false, pushMessage);
+            await settleRehearsalTurn(rehearsing, record, event.ok !== false, endMessage);
             return;
           }
           if (!record) return;
           if (cfg.changes?.showShared === false && record.files.every((file) => file.shared)) return;
           const changes = checkpoints.summary(record);
           if (!changes.total) return;
-          const card = pushMessage({ role: "bot", kind: "changes", changes });
+          const card = endMessage({ role: "bot", kind: "changes", changes });
           checkpoints.attachCard(record.id, roomId, card.id);
         })
         .catch(() => {});
@@ -4556,167 +4579,187 @@ bus.subscribe((event: RuntimeEvent) => {
         // anything said while the card was being made goes now
         drainSteer(event.threadId);
       });
-      store.setTaskBusy(event.threadId, false);
-      turnStarted.delete(event.threadId);
-      repeats.end(event.threadId);
-      cutOff.end(event.threadId);
-      // a call the turn never heard back from will not report now
-      for (const settled of store.settleOpenTools(roomId, inRoom ? bot.id : undefined)) {
-        broadcast({ kind: "message.patch", threadId: roomId, message: settled });
-        for (const [item, id] of toolMessageByItem) if (id === settled.id) toolMessageByItem.delete(item);
-      }
-      // An engine that fails a turn normally says why with a runtime.error.
-      // Some only put the reason on the turn's end (a Codex turn the
-      // provider refused, Antigravity's status), and a turn that ends in
-      // silence reads as the agent not answering, so recoverTurn says it.
-      if (event.stopReason === "tool_stalled") {
-        const said = turnErrors.get(event.threadId)?.at(-1);
-        if (said) stalledSince.set(event.threadId, said);
-      }
-      // What the incident desk reads of this end, taken before recoverTurn
-      // clears it.
-      const endedErrors = [...(turnErrors.get(event.threadId) ?? [])];
-      const endedAsked = turnAsked.get(event.threadId) ?? lastAsked.get(event.threadId);
-      const handedOver = recoverTurn(
-        bot,
-        event.threadId,
-        roomId,
-        { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt), person: laneTelegramPerson.has(event.threadId), preInputRefusal: event.preInputRefusal },
-        (text, phoneText) => pushMessage({ role: "bot", kind: "notice", text, ...(phoneText ? { phoneText } : {}) }),
-      );
-      // a folder watcher's own turn ending is what it has seen from now on
-      watcherTurnEnded(event.threadId, pickingUp || Boolean(handedOver) || refolding);
-      // The incident desk (server/incidents.ts): a turn nothing else will
-      // pick up that failed or stalled is an incident, and one that worked
-      // settles the retry it was. Before settleOwners, which closes a
-      // routine's or a workflow's run: theirs speak for themselves.
-      const deskNotes = deskTurns.get(event.threadId);
-      if (!handedOver) {
-        noteTurnEnd(bot, event.threadId, roomId, {
+      const finish = () => {
+        // A successful steer receipt can share one native read with the end.
+        // Read its accepted obligation after that receipt, before dispatching
+        // anything queued. Refused/queued words never join this attempt.
+        owesAnswer ||= turnsForYou.has(event.threadId);
+        store.setTaskBusy(event.threadId, false);
+        turnStarted.delete(event.threadId);
+        repeats.end(event.threadId);
+        cutOff.end(event.threadId);
+        // a call the turn never heard back from will not report now
+        for (const settled of store.settleOpenTools(roomId, inRoom ? bot.id : undefined)) {
+          broadcast({ kind: "message.patch", threadId: roomId, message: settled });
+          for (const [item, id] of toolMessageByItem) if (id === settled.id) toolMessageByItem.delete(item);
+        }
+        // An engine that fails a turn normally says why with a runtime.error.
+        // Some only put the reason on the turn's end (a Codex turn the
+        // provider refused, Antigravity's status), and a turn that ends in
+        // silence reads as the agent not answering, so recoverTurn says it.
+        if (event.stopReason === "tool_stalled") {
+          const said = turnErrors.get(event.threadId)?.at(-1);
+          if (said) stalledSince.set(event.threadId, said);
+        }
+        // What the incident desk reads of this end, taken before recoverTurn
+        // clears it.
+        const endedErrors = [...(turnErrors.get(event.threadId) ?? [])];
+        const endedAsked = turnAsked.get(event.threadId) ?? lastAsked.get(event.threadId);
+        let recoveryOutcome = false;
+        const handedOver = recoverTurn(
+          bot,
+          event.threadId,
+          roomId,
+          { ok: event.ok !== false, stopReason: event.stopReason ?? null, pickingUp, rebuilt: Boolean(rebuilt), person: laneTelegramPerson.has(event.threadId), preInputRefusal: event.preInputRefusal },
+          (text, phoneText) => { recoveryOutcome = true; pushMessage({ role: "bot", kind: "notice", text, ...(phoneText ? { phoneText } : {}) }); },
+        );
+        // a folder watcher's own turn ending is what it has seen from now on
+        watcherTurnEnded(event.threadId, pickingUp || Boolean(handedOver) || refolding);
+        // The incident desk (server/incidents.ts): a turn nothing else will
+        // pick up that failed or stalled is an incident, and one that worked
+        // settles the retry it was. Before settleOwners, which closes a
+        // routine's or a workflow's run: theirs speak for themselves.
+        const deskNotes = deskTurns.get(event.threadId);
+        if (!handedOver) {
+          noteTurnEnd(bot, event.threadId, roomId, {
+            ok: event.ok !== false,
+            stopReason: event.stopReason ?? null,
+            skip: command || pickingUp || Boolean(rebuilt) || refolding || Boolean(event.preInputRefusal) || Boolean(deskNotes),
+            errors: endedErrors,
+            asked: endedAsked,
+          });
+        }
+        deskRetries.delete(event.threadId);
+        if (deskNotes && !handedOver && !pickingUp && !refolding) {
+          deskTurns.delete(event.threadId);
+          for (const id of deskNotes) deskTurnEnded(id, event.ok !== false);
+        }
+        // Capture the honest result before Telegram and owner consumers do.
+        const noAnswer = quietWord !== undefined && owesAnswer && !endedOutput.useful && !recoveryOutcome && !endedErrors.length &&
+          event.ok !== false && event.stopReason !== "interrupted" && !pickingUp && !handedOver && !refolding && !command;
+        if (noAnswer) {
+          pushMessage({ role: "bot", kind: "notice", text: NO_ANSWER });
+          endedOutput.report = NO_ANSWER;
+        }
+        if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId, event.preInputRefusal?.reason);
+        if ((!pickingUp || rebuiltEnds) && !handedOver && !refolding) {
+          endTelegramWaits(event.threadId, event.preInputRefusal?.reason ?? (rebuilt === "gone" ? engineGoneNotice(bot.name) : undefined));
+        }
+        const heldPerson = laneTelegramPerson.get(event.threadId);
+        if (heldPerson && event.ok === false && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
+          tellTelegramPersonHeld(heldPerson, failedTurnNotice(event.stopReason));
+        }
+        // A check-in that answered QUIET, with nobody else's words in it, is
+        // folded away and announces nothing. One the person spoke into is
+        // theirs now, and one that failed is something they should see.
+        const quietRun =
+          quietWord !== undefined && !owesAnswer && !endedOutput.useful && !recoveryOutcome && !inRoom &&
+          event.ok !== false && !handedOver && !pickingUp && !refolding && foldQuietRun(event.threadId);
+        checkInTurns.delete(event.threadId);
+        // The reply this attempt has to say, once, now that it is over,
+        // whether it ended well or not (server/reply-notifications.ts).
+        const replyNotice = settledReply(endingReply, {
+          stopReason: event.stopReason,
+          continues: pickingUp || handedOver || refolding, quiet: quietRun, maintenance: command,
+        });
+        const replyFrame = replyNotice &&
+          settledFrame(replyNotice, store.messagesFor(replyNotice.threadId).find((m) => m.id === replyNotice.message.id));
+        if (replyFrame) broadcast(replyFrame);
+        // a turn asked again or handed to the backup is not over yet, so what
+        // waits on how it ends (a routine's run, a workflow step, a meeting's
+        // write-up, a mail's reply) waits for the attempt that ends it
+        // the failure in its own words, for a routine's or a workflow's
+        // incident, where the run itself keeps only the stop reason
+        if (!handedOver && event.ok === false) failedWords.set(event.threadId, lastWords(endedErrors, event.stopReason ?? null));
+        if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}), said: endedOutput.protocol, report: endedOutput.report, noAnswer });
+        failedWords.delete(event.threadId);
+        if (mailQueue.length) setTimeout(() => void drainMail(), 0);
+        // whatever the agent was given to act with is spent
+        agentTokens.revokeTask(event.threadId);
+        // A turn another agent started that ended well without a word to
+        // the person leaves nothing to read; anything else marks the chat.
+        const codexAgentTurn = event.provider === "codex" && Boolean(origin && origin.turnId === event.turnId && origin.origin === "agent");
+        const quietAgentTurn =
+          (replyingTo.has(event.threadId) || codexAgentTurn) && (event.ok !== false || (codexAgentTurn && event.stopReason === "interrupted")) && !spokeInTurn.has(event.threadId) &&
+          !endedOutput.useful && !owesAnswer && !recoveryOutcome;
+        // So does one nobody asked for that ended on the bare quiet word
+        // with nothing else said, unless the person has joined it since.
+        const quietEnd = quietWord !== undefined && event.ok !== false && !endedOutput.useful && !owesAnswer && !recoveryOutcome && !endedErrors.length;
+        spokeInTurn.delete(event.threadId);
+        if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
+        if (quietAgentTurn || quietRun || quietEnd) {
+          // nothing new here
+        } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
+        else store.patchBot(bot.id, { unread: true });
+        broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+        retriedForContext.delete(event.threadId);
+        // If this lane is filling up, fold its older half now rather than
+        // on the way into the next turn, so nobody waits on a summary.
+        const settledLane = store.taskByThread(event.threadId)?.task;
+        // Only a request from this engine/model can drive the fold. The
+        // default window stays a safety margin here, even when it is not
+        // a known window that the ring can display.
+        const own = readingFor(settledLane?.reading, bot.modelSelection);
+        // A stranger's mail is folded into nothing, read for no skill, and
+        // leaves no session behind: the lane's next turn may be the owner's,
+        // and none of what the mail said may reach it as context.
+        const guestEnded = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE;
+        const personEnded = laneTelegramPerson.has(event.threadId);
+        if (!personEnded && event.ok && laneRequester.get(event.threadId) === "owner") store.setTelegramExchangePending(event.threadId, false);
+        if (guestEnded) store.startFreshSession(event.threadId);
+        if (guestEnded) {
+          // nothing of the owner's to keep from this turn
+        } else if (!personEnded && !command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
+          void foldAfterTurn(bot.id, event.threadId);
+        } else if (!personEnded && !command) {
+          // Otherwise absorb one message into the running summary, if this
+          // workspace asked for that. Deliberately in the else: a lane that
+          // is already over the threshold wants the whole fold, not one
+          // message at a time.
+          void microFold(bot.id, event.threadId).catch(() => {});
+        }
+        // And read the session back, if this workspace asked for that. After
+        // the fold on purpose: a review reads what is actually in the lane,
+        // and a summarised lane is a smaller thing to read.
+        // Never a shared room's lane: what other people said there is not
+        // the owner's to turn into the agent's standing skills.
+        // Nor the lane strangers' mail is answered in, whoever's turn this was.
+        const guestLane = guestEnded || Boolean(settledLane?.guestMail);
+        if (!personEnded && !command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
+        const requester = laneRequester.get(event.threadId);
+        laneRequester.delete(event.threadId);
+        laneTelegramPerson.delete(event.threadId);
+        laneTelegramDelegate.delete(event.threadId);
+        drainRoomTags(bot.id);
+        // before anything queued starts the next turn on the old session
+        freshIfAsked(event.threadId);
+        drainSteer(event.threadId);
+        closeIfAsked(event.threadId);
+        // after what waited has had its chance to go, since it goes first
+        if (!personEnded) goalTurnEnded(bot, event.threadId, {
           ok: event.ok !== false,
           stopReason: event.stopReason ?? null,
-          skip: command || pickingUp || Boolean(rebuilt) || refolding || Boolean(event.preInputRefusal) || Boolean(deskNotes),
-          errors: endedErrors,
-          asked: endedAsked,
+          goesOn: pickingUp || handedOver || refolding,
+          inRoom,
+          command,
+          out: Boolean(loggedTurn.out),
         });
-      }
-      deskRetries.delete(event.threadId);
-      if (deskNotes && !handedOver && !pickingUp && !refolding) {
-        deskTurns.delete(event.threadId);
-        for (const id of deskNotes) deskTurnEnded(id, event.ok !== false);
-      }
-      if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId, event.preInputRefusal?.reason);
-      if ((!pickingUp || rebuiltEnds) && !handedOver && !refolding) {
-        endTelegramWaits(event.threadId, event.preInputRefusal?.reason ?? (rebuilt === "gone" ? engineGoneNotice(bot.name) : undefined));
-      }
-      const heldPerson = laneTelegramPerson.get(event.threadId);
-      if (heldPerson && event.ok === false && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
-        tellTelegramPersonHeld(heldPerson, failedTurnNotice(event.stopReason));
-      }
-      // A check-in that answered QUIET, with nobody else's words in it, is
-      // folded away and announces nothing. One the person spoke into is
-      // theirs now, and one that failed is something they should see.
-      const quietRun =
-        endingCheckIn && !inRoom && event.ok !== false && !handedOver &&
-        !turnsForYou.has(event.threadId) && foldQuietRun(event.threadId);
-      checkInTurns.delete(event.threadId);
-      // The reply this attempt has to say, once, now that it is over,
-      // whether it ended well or not (server/reply-notifications.ts).
-      const replyNotice = settledReply(endingReply, {
-        stopReason: event.stopReason,
-        continues: pickingUp || handedOver || refolding, quiet: quietRun, maintenance: command,
-      });
-      const replyFrame = replyNotice &&
-        settledFrame(replyNotice, store.messagesFor(replyNotice.threadId).find((m) => m.id === replyNotice.message.id));
-      if (replyFrame) broadcast(replyFrame);
-      // a turn asked again or handed to the backup is not over yet, so what
-      // waits on how it ends (a routine's run, a workflow step, a meeting's
-      // write-up, a mail's reply) waits for the attempt that ends it
-      // the failure in its own words, for a routine's or a workflow's
-      // incident, where the run itself keeps only the stop reason
-      if (!handedOver && event.ok === false) failedWords.set(event.threadId, lastWords(endedErrors, event.stopReason ?? null));
-      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}), ...(quietWord !== undefined ? { said: quietWord } : {}) });
-      failedWords.delete(event.threadId);
-      if (mailQueue.length) setTimeout(() => void drainMail(), 0);
-      // whatever the agent was given to act with is spent
-      agentTokens.revokeTask(event.threadId);
-      // A turn another agent started that ended well without a word to
-      // the person leaves nothing to read; anything else marks the chat.
-      const codexAgentTurn = event.provider === "codex" && Boolean(origin && origin.turnId === event.turnId && origin.origin === "agent");
-      const quietAgentTurn =
-        (replyingTo.has(event.threadId) || codexAgentTurn) && (event.ok !== false || (codexAgentTurn && event.stopReason === "interrupted")) && !spokeInTurn.has(event.threadId);
-      // So does one nobody asked for that ended on the bare quiet word
-      // with nothing else said, unless the person has joined it since.
-      const quietEnd = quietWord !== undefined && event.ok !== false && !spokeInTurn.has(event.threadId) && !turnsForYou.has(event.threadId);
-      spokeInTurn.delete(event.threadId);
-      if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
-      if (quietAgentTurn || quietRun || quietEnd) {
-        // nothing new here
-      } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
-      else store.patchBot(bot.id, { unread: true });
-      broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
-      retriedForContext.delete(event.threadId);
-      // If this lane is filling up, fold its older half now rather than
-      // on the way into the next turn, so nobody waits on a summary.
-      const settledLane = store.taskByThread(event.threadId)?.task;
-      // Only a request from this engine/model can drive the fold. The
-      // default window stays a safety margin here, even when it is not
-      // a known window that the ring can display.
-      const own = readingFor(settledLane?.reading, bot.modelSelection);
-      // A stranger's mail is folded into nothing, read for no skill, and
-      // leaves no session behind: the lane's next turn may be the owner's,
-      // and none of what the mail said may reach it as context.
-      const guestEnded = laneRequester.get(event.threadId) === MAIL_FROM_ANYONE;
-      const personEnded = laneTelegramPerson.has(event.threadId);
-      if (!personEnded && event.ok && laneRequester.get(event.threadId) === "owner") store.setTelegramExchangePending(event.threadId, false);
-      if (guestEnded) store.startFreshSession(event.threadId);
-      if (guestEnded) {
-        // nothing of the owner's to keep from this turn
-      } else if (!personEnded && !command && shouldCompact(own?.used ?? 0, own?.window ?? contextLimitFor(bot.modelSelection.model))) {
-        void foldAfterTurn(bot.id, event.threadId);
-      } else if (!personEnded && !command) {
-        // Otherwise absorb one message into the running summary, if this
-        // workspace asked for that. Deliberately in the else: a lane that
-        // is already over the threshold wants the whole fold, not one
-        // message at a time.
-        void microFold(bot.id, event.threadId).catch(() => {});
-      }
-      // And read the session back, if this workspace asked for that. After
-      // the fold on purpose: a review reads what is actually in the lane,
-      // and a summarised lane is a smaller thing to read.
-      // Never a shared room's lane: what other people said there is not
-      // the owner's to turn into the agent's standing skills.
-      // Nor the lane strangers' mail is answered in, whoever's turn this was.
-      const guestLane = guestEnded || Boolean(settledLane?.guestMail);
-      if (!personEnded && !command && !guestLane && !isSharedLane(event.threadId)) void reviewForSkill(bot.id, event.threadId).catch(() => {});
-      const requester = laneRequester.get(event.threadId);
-      laneRequester.delete(event.threadId);
-      laneTelegramPerson.delete(event.threadId);
-      laneTelegramDelegate.delete(event.threadId);
-      drainRoomTags(bot.id);
-      // before anything queued starts the next turn on the old session
-      freshIfAsked(event.threadId);
-      drainSteer(event.threadId);
-      closeIfAsked(event.threadId);
-      // after what waited has had its chance to go, since it goes first
-      if (!personEnded) goalTurnEnded(bot, event.threadId, {
-        ok: event.ok !== false,
-        stopReason: event.stopReason ?? null,
-        goesOn: pickingUp || handedOver || refolding,
-        inRoom,
-        command,
-        out: Boolean(loggedTurn.out),
-      });
-      replyingTo.delete(event.threadId);
-      // an agent that named someone else hands the room over to them, and
-      // the person who started the chain is still the one who asked
-      if (inRoom) {
-        const said = store.messagesFor(roomId);
-        const last = [...said].reverse().find((m) => m.from === bot.id && m.kind === "text");
-        if (last?.text) void relayMentions(roomId, bot.id, last.text, requester, nextAgentChain(event.threadId), (turnHops.get(event.threadId) ?? 0) + 1);
-        if (bloks.get(roomId)?.sharing) broadcast({ kind: "room.activity", roomId, botId: bot.id, busy: false });
-      }
-      activeRoom.delete(event.threadId);
+        replyingTo.delete(event.threadId);
+        // an agent that named someone else hands the room over to them, and
+        // the person who started the chain is still the one who asked
+        if (inRoom) {
+          if (endedOutput.report) void relayMentions(roomId, bot.id, endedOutput.report, requester, nextAgentChain(event.threadId), (turnHops.get(event.threadId) ?? 0) + 1);
+          if (bloks.get(roomId)?.sharing) broadcast({ kind: "room.activity", roomId, botId: bot.id, busy: false });
+        }
+        activeRoom.delete(event.threadId);
+        if (quietWord !== undefined) rebuildUpdatedWhenQuiet();
+      };
+      // Existing cardsPending already holds new work off this lane. Only
+      // marker endings need to await its deliverables before deciding that
+      // nothing was reported. No extra retry, queue or timer is introduced.
+      if (quietWord !== undefined) {
+        void Promise.all([carded, joining?.catch(() => null)]).then(finish).catch((error) => console.error(error));
+      } else finish();
       break;
     }
   }
@@ -4951,6 +4994,10 @@ const recallIndexes = new IndexCache();
 // started, or anything asking something of them, moves the conversation
 // it lands in.
 store.onAppend = (threadId, message) => {
+  const speaker = message.from ? store.bot(message.from) : null;
+  const lane = bloks.get(threadId) ? speaker?.tasks.find((t) => activeRoom.get(t.id) === threadId)?.id : threadId;
+  const output = lane ? turnOutputs.get(lane) : undefined;
+  noteOutput(output, message);
   // an index already built grows with its conversation; one nobody has
   // searched yet is built whole when somebody does
   const index = recallIndexes.peek(threadId);
@@ -6093,8 +6140,6 @@ async function startClaimedTurn(
   const checkIn = (Boolean(opts.routine?.quiet) || Boolean(opts.incidentQuiet)) && !blok && !command;
   if (checkIn) checkInTurns.add(task.id);
   else checkInTurns.delete(task.id);
-  // a quiet word from a turn that never ended is not this one's
-  quietEnds.delete(task.id);
   if (opts.incidentNotes?.length) deskTurns.set(task.id, opts.incidentNotes);
   // what it was asked, rooms included, for an incident's one retry
   lastAsked.set(task.id, {
@@ -7383,28 +7428,30 @@ function unsendable(botId: string): string | null {
  * or `unsent` from a start that failed before reaching its engine, which
  * otherwise left each of them waiting on an end that never came.
  */
-function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean; quiet?: boolean; said?: string }) {
+function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean; quiet?: boolean; said?: string; report?: string; noAnswer?: boolean }) {
   const { ok, why, unsent, quiet } = outcome;
   // what the agent actually said; a turn that never ran said nothing,
   // and the last reply in its lane belongs to an earlier one. A turn
   // that ended on the bare quiet word said that, though the chat never
-  // showed it (quietEnds).
+  // showed it.
   const said = unsent ? "" : (outcome.said ?? lastSaid(laneId));
+  const report = unsent ? "" : (outcome.report ?? (isQuietReply(said) ? "" : said));
   // A failed turn may still be answered by a backup engine, so its mail
   // waits a little for that (replyByMail). Nothing picks up a turn that
   // never ran, and a sender left waiting would be emailed whatever the
   // lane says next.
   if (unsent) mailAnswering.delete(laneId);
-  else replyByMail(laneId, ok);
-  collectMeetingItems(laneId, ok);
+  else replyByMail(laneId, ok, report);
+  collectMeetingItems(laneId, ok, report);
   // A routine's run ends where its turn does, and its summary is
   // what the agent actually said: a row that only says "ok" answers
   // half the question people are asking.
   if (openRuns.has(laneId)) {
     closeRun(laneId, {
-      ok,
-      summary: said || undefined,
-      error: ok ? undefined : (why ?? "The turn did not finish."),
+      ok: ok && !outcome.noAnswer,
+      summary: report || undefined,
+      error: outcome.noAnswer ? NO_ANSWER : ok ? undefined : (why ?? "The turn did not finish."),
+      ...(outcome.noAnswer ? { noAnswer: true } : {}),
       ...(quiet ? { quiet: true } : {}),
     });
   }
@@ -7425,7 +7472,7 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
       endStep(onBehalfOf.runId, onBehalfOf.stepId, "failed", { error: failed });
       finishRun(onBehalfOf.runId, "failed", failed);
     } else {
-      endStep(onBehalfOf.runId, onBehalfOf.stepId, "ok", { summary: said });
+      endStep(onBehalfOf.runId, onBehalfOf.stepId, "ok", { summary: report || undefined });
       workflows.update(onBehalfOf.runId, (run) => {
         run.values[onBehalfOf.stepId] = { text: said };
         run.cursor++;
@@ -7442,7 +7489,7 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
   }
   // A job ends where its turn does too, and whether the agent took it
   // or handed it back is in the same last thing they said.
-  if (openJobs.has(laneId)) settleJob(laneId, ok, said || (why ?? ""));
+  if (openJobs.has(laneId)) settleJob(laneId, ok, said || (why ?? ""), report);
 }
 
 // ── shared rooms ──────────────────────────────────────────────────────
@@ -7729,14 +7776,14 @@ function releaseMeeting(id: string, laneId: string) {
   broadcast({ kind: "meetings" });
 }
 
-function collectMeetingItems(laneId: string, ok: boolean) {
+function collectMeetingItems(laneId: string, ok: boolean, report?: string) {
   const id = meetingLanes.get(laneId);
   if (!id) return;
   meetingLanes.delete(laneId);
   const meeting = meetings.find((m) => m.id === id);
   if (!meeting) return;
   if (!ok) return releaseMeeting(meeting.id, laneId);
-  meeting.items = actionItems(lastSaid(laneId), store.bots.filter((b) => !b.archivedAt).map((b) => ({ id: b.id, name: b.name })));
+  meeting.items = actionItems(report ?? lastSaid(laneId), store.bots.filter((b) => !b.archivedAt).map((b) => ({ id: b.id, name: b.name })));
   saveMeetings();
   broadcast({ kind: "meetings" });
 }
@@ -9371,27 +9418,6 @@ const replyingTo = new Map<string, { peerId: string; peerName: string }>();
  * finished without a word has nothing for the person to read, so it does
  * not mark the conversation unread. */
 const spokeInTurn = new Set<string>();
-/** Lanes whose running turn, one nobody asked for (unaskedTurn), last
- * said the bare quiet word, which was never written: QUIET in any case,
- * as isQuietReply reads it. The word itself, for what reads the turn's
- * last words when it ends. Any later word in the turn takes its place. */
-const quietEnds = new Map<string, string>();
-
-/** Whether nobody is waiting on what a lane's running turn says: another
- * agent, a job, a watcher, a webhook or a workflow started it, and no
- * person started it, joined it since, or asked for it from Telegram, a
- * shared room or an email. A routine is the person's own standing ask,
- * with its own quiet switch, and a goal's or a rehearsal's turns are the
- * person's too. Such a turn may end on the bare quiet word, which then
- * says nothing at all (GitHub 363). */
-function unaskedTurn(laneId: string): boolean {
-  return !turnsForYou.has(laneId) &&
-    (laneRequester.get(laneId) ?? "owner") === "owner" &&
-    !laneTelegramPerson.has(laneId) && !laneTelegramDelegate.has(laneId) && !laneTelegramGroup.has(laneId) &&
-    !mailAnswering.has(laneId) && !openRuns.has(laneId) && !lastAsked.get(laneId)?.routine && !rehearsals.byTask(laneId) &&
-    store.taskByThread(laneId)?.task.goal?.status !== "active";
-}
-
 /** How many turns in a row agents may start in one another, or in
  * themselves, with `bloks say` before the person has a say. Each one is
  * a paid turn, and a turn's own budget (TURN_BUDGET in
@@ -9635,10 +9661,10 @@ function closeIfAsked(laneId: string) {
  * (server/room-tags.ts). On disk, so a restart does not lose them. */
 const roomTags = new RoomTagQueues(join(DATA_DIR, "room-lines.json"));
 
-function queueRoomTag(botId: string, roomId: string, text: string, requester: string | undefined, hops: number) {
+function queueRoomTag(botId: string, roomId: string, text: string, requester: string | undefined, hops: number, byYou = false) {
   // with the count its turn would have started with, so a delivery later
   // counts against the same hop limit
-  roomTags.add(botId, roomId, text, requester, hops);
+  roomTags.add(botId, roomId, text, requester, hops, Date.now(), byYou);
 }
 
 /** A refusal that means "not now" rather than "no": the agent is busy,
@@ -9674,7 +9700,7 @@ function drainRoomTags(botId: string) {
     const previous = roomPosting.get(roomId);
     const run = (previous ?? Promise.resolve())
       .catch(() => {})
-      .then(() => dispatchRound(roomId, [[botId, entry.texts.join("\n")]], entry.hops, entry.requester));
+      .then(() => dispatchRound(roomId, [[botId, entry.texts.join("\n")]], entry.hops, entry.requester, entry.byYou));
     roomPosting.set(roomId, run);
     void run.finally(() => {
       if (roomPosting.get(roomId) === run) roomPosting.delete(roomId);
@@ -9703,7 +9729,7 @@ async function speakInTurn(
     .map(([id, text, hops]) => [store.bot(id), text, hops] as const)
     .filter((entry): entry is readonly [BotRecord, string, number] => entry[0] !== null);
   // a busy agent hears it when its turn ends, rather than never
-  for (const [member, text, hops] of named) if (!idleHere(member)) queueRoomTag(member.id, roomId, text, requester, hops);
+  for (const [member, text, hops] of named) if (!idleHere(member)) queueRoomTag(member.id, roomId, text, requester, hops, byYou);
   // Junior first, so the lead speaks last, having heard the rest. A
   // crowned lead may be junior to someone in the room, so it is put last
   // by name; a room on seniority gets there by rank, as it always has.
@@ -9717,7 +9743,7 @@ async function speakInTurn(
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
     await startTurn(member.id, text, { roomId, hops, requester, byYou, roomAgentStarted: agentStarted }).catch((e) =>
-      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
+      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops, byYou) : sayTurnedAway(roomId, e),
     );
     await waitForRoomTurn(member.id, roomId);
   }
@@ -10651,7 +10677,7 @@ async function offerJob(jobId: string): Promise<Job | null> {
  * A job lane's turn has ended. Whether that was the work being done or
  * the agent handing it back is in what they said.
  */
-function settleJob(threadId: string, ok: boolean, said: string) {
+function settleJob(threadId: string, ok: boolean, said: string, report = said) {
   const jobId = openJobs.get(threadId);
   if (!jobId) return;
   openJobs.delete(threadId);
@@ -10663,7 +10689,7 @@ function settleJob(threadId: string, ok: boolean, said: string) {
   }
   const claim = readClaim(said);
   if (claim.taken) {
-    jobs.finish(jobId, { ok: true, result: claim.result, now });
+    jobs.finish(jobId, { ok: true, result: isQuietReply(claim.result) ? report || "Ended without a report." : claim.result, now });
     broadcast({ kind: "jobs" });
     return;
   }
@@ -11312,7 +11338,7 @@ async function reviewForSkill(botId: string, threadId: string): Promise<boolean>
   return true;
 }
 
-function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string; quiet?: boolean; refused?: boolean }) {
+function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string; quiet?: boolean; refused?: boolean; noAnswer?: boolean }) {
   const open = openRuns.get(threadId);
   if (!open) return;
   openRuns.delete(threadId);
@@ -11370,7 +11396,7 @@ async function runRoutineNow(routine: Routine, manual: boolean): Promise<void> {
     const run = routines.beginRun(routine.id, blok.id);
     if (run) openRuns.set(blok.id, { routineId: routine.id, runId: run.id });
     broadcast({ kind: "routines" });
-    void postToRoom(blok, routine.prompt, { hops: 0 })
+    void postToRoom(blok, routine.prompt, { hops: 0, byYou: manual })
       .then(() => closeRun(blok.id, { ok: true, summary: "Posted to the room." }))
       .catch((e) =>
         closeRun(blok.id, {
@@ -11782,9 +11808,10 @@ function routineLabel(routine: Routine): string {
 
 /** A routine's run ended: its incident, and the one notice when this
  * failure is the one that stopped its automatic runs. */
-function routineEnded(routine: Routine, threadId: string, outcome: { ok: boolean; error?: string; refused?: boolean }, stopped: boolean) {
-  // refused as the person pressed Run, and told so there and then
-  if (outcome.refused) return;
+function routineEnded(routine: Routine, threadId: string, outcome: { ok: boolean; error?: string; refused?: boolean; noAnswer?: boolean }, stopped: boolean) {
+  // Refusals and a requested no-answer outcome were already reported.
+  // The latter is a failed run, not a reason to buy another model turn.
+  if (outcome.refused || outcome.noAnswer) return;
   const subject = `routine:${routine.id}`;
   const why = failedWords.get(threadId) ?? outcome.error ?? "the run did not finish";
   if (outcome.ok) thingWorked(subject, "It ran fine on its next run.");
@@ -12008,13 +12035,12 @@ function foldQuietRun(laneId: string): boolean {
   const prompt = said[at];
   // a quiet routine's prompt, or the incident desk's note to a lead,
   // which asks for QUIET the same way (server/incidents.ts)
-  const quietAsk = (prompt?.via === "routine" && prompt.routine?.quiet) || (prompt?.via === "incident" && prompt.incident?.kind === "note");
+  const quietAsk = prompt?.via === "routine" || (prompt?.via === "incident" && prompt.incident?.kind === "note");
   if (!prompt || prompt.deleted || !quietAsk) return false;
   const turn = said.slice(at + 1);
   const quietKind = (m: Message) =>
     m.role === "bot" && !m.deleted && (m.kind === "text" || m.kind === "activity" || m.kind === "screen" || (m.kind === "notice" && Boolean(m.compaction)));
-  const answer = [...turn].reverse().find((m) => m.kind === "text");
-  if (!answer || !isQuietReply(answer.text) || !turn.every(quietKind)) return false;
+  if (!turn.every(quietKind) || turn.some((m) => m.kind === "text" && !itemProgress(m))) return false;
   const folded = store.patchMessages(laneId, [prompt.id, ...turn.map((m) => m.id)], () => ({ quiet: true }));
   for (const message of folded) broadcast({ kind: "message.patch", threadId: laneId, message });
   return true;
@@ -13987,7 +14013,7 @@ async function drainMail() {
 setInterval(() => void drainMail(), 30_000).unref?.();
 
 /** The end of an Email lane's turn: what the agent said goes back. */
-function replyByMail(laneId: string, ok: boolean) {
+function replyByMail(laneId: string, ok: boolean, report?: string) {
   const answering = mailAnswering.get(laneId);
   if (!answering) return;
   if (answering.until && answering.until < Date.now()) return void mailAnswering.delete(laneId);
@@ -14002,7 +14028,7 @@ function replyByMail(laneId: string, ok: boolean) {
   const address = bot ? mailAddressOf(bot) : null;
   // Said after the mail, or nothing: the last words in the lane may be an
   // earlier sender's reply, when this turn's answer was only a component.
-  const said = answering.messageId ? saidAfter(laneId, answering.messageId) : lastSaid(laneId);
+  const said = report ?? (answering.messageId ? saidAfter(laneId, answering.messageId) : lastSaid(laneId));
   if (!bot || !address || !ok || !said) return;
   const subject = answering.mail.subject ? (/^re:/i.test(answering.mail.subject) ? answering.mail.subject : `Re: ${answering.mail.subject}`) : "A reply from your agent";
   void relayLink
@@ -14070,7 +14096,7 @@ async function onChatMessage(message: ChatMessage) {
   if (decision.kind === "ignore") return;
   if (decision.kind === "post") {
     try {
-      enqueueRoomPost(blok, decision.text, { personId: decision.personId, via: message.platform, hops: 0 });
+      enqueueRoomPost(blok, decision.text, { personId: decision.personId, via: message.platform, hops: 0, byYou: true });
     } catch {}
     return;
   }
@@ -14783,7 +14809,7 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
 
 /** What an engine is told about a message another agent sent: who it is
  * from, how to answer, and that a turn with nothing for the person may
- * end on the bare quiet word, which then says nothing (unaskedTurn,
+ * end on the bare quiet word, which then says nothing (the shared completion policy,
  * GitHub 363). The transcript keeps the words alone, with the sender as
  * data, so the person's chat can say who it was. */
 function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
@@ -16263,7 +16289,7 @@ function drainMemberWaiting(laneId: string) {
   if (!list.length) memberWaiting.delete(laneId);
   const queued = store.patchMessage(laneId, next.messageId, { queued: false });
   if (queued) broadcast({ kind: "message.patch", threadId: laneId, message: queued });
-  void startTurn(next.botId, next.text, { taskId: laneId, presetMessage: true, requester: next.personId }).catch((e) => noteTurnRefused(laneId, e));
+  void startTurn(next.botId, next.text, { taskId: laneId, presetMessage: true, requester: next.personId, byYou: true }).catch((e) => noteTurnRefused(laneId, e));
 }
 
 /** A member's turn that could not start says why, in the conversation it
@@ -16428,7 +16454,7 @@ async function serveMember(
       // its replies, so the room's rules for that apply.
       if (!blok.sharing) blok = bloks.share(blok.id, {}) ?? blok;
       // a human message starts a fresh chain: whoever it wakes is at no hops
-      const { message } = enqueueRoomPost(blok, text, { personId, hops: 0, replyTo: replyRef(body.replyTo) });
+      const { message } = enqueueRoomPost(blok, text, { personId, hops: 0, replyTo: replyRef(body.replyTo), byYou: true });
       const view = viewOf(personId, blok.id)!;
       return json(res, 202, { message: memberMessage(message, view) });
     }
@@ -16478,7 +16504,7 @@ async function serveMember(
         return json(res, 200, { ok: true });
       }
       // a card with nothing waiting on it is answered by saying so in the room
-      enqueueRoomPost(blok, answer, { personId, hops: 0 });
+      enqueueRoomPost(blok, answer, { personId, hops: 0, byYou: true });
       return json(res, 200, { ok: true });
     }
 
@@ -16644,7 +16670,7 @@ async function serveMember(
           list.push({ personId, messageId: message.id, text: said, botId: bot.id });
           memberWaiting.set(lane.id, list);
         } else {
-          void startTurn(bot.id, said, { taskId: lane.id, presetMessage: true, requester: personId }).catch((e) => noteTurnRefused(lane.id, e));
+          void startTurn(bot.id, said, { taskId: lane.id, presetMessage: true, requester: personId, byYou: true }).catch((e) => noteTurnRefused(lane.id, e));
         }
         return json(res, 202, { message: memberMessage(message, view), queued: busy });
       }

@@ -218,7 +218,7 @@ test("a Standard turn by the workspace default carries no speed at all", async (
   await s.settled();
 });
 
-test("a Fast Codex check-in that answers QUIET stays folded away, speed and all", async (t) => {
+test("a manually run Fast Codex check-in keeps its speed and reports a missing answer honestly", async (t) => {
   const s = await codexCommands(t);
   await s.turn("warm");
   s.spec({ tier: "echo", answer: "QUIET" });
@@ -240,13 +240,13 @@ test("a Fast Codex check-in that answers QUIET stays folded away, speed and all"
   await waitFor(async () => (await run())?.state && (await run()).state !== "running", "the check-in never finished");
 
   assert.equal(lastTier(s), "priority");
-  assert.equal((await run()).state, "ok");
-  assert.equal((await run()).quiet, true);
-  assert.equal(Boolean((await lane(s)).unread), false, "a quiet check-in leaves nothing unread");
+  assert.equal((await run()).state, "failed");
+  assert.equal((await run()).error, "The agent ended this turn without an answer.");
+  assert.equal(Boolean((await lane(s)).unread), true);
   const messages = await s.messages();
   const asked = messages.findIndex((m) => m.role === "user" && m.text === "Any news?");
   assert.ok(asked >= 0);
-  assert.ok(messages.slice(asked).every((m) => m.quiet), "everything from the check-in on is folded");
+  assert.ok(!messages.slice(asked).some((m) => m.role === "bot" && m.text === "QUIET"));
 });
 
 test("an agent reads its speed and may slow only itself; Fast and the workspace stay the owner's", async (t) => {

@@ -1,7 +1,6 @@
 // Quiet runs: a check-in's agent is told, in the turn and not the system
 // prompt, that it may answer QUIET when nothing needs the person, and a
-// run that does is kept out of their way. A time-of-day routine that did
-// not ask for this behaves exactly as it always has.
+// run that does is kept out of their way. A manual run still owes the person an outcome.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test, type TestContext } from "node:test";
@@ -94,43 +93,22 @@ async function frames(h: Harness): Promise<any[]> {
   return seen.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
 }
 
-test("a check-in that answers QUIET is folded away: no unread, no ledger line, a quiet run", async (t) => {
+test("an explicitly run check-in owes an honest outcome rather than a marker", async (t) => {
   const { h, p, bot } = await setup(t);
-  const routine = await file(h, { targetId: bot.id, targetKind: "agent", name: "Inbox", every: 30, activeHours: { from: "09:00", to: "18:00" } });
-  await h.fetch(`/api/bots/${bot.id}/tasks/${bot.threadId}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
+  const routine = await file(h, { targetId: bot.id, targetKind: "agent", name: "Inbox", every: 30 });
   p.state.replies.push("Quiet.");
-  const before = await lane(h, bot);
-
   const after = await runIt(h, bot, routine.id);
-  // told in the turn, in so many words, and never in the standing prompt
   assert.equal(p.lastAsked(), `(Your routine "Inbox" was run by hand. ${QUIET_ASK})\n\nAnything urgent in the inbox?`);
-  const system = p.state.calls.at(-1).messages.find((m: any) => m.role === "system")?.content ?? "";
-  assert.doesNotMatch(String(system), /QUIET/);
-
-  assert.equal(after.runs[0].state, "ok");
-  assert.equal(after.runs[0].quiet, true);
-  assert.equal(after.runs[0].summary, undefined, "one word is not a summary");
-  assert.equal(after.lastReport, undefined, "nothing was reported");
-
+  assert.equal(after.runs[0].state, "failed");
+  assert.equal(after.runs[0].quiet, undefined);
+  assert.equal(after.runs[0].error, "The agent ended this turn without an answer.");
+  assert.equal(after.lastReport, undefined);
   const said = await messagesOf(h, bot);
-  const prompt = said.find((m: any) => m.role === "user" && m.text === "Anything urgent in the inbox?");
-  const answer = said.find((m: any) => m.role === "bot" && m.text === "Quiet.");
-  assert.deepEqual(prompt.routine, { name: "Inbox", manual: true, quiet: true });
-  assert.equal(prompt.quiet, true);
-  assert.equal(answer.quiet, true);
-  assert.ok(!(await lane(h, bot)).unread, "a quiet check-in marked the lane unread");
-  assert.ok(!(await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id).unread);
-  assert.equal((await lane(h, bot)).lastAt, before.lastAt, "the sidebar's time reads past it");
-
-  // the answer's frame was already marked quiet, and held for the end of
-  // the check-in, so no client ever had it as news
-  const shown = (await frames(h)).filter((f) => f.kind === "message" && f.message?.id === answer.id);
-  assert.equal(shown.length, 1);
-  assert.equal(shown[0].message.quiet, true);
-  assert.equal(shown[0].checkIn, true);
-
-  const { entries } = await h.json("/api/ledger");
-  assert.ok(!entries.some((e: any) => e.kind === "routine.ran"), "a quiet run went into the record");
+  assert.ok(!said.some((m: any) => m.role === "bot" && /^quiet[.!…]*$/i.test(m.text?.trim() ?? "")));
+  assert.equal(said.filter((m: any) => m.text === after.runs[0].error).length, 1);
+  assert.equal((await lane(h, bot)).unread, true);
+  const shown = await frames(h);
+  assert.ok(!shown.some((f: any) => f.kind === "runtime" && (f.event?.delta === "Quiet." || f.event?.text === "Quiet.")));
 });
 
 test("a check-in with something to say is news like any reply, and its next run is told what it said", async (t) => {
@@ -162,26 +140,17 @@ test("a check-in with something to say is news like any reply, and its next run 
   assert.ok((await messagesOf(h, bot)).filter((m: any) => m.role === "user").every((m: any) => m.text === "Anything urgent in the inbox?"));
 });
 
-test("a time-of-day routine is untouched unless it asks to be quiet", async (t) => {
+test("manual time-of-day runs cannot silently lose an answer with or without the quiet flag", async (t) => {
   const { h, p, bot } = await setup(t);
-  const plain = await file(h, { targetId: bot.id, targetKind: "agent", name: "Brief", time: later() });
-  await h.fetch(`/api/bots/${bot.id}/tasks/${bot.threadId}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
-  p.state.replies.push("QUIET");
-  const ran = await runIt(h, bot, plain.id);
-  assert.equal(p.lastAsked(), '(Your routine "Brief" was run by hand.)\n\nAnything urgent in the inbox?');
-  assert.equal(ran.runs[0].quiet, undefined, "it was never told it could be quiet");
-  const said = await messagesOf(h, bot);
-  assert.deepEqual(said.find((m: any) => m.role === "user").routine, { name: "Brief", manual: true });
-  assert.ok(said.every((m: any) => m.quiet === undefined));
-  assert.equal((await lane(h, bot)).unread, true);
-
-  const asked = await file(h, { targetId: bot.id, targetKind: "agent", name: "Brief if needed", time: later(), quiet: true });
-  await h.fetch(`/api/bots/${bot.id}/tasks/${bot.threadId}`, { method: "PATCH", body: JSON.stringify({ unread: false }) });
-  p.state.replies.push("QUIET");
-  const quiet = await runIt(h, bot, asked.id);
-  assert.equal(p.lastAsked(), `(Your routine "Brief if needed" was run by hand. ${QUIET_ASK})\n\nAnything urgent in the inbox?`);
-  assert.equal(quiet.runs[0].quiet, true);
-  assert.ok(!(await lane(h, bot)).unread);
+  for (const quiet of [false, true]) {
+    const routine = await file(h, { targetId: bot.id, targetKind: "agent", time: later(), quiet });
+    p.state.replies.push("QUIET");
+    const result = await runIt(h, bot, routine.id);
+    assert.equal(result.runs[0].state, "failed");
+    assert.equal(result.runs[0].error, "The agent ended this turn without an answer.");
+    assert.equal(result.runs[0].quiet, undefined);
+    assert.ok((await lane(h, bot)).unread);
+  }
 });
 
 test("a check-in that fails is not quiet, whatever it said", async (t) => {

@@ -7,7 +7,8 @@ import { startHarness, type Harness } from "./helpers/server.ts";
 import { NoticeDelivery, noticeFor } from "../src/lib/notify.ts";
 
 const CLI = String.raw`#!__NODE__
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 const dir=__DIR__, kind='__KIND__', slot='__SLOT__';
 const out=x=>console.log(JSON.stringify(x));
@@ -17,6 +18,7 @@ if(process.argv.includes('auth')){out({loggedIn:true});process.exit();}
 const run=async(start)=>{
  const path=dir+'/plan-'+slot+'.json', plans=JSON.parse(readFileSync(path,'utf8')), p=plans.shift()??{items:[]};writeFileSync(path,JSON.stringify(plans));
  if(p.capture)writeFileSync(dir+'/token-'+slot,process.env.BLOKS_TOKEN??'');
+ if(p.file){mkdirSync(dirname(p.file),{recursive:true});writeFileSync(p.file,'A real neutral deliverable');}
  if(kind==='codex')out({method:'turn/started',params:{threadId:'thread',turn:{id:'native',status:'inProgress'}}});
  else out({type:'system',subtype:'init',session_id:'fixture',model:'claude-sonnet-5'});
  for(const [i,item] of (p.items??[]).entries()) {
@@ -42,8 +44,8 @@ let h: Harness, home: string, controller: AbortController;
 const frames: any[] = [];
 let reading: Promise<void>;
 const pause = (ms:number)=>new Promise(r=>setTimeout(r,ms));
-async function wait(check:()=>boolean|Promise<boolean>, why:string) {
- const end=Date.now()+15000; while(Date.now()<end){if(await check())return;await pause(25);} assert.fail(why+'\n'+h.logs().slice(-1000));
+async function wait(check:()=>boolean|Promise<boolean>, why:string, ms=15000) {
+ const end=Date.now()+ms; while(Date.now()<end){if(await check())return;await pause(25);} assert.fail(why+'\n'+h.logs().slice(-1000));
 }
 const plan=(slot:string, p:unknown[])=>{writeFileSync(join(home,`plan-${slot}.json`),JSON.stringify(p));for(const f of ['ready','release'])rmSync(join(home,`${f}-${slot}`),{force:true});};
 const bot=async(kind:string, backup=false)=>{
@@ -121,7 +123,7 @@ test('goal ownership cannot create a generic result',async()=>{
  assert.ok(r.ok,await r.text());await wait(()=>existsSync(join(home,'ready-codex')),'goal never ran');await idle(b);assert.equal(outcomes(b).length,0);
 });
 
-test('actual quiet routine: a report announces once when settled, also when the run then fails; QUIET does not',async()=>{
+test('actual quiet routine: a preceding report survives an ending marker and also a later failure',async()=>{
  for(const mode of ['report','quiet','fail']){
   plan('claudeAgent',[{items:[{text:'Routine progress'},{text:mode==='quiet'?'QUIET':'Routine report'}],fail:mode==='fail'}]);
   const b=await bot('claudeAgent');
@@ -129,7 +131,7 @@ test('actual quiet routine: a report announces once when settled, also when the 
   assert.ok(made.routine?.id,JSON.stringify(made));
   const r=await h.fetch(`/api/routines/${made.routine.id}/run`,{method:'POST'});assert.ok(r.ok,await r.text());
   await wait(()=>existsSync(join(home,'ready-claudeAgent')),'routine never ran');await idle(b);await pause(100);
-  assert.equal(outcomes(b).length,mode==='quiet'?0:1);if(mode!=='quiet')assert.equal(outcomes(b)[0].message.text,'Routine report');
+  assert.equal(outcomes(b).length,1);assert.equal(outcomes(b)[0].message.text,mode==='quiet'?'Routine progress':'Routine report');
  }
 });
 
@@ -203,11 +205,11 @@ const said=async(b:any)=>(await h.json(`/api/bots/${b.id}/messages?thread=${b.th
 const settled=async(b:any)=>{await idle(b);await wait(async()=>!(await lane(b)).settling,'lane never settled');await pause(150);};
 const spoken=(b:any)=>frames.filter(f=>f.kind==='message'&&f.threadId===b.threadId&&f.message?.role==='bot'&&f.message?.kind==='text'&&!b.messages.some((g:any)=>g.id===f.message.id));
 /** Holds a Codex turn open for its credential, so a test can speak as that agent. */
-async function asAgent(go:(token:string)=>Promise<void>){
+async function asAgent(go:(token:string,sender:any)=>Promise<void>){
  rmSync(join(home,'token-codex'),{force:true});
  plan('codex',[{items:[],hold:true,capture:true}]);const sender=await bot('codex');await send(sender);
  await wait(()=>existsSync(join(home,'token-codex'))&&readFileSync(join(home,'token-codex'),'utf8').length>0,'no sender credential');
- try {await go(readFileSync(join(home,'token-codex'),'utf8'));}
+ try {await go(readFileSync(join(home,'token-codex'),'utf8'),sender);}
  finally {writeFileSync(join(home,'release-codex'),'yes');await idle(sender);}
 }
 const sayAs=async(token:string,b:any,text:string)=>{const r=await h.fetch(`/api/bots/${b.id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify({text})});assert.ok(r.ok,await r.text());};
@@ -257,12 +259,51 @@ test('an agent-started turn that talks about QUIET, or says something before it,
  });
 });
 
-test('a turn the person started shows a bare QUIET like any reply',async()=>{
- plan('claudeAgent',[{items:[{text:'QUIET'}]}]);const b=await bot('claudeAgent');await send(b);
- await wait(()=>existsSync(join(home,'ready-claudeAgent')),'the turn never ran');await settled(b);
- const reply=(await said(b)).find((m:any)=>m.role==='bot'&&m.kind==='text');
- assert.equal(reply?.text,'QUIET');assert.equal(reply?.quiet,undefined);
- await wait(()=>outcomes(b).length===1,'the person was not told their reply');
- assert.equal(outcomes(b)[0].message.text,'QUIET');
+test('a person-requested marker-only turn gets one honest notice instead of a marker or stale reply',async()=>{
+ plan('claudeAgent',[{items:[{text:'Older useful answer'}]},{items:[{text:'QUIET'}]}]);const b=await bot('claudeAgent');await send(b);await settled(b);
+ const before=frames.length;await send(b);await settled(b);
+ const added=frames.slice(before);
+ assert.ok(!added.some(f=>f.kind==='message'&&f.message?.text==='QUIET'));
+ assert.ok(!added.some(f=>f.kind==='runtime'&&(f.event?.delta==='QUIET'||f.event?.text==='QUIET')));
+ assert.equal(added.filter(f=>f.kind==='message'&&f.message?.text==='The agent ended this turn without an answer.').length,1);
+ assert.equal(added.filter(f=>f.kind==='reply.settled').length,0,'an older reply was reused');
  assert.equal((await lane(b)).unread,true);
+});
+
+
+test('a failed primary followed by a marker-only backup gives one honest logical outcome',async()=>{
+ plan('codex',[{items:[],fail:true}]);plan('spare',[{items:[{text:'QUIET'}]}]);
+ const b=await bot('codex',true), at=frames.length;await send(b);
+ await wait(()=>existsSync(join(home,'ready-spare')),'backup never ran');await settled(b);
+ const added=frames.slice(at);
+ assert.equal(added.filter(x=>x.kind==='message'&&x.message?.text==='The agent ended this turn without an answer.').length,1);
+ assert.equal(added.filter(x=>x.kind==='reply.settled').length,0);
+ assert.ok(!added.some(x=>x.message?.text==='QUIET'||x.event?.delta==='QUIET'||x.event?.text==='QUIET'));
+});
+
+test('an authenticated agent room handoff stays silent on its marker, while the explicit post is preserved',async()=>{
+ await asAgent(async(token,sender)=>{
+  plan('claudeAgent',[{items:[{text:'QUIET'}]}]);const receiver=await bot('claudeAgent');
+  await h.json(`/api/bots/${receiver.id}`,{method:'PATCH',body:JSON.stringify({name:'Receiver'})});
+  const other=sender;const {blok}=await h.json('/api/bloks',{method:'POST',body:JSON.stringify({name:'Fixture room',memberIds:[receiver.id,other.id]})});
+  const at=frames.length;const r=await h.fetch(`/api/bloks/${blok.id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify({text:'@Receiver inspect fixture'})});assert.ok(r.ok,await r.text());
+  await wait(()=>existsSync(join(home,'ready-claudeAgent')),'room receiver never ran');await settled(receiver);
+  const rows=(await h.json('/api/bloks')).bloks.find((x:any)=>x.id===blok.id).messages;
+  assert.ok(rows.some((x:any)=>x.text==='@Receiver inspect fixture'));
+  assert.ok(!rows.some((x:any)=>x.text==='QUIET'||x.text==='The agent ended this turn without an answer.'));
+  assert.ok(!frames.slice(at).some(x=>x.kind==='reply.settled'&&x.botId===receiver.id));
+ });
+});
+
+
+test('a marker after a terminal artifact or checkpoint card does not claim there was no deliverable',async()=>{
+ for(const kind of ['artifact','changes']){
+  const b=await bot('claudeAgent');
+  const file=join(home,'.bloks',kind==='artifact'?'artifacts':'workspaces',b.id,'neutral-result.md');
+  plan('claudeAgent',[{items:[{text:'QUIET'}],file}]);const at=frames.length;await send(b);await settled(b);
+  const added=frames.slice(at).filter(x=>x.threadId===b.threadId);
+  assert.ok(added.some(x=>x.kind==='message'&&x.message?.kind===kind),`${kind}: no actual terminal deliverable`);
+  assert.ok(!added.some(x=>x.message?.text==='The agent ended this turn without an answer.'),`${kind}: false no-answer claim`);
+  assert.equal((await lane(b)).unread,true,`${kind}: deliverable was not marked unread`);
+ }
 });

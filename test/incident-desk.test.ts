@@ -156,8 +156,8 @@ test("with a lead, the lead gets a quiet turn and what it says reaches the perso
   });
   assert.ok(folded, "the lead's QUIET answer was not folded away");
   const turn = folded.slice(folded.findIndex((m) => m.id === note.id));
-  assert.ok(turn.some((m) => m.role === "bot" && m.kind === "text"), "the lead never answered");
-  assert.ok(turn.filter((m) => m.role === "bot" && m.kind === "text").every((m) => m.quiet), "its answer stayed on the page");
+  assert.equal(turn.filter((m) => m.role === "bot" && m.kind === "text").length, 0, "the internal marker was stored");
+  assert.ok(turn.every((m) => m.quiet), "the quiet work stayed on the page");
   // the lead cannot act on it again now it is with the person, nor settle it
   const statuses = await h.json(`/api/incidents/${incident.id}`);
   assert.equal(statuses.incident.state, "needs-you");

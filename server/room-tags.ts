@@ -27,6 +27,8 @@ export interface WaitingLines {
   /** "owner" or a person id, as startTurn reads it. */
   requester: string;
   texts: string[];
+  /** The first round was an explicit person request, not an agent handoff. */
+  byYou?: true;
   /** Where the chain stood when the agent was named, for the hop limit. */
   hops: number;
 }
@@ -59,8 +61,8 @@ export class RoomTagQueues {
       if (!texts.length) continue;
       const hops = typeof r.hops === "number" && r.hops >= 0 ? Math.floor(r.hops) : 0;
       const lines = this.byAgent.get(botId) ?? new Map<string, WaitingLines>();
-      const key = JSON.stringify([roomId, requester]);
-      lines.set(key, { roomId, requester, texts, hops });
+      const key = JSON.stringify([roomId, requester, r.byYou === true]);
+      lines.set(key, { roomId, requester, texts, hops, ...(r.byYou === true ? { byYou: true } : {}) });
       this.byAgent.set(botId, lines);
       this.since.set(JSON.stringify([botId, key]), at);
     }
@@ -86,11 +88,11 @@ export class RoomTagQueues {
     }
   }
 
-  add(botId: string, roomId: string, text: string, requester: string | undefined, hops: number, now = Date.now()) {
+  add(botId: string, roomId: string, text: string, requester: string | undefined, hops: number, now = Date.now(), byYou = false) {
     const who = requester ?? "owner";
     const lines = this.byAgent.get(botId) ?? new Map<string, WaitingLines>();
-    const key = JSON.stringify([roomId, who]);
-    const entry = lines.get(key) ?? { roomId, requester: who, texts: [], hops: 0 };
+    const key = JSON.stringify([roomId, who, byYou]);
+    const entry: WaitingLines = lines.get(key) ?? { roomId, requester: who, texts: [], hops: 0, ...(byYou ? { byYou: true } : {}) };
     if (!entry.texts.includes(text)) entry.texts.push(text);
     entry.hops = Math.max(entry.hops, hops);
     lines.set(key, entry);
@@ -114,7 +116,7 @@ export class RoomTagQueues {
   take(botId: string, entry: WaitingLines) {
     const lines = this.byAgent.get(botId);
     if (!lines) return;
-    const key = JSON.stringify([entry.roomId, entry.requester]);
+    const key = JSON.stringify([entry.roomId, entry.requester, entry.byYou === true]);
     lines.delete(key);
     this.since.delete(JSON.stringify([botId, key]));
     if (!lines.size) this.byAgent.delete(botId);
