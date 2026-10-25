@@ -42,6 +42,7 @@ import { ENGINE_SETUP, installEngine, openInTerminal, openSignIn, runSetupScript
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
 import { ReplyNotifications, settledFrame, settledReply } from "./reply-notifications.ts";
+import { TextPreview } from "./text-preview.ts";
 import { AnswerReady, answerDue, answersAllowed, attentionFrom, Viewing, viewingReport, type Attention } from "./answer-ready.ts";
 import { LiveActivities } from "./live-activities.ts";
 import { deviceKey, seal } from "./relay-crypto.ts";
@@ -3957,6 +3958,8 @@ const answerAsked = new Map<string, boolean>();
 const viewing = new Viewing();
 let attention: Attention | null = null;
 
+const textPreview = new TextPreview();
+
 bus.subscribe((event: RuntimeEvent) => {
   // Maintenance compaction (idle or before a turn) does not own a
   // command catalog: keep the latest agent turn's report.
@@ -3967,7 +3970,17 @@ bus.subscribe((event: RuntimeEvent) => {
     const source = origin && origin.turnId && origin.turnId === event.turnId ? (turnsForYou.has(event.threadId) ? "person" : origin.origin) : "unknown";
     event = { ...event, codexText: codexTextFor(event.codexItem, event.turnId, event.itemId, source) };
   }
-  broadcast({ kind: "runtime", event });
+  // Match the existing settled silence boundary, without changing the event
+  // that completion processing below reads. Filter before live delivery/replay.
+  if (event.type === "turn.started") textPreview.start(event);
+  let preview: RuntimeEvent | null = event;
+  if (event.type === "content.delta") {
+    const inRoom = (activeRoom.get(event.threadId) ?? event.threadId) !== event.threadId;
+    const silent = !inRoom && (checkInTurns.has(event.threadId) || unaskedTurn(event.threadId));
+    preview = textPreview.delta(event, silent);
+  } else if (event.type === "item.completed" && event.itemType === "assistant_text") textPreview.complete(event);
+  else if (event.type === "turn.completed" || event.type === "session.exited") textPreview.end(event);
+  if (preview) broadcast({ kind: "runtime", event: preview });
   const bot = store.botByThread(event.threadId);
   if (!bot) return;
 
@@ -5936,6 +5949,7 @@ async function interruptLane(bot: BotRecord, laneId: string) {
 function deleteLane(botId: string, laneId: string): ReturnType<typeof store.deleteTask> {
   if (claimedLanes.has(laneId)) return "busy";
   const outcome = store.deleteTask(botId, laneId);
+  if (outcome === "ok") textPreview.forget(laneId);
   // A rehearsal's lane is the only way to its copy: closed, nothing can
   // follow up on it or apply it, so the copy goes now rather than in a week.
   const rehearsed = outcome === "ok" ? rehearsals.forTask(laneId) : undefined;
@@ -17115,6 +17129,7 @@ async function forgetAgent(bot: BotRecord, actor: "you" | null) {
   // to leave two files behind. The native copy goes with its gzipped
   // older ones.
   for (const task of bot.tasks) {
+    textPreview.forget(task.id);
     try {
       unlinkSync(join(EVENTS_DIR, `${task.id}.ndjson`));
     } catch {}
