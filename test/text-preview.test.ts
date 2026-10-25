@@ -70,3 +70,23 @@ test("an actual session exit without a turn id retires preview state", () => {
   assert.equal(chunk(p, "orphan suffix"), null);
   begin(p); assert.equal(words(chunk(p, "Fresh answer")), "Fresh answer");
 });
+
+
+test("whole-message BoxAgent progress does not admit a later marker, but keeps real reports", () => {
+  const p = new TextPreview(); begin(p);
+  const box = { provider: "boxAgent" };
+  assert.equal(words(chunk(p, "Checking the task.\n", box)), "Checking the task.\n");
+  assert.equal(chunk(p, "QUIET", box), null);
+  assert.equal(words(chunk(p, "QUIET is a word in this report.", box)), "");
+  // Ambiguous prose still arrives through its authoritative completion.
+  assert.equal(words(chunk(p, "The task is complete.", box)), "The task is complete.");
+});
+
+for (const text of ["Привет, работа идёт.", "你好，工作正在进行。", "État du travail", "🙂 Working", "¿Listo?"]) {
+  test(`ordinary Unicode prose streams at every split: ${text}`, () => {
+    for (let split = 0; split <= text.length; split++) {
+      const p = new TextPreview(); begin(p);
+      assert.equal(words(chunk(p, text.slice(0, split))) + words(chunk(p, text.slice(split))), text);
+    }
+  });
+}

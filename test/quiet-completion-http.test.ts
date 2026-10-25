@@ -17,6 +17,8 @@ const lane = async (f: Awaited<ReturnType<typeof quietFixture>>, b: any) => (awa
 
 test("real scheduled timed routines ignore the quiet switch for markers, preserve prior reports/unread/time, and send no attention", { timeout: 150_000 }, async t => {
   const f = await quietFixture(t), pushes: Array<{ frames: any[]; wake: unknown }> = [];
+  // This fixture measures scheduled routine wakes, not the unrelated default daily brief.
+  await f.h.json("/api/briefs/settings", request("PATCH", { enabled: false }));
   const previews = await chainRelay(t, f.h, pushes);
   const cases = [];
   for (const quiet of [undefined, false, true]) {
@@ -148,4 +150,19 @@ test("the requested no-answer notice records a failed manual run without buying 
   assert.equal((await f.h.json("/api/incidents")).incidents.length, 0, "honest no-answer outcome started an incident");
   assert.equal(f.calls.length, 1, "honest no-answer outcome dispatched another model turn");
   assert.equal((await f.messages(worker)).filter(m => m.text === noAnswer).length, 1);
+});
+
+
+test("ordinary Unicode token streams arrive before completion and settle without alteration", async t => {
+  const f = await quietFixture(t), b = await f.bot();
+  for (const text of ["Привет, работа идёт.", "你好，工作正在进行。", "État du travail", "🙂 Working", "¿Listo?"]) {
+    const at = f.frames.length; f.setAnswer(text); await f.send(b);
+    const frames = f.frames.slice(at);
+    const deltas = frames.filter(x => x.kind === "runtime" && x.event?.type === "content.delta" && x.event?.streamKind === "assistant_text");
+    assert.equal(deltas.map(x => x.event.delta).join(""), text, "Unicode live stream was held or changed");
+    const first = frames.indexOf(deltas[0]);
+    const completed = frames.findIndex(x => x.kind === "runtime" && x.event?.type === "item.completed" && x.event?.itemType === "assistant_text");
+    assert.ok(first >= 0 && completed > first, "Unicode text only appeared at completion");
+    assert.ok((await f.messages(b)).some(m => m.role === "bot" && m.kind === "text" && m.text === text));
+  }
 });

@@ -33,6 +33,10 @@ export class TextPreview {
       a.items.clear();
       return null;
     }
+    // BoxAgent polls complete messages, not token fragments, and sends only
+    // one final completion. Each delta therefore starts its own classification;
+    // an earlier progress message cannot admit a later no-report word.
+    if (event.provider === "boxAgent") a.items.delete(key);
     let item = a.items.get(key);
     if (!item) {
       if (a.items.size >= ITEMS) {
@@ -50,7 +54,7 @@ export class TextPreview {
     const first = sample.trimStart();
     // Fences may be lifted into cards, leaving only the quiet word. Keep
     // structured/quoted prefixes settled-only rather than parse them twice.
-    if ((first && !/^[a-z0-9]/i.test(first)) || /^quiet/i.test(first)) {
+    if ((first && /^[`"'“‘\[{<>~]/u.test(first)) || /^quiet/i.test(first)) {
       item.mode = "settled";
       item.held = "";
       return null;
