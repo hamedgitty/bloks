@@ -273,11 +273,13 @@ export function NewSoloAgentDialog({
   onOpenChange,
   workspace,
   onMade,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   workspace: MemberWorkspace;
   onMade: (agent: MemberAgent) => void;
+  onCloseAutoFocus?: React.ComponentProps<typeof DialogContent>["onCloseAutoFocus"];
 }) {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -308,7 +310,7 @@ export function NewSoloAgentDialog({
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-2rem)] max-w-[420px]">
+      <DialogContent className="w-[calc(100%-2rem)] max-w-[420px]" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogTitle>New solo agent</DialogTitle>
         {!room.ok ? (
           <>

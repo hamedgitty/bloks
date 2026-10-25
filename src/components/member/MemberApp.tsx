@@ -7,12 +7,13 @@
 // sidebar, and the work on a panel beside it. The sidebar lists the team
 // agents this person reaches, their own solo agents (each marked "Only
 // you"), and their rooms; the pages that are theirs sit at its foot.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Gauge, Plus, Settings, UserRound, Users } from "@/components/icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Gauge, Menu, Plus, Settings, UserRound, Users, X } from "@/components/icons";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { WorkspaceSwitcher } from "@/components/WorkspaceSwitcher";
 import { WorkspaceDialogs } from "@/components/WorkspaceDialogs";
 import { WorkspaceMark } from "@/components/WorkspaceMark";
@@ -99,6 +100,26 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
   const [place, setPlace] = useState<MemberPlace | null>(null);
   const [usage, setUsage] = useState<MemberUsage | null>(null);
   const [making, setMaking] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const navigationTrigger = useRef<HTMLButtonElement>(null);
+  const desktopNavigation = useRef<HTMLDivElement>(null);
+  // Match the CSS boundary: a drawer left open while widening must not
+  // keep a desktop conversation behind a hidden modal.
+  useEffect(() => {
+    const wide = window.matchMedia("(min-width: 768px)");
+    const resized = () => { if (wide.matches) setNavigationOpen(false); };
+    wide.addEventListener("change", resized);
+    return () => wide.removeEventListener("change", resized);
+  }, []);
+  const focusNavigation = () => {
+    if (window.matchMedia("(min-width: 768px)").matches) {
+      desktopNavigation.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    } else navigationTrigger.current?.focus();
+  };
+  const makeSolo = () => {
+    setMaking(true);
+    setNavigationOpen(false);
+  };
   const [leaving, setLeaving] = useState(false);
   const connected = useMemberConnected();
   const switcher = useWorkspaces();
@@ -198,6 +219,7 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
   const go = (next: MemberPlace) => {
     setPlace(next);
     keepPlace(next);
+    setNavigationOpen(false);
   };
 
   const groups = useMemo(() => agentGroups(agents), [agents]);
@@ -229,11 +251,105 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
     }
   };
 
+  const navigation = (
+    <nav aria-label="Agents and rooms" className="flex min-h-0 w-full flex-1 flex-col bg-sidebar">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3 pt-1">
+        {member && !paused && (
+          <Section title="Team agents">
+            {groups.team.map((a) => (
+              <AgentRow key={a.id} agent={a} on={openAgent?.id === a.id} onOpen={() => go({ kind: "agent", id: a.id, lane: defaultLane(a) })} />
+            ))}
+            {loaded && !groups.team.length && <Empty>No team agents are open to you yet.</Empty>}
+          </Section>
+        )}
+        {member && !paused && (
+          <Section
+            title="Your agents"
+            action={
+              <button
+                type="button"
+                onClick={makeSolo}
+                aria-label="New solo agent"
+                className="grid size-6 place-items-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-accent hover:text-foreground active:scale-[0.94]"
+              >
+                <Plus size={14} />
+              </button>
+            }
+          >
+            {groups.mine.map((a) => (
+              <AgentRow key={a.id} agent={a} on={openAgent?.id === a.id} onOpen={() => go({ kind: "agent", id: a.id, lane: "private" })} />
+            ))}
+            {loaded && !groups.mine.length && (
+              <button type="button" onClick={makeSolo} className="w-full rounded-lg px-2.5 py-2 text-left text-body text-muted-foreground outline-none hover:bg-accent hover:text-foreground">
+                Make an agent only you use
+              </button>
+            )}
+          </Section>
+        )}
+        {!paused && <Section title="Rooms">
+          {rooms.map((r) => (
+            <Row key={r.id} on={place?.kind === "room" && place.id === r.id} onClick={() => go({ kind: "room", id: r.id })}>
+              <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-small font-semibold text-muted-foreground" aria-hidden>
+                #
+              </span>
+              <span className="min-w-0 flex-1 truncate">{r.name}</span>
+              {r.role === "viewer" && <span className="text-caption text-muted-foreground">Read only</span>}
+            </Row>
+          ))}
+          {loaded && !rooms.length && <Empty>You are not in any rooms yet.</Empty>}
+        </Section>}
+      </div>
+      {pages.length > 0 && !paused && (
+        <div className="flex flex-col gap-0.5 border-t border-border/60 px-2.5 py-2">
+          {pages.map((p) => {
+            const Icon = PAGE_ICON[p.page];
+            return (
+              <Row key={p.page} on={place?.kind === "page" && place.page === p.page} onClick={() => go({ kind: "page", page: p.page })} small>
+                <Icon size={15} className="shrink-0 text-muted-foreground" />
+                <span className="flex-1 truncate">{p.label}</span>
+                {p.page === "usage" && usage?.stopped && <span className="size-1.5 rounded-full bg-destructive" aria-label="Your limit is reached" />}
+              </Row>
+            );
+          })}
+        </div>
+      )}
+    </nav>
+  );
+
   return (
     <TooltipProvider delayDuration={400}>
       <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-sidebar">
         <div className="titlebar-drag relative flex h-11 shrink-0 items-center bg-sidebar">
           <div className={cn("shrink-0", isElectron ? "w-[78px]" : "w-4")} />
+          <Dialog open={navigationOpen} onOpenChange={setNavigationOpen}>
+            <DialogTrigger asChild>
+              <Button ref={navigationTrigger} variant="ghost" size="icon" className="mr-1 size-11 md:hidden" aria-label="Open navigation">
+                <Menu size={20} />
+              </Button>
+            </DialogTrigger>
+            <DialogContent
+              showCloseButton={false}
+              aria-describedby={undefined}
+              className="left-0 top-0 flex h-dvh w-[min(320px,88vw)] max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none rounded-r-2xl border-y-0 border-l-0 p-0"
+              onCloseAutoFocus={(event) => {
+                // Creation owns focus next. On desktop the mobile trigger
+                // is hidden, so return to a visible navigation control.
+                if (making) event.preventDefault();
+                else if (window.matchMedia("(min-width: 768px)").matches) {
+                  event.preventDefault();
+                  focusNavigation();
+                }
+              }}
+            >
+              <div className="flex h-14 shrink-0 items-center justify-between gap-2 px-3">
+                <DialogTitle className="text-ui">Agents and rooms</DialogTitle>
+                <DialogClose asChild>
+                  <Button variant="ghost" size="icon" className="size-11" aria-label="Close navigation"><X size={20} /></Button>
+                </DialogClose>
+              </div>
+              {navigation}
+            </DialogContent>
+          </Dialog>
           {switcher.available ? (
             <WorkspaceSwitcher
               onSettings={member ? () => go({ kind: "page", page: "settings" }) : undefined}
@@ -242,84 +358,25 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
           ) : workspace ? (
             // outside the desktop app there is no list to switch in: the
             // workspace you are in, and what you are there
-            <span className="flex h-7 items-center gap-1.5 pl-1 text-body font-medium text-foreground">
+            <span className="flex h-7 min-w-0 items-center gap-1.5 pl-1 text-body font-medium text-foreground">
               <WorkspaceMark mark={workspace.workspace.mark} size={18} />
-              {workspace.workspace.name}
-              <span className="ml-1 rounded-full bg-muted px-2 py-px text-small font-normal text-muted-foreground">
+              <span className="truncate">{workspace.workspace.name}</span>
+              <span className="ml-1 shrink-0 rounded-full bg-muted px-2 py-px text-small font-normal text-muted-foreground">
                 {workspace.you.role === "admin" ? "Admin" : "Member"}
               </span>
             </span>
           ) : null}
           {!connected && loaded && !paused && (
-            <span className="ml-3 flex items-center gap-1.5 text-small text-muted-foreground" role="status">
-              <span className="size-1.5 rounded-full bg-warning" aria-hidden />
-              Reaching {owner}'s computer
+            <span className="ml-3 flex min-w-0 items-center gap-1.5 text-small text-muted-foreground" role="status">
+              <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden />
+              <span className="truncate">Reaching {owner}'s computer</span>
             </span>
           )}
         </div>
         <div className="relative flex min-h-0 min-w-0 flex-1">
-          <nav aria-label="Agents and rooms" className="flex w-[264px] shrink-0 flex-col border-r-0 bg-sidebar">
-            <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3 pt-1">
-              {member && !paused && (
-                <Section title="Team agents">
-                  {groups.team.map((a) => (
-                    <AgentRow key={a.id} agent={a} on={openAgent?.id === a.id} onOpen={() => go({ kind: "agent", id: a.id, lane: defaultLane(a) })} />
-                  ))}
-                  {loaded && !groups.team.length && <Empty>No team agents are open to you yet.</Empty>}
-                </Section>
-              )}
-              {member && !paused && (
-                <Section
-                  title="Your agents"
-                  action={
-                    <button
-                      type="button"
-                      onClick={() => setMaking(true)}
-                      aria-label="New solo agent"
-                      className="grid size-6 place-items-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-accent hover:text-foreground active:scale-[0.94]"
-                    >
-                      <Plus size={14} />
-                    </button>
-                  }
-                >
-                  {groups.mine.map((a) => (
-                    <AgentRow key={a.id} agent={a} on={openAgent?.id === a.id} onOpen={() => go({ kind: "agent", id: a.id, lane: "private" })} />
-                  ))}
-                  {loaded && !groups.mine.length && (
-                    <button type="button" onClick={() => setMaking(true)} className="w-full rounded-lg px-2.5 py-2 text-left text-body text-muted-foreground outline-none hover:bg-accent hover:text-foreground">
-                      Make an agent only you use
-                    </button>
-                  )}
-                </Section>
-              )}
-              {!paused && <Section title="Rooms">
-                {rooms.map((r) => (
-                  <Row key={r.id} on={place?.kind === "room" && place.id === r.id} onClick={() => go({ kind: "room", id: r.id })}>
-                    <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-small font-semibold text-muted-foreground" aria-hidden>
-                      #
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{r.name}</span>
-                    {r.role === "viewer" && <span className="text-caption text-muted-foreground">Read only</span>}
-                  </Row>
-                ))}
-                {loaded && !rooms.length && <Empty>You are not in any rooms yet.</Empty>}
-              </Section>}
-            </div>
-            {pages.length > 0 && !paused && (
-              <div className="flex flex-col gap-0.5 border-t border-border/60 px-2.5 py-2">
-                {pages.map((p) => {
-                  const Icon = PAGE_ICON[p.page];
-                  return (
-                    <Row key={p.page} on={place?.kind === "page" && place.page === p.page} onClick={() => go({ kind: "page", page: p.page })} small>
-                      <Icon size={15} className="shrink-0 text-muted-foreground" />
-                      <span className="flex-1 truncate">{p.label}</span>
-                      {p.page === "usage" && usage?.stopped && <span className="size-1.5 rounded-full bg-destructive" aria-label="Your limit is reached" />}
-                    </Row>
-                  );
-                })}
-              </div>
-            )}
-          </nav>
+          <div ref={desktopNavigation} className="hidden w-[264px] shrink-0 md:flex">
+            {navigation}
+          </div>
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-tl-xl border-l border-t bg-background">
             {paused && workspace ? (
               <PausedPanel workspace={workspace} line={paused} onLeave={() => void leave()} leaving={leaving} />
@@ -358,6 +415,10 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
           <NewSoloAgentDialog
             open={making}
             onOpenChange={setMaking}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              focusNavigation();
+            }}
             workspace={workspace}
             onMade={(agent) => {
               setAgents((list) => [...list.filter((a) => a.id !== agent.id), agent]);

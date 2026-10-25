@@ -134,7 +134,7 @@ export function AgentView({
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b px-5">
+      <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-3 border-b px-5 py-2 sm:h-14 sm:flex-nowrap sm:py-0">
         <AgentFace agent={agent} size={28} />
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
           <h1 className="truncate text-ui font-semibold text-foreground">{agent.name}</h1>
@@ -142,7 +142,7 @@ export function AgentView({
           {agent.solo && <OnlyYou className="self-center" />}
         </div>
         {lanes.length > 1 && (
-          <Segmented aria-label="Conversation" size="sm" value={lane} onChange={(v) => onLane(v)} options={lanes} className="w-[190px]" />
+          <Segmented aria-label="Conversation" size="sm" value={lane} onChange={(v) => onLane(v)} options={lanes} className="w-full sm:w-[190px]" />
         )}
         {lanes.length === 1 && !agent.solo && <span className="text-body text-muted-foreground">{lane === "team" ? "Team" : "Private"}</span>}
         {agent.solo && agent.mine && (
