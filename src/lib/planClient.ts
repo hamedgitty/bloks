@@ -35,19 +35,23 @@ const set = (patch: Partial<PlanState>) => {
 };
 
 let asking: Promise<PlanSnapshot | null> | null = null;
+let latestLook = 0;
 
 /** Asks the server, fresh when somebody may just have changed it. */
 export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
   if (asking && !fresh) return asking;
+  const look = ++latestLook;
   const before: PlanKey | null = state.snapshot ? planKey(state.snapshot) : null;
   set({ loading: true });
   const run = fetch(`/api/plan${fresh ? "?fresh=1" : ""}`, { headers: { accept: "application/json" } })
     .then(async (res) => {
+      if (look !== latestLook) return state.snapshot;
       if (!res.ok) {
-        set({ loading: false, ...failedLook(state.snapshot, res.status) });
+        set({ loading: false, ...failedLook(state.snapshot, res.status), ...(res.status === 401 || res.status === 403 ? { news: null } : {}) });
         return state.snapshot;
       }
       const snapshot = (await res.json()) as PlanSnapshot;
+      if (look !== latestLook) return state.snapshot;
       const change = fresh ? planChange(before, planKey(snapshot)) : null;
       set({ snapshot, loading: false, problem: null, stale: false, ...(change ? { news: { ...change, at: Date.now() } } : {}) });
       if (change) {
@@ -57,6 +61,7 @@ export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
       return snapshot;
     })
     .catch(() => {
+      if (look !== latestLook) return state.snapshot;
       // what was shown stays shown, and the page says it could not look
       set({ loading: false, ...failedLook(state.snapshot, null) });
       return state.snapshot;

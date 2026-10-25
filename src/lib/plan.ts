@@ -106,7 +106,7 @@ export function failedLook(
   kept: PlanSnapshot | null,
   status: number | null,
 ): { snapshot: PlanSnapshot | null; stale: boolean; problem: PlanProblem | null } {
-  if (status === 403) {
+  if (status === 401 || status === 403) {
     return {
       snapshot: null,
       stale: false,

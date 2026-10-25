@@ -110,6 +110,8 @@ test("the plan key is the bundle, then the plan, then what the gates say, and fr
   assert.equal(planKey(snap({ account: account({ plan: "team" }) })), "team");
   assert.equal(planKey(snap({ ownerPlan: "team" })), "team", "offline, the gates' plan stands in");
   assert.equal(planKey(snap({})), "cloud");
+  assert.equal(planKey(snap({ ownerPlan: "team" }), "cloud"), "team", "the host fallback precedes the app");
+  assert.equal(planKey(snap({}), "team"), "team", "the app fallback still works offline");
   assert.equal(planKey(null), "free");
 });
 
@@ -233,9 +235,11 @@ test("a look that did not land never reads as no plan", () => {
   assert.equal(first.problem?.kind, "unreachable");
   assert.match(first.problem!.words, /couldn't read your plan/);
   // a refusal is this device not being shown the plan at all
-  const refused = failedLook(shown, 403);
-  assert.equal(refused.snapshot, null);
-  assert.equal(refused.stale, false);
-  assert.equal(refused.problem?.kind, "refused");
-  assert.match(refused.problem!.words, /computer this workspace runs on/);
+  for (const status of [401, 403]) {
+    const refused = failedLook(shown, status);
+    assert.equal(refused.snapshot, null);
+    assert.equal(refused.stale, false);
+    assert.equal(refused.problem?.kind, "refused");
+    assert.match(refused.problem!.words, /computer this workspace runs on/);
+  }
 });

@@ -68,10 +68,10 @@ test("the owner's own device reads the plan and opens billing, on the network an
   const here = await h.json("/api/plan");
   assert.equal(here.account.plan, "team");
   assert.equal(here.sameComputer, true);
-  // the owner's own credential presented here is still the owner here
+  // A paired credential stays a device, even on this computer.
   const ownCredential = await h.fetch("/api/plan", { headers: { authorization: `Bearer ${OWNER_TOKEN}` } });
   assert.equal(ownCredential.status, 200);
-  assert.equal((await ownCredential.json()).sameComputer, true);
+  assert.equal((await ownCredential.json()).sameComputer, false);
 
   // A billing link is made only when somebody presses for it, and each
   // press asks bloks.dev for one once.
@@ -116,11 +116,13 @@ test("the owner's own device reads the plan and opens billing, on the network an
     fetch(`http://127.0.0.1:${proxy.port}${path}`, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
   const throughCloud = await at(app, "/api/plan");
   assert.equal(throughCloud.status, 200);
+  assert.match(throughCloud.headers.get("cache-control") ?? "", /no-store/);
   const cloudPlan = await throughCloud.json();
   assert.equal(cloudPlan.account.plan, "team");
   assert.equal(cloudPlan.sameComputer, false);
   const cloudBilling = await pressed(() => at(app, "/api/plan/manage", { method: "POST", body: "{}" }));
   assert.equal(cloudBilling.status, 200);
+  assert.match(cloudBilling.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual(await cloudBilling.json(), { url: `${s.base}/portal/session-1`, manageAt: "portal" });
   // Link's page, for a plan Link took the payment for, comes back the same way
   s.manageAt("link");
@@ -142,6 +144,8 @@ test("the owner's own device reads the plan and opens billing, on the network an
     assert.equal(network.status, 403, `${method} ${path} answered the owner's device on the network`);
     const cloud = await at(app, path, { method, ...(method === "POST" ? { body: "{}" } : {}) });
     assert.equal(cloud.status, 403, `${method} ${path} answered the owner's device through Bloks Cloud`);
+    const loopback = await h.fetch(path, { method, headers: { authorization: `Bearer ${OWNER_TOKEN}` } });
+    assert.equal(loopback.status, 403, `${method} ${path} treated a paired bearer as the local window`);
   }
   assert.equal(s.bearers.length, before, "a local-only route reached bloks.dev for a device elsewhere");
   assert.deepEqual(s.linkKeys, [], "a hosted workspace's link was asked for a device elsewhere");
@@ -158,6 +162,7 @@ test("the owner's own device reads the plan and opens billing, on the network an
     assert.ok(!JSON.stringify(network.body).includes("team"), "a member's device was told the owner's plan");
     const cloud = await at(member, path, { method, ...(method === "POST" ? { body: "{}" } : {}) });
     assert.notEqual(cloud.status, 200, `${method} ${path} answered a member's device through Bloks Cloud`);
+    assert.match(cloud.headers.get("cache-control") ?? "", /no-store/);
     assert.doesNotMatch(await cloud.text(), /portal|"plan"/);
     assert.equal((await h.fetchRemote(path, { method, token: "not-a-device" })).status, 401);
     assert.equal((await h.fetchRemote(path, { method })).status, 401);
@@ -232,4 +237,44 @@ test("somebody holding an invite, then let in as a member, never reads the plan 
   assert.equal(s.bearers.length, asked, "an invite or a member reached bloks.dev with the key");
   // and the owner's window still reads it
   assert.equal((await h.json("/api/plan")).account.plan, "team");
+});
+
+
+test("Plan cache headers survive credential refusals and handler failures, and the local window keeps its controls", async (t) => {
+  const site = await startFakeSite();
+  t.after(() => site.close());
+  site.setAccount(SITE_LICENCE, { plan: "team", hosting: { tier: "standard", state: "active" } });
+  const h = await workspace(t, site, { remote: { devices: [device("owner-device", OWNER_TOKEN)] } });
+  const before = site.bearers.length;
+  for (const path of ["/api/plan", "/api/plan?fresh=1", "/api/plan/manage"]) {
+    const method = path.endsWith("manage") ? "POST" : "GET";
+    const invalid = await h.fetch(path, { method, headers: { authorization: "Bearer revoked-fixture-device" } });
+    assert.equal(invalid.status, 401);
+    assert.match(invalid.headers.get("cache-control") ?? "", /no-store/, path);
+    const foreign = await h.fetchAs("https://outside.example", path, { method });
+    assert.equal(foreign.status, 403);
+    assert.match(foreign.headers.get("cache-control") ?? "", /no-store/, path);
+  }
+  assert.equal(site.bearers.length, before, "rejected requests reached the account service");
+  assert.ok(readFileSync(h.configFile, "utf8").includes(SITE_LICENCE), "a rejected request changed the key");
+  for (const path of ["/api/plan", "/api/plan?fresh=1"]) {
+    const answer = await h.fetch(path);
+    assert.equal(answer.status, 200);
+    assert.match(answer.headers.get("cache-control") ?? "", /no-store/);
+    assert.equal((await answer.json()).sameComputer, true);
+  }
+  site.down(true);
+  const failed = await h.fetch("/api/plan/manage", { method: "POST" });
+  assert.equal(failed.status, 502);
+  assert.match(failed.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal((await failed.json()).url, undefined);
+  site.down(false);
+  const hosting = await h.fetch("/api/plan/hosting/link", { method: "POST" });
+  assert.equal(hosting.status, 200, "the local window lost Hosting access");
+  assert.match(hosting.headers.get("cache-control") ?? "", /no-store/);
+  const removed = await h.json("/api/plan/licence", { method: "DELETE" });
+  assert.equal(removed.removed, true, "the local window lost key removal");
+  const absent = await h.fetch("/api/plan/manage", { method: "POST" });
+  assert.equal(absent.status, 409);
+  assert.match(absent.headers.get("cache-control") ?? "", /no-store/);
 });
