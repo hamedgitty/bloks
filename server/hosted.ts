@@ -109,7 +109,7 @@ const SHELL_UNTOUCHED = "That is only about a screen: your commands and files ar
  * not there this turn. */
 export function noComputerLine(why: NoComputer, o: { hosted: boolean; platform?: string; vm?: string }): string {
   if (why === "withheld") {
-    return ` Bloks has not lent the owner's computer to this turn because the owner did not start it. ${SHELL_UNTOUCHED}`;
+    return ` Bloks has not lent the owner's computer to this turn because the owner did not start it. Respect that access restriction; do not bypass it through another tool. ${SHELL_UNTOUCHED}`;
   }
   if (why === "vm") {
     const because = (o.vm ?? "it is not ready").replace(/[.\s]+$/, "");

@@ -232,7 +232,7 @@ const BUILTIN: Array<Omit<Skill, "source">> = [
 4. If something slipped since yesterday, say so and why.
 
 Not for: a single lookup. If they asked what one meeting is, answer that and stop.
-Return: a concise brief suited to what needs attention.
+Return: a concise brief suited to what needs attention, honoring any requested length.
 Approval: none needed, this is read-only.`,
   },
   {
@@ -248,7 +248,7 @@ Approval: none needed, this is read-only.`,
 
 Not for: one named message. Read and answer that one rather than sorting the whole inbox.
 Return: the classifications and escalations, and any requested drafts.
-Approval: required before sending anything. Never send on your own.`,
+Send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
   },
   {
     id: "research-brief",
@@ -257,7 +257,7 @@ Approval: required before sending anything. Never send on your own.`,
     body: `Use this for any research request.
 
 1. Start with primary sources (the actual documentation, filing, or repository) before commentary about them.
-2. Check load-bearing claims against sources appropriate to the question and stakes.
+2. Check load-bearing claims against sources appropriate to the question and stakes. One authoritative source may suffice; surface unresolved conflicts.
 3. Separate clearly: established fact, contested, and your own inference.
 4. Say plainly when the evidence is thin. A short honest brief beats a long confident one.
 
@@ -278,7 +278,7 @@ Approval: none needed unless the research requires paid access or account creati
 
 Not for: a question about how code works, or a change you were asked to make. Explain or write it instead.
 Return: findings ordered most-severe first. If the diff is clean, say so in one line.
-A review is read-only unless changes are authorized. Push only when authorized; existing authorization need not be requested again.`,
+A review is read-only unless changes are authorized. Edit permission alone does not authorize publication. Push only when authority covers this repository and action and its conditions, such as review or CI, are met; existing authorization need not be requested again.`,
   },
   {
     id: "meeting-prep",
@@ -307,7 +307,7 @@ Approval: none needed, this is read-only.`,
 4. Note anything that has now slipped two weeks running; that is a pattern, not a delay.
 
 Not for: a question about one project. Answer that project rather than reviewing the week.
-Return: what shipped, what slipped, and the relevant risks.
+Return: what shipped, what slipped, and the relevant risks, honoring any requested length.
 Approval: none needed, this is read-only.`,
   },
   {
@@ -322,8 +322,8 @@ Approval: none needed, this is read-only.`,
 4. Match the user's voice from their previous messages. Never use "I hope this finds you well", "circling back", or "just following up".
 
 Not for: a reply in an existing thread. Match that thread rather than opening cold.
-Return: a subject line and body appropriate to the recipient.
-Approval: always required before sending. Never send outreach on your own.`,
+Return: a subject line and body appropriate to the recipient, honoring any requested length.
+Send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
   },
   {
     id: "expense-coding",
@@ -349,7 +349,7 @@ Approval: required before categorizing anything as personal or writing to an acc
 Not for: a reply in the chat. A short answer, or one with some structure, belongs in the chat, drawn as interface when you can.
 
 ## First, does this need a file at all
-Most answers do not. Answer in chat unless making a file is requested or otherwise authorized. Analysis or a comparison alone does not authorize a file.
+Most answers do not. Answer in chat unless making a file is requested or otherwise authorized. Analysis or a comparison alone does not authorize a file. Honor any requested length or content count.
 
 ## How much to put in
 Depth follows the stakes, not a template. Ask what a careful person would want to know before they act, and give exactly that.

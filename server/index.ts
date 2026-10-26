@@ -7467,11 +7467,16 @@ async function startClaimedTurn(
   // engine with a credential asks for a key on the command line instead,
   // and the rest are not told about either (GitHub 172).
   const asksByTool = instance.driverKind === "claudeAgent" || apiTools;
+  const promptRequester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? turnPerson ?? "owner";
+  // Match the per-turn connector grant. Telegram people have their own
+  // request tool; unlisted mail has no tools at all.
+  const connectorCanBeOffered = personSource || (!(sharing || promptRequester !== "owner") || roomTools?.connectors);
   const connectorHint = [
-    asksByTool && cfg.composio?.key && bot.composio !== false
-      ? "Use an existing configured account route when it meets the task. If a connection is needed and authorized, the request_connection tool can ask for the app slugs and show a sign-in card in the chat; never paste sign-in or OAuth links into the conversation yourself."
+    asksByTool && !guestMail && connectorCanBeOffered &&
+      cfg.composio?.key && bot.composio !== false
+      ? "Use a configured route when it is usable for the requested account and task. A route for another account, or one that is unavailable or insufficient, does not establish that no route exists or authorize a new connection or provider switch. If a connection is needed and authorized, request_connection can show a sign-in card for the app slugs; never paste sign-in or OAuth links into the conversation yourself."
       : null,
-    secretHint(asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
+    secretHint(guestMail ? null : asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
   ]
     .filter(Boolean)
     .join(" ");
@@ -7643,7 +7648,7 @@ async function startClaimedTurn(
   // A backup engine or a retry after a fold goes on with the turn before
   // it, for whoever asked for that one (a pickup is told who, by the
   // record of the turn it picks up).
-  const requester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? turnPerson ?? "owner";
+  const requester = promptRequester;
   laneRequester.set(task.id, requester);
   laneAudience.set(task.id, telegramAudience(personSource ?? groupSource));
   if (groupSource) laneTelegramGroup.set(task.id, groupSource);

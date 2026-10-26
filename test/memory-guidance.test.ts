@@ -13,7 +13,7 @@ const home = mkdtempSync(join(tmpdir(), "bloks-memory-guidance-"));
 process.env.HOME = home;
 process.env.BLOKS_DATA_DIR = join(home, ".bloks");
 after(() => rmSync(home, { recursive: true, force: true }));
-const { memoryPrompt } = await import("../server/workspace.ts");
+const { memoryPrompt, writeMemoryFile } = await import("../server/workspace.ts");
 
 for (const how of ["files", "tools"] as const) {
   test(`decisions later work needs are kept without being asked (${how})`, () => {
@@ -38,9 +38,20 @@ for (const how of ["files", "tools"] as const) {
 for (const how of ["files", "tools"] as const) {
   test(`configured record and Bloks fallback are both described (${how})`, () => {
     const said = memoryPrompt("example-agent", how);
-    assert.match(said, /Use the configured canonical record when one exists; otherwise Bloks memory is available/);
+    assert.match(said, /Use an accessible configured canonical record when one exists; if none is configured, Bloks memory is available/);
     assert.match(said, /Bloks provides fallback persistent memory/);
     assert.match(said, how === "files" ? /example-agent\/MEMORY\.md/ : /memory_read and memory_write/);
     assert.match(said, /auto-loaded each turn/);
+  });
+}
+
+for (const how of ["files", "tools"] as const) {
+  test(`populated fallback is loaded without overriding an inaccessible configured record (${how})`, () => {
+    const id = `populated-${how}`;
+    assert.equal(writeMemoryFile(id, "- STORED_FACT\n"), true);
+    const said = memoryPrompt(id, how);
+    assert.match(said, /STORED_FACT/);
+    assert.match(said, /If a configured record is inaccessible, report that limitation/);
+    assert.match(said, /do not invent a competing owner or copy private context to fallback memory/);
   });
 }

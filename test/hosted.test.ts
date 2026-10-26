@@ -283,5 +283,6 @@ test("computer guidance limits its screen claim to Bloks", () => {
     assert.match(said, /Bloks/);
     assert.doesNotMatch(said, /You have no screen/);
     assert.match(said, /commands and files are not affected/);
+    if (why === "withheld") assert.match(said, /Respect that access restriction; do not bypass it through another tool/);
   }
 });

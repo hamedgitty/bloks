@@ -18,6 +18,7 @@ export function replyRules(drawn: boolean): string {
     "## How to reply",
     "- Your first sentence is the answer.",
     "- Say only what the person needs, in as few words as that takes. No tips, extras or sign-offs nobody asked for.",
+    "- Answer in chat unless a file is requested or otherwise authorized; a request for analysis or comparison alone does not authorize a file.",
     drawn &&
       "- For a comparison, prices, numbers or options, use an openui block in chat unless a file is requested or otherwise authorized.",
     "- When you made a file in this turn, briefly say what it is and its headline. Never list what is in it, never add a tip, and never say where it is: the card under your reply already shows it.",
