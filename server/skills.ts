@@ -229,10 +229,10 @@ const BUILTIN: Array<Omit<Skill, "source">> = [
 1. Gather: today's calendar, open tasks, and threads awaiting a reply.
 2. Group into: needs a decision from me, happening today, and waiting on someone else.
 3. Lead with the decisions. Never open with a greeting or a summary of what you're about to say.
-4. Keep it under 150 words. If something slipped since yesterday, say so and why.
+4. If something slipped since yesterday, say so and why.
 
 Not for: a single lookup. If they asked what one meeting is, answer that and stop.
-Return: a short plain-text brief. No tables, no headers unless there are more than three groups.
+Return: a concise brief suited to what needs attention.
 Approval: none needed, this is read-only.`,
   },
   {
@@ -243,11 +243,11 @@ Approval: none needed, this is read-only.`,
 
 1. Read only what arrived since the last run.
 2. Classify each message: needs-me, routine (safe to draft), or noise.
-3. For routine mail, draft a reply in the user's voice and hold it.
-4. Escalate immediately, without waiting for the batch: anything financial, legal, security-related, time-sensitive within 24h, or from a named VIP.
+3. Draft a reply only when the task calls for one; use the user's voice.
+4. Escalate immediately, without waiting for the batch: anything financial, legal, security-related, time-sensitive, or from a named VIP.
 
 Not for: one named message. Read and answer that one rather than sorting the whole inbox.
-Return: counts per class, the escalations in full, and the drafts awaiting approval.
+Return: the classifications and escalations, and any requested drafts.
 Approval: required before sending anything. Never send on your own.`,
   },
   {
@@ -257,12 +257,12 @@ Approval: required before sending anything. Never send on your own.`,
     body: `Use this for any research request.
 
 1. Start with primary sources (the actual documentation, filing, or repository) before commentary about them.
-2. Cross-check any load-bearing claim against a second independent source.
+2. Check load-bearing claims against sources appropriate to the question and stakes.
 3. Separate clearly: established fact, contested, and your own inference.
 4. Say plainly when the evidence is thin. A short honest brief beats a long confident one.
 
 Not for: a fact you already hold, or one lookup that a single source settles. Answer it plainly instead.
-Return: the answer in the first two sentences, then supporting detail, then sources as links.
+Return: the answer, supporting detail and relevant sources as links.
 Approval: none needed unless the research requires paid access or account creation.`,
   },
   {
@@ -278,7 +278,7 @@ Approval: none needed unless the research requires paid access or account creati
 
 Not for: a question about how code works, or a change you were asked to make. Explain or write it instead.
 Return: findings ordered most-severe first. If the diff is clean, say so in one line.
-Approval: required before pushing any change.`,
+A review is read-only unless changes are authorized. Push only when authorized; existing authorization need not be requested again.`,
   },
   {
     id: "meeting-prep",
@@ -292,7 +292,7 @@ Approval: required before pushing any change.`,
 4. Propose an agenda with the single most important item first.
 
 Not for: a meeting already under way, or one with no attendees and no history worth assembling.
-Return: half a page maximum. Who, what changed, what to decide, suggested agenda.
+Return: who, what changed, what to decide, and a useful agenda.
 Approval: none needed, this is read-only.`,
   },
   {
@@ -303,11 +303,11 @@ Approval: none needed, this is read-only.`,
 
 1. List what actually shipped, not what was worked on.
 2. List what slipped, each with the real reason, not "ran out of time".
-3. Name the single biggest risk to next week and what would defuse it.
+3. Name the material risks to next week and what would defuse them.
 4. Note anything that has now slipped two weeks running; that is a pattern, not a delay.
 
 Not for: a question about one project. Answer that project rather than reviewing the week.
-Return: three short sections and one risk. Under 200 words.
+Return: what shipped, what slipped, and the relevant risks.
 Approval: none needed, this is read-only.`,
   },
   {
@@ -318,11 +318,11 @@ Approval: none needed, this is read-only.`,
 
 1. Research the account first. If you cannot find something specific and true about them, say so and skip them rather than writing filler.
 2. Open with that specific thing, not with who you are.
-3. One clear ask. No multi-part questions.
+3. Make the ask clear.
 4. Match the user's voice from their previous messages. Never use "I hope this finds you well", "circling back", or "just following up".
 
 Not for: a reply in an existing thread. Match that thread rather than opening cold.
-Return: subject line and body, under 120 words.
+Return: a subject line and body appropriate to the recipient.
 Approval: always required before sending. Never send outreach on your own.`,
   },
   {
@@ -332,8 +332,8 @@ Approval: always required before sending. Never send outreach on your own.`,
     body: `Use this when processing transactions or receipts.
 
 1. Categorize using the categories already present in the user's history. Do not invent new ones.
-2. When a transaction is ambiguous, ask. Never guess a category to finish the batch.
-3. Flag: duplicate charges, subscriptions with no recent use, and anything more than 50% above its own historical average.
+2. Resolve ambiguity from available evidence. Ask when a material uncertainty remains.
+3. Flag: duplicate charges, subscriptions with no recent use, and material departures from its historical pattern.
 4. Note any charge missing a receipt so the user can find it while they still remember it.
 
 Not for: one receipt somebody asked you to read. Read it and say what it is.
@@ -349,7 +349,7 @@ Approval: required before categorizing anything as personal or writing to an acc
 Not for: a reply in the chat. A short answer, or one with some structure, belongs in the chat, drawn as interface when you can.
 
 ## First, does this need a file at all
-Most answers do not. A fact, an opinion, a quick pick, a comparison of two or three things on a few points: answer in the chat. Make a file when the person asked for one, or when they will keep it, share it, print it or come back to it, or when the decision has real stakes and more facts than a chat card can hold.
+Most answers do not. Answer in chat unless making a file is requested or otherwise authorized. Analysis or a comparison alone does not authorize a file.
 
 ## How much to put in
 Depth follows the stakes, not a template. Ask what a careful person would want to know before they act, and give exactly that.
@@ -362,27 +362,27 @@ More detail never means more words per fact. It means more facts, each said once
 They do not read it. They scan it, and decide in about two seconds whether it answers them.
 - The eye lands on the biggest thing first, then runs down the left edge, stopping at numbers, bold words and the first two or three words of each line. Put the meaning exactly there.
 - Attention is spent, not given. Every extra word, box, color and icon costs some of it, and what is left goes to the answer. Clean is not a style here; it is how the answer gets through.
-- People hold three to five things at once. More groups than that and they stop comparing and start skimming.
+- Group related facts so the reader can compare them easily.
 - A number with its meaning beside it ("$100 less", "2.5 times the graphics power") is read in a glance. A number alone makes the reader do the math, and most will not.
 - Sameness is what lets someone compare. Two options described in two different shapes cannot be compared without reading both in full.
 
 ## Write it before you style it
 1. The headline is the answer, not the topic. "The Series S, unless you want 4K" beats "PS5 vs Xbox Series S: a complete comparison". A subtitle under it says the scope and the date the facts are from.
 2. Do the math for them. Differences, totals, per month, per use, the gap between the two: work them out and show the result, with the raw figures beside it in smaller type.
-3. Cut. Every sentence that would not change their decision goes; every fact that would change it stays. Labels are one to three words. Lines in cards stay under about twelve words. No paragraph runs past three lines. No intro, no "in this comparison we will", no closing summary of what they just read.
+3. Cut. Every sentence that would not change their decision goes; every fact that would change it stays. Keep labels and paragraphs easy to scan. No intro, no "in this comparison we will", no closing summary of what they just read.
 4. Say each fact once, in the place it does the most work. If the price is in the verdict, the table does not need a sentence about the price as well.
 5. Replace pros and cons with decision rules: "Choose the PS5 if you want 4K or PlayStation exclusives. Choose the Series S if you want Game Pass and the lower price." People decide on their own situation, not on a list of features.
 6. Plain words. No hype, no marketing adjectives ("ultimate", "comprehensive", "powerhouse"), no exclamation marks, no emoji.
 
 ## The shape
-- Choose the form from the content. A comparison is a table with the better value marked in each row. Numbers over time are one chart. A choice is two or three cards with the same rows in the same order, one marked as the pick. Steps are a numbered list. Not everything needs a chart, and nothing needs all of them.
+- Choose the form from the content. A comparison is a table with the better value marked in each row. Numbers over time are one chart. A choice uses comparable cards with the same rows in the same order, with a recommendation when appropriate. Steps are a numbered list. Not everything needs a chart, and nothing needs all of them.
 - The order: headline and scope, the verdict (the pick and the rule for when the other wins), the key numbers, the detail, what would change the answer (a price drop, a date, a missing fact), sources.
 - The first screen of a phone holds the headline, the verdict and the key numbers. Someone who reads nothing else has the answer.
-- Group by the question each part answers ("What does it really cost", "Which fits how you play"), not by where you found the facts. Three to five sections on a short page, and on a long one keep each section to three to five things.
+- Group by the question each part answers ("What does it really cost", "Which fits how you play"), not by where you found the facts.
 - Reference detail someone may want but few will read (full spec lists, method notes) goes in a details element they can open. Nothing that would change the decision is hidden.
 
 ## The look: quiet, so the content is loud
-- Hierarchy by size and weight, not by boxes and colors. Three levels and no more: the big thing (headline, key numbers), the label, the detail in muted type.
+- Hierarchy by size and weight, not by boxes and colors. Make the headline, labels and supporting detail easy to distinguish.
 - Space is the separator. Use space before a line, a line before a box, and a box only when the content inside is one unit.
 - Background plain: #ffffff or #fafafa in light, #0b0b0c or #111113 in dark. Never a gradient behind the page, never a photo behind text.
 - Cards, when you need them: one step off the background (#f4f4f5 light, #1a1a1d dark), a hairline border (the text color at 8 to 12 percent), radius 12 to 16px, at most a 0 1px 2px shadow. Cards never sit inside cards.
@@ -399,12 +399,12 @@ Every color is a CSS variable on :root, redefined inside @media (prefers-color-s
 ## Tables
 - First column names the row, one column per option, the same order everywhere on the page.
 - Mark the better value in each row (weight 600 or a small accent dot), not every cell. A row where they are equal says so once ("Same") rather than repeating the value.
-- Numbers right aligned and tabular. Units in the row label, not in every cell. Seven rows or fewer before you split by theme.
+- Numbers right aligned and tabular. Units in the row label, not in every cell. Split long tables by theme when that helps comparison.
 - Hairline row borders, no zebra stripes, no heavy header fill.
 - On a phone a wide table scrolls sideways inside its own wrapper (overflow-x: auto) with the first column sticky. The page itself never scrolls sideways.
 
 ## Charts
-- Only when the shape of the numbers is the point. Axes labeled with units. Three series or fewer are labeled at the line, not in a legend.
+- Only when the shape of the numbers is the point. Axes labeled with units. Label series clearly.
 - Inline SVG, or a library from a pinned version (for example https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js). The key numbers are in the text too, so the page reads if the script never loads.
 - Series colors from the variables, distinct in both themes, and never color alone telling two series apart.
 
@@ -414,25 +414,25 @@ Every color is a CSS variable on :root, redefined inside @media (prefers-color-s
 - One file: CSS in a style element, script in a script element. No CSS frameworks, no hotlinked images. It opens in a sandbox and may be read offline.
 
 ## The file
-- <!doctype html>, <meta charset="utf-8">, <meta name="viewport" content="width=device-width, initial-scale=1">, and a <title> of two to five words.
+- <!doctype html>, <meta charset="utf-8">, <meta name="viewport" content="width=device-width, initial-scale=1">, and a descriptive <title>.
 - Named for what it is: ps5-vs-xbox-series-s.html, not comparison.html or output.html.
-- Under about 200 KB. Images only when they carry information.
+- Images only when they carry information.
 
 ## Decks and printed reports
-- A deck: one idea per slide, its title a full sentence that states the point, at most three short lines or one chart, the same palette and type as above. The HTML version shows one slide per screen and moves with the arrow keys and a swipe.
+- A deck: one idea per slide, its title a full sentence that states the point, content sized for readability, the same palette and type as above. The HTML version shows one slide per screen and moves with the arrow keys and a swipe.
 - A report for print: @media print with black on white, no card fills, a page break before each section.
 
 ## Check before you hand it over
 - The five second test: someone who sees only the first screen on a phone can say the answer.
-- The squint test: blur your eyes and you see three to five clear blocks, one of them clearly first.
+- The squint test: the visual hierarchy makes the most important content clear.
 - Read it as the person: every line either helps them decide or goes.
 - Nothing overflows at 390px. Dark mode is readable everywhere. Every number has its unit and its date. The sources are there, small, at the bottom.
 
 ## In the chat
-The file speaks for itself. Your reply is one or two sentences: what you made and its headline, for example "The Series S is the better buy at $499 unless you want 4K; the full comparison is in the card." Do not repeat the page in the chat as a list.
+The file speaks for itself. Briefly say what you made and its headline, for example "The Series S is the better buy at $499 unless you want 4K; the full comparison is in the card." Do not repeat the page in the chat as a list.
 
-Return: one self contained file in your artifacts folder, and a reply of a sentence or two.
-Approval: none needed.`,
+Return: one self contained file in your artifacts folder, with a brief reply.
+Create and deliver a file only within the user's authorized scope.`,
   },
   {
     id: "using-bloks",

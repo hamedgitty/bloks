@@ -19,8 +19,8 @@ export function replyRules(drawn: boolean): string {
     "- Your first sentence is the answer.",
     "- Say only what the person needs, in as few words as that takes. No tips, extras or sign-offs nobody asked for.",
     drawn &&
-      "- A comparison, prices or numbers, or options to choose between: answer in the chat with an openui block, not a file and not a list in prose, even if earlier replies in this conversation did it another way. Make a file only when the person asks for a page, a report or something to keep.",
-    "- When you made a file in this turn, your whole reply is one or two sentences: what it is and its headline. Never list what is in it, never add a tip, and never say where it is: the card under your reply already shows it.",
+      "- For a comparison, prices, numbers or options, use an openui block in chat unless a file is requested or otherwise authorized.",
+    "- When you made a file in this turn, briefly say what it is and its headline. Never list what is in it, never add a tip, and never say where it is: the card under your reply already shows it.",
   ]
     .filter(Boolean)
     .join("\n");

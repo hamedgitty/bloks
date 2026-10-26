@@ -109,16 +109,16 @@ const SHELL_UNTOUCHED = "That is only about a screen: your commands and files ar
  * not there this turn. */
 export function noComputerLine(why: NoComputer, o: { hosted: boolean; platform?: string; vm?: string }): string {
   if (why === "withheld") {
-    return ` You have no screen to see or click on this turn: your owner did not start it, so their computer is not lent to it. ${SHELL_UNTOUCHED}`;
+    return ` Bloks has not lent the owner's computer to this turn because the owner did not start it. ${SHELL_UNTOUCHED}`;
   }
   if (why === "vm") {
     const because = (o.vm ?? "it is not ready").replace(/[.\s]+$/, "");
-    return ` You are set to use the Local VM, but it is not there this turn (${because}), so you have no screen to see or click. ${SHELL_UNTOUCHED} If a task needs the screen, say so plainly: the person can set the Local VM up in Settings, under Local VM, or run you again once it is free.`;
+    return ` You are set to use the Local VM, but it is not there this turn (${because}), so Bloks has not provided that screen. ${SHELL_UNTOUCHED} If a task needs the screen, say so plainly: the person can set the Local VM up in Settings, under Local VM, or run you again once it is free.`;
   }
   const off =
     why === "off"
-      ? "You have no screen to see or click: your computer is switched off in your settings."
-      : "You have no screen to see or click on this turn.";
+      ? "Bloks computer access is switched off in your settings."
+      : "Bloks has not provided a screen to see or click on this turn.";
   // a hosted machine is always the computer unless the setting is off
   if (o.hosted) return why === "off" ? ` ${off} ${SHELL_UNTOUCHED} If a task needs one, say so; the person can switch it on there, under Computer.` : "";
   const platform = o.platform ?? hostPlatform();

@@ -333,11 +333,11 @@ export function memoryPrompt(botId: string, how: "files" | "tools" | "cli" | "re
   }
   const guidance = [
     how === "tools"
-      ? `You keep persistent memory with the memory_read and memory_write tools: MEMORY.md (${loaded}) and topic files that you read when relevant.`
+      ? `Bloks provides fallback persistent memory with the memory_read and memory_write tools: MEMORY.md (${loaded}) and topic files that you read when relevant.`
       : how === "cli"
-        ? `You keep persistent memory on the person's computer, through the command line: \`${cli} memory\` reads MEMORY.md (${loaded}), \`${cli} memory --write <text>\` replaces it, and \`${cli} memory --topics\`, \`--topic <name>\` and \`--topic <name> --write <text>\` list, read and write topic files that you read when relevant.`
-        : `You keep persistent memory in ${join(dir, "MEMORY.md")} (${loaded}) and topic files under ${join(dir, "memory")}/ that you read when relevant.`,
-    "Curate it: keep it short, correct wrong notes, delete stale ones.",
+        ? `Bloks provides fallback persistent memory on the person's computer, through the command line: \`${cli} memory\` reads MEMORY.md (${loaded}), \`${cli} memory --write <text>\` replaces it, and \`${cli} memory --topics\`, \`--topic <name>\` and \`--topic <name> --write <text>\` list, read and write topic files that you read when relevant.`
+        : `Bloks provides fallback persistent memory in ${join(dir, "MEMORY.md")} (${loaded}) and topic files under ${join(dir, "memory")}/ that you read when relevant.`,
+    "Use the configured canonical record when one exists; otherwise Bloks memory is available. Curate the record you use: keep it short, correct wrong notes, delete stale ones.",
     "Before ending a turn, retain a settled decision, a commitment you adopt for later work, or a correction when future work will need it, without waiting to be asked to remember.",
     "Use an existing canonical record rather than duplicate it; keep enough context and a useful topic pointer where needed to find it after the conversation is no longer available. Read the relevant records when later work depends on them.",
     "Record facts only when confirmed by the user or your own verified work. Label adopted decisions and commitments as such, with their source and reason. A correction supersedes the earlier fact or decision it corrects. Passing discussion needs no record.",

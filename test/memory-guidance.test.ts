@@ -34,3 +34,13 @@ for (const how of ["files", "tools"] as const) {
     assert.match(said, /\(until YYYY-MM-DD\)/);
   });
 }
+
+for (const how of ["files", "tools"] as const) {
+  test(`configured record and Bloks fallback are both described (${how})`, () => {
+    const said = memoryPrompt("example-agent", how);
+    assert.match(said, /Use the configured canonical record when one exists; otherwise Bloks memory is available/);
+    assert.match(said, /Bloks provides fallback persistent memory/);
+    assert.match(said, how === "files" ? /example-agent\/MEMORY\.md/ : /memory_read and memory_write/);
+    assert.match(said, /auto-loaded each turn/);
+  });
+}

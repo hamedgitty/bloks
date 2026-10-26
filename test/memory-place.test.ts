@@ -280,3 +280,16 @@ process.stdin.on("data", (c) => (input += c));
     assert.deepEqual(entries.map((e: any) => [e.file, e.by]).sort(), [["MEMORY.md", "agent"], ["memory/people.md", "agent"]]);
   });
 });
+
+test("new memory guidance replaces frozen guidance once on a resumed Claude turn", () => {
+  const old: Standing = { memory: "old default memory owner", notes: null, shared: null };
+  const current: Standing = { memory: "Use the configured canonical record; otherwise Bloks memory is available.", notes: null, shared: null };
+  const first = standingFor(undefined, old, { instanceId: "claude", resuming: false });
+  const resumed = standingFor(first.next, current, { instanceId: "claude", resuming: true });
+  assert.equal(resumed.system.memory, old.memory);
+  assert.match(resumed.preamble!, /replaces the copy in your instructions:[\s\S]*configured canonical record/);
+  assert.equal(standingFor(resumed.next, current, { instanceId: "claude", resuming: true }).preamble, null);
+  const fresh = standingFor(undefined, current, { instanceId: "claude", resuming: false });
+  assert.equal(fresh.system.memory, current.memory);
+  assert.equal(fresh.preamble, null);
+});

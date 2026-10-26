@@ -55,7 +55,7 @@ test("off a Mac this computer's own screen is not offered, is still accepted, an
 
 test("an agent with no computer is told so, and how the person gives it one", () => {
   const pc = noComputerLine("none", { hosted: false, platform: "win32" });
-  assert.match(pc, /no screen to see or click on this turn/);
+  assert.match(pc, /Bloks has not provided a screen to see or click on this turn/);
   assert.match(pc, /in your settings, under Computer/);
   assert.match(pc, /Local VM/);
   assert.match(pc, /Cloud box/);
@@ -68,7 +68,7 @@ test("an agent with no computer is told so, and how the person gives it one", ()
   assert.doesNotMatch(mac, /needs Bloks running on a Mac/);
 
   assert.match(noComputerLine("off", { hosted: false, platform: "win32" }), /switched off in your settings/);
-  assert.match(noComputerLine("withheld", { hosted: false, platform: "darwin" }), /your owner did not start it/);
+  assert.match(noComputerLine("withheld", { hosted: false, platform: "darwin" }), /the owner did not start it/);
   assert.doesNotMatch(noComputerLine("withheld", { hosted: false }), /under Computer/, "someone else's turn is not told to change the owner's settings");
   assert.equal(noComputerLine("none", { hosted: true }), "", "a hosted machine is the computer");
   assert.match(noComputerLine("off", { hosted: true }), /switched off/);
@@ -275,4 +275,13 @@ test("on a Mac nothing is hosted: no desktop ticket, and health says so", async 
   assert.equal((await h.fetch("/api/hosted/desktop", { method: "POST", body: "{}" })).status, 404);
   assert.equal((await h.fetch(`/hosted/desktop/${"a".repeat(48)}/vnc.html`)).status, 404);
   assert.equal((await h.json("/api/config")).hosted.on, false);
+});
+
+test("computer guidance limits its screen claim to Bloks", () => {
+  for (const why of ["none", "off", "vm", "withheld"] as const) {
+    const said = noComputerLine(why, { hosted: false, platform: "linux" });
+    assert.match(said, /Bloks/);
+    assert.doesNotMatch(said, /You have no screen/);
+    assert.match(said, /commands and files are not affected/);
+  }
 });

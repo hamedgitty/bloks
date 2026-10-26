@@ -128,7 +128,7 @@ test("an OpenCode agent saved on This computer keeps running its hourly routine 
   // What 3.0.9 told it instead of nothing: "You have no computer". A
   // model reads that as "I cannot run anything", and the scripts stopped.
   assert.doesNotMatch(told!, /You have no computer/, "the agent was told it has no computer");
-  assert.match(told!, /no screen to see or click/);
+  assert.match(told!, /Bloks has not provided a screen to see or click/);
   assert.match(told!, /commands and files are not affected/, "the agent was not told its commands still run");
 });
 
