@@ -9,7 +9,7 @@
 // the feature rests on; `ssh -R` opens the reverse tunnel as a plain
 // local forward, so the engine on the far side reaches Bloks' gate the
 // way it would through a real one.
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface FakePlaces {
@@ -259,6 +259,20 @@ export function fakePlaces(root: string, seen: string): FakePlaces {
   } catch {
     /* already there */
   }
+  // Give the fake far side only the ordinary tools its shell scripts use.
+  // Neither PATH may fall through to this computer's Docker or SSH when
+  // a test removes a stand-in to exercise a missing-program error.
+  for (const name of ["sh", "cat", "chmod", "mkdir", "rm", "tar", "find", "head", "tr", "grep", "sleep", "curl"]) {
+    const source = ["/usr/bin", "/bin"].map((dir) => join(dir, name)).find(existsSync);
+    if (source) symlinkSync(source, join(there, name));
+  }
+  // The real bootstrap prepends the far home's .local/bin and
+  // /usr/local/bin. Keep the far side from finding host programs there.
+  const guards = join(home, ".local", "bin");
+  mkdirSync(guards, { recursive: true });
+  for (const name of ["docker", "ssh"]) {
+    writeFileSync(join(guards, name), `#!${node}\nprocess.stderr.write("Blocked host program in fake workplace.\\n");\nprocess.exit(127);\n`, { mode: 0o755 });
+  }
   const dockerLog = join(root, "docker.log");
   const sshLog = join(root, "ssh.log");
   const dockerState = join(root, "docker.json");
@@ -276,13 +290,13 @@ export function fakePlaces(root: string, seen: string): FakePlaces {
     dockerState,
     sshControl,
     env: {
-      PATH: `${bin}:${there}:/usr/bin:/bin:/usr/sbin:/sbin`,
+      PATH: `${bin}:${there}`,
       FAKE_DOCKER_LOG: dockerLog,
       FAKE_DOCKER_STATE: dockerState,
       FAKE_SSH_LOG: sshLog,
       FAKE_SSH_CONTROL: sshControl,
       FAKE_HOME: home,
-      FAKE_THERE_PATH: `${there}:/usr/bin:/bin`,
+      FAKE_THERE_PATH: there,
     },
     dockerCalls: () => lines(dockerLog),
     sshCalls: () => lines(sshLog),
