@@ -248,7 +248,7 @@ Approval: none needed, this is read-only.`,
 
 Not for: one named message. Read and answer that one rather than sorting the whole inbox.
 Return: the classifications and escalations, and any requested drafts.
-Send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
+Approval: send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
   },
   {
     id: "research-brief",
@@ -278,7 +278,7 @@ Approval: none needed unless the research requires paid access or account creati
 
 Not for: a question about how code works, or a change you were asked to make. Explain or write it instead.
 Return: findings ordered most-severe first. If the diff is clean, say so in one line.
-A review is read-only unless changes are authorized. Edit permission alone does not authorize publication. Push only when authority covers this repository and action and its conditions, such as review or CI, are met; existing authorization need not be requested again.`,
+Approval: a review is read-only unless changes are authorized. Edit permission alone does not authorize publication. Push only when authority covers this repository and action and its conditions, such as review or CI, are met; existing authorization need not be requested again.`,
   },
   {
     id: "meeting-prep",
@@ -323,7 +323,7 @@ Approval: none needed, this is read-only.`,
 
 Not for: a reply in an existing thread. Match that thread rather than opening cold.
 Return: a subject line and body appropriate to the recipient, honoring any requested length.
-Send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
+Approval: send only when authority covers the recipient and action; a draft alone does not authorize sending.`,
   },
   {
     id: "expense-coding",
@@ -432,7 +432,7 @@ Every color is a CSS variable on :root, redefined inside @media (prefers-color-s
 The file speaks for itself. Briefly say what you made and its headline, for example "The Series S is the better buy at $499 unless you want 4K; the full comparison is in the card." Do not repeat the page in the chat as a list.
 
 Return: one self contained file in your artifacts folder, with a brief reply.
-Create and deliver a file only within the user's authorized scope.`,
+Approval: create and deliver a file only within the user's authorized scope.`,
   },
   {
     id: "using-bloks",
