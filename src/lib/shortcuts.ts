@@ -32,6 +32,8 @@ export interface Shortcut {
   /** One chord, or a few that belong together, such as a pair that are
    * each other's opposite (⌥↑ and ⌥↓). */
   keys: readonly Chord[];
+  /** A different chord on Mac, when the other platforms keep their own. */
+  macKeys?: readonly Chord[];
   /** What it does, as the sheet says it (a catalogue key). */
   does: MessageKey;
   /** Where it means that, when it is not everywhere (a catalogue key). */
@@ -84,9 +86,19 @@ export const SHORTCUTS: readonly Shortcut[] = [
     desktopOnly: true,
   },
   {
+    id: "sidebarAgent",
+    group: "navigation",
+    keys: [["Mod", "1"], ["Mod", "9"]],
+    does: "libShortcuts.does.sidebarAgent",
+    when: "libShortcuts.when.sidebarAgent",
+    desktopOnly: true,
+    macOnly: true,
+  },
+  {
     id: "workspace",
     group: "navigation",
     keys: [["Mod", "1"], ["Mod", "9"]],
+    macKeys: [["Alt", "Mod", "1"], ["Alt", "Mod", "9"]],
     does: "libShortcuts.does.workspace",
     when: "libShortcuts.when.workspace",
     desktopOnly: true,
@@ -303,7 +315,9 @@ function heard(shortcut: Shortcut, desktop: boolean, platform: Platform): boolea
  * for an id the list does not have, or one this app does not hear. */
 export function keysFor(id: string, platform: Platform, desktop = true): string[] {
   const shortcut = SHORTCUTS.find((s) => s.id === id);
-  return shortcut && heard(shortcut, desktop, platform) ? shortcut.keys.map((chord) => chordLabel(chord, platform)) : [];
+  return shortcut && heard(shortcut, desktop, platform)
+    ? (platform === "mac" ? shortcut.macKeys ?? shortcut.keys : shortcut.keys).map((chord) => chordLabel(chord, platform))
+    : [];
 }
 
 /** The sheet's contents: each group in order, holding what this app can
@@ -314,6 +328,9 @@ export function shortcutSheet(
 ): Array<{ id: ShortcutGroup; label: MessageKey; shortcuts: Shortcut[] }> {
   return SHORTCUT_GROUPS.map((group) => ({
     ...group,
-    shortcuts: SHORTCUTS.filter((s) => s.group === group.id && heard(s, desktop, platform)),
+    shortcuts: SHORTCUTS.filter((s) => s.group === group.id && heard(s, desktop, platform)).map((s) => ({
+      ...s,
+      keys: platform === "mac" ? s.macKeys ?? s.keys : s.keys,
+    })),
   })).filter((group) => group.shortcuts.length > 0);
 }

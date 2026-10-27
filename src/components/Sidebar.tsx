@@ -53,6 +53,8 @@ import { CHAT_COLUMN } from "@/lib/sideColumn";
 import { SideColumn } from "./SideColumn";
 import { openSearch } from "./CommandPalette";
 import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
+import { agentNumberKey, numberKeysAvailable } from "@/lib/numberKeys";
+import { platformOf } from "@/lib/shortcuts";
 import { ListTree } from "@/components/icons";
 import {
   DropdownMenu,
@@ -400,6 +402,7 @@ function BotListItem({
   onMenu,
   onDrag,
   compact,
+  numbered,
 }: {
   bot: Bot;
   onMenu: (menu: MenuState) => void;
@@ -408,6 +411,8 @@ function BotListItem({
   /** The conversations view: one line per agent, with its other
    * conversations listed underneath instead of one conversation's preview. */
   compact?: boolean;
+  /** Folded sections do not take a number, even for the row kept open. */
+  numbered: boolean;
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
@@ -427,6 +432,7 @@ function BotListItem({
       >
         <button
           data-lane-of={bot.id}
+          data-numbered-agent={numbered || undefined}
           onKeyDown={(e) => laneRowKeys(e, bot.id)}
           onClick={() => dispatch({ type: "select", id: bot.id, lane: general?.id })}
           onContextMenu={(e) => {
@@ -481,6 +487,7 @@ function BotListItem({
   return (
     <button
       data-sidebar-row={bot.id}
+      data-numbered-agent={numbered || undefined}
       data-sidebar-waiting={Boolean(bot.unread || bot.tasks?.some((task) => task.state === "needs-you"))}
       onClick={() => dispatch({ type: "select", id: bot.id })}
       onContextMenu={(e) => {
@@ -679,6 +686,7 @@ export function useSecurityRisky(): number {
  * column inside the drawer the pill opens (MobileNav.tsx). */
 export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   const { state, dispatch } = useStore();
+  const agentList = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useConversationsView();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [filing, setFiling] = useState<FilingState | null>(null);
@@ -925,6 +933,24 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
     return sidebarLayout(rows, state.sectionOrder);
   }, [state.bloks, visibleBots, heldActivity, state.sectionOrder]);
 
+  // Use the rendered buttons, in the order sidebarLayout drew them. Their
+  // own click decides which conversation opens in each sidebar view.
+  useEffect(() => {
+    if (!window.bloks || platformOf() !== "mac") return;
+    const onKey = (e: KeyboardEvent) => {
+      const number = agentNumberKey(e);
+      if (!number || !numberKeysAvailable()) return;
+      const buttons = Array.from(agentList.current?.querySelectorAll<HTMLButtonElement>("button[data-numbered-agent]") ?? [])
+        .filter((button) => button.getClientRects().length > 0 && !button.closest("[inert]"));
+      const button = buttons[number - 1];
+      if (!button) return;
+      e.preventDefault();
+      button.click();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const newMenuItems = (
     <DropdownMenuContent align="end" className="min-w-[160px]">
       <DropdownMenuItem onClick={() => dispatch({ type: "toggleNewAgent", open: true })}>
@@ -987,7 +1013,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
               />
             ) : (
               <>
-                <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
+                <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} compact={conversations} numbered={!folded} />
                 <ConversationRows bot={row.bot} open={conversations && !folded} />
               </>
             )}
@@ -1066,7 +1092,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
         onMouseEnter={holdActivity}
         onMouseLeave={() => setHeldActivity(null)}
       >
-        <div className="flex flex-col gap-px">
+        <div ref={agentList} className="flex flex-col gap-px">
           {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling) && (
             <div
               {...fileZone(null, (kind) => (kind === "room" ? unfiledRooms : unfiledBots))}

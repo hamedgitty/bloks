@@ -11,7 +11,7 @@ import {
   SHORTCUTS,
   shortcutSheet,
 } from "../src/lib/shortcuts.ts";
-import { inEnglish } from "../src/lib/i18n.ts";
+import { getLanguage, inEnglish, LANGUAGES, setLanguage, t } from "../src/lib/i18n.ts";
 import { lastEditable } from "../src/lib/transcript.ts";
 import type { Message } from "../src/state/reducer.ts";
 
@@ -61,6 +61,42 @@ describe("the shortcut list", () => {
     assert.deepEqual(keysFor("sidebarStep", "mac"), ["⌥↑", "⌥↓"]);
     assert.deepEqual(keysFor("sidebarWaiting", "mac"), ["⌥⇧↑", "⌥⇧↓"]);
     assert.deepEqual(keysFor("editLast", "mac"), ["↑"]);
+  });
+
+  test("Mac agent and workspace numbers have distinct hints, with the other platforms unchanged", () => {
+    assert.deepEqual(keysFor("sidebarAgent", "mac"), ["⌘1", "⌘9"]);
+    assert.deepEqual(keysFor("workspace", "mac"), ["⌥⌘1", "⌥⌘9"]);
+    assert.deepEqual(keysFor("workspace", "other"), ["Ctrl+1", "Ctrl+9"]);
+    assert.deepEqual(keysFor("sidebarAgent", "other"), []);
+    assert.deepEqual(keysFor("sidebarAgent", "mac", false), []);
+    const workspace = shortcutSheet(true, "mac").flatMap((group) => group.shortcuts).find((s) => s.id === "workspace")!;
+    assert.deepEqual(workspace.keys.map((chord) => chordLabel(chord, "mac")), ["⌥⌘1", "⌥⌘9"]);
+    for (const [desktop, platform] of [[false, "mac"], [true, "other"], [false, "other"]] as const) {
+      assert.ok(!shortcutSheet(desktop, platform).flatMap((group) => group.shortcuts).some((s) => s.id === "sidebarAgent"));
+    }
+  });
+
+  test("the numbered agent hint follows the chosen language", async () => {
+    const before = getLanguage();
+    try {
+      const agent = shortcutSheet(true, "mac").flatMap((group) => group.shortcuts).find((s) => s.id === "sidebarAgent")!;
+      assert.ok(agent.when);
+      await setLanguage("en");
+      const english = [t(agent.does), t(agent.when)];
+      assert.deepEqual(english, ["Go to an agent in the sidebar", "first to ninth agent, skipping folded sections"]);
+      for (const { code } of LANGUAGES) {
+        await setLanguage(code);
+        const translated: string[] = [t(agent.does), t(agent.when)];
+        assert.ok(translated.every((line) => line.trim()), code);
+        if (code !== "en") {
+          assert.notEqual(translated[0], english[0], code);
+          assert.notEqual(translated[1], english[1], code);
+        }
+      }
+      assert.deepEqual(agent.keys.map((chord) => chordLabel(chord, "mac")), ["⌘1", "⌘9"]);
+    } finally {
+      await setLanguage(before);
+    }
   });
 
   test("Esc stops the agent, and says where, since it also closes things and ends dictation", () => {

@@ -152,8 +152,9 @@ test("no menu key takes one the window answers to", () => {
     );
     // and none of them is one the page keeps to itself
     const owned = keyed.map((item) => item.accelerator?.replace("CmdOrCtrl", "Mod"));
-    for (const id of ["palette", "newAgent", "find", "shortcuts", "interrupt", "back", "forward", "recent", "workspace", "toggleSidebar"]) {
-      for (const chord of SHORTCUTS.find((s) => s.id === id)?.keys ?? []) {
+    for (const id of ["palette", "newAgent", "find", "shortcuts", "interrupt", "back", "forward", "recent", "workspace", "sidebarAgent", "toggleSidebar"]) {
+      const shortcut = SHORTCUTS.find((s) => s.id === id);
+      for (const chord of [...(shortcut?.keys ?? []), ...(shortcut?.macKeys ?? [])]) {
         assert.ok(!owned.includes(chord.join("+")), `the menu took ${id}'s ${chord.join("+")}`);
       }
     }

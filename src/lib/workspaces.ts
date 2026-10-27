@@ -115,7 +115,7 @@ export function muteLabel(mute: WorkspaceInfo["mute"], now = Date.now()): string
   return t("workspaces.mute.untilDay", { day: formatDate(at, { weekday: "short" }), time });
 }
 
-/** The workspace ⌘1 to ⌘9 reach: the nth in the list, as the switcher
+/** The workspace number keys reach the nth in the list, as the switcher
  * lists them. */
 export function workspaceForKey(s: WorkspacesState, digit: number): WorkspaceInfo | null {
   if (!s.available || digit < 1 || digit > 9) return null;
@@ -124,8 +124,8 @@ export function workspaceForKey(s: WorkspacesState, digit: number): WorkspaceInf
 
 // ── reordering the list ────────────────────────────────────────────────
 // The order is the list's own (electron/workspaces.mjs reorder), kept by
-// the app and used wherever workspaces are listed: the switcher, ⌘1 to
-// ⌘9, the command palette, and the list a paired phone is given.
+// the app and used wherever workspaces are listed: the switcher, number
+// keys, the command palette, and the list a paired phone is given.
 
 /** Where a row being dragged would land: past every other row whose
  * middle its own middle has crossed. `centers` are the rows' middles as

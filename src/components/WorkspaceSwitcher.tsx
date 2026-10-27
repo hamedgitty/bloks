@@ -4,7 +4,7 @@
 // A pill with the workspace's mark and name; its menu lists every
 // workspace on this computer (a dot on one that has something waiting, a
 // tick on the one you are in), then joining one and making one, then what
-// belongs to the one you are in: its settings and its mute. ⌘1 to ⌘9 go
+// belongs to the one you are in: its settings and its mute. ⌥⌘1 to ⌥⌘9 go
 // straight to the first nine, in the menu's order, without opening it.
 //
 // Switching is the main process pointing the window at another
@@ -29,6 +29,7 @@ import { toast } from "@/components/ui/toast";
 import { useOptionalStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { platformOf } from "@/lib/shortcuts";
+import { numberKeysAvailable, workspaceNumberKey } from "@/lib/numberKeys";
 import {
   MUTE_CHOICES,
   act,
@@ -53,7 +54,7 @@ export async function goToWorkspace(id: string, options?: { open?: "join" }) {
   if (error) toast.error(error);
 }
 
-/** ⌘1 to ⌘9 (Ctrl elsewhere): the first nine workspaces. Not while the
+/** ⌥⌘1 to ⌥⌘9 on Mac (Ctrl elsewhere): the first nine workspaces. Not while the
  * key has already been taken by what has focus, such as the command
  * palette's own Ctrl+number. */
 function useWorkspaceKeys(s: WorkspacesState) {
@@ -61,9 +62,9 @@ function useWorkspaceKeys(s: WorkspacesState) {
     if (!s.available || s.workspaces.length < 2) return;
     const mac = platformOf() === "mac";
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.shiftKey || e.altKey || !/^[1-9]$/.test(e.key)) return;
-      if (mac ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return;
-      const target = workspaceForKey(s, Number(e.key));
+      const number = workspaceNumberKey(e, mac ? "mac" : "other");
+      if (!number || (mac && !numberKeysAvailable())) return;
+      const target = workspaceForKey(s, number);
       if (!target) return;
       e.preventDefault();
       if (target.id !== s.current) void goToWorkspace(target.id);
@@ -128,7 +129,7 @@ function WorkspaceRow({
   const here = ws.id === current;
   const failed = ws.status === "failed";
   const starting = ws.status === "starting" || retrying;
-  const mod = platformOf() === "mac" ? "⌘" : "Ctrl+";
+  const mod = platformOf() === "mac" ? "⌥⌘" : "Ctrl+";
   const lifted = lift?.id === ws.id;
   return (
     <DropdownMenuPrimitive.RadioItem
