@@ -245,10 +245,10 @@ test("prompt and built-ins respect configured authority", async (t) => {
   assert.doesNotMatch(review.body, /Approval: required before pushing any change/);
   const { skill: inbox } = await h.json("/api/skills/inbox-triage");
   assert.match(inbox.body, /Draft a reply only when the task calls for one/);
-  assert.match(inbox.body, /Send only when authority covers the recipient and action/);
+  assert.match(inbox.body, /Approval: send only when authority covers the recipient and action/);
   assert.match(inbox.body, /a draft alone does not authorize sending/);
   const { skill: outreach } = await h.json("/api/skills/outreach-draft");
-  assert.match(outreach.body, /Send only when authority covers the recipient and action/);
+  assert.match(outreach.body, /Approval: send only when authority covers the recipient and action/);
   const { skill: research } = await h.json("/api/skills/research-brief");
   assert.match(research.body, /One authoritative source may suffice; surface unresolved conflicts/);
   const { skill: expense } = await h.json("/api/skills/expense-coding");
