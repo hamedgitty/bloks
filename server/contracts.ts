@@ -450,6 +450,16 @@ export interface ProviderAdapter {
     requestId: string,
     decision: { behavior: "allow" | "deny" | "answer"; message?: string },
   ): Promise<void>;
+  /**
+   * The agent takes back a question it asked without waiting (`async` on
+   * its request.opened), the person having settled it some other way. It
+   * resolves as `withdrawn` by the `agent`, with no answer. True when this
+   * engine held that question for that conversation and has let it go;
+   * false, with nothing changed, for anything else. Only an engine whose
+   * questions can go unanswered has it: nothing waits on such a question,
+   * so a blocking question or an approval can never be withdrawn.
+   */
+  withdrawAsk?(threadId: ThreadId, requestId: string): boolean;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;

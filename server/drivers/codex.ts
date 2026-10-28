@@ -1825,6 +1825,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           answer(decision.behavior, decision.message);
         },
 
+        // The agent taking back a question it asked without waiting, the
+        // person having settled it some other way. Only such a question,
+        // in the conversation that asked it: it is settled as withdrawn,
+        // with no answer, and the agent is told nothing.
+        withdrawAsk: (threadId, requestId) => {
+          const asked = asyncAsks.get(requestId);
+          if (!asked || asked.threadId !== threadId) return false;
+          asyncAsks.delete(requestId);
+          appendNative(threadId, {
+            dir: "out",
+            source: "bloks.approval",
+            msg: { stage: "resolved", requestId, method: "request_user_input_async", threadId, turnId: asked.turnId, behavior: "withdrawn", source: "agent" },
+          });
+          emit({ ...envelope(threadId, asked.turnId), type: "request.resolved", requestId, behavior: "withdrawn", source: "agent" });
+          return true;
+        },
+
         hasSession: (threadId) => running.has(threadId),
 
         stopAll: async () => {

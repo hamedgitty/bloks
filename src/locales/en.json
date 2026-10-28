@@ -4232,6 +4232,7 @@
   "optionCard.what.useTool": "Use {tool}",
   "optionCard.what.webSearch": "Search the web",
   "optionCard.what.write": "Write a file",
+  "optionCard.withdrawnBy": "{agent} withdrew this question. No answer is needed.",
   "optionCard.workflowWaiting": "Workflow waiting",
   "optionCard.yourAgent": "Your agent",
   "optionCard.yourAnswer": "Your answer",

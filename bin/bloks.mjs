@@ -328,6 +328,25 @@ const COMMANDS = {
       return request("POST", `/api/bots/${encodeURIComponent(args[0])}/take-back`);
     },
   },
+  questions: {
+    use: "questions",
+    about: "the questions you asked without waiting that nobody has answered yet, with the id `unask` takes",
+    run: async () => {
+      const me = await request("GET", "/api/agent/whoami");
+      return (await request("GET", `/api/bots/${me.botId ?? me.id}/questions`)).questions;
+    },
+  },
+  unask: {
+    use: "unask <question-id>",
+    about:
+      "withdraw a question you asked without waiting, once the person has settled it some other way. Its card closes saying you withdrew it; no answer is given for them and no turn starts. " +
+      "An answer they gave first stands. Approvals and questions you waited on stay theirs to answer",
+    run: async (args) => {
+      if (args.length !== 1 || !args[0]) throw new Error("unask needs one question id, from `questions`");
+      const me = await request("GET", "/api/agent/whoami");
+      return request("DELETE", `/api/bots/${me.botId ?? me.id}/questions/${encodeURIComponent(args[0])}`);
+    },
+  },
   recall: {
     use: "recall <words…> | recall --id <message-id>",
     about: "look something up in your own past conversations: a decision, a name, a preference",

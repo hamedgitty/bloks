@@ -142,6 +142,7 @@ test("only an engine's own question still owed an answer waits above the compose
     asked("dismissed", { dismissed: true }),
     asked("closed", { closed: "The agent stopped" }),
     asked("cut", { cutOff: true }),
+    asked("withdrawn", { answered: "Closed without an answer", closed: "Kat withdrew this question. No answer is needed.", withdrawn: true }),
     asked("gate", { runId: "run-1" }),
     asked("setup", { requestId: undefined }),
     asked("second", { options: ["A", "B"] }),

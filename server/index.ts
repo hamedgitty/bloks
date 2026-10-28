@@ -124,7 +124,7 @@ import { JoinClient } from "./join-client.ts";
 import * as invites from "./invites.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
-import type { ModelSelection, PlanUsage, ProviderInstance, ProviderSnapshot, RuntimeEvent, SendTurnInput, UsageNotice } from "./contracts.ts";
+import type { ModelSelection, PlanUsage, ProviderAdapter, ProviderInstance, ProviderSnapshot, RuntimeEvent, SendTurnInput, UsageNotice } from "./contracts.ts";
 import { planNotices, sortNotices } from "./plan-usage.ts";
 import { newId } from "./contracts.ts";
 
@@ -4633,6 +4633,15 @@ const askCardThread = new Map<string, string>();
  * that has ended can still ask (a background task), and by then the
  * lane's engine is forgotten and the agent's own may be another. */
 const askEngineByRequest = new Map<string, string>();
+/** The live questions asked without waiting (Codex's
+ * request_user_input_async), the one kind of ask its agent may withdraw
+ * (withdrawQuestion), with the engine that asked each. The adapter
+ * itself, not its id: a rebuilt engine keeps the id, and a withdrawal
+ * must never reach an engine that did not ask. */
+const asyncAskOrigin = new Map<string, ProviderAdapter>();
+/** Withdrawals begun and not yet seen through, so trying again finishes
+ * one the engine has already let go of, rather than refusing it. */
+const withdrawing = new Set<string>();
 /** A collaborator who answered an approval, by request, so the record and
  * the card say who decided rather than "you". */
 const decidedByMember = new Map<string, string>();
@@ -4671,6 +4680,8 @@ function forgetAsk(requestId: string) {
   askCardThread.delete(requestId);
   askThreadByRequest.delete(requestId);
   askEngineByRequest.delete(requestId);
+  asyncAskOrigin.delete(requestId);
+  withdrawing.delete(requestId);
   decidedByMember.delete(requestId);
   askTargets.delete(requestId);
   answeredBy.delete(requestId);
@@ -4692,6 +4703,9 @@ function closedWhy(source: string | undefined, card: { tool?: string; title: str
     return `The turn ended before this was answered${approval ? ", so it was not done" : ""}. Nothing is waiting on it now.`;
   }
   if (source === "engine") return `${agent}'s engine closed this before it was answered. Nothing is waiting on it now.`;
+  // the agent took its question back (withdrawQuestion); the app says
+  // this in the reader's language, from the card's `withdrawn`
+  if (source === "agent") return `${agent} withdrew this question. No answer is needed.`;
   return "This closed before it was answered. Nothing is waiting on it now.";
 }
 /** What such a card reads as answered with, for a screen that shows only that. */
@@ -4702,6 +4716,119 @@ const CLOSED_UNANSWERED = "Closed without an answer";
 function askInstance(bot: { modelSelection: ModelSelection }, askThread: string | undefined, requestId: string) {
   const asked = askEngineByRequest.get(requestId);
   return (asked ? registry.get(asked) : undefined) ?? laneInstance(bot, askThread);
+}
+
+/** A live ask's card, where it is: the room it was asked in, or the lane. */
+function liveAskCard(requestId: string) {
+  const lane = askThreadByRequest.get(requestId);
+  const messageId = askMessageByRequest.get(requestId);
+  if (!lane || !messageId) return null;
+  const thread = askCardThread.get(requestId) ?? lane;
+  const message = store.messagesFor(thread).find((m) => m.id === messageId);
+  return message?.card ? { lane, thread, message, card: message.card } : null;
+}
+
+/** The questions an agent asked without waiting that nobody has answered
+ * yet, oldest first, wherever each was asked: what `bloks questions`
+ * lists, by the id `bloks unask` takes. */
+function openQuestions(botId: string) {
+  const open: Record<string, unknown>[] = [];
+  for (const requestId of asyncAskOrigin.keys()) {
+    const asked = liveAskCard(requestId);
+    if (!asked || store.botByThread(asked.lane)?.id !== botId) continue;
+    const { lane, thread, message, card } = asked;
+    if (card.answered || card.dismissed || card.closed || card.cutOff || card.runId) continue;
+    const room = thread !== lane ? bloks.get(thread) : undefined;
+    open.push({
+      id: message.id,
+      question: card.subtitle || card.title,
+      choices: card.options,
+      askedAt: new Date(message.at).toISOString(),
+      ...(room ? { room: { id: room.id, name: room.name } } : { conversation: { taskId: lane, title: store.taskByThread(lane)?.task.title } }),
+    });
+  }
+  return open;
+}
+
+/**
+ * An agent takes back a question it asked without waiting, the person
+ * having settled it some other way. It closes as withdrawn through the
+ * settlement every ask goes through (the request.resolved case above):
+ * nothing is answered for the person, nothing is said to the agent, no
+ * turn starts, and a copy on a phone closes. Its own questions only, and
+ * only that kind: an approval, a question that waits or a workflow's gate
+ * stays for the person. Whichever settles a question first wins, so an
+ * answer given first stands, and one given after is refused as it is for
+ * any closed card.
+ */
+function withdrawQuestion(botId: string, messageId: string): { status: number; body: Record<string, unknown> } {
+  const notOpen = { status: 404, body: { error: "No open question of yours has that id, so nothing changed. `bloks questions` lists them." } };
+  const requestId = [...askMessageByRequest].find(([, id]) => id === messageId)?.[0];
+  const asked = requestId ? liveAskCard(requestId) : null;
+  // another agent's reads as unknown: its asks are not told apart
+  if (!requestId || !asked || store.botByThread(asked.lane)?.id !== botId) return notOpen;
+  const { lane, thread, card } = asked;
+  const origin = asyncAskOrigin.get(requestId);
+  if (!origin || card.runId || card.tool) {
+    return { status: 409, body: { error: "Only a question you asked without waiting can be withdrawn. This one is for the person to answer." } };
+  }
+  // Withdrawn on an earlier try that stopped short (see the check at the
+  // end): the card says so, but the ask was never let go of.
+  const unfinished = card.withdrawn === true;
+  if (!unfinished && (card.answered || card.dismissed || card.closed || card.cutOff)) return notOpen;
+  const tried = unfinished || withdrawing.has(requestId);
+  withdrawing.add(requestId);
+  const current = registry.get(askEngineByRequest.get(requestId) ?? "")?.adapter;
+  try {
+    if (unfinished) {
+      // written again as memory has it, in case the disk missed it
+      const patched = store.patchMessage(thread, messageId, { card });
+      if (patched) broadcast({ kind: "message.patch", threadId: thread, message: patched });
+      settleWithdrawn(origin, lane, requestId);
+    } else if (current !== origin) {
+      // The engine that asked is gone, rebuilt or stopped, so nothing can
+      // hear an answer any more. The card closes without asking another.
+      settleWithdrawn(origin, lane, requestId);
+    } else if (!origin.withdrawAsk) {
+      withdrawing.delete(requestId);
+      return { status: 409, body: { error: "The engine that asked cannot withdraw its questions, so nothing changed." } };
+    } else if (!origin.withdrawAsk(lane, requestId)) {
+      // The engine let go of it on an earlier try that stopped short. Any
+      // other time, how it ended is not known here, so it is left alone.
+      if (!tried) {
+        withdrawing.delete(requestId);
+        return { status: 409, body: { error: "The engine that asked no longer holds this question, and how it ended is not known here, so nothing changed." } };
+      }
+      settleWithdrawn(origin, lane, requestId);
+    }
+  } catch (error) {
+    return { status: 500, body: { error: `The question could not be withdrawn (${error instanceof Error ? error.message : String(error)}). Nothing was answered; try unask again.` } };
+  }
+  // Checked rather than assumed: a settlement can stop part way, a card
+  // that could not be saved say, and the ask then stays to try again.
+  const settled = !askThreadByRequest.has(requestId) && store.messagesFor(thread).some((m) => m.id === messageId && m.card?.withdrawn);
+  if (!settled) {
+    return { status: 500, body: { error: "The question was withdrawn, but its card could not be closed. Nothing was answered; run unask again to finish it." } };
+  }
+  return { status: 200, body: { ok: true, withdrawn: messageId } };
+}
+
+/** A withdrawal settled the way an engine's own would be, for the one
+ * an engine can no longer report: the one that asked is gone, or let the
+ * question go on an earlier try. The request.resolved case does the rest,
+ * as for every ask. */
+function settleWithdrawn(origin: ProviderAdapter, lane: string, requestId: string) {
+  bus.publish({
+    type: "request.resolved",
+    eventId: newId(),
+    provider: origin.provider,
+    providerInstanceId: askEngineByRequest.get(requestId),
+    threadId: lane,
+    createdAt: new Date().toISOString(),
+    requestId,
+    behavior: "withdrawn",
+    source: "agent",
+  });
 }
 /** Proposed teams awaiting the user's yes, by card message id. */
 const teamPlans = new Map<string, { plan: TeamPlan; leadId: string }>();
@@ -5285,6 +5412,9 @@ bus.subscribe((event: RuntimeEvent) => {
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
         if (event.providerInstanceId) askEngineByRequest.set(event.requestId, event.providerInstanceId);
+        // a question that did not wait, which its agent may withdraw, and
+        // the engine that asked it, never one standing in for it
+        if (event.async && asker && asker.instanceId === event.providerInstanceId) asyncAskOrigin.set(event.requestId, asker.adapter);
         // A turn that began on a phone should not stall on a card the
         // person cannot see. The card goes to the chat it came from, with
         // its choices as buttons, and the next message from that chat is
@@ -5337,7 +5467,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // there too, and stops offering its buttons.
       if (event.requestId) {
         settleTelegramCard(event.requestId, (card) => outcomeOf(card, event.behavior, event.source));
-        settleSignalCard(event.requestId, event.behavior);
+        settleSignalCard(event.requestId, event.behavior, event.source);
       }
       const messageId = event.requestId ? askMessageByRequest.get(event.requestId) : null;
       // An async question's answer has no call waiting for it, so it is
@@ -5395,12 +5525,14 @@ bus.subscribe((event: RuntimeEvent) => {
             card:
               event.source === "user"
                 ? { ...existing.card, answered: event.behavior, dismissed: false, ...(decider ? { answeredBy: decider } : {}) }
-                : // Nobody answered: a timeout, the turn's end or the engine
-                  // closed it. It stays in the conversation and says which.
+                : // Nobody answered: a timeout, the turn's end, the engine
+                  // or the agent withdrawing it closed it. It stays in the
+                  // conversation and says which.
                   {
                     ...existing.card,
                     answered: CLOSED_UNANSWERED,
                     closed: closedWhy(event.source, existing.card, bot.name),
+                    ...(event.source === "agent" ? { withdrawn: true } : {}),
                   },
           });
           if (patched) broadcast({ kind: "message.patch", threadId: cardThread, message: patched });
@@ -16407,15 +16539,17 @@ function forwardSignalCard(botId: string, laneId: string, requestId: string, car
 }
 
 /** A card answered or closed anywhere. Answered somewhere else, the
- * owner's chat is told, so their next words there are a message again. */
-function settleSignalCard(requestId: string, behavior?: string): void {
+ * owner's chat is told, so their next words there are a message again.
+ * A question its agent withdrew is let go of without a word: the person
+ * settled it themselves, and nothing was answered to report. */
+function settleSignalCard(requestId: string, behavior?: string, source?: string): void {
   const said = behavior === "allow" ? "Allowed in the app." : behavior === "deny" ? "Denied in the app." : "Answered in the app.";
   for (const [botId, ask] of signalAsks) {
     if (ask.requestId !== requestId) continue;
     signalAsks.delete(botId);
     const state = currentSignal(botId, ask.generation);
     const to = state ? ownerRecipient(state) : undefined;
-    if (!ask.answered && to) void signalSay(botId, ask.generation, to, said);
+    if (!ask.answered && to && source !== "agent") void signalSay(botId, ask.generation, to, said);
   }
   signalPersonAsks.delete(requestId);
 }
@@ -23067,6 +23201,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         editClosed,
       });
       return json(res, result.takenBack.length ? 200 : 409, result.takenBack.length ? result : { ...result, error: result.note });
+    }
+    // An agent's own questions asked without waiting, and taking back one
+    // the person settled some other way (withdrawQuestion). From one of
+    // its own turns only: the person answers a card, or puts it aside, on
+    // the card.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/questions$/);
+    if (m && method === "GET") {
+      if (!asAgent || asAgent.botId !== m[1]) return json(res, 403, { error: "an agent reads its own questions, from its own turn" });
+      return json(res, 200, { questions: openQuestions(asAgent.botId) });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/questions\/([\w-]+)$/);
+    if (m && method === "DELETE") {
+      if (!asAgent || asAgent.botId !== m[1]) return json(res, 403, { error: "only the agent that asked a question can withdraw it, from its own turn" });
+      const withdrawn = withdrawQuestion(asAgent.botId, m[2]);
+      return json(res, withdrawn.status, withdrawn.body);
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
     if (m && method === "GET") {
