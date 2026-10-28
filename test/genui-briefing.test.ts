@@ -257,6 +257,15 @@ test("prompt and built-ins respect configured authority", async (t) => {
     const { skill } = await h.json(`/api/skills/${id}`);
     assert.doesNotMatch(skill.body, /under (?:120|150|200) words|three short sections and one risk|a second independent source/i, id);
   }
+  const { skill: using } = await h.json("/api/skills/using-bloks");
+  assert.match(using.body, /Keep what matters first: in an accessible configured canonical record when one exists, otherwise with `memory`/);
+  assert.match(using.body, /do not look for another way around it/);
+  assert.match(using.body, /is not done until the person says yes/);
+  const { skill: guide } = await h.json("/api/skills/how-bloks-works");
+  assert.match(guide.body, /Return: a plain, brief answer/);
+  for (const [id, body] of [["using-bloks", using.body], ["how-bloks-works", guide.body]]) {
+    assert.doesNotMatch(body, /in a sentence|a sentence or two|in a few sentences/, id);
+  }
 });
 
 test("no connection hint without a configured connector", async (t) => {

@@ -448,7 +448,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 ## Which conversation
 - A new tab: \`tab <agent-id|me> "<first message>" --title "<name>"\` opens a conversation of its own for you (me) or another agent, with that message in it. Use it when the work should be kept apart ("start a new tab for the setup"). The person's screen stays where it is.
 - A handoff: \`say <agent-id> "<text>"\` goes to that agent's first conversation, starting a turn there or waiting behind the one running. \`--task <name>\` only names the work for counting turns between agents; it never opens a tab. \`--now\` is for a correction to a turn already running. \`take-back\` withdraws your words still waiting.
-- A fresh session: \`fresh\` keeps the conversation you are in and its transcript, and starts your next turn there without the old engine context. Keep what matters with \`memory\` first. \`rename\`, \`close\` and \`summary\` also act only on the conversation you are in.
+- A fresh session: \`fresh\` keeps the conversation you are in and its transcript, and starts your next turn there without the old engine context. Keep what matters first: in an accessible configured canonical record when one exists, otherwise with \`memory\`. \`rename\`, \`close\` and \`summary\` also act only on the conversation you are in.
 
 ## People and rooms
 - \`agents\` and \`rooms\` list who and what exists, with ids; \`whoami\` is you. Use ids from there, never guessed ones.
@@ -480,9 +480,9 @@ Say so plainly, and show them where rather than naming a page from memory:
 - How a feature works and where it lives: the how-bloks-works skill.
 
 ## Say what happened
-Every command answers JSON. Report what it said: the tab's title and id, whether it started or is queued, an engine warning, a card waiting. A refusal means nothing happened: say why in a sentence and what the person can do, and do not look for another way around it.
+Every command answers JSON. Report what it said: the tab's title and id, whether it started or is queued, an engine warning, a card waiting. A refusal means nothing happened: say briefly why and what the person can do, and do not look for another way around it.
 
-Return: a sentence or two on what changed, or on what the person needs to do.
+Return: a brief note on what changed, or on what the person needs to do.
 Approval: anything that waits on a card (an app watcher, an intent, a skill revision, a change to the home, a secret) is not done until the person says yes; say it is waiting.`,
   },
   {
@@ -580,7 +580,7 @@ Name, theme, accent, transcript width, the sidebar's conversations, the quick as
 ## Where data lives
 Plain files on their computer: Personal in ~/.bloks, other workspaces in the app's folder (on a Mac, ~/Library/Application Support/Bloks/workspaces/). Backups in ~/.bloks-backups, exports in ~/.bloks-exports. No server of Bloks holds their data.
 
-Return: a plain answer in a few sentences: what it is, how it behaves, where it lives, and what you or they can do. Then \`open\` when a page helps.
+Return: a plain, brief answer: what it is, how it behaves, where it lives, and what you or they can do. Then \`open\` when a page helps.
 Approval: none to explain or point. A proposed change waits on their Change.`,
   },
 ];

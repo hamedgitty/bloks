@@ -35,17 +35,25 @@ for (const how of ["files", "tools"] as const) {
   });
 }
 
-for (const how of ["files", "tools"] as const) {
+for (const how of ["files", "tools", "cli"] as const) {
   test(`configured record and Bloks fallback are both described (${how})`, () => {
     const said = memoryPrompt("example-agent", how);
     assert.match(said, /Use an accessible configured canonical record when one exists; if none is configured, Bloks memory is available/);
     assert.match(said, /Bloks provides fallback persistent memory/);
-    assert.match(said, how === "files" ? /example-agent\/MEMORY\.md/ : /memory_read and memory_write/);
+    assert.match(said, { files: /example-agent\/MEMORY\.md/, tools: /memory_read and memory_write/, cli: /through the command line: `node "\$BLOKS_CLI" memory` reads/ }[how]);
     assert.match(said, /auto-loaded each turn/);
   });
 }
 
-for (const how of ["files", "tools"] as const) {
+test("a place that cannot change Bloks memory still puts a configured record first", () => {
+  assert.equal(writeMemoryFile("populated-readonly", "- STORED_FACT\n"), true);
+  const said = memoryPrompt("populated-readonly", "readonly");
+  assert.match(said, /^Bloks provides fallback persistent memory on the person's computer, and where you work now you cannot change it\./);
+  assert.match(said, /Use an accessible configured canonical record when one exists; otherwise say in your reply anything worth remembering, and the person can add it\./);
+  assert.match(said, /STORED_FACT/);
+});
+
+for (const how of ["files", "tools", "cli"] as const) {
   test(`populated fallback is loaded without overriding an inaccessible configured record (${how})`, () => {
     const id = `populated-${how}`;
     assert.equal(writeMemoryFile(id, "- STORED_FACT\n"), true);

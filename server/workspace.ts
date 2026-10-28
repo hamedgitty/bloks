@@ -328,7 +328,7 @@ export function memoryPrompt(botId: string, how: "files" | "tools" | "cli" | "re
   // line, or, where that cannot run, only read.
   if (how === "readonly") {
     const memory = loadMemory(botId);
-    const said = "Your memory is kept on the person's computer, and where you work now you cannot change it. Say in your reply anything worth remembering, and the person can add it.";
+    const said = "Bloks provides fallback persistent memory on the person's computer, and where you work now you cannot change it. Use an accessible configured canonical record when one exists; otherwise say in your reply anything worth remembering, and the person can add it.";
     return memory ? `${said}\n\nYour memory (MEMORY.md):\n${memory.text}${memory.truncated ? "\n[memory truncated]" : ""}` : said;
   }
   const guidance = [
