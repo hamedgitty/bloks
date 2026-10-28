@@ -448,7 +448,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 ## Which conversation
 - A new tab: \`tab <agent-id|me> "<first message>" --title "<name>"\` opens a conversation of its own for you (me) or another agent, with that message in it. Use it when the work should be kept apart ("start a new tab for the setup"). The person's screen stays where it is.
 - A handoff: \`say <agent-id> "<text>"\` goes to that agent's first conversation, starting a turn there or waiting behind the one running. \`--task <name>\` only names the work for counting turns between agents; it never opens a tab. \`--now\` is for a correction to a turn already running. \`take-back\` withdraws your words still waiting.
-- A fresh session: \`fresh\` keeps the conversation you are in and its transcript, and starts your next turn there without the old engine context. Keep what matters first: in an accessible configured canonical record when one exists, otherwise with \`memory\`. \`rename\`, \`close\` and \`summary\` also act only on the conversation you are in.
+- A fresh session: \`fresh\` keeps the conversation you are in and its transcript, and starts your next turn there without the old engine context. Keep what matters first: in an accessible configured canonical record when one exists, or with \`memory\` if none is configured. If a configured record is inaccessible, report that limitation and do not copy private context to \`memory\`. \`rename\`, \`close\` and \`summary\` also act only on the conversation you are in.
 
 ## People and rooms
 - \`agents\` and \`rooms\` list who and what exists, with ids; \`whoami\` is you. Use ids from there, never guessed ones.

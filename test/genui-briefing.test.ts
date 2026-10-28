@@ -258,7 +258,8 @@ test("prompt and built-ins respect configured authority", async (t) => {
     assert.doesNotMatch(skill.body, /under (?:120|150|200) words|three short sections and one risk|a second independent source/i, id);
   }
   const { skill: using } = await h.json("/api/skills/using-bloks");
-  assert.match(using.body, /Keep what matters first: in an accessible configured canonical record when one exists, otherwise with `memory`/);
+  assert.match(using.body, /Keep what matters first: in an accessible configured canonical record when one exists, or with `memory` if none is configured\./);
+  assert.match(using.body, /If a configured record is inaccessible, report that limitation and do not copy private context to `memory`\./);
   assert.match(using.body, /do not look for another way around it/);
   assert.match(using.body, /is not done until the person says yes/);
   const { skill: guide } = await h.json("/api/skills/how-bloks-works");
