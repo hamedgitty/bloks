@@ -135,3 +135,29 @@ test("the npm packages the server imports ship beside it, in the app and in blok
     }
   }
 });
+
+test("the English words the server names places in ship beside it, in the app and in bloks-server", () => {
+  // server/where.ts reads the catalogue relative to its own module, and a
+  // package without it fails nothing anyone sees: `bloks where` and the
+  // card `bloks open` leaves call every Settings page "label", and a row
+  // asked for by its English name is refused.
+  const tried = [...read("server/where.ts").matchAll(/"(\.\.\/[^"]*en\.json)"/g)].map((m) => m[1]);
+  assert.ok(tried.length, "server/where.ts no longer reads its catalogue by a literal relative path; update this test");
+  const looksAt = (serverDir: string, file: string) => tried.some((at) => resolve(serverDir, at) === file);
+  assert.ok(existsSync(join(root, "src/locales/en.json")), "src/locales/en.json is missing from the repository");
+
+  // In the app the compiled server is Resources/server, and the
+  // catalogues are copied to Resources/locales.
+  assert.equal(shippedAs("dist-server"), "server");
+  assert.equal(shippedAs("src/locales"), "locales", "the packaged app leaves the catalogues behind");
+  assert.ok(looksAt("/Resources/server", "/Resources/locales/en.json"), "the app's server looks for its words where they are not");
+
+  // In bloks-server it stays dist-server, with the catalogue copied to
+  // locales/ beside it.
+  assert.match(
+    read("scripts/pack-server.mjs"),
+    /cpSync\(join\(root, "src", "locales", "en\.json"\), join\(stage, "locales", "en\.json"\)\)/,
+    "bloks-server is packed without the English catalogue",
+  );
+  assert.ok(looksAt("/bloks-server/dist-server", "/bloks-server/locales/en.json"), "bloks-server's server looks for its words where they are not");
+});

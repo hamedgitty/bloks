@@ -4,8 +4,9 @@
 // The package is the compiled server with the few npm packages it imports
 // already beside it (dist-server/node_modules, staged by
 // scripts/stage-server-deps.mjs), the built UI it serves, the two command
-// line entry points, and a package.json to mark it as ES modules. Nothing
-// is installed after unpacking: anything with Node 22 runs it.
+// line entry points, the English catalogue the server names the app's
+// places in, and a package.json to mark it as ES modules. Nothing is
+// installed after unpacking: anything with Node 22 runs it.
 //
 // Beside the tarball goes its sha256, in the form sha256sum -c and
 // shasum -a 256 -c read. A server updating itself from the app refuses a
@@ -35,6 +36,11 @@ cpSync(join(root, "dist-server"), join(stage, "dist-server"), { recursive: true 
 cpSync(join(root, "dist"), join(stage, "dist"), { recursive: true });
 cpSync(join(root, "bin", "bloks-server.mjs"), join(stage, "bin", "bloks-server.mjs"));
 cpSync(join(root, "bin", "bloks.mjs"), join(stage, "bin", "bloks.mjs"));
+// Beside dist-server, where server/where.ts reads it, as in the app's
+// Resources. Without it nothing fails: `bloks where` and the card `bloks
+// open` leaves call every Settings page "label".
+mkdirSync(join(stage, "locales"));
+cpSync(join(root, "src", "locales", "en.json"), join(stage, "locales", "en.json"));
 
 writeFileSync(
   join(stage, "package.json"),

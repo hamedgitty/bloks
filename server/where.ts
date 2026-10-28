@@ -11,9 +11,10 @@
 // until the person changes it, on the page, themselves.
 //
 // The words are the app's own catalogue (src/locales/en.json), read once
-// from beside the server: next to it in a checkout, and in Resources
-// beside the compiled server in the packaged app, where electron-builder
-// puts the catalogues for the menu bar.
+// from beside the server: next to it in a checkout, in Resources beside
+// the compiled server in the packaged app, where electron-builder puts
+// the catalogues for the menu bar, and beside dist-server in bloks-server
+// (scripts/pack-server.mjs).
 import { readFileSync } from "node:fs";
 
 import {
