@@ -175,4 +175,19 @@ describe("a card answered somewhere else", () => {
     // its buttons answer nothing, and a tap is told it closed
     assert.deepEqual(cards.press(CHAT, 10, data(sent, 2)), { settled: "Closed without an answer." });
   });
+
+  test("a provisional tap that loses to a withdrawal is reworded when it cannot reach the engine", () => {
+    const cards = new CardButtons();
+    const sent = cards.forward(question());
+    cards.sent("req-2", 10);
+    const press = cards.press(CHAT, 10, data(sent, 1));
+    assert.ok(press && "card" in press);
+    assert.equal(press.card.settled, "Answered: Blue");
+    // The local press is provisional; the engine can settle first.
+    assert.equal(cards.settle("req-2", (card) => outcomeOf(card, "withdrawn", "agent")), undefined);
+    // pressTelegramCard rewords a press rejected by the engine.
+    cards.reword(press.card, "That card had already closed, so nothing was done.");
+    assert.equal(settledText(press.card), "Your agent has a question\nWhich colour?\n\nThat card had already closed, so nothing was done.");
+    assert.deepEqual(cards.press(CHAT, 10, data(sent, 0)), { settled: "That card had already closed, so nothing was done." });
+  });
 });
