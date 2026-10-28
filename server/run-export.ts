@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 // Agents' runs, written out as data to train a model on.
 //
 // A person who has spent months with their agents has something a model
@@ -794,7 +795,7 @@ const OWNER_EMOJI_DOWN = /^\u{1F44E}[\u{1F3FB}-\u{1F3FF}]?$/u;
 const OTHERS_VIA = new Set(["email", "whatsapp", "slack", "discord"]);
 
 /** Said to the agent and part of the conversation. */
-const said = (m: Message) => m.role === "user" && m.kind === "text" && !m.queued && !m.unsent;
+const said = (m: Message) => m.role === "user" && m.kind === "text" && !m.queued && !m.unsent && !dismissedPreparation(m);
 /** The owner's own words, typed here or from their own Telegram or Signal. */
 const ownWords = (m: Message) => said(m) && !m.agent && !m.via && !othersWords(m);
 function othersWords(m: Message): boolean {

@@ -24,6 +24,15 @@ import { FailingNotice, IncidentNotice } from "./IncidentCard";
 import { GroupMessage } from "./Group";
 import { t } from "@/lib/i18n";
 
+function preparationDeliveryLine(message: Message): string {
+  switch (message.preparation?.state) {
+    case "joined": return t("waitingStrip.status.joined");
+    case "uncertain": return t("waitingStrip.status.unconfirmed");
+    case "not-sent": return t("waitingStrip.status.notSent");
+    default: return message.delivery?.line ?? "";
+  }
+}
+
 /** How a message sits in a conversation of more than two
  * (src/lib/participants.ts): whose side, where in its sender's run, the
  * sender's face, and who has read up to it. Absent, the message is drawn
@@ -261,6 +270,7 @@ export function Bubble({
   isHit?: boolean;
 }) {
   const user = message.role === "user";
+  const unresolvedDismissal = Boolean(message.preparation?.dismissed && message.preparation.state !== "joined");
   // Editing happens where the message already is. Sending it back to
   // the composer would lose your place and pretend it is a new message.
   const [editing, setEditing] = useState<string | null>(null);
@@ -280,7 +290,7 @@ export function Bubble({
   const [redoError, setRedoError] = useState<string | null>(null);
   const asked = useRef<Promise<RedoPreview | null> | null>(null);
   const startEditing = () => {
-    if (editing !== null) return;
+    if (editing !== null || unresolvedDismissal) return;
     setEditing(message.text ?? "");
   };
   useEffect(() => {
@@ -552,7 +562,7 @@ export function Bubble({
               <div className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">{queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}</div>
             )}
             {message.delivery && message.delivery.route !== "queued" && !message.queued && (
-              <div className="mt-1 px-1 text-caption text-muted-foreground">{message.delivery.line}</div>
+              <div className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
             )}
           </>
         }
@@ -567,9 +577,9 @@ export function Bubble({
               onReply={onReply}
               onForward={onForward}
               onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-              onEdit={group.mine && onEdit && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
-              onDelete={onDelete ? () => onDelete(message.id) : undefined}
-              onRewind={group.mine && onRewind ? () => onRewind(message.id) : undefined}
+              onEdit={group.mine && onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
+              onDelete={onDelete && !unresolvedDismissal ? () => onDelete(message.id) : undefined}
+              onRewind={group.mine && onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
             />
           ) : null
         }
@@ -636,7 +646,7 @@ export function Bubble({
             stopping it: said once, quietly, so a person who expected it
             to wait can see it did not (server/delivery.ts). */}
         {message.delivery && message.delivery.route !== "queued" && !message.queued && (
-          <div className="mt-1 px-1 text-caption text-muted-foreground">{message.delivery.line}</div>
+          <div className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
         )}
       </div>
       {/* The same row as a reply's, under your bubble and lined up with
@@ -653,9 +663,9 @@ export function Bubble({
         onReply={onReply}
         onForward={onForward}
         onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-        onEdit={onEdit && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
-        onDelete={onDelete ? () => onDelete(message.id) : undefined}
-        onRewind={onRewind ? () => onRewind(message.id) : undefined}
+        onEdit={onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
+        onDelete={onDelete && !unresolvedDismissal ? () => onDelete(message.id) : undefined}
+        onRewind={onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
       />
     </div>
   );

@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 // Redo: editing a message the agent already read, and having it start
 // again from the new words (GitHub 258).
 //
@@ -53,7 +54,7 @@ function own(m: Message): boolean {
  * still waiting above the composer, and not already rewound. One taken
  * back counts, since the turn it started is still there. */
 function said(m: Message): boolean {
-  return m.role === "user" && m.kind === "text" && !m.queued && !m.unsent && !m.rewound;
+  return m.role === "user" && m.kind === "text" && !m.queued && !m.unsent && !dismissedPreparation(m) && !m.rewound;
 }
 
 /**
@@ -73,7 +74,7 @@ export function redoPlan(messages: readonly Message[], messageId: string): RedoP
   const at = messages.findIndex((m) => m.id === messageId);
   const target = messages[at];
   if (!target || target.role !== "user" || target.kind !== "text" || target.deleted || !target.text) return null;
-  if (target.queued || target.unsent) return "waiting";
+  if (target.queued || target.unsent || dismissedPreparation(target)) return "waiting";
   if (!own(target)) return "not-yours";
 
   // back to the message that started the turn this one joined
@@ -116,7 +117,7 @@ export function redoPlan(messages: readonly Message[], messageId: string): RedoP
  * nothing of it to take back, and it goes after the redone turn as it
  * would have gone after the old one. */
 export function takenBack(messages: readonly Message[], from: number, keepWaiting = false): Message[] {
-  return messages.slice(from).filter((m) => !m.deleted && !(keepWaiting && (m.queued || m.unsent)));
+  return messages.slice(from).filter((m) => !m.deleted && !(keepWaiting && (m.queued || m.unsent || dismissedPreparation(m))));
 }
 
 /** What a redo would take back, as the line under the editor counts it. */

@@ -308,6 +308,15 @@ export interface Message {
    * that turn, the turn was stopped for it, or it waited (server/delivery.ts).
    * Absent on a message that started a turn of its own. */
   delivery?: import("./delivery.ts").Delivery;
+  /** One preparation-bound input. The message remains the authority for
+   * its words and sender; this records only its delivery state and source. */
+  preparation?: {
+    attempt: string;
+    state: "pending" | "dispatching" | "joined" | "next" | "uncertain" | "not-sent";
+    /** Dismissed from waiting, while its unknown input remains excluded from replay. */
+    dismissed?: boolean;
+    source?: { chatId: number; senderId: number; messageId: number; topicId?: number; generation: string };
+  };
   /** Who a room's Auto sent a message that named nobody to, and why, or
    * that the lead took it instead (server/room-route.ts). On the
    * person's own message, and drawn as the quiet line above the reply. */
@@ -786,6 +795,8 @@ const DEFAULT_GREETING = "I'm ready. Tell me what you need and I'll get to work.
 export class Store {
   bots: BotRecord[] = [];
   private messages = new Map<string, Message[]>();
+  /** A lane's Telegram preparation sources, built once when first needed. */
+  private preparationSources = new Map<string, Set<string>>();
   private defaultSelection: () => ModelSelection;
   /** Told about every message as it is written. Messages arrive through
    * forty-odd doors, and something that cares about all of them (who the
@@ -852,6 +863,26 @@ export class Store {
     return list!;
   }
 
+  private preparationSourceKey(message: Message): string | undefined {
+    const source = message.preparation?.source;
+    if (!source) return undefined;
+    const requester = message.telegramPerson?.requester ?? message.telegramGroup?.requester ??
+      (message.telegramDelegate ? `delegate:${message.telegramDelegate.requester}` : "owner");
+    return JSON.stringify([requester, source.generation, source.chatId, source.senderId, source.messageId, source.topicId ?? null]);
+  }
+
+  hasPreparationSource(threadId: string, source: NonNullable<NonNullable<Message["preparation"]>["source"]>, requester: string): boolean {
+    let keys = this.preparationSources.get(threadId);
+    if (!keys) {
+      keys = new Set(this.messagesFor(threadId).flatMap((message) => {
+        const key = this.preparationSourceKey(message);
+        return key ? [key] : [];
+      }));
+      this.preparationSources.set(threadId, keys);
+    }
+    return keys.has(JSON.stringify([requester, source.generation, source.chatId, source.senderId, source.messageId, source.topicId ?? null]));
+  }
+
   /** Transcripts changed by a row that could wait (save, `soon`). */
   private waiting = new Set<string>();
   private waitingWrite: ReturnType<typeof setTimeout> | null = null;
@@ -872,8 +903,8 @@ export class Store {
    * take-back reports a failed one, a Telegram reply is marked sending
    * before it goes).
    */
-  private save(threadId: string, list: Message[], soon = false) {
-    if (soon) {
+  private save(threadId: string, list: Message[], soon = false, durable = false) {
+    if (soon && !durable) {
       this.waiting.add(threadId);
       unwritten.add(this);
       if (!this.waitingWrite) {
@@ -882,7 +913,9 @@ export class Store {
       }
       return;
     }
-    writeWhole(messagesFile(threadId), JSON.stringify(list, null, 2));
+    const text = JSON.stringify(list, null, 2);
+    if (durable) writeFileAtomic(messagesFile(threadId), text);
+    else writeWhole(messagesFile(threadId), text);
     // written whole, so whatever was waiting in it is written too
     this.waiting.delete(threadId);
   }
@@ -913,6 +946,8 @@ export class Store {
     const list = this.messagesFor(threadId);
     list.push(full);
     this.save(threadId, list, soon);
+    const key = this.preparationSourceKey(full);
+    if (key) this.preparationSources.get(threadId)?.add(key);
     this.onAppend?.(threadId, full);
     return full;
   }
@@ -948,7 +983,7 @@ export class Store {
     return patched ? { message: patched, added: !had } : null;
   }
 
-  patchMessage(threadId: string, messageId: string, patch: Partial<Message>, { soon = false }: { soon?: boolean } = {}): Message | null {
+  patchMessage(threadId: string, messageId: string, patch: Partial<Message>, { soon = false, durable = false }: { soon?: boolean; durable?: boolean } = {}): Message | null {
     const list = this.messagesFor(threadId);
     const idx = list.findIndex((m) => m.id === messageId);
     if (idx === -1) return null;
@@ -957,9 +992,11 @@ export class Store {
     // But a patch that says `card: undefined` means it, which is how a
     // message taken back stops being answerable. `??` could not tell the
     // two apart, so it kept the card on every deletion.
-    const card = "card" in patch ? patch.card : list[idx].card;
+    const before = list[idx];
+    const card = "card" in patch ? patch.card : before.card;
     list[idx] = { ...list[idx], ...patch, card };
-    this.save(threadId, list, soon);
+    try { this.save(threadId, list, soon, durable); }
+    catch (error) { if (durable) list[idx] = before; throw error; }
     this.onRewrite?.(threadId, [list[idx]]);
     return list[idx];
   }
@@ -972,8 +1009,9 @@ export class Store {
    * is the order the agent heard things in (GitHub 170). Ids stay as
    * they are, so a reply, an edit or a deletion still finds the message.
    */
-  moveToEnd(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>): Message[] {
+  moveToEnd(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>, { durable = false }: { durable?: boolean } = {}): Message[] {
     const list = this.messagesFor(threadId);
+    const before = durable ? [...list] : [];
     const moved: Message[] = [];
     for (const id of messageIds) {
       const idx = list.findIndex((m) => m.id === id);
@@ -983,23 +1021,26 @@ export class Store {
     }
     if (!moved.length) return [];
     list.push(...moved);
-    this.save(threadId, list);
+    try { this.save(threadId, list, false, durable); }
+    catch (error) { if (durable) list.splice(0, list.length, ...before); throw error; }
     this.onRewrite?.(threadId, moved);
     return moved;
   }
 
   /** Several request markers change together, without moving their
    * transcript positions. A crash cannot leave half a burst claimed. */
-  patchMessages(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>): Message[] {
+  patchMessages(threadId: string, messageIds: readonly string[], patch: (m: Message) => Partial<Message>, { durable = false }: { durable?: boolean } = {}): Message[] {
     const ids = new Set(messageIds);
     const changed: Message[] = [];
     const list = this.messagesFor(threadId);
+    const before = durable ? [...list] : [];
     for (let i = 0; i < list.length; i++) if (ids.has(list[i].id)) {
       list[i] = { ...list[i], ...patch(list[i]) };
       changed.push(list[i]);
     }
     if (changed.length) {
-      this.save(threadId, list);
+      try { this.save(threadId, list, false, durable); }
+      catch (error) { if (durable) list.splice(0, list.length, ...before); throw error; }
       this.onRewrite?.(threadId, changed);
     }
     return changed;
@@ -1227,6 +1268,7 @@ export class Store {
     };
     const list: Message[] = input.messages.map((message) => ({ ...message, id: newId() }));
     this.messages.set(task.id, list);
+    this.preparationSources.delete(task.id);
     this.save(task.id, list);
     bot.tasks.push(task);
     if (input.activate) {
@@ -1370,6 +1412,7 @@ export class Store {
 
   private dropTranscript(taskId: string) {
     this.messages.delete(taskId);
+    this.preparationSources.delete(taskId);
     this.waiting.delete(taskId);
     try {
       unlinkSync(messagesFile(taskId));
