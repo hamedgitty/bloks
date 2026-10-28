@@ -233,6 +233,9 @@ test("with the network off, a container reaches only Bloks and its engine's own 
   assert.match(out.proxyPort80, /^HTTP\/1\.1 403/);
   // nothing here is undoable, and it says so
   assert.match(out.persona, /cannot undo what you change there/);
+  // the turn has ended before the test does: until it has, its stand-ins
+  // still write in the folder the test removes
+  assert.ok(await idle(h, bot));
 });
 
 test("the Test says exactly what is missing there, and a sign-in is copied only on consent, exactly as shown", async (t) => {
