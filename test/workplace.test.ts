@@ -4,20 +4,23 @@
 // The shell is run for real (it is this computer's own sh); docker and
 // ssh never are.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request, type IncomingMessage } from "node:http";
 import { createServer as createTcpServer, connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { redoLine } from "../src/lib/redo.ts";
 import { placeLine, placeTrouble } from "../src/lib/workplace.ts";
+import { signalGroup } from "../server/drivers/engine-processes.ts";
 import { Gate } from "../server/workplace-gate.ts";
 import { allowedTarget, frame, hostLine } from "../server/workplace-line.ts";
+import { Workplaces } from "../server/workplace-run.ts";
 import {
   bootstrapArgv,
   containerNameFor,
@@ -42,8 +45,10 @@ import {
   type DockerImagePlace,
   type SshPlace,
 } from "../server/workplace.ts";
+import { fakePlaces } from "./helpers/fake-places.ts";
 
 const LINE = fileURLToPath(new URL("../bin/bloks-line.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
 
 const image = (over: Partial<DockerImagePlace> = {}): DockerImagePlace => ({
   kind: "docker",
@@ -482,6 +487,118 @@ test("frames carry their type, connection and length", () => {
   const ready = hostLine({ stdin: new PassThrough(), stdout }, { gate: { host: "127.0.0.1", port: 9 }, hosts: [] }).ready;
   stdout.end(frame(5, 0, Buffer.from("EADDRINUSE")));
   return assert.rejects(ready, /EADDRINUSE/);
+});
+
+// ── a file missing from this install ───────────────────────────────────
+
+/**
+ * Turns in a container through docker's stand-in (test/helpers/
+ * fake-places.ts), with the line and the agent's command line as files a
+ * test can take away. Every command started there is written down as it
+ * is started, before it could say so itself.
+ */
+function missingFileTurns(t: TestContext) {
+  const root = mkdtempSync(join(tmpdir(), "bloks-missing-"));
+  const fake = fakePlaces(root, join(root, "seen.json"));
+  fake.setDocker({ containers: { "bloks-quiet": { running: true } } });
+  // the stand-in finds its state and the far side in the environment it
+  // is started with, which is this process's
+  const named = ["FAKE_DOCKER_LOG", "FAKE_DOCKER_STATE", "FAKE_HOME", "FAKE_THERE_PATH"];
+  for (const name of named) process.env[name] = fake.env[name];
+  const lineFile = join(root, "bloks-line.mjs");
+  const cliFile = join(root, "bloks.mjs");
+  copyFileSync(LINE, lineFile);
+  copyFileSync(CLI, cliFile);
+  const gate = new Gate({ mainPort: () => 9, live: () => true });
+  const places = new Workplaces({ gate, lineFile, cliFile, docker: join(fake.bin, "docker"), onStatus: () => {} });
+  const started: Array<{ argv: readonly string[]; child: ChildProcess }> = [];
+  const start = places["start"].bind(places);
+  places["start"] = (place, argv, tunnel) => {
+    const child = start(place, argv, tunnel);
+    started.push({ argv, child });
+    return child;
+  };
+  t.after(async () => {
+    // whatever was started there goes, and is waited for, however the test went
+    await places.dispose();
+    await Promise.all(
+      started
+        .filter(({ child }) => child.exitCode === null && child.signalCode === null)
+        .map(({ child }) => {
+          const gone = once(child, "exit");
+          signalGroup(child, "SIGKILL");
+          return gone;
+        }),
+    );
+    await gate.dispose();
+    for (const name of named) delete process.env[name];
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const begin = (env: Record<string, string>, network = false) =>
+    places.begin({
+      bot: { id: "b1", name: "Scout" },
+      laneId: "lane1",
+      place: image({ name: "bloks-quiet", folder: "copy", network, idleMinutes: 0 }),
+      driverKind: "claudeAgent",
+      home: fake.home,
+      env: { BLOKS_URL: "http://127.0.0.1:9", ...env },
+      tokens: ["blk_turn"],
+      texts: ["Quietly."],
+    });
+  // nothing of the turn is left open: no gate to it, no run kept for it
+  const closed = () => {
+    assert.equal(gate.openTurns(), 0);
+    assert.equal(places.running("b1"), 0);
+    assert.equal(places.runOf("lane1"), null);
+  };
+  return { lineFile, cliFile, started, begin, closed, gate, places };
+}
+
+const LINE_STARTED = /\/line\.mjs \d+ \d+$/;
+
+test("a missing line fails a network-off turn before anything starts there, and the lane works once it is back", async (t) => {
+  const { lineFile, started, begin, closed, gate, places } = missingFileTurns(t);
+  rmSync(lineFile);
+  await assert.rejects(begin({ BLOKS_TOKEN: "blk_turn" }), { code: "ENOENT", path: lineFile });
+  assert.equal(started.length, 0, "a docker exec was started for a turn that could not run");
+  closed();
+  // the same lane again with the file back: the line comes up, and goes with the turn
+  copyFileSync(LINE, lineFile);
+  await begin({ BLOKS_TOKEN: "blk_turn" });
+  assert.equal(started.length, 1);
+  assert.match(started[0].argv.join(" "), LINE_STARTED);
+  assert.equal(gate.openTurns(), 1);
+  assert.ok(places.runOf("lane1"));
+  const gone = once(started[0].child, "exit");
+  await places.end("lane1", null);
+  closed();
+  await gone;
+});
+
+test("a missing command line fails a turn that would carry it before anything starts there", async (t) => {
+  const { cliFile, started, begin, closed } = missingFileTurns(t);
+  rmSync(cliFile);
+  // either of the turn's tokens takes the agent's command line along
+  for (const env of [{ BLOKS_TOKEN: "blk_turn" }, { BLOKS_REPLY_TOKEN: "blk_reply" }] as Array<Record<string, string>>) {
+    await assert.rejects(begin(env), { code: "ENOENT", path: cliFile });
+    assert.equal(started.length, 0, "a docker exec was started for a turn that could not run");
+    closed();
+  }
+});
+
+test("a turn needs only the files it uses: no line with the network on, no command line without a token", async (t) => {
+  const { lineFile, cliFile, started, begin, closed, places } = missingFileTurns(t);
+  rmSync(lineFile);
+  await begin({ BLOKS_TOKEN: "blk_turn" }, true);
+  assert.equal(started.length, 0);
+  await places.end("lane1", null);
+  closed();
+  copyFileSync(LINE, lineFile);
+  rmSync(cliFile);
+  await begin({});
+  assert.match(started.at(-1)!.argv.join(" "), LINE_STARTED);
+  await places.end("lane1", null);
+  closed();
 });
 
 // ── the header's words ─────────────────────────────────────────────────

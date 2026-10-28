@@ -436,6 +436,9 @@ export class Workplaces {
 
     // what the turn's environment says there
     const env: Record<string, string> = { ...input.env };
+    // The agent's command line, read before the line below starts anything
+    // there, so a file missing from this install leaves nothing running.
+    const cli = env.BLOKS_TOKEN || env.BLOKS_REPLY_TOKEN ? readFileSync(this.deps.cliFile, "utf8") : null;
     let bloksUrl = gate.url;
     if (gate.line) {
       const hosts = LINE_HOSTS[input.driverKind] ?? [];
@@ -454,9 +457,9 @@ export class Workplaces {
       });
     }
     if (env.BLOKS_URL) env.BLOKS_URL = bloksUrl;
-    if (env.BLOKS_TOKEN || env.BLOKS_REPLY_TOKEN) {
+    if (cli !== null) {
       env.BLOKS_CLI = `${run}/bloks.mjs`;
-      active.files.push({ path: env.BLOKS_CLI, content: readFileSync(this.deps.cliFile, "utf8") });
+      active.files.push({ path: env.BLOKS_CLI, content: cli });
     } else delete env.BLOKS_CLI;
     env.BLOKS_OUTBOX = outbox;
 
@@ -564,8 +567,11 @@ export class Workplaces {
     const tag = `line-${id}`;
     const script = `${run}/line.mjs`;
     const ports = { bloksPort: randomPort(), proxyPort: randomPort() };
+    // Read before anything starts there: a file missing from this install
+    // fails here, not after a docker exec is left waiting on its input.
+    const content = readFileSync(this.deps.lineFile, "utf8");
     const child = this.start(place, bootstrapArgv(sentinel, "node", [script, String(ports.bloksPort), String(ports.proxyPort)]));
-    child.stdin.write(preambleText({ tag, run, sentinel, files: [{ path: script, content: readFileSync(this.deps.lineFile, "utf8") }], env: {}, folders: [], cwd: "/" }));
+    child.stdin.write(preambleText({ tag, run, sentinel, files: [{ path: script, content }], env: {}, folders: [], cwd: "/" }));
     let said = "";
     child.stderr.on("data", (chunk: Buffer) => (said = (said + chunk.toString()).slice(-2_000)));
     const host = hostLine(child, { gate: { host: "127.0.0.1", port: gatePort }, hosts });
