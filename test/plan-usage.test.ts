@@ -122,26 +122,26 @@ const windowAt = (id: string, minutes: number, used: number, elapsed: number, ex
 test("a window at its limit stops and near it warns, in the few words Bloks AI uses", () => {
   const out = windowAt("five_hour", 300, 1, 0.5);
   assert.deepEqual(planNotices("claude", planOf(out), NOW), [
-    { id: `claude:five_hour:stop:${out.resetsAt}`, source: "claude", level: "stop", title: "Limit reached", usedPercent: 100, resetsAt: out.resetsAt },
+    { id: `claude:five_hour:stop:${out.resetsAt}`, source: "claude", level: "stop", title: "5-hour limit: Limit reached", usedPercent: 100, resetsAt: out.resetsAt, planWindow: { id: "five_hour", minutes: 300 } },
   ]);
   // the engine's own word counts as much as the share, either way
   const rejected = planNotices("claude", planOf(windowAt("seven_day", 10_080, 0.6, 0.9, { status: "rejected" })), NOW);
-  assert.deepEqual([rejected[0].level, rejected[0].title, rejected[0].usedPercent], ["stop", "Limit reached", 60]);
+  assert.deepEqual([rejected[0].level, rejected[0].title, rejected[0].usedPercent], ["stop", "Weekly limit: Limit reached", 60]);
   const warned = planNotices("claude", planOf(windowAt("seven_day", 10_080, 0.7, 0.9, { status: "warning" })), NOW);
-  assert.deepEqual([warned[0].level, warned[0].title], ["warn", "Approaching limit"]);
+  assert.deepEqual([warned[0].level, warned[0].title], ["warn", "Weekly limit: Approaching limit"]);
   const near = planNotices("codex", planOf(windowAt("primary", 300, 0.8, 0.95)), NOW);
-  assert.deepEqual([near[0].source, near[0].level, near[0].title, near[0].usedPercent], ["codex", "warn", "Approaching limit", 80]);
+  assert.deepEqual([near[0].source, near[0].level, near[0].title, near[0].usedPercent], ["codex", "warn", "5-hour limit (primary): Approaching limit", 80]);
   // over the cap is said as all of it
   assert.equal(planNotices("claude", planOf(windowAt("five_hour", 300, 1.04, 0.5)), NOW)[0].usedPercent, 100);
   // a window of no known length or reset still says it is used up
-  assert.deepEqual(planNotices("codex", planOf({ id: "primary", minutes: null, used: 1, resetsAt: null }), NOW).map((n) => [n.title, n.resetsAt]), [["Limit reached", null]]);
+  assert.deepEqual(planNotices("codex", planOf({ id: "primary", minutes: null, used: 1, resetsAt: null }), NOW).map((n) => [n.title, n.resetsAt]), [["Limit (primary): Limit reached", null]]);
 });
 
 test("pace is a share used ahead of the share of the window gone by", () => {
   // 60% of the week used with half of it gone: on pace to run out early
   const week = windowAt("seven_day", 10_080, 0.6, 0.5);
   assert.deepEqual(planNotices("claude", planOf(week), NOW), [
-    { id: `claude:seven_day:info:${week.resetsAt}`, source: "claude", level: "info", title: "Approaching limit", usedPercent: 60, resetsAt: week.resetsAt },
+    { id: `claude:seven_day:info:${week.resetsAt}`, source: "claude", level: "info", title: "Weekly limit: Approaching limit", usedPercent: 60, resetsAt: week.resetsAt, planWindow: { id: "seven_day", minutes: 10_080 } },
   ]);
   assert.equal(planNotices("codex", planOf(windowAt("primary", 300, 0.3, 0.2)), NOW)[0]?.level, "info");
   // and these are not
@@ -156,6 +156,55 @@ test("pace is a share used ahead of the share of the window gone by", () => {
     ["nothing used", windowAt("seven_day", 10_080, 0, 0.9)],
   ];
   for (const [why, window] of quiet) assert.deepEqual(planNotices("claude", planOf(window), NOW), [], why);
+});
+
+test("simultaneous plan limits retain their reported window and model in the wire and fallback titles", () => {
+  const windows = [
+    windowAt("five_hour", 300, 1, 0.5),
+    windowAt("seven_day", 10_080, 1, 0.5),
+    windowAt("seven_day_opus", 10_080, 1, 0.5),
+    windowAt("seven_day_sonnet", 10_080, 1, 0.5),
+    windowAt("primary", 90, 1, 0.5),
+    windowAt("secondary", 90, 1, 0.5),
+    { id: "model_new", minutes: null, used: 1, resetsAt: null },
+  ];
+  const notices = planNotices("example", planOf(...windows), NOW);
+  assert.deepEqual(notices.map((n) => n.planWindow), windows.map(({ id, minutes }) => ({ id, minutes })));
+  assert.deepEqual(notices.map((n) => n.title), [
+    "5-hour limit: Limit reached", "Weekly limit: Limit reached", "Weekly limit, Opus: Limit reached",
+    "Weekly limit, Sonnet: Limit reached", "90-minute limit (primary): Limit reached",
+    "90-minute limit (secondary): Limit reached", "Limit (model_new): Limit reached",
+  ]);
+  assert.equal(new Set(notices.map((n) => n.id)).size, windows.length);
+});
+
+test("fallback titles keep severity and avoid misleading or unbounded window metadata", () => {
+  const exhausted = { id: "seven_day", minutes: 10_080, used: 1, resetsAt: null };
+  const warn = { ...exhausted, id: "seven_day_opus", used: 0.81 };
+  const info = windowAt("five_hour", 300, 0.6, 0.5);
+  const result = planNotices("claude", planOf(exhausted, warn, info), NOW);
+  assert.deepEqual(result.map((n) => [n.level, n.title]), [
+    ["stop", "Weekly limit: Limit reached"],
+    ["warn", "Weekly limit, Opus: Approaching limit"],
+    ["info", "5-hour limit: Approaching limit"],
+  ]);
+  // details that cannot be used keep the old title, with no label at all
+  for (const minutes of [0, -1, NaN, Infinity, 1.5, 300]) {
+    const invalid = { ...exhausted, minutes };
+    const notice = planNotices("claude", planOf(invalid), NOW)[0];
+    assert.equal(notice.title, "Limit reached");
+    assert.equal(notice.id, "claude:seven_day:stop:null");
+    assert.equal(notice.level, "stop");
+  }
+  assert.equal(planNotices("claude", planOf({ ...warn, minutes: 300 }), NOW)[0].title, "Approaching limit");
+  const unknown = { ...exhausted, id: "<unknown>" + "x".repeat(200), minutes: null };
+  const title = planNotices("claude", planOf(unknown), NOW)[0].title;
+  assert.equal(title, `Limit (${unknown.id.slice(0, 80)}): Limit reached`);
+  // the bound counts characters, so it never splits one in two
+  const wide = { ...exhausted, id: "x".repeat(79) + "\u{1F600}tail", minutes: null };
+  assert.equal(planNotices("claude", planOf(wide), NOW)[0].title, `Limit (${"x".repeat(79)}\u{1F600}): Limit reached`);
+  const control = planNotices("claude", planOf({ ...exhausted, id: "\u0000seven_day_opus", minutes: null }), NOW)[0];
+  assert.equal(control.title, "Limit (seven_day_opus): Limit reached", "a sanitized unknown ID must not acquire model scope");
 });
 
 test("one line per window, the worst first, and nothing from a window already reset", () => {
