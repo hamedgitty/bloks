@@ -691,6 +691,7 @@ export function Composer({
   const queuedNotice = useQueuedNotice({
     messages: waiting,
     threadId: bot.threadId,
+    recoveryKey: draftKey,
     working,
     // Into the running turn when its engine can take words mid-turn,
     // each as it was said; otherwise the same stop Cmd+Enter makes, and

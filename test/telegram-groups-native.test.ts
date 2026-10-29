@@ -404,3 +404,17 @@ for (const full of [false, true]) test("a group person stays restricted on Codex
   assert.equal(f.records().length, 0, "a restricted group turn used Codex or private full delegation");
   assert.equal(f.sent(GROUP).some((x) => x.body.reply_markup), false);
 });
+
+test("an owner group preparation addition joins without a receipt post", async (t) => {
+  const f = await personFixture(t, "codex", { seed: (root) => writeFileSync(join(root, "hold-thread"), "1") });
+  group(f, "GROUP_FIRST FAKE_REPLY");
+  await until(() => existsSync(join(f.root, "thread-held")), "the group turn did not pause before its input");
+  const addition = group(f, "GROUP_ADDITION");
+  await until(async () => (await f.messages()).some((m) => m.text?.includes("GROUP_ADDITION") && m.preparation?.state === "pending"), "the addition did not wait for preparation");
+  assert.equal(f.sent(GROUP).some((c) => c.body.reply_parameters?.message_id === addition), false, "a receipt was posted to the group");
+  writeFileSync(join(f.root, "release-thread"), "1");
+  const input = await until(() => f.records().find((r) => r.text?.includes("GROUP_FIRST") && r.text?.includes("GROUP_ADDITION")), "the group addition did not join the first input");
+  assert.equal(input.groupOwner, true);
+  await f.idle();
+  assert.equal(f.sent(GROUP).some((c) => c.body.reply_parameters?.message_id === addition), false, "a receipt was posted after the join");
+});

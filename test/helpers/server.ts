@@ -188,10 +188,10 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
   return {
     url,
     home,
-    fetch: (path, init) => request("http://localhost:5199", path, init),
+    fetch: (path, init) => request(extraEnv.BLOKS_STATIC_DIR ? url : "http://localhost:5199", path, init),
     fetchAs: (origin, path, init) => request(origin, path, init),
     async json(path, init) {
-      const res = await request("http://localhost:5199", path, init);
+      const res = await request(extraEnv.BLOKS_STATIC_DIR ? url : "http://localhost:5199", path, init);
       return res.json();
     },
     logs: () => io.out + io.err,

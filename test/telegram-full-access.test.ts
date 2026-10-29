@@ -110,6 +110,79 @@ test("different senders take separate turns, and only the sender of the running 
   assert.equal((await f.messages()).find((m) => m.text === "Owner words while Lee works").telegramDelegate, undefined);
 });
 
+test("during preparation a delegate joins only their own request", async (t) => {
+  const f = await fixture(t);
+  await giveLeeFullAccess(f);
+  writeFileSync(join(f.root, "hold-thread"), "1");
+  f.tg.say("CTX_HOLD", undefined, STRANGER);
+  await waitFor(() => existsSync(join(f.root, "thread-held")), "the first turn did not pause before its input");
+  f.tg.say("Owner separate");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "Owner separate" && m.queued), "the owner did not wait");
+  f.tg.say("Delegate addition", undefined, STRANGER);
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "Delegate addition" && m.preparation?.state === "pending"), "the delegate was not retained");
+  writeFileSync(join(f.root, "release-thread"), "1");
+  await waitFor(() => existsSync(join(f.root, "ctx-started")), "the first input was not sent");
+  const first = heardContext(f).find((c) => c.method === "turn/start" && inputWords(c).includes("CTX_HOLD"));
+  assert.match(inputWords(first), /Delegate addition/);
+  assert.doesNotMatch(inputWords(first), /Owner separate/);
+  writeFileSync(join(f.root, "ctx-release"), "1");
+  await waitFor(() => sentTo(f, STRANGER).some((c) => c.body.text === "CTX DONE"), "the delegate did not get their answer");
+  await waitFor(() => sentTo(f, CHAT).some((c) => c.body.text === "ANSWER"), "the owner did not get a separate answer");
+  assert.equal(sentTo(f, CHAT).some((c) => c.body.text === "CTX DONE"), false);
+  assert.equal(sentTo(f, STRANGER).some((c) => c.body.text === "ANSWER"), false);
+  assert.equal(f.tg.calls("sendMessage").some((c) => c.body.chat_id === STRANGER && c.body.disable_notification && c.body.reply_parameters), false, "a receipt was posted to the delegate");
+});
+
+test("revoking a delegate during preparation prevents their addition from dispatching", async (t) => {
+  const f = await fixture(t);
+  const lee = await giveLeeFullAccess(f);
+  writeFileSync(join(f.root, "hold-thread"), "1");
+  f.tg.say("CTX_HOLD", undefined, STRANGER);
+  await waitFor(() => existsSync(join(f.root, "thread-held")), "the first turn did not pause before its input");
+  f.tg.say("REVOKED_ADDITION", undefined, STRANGER);
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "REVOKED_ADDITION" && m.preparation?.state === "pending"), "the addition was not retained");
+  assert.equal((await access(f, lee.id, "restricted")).status, 200);
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "REVOKED_ADDITION" && m.unsent), "the revoked addition was not marked unsent");
+  writeFileSync(join(f.root, "release-thread"), "1");
+  await sleep(500);
+  assert.ok(heardContext(f).every((call) => !inputWords(call).includes("REVOKED_ADDITION")), "revoked words reached the engine");
+});
+
+test("a delegate's refused preparation steer is answered only in their next turn", async (t) => {
+  const f = await fixture(t);
+  await giveLeeFullAccess(f);
+  writeFileSync(join(f.root, "hold-skill"), "1");
+  f.tg.say("CTX_HOLD $selected", undefined, STRANGER);
+  await waitFor(() => existsSync(join(f.root, "skill-held")), "the first input did not pause in skill lookup");
+  f.tg.say("DELEGATE_FALLBACK", undefined, STRANGER);
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "DELEGATE_FALLBACK" && m.preparation?.state === "pending"), "the addition was not retained");
+  writeFileSync(join(f.root, "scope-force-queue"), "1");
+  writeFileSync(join(f.root, "release-skill"), "1");
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "DELEGATE_FALLBACK" && m.preparation?.state === "next"), "the refused input did not fall back");
+  writeFileSync(join(f.root, "ctx-release"), "1");
+  await waitFor(() => sentTo(f, STRANGER).some((c) => c.body.text === "CTX DONE"), "the first answer did not reach its sender");
+  await waitFor(() => sentTo(f, STRANGER).some((c) => c.body.text === "ANSWER"), "the next answer did not reach its sender");
+  const starts = heardContext(f).filter((call) => call.method === "turn/start" && inputWords(call).includes("DELEGATE_FALLBACK"));
+  assert.equal(starts.length, 1);
+  assert.equal(sentTo(f, STRANGER).filter((c) => c.body.text === "ANSWER").length, 1);
+  assert.equal(sentTo(f, CHAT).some((c) => ["CTX DONE", "ANSWER"].includes(c.body.text)), false);
+});
+
+test("a revoked delegate cannot dispatch a preparation addition", async (t) => {
+  const f = await fixture(t);
+  const lee = await giveLeeFullAccess(f);
+  writeFileSync(join(f.root, "hold-thread"), "1");
+  f.tg.say("CTX_HOLD", undefined, STRANGER);
+  await waitFor(() => existsSync(join(f.root, "thread-held")), "the first turn did not pause");
+  f.tg.say("REVOKED_RECEIPT", undefined, STRANGER);
+  await waitFor(async () => (await f.messages()).some((m) => m.text === "REVOKED_RECEIPT"), "the addition was not retained");
+  assert.equal((await access(f, lee.id, "restricted")).status, 200);
+  writeFileSync(join(f.root, "release-thread"), "1");
+  await sleep(500);
+  assert.equal(f.tg.calls("editMessageText").filter((c) => c.body.chat_id === STRANGER).length, 0);
+  assert.ok(heardContext(f).every((call) => !inputWords(call).includes("REVOKED_RECEIPT")));
+});
+
 test("taking full access back drops their waiting words, stops their turn and leaves them restricted", async (t) => {
   const f = await fixture(t);
   const lee = await giveLeeFullAccess(f);

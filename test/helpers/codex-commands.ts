@@ -27,7 +27,7 @@ export async function codexCommands(t: TestContext, extraEnv: Record<string, str
   //   turnError: turn/start answers with this JSON-RPC error
   //   exitBeforeAnswer / exitAfterStart: the process exits with a message
   //     before turn/start is answered, or after the turn has started
-  const spec = { auto: false, hold: false, compact: "ok", refuseSteer: false, used: 40_000, window: 1_000_000, forgotten: false, holdSkills: false, refuseSkills: false };
+  const spec = { auto: false, hold: false, compact: "ok", refuseSteer: false, wrongSteerId: false, holdSteer: false, used: 40_000, window: 1_000_000, forgotten: false, holdThread: false, holdSkills: false, refuseSkills: false };
   mkdirSync(join(root, ".bloks"), { recursive: true });
   writeFileSync(join(root, ".bloks/config.json"), JSON.stringify({ delivery: { mode: "interrupt" }, instances: {
     codex: { driver: "codex", config: { cli } }, other: { driver: "codex", config: { cli } },
@@ -42,7 +42,7 @@ const root = ${JSON.stringify(root)};
 process.stdin.on("end",()=>process.exit(0));
 const out = (m) => process.stdout.write(JSON.stringify(m)+"\\n");
 const log = (m) => appendFileSync(root+"/calls.jsonl",JSON.stringify(m)+"\\n");
-let thread, turn, ended=false, total=0;
+let thread, turn, ended=false, total=0, skillsCount=0;
 const finish = () => {
   if(ended)return;ended=true;
   const answer=JSON.parse(readFileSync(root+"/spec.json","utf8")).answer??"ANSWER";
@@ -56,14 +56,16 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
   if(m.method==="initialize")return reply();
   if(m.method==="initialized")return;
   if(m.method==="model/list")return reply({data:[{id:"gpt-6.1-sol",model:"gpt-6.1-sol",displayName:"GPT-6.1 Sol",isDefault:true,hidden:false}]});
-  log({method:m.method,params:m.params,cwd:process.cwd()});
+  log({method:m.method,params:m.params,cwd:process.cwd(),pid:process.pid});
   if(m.method==="skills/list"){
+    skillsCount++;
     if(spec.refuseSkills)return out({id:m.id,error:{code:-1,message:"skills unavailable"}});
     const listed=()=>reply({data:[{cwd:m.params.cwds[0],skills:[
     {name:"selected",description:"A native skill",enabled:true,path:root+"/PLANTED_PATH/SKILL.md"},
     {name:"other-skill",description:"Another skill",enabled:true,path:root+"/OTHER_PATH/SKILL.md"},
     {name:"off",description:"Disabled",enabled:false,path:root+"/DISABLED_PATH/SKILL.md"}
     ],errors:[]}]});
+    if(spec.holdSteerSkills&&skillsCount>1){const timer=setInterval(()=>{if(existsSync(root+"/steer-skill-gate")){clearInterval(timer);listed();}},20);return;}
     if(spec.holdSkills){const timer=setInterval(()=>{if(existsSync(root+"/skill-gate")){clearInterval(timer);listed();}},20);return;}
     return listed();
   }
@@ -71,7 +73,9 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
     if(m.method==="thread/resume"&&spec.forgotten)return out({id:m.id,error:{code:-1,message:"forgotten"}});
     if((spec.rejectTier===true||spec.rejectTier===m.method)&&"serviceTier" in m.params)return out({id:m.id,error:{code:-32602,message:"unknown field \`serviceTier\`"}});
     const tier=spec.tier===undefined?{}:{serviceTier:spec.tier==="echo"?(m.params.serviceTier??null):spec.tier};
-    thread=m.params.threadId??"native-"+process.pid;return reply({thread:{id:thread},model:"gpt-6.1-sol",...tier});
+    thread=m.params.threadId??"native-"+process.pid;
+    if(spec.holdThread){const timer=setInterval(()=>{if(existsSync(root+"/thread-gate")){clearInterval(timer);reply({thread:{id:thread},model:"gpt-6.1-sol",...tier});}},20);return;}
+    return reply({thread:{id:thread},model:"gpt-6.1-sol",...tier});
   }
   if(m.method==="thread/compact/start"){
     if(spec.compact==="reject")return out({id:m.id,error:{code:-1,message:"Compaction refused"}});
@@ -83,14 +87,32 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
     out({method:"item/completed",params:{threadId:thread,turnId:compact,item:{type:"contextCompaction",id:"manual"}}});return;
   }
   if(m.method==="turn/steer"){
-    if(spec.refuseSteer)return out({id:m.id,error:{code:-1,message:"Not taken"}});return reply({turnId:turn});
+    if(spec.refuseSteer&&!spec.completeWithSteer&&!spec.holdSteer)return out({id:m.id,error:{code:-32600,message:"no active turn to steer"}});
+    if(spec.steerInternalError)return out({id:m.id,error:{code:-32603,message:"failed to steer turn: internal failure"}});
+    const accept=()=>{
+      const receipt=spec.refuseSteer?{id:m.id,error:{code:-32600,message:"no active turn to steer"}}:{id:m.id,result:{turnId:spec.wrongSteerId?"other-turn":turn}};
+      if(!spec.completeWithSteer)return out(receipt);
+      ended=true;
+      const frames=[receipt,
+        {method:"item/completed",params:{threadId:thread,turnId:turn,item:{type:"agentMessage",id:"answer",text:"ANSWER"}}},
+        {method:"turn/completed",params:{threadId:thread,turn:{id:turn,status:"completed"}}}];
+      process.stdout.write(frames.map(JSON.stringify).join("\\n")+"\\n");
+    };
+    if(spec.holdSteer){const timer=setInterval(()=>{if(existsSync(root+"/steer-gate")){clearInterval(timer);accept();}},20);return;}
+    return accept();
   }
   if(m.method!=="turn/start")return reply();
   if(spec.captureCredential)appendFileSync(root+"/credentials.jsonl",JSON.stringify({token:process.env.BLOKS_TOKEN})+"\\n");
   if(spec.turnError)return out({id:m.id,error:spec.turnError});
   if(spec.exitBeforeAnswer){process.stderr.write(spec.exitBeforeAnswer);process.exit(1);}
-  turn="work-"+process.pid;reply({turn:{id:turn}});
-  out({method:"turn/started",params:{threadId:thread,turn:{id:turn}}});
+  turn="work-"+process.pid;
+  const started={method:"turn/started",params:{threadId:thread,turn:{id:turn}}};
+  if(spec.startedBeforeReply||spec.holdStartReply)out(started);
+  const startReply=()=>reply({turn:spec.missingStartId?{}:{id:spec.wrongStartId?"other-turn":turn}});
+  if(spec.holdStartReply){const timer=setInterval(()=>{if(existsSync(root+"/start-reply-gate")){clearInterval(timer);startReply();}},20);}
+  else startReply();
+  if(!spec.startedBeforeReply&&!spec.holdStartReply)out(started);
+  if(spec.duplicateStarted)out(started);
   if(spec.exitAfterStart){process.stderr.write(spec.exitAfterStart);process.exit(1);}
   const text=m.params.input.filter(i=>i.type==="text").map(i=>i.text).join("");
   if(spec.auto){
@@ -134,6 +156,10 @@ createInterface({input:process.stdin}).on("line",async (line)=>{
     commands: async (lane = bot.threadId) => (await h.json(`/api/bots/${bot.id}/commands?taskId=${lane}`)).commands as any[],
     gate: () => writeFileSync(join(root, "gate"), ""),
     skillsGate: () => writeFileSync(join(root, "skill-gate"), ""),
+    steerSkillsGate: () => writeFileSync(join(root, "steer-skill-gate"), ""),
+    threadGate: () => writeFileSync(join(root, "thread-gate"), ""),
+    steerGate: () => writeFileSync(join(root, "steer-gate"), ""),
+    startReplyGate: () => writeFileSync(join(root, "start-reply-gate"), ""),
     startAuto: () => writeFileSync(join(root, "auto-start"), ""),
     async settled() { await waitFor(async () => (await current()).tasks.every((task: any) => task.state === "idle")); },
     /** How many times the fake was called with this method. */

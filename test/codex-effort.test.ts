@@ -13,6 +13,7 @@ import { CodexDriver } from "../server/drivers/codex.ts";
 
 interface Options {
   rejectEffort?: boolean;
+  errorCode?: number;
   turnError?: string;
   startError?: string;
 }
@@ -45,7 +46,7 @@ async function setup(t: TestContext, options: Options = {}) {
               effective.push(threadEffort);
             }
             queueMicrotask(() => {
-              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: -32602, message: error } } : { id: frame.id, result }) + "\n");
+              stdout.write(JSON.stringify(error ? { id: frame.id, error: { code: options.errorCode ?? -32602, message: error } } : { id: frame.id, result }) + "\n");
               if (frame.method === "turn/start" && !error) {
                 stdout.write(JSON.stringify({ method: "turn/completed", params: { turn: { status: "completed" } } }) + "\n");
               }
@@ -124,6 +125,17 @@ for (const resumed of [false, true]) {
     assert.equal(completed.type === "turn.completed" && completed.ok, true);
   });
 }
+
+test("an older server's non-standard effort rejection still retries without effort", async (t) => {
+  const h = await setup(t, { rejectEffort: true, errorCode: -32000 });
+  const completed = await h.turn({ effort: "high" });
+  const starts = sent(h.frames, "turn/start");
+  assert.equal(starts.length, 2);
+  assert.equal(starts[0].effort, "high");
+  assert.equal("effort" in starts[1], false);
+  assert.deepEqual(starts[1].input, starts[0].input);
+  assert.equal(completed.type === "turn.completed" && completed.ok, true);
+});
 
 // This checks the Bloks transport contract, not Codex's implementation of
 // persisted settings. In Codex 0.162.1 a cold resume with a stated model

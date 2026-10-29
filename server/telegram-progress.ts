@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 import type { Message } from "./store.ts";
 import { botWords, replySpan } from "./telegram-reply.ts";
 import type { Progress } from "./telegram.ts";
@@ -39,7 +40,7 @@ export class TurnProgress {
   /** A steer can finish before its successful RPC resumes the caller and
    * saves the input row. Keep one intake boundary until that decision. */
   joining(): void {
-    this.join = { after: this.messages().findLast(m => !m.queued && !m.unsent)?.id, accepted: false };
+    this.join = { after: this.messages().findLast(m => !m.queued && !m.unsent && !dismissedPreparation(m))?.id, accepted: false };
   }
 
   joined(accepted: boolean): void {
@@ -67,12 +68,12 @@ export class TurnProgress {
     const rows = this.messages();
     const at = this.join.after === undefined ? -1 : rows.findIndex(m => m.id === this.join!.after);
     if (this.join.after !== undefined && at < 0) return [];
-    return rows.slice(at + 1).filter(m => !m.queued && !m.unsent);
+    return rows.slice(at + 1).filter(m => !m.queued && !m.unsent && !dismissedPreparation(m));
   }
 
   private taken(): Message | undefined {
     const request = this.messages().find((m) => m.id === this.requestId());
-    return request && request.role === "user" && request.kind === "text" && !request.queued && !request.unsent && !request.deleted ? request : undefined;
+    return request && request.role === "user" && request.kind === "text" && !request.queued && !request.unsent && !dismissedPreparation(request) && !request.deleted ? request : undefined;
   }
 
   /** Completed stored bot text, after the request joined its turn. A

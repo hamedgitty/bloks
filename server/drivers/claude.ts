@@ -360,6 +360,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       cleanup: () => Promise<boolean>;
       /** More words for this turn, or false when it can no longer take them. */
       steer: (text: string, onDispatch?: () => void) => boolean;
+      steerPrepared: (text: string, options: { onDispatch: () => void; onAcceptedLate?: () => void }) => Promise<"accepted" | "refused" | "uncertain">;
       broker?: AskBroker;
     }
     /** At most one turn per thread. A second send while one is live is a
@@ -386,6 +387,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const turnId = newId();
       // A health refresh cannot change the protocol of an already running CLI.
       const attributed = attributedCompletionSupported;
+      // The version probe describes the local CLI, not one spawned by a
+      // workplace. Until its capability is known, leave preparation inputs
+      // for the next turn; ordinary steering keeps its existing behavior.
+      const attributedPreparation = attributed && !turn.place;
       const inputs = attributed ? new ClaudeInputs() : null;
       let sealed = false;
       let closingBroker = false;
@@ -735,6 +740,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let held: any = null;
       /** Whether stdin still takes words for this turn. */
       let inputOpen = true;
+      // These callbacks are keyed by the input UUID, never result.uuid.
+      // A process exit or timer ends the wait without calling it delivered.
+      const confirmations = new Map<string, { accepted: () => void; ended: () => void }>();
       /** Words were written after the prompt, so a result may not be the last. */
       let steered = false;
       /** Whether any assistant frame carried usage this turn. */
@@ -772,6 +780,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (waitTimer) clearInterval(waitTimer);
         waiting = null;
         if (completionTimer) clearTimeout(completionTimer);
+        for (const waiting of confirmations.values()) waiting.ended();
+        confirmations.clear();
         closingBroker = true;
         try { broker.close(); } finally { closingBroker = false; }
         closeInput();
@@ -1018,6 +1028,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: frame });
           accountChild(frame);
           return;
+        }
+        const acceptedIds: string[] = frame.type === "command_lifecycle" && ["started", "completed"].includes(frame.state) && typeof frame.command_uuid === "string"
+          ? [frame.command_uuid]
+          : frame.type === "system" && frame.subtype === "status" && frame.status === "requesting" && Array.isArray(frame.user_message_uuids)
+            ? frame.user_message_uuids.filter((id: unknown): id is string => typeof id === "string")
+            : [];
+        for (const id of acceptedIds) {
+          const wait = confirmations.get(id);
+          if (wait) { confirmations.delete(id); wait.accepted(); }
         }
         noteBackground(frame);
         if (inputs && frame.type === "command_lifecycle") {
@@ -1399,13 +1418,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const result = inputs?.selectedResult ?? held;
         if (result) settle(result, true); else finish(false, "interrupted");
       };
-      const say = (text: string, onDispatch?: () => void): boolean => {
+      const say = (text: string, onDispatch?: () => void, onId?: (id: string | null) => void): boolean => {
         // Over stdin, never argv: a pasted document would blow past
         // ARG_MAX, and argv is readable by every process on the machine.
         if (sealed || !inputOpen || child.stdin.destroyed || !child.stdin.writable) return false;
         const id = inputs ? newId() : null;
         const message = { type: "user", message: { role: "user", content: text }, ...(id ? { uuid: id } : {}) };
         if (id) inputs!.register(id);
+        onId?.(id);
         // Words for a turn waiting on its background work: the turn ends
         // once these are answered too, and what it waits on is asked again.
         if (waiting) {
@@ -1443,7 +1463,39 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         } catch (error) { steered = previous; throw error; }
       };
 
-      running.set(threadId, { turnId, abort, steer, broker, cleanup: () => {
+      const steerPrepared: RunningTurn["steerPrepared"] = async (text, options) => {
+        if (sealed || stopping || exited || !inputOpen || !personReady) return "refused";
+        return new Promise((resolve) => {
+          let done = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const settle = (outcome: "accepted" | "refused" | "uncertain") => {
+            if (done) return;
+            done = true;
+            if (timer) clearTimeout(timer);
+            resolve(outcome);
+          };
+          let id: string | null = null, dispatched = false;
+          try {
+            const sent = say(text, () => { options.onDispatch(); dispatched = true; steered = true; }, (value) => {
+              id = value;
+              if (!value) return;
+              confirmations.set(value, {
+                accepted: () => { if (done) options.onAcceptedLate?.(); else settle("accepted"); },
+                ended: () => settle("uncertain"),
+              });
+            });
+            if (!sent) return settle("refused");
+            if (!id) return settle("uncertain");
+            timer = setTimeout(() => settle("uncertain"), 30_000);
+            timer.unref?.();
+          } catch {
+            if (id) confirmations.delete(id);
+            settle(dispatched ? "uncertain" : "refused");
+          }
+        });
+      };
+
+      running.set(threadId, { turnId, abort, steer, steerPrepared, broker, cleanup: () => {
         // Disposal's instance-wide helper may have forgotten this leader
         // after its exit. Its resistant owned helpers still need escalation.
         if (!owner.confirmed) signalGroup(child, "SIGKILL");
@@ -1456,6 +1508,37 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const initialize = { type: "control_request", request_id: initializeId, request: { subtype: "initialize" } };
       child.stdin.write(JSON.stringify(initialize) + "\n");
       appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: initialize });
+      const sendInitial = (baseWords: string) => {
+        // Older or unknown CLIs cannot identify accepted inputs. Keep their
+        // existing running-turn steering, and leave preparation additions
+        // for the normal next-turn queue instead of guessing delivery.
+        if (!attributedPreparation) turn.preparation?.unavailable();
+        const prepared = attributedPreparation ? turn.preparation?.freeze().commit() : undefined;
+        let inputId: string | null = null;
+        try {
+          const sent = say(prepared?.text ? `${baseWords}\n\n${prepared.text}` : baseWords, undefined, (id) => {
+            inputId = id;
+            if (!id || !prepared?.text) return;
+            let ended = false;
+            const timer = setTimeout(() => {
+              ended = true;
+              prepared.settle("uncertain");
+            }, 30_000);
+            timer.unref?.();
+            confirmations.set(id, {
+              accepted: () => { clearTimeout(timer); prepared.settle("accepted"); if (!ended) turn.preparation?.ready(turnId); },
+              ended: () => { clearTimeout(timer); if (!ended) prepared.settle("uncertain"); },
+            });
+          });
+          if (!sent) { prepared?.settle("refused"); turn.preparation?.unavailable(); return false; }
+          if (attributedPreparation && !prepared?.text) turn.preparation?.ready(turnId);
+          else if (prepared?.text && !inputId) prepared.settle("uncertain");
+          return true;
+        } catch (error) {
+          prepared?.settle("uncertain");
+          throw error;
+        }
+      };
       if (turn.person) {
         void (async () => {
           const end = Date.now() + 20_000;
@@ -1477,7 +1560,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             if (sealed || stopping) return;
             personReady = true;
-            if (!say(turn.text)) inputFailed();
+            if (!sendInitial(turn.text)) inputFailed();
           } catch (error) {
             if (sealed) return;
             sealed = true;
@@ -1485,7 +1568,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             finish(false, "person_guard");
           }
         })();
-      } else if (!say(words)) inputFailed();
+      } else if (!sendInitial(words)) inputFailed();
 
       return { turnId };
     };
@@ -1539,6 +1622,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         sendTurn,
 
         steerTurn: async (threadId, text, options) => running.get(threadId)?.steer(text, options?.onDispatch) ?? false,
+
+        steerPrepared: async (threadId, expectedTurnId, text, options) => {
+          const active = running.get(threadId);
+          return active && active.turnId === expectedTurnId ? active.steerPrepared(text, options) : "refused";
+        },
 
         interruptTurn: async (threadId) => running.get(threadId)?.abort(),
 

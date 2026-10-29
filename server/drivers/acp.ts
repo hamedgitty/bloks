@@ -944,7 +944,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // An agent that says it takes pictures in a prompt is sent the
             // turn's own (GitHub 365). One that does not still has their
             // paths in the words, to open with its own tools.
-            const pictures = hello?.agentCapabilities?.promptCapabilities?.image === true ? pictureBlocks(turn.images) : [];
+            let pictures = hello?.agentCapabilities?.promptCapabilities?.image === true ? pictureBlocks(turn.images) : [];
 
             const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
             const cwd = turn.cwd ?? homedir();
@@ -1016,7 +1016,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             }
             // a cursor that did not lead back to its session is a new one,
             // and is told the story rather than only the words
-            const words = cursor && !session && turn.handoff ? turn.handoff : turn.text;
+            const baseWords = cursor && !session && turn.handoff ? turn.handoff : turn.text;
             if (!session) {
               session = await within(rpc.request("session/new", { cwd, mcpServers }), "opening a session", spec.name);
             }
@@ -1084,10 +1084,26 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               return;
             }
             state.live = true;
-            const result = await rpc.request("session/prompt", {
-              sessionId,
-              prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words }, ...pictures],
-            });
+            const prepared = turn.preparation?.freeze().commit();
+            const words = prepared?.text ? `${baseWords}\n\n${prepared.text}` : baseWords;
+            if (prepared?.images.length && hello?.agentCapabilities?.promptCapabilities?.image === true) {
+              pictures = [...pictures, ...pictureBlocks(prepared.images)];
+            }
+            let result: any;
+            try {
+              const pending = rpc.request("session/prompt", {
+                sessionId,
+                prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words }, ...pictures],
+              });
+              turn.preparation?.withoutSteering?.();
+              result = await pending;
+              prepared?.settle("accepted");
+            } catch (error) {
+              prepared?.settle("uncertain");
+              turn.preparation?.unavailable();
+              throw error;
+            }
+            turn.preparation?.unavailable();
             const usage = result?.usage;
             if (usage) {
               emit({
