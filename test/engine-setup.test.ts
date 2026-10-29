@@ -6,12 +6,23 @@
 // person's own folder, a failure comes back as the step that fixes it,
 // and only a window on this computer may start any of it.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 
 import { ENGINE_SETUP, explainInstallFailure, installEngine, runSetupScript } from "../server/engine-setup.ts";
+import { CLI_PROVIDERS } from "../server/providers.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 
 describe("engine setup", () => {
+  test("onboarding offers every built-in CLI engine with an installer", () => {
+    const source = readFileSync(new URL("../src/components/Onboarding.tsx", import.meta.url), "utf8");
+    const cards = source.match(/const ENGINES:[\s\S]*?= \[([\s\S]*?)\n\];/)?.[1];
+    assert.ok(cards, "the onboarding engine cards must be present");
+    const offered = new Set([...cards.matchAll(/kind:\s*"([^"]+)"/g)].map((match) => match[1]));
+    assert.deepEqual(CLI_PROVIDERS.filter((entry) => !offered.has(entry.kind)).map((entry) => entry.kind), [], "a supported CLI is missing from onboarding");
+    assert.deepEqual(CLI_PROVIDERS.filter((entry) => !ENGINE_SETUP[entry.kind]?.install).map((entry) => entry.kind), [], "an onboarding CLI has no installer");
+  });
+
   test("no installer needs sudo, and npm ones install into the person's own folder", () => {
     for (const [kind, setup] of Object.entries(ENGINE_SETUP)) {
       assert.equal(/\bsudo\b/.test(setup.install), false, `${kind} asks for an admin password`);

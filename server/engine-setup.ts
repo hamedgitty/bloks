@@ -42,6 +42,7 @@ export const ENGINE_SETUP: Record<string, EngineSetup> = {
   claudeAgent: { install: "curl -fsSL https://claude.ai/install.sh | bash", signIn: "claude" },
   codex: { install: npmUser("@openai/codex"), signIn: "codex login" },
   geminiCli: { install: npmUser("@google/gemini-cli"), signIn: "gemini" },
+  opencode: { install: npmUser("opencode-ai"), signIn: "opencode auth login" },
   pi: { install: npmUser("--ignore-scripts @earendil-works/pi-coding-agent pi-acp") },
   antigravity: { install: "curl -fsSL https://antigravity.google/cli/install.sh | bash" },
   grokCli: { install: "curl -fsSL https://x.ai/cli/install.sh | bash" },
