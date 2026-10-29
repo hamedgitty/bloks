@@ -81,6 +81,10 @@ export interface OptionCardData {
    * card stays in the conversation, where one only hidden read as a
    * question that was never asked. */
   closed?: string;
+  /** The agent that asked withdrew the question, the person having
+   * settled it some other way. `closed` says so in English; the app says
+   * it in the reader's language. */
+  withdrawn?: boolean;
   /** Present when an agent proposed an app watcher (server/app-watch.ts):
    * what it would watch and who would act where, for the person to start
    * or not. Answered through the watcher's own routes, never as a reply. */

@@ -52,6 +52,9 @@ export interface OptionCardData {
   cutOff?: boolean;
   /** Why it closed before anyone answered, in the server's words. */
   closed?: string;
+  /** The agent that asked withdrew the question, the person having
+   * settled it some other way; said in the reader's language. */
+  withdrawn?: boolean;
   dismissed?: boolean;
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means a setup question, which is safe to ignore. */

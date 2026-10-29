@@ -4075,6 +4075,7 @@
   "optionCard.what.useTool": "{tool} を使用",
   "optionCard.what.webSearch": "ウェブを検索",
   "optionCard.what.write": "ファイルに書き込む",
+  "optionCard.withdrawnBy": "{agent} はこの質問を取り下げました。回答は不要です。",
   "optionCard.workflowWaiting": "ワークフロー待機中",
   "optionCard.yourAgent": "あなたのエージェント",
   "optionCard.yourAnswer": "あなたの回答",

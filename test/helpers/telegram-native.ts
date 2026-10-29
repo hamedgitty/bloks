@@ -105,8 +105,8 @@ async function telegramStub(t: TestContext) {
 }
 
 /** An engine that speaks Codex's app-server protocol and does what the
- * words of its turn say: ask for approval, ask a question, save files, or
- * work slowly through a few commands. */
+ * words of its turn say: ask for approval, ask a question, waiting on it or
+ * not, save files, or work slowly through a few commands. */
 function fakeCodex(root: string): string {
   const cli = join(root, "fake-codex.mjs");
   writeFileSync(cli, `#!${process.execPath}
@@ -272,6 +272,11 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       statuses.push(response.status);
     }
     return finish("GUARDS " + JSON.stringify(statuses));
+  }
+  // request_user_input_async: the question, and the turn carries on
+  if (text.includes("ASYNC_ASK")) {
+    out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "q-colour", phase: "final_answer", delivery: "async", text: "Which colour?", questions: [{ title: "Which colour?", options: ["Red", "Blue"] }] } } });
+    return finish("Carried on.");
   }
   if (text.includes("APPROVE")) {
     const result = await ask(900, "item/commandExecution/requestApproval", { itemId: "cmd-1", command: "rm -rf build" });
