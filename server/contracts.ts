@@ -512,6 +512,9 @@ export interface UsageNotice {
   usedPercent: number;
   /** Epoch milliseconds, when known. */
   resetsAt: number | null;
+  /** Reported plan window, when this is a plan notice. Older clients
+   * can continue to use the title. */
+  planWindow?: Pick<PlanWindow, "id" | "minutes">;
   /** "spend" for a spending limit on the person's own key, whose month
    * starts again rather than a window resetting. Absent for the rest; a
    * client that does not know it says "Resets" for every notice. */
