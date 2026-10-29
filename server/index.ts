@@ -7466,13 +7466,15 @@ async function startClaimedTurn(
   // The asking tools (request_secret, request_connection) live in Claude
   // Code's bridge and in the API tool loop, nowhere else. Every other
   // engine with a credential asks for a key on the command line instead,
-  // and the rest are not told about either (GitHub 172).
+  // and the rest are not told about either (GitHub 172). A guest's turn
+  // (guestMail) is told of neither: it gets no connector, and whoever
+  // wrote is not the one to ask for a key or a connection.
   const asksByTool = instance.driverKind === "claudeAgent" || apiTools;
   const connectorHint = [
-    asksByTool && cfg.composio?.key && bot.composio !== false
+    asksByTool && !guestMail && cfg.composio?.key && bot.composio !== false
       ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
       : null,
-    secretHint(asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
+    secretHint(guestMail ? null : asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
   ]
     .filter(Boolean)
     .join(" ");

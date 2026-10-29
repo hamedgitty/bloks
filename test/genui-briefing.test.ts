@@ -142,6 +142,7 @@ test("switched off, an agent is told the gallery instead, and the old bloks fenc
   // and the reply rules do not point it at a block it was never taught
   assert.match(persona, /## How to reply/);
   assert.doesNotMatch(persona, /answer in the chat with an openui block/);
+  assert.match(persona, /An ordinary answer stays in the chat unless a file is asked for\./);
 
   const component = after.find((m) => m.kind === "component");
   assert.equal(component?.component?.kind, "quote");
@@ -182,6 +183,10 @@ test("every agent that makes files is pointed at the design skill, and can read 
   assert.match(last, /When you made a file in this turn, your whole reply is one or two sentences/);
   // a comparison is an answer drawn in the chat, whatever the conversation did before
   assert.match(last, /A comparison, prices or numbers, or options to choose between: answer in the chat with an openui block/);
+  // an ordinary answer stays in the chat, while a file for something kept
+  // or a decision with real stakes is still made
+  assert.match(last, /An ordinary answer stays in the chat unless a file is asked for\./);
+  assert.match(persona, /Make one when it is asked for, when it will be kept, shared or come back to, or when a decision with real stakes needs more facts than a reply can hold\./);
   // the body stays out of the prompt until it is asked for
   assert.doesNotMatch(persona, /prefers-color-scheme/);
 
