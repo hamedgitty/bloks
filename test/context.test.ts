@@ -26,6 +26,11 @@ import {
 
 const say = (role: Turn["role"], text: string): Turn => ({ role, text });
 
+test("Antigravity's exhausted trajectory takes the context recovery path", () => {
+  assert.equal(isContextError("agent executor error: generating and executing: serializing trajectory: maxMessageTokens must be positive, got 0"), true);
+  assert.equal(isContextError("API error (attempt 1): INTERNAL (code 500): Internal error encountered."), false);
+});
+
 describe("how much a model will take", () => {
   test("the families we actually run", () => {
     assert.equal(contextLimitFor("claude-sonnet-5"), 200_000);

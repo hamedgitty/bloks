@@ -715,6 +715,7 @@ const TOO_LONG = [
   /input length and `max_tokens`/i,
   /exceeds the (model|maximum)/i,
   /string too long/i,
+  /serializing trajectory: maxMessageTokens must be positive, got (?:0|-\d+)/i,
 ];
 
 /**
