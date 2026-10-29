@@ -214,7 +214,7 @@ export interface Message {
   /** Came in some other way than you typing it here. "goal" is Bloks
    * starting the next turn toward the conversation's goal; "incident" is
    * the incident desk handing a lead something that failed. */
-  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident";
+  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service";
   /** Posted or sent by a standing intent (server/intents.ts). */
   intent?: { id: string; name: string };
   /** The incident desk (server/incidents.ts): the note on a lead's quiet
