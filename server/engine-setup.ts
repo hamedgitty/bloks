@@ -48,6 +48,7 @@ export const ENGINE_SETUP: Record<string, EngineSetup> = {
   // Cursor's own installer, which writes cursor-agent into ~/.local/bin
   cursor: { install: "curl https://cursor.com/install -fsS | bash", signIn: "cursor-agent login" },
   cline: { install: npmUser("cline"), signIn: "cline auth" },
+  commandcode: { install: npmUser("command-code"), signIn: "command-code login" },
 };
 
 /** Long enough for a slow download, short enough that a hung installer

@@ -61,7 +61,7 @@ tool calls and permission requests.
 **CLI over the Agent Client Protocol.** `acp.ts` is generic: ACP is a
 JSON-RPC protocol that agent CLIs speak so editors can drive them, so one
 implementation serves any agent that speaks it. Gemini CLI was the first;
-OpenCode, the Grok CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline
+OpenCode, Command Code (`command-code acp`), the Grok CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline
 --acp`) followed. Adding another is an entry in `ACP_SPECS`, which can
 also say how the CLI reports its sign-in (`signInCheck`, a command, for
 Cursor's keychain login), which ACP auth method to call before a session

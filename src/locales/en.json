@@ -5259,7 +5259,7 @@
   "settingsPages.devices.row.phoneAccess": "Phone access",
   "settingsPages.devices.row.whereYourBloksRuns": "Where your Bloks runs",
   "settingsPages.engines.description": "The AI tools and API keys your agents think with.",
-  "settingsPages.engines.keywords": "engines models providers claude codex gemini grok cursor cline openai api key cli sign in bloks ai endpoints pause speed path",
+  "settingsPages.engines.keywords": "engines models providers claude codex gemini grok cursor cline commandcode command code openai api key cli sign in bloks ai endpoints pause speed path",
   "settingsPages.engines.label": "Engines and keys",
   "settingsPages.engines.row.codexSpeed": "Codex speed",
   "settingsPages.engines.row.howYourEnginesAreDoing": "How your engines are doing",

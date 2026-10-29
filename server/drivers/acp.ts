@@ -88,6 +88,9 @@ export interface AcpSpec {
    * whose documented flow has the client authenticate first (Cursor's
    * `cursor_login`). Called only when initialize lists it. */
   authMethod?: string;
+  /** Permission modes selected after every new or resumed session, so a
+   * saved full-auto mode cannot carry into an ordinary turn. */
+  permissionModes?: { default: string; fullAuto: string };
   /** The oldest release that speaks ACP the way this driver does. An
    * older one is reported as unavailable with the reason, not left to
    * fail its first message in some stranger way. */
@@ -1056,7 +1059,18 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // agents use modes for something else entirely (pi-acp's are
             // thinking levels), so only ask for it where it exists.
             const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
-            if (((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) && modes.some((m) => m?.id === "yolo")) {
+            const fullAuto = (config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared);
+            if (spec.permissionModes) {
+              const modeId = fullAuto ? spec.permissionModes.fullAuto : spec.permissionModes.default;
+              if (!modes.some((mode) => mode?.id === modeId)) {
+                throw new Error(`${spec.name} does not offer the required permission mode (${modeId}), so the message was not sent. Update the engine and try again.`);
+              }
+              try {
+                await rpc.request("session/set_mode", { sessionId, modeId });
+              } catch (e) {
+                throw new Error(`${spec.name} could not select the required permission mode (${modeId}): ${(e as Error).message}. The message was not sent.`);
+              }
+            } else if (fullAuto && modes.some((m) => m?.id === "yolo")) {
               try {
                 await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
               } catch (e) {
@@ -1242,6 +1256,24 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
 /** Every ACP agent Bloks knows how to launch. */
 export const ACP_SPECS: readonly AcpSpec[] = [
+  {
+    kind: "commandcode",
+    name: "Command Code",
+    // The full name works on Windows too, where cmd is the system shell.
+    command: "command-code",
+    args: ["acp"],
+    install: "npm i -g --prefix ~/.local command-code",
+    signIn: "run `command-code login` in a terminal",
+    keyEnv: ["COMMAND_CODE_API_KEY"],
+    authFiles: [".commandcode/auth.json"],
+    authMethod: "command-code-cli",
+    permissionModes: { default: "default", fullAuto: "bypass" },
+    probeModels: true,
+    models: {
+      default: "auto",
+      options: [{ id: "auto", label: "Auto" }],
+    },
+  },
   {
     kind: "opencode",
     name: "OpenCode",
