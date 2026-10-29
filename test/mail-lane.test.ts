@@ -235,7 +235,7 @@ const SECRET = "widget-secret-value";
 /** A home whose engines are stand-ins that keep, per mail (MARK-<tag> in
  * the words), what they were started with: a Pi over ACP that asks to
  * edit a file and keeps the answer, a Claude Code that keeps its
- * arguments, and one that is always out of usage. A secret is saved for
+ * arguments and persona, and one that is always out of usage. A secret is saved for
  * agents, and Composio is connected so Claude Code has a connector to
  * pre-allow. */
 function strangerHome() {
@@ -278,11 +278,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   writeFileSync(
     claude,
     `#!${process.execPath}
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
+const at = args.indexOf("--append-system-prompt-file");
+const persona = at >= 0 ? readFileSync(args[at + 1], "utf8") : null;
 let buf = "";
 let started = false;
 process.stdin.on("data", (c) => {
@@ -295,7 +297,7 @@ process.stdin.on("data", (c) => {
     if (frame.type !== "user") continue;
     started = true;
     const tag = (String(frame.message?.content ?? "").match(/MARK-(\\w+)/) || [])[1] || "none";
-    writeFileSync(${JSON.stringify(home)} + "/claude-" + tag + ".json", JSON.stringify({ args, secret: process.env.WIDGET_TOKEN ?? null, token: process.env.BLOKS_TOKEN ?? null }));
+    writeFileSync(${JSON.stringify(home)} + "/claude-" + tag + ".json", JSON.stringify({ args, persona, secret: process.env.WIDGET_TOKEN ?? null, token: process.env.BLOKS_TOKEN ?? null }));
     out({ type: "system", subtype: "init", session_id: "sess-mail", model: "claude-sonnet-5" });
     out({ type: "assistant", message: { content: [{ type: "text", text: "Thanks for writing." }] } });
     out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-mail", result: "Thanks for writing." });
@@ -403,6 +405,11 @@ test("Claude Code answers mail from anyone in conversation only, each mail in a 
   assert.notEqual(flag(stranger.args, "--permission-mode"), "bypassPermissions");
   assert.equal(stranger.secret, null, "a saved secret was in the environment of a stranger's turn");
   assert.ok(!stranger.token, "a stranger's turn could act on the workspace as the agent");
+  // nor is it told to ask whoever wrote for a connection or a key, and the
+  // screen kept from it is not to be reached some other way
+  assert.ok(stranger.persona, "the stranger's turn had no persona");
+  assert.doesNotMatch(stranger.persona, /request_connection|request_secret/);
+  assert.match(stranger.persona, /their computer is not lent to it\. Do not bypass that through another tool\./);
   assert.ok(await box.idle(cleo.id));
 
   // the next stranger does not pick up the last one's session
@@ -421,6 +428,10 @@ test("Claude Code answers mail from anyone in conversation only, each mail in a 
   assert.match(flag(boss.args, "--allowedTools") ?? "", /mcp__composio/);
   assert.equal(boss.secret, SECRET);
   assert.ok(boss.token, "a listed sender's turn lost the agent's credential");
+  // the owner's own mail is still told how to ask for both, and has its screen
+  assert.match(boss.persona ?? "", /call the request_connection tool/);
+  assert.match(boss.persona ?? "", /call the request_secret tool/);
+  assert.doesNotMatch(boss.persona ?? "", /did not start it/);
 });
 
 test("a backup engine picking up a stranger's mail goes on as the stranger's turn", async (t) => {
