@@ -503,11 +503,12 @@ picks its own.
 </p>
 
 The first-run check, and Settings, Engines and keys, install Claude Code,
-Codex, Gemini CLI, Pi, Antigravity, the Grok CLI, Cursor and Cline with
-one button. They go into your own `~/.local`, so no admin password and no
-npm permission errors, and an engine that is installed but not signed in
-says so, with a button that opens Terminal at its sign-in. An engine
-installed somewhere else, or a build of your own, can be pointed at with
+Codex, Gemini CLI, Pi, OpenCode, Command Code, Antigravity, the Grok CLI,
+Cursor and Cline with one button. They go into your own `~/.local`, so
+no admin password and no npm permission errors, and an engine that is
+installed but not signed in says so, with a button that opens Terminal at
+its sign-in. An engine installed somewhere else, or a build of your own,
+can be pointed at with
 **Use a different copy** under its row. To do it by hand:
 
 | Engine | How you connect | Works in your folders |
@@ -527,6 +528,13 @@ installed somewhere else, or a build of your own, can be pointed at with
 | Custom (OpenAI-compatible) | Paste a base URL and one or more keys | no |
 | Ollama | Run it; Bloks finds it on this machine, or where `OLLAMA_HOST` points | no |
 | Bloks AI | Part of a Bloks plan: no key, no sign-in | no |
+
+For Command Code, install and sign in on the machine running the engine.
+With a headless `bloks-server`, that is the server, rather than the
+desktop app's computer. Then select **Command Code** as an agent's
+engine. Bloks discovers its models from the signed-in CLI's ACP session.
+Use `command-code` on Windows too: `cmd` is the system shell. Command
+Code's own configuration controls its provider and privacy settings.
 
 The engines that work in your folders run commands and read and edit
 files on your computer. The others get a smaller set of tools from Bloks
