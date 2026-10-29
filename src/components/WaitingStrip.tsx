@@ -277,6 +277,8 @@ export function waitingSender(m: Message): string | null {
       return m.intent?.name ? t("waitingStrip.sender.intentNamed", { name: m.intent.name }) : t("waitingStrip.sender.intent");
     case "webhook":
       return t("waitingStrip.sender.webhook");
+    case "service":
+      return t("waitingStrip.sender.service");
     case "email":
       return t("waitingStrip.sender.email");
     case "goal":

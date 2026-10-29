@@ -22,6 +22,7 @@ import { dirname } from "node:path";
 
 import { MAX_QUEUED_RECOVERY_MS, MAX_SESSION_REF_CHARS, MAX_TITLE_CHARS, MAX_TURNS_IN_FLIGHT } from "./limits.ts";
 import { readSaved } from "./atomic-write.ts";
+import { MAX_SERVICE_QUEUE_ITEMS } from "./service-wakes.ts";
 
 export interface TurnInFlight {
   /** The lane the turn runs in, which is also what keys its engine session. */
@@ -34,6 +35,8 @@ export interface TurnInFlight {
   requester?: string;
   /** The person started it, so what it says is a reply to them. */
   byYou?: boolean;
+  /** Exact admitted inputs of this service turn, never a lane-wide flag. */
+  serviceMessages?: string[];
   /** The engine instance and its session, as they stood when the turn
    * was last heard from. What the continuation resumes is the lane's own
    * cursor in bots.json; this is the record of which one that was. */
@@ -71,12 +74,15 @@ function sanitize(raw: unknown): TurnInFlight | null {
   const botId = clean(r.botId, 64);
   if (!laneId || !botId || typeof r.startedAt !== "number" || typeof r.seenAt !== "number") return null;
   const waiting = r.waiting as Record<string, unknown> | undefined;
+  const serviceMessages = r.serviceMessages;
+  if (serviceMessages !== undefined && (!Array.isArray(serviceMessages) || serviceMessages.length === 0 || serviceMessages.length > MAX_SERVICE_QUEUE_ITEMS || !serviceMessages.every((id) => typeof id === "string" && /^[\w-]{1,64}$/.test(id)))) return null;
   return {
     laneId,
     botId,
     ...(clean(r.roomId, 64) ? { roomId: clean(r.roomId, 64) } : {}),
     ...(clean(r.requester, 64) ? { requester: clean(r.requester, 64) } : {}),
     ...(r.byYou === true ? { byYou: true } : {}),
+    ...(serviceMessages ? { serviceMessages: [...serviceMessages as string[]] } : {}),
     ...(clean(r.instanceId, 64) ? { instanceId: clean(r.instanceId, 64) } : {}),
     ...(clean(r.session, MAX_SESSION_REF_CHARS) ? { session: clean(r.session, MAX_SESSION_REF_CHARS) } : {}),
     ...(clean(r.tool, MAX_TITLE_CHARS) ? { tool: clean(r.tool, MAX_TITLE_CHARS) } : {}),
