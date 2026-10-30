@@ -67,3 +67,13 @@ export function YourComputer(platform?: string): string {
 export function modKey(platform?: string): string {
   return deviceWord(platform) === "Mac" ? "⌘" : "Ctrl+";
 }
+
+/**
+ * Whether meeting notes can run here. They listen through the native
+ * macOS helper and this computer's own microphone, so they need the
+ * desktop app on a Mac, and a window onto a hosted workspace is not
+ * listening through either. The bridge offers the call on every platform.
+ */
+export function meetingNotesHere(bridge: boolean, hosted: boolean | undefined, platform?: string): boolean {
+  return bridge && !hosted && deviceWord(platform) === "Mac";
+}

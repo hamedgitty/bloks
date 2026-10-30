@@ -1,4 +1,4 @@
-// The words of a move between this Mac and the hosted machine, apart from
+// The words of a move between this computer and the hosted machine, apart from
 // the screens (src/components/hosting/), so they can be tested alone.
 //
 // A move has six steps and says where it is in each of them in a word or
@@ -9,6 +9,7 @@
 import type { HostingMove, HostingMoveCounts, HostingMoveKey, HostingMoveStep } from "../types/bridge.d.ts";
 import { SETTINGS_PAGE_LIST } from "./settingsPages.ts";
 import { formatList, formatNumber, hasMessage, t, type MessageKey } from "./i18n.ts";
+import { thisComputer } from "./thisComputer.ts";
 
 // Each step's label is a key, read in the language it is drawn in.
 export const MOVE_STEPS: ReadonlyArray<{ step: HostingMoveStep; label: MessageKey }> = [
@@ -61,7 +62,7 @@ export function destination(move: Pick<HostingMove, "direction" | "to">): "hoste
 
 /** The card's heading for a move as it stands. */
 export function headline(move: Pick<HostingMove, "direction" | "from" | "to" | "phase">): string {
-  const params = { name: move.from.name, to: move.to.name };
+  const params = { name: move.from.name, to: move.to.name, computer: thisComputer() };
   const where = destination(move);
   switch (move.phase) {
     case "done":
@@ -79,16 +80,16 @@ export function headline(move: Pick<HostingMove, "direction" | "from" | "to" | "
 
 /** "Personal starts moving to your hosted machine in 5 s." */
 export function startsIn(move: Pick<HostingMove, "direction" | "from" | "to">, seconds: number): string {
-  return t(`libHostingMove.startsIn.${destination(move)}`, { name: move.from.name, to: move.to.name, seconds });
+  return t(`libHostingMove.startsIn.${destination(move)}`, { name: move.from.name, to: move.to.name, seconds, computer: thisComputer() });
 }
 
 /** The line under it. */
 export function subline(move: Pick<HostingMove, "direction" | "from" | "phase" | "step">): string {
   const side = move.direction === "to-hosted" ? "mac" : "hosted";
-  const params = { name: move.from.name };
+  const params = { name: move.from.name, computer: thisComputer() };
   switch (move.phase) {
     case "done":
-      return move.direction === "to-hosted" ? t("libHostingMove.subline.doneHosted") : t("libHostingMove.subline.doneMac");
+      return move.direction === "to-hosted" ? t("libHostingMove.subline.doneHosted", params) : t("libHostingMove.subline.doneMac");
     case "failed":
       return t("libHostingMove.subline.failed");
     case "stopped":

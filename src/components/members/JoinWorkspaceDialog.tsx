@@ -36,6 +36,7 @@ import {
 import { BlockConfetti } from "./BlockBurst";
 import { WorkspaceMark } from "@/components/WorkspaceMark";
 import { formatList, t, tr } from "@/lib/i18n";
+import { thisComputer } from "@/lib/thisComputer";
 
 export interface Joined {
   credentials: JoinCredentials;
@@ -79,7 +80,7 @@ function ended(code: string, inviter: string | null, workspace: string | null, e
       return {
         title: named ? t("membersJoinWorkspaceDialog.ended.declined.title", who) : t("membersJoinWorkspaceDialog.ended.declined.titleAnyone"),
         body: named ? t("membersJoinWorkspaceDialog.ended.declined.body", who) : t("membersJoinWorkspaceDialog.ended.declined.bodyAnyone"),
-        note: t("membersJoinWorkspaceDialog.ended.declined.note"),
+        note: t("membersJoinWorkspaceDialog.ended.declined.note", { computer: thisComputer() }),
       };
     case "already_member":
       return {

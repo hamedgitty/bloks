@@ -13,6 +13,7 @@ import { namer } from "./names";
 import { ownerOrNull } from "./yourName";
 import { openWorkspaceDialog } from "@/lib/workspaces";
 import { formatDate, t, type MessageKey } from "./i18n.ts";
+import { thisComputer } from "./thisComputer.ts";
 
 export type WorkspaceRole = "admin" | "member";
 export type Role = WorkspaceRole | "owner";
@@ -191,7 +192,7 @@ export type JoinAnswer =
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const parsed = await res.json().catch(() => ({ ok: false, code: "offline", error: t("members.macDidNotAnswer") }));
+  const parsed = await res.json().catch(() => ({ ok: false, code: "offline", error: t("members.macDidNotAnswer", { computer: thisComputer() }) }));
   return parsed as T;
 }
 
