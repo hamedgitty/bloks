@@ -8,7 +8,6 @@ import { Pencil } from "@/components/icons";
 import { Pin } from "@/components/icons";
 import { PinOff } from "@/components/icons";
 import { Plus } from "@/components/icons";
-import { Loader2 } from "@/components/icons";
 import { Archive } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
 import { Folder } from "@/components/icons";
@@ -19,6 +18,7 @@ import { Users } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { Target } from "@/components/icons";
 import { api, sidebarRows, useStore, formatWhen, workingInRoom, type Action, type Blok, type Bot } from "@/state/store";
+import { openLaneUnread, rowLane } from "@/state/reducer";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
@@ -450,14 +450,14 @@ function BotListItem({
             {general && <LaneRing lane={general} />}
             {general?.state === "needs-you" ? (
               <span className="text-caption text-warning">{t("sidebar.waiting")}</span>
-            ) : general?.state === "working" ? (
-              <LaneMark state="working" />
             ) : (
+              general?.state !== "working" &&
               timestamp > 0 && (
                 <span className="text-caption tabular-nums text-muted-foreground/80">{formatWhen(timestamp)}</span>
               )
             )}
-            {general?.unread && <span className="size-1.5 rounded-full bg-success" />}
+            {/* one mark, General's: the conversation this row opens */}
+            {general && <LaneMark state={general.state} unread={general.unread} />}
           </span>
         </button>
         {/* a new conversation, from the agent it is with */}
@@ -475,6 +475,10 @@ function BotListItem({
       </div>
     );
   }
+  // The conversation a click on this row opens, and its mark and line:
+  // all three are about the same one (rowLane).
+  const lane = rowLane(bot);
+  const laneUnread = lane && lane.id !== (bot.activeTaskId ?? bot.threadId) ? Boolean(lane.unread) : openLaneUnread(bot);
   return (
     <button
       data-sidebar-row={bot.id}
@@ -504,16 +508,12 @@ function BotListItem({
           <span
             className={cn(
               "truncate text-body",
-              bot.unread ? "font-medium text-foreground" : "text-muted-foreground",
+              laneUnread ? "font-medium text-foreground" : "text-muted-foreground",
             )}
           >
             {agentPreview(bot)}
           </span>
-          {bot.busy && !bot.tasks?.some((task) => task.state === "needs-you") ? (
-            <Loader2 size={13} className="shrink-0 animate-spin text-brand motion-reduce:animate-none" aria-label={t("sidebar.working")} />
-          ) : (
-            bot.unread && <span className="size-2 shrink-0 rounded-full bg-success" />
-          )}
+          <LaneMark state={lane?.state ?? (bot.busy ? "working" : "idle")} unread={laneUnread} />
         </div>
       </div>
     </button>
