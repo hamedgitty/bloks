@@ -1072,7 +1072,7 @@ function RunHistory({ routine }: { routine: Routine }) {
   );
 }
 
-/** One routine, opened from its card: change, pause, run now, delete. */
+/** One routine, opened from its card: pause, run now, change, delete. */
 function RoutineDetails({
   routine,
   target,
@@ -1216,10 +1216,6 @@ function RoutineDetails({
           </label>
         )}
         <div className="mt-4 flex gap-2">
-          <Button variant="secondary" size="sm" className="flex-1" onClick={() => onEdit(routine)}>
-            <Pencil size={12} />
-            {t("common.edit")}
-          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -1230,6 +1226,10 @@ function RoutineDetails({
           >
             <Play size={12} />
             {t("common.runNow")}
+          </Button>
+          <Button variant="secondary" size="sm" className="flex-1" onClick={() => onEdit(routine)}>
+            <Pencil size={12} />
+            {t("common.edit")}
           </Button>
           <Button
             variant="secondary"
