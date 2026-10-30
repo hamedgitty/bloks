@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runElapsed, runSource } from "../src/lib/routineDetails.ts";
+import { routinePatch, runElapsed, runSource, type RoutineDraft } from "../src/lib/routineDetails.ts";
 
 test("elapsed time uses actual timestamps, in seconds, minutes and hours", () => {
   for (const [elapsed, expected] of [
@@ -60,4 +60,37 @@ test("room navigation requires the recorded room and a retained target", () => {
   assert.equal(runSource(room, { threadId: "room-b" }, bots, [{ id: "room-a" }]), null);
   assert.equal(runSource(room, {}, bots, [{ id: "room-a" }]), null);
   assert.equal(runSource(room, { threadId: "room-a" }, bots, []), null);
+});
+
+const weekly: RoutineDraft = {
+  targetId: "agent-a", targetKind: "agent", name: "Digest", prompt: "Sum it up.",
+  time: "09:00", days: [1, 3], durationMin: 30, runsOn: "cloud", thread: "News",
+};
+
+test("an edit sends only what changed, and nothing when nothing did", () => {
+  assert.deepEqual(routinePatch(weekly, { ...weekly }), {});
+  assert.deepEqual(routinePatch(weekly, { ...weekly, days: [3, 1] }), {}, "the same days in another order");
+  assert.deepEqual(routinePatch(weekly, { ...weekly, name: "Brief", prompt: "Say it.", time: "07:30" }), {
+    name: "Brief", prompt: "Say it.", time: "07:30",
+  });
+  assert.deepEqual(routinePatch(weekly, { ...weekly, targetId: "agent-b" }), {}, "the target is never sent");
+});
+
+test("a field taken away is sent cleared, the way the server clears it", () => {
+  const { name: _name, runsOn: _runsOn, thread: _thread, ...bare } = weekly;
+  assert.deepEqual(routinePatch(weekly, bare), { name: "", runsOn: null, thread: null });
+});
+
+test("changing the kind of schedule clears the old one", () => {
+  const once: RoutineDraft = { ...weekly, days: [], repeat: "once", date: "2026-11-02" };
+  assert.deepEqual(routinePatch(once, weekly), { days: [1, 3], repeat: "weekly" });
+
+  const { time: _time, durationMin: _duration, ...rest } = weekly;
+  const checkIn: RoutineDraft = { ...rest, every: 30, activeHours: { from: "09:00", to: "18:00" } };
+  assert.deepEqual(routinePatch(checkIn, { ...weekly, quiet: true }), {
+    time: "09:00", durationMin: 30, every: null, activeHours: null, quiet: true,
+  });
+  assert.deepEqual(routinePatch(weekly, checkIn), { every: 30, activeHours: { from: "09:00", to: "18:00" } });
+  assert.deepEqual(routinePatch(checkIn, { ...checkIn, activeHours: undefined }), { activeHours: null }, "all day");
+  assert.deepEqual(routinePatch({ ...weekly, quiet: true }, weekly), { quiet: false });
 });
