@@ -1,5 +1,5 @@
 // Joining a workspace end to end: the owner's Members routes, the door on
-// this network, and this Mac's own joining client talking to it, sealed
+// this network, and this computer's own joining client talking to it, sealed
 // (server/members.ts, server/join-client.ts).
 //
 // The members module is handed fakes for everything the server owns (the
@@ -152,7 +152,8 @@ test("an invite found on this network, asked for, approved with matching words, 
   const request = (await call("/api/workspace/members")).body.requests[0];
   assert.equal(request.name, "Sam Okafor");
   assert.equal(request.forName, "Sam");
-  assert.equal(request.device, "mac");
+  const kind = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "pc" : "computer";
+  assert.equal(request.device, kind, "the owner hears what the joiner runs on: Mac, PC or computer");
   assert.equal(request.password, "none");
   assert.equal(request.phrase, asked.phrase, "both screens show the same four words");
   assert.ok(frames.some((f) => f.kind === "workspace.request" && f.request.inviteId === inv.id));

@@ -51,7 +51,13 @@ import { AlertTriangle } from "@/components/icons";
 import { distinctNames } from "@/lib/names";
 import { formatList, formatNumber, t, type MessageKey } from "@/lib/i18n";
 
-const DEVICE_WORD: Record<"iphone" | "mac" | "browser", MessageKey> = { iphone: "membersMembersPage.device.iphone", mac: "membersMembersPage.device.mac", browser: "membersMembersPage.device.browser" };
+const DEVICE_WORD: Record<"iphone" | "mac" | "pc" | "computer" | "browser", MessageKey> = {
+  iphone: "membersMembersPage.device.iphone",
+  mac: "membersMembersPage.device.mac",
+  pc: "membersMembersPage.device.pc",
+  computer: "membersMembersPage.device.computer",
+  browser: "membersMembersPage.device.browser",
+};
 const dollars = (n: number, cents = true) =>
   formatNumber(n, { style: "currency", currency: "USD", minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2 });
 /** How long a newcomer's row says "New". */
@@ -564,7 +570,8 @@ function MemberRow({
   const line = [
     isNew ? t("membersMembersPage.joinedJustNow") : t("membersMembersPage.joinedOn", { date: shortDate(m.joinedAt) }),
     activeWords(m.lastActive),
-    m.device ? t(DEVICE_WORD[m.device]) : null,
+    // a kind this page does not know yet (a newer workspace's) is a computer
+    m.device ? t(DEVICE_WORD[m.device] ?? "membersMembersPage.device.computer") : null,
   ].filter(Boolean);
   const spend = m.spend && m.limits;
   const usage = spend

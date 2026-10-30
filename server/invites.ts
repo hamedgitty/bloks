@@ -520,7 +520,7 @@ export type ClaimResult =
   | { ok: true; invite: WorkspaceInvite; fresh: boolean }
   | { ok: false; error: JoinError; invite?: WorkspaceInvite; triesLeft?: number; locked?: boolean };
 
-const DEVICES: readonly DeviceKind[] = ["iphone", "mac", "browser"];
+const DEVICES: readonly DeviceKind[] = ["iphone", "mac", "pc", "computer", "browser"];
 
 /**
  * Somebody with the code asks to join. Checks run in the order a person

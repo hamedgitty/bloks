@@ -39,8 +39,9 @@ export type MemberRole = "collaborator" | "viewer";
 /** A person's place in the workspace. The owner is not a role anyone
  * holds: it is whoever this computer belongs to, and has no Person. */
 export type WorkspaceRole = "admin" | "member";
-/** What a person joined from, as their app said it. */
-export type DeviceKind = "iphone" | "mac" | "browser";
+/** What a person joined from, as their app said it. A desktop says
+ * "mac", "pc" or "computer"; older ones said "mac" whatever they ran on. */
+export type DeviceKind = "iphone" | "mac" | "pc" | "computer" | "browser";
 
 export interface Person {
   id: string;

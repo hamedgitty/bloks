@@ -43,7 +43,7 @@ export interface Member {
   role: WorkspaceRole;
   joinedAt: number;
   invitedBy: string;
-  device: "iphone" | "mac" | "browser" | null;
+  device: "iphone" | "mac" | "pc" | "computer" | "browser" | null;
   devices: number;
   lastActive: number | null;
   soloAgents: number;
@@ -70,7 +70,7 @@ export interface JoinRequest {
   name: string;
   forName: string | null;
   role: WorkspaceRole;
-  device: "iphone" | "mac" | "browser";
+  device: "iphone" | "mac" | "pc" | "computer" | "browser";
   at: number;
   password: "correct" | "none";
   phrase: string | null;

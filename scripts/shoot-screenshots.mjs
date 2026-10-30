@@ -477,7 +477,7 @@ export async function askToJoin(world, inviteName, asName) {
   const joiner = new JoinClient(() => world.services.url);
   const found = await joiner.lookup(`${invite.link.split("~")[0]}~127.0.0.1:${desktop.ports[roles.team]}`);
   if (!found.ok) throw new Error(`the invite did not open: ${found.error}`);
-  const claimed = await joiner.claim(found.session, { name: asName, device: "iphone" });
+  const claimed = await joiner.claim(found.session, { name: asName });
   if (claimed?.ok === false) throw new Error(`the request did not go through: ${claimed.error}`);
 }
 

@@ -13,6 +13,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "bloks-invites-"));
 let inv: typeof import("../server/invites.ts");
 let people: typeof import("../server/people.ts");
+let joinClient: typeof import("../server/join-client.ts");
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const token = (c: string) => sha(c.repeat(43));
 
@@ -21,6 +22,7 @@ before(async () => {
   mkdirSync(join(home, ".bloks"), { recursive: true });
   inv = await import("../server/invites.ts");
   people = await import("../server/people.ts");
+  joinClient = await import("../server/join-client.ts");
 });
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
@@ -131,6 +133,19 @@ test("a right claim waits for the owner, with the same four words on both sides"
   assert.ok(inv.claim(i, { name: "Sam", tokenHash: t }, ctx()).ok);
   const late = inv.claim(i, { name: "Mallory", tokenHash: token("b") }, ctx());
   assert.ok(!late.ok && late.error === "used");
+});
+
+test("a desktop joiner is a Mac on macOS, a PC on Windows, else a computer, and the host keeps what it said", () => {
+  const { deviceOf } = joinClient;
+  assert.equal(deviceOf("darwin"), "mac");
+  assert.equal(deviceOf("win32"), "pc");
+  for (const platform of ["linux", "freebsd"] as const) assert.equal(deviceOf(platform), "computer", platform);
+  // a new joiner's words, and the word every older desktop still sends
+  for (const device of ["pc", "computer", "mac"]) {
+    const out = inv.claim(made(), { name: "Sam", tokenHash: token(device[0]), device }, ctx());
+    assert.ok(out.ok);
+    assert.equal(out.invite.claim?.device, device);
+  }
 });
 
 test("every way a claim is refused has its own code", () => {

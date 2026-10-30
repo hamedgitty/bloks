@@ -1,4 +1,4 @@
-// Joining somebody else's workspace from this Mac.
+// Joining somebody else's workspace from this computer.
 //
 // The other half of server/members.ts's door. The window hands over what
 // was pasted or typed; this finds the invite (through Bloks Cloud, or on
@@ -14,11 +14,17 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import * as invites from "./invites.ts";
-import { joinPhrase } from "./people.ts";
+import { joinPhrase, type DeviceKind } from "./people.ts";
 import { open, peek, seal } from "./relay-crypto.ts";
 import { thisMachine } from "./this-machine.ts";
 
 export type Fetch = typeof fetch;
+
+/** What this computer tells the host it is, for the owner's request card.
+ * Mac, PC or computer, the words the window uses too (src/lib/thisComputer.ts). */
+export function deviceOf(platform: NodeJS.Platform): DeviceKind {
+  return platform === "darwin" ? "mac" : platform === "win32" ? "pc" : "computer";
+}
 
 export interface FoundInvite {
   publicId: string;
@@ -290,14 +296,14 @@ export class JoinClient {
     return failure(answer);
   }
 
-  async claim(id: unknown, input: { name: unknown; password?: unknown; device?: unknown }) {
+  async claim(id: unknown, input: { name: unknown; password?: unknown }) {
     const s = this.session(id);
     if (!s) return { ok: false, status: 404, code: "no_session", error: "Look the invite up again." } satisfies JoinFailure;
     const answer = await this.ask(s, "/api/join/claim", {
       name: input.name,
       ...(typeof input.password === "string" && input.password ? { password: input.password } : {}),
       tokenHash: s.tokenHash,
-      device: input.device === "browser" ? "browser" : "mac",
+      device: deviceOf(process.platform),
       ...(s.clientToken ? { relayClient: sha256(s.clientToken) } : {}),
     });
     return "ok" in answer ? answer : this.shape(s, answer);
