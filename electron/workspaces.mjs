@@ -184,6 +184,8 @@ export function parseRegistry(text) {
       accent: typeof accent === "string" && ACCENT_ID.test(accent) ? accent : null,
       // "Show working agents in the notch": on unless turned off
       notch: raw?.prefs?.notch !== false,
+      // "Close to the tray" (Windows): off unless turned on
+      tray: raw?.prefs?.tray === true,
       // what the person is called in every workspace of their own
       ownerName: cleanPersonName(raw?.prefs?.ownerName) || null,
       // the language the interface and the menu bar are read in; none
@@ -274,6 +276,13 @@ export function setLanguage(registry, language) {
 export function setNotch(registry, on) {
   if (typeof on !== "boolean" || registry.prefs.notch === on) return registry;
   return { ...registry, prefs: { ...registry.prefs, notch: on } };
+}
+
+/** "Close to the tray" (electron/tray.mjs), on or off. Anything but a
+ * yes or a no leaves it as it was. */
+export function setTray(registry, on) {
+  if (typeof on !== "boolean" || registry.prefs.tray === on) return registry;
+  return { ...registry, prefs: { ...registry.prefs, tray: on } };
 }
 
 const sorted = (list) => [...list].sort((a, b) => a.order - b.order || a.createdAt - b.createdAt);

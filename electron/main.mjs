@@ -33,6 +33,7 @@ import {
   shell,
   ShareMenu,
   systemPreferences,
+  Tray,
   utilityProcess,
   WebContentsView,
 } from "electron";
@@ -68,6 +69,7 @@ import {
 import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } from "./server-line.mjs";
 import { terminalQuery } from "./terminal-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
+import { closeHides, trayOn } from "./tray.mjs";
 import { AppBrowser, allowedForAgent, downloadName, partitionFor, refusedNavigation } from "./app-browser.mjs";
 import os from "node:os";
 
@@ -107,6 +109,7 @@ import {
   setSameAccent,
   setLanguage,
   setNotch,
+  setTray,
   settle,
   shownMark,
   snapshot,
@@ -1051,6 +1054,8 @@ function workspacesState() {
     sameAccent: registry.prefs.sameAccent,
     // the notch's switch, only where there is a notch to show it in
     ...(notchPlatform() ? { notch: notchOn() } : {}),
+    // "Close to the tray", only on Windows (electron/tray.mjs)
+    ...(process.platform === "win32" ? { tray: registry.prefs.tray === true } : {}),
   };
 }
 
@@ -1932,6 +1937,7 @@ handle("prefs:language", (event, language) => {
   registry = next;
   saveRegistry();
   installAppMenu();
+  syncTray();
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed() && win.webContents !== event.sender) win.webContents.send("prefs:language", registry.prefs.language ?? "system");
   }
@@ -1955,6 +1961,15 @@ handle("prefs:notch", (_event, on) => {
   saveRegistry();
   tellWorkspaces();
   notch.sync(notchOn());
+});
+// "Close to the tray" (src/components/settings/GeneralPage.tsx), kept
+// with the theme like the notch's switch: the icon comes and goes with it.
+handle("prefs:tray", (_event, on) => {
+  if (!registry || typeof on !== "boolean") return;
+  registry = setTray(registry, on);
+  saveRegistry();
+  tellWorkspaces();
+  syncTray();
 });
 handle("prefs:same-accent", (event, on, showing) => {
   const id = senderWorkspace(event);
@@ -2317,6 +2332,29 @@ function notchOn() {
   return notchPlatform() && registry?.prefs?.notch !== false;
 }
 
+// ── the tray (Windows) ────────────────────────────────────────────────
+// With "Close to the tray" on (electron/tray.mjs): a click on the icon
+// brings the window back, and its menu quits Bloks for real.
+let tray = null;
+function syncTray() {
+  if (!trayOn(process.platform, registry?.prefs)) {
+    tray?.destroy();
+    tray = null;
+    return;
+  }
+  if (!tray) {
+    tray = new Tray(APP_ICON);
+    tray.setToolTip(app.name);
+    tray.on("click", () => {
+      const win = mainWindow();
+      if (win) raise(win);
+      else createWindow();
+    });
+  }
+  // built again on a language change, for the word
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: mainWords()("menu.quit", { name: app.name }), click: () => app.quit() }]));
+}
+
 /** The island's page, from workspace `id`'s server. While that server is
  * starting, or will not, a clear page: the opening and failure pages are
  * for a window someone is looking at, and this one would show them as a
@@ -2511,6 +2549,17 @@ function createWindow() {
     });
   }
   persistWindowState(win);
+  // "Close to the tray": the close button hides the window, unless Bloks
+  // is quitting. Windows ending the session sends no before-quit, so
+  // that says Bloks is quitting here, or the window would hold it up.
+  win.on("close", (event) => {
+    if (!closeHides(process.platform, registry?.prefs, quitting)) return;
+    event.preventDefault();
+    win.hide();
+  });
+  win.on("session-end", () => {
+    quitting = true;
+  });
   if (restored.maximized) win.maximize();
 
   // Links in this app come from models and from web pages the agent read,
@@ -3510,8 +3559,13 @@ handle("update:install", () => {
       drain: drainBeforeRestart,
       mark: () => markInstall(INSTALL_MARK_FILE(), { from: app.getVersion(), to: updaterState.version }),
       staged: nativelyStaged,
-      // same teardown as a normal quit, then the installer takes over
-      quit: () => electronUpdater.autoUpdater.quitAndInstall(),
+      // same teardown as a normal quit, then the installer takes over.
+      // Quitting is said first: an updater may close the windows before
+      // before-quit, and "Close to the tray" must not hide them then.
+      quit: () => {
+        quitting = true;
+        return electronUpdater.autoUpdater.quitAndInstall();
+      },
       // destroyed, not asked: asking is what did not work
       closeWindows: () => {
         const open = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
@@ -3701,6 +3755,7 @@ app.whenReady().then(async () => {
   createWindow();
   // the island in the notch, once there is a workspace for it to show
   notch.sync(notchOn());
+  syncTray();
   // the others come up behind the window, one at a time, so the one you
   // are looking at never waits on them
   if (registry && !remoteProfile) {

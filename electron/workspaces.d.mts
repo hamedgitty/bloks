@@ -32,7 +32,7 @@ export interface WorkspaceEntry {
 export interface Registry {
   version: number;
   current: string;
-  prefs: { theme: "light" | "dark" | "system" | null; sameAccent: boolean; accent: string | null; ownerName?: string | null; notch?: boolean; language?: string | null };
+  prefs: { theme: "light" | "dark" | "system" | null; sameAccent: boolean; accent: string | null; ownerName?: string | null; notch?: boolean; tray?: boolean; language?: string | null };
   workspaces: WorkspaceEntry[];
 }
 
@@ -93,6 +93,7 @@ export function accentOf(registry: Registry, id: string | null): string | null;
 export function chooseAccent(registry: Registry, id: string | null, accent: unknown): Registry;
 export function setSameAccent(registry: Registry, id: string | null, on: boolean, showing?: unknown): { registry: Registry; accent: string | null };
 export function setNotch(registry: Registry, on: unknown): Registry;
+export function setTray(registry: Registry, on: unknown): Registry;
 export const LANGUAGE_CODES: readonly string[];
 export function setLanguage(registry: Registry, language: unknown): Registry;
 export function rerollMark(registry: Registry, id: string, options?: { random?: () => number }): Registry;

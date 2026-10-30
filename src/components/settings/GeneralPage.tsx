@@ -241,6 +241,20 @@ export function GeneralPage() {
             }
           />
         )}
+        {/* the app says whether there is one: only on Windows */}
+        {window.bloks?.prefsTray && workspaces.available && typeof workspaces.tray === "boolean" && (
+          <SettingRow
+            label={t("generalPage.minimizeToTheSystemTray")}
+            description={t("generalPage.theCloseButtonHidesThe")}
+            control={
+              <Switch
+                aria-label={t("generalPage.minimizeToTheSystemTray")}
+                checked={workspaces.tray}
+                onCheckedChange={(on) => void window.bloks?.prefsTray?.(on)}
+              />
+            }
+          />
+        )}
       </SettingsGroup>
       {window.bloks && (
         <SettingsGroup title={t("generalPage.shortcut")}>
