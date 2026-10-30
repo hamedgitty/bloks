@@ -600,8 +600,10 @@ export function Bubble({
           onPointerUp={tap.onPointerUp}
           className={cn(
             // a soft bubble on your side: set apart from the replies
-            // around it without shouting louder than them
-            "min-w-0 whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-lead text-foreground [overflow-wrap:anywhere]",
+            // around it without shouting louder than them. Capped at its
+            // column, as a group bubble is: a reply's one-line excerpt
+            // would otherwise widen it past the conversation (GitHub 415).
+            "min-w-0 max-w-full whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-lead text-foreground [overflow-wrap:anywhere]",
             // an editor gets the room the words may grow into
             editing !== null && "w-full",
             message.via === "goal" || message.via === "incident"
