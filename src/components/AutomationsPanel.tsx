@@ -22,6 +22,7 @@ import { ChevronLeft } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
 import { Copy } from "@/components/icons";
 import { Check } from "@/components/icons";
+import { Pencil } from "@/components/icons";
 import { Play } from "@/components/icons";
 import { Plus } from "@/components/icons";
 import { Repeat } from "@/components/icons";
@@ -128,6 +129,8 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
   const [filterId, setFilterId] = useState<string>("");
   const [creating, setCreating] = useState<{ time?: string; days?: number[]; date?: string } | null>(null);
   const [selected, setSelected] = useState<Routine | null>(null);
+  // the routine whose form is open, over its details
+  const [editing, setEditing] = useState<Routine | null>(null);
 
   // drag-to-reschedule: pointer-tracked, snapped to 15 minutes, dropped
   // onto whichever day column the pointer ends over, the way any
@@ -729,10 +732,21 @@ export function AutomationsPanel({ onClose }: { onClose: () => void }) {
       )}
       {selected && (
         <RoutineDetails
-          routine={selected}
+          // as last read, so a change saved from its form shows here at once
+          routine={routines?.find((r) => r.id === selected.id) ?? selected}
           target={targetOf(selected.targetId)}
           onWrite={write}
+          onEdit={setEditing}
           onClose={() => setSelected(null)}
+        />
+      )}
+      {editing && (
+        <RoutinesDialog
+          edit={editing}
+          onClose={() => {
+            setEditing(null);
+            load();
+          }}
         />
       )}
     </main>
@@ -1058,16 +1072,18 @@ function RunHistory({ routine }: { routine: Routine }) {
   );
 }
 
-/** One routine, opened from its card: pause, run now, delete. */
+/** One routine, opened from its card: pause, run now, change, delete. */
 function RoutineDetails({
   routine,
   target,
   onWrite,
+  onEdit,
   onClose,
 }: {
   routine: Routine;
   target: { name: string; bot?: Bot } | null;
   onWrite: (run: Promise<unknown>) => void;
+  onEdit: (routine: Routine) => void;
   onClose: () => void;
 }) {
   const [briefOnly, setBriefOnly] = useState(Boolean(routine.briefOnly));
@@ -1210,6 +1226,10 @@ function RoutineDetails({
           >
             <Play size={12} />
             {t("common.runNow")}
+          </Button>
+          <Button variant="secondary" size="sm" className="flex-1" onClick={() => onEdit(routine)}>
+            <Pencil size={12} />
+            {t("common.edit")}
           </Button>
           <Button
             variant="secondary"
