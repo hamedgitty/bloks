@@ -47,6 +47,7 @@ import {
 } from "@/lib/sections";
 import { refreshCheckup, riskyCount, useSecurityCheckup } from "@/lib/securityCheckup";
 import { ConversationRows, laneRowKeys, LaneRing, WaitingRow } from "./SidebarParts";
+import { LaneMark } from "./TaskStrip";
 import { RoomRename } from "./room/RoomRename";
 import { CHAT_SIDEBAR, useChatSidebar } from "@/lib/chatSidebar";
 import { CHAT_COLUMN } from "@/lib/sideColumn";
@@ -450,17 +451,13 @@ function BotListItem({
             {general?.state === "needs-you" ? (
               <span className="text-caption text-warning">{t("sidebar.waiting")}</span>
             ) : general?.state === "working" ? (
-              <Loader2
-                size={12}
-                className="animate-spin text-brand motion-reduce:animate-none"
-                aria-label={t("sidebar.working")}
-              />
+              <LaneMark state="working" />
             ) : (
               timestamp > 0 && (
                 <span className="text-caption tabular-nums text-muted-foreground/80">{formatWhen(timestamp)}</span>
               )
             )}
-            {general?.unread && <span className="size-1.5 rounded-full bg-brand" />}
+            {general?.unread && <span className="size-1.5 rounded-full bg-success" />}
           </span>
         </button>
         {/* a new conversation, from the agent it is with */}
@@ -515,7 +512,7 @@ function BotListItem({
           {bot.busy && !bot.tasks?.some((task) => task.state === "needs-you") ? (
             <Loader2 size={13} className="shrink-0 animate-spin text-brand motion-reduce:animate-none" aria-label={t("sidebar.working")} />
           ) : (
-            bot.unread && <span className="size-2 shrink-0 rounded-full bg-brand" />
+            bot.unread && <span className="size-2 shrink-0 rounded-full bg-success" />
           )}
         </div>
       </div>
@@ -1183,7 +1180,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                   {isFolded && (
                     <span className="shrink-0 normal-case tracking-normal">{rows.length}</span>
                   )}
-                  {waiting && <span className="size-1.5 shrink-0 rounded-full bg-brand" />}
+                  {waiting && <span className="size-1.5 shrink-0 rounded-full bg-success" />}
                   <ChevronRight
                     size={11}
                     className={cn("ml-auto shrink-0 transition-transform", !isFolded && "rotate-90")}

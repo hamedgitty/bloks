@@ -31,7 +31,7 @@ export function MobileNav() {
         className="fixed left-3 top-[max(env(safe-area-inset-top),10px)] z-30 flex size-10 items-center justify-center rounded-full border bg-popover/95 text-muted-foreground shadow-md shadow-(color:--shadow-color) backdrop-blur-sm transition-[scale,color] duration-150 ease-out hover:text-foreground active:scale-[0.96] md:hidden"
       >
         <Menu size={19} />
-        {unread && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-brand ring-2 ring-popover" />}
+        {unread && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-success ring-2 ring-popover" />}
       </button>
       <AnimatePresence>
         {open && (
