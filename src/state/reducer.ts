@@ -663,7 +663,7 @@ export function laneHasMessages(lane: { lastAt?: number; createdAt: number; usag
  * Picking fields out of it by name drops whatever was added later, and
  * the card reading a dropped field vanishes until the next reload. */
 export function configFromFrame(frame: Record<string, unknown>): ConfigStatus {
-  const { kind: _kind, _seq, ...status } = frame;
+  const { kind: _kind, _seq, _serverSeq, ...status } = frame;
   return status as unknown as ConfigStatus;
 }
 

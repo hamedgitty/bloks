@@ -339,6 +339,10 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
   // own watermark, including hello, rather than disabling renderer freshness.
   // Keep notification identities across relay and renderer reconnects: a
   // replay keeps its original sequence and cannot become fresh attention.
+  // The server's own count for a frame goes on as `_serverSeq`: an agent
+  // list or an answer through here says where it was made in that count,
+  // never this one, and the window orders the two by it (GitHub 398). Null
+  // from a server too old to send it.
   let frameSeq = 0;
   const noticeSequences = new Map();
   const sequenced = (frame) => {
@@ -355,7 +359,8 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
         if (noticeSequences.size > 512) noticeSequences.delete(noticeSequences.keys().next().value);
       }
     }
-    return { ...frame, _seq: seq };
+    const { _seq: serverSeq, ...rest } = frame;
+    return { ...rest, _seq: seq, _serverSeq: Number.isSafeInteger(serverSeq) ? serverSeq : null };
   };
 
   /** One request through Bloks Cloud, sealed afresh: its own time and

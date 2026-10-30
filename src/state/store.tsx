@@ -29,7 +29,7 @@ import { sendCardAnswer } from "@/lib/cardAnswer";
 import { sendMessage } from "@/lib/sendMessage";
 import { sendRoomPatch } from "@/lib/roomPatch";
 import { keepTrying } from "@/lib/retry";
-import { snapshotOrder, type SnapshotLoad } from "./snapshotOrder";
+import { serverSeq, snapshotOrder, type SnapshotLoad } from "./snapshotOrder";
 import { sendHeld, takeWake, wakeFetch, wakeGaveUp } from "@/lib/waking";
 import { placeRow, type Listed } from "@/lib/sections";
 import { askLaneFocus, dropLaneFocus } from "@/lib/drafts";
@@ -885,7 +885,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // on its way, which is older than it when made before it
       const applyFrame = (action: Action) => {
         rawDispatch(action);
-        listOrder.current.note(typeof frame._seq === "number" ? frame._seq : undefined, action);
+        listOrder.current.note(serverSeq(frame), action);
       };
       // the workspace's people go to their own small bus (src/lib/members.ts)
       if (typeof frame.kind === "string" && frame.kind.startsWith("workspace.")) {
@@ -1011,7 +1011,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               body: JSON.stringify({ unread: false }),
             }).catch(() => {});
           }
-          if (typeof frame._seq === "number") botSeq.current.set(bot.id, frame._seq);
+          const made = serverSeq(frame);
+          if (made !== undefined) botSeq.current.set(bot.id, made);
           applyFrame({ type: "botPatched", bot: withoutEdits(bot, editing(bot.id)) });
           break;
         }
