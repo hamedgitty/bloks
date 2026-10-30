@@ -44,6 +44,7 @@ import { TurnFoldLine } from "./TurnFold";
 import { TracePanel } from "./trace/TracePanel";
 import { askForFold, type TraceAsk } from "@/lib/traceView";
 import { MeetingPanel } from "./MeetingPanel";
+import { meetingNotesHere } from "@/lib/thisComputer";
 import { AudioLines } from "@/components/icons";
 import { ForwardDialog, type ReplyDraft } from "./MessageActions";
 import { Button } from "@/components/ui/button";
@@ -907,9 +908,9 @@ export function ChatView({ bot }: { bot: Bot }) {
         <div ref={actionsRef} className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* the model is picked where you type, in the composer's footer */}
           <CallButton bot={bot} />
-          {/* meeting notes listen through the Mac's own microphone, so a
-              window onto a hosted workspace does not offer them */}
-          {window.bloks?.meetingStart && !state.config?.hosted?.on && (
+          {/* meeting notes need the app on a Mac, and a window onto a
+              hosted workspace is not listening through one */}
+          {meetingNotesHere(Boolean(window.bloks?.meetingStart), state.config?.hosted?.on) && (
             <Button
               variant="ghost"
               size="icon"

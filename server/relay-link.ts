@@ -30,13 +30,7 @@ import { deviceKey, inviteKey, open, peek, seal, type Envelope, type RelayReques
 import { linkAskValid, sealForRequester, type OwnerLink } from "./owner-link.ts";
 import { markSeen, pairedDevices } from "./pairing.ts";
 import type { ActivityPush, PushResult } from "./live-activities.ts";
-
-/** What to call the machine this harness runs on. Bloks ships on
- * Windows and Linux too, where "the Mac" reads as a copy-paste slip
- * rather than a description. */
-function thisMachine(): string {
-  return process.platform === "darwin" ? "this Mac" : process.platform === "win32" ? "this PC" : "this computer";
-}
+import { thisMachine } from "./this-machine.ts";
 
 /** Why the line went down, in words a settings screen can show. Node's
  * fetch says only "fetch failed" and keeps the reason in its cause, and

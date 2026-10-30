@@ -64,6 +64,7 @@ import {
   readMoveState,
   runMove,
   startingWords,
+  thisMachine,
 } from "./hosting-move.mjs";
 import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } from "./server-line.mjs";
 import { terminalQuery } from "./terminal-window.mjs";
@@ -899,7 +900,7 @@ async function pairForPhone(id, target, device) {
   const refused = pairRefusal(registry, id, String(target));
   if (refused) return { ok: false, ...refused };
   const ws = entryOf(String(target));
-  if (!(await launch(ws.id))) return { ok: false, status: 503, error: `${ws.name} would not start on the Mac.` };
+  if (!(await launch(ws.id))) return { ok: false, status: 503, error: `${ws.name} would not start.` };
   const made = await serverAsks.ask(servers.get(ws.id)?.child, "pair.mint", {}, 15_000);
   if (made.ok === false || made.error) return { ok: false, status: made.status ?? 409, error: made.error ?? "No pairing could be made." };
   tellPairingMade(ws, entryOf(id), typeof device === "string" ? device.slice(0, 60) : "");
@@ -1386,13 +1387,13 @@ async function pairForMove(move) {
   }
   // a new workspace here, named after the hosted one
   const taken = (name) => registry.workspaces.some((w) => w.name.toLowerCase() === name.toLowerCase());
-  const name = [move.to.name, hosted.name, `${hosted.name} on this Mac`].find((n) => n && !taken(n)) ?? `${hosted.name} ${Date.now().toString(36)}`;
+  const name = [move.to.name, hosted.name, `${hosted.name} on ${thisMachine()}`].find((n) => n && !taken(n)) ?? `${hosted.name} ${Date.now().toString(36)}`;
   const made = addWorkspace(registry, { kind: "custom", name }, { workspacesDir: workspacesDir() });
   fs.mkdirSync(made.entry.dataDir, { recursive: true, mode: 0o700 });
   registry = made.registry;
   saveRegistry();
   tellWorkspaces();
-  if (!(await launch(made.entry.id))) throw new Error(`${name} would not start on this Mac.`);
+  if (!(await launch(made.entry.id))) throw new Error(`${name} would not start on ${thisMachine()}.`);
   return { to: { id: made.entry.id, name } };
 }
 
@@ -1516,8 +1517,8 @@ handle("hosting:move-start", (_event, input) =>
     const direction = input?.direction === "to-mac" ? "to-mac" : "to-hosted";
     const from = entryOf(String(input?.from ?? ""));
     if (!from) throw new Error("There is no such workspace to move.");
-    if (direction === "to-hosted" && (isRemoteKind(from.kind) || from.moved)) throw new Error(`${from.name} is not a workspace on this Mac that can move.`);
-    if (direction === "to-mac" && from.kind !== "hosted") throw new Error("Only your hosted workspace moves to this Mac.");
+    if (direction === "to-hosted" && (isRemoteKind(from.kind) || from.moved)) throw new Error(`${from.name} is not a workspace on ${thisMachine()} that can move.`);
+    if (direction === "to-mac" && from.kind !== "hosted") throw new Error(`Only your hosted workspace moves to ${thisMachine()}.`);
     const hosted = hostedEntry();
     const to = direction === "to-hosted"
       ? { id: hosted?.id ?? null, name: hosted?.name ?? "Hosted" }

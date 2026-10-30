@@ -18,6 +18,7 @@ import type { HostingMoveState, HostingMoveTarget } from "@/types/bridge";
 import { SettingRow, SettingsGroup, SettingsSelect } from "../SettingsLayout";
 import { said, useHostingMove } from "./useHostingMove";
 import { formatList, t } from "@/lib/i18n";
+import { thisComputer } from "@/lib/thisComputer";
 
 /** Names said one after another, the way the reader's language lists them. */
 const listed = (names: string[]) => formatList(names, { type: "unit", style: "short" });
@@ -57,7 +58,7 @@ export function MoveHome({ state: given, only }: { state?: HostingMoveState; onl
 
   const moveAll = async () => {
     const ok = await confirm({
-      title: t("moveHome.moveAll.title"),
+      title: t("moveHome.moveAll.title", { computer: thisComputer() }),
       body: `${t("moveHome.moveAll.body", { names: listed(hosted.map((h) => h.name)) })}\n\n${stillPaidLine()}`,
       confirmLabel: t("moveHome.moveAll.confirm"),
     });
@@ -68,11 +69,11 @@ export function MoveHome({ state: given, only }: { state?: HostingMoveState; onl
 
   return (
     <SettingsGroup
-      title={t("moveHome.moveToThisMac")}
+      title={t("moveHome.moveToThisMac", { computer: thisComputer() })}
       action={
         hosted.length > 1 ? (
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void moveAll()}>
-            {t("moveHome.moveAllToThisMac")}
+            {t("moveHome.moveAllToThisMac", { computer: thisComputer() })}
           </Button>
         ) : undefined
       }
@@ -91,7 +92,7 @@ export function MoveHome({ state: given, only }: { state?: HostingMoveState; onl
 export function landings(hosted: { id: string; name: string }, state: HostingMoveState, targets: HostingMoveTarget[] | null) {
   const copies = state.copies.filter((c) => c.to === hosted.id);
   const out: Array<{ key: string; to: string | null; name: string; replace: boolean; label: string }> = [];
-  for (const copy of copies) out.push({ key: `copy:${copy.id}`, to: copy.id, name: copy.name, replace: true, label: t("moveHome.landing.copy", { name: copy.name }) });
+  for (const copy of copies) out.push({ key: `copy:${copy.id}`, to: copy.id, name: copy.name, replace: true, label: t("moveHome.landing.copy", { name: copy.name, computer: thisComputer() }) });
   for (const target of targets ?? []) {
     if (target.empty && !target.copy) out.push({ key: `empty:${target.id}`, to: target.id, name: target.name, replace: false, label: t("moveHome.landing.empty", { name: target.name }) });
   }
@@ -115,18 +116,18 @@ function HomeRow({ hosted, state, targets, busy }: { hosted: { id: string; name:
         ? t("moveHome.confirm.keys", { keys: listed(groups.flatMap((g) => g.items)) })
         : t("moveHome.confirm.noKeys");
       const into = pick.replace
-        ? t("moveHome.confirm.replaces", { name: pick.name })
+        ? t("moveHome.confirm.replaces", { name: pick.name, computer: thisComputer() })
         : pick.to
           ? t("moveHome.confirm.intoEmpty", { name: pick.name })
           : t("moveHome.confirm.intoNew", { name: pick.name });
       const ok = await confirm({
-        title: t("moveHome.confirm.title", { name: hosted.name }),
+        title: t("moveHome.confirm.title", { name: hosted.name, computer: thisComputer() }),
         body: [
           `${t("moveHome.confirm.moving", { counts: countsWords(preview?.counts) })} ${into}`,
           `${keysLine} ${t("moveHome.confirm.afterwards")}`,
           stillPaidLine(),
         ].join("\n\n"),
-        confirmLabel: pick.replace ? t("moveHome.confirm.replaceAndMove") : t("moveHome.moveToThisMac"),
+        confirmLabel: pick.replace ? t("moveHome.confirm.replaceAndMove") : t("moveHome.moveToThisMac", { computer: thisComputer() }),
         destructive: pick.replace,
       });
       if (!ok) return;
@@ -141,11 +142,11 @@ function HomeRow({ hosted, state, targets, busy }: { hosted: { id: string; name:
   return (
     <SettingRow
       label={hosted.name}
-      description={t("moveHome.bringEverythingInItTo")}
+      description={t("moveHome.bringEverythingInItTo", { computer: thisComputer() })}
       control={
         <Button size="sm" className="gap-1.5" disabled={busy || asking} onClick={() => void go()}>
           <Monitor size={14} />
-          {t("moveHome.moveToThisMac")}
+          {t("moveHome.moveToThisMac", { computer: thisComputer() })}
         </Button>
       }
     >

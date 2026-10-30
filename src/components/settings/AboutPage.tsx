@@ -12,6 +12,7 @@ import { drainingLine } from "../UpdateCard";
 import { SettingRow, SettingsGroup } from "../SettingsLayout";
 import { ServerUpdateRow, useServerUpdate } from "./ServerUpdate";
 import { t } from "@/lib/i18n";
+import { yourComputer } from "@/lib/thisComputer";
 
 /** The small mark a hosted workspace wears in Settings, so nobody wonders
  * why the Mac's own options are not there. */
@@ -107,7 +108,7 @@ export function AboutPage() {
               {t("aboutPage.thisWorkspace")} <HostedMark />
             </>
           }
-          description={t("aboutPage.itRunsOnAMachine")}
+          description={t("aboutPage.itRunsOnAMachine", { computer: yourComputer() })}
         />
       )}
       {/* A browser has no app of its own to update; the server row below

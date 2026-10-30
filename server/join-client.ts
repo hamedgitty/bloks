@@ -1,4 +1,4 @@
-// Joining somebody else's workspace from this Mac.
+// Joining somebody else's workspace from this computer.
 //
 // The other half of server/members.ts's door. The window hands over what
 // was pasted or typed; this finds the invite (through Bloks Cloud, or on
@@ -16,6 +16,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as invites from "./invites.ts";
 import { joinPhrase } from "./people.ts";
 import { open, peek, seal } from "./relay-crypto.ts";
+import { machineKind, thisMachine } from "./this-machine.ts";
 
 export type Fetch = typeof fetch;
 
@@ -136,7 +137,7 @@ export class JoinClient {
     } catch {
       return s.via === "lan"
         ? { ok: false, status: 503, code: "unreachable", error: `${s.invite.inviter}'s computer did not answer on this network.` }
-        : { ok: false, status: 503, code: "offline", error: "Bloks Cloud could not be reached. Check this Mac's connection." };
+        : { ok: false, status: 503, code: "offline", error: `Bloks Cloud could not be reached. Check ${thisMachine()}'s connection.` };
     }
     const outer = (await res.json().catch(() => ({}))) as { status?: number; payload?: string; error?: string };
     if (res.status === 503 || res.status === 504) {
@@ -180,7 +181,7 @@ export class JoinClient {
           if ("ok" in found) return found;
           if (found.status !== 200) return failure(found);
           const invite = readPreview({ ...((found.body.preview as object) ?? {}), publicId: found.body.publicId }, s.publicId);
-          if (!invite) return { ok: false, status: 502, code: "unreachable", error: "The invite's computer answered in a way this Mac does not understand." };
+          if (!invite) return { ok: false, status: 502, code: "unreachable", error: `The invite's computer answered in a way ${thisMachine()} does not understand.` };
           s.invite = invite;
           s.publicId = invite.publicId;
           this.sessions.set(s.id, s);
@@ -196,7 +197,7 @@ export class JoinClient {
     try {
       res = await this.fetcher(`${relay}/invites/lookup?code=${parsed.code}`, { signal: AbortSignal.timeout(10_000) });
     } catch {
-      return { ok: false, status: 503, code: "offline", error: "Bloks Cloud could not be reached. Check this Mac's connection, then try again." };
+      return { ok: false, status: 503, code: "offline", error: `Bloks Cloud could not be reached. Check ${thisMachine()}'s connection, then try again.` };
     }
     if (res.status === 429) {
       const said = (await res.json().catch(() => ({}))) as { retryAfter?: unknown };
@@ -289,14 +290,14 @@ export class JoinClient {
     return failure(answer);
   }
 
-  async claim(id: unknown, input: { name: unknown; password?: unknown; device?: unknown }) {
+  async claim(id: unknown, input: { name: unknown; password?: unknown }) {
     const s = this.session(id);
     if (!s) return { ok: false, status: 404, code: "no_session", error: "Look the invite up again." } satisfies JoinFailure;
     const answer = await this.ask(s, "/api/join/claim", {
       name: input.name,
       ...(typeof input.password === "string" && input.password ? { password: input.password } : {}),
       tokenHash: s.tokenHash,
-      device: input.device === "browser" ? "browser" : "mac",
+      device: machineKind(),
       ...(s.clientToken ? { relayClient: sha256(s.clientToken) } : {}),
     });
     return "ok" in answer ? answer : this.shape(s, answer);

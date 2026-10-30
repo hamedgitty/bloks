@@ -14,6 +14,7 @@ import { autoMoveFrom, countsDiffer as appCountsDiffer, hostingRunning, keepMove
 import { markMoved, normalizeEntry } from "../electron/workspaces.mjs";
 import { HOSTED_TARGET, othersFor } from "../electron/server-line.mjs";
 import { MOVE_STEPS, countsWords, headline, keyGroups, sendingWords, stepLabel, stepState } from "../src/lib/hostingMove.ts";
+import { thisComputer } from "../src/lib/thisComputer.ts";
 import { stripSecrets } from "../server/backup.ts";
 import { MoveUploads, PART_BYTES, UploadError, readPart, sha256 } from "../server/move-upload.ts";
 import { cleanMovedMark, clearMovedMark, movedWords, readMovedMark, writeMovedMark } from "../server/moved-mark.ts";
@@ -95,7 +96,7 @@ test("the note a moved copy keeps never travels, and is cleaned like a name", ()
   assert.deepEqual(mark, { to: "hosted", name: "Hos ted machine", workspaceId: "ws_abc", at: 5, pending: true });
   assert.equal(cleanMovedMark({ to: "elsewhere" }), null);
   assert.equal(cleanMovedMark({ to: "mac", workspaceId: "../x" })?.workspaceId, null);
-  assert.match(movedWords({ ...mark!, pending: false }), /^This workspace moved to your hosted machine\. Its routines, watchers, workflows and chat bots run there now, not on this Mac\.$/);
+  assert.match(movedWords({ ...mark!, pending: false }), /^This workspace moved to your hosted machine\./);
   assert.match(movedWords(mark!), /is moving to your hosted machine/);
   const dir = mkdtempSync(join(tmpdir(), "bloks-moved-mark-"));
   try {
@@ -220,7 +221,8 @@ test("the card says each step in a word or two, and how much is across while it 
   assert.equal(sendingWords(1_200_000_000, 3_400_000_000), "Sending 1.2 of 3.4 GB");
   assert.equal(headline(move), "Moving Personal to your hosted machine");
   assert.equal(headline({ ...move, phase: "done" }), "Personal is on your hosted machine");
-  assert.equal(headline({ ...move, direction: "to-mac", from: { id: "ws_h", name: "Hosted" }, to: { id: "ws_n", name: "Hosted" } }), "Moving Hosted to Hosted on this Mac");
+  // the machine a move home lands on is named as this one is, Mac, PC or computer
+  assert.equal(headline({ ...move, direction: "to-mac", from: { id: "ws_h", name: "Hosted" }, to: { id: "ws_n", name: "Hosted" } }), `Moving Hosted to Hosted on ${thisComputer()}`);
   assert.equal(countsWords({ agents: 3, conversations: 1, rooms: 0, routines: 2, watchers: 0, workflows: 0, memoryFiles: 0 }), "3 agents, 1 conversation and 2 routines");
   const groups = keyGroups(
     [

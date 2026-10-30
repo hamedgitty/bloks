@@ -19,6 +19,8 @@
 import { chmodSync, existsSync, lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { thisMachine } from "./this-machine.ts";
+
 /** How much a finding wants the person's attention. */
 export type Level = "ok" | "look" | "risky";
 
@@ -100,15 +102,11 @@ export function names(list: string[], most = 3): string {
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-function machine(platform: NodeJS.Platform | undefined): string {
-  return platform === "darwin" ? "this Mac" : platform === "win32" ? "this PC" : "this computer";
-}
-
 const ORDER: Record<Level, number> = { risky: 0, look: 1, ok: 2 };
 
 /** Every finding, the ones that want attention first. */
 export function checkup(facts: SecurityFacts): Finding[] {
-  const here = machine(facts.platform ?? process.platform);
+  const here = thisMachine(facts.platform);
   const findings: Finding[] = [];
 
   const full = facts.agents.filter((a) => a.approvals === "full");
