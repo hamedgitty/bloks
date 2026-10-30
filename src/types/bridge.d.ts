@@ -175,6 +175,8 @@ export type WorkspacesState =
       /** "Show working agents in the notch"; absent off macOS, where
        * there is no notch to show them in. */
       notch?: boolean;
+      /** "Close to the tray"; absent off Windows (electron/tray.mjs). */
+      tray?: boolean;
       /** What the person is called in their own workspaces, once they
        * have said; null until then. Absent from an older app. */
       ownerName?: string | null;
@@ -282,6 +284,8 @@ declare global {
       pendingNotifyTarget?(): Promise<string | null>;
       /** Shows the working agents in the notch, or takes the island away. */
       prefsNotch?(on: boolean): Promise<void>;
+      /** Turns "Close to the tray" on or off (Windows). */
+      prefsTray?(on: boolean): Promise<void>;
       /** The island's page: the pointer is over the island, or has left
        * it, so its window takes the mouse or lets it through. */
       notchHover?(over: boolean): Promise<void>;
