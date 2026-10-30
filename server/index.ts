@@ -3386,7 +3386,10 @@ function broadcast(payload: unknown) {
   } catch {}
   if ((payload as { kind?: string })?.kind !== "screen") {
     try {
-      relayLink.publish(payload, ownerHidden ? undefined : wakeFor(payload), false, ownerHidden ? hidden!.personId : undefined);
+      // with where it stands on this stream, as every window's frame has
+      // it: an agent list or an answer through Bloks Cloud says the same
+      // count, and the app orders the two by it (GitHub 398)
+      relayLink.publish({ ...(payload as object), _seq: seq }, ownerHidden ? undefined : wakeFor(payload), false, ownerHidden ? hidden!.personId : undefined);
     } catch (error) {
       // Device settings may be unreadable. Do not turn an already saved
       // message into a failed request that the sender repeats.
