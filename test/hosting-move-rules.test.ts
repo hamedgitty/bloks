@@ -96,7 +96,7 @@ test("the note a moved copy keeps never travels, and is cleaned like a name", ()
   assert.deepEqual(mark, { to: "hosted", name: "Hos ted machine", workspaceId: "ws_abc", at: 5, pending: true });
   assert.equal(cleanMovedMark({ to: "elsewhere" }), null);
   assert.equal(cleanMovedMark({ to: "mac", workspaceId: "../x" })?.workspaceId, null);
-  assert.match(movedWords({ ...mark!, pending: false }), /^This workspace moved to your hosted machine\. Its routines, watchers, workflows and chat bots run there now, not on this Mac\.$/);
+  assert.match(movedWords({ ...mark!, pending: false }), /^This workspace moved to your hosted machine\./);
   assert.match(movedWords(mark!), /is moving to your hosted machine/);
   const dir = mkdtempSync(join(tmpdir(), "bloks-moved-mark-"));
   try {

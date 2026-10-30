@@ -50,6 +50,12 @@ export const BACK_WITHIN_MS = 10 * 60_000;
 /** The toast before a move started on its own begins. */
 export const AUTO_DELAY_MS = 6_000;
 
+/** What to call the machine this app runs on, which is the local end of
+ * every move. The same words as server/this-machine.ts. */
+export function thisMachine(platform = process.platform) {
+  return platform === "darwin" ? "this Mac" : platform === "win32" ? "this PC" : "this computer";
+}
+
 const COUNTED = [
   ["agents", "agent", "agents"],
   ["conversations", "conversation", "conversations"],
@@ -94,7 +100,7 @@ export function notEmptyWords(move) {
 
 /** A fresh move, before anything has happened. */
 export function newMove({ direction, from, to, replace = false, auto = false, now = Date.now() }) {
-  if (!DIRECTIONS.includes(direction)) throw new Error("A move goes to the hosted machine or to this Mac.");
+  if (!DIRECTIONS.includes(direction)) throw new Error(`A move goes to the hosted machine or to ${thisMachine()}.`);
   return {
     id: `mv_${now.toString(36)}`,
     direction,
@@ -188,14 +194,14 @@ export function autoMoveFrom({ account, state, registry }) {
 
 /** The toast's words before a move started on its own begins. */
 export function startingWords(move) {
-  return move.direction === "to-hosted" ? `Moving ${move.from.name} to your hosted machine.` : `Moving ${move.from.name} to this Mac.`;
+  return move.direction === "to-hosted" ? `Moving ${move.from.name} to your hosted machine.` : `Moving ${move.from.name} to ${thisMachine()}.`;
 }
 
 /** The one calm sentence once a move is done. */
 export function doneWords(move) {
   return move.direction === "to-hosted"
-    ? `${move.from.name} runs on your hosted machine now. The copy on this Mac stays, paused, until you remove it.`
-    : `${move.from.name} runs on this Mac now, as ${move.to.name}. Hosting is still paid for; change your plan in Settings, Plan.`;
+    ? `${move.from.name} runs on your hosted machine now. The copy on ${thisMachine()} stays, paused, until you remove it.`
+    : `${move.from.name} runs on ${thisMachine()} now, as ${move.to.name}. Hosting is still paid for; change your plan in Settings, Plan.`;
 }
 
 // ── talking to the two servers ─────────────────────────────────────────
@@ -285,7 +291,7 @@ export async function runMove(start, deps) {
       // a Bloks from before this pipeline can take a file in by hand, from
       // Backups, but cannot say what arrived, so a move is not started there
       if (!there.body.counts || !("lastRestore" in there.body)) {
-        throw new MoveProblem(`Bloks on ${move.direction === "to-hosted" ? "your hosted machine" : "this Mac"} needs an update before a workspace can move there.`);
+        throw new MoveProblem(`Bloks on ${move.direction === "to-hosted" ? "your hosted machine" : thisMachine()} needs an update before a workspace can move there.`);
       }
       const replaceable = move.replace && there.body.moved && !there.body.moved.pending;
       if (!there.body.empty && !replaceable) throw new MoveProblem(notEmptyWords(move), { code: "not-empty" });

@@ -100,6 +100,7 @@ export function autoMoveFrom(input: {
   state: MoveState | null | undefined;
   registry: { workspaces: Array<{ id: string; kind: string; name: string; moved?: unknown }> } | null | undefined;
 }): { id: string; name: string } | null;
+export function thisMachine(platform?: string): string;
 export function startingWords(move: Pick<Move, "direction" | "from">): string;
 export function doneWords(move: Pick<Move, "direction" | "from" | "to">): string;
 
