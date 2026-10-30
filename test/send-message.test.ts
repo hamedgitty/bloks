@@ -10,54 +10,48 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-test("stop-and-send waits for Stop and sends the follow-up once without steering", async () => {
-  const stopped = deferred<unknown>();
+test("stop-and-send is one request that names the stop and never steers", async () => {
   const sent = deferred<unknown>();
   const calls: Array<{ path: string; body: any }> = [];
   const ref = { botId: "river", taskId: "plans", text: "Use the revised outline", stopFirst: true };
   const pending = sendMessage(async (path, init) => {
     calls.push({ path, body: JSON.parse(String(init?.body)) });
-    return path.endsWith("/interrupt") ? stopped.promise : sent.promise;
+    return sent.promise;
   }, ref);
-  assert.deepEqual(calls, [{ path: "/api/bots/river/interrupt", body: { taskId: "plans" } }]);
-  // Another conversation or new draft while Stop waits cannot move these words.
+  // Another conversation or new draft while it waits cannot move these words.
   ref.botId = "other";
   ref.taskId = "other-lane";
   ref.text = "New draft";
-  stopped.resolve({ ok: true });
-  await setImmediate();
+  sent.resolve({ ok: true, queued: true, stopped: true });
+  assert.deepEqual(await pending, { ok: true, queued: true, stopped: true });
   assert.deepEqual(calls, [
-    { path: "/api/bots/river/interrupt", body: { taskId: "plans" } },
-    { path: "/api/bots/river/messages", body: { text: "Use the revised outline", taskId: "plans", steer: false } },
+    { path: "/api/bots/river/messages", body: { text: "Use the revised outline", taskId: "plans", steer: false, stopFirst: true } },
   ]);
-  sent.resolve({ ok: true, queued: true });
-  assert.deepEqual(await pending, { ok: true, queued: true });
-  assert.equal(calls.length, 2);
 });
 
-test("a refused Stop does not submit the follow-up and reaches draft recovery", async () => {
-  const failure = new Error("Stop was refused");
+test("an older server that only queued the words is then stopped, and a refused stop keeps them sent", async () => {
   const calls: string[] = [];
-  let recovered = 0;
-  await sendMessage(async path => { calls.push(path); throw failure; }, {
-    botId: "river", taskId: "plans", text: "Keep these words", stopFirst: true,
-  }).catch(error => { assert.equal(error, failure); recovered++; });
-  assert.deepEqual(calls, ["/api/bots/river/interrupt"]);
-  assert.equal(recovered, 1);
+  const result = await sendMessage(async path => {
+    calls.push(path);
+    if (path.endsWith("/interrupt")) throw new Error("Stop was refused");
+    return { ok: true, queued: true };
+  }, { botId: "river", taskId: "plans", text: "Keep these words", stopFirst: true });
+  assert.deepEqual(result, { ok: true, queued: true });
+  assert.deepEqual(calls, ["/api/bots/river/messages", "/api/bots/river/interrupt"]);
+  // a turn the words started on an idle lane is not stopped
+  calls.length = 0;
+  await sendMessage(async path => { calls.push(path); return { ok: true }; }, { botId: "river", text: "Start", stopFirst: true });
+  assert.deepEqual(calls, ["/api/bots/river/messages"]);
 });
 
-test("a failed follow-up is returned to recovery without repeating Stop or send", async () => {
+test("a refused stop-and-send reaches draft recovery once", async () => {
   const failure = new Error("Send was refused");
   const calls: string[] = [];
   let recovered = 0;
-  await sendMessage(async path => {
-    calls.push(path);
-    if (path.endsWith("/messages")) throw failure;
-    return { ok: true };
-  }, { botId: "river", text: "Keep these words", stopFirst: true }).catch(error => {
-    assert.equal(error, failure); recovered++;
-  });
-  assert.deepEqual(calls, ["/api/bots/river/interrupt", "/api/bots/river/messages"]);
+  await sendMessage(async path => { calls.push(path); throw failure; }, {
+    botId: "river", text: "Keep these words", stopFirst: true,
+  }).catch(error => { assert.equal(error, failure); recovered++; });
+  assert.deepEqual(calls, ["/api/bots/river/messages"]);
   assert.equal(recovered, 1);
 });
 
@@ -75,21 +69,22 @@ test("a plain send while a stop-then-send waits goes after it, not into the turn
   const stopped = deferred<unknown>();
   const calls: Array<{ path: string; body: any }> = [];
   const api = async (path: string, init?: RequestInit) => {
-    calls.push({ path, body: JSON.parse(String(init?.body)) });
-    return path.endsWith("/interrupt") ? stopped.promise : { ok: true };
+    const body = JSON.parse(String(init?.body));
+    calls.push({ path, body });
+    return body.stopFirst ? stopped.promise : { ok: true };
   };
   const first = sendMessage(api, { botId: "river", taskId: "plans", text: "A", stopFirst: true });
   const second = sendMessage(api, { botId: "river", taskId: "plans", text: "B" });
   // another conversation is not held up by this one
   await sendMessage(api, { botId: "river", taskId: "other", text: "C" });
   await setImmediate();
-  assert.deepEqual(calls.map((c) => c.body.text ?? "stop"), ["stop", "C"]);
-  stopped.resolve({ ok: true });
+  assert.deepEqual(calls.map((c) => c.body.text), ["A", "C"]);
+  stopped.resolve({ ok: true, queued: true, stopped: true });
   await first;
   await second;
-  assert.deepEqual(calls.map((c) => c.body.text ?? "stop"), ["stop", "C", "A", "B"]);
-  assert.equal(calls[2]!.body.steer, false);
-  assert.equal(calls[3]!.body.steer, undefined);
+  assert.deepEqual(calls.map((c) => c.body.text), ["A", "C", "B"]);
+  assert.equal(calls[0]!.body.stopFirst, true);
+  assert.equal(calls[2]!.body.steer, undefined);
 });
 
 test("the person's tap on how words meet a running turn rides along, except on a stop-and-send", async () => {
@@ -101,5 +96,5 @@ test("the person's tap on how words meet a running turn rides along, except on a
   await sendMessage(api, { botId: "river", taskId: "plans", text: "add a chart", delivery: "now" });
   await sendMessage(api, { botId: "river", taskId: "plans", text: "and a table", delivery: "wait", stopFirst: true });
   assert.deepEqual(calls[0], { path: "/api/bots/river/messages", body: { text: "add a chart", taskId: "plans", delivery: "now" } });
-  assert.deepEqual(calls.at(-1), { path: "/api/bots/river/messages", body: { text: "and a table", taskId: "plans", steer: false } });
+  assert.deepEqual(calls.at(-1), { path: "/api/bots/river/messages", body: { text: "and a table", taskId: "plans", steer: false, stopFirst: true } });
 });

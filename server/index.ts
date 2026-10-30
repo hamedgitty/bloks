@@ -6729,7 +6729,7 @@ function queuedCommand(laneId: string, item: { messageId?: string }): string | u
   return accepted && commandFor(m.text, accepted) ? accepted : undefined;
 }
 /** One ordinary prefix or one command. The remaining words stay in FIFO order. */
-function queuedSegment<T extends { messageId?: string; text?: string; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup }>(laneId: string, items: T[], continuation = false, requester?: string) {
+function queuedSegment<T extends { messageId?: string; text?: string; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup; alone?: true }>(laneId: string, items: T[], continuation = false, requester?: string) {
   const alive = items.filter((item) => steerWords(laneId, item) !== null);
   // A person with full access runs as the owner but is a sender of their
   // own: their words and anyone else's are never one burst.
@@ -6743,7 +6743,8 @@ function queuedSegment<T extends { messageId?: string; text?: string; requester?
   const wantedAudience = continuation ? laneAudience.get(laneId) ?? "private" : alive[0] ? audience(alive[0]) : "private";
   const split = alive.findIndex((item) => trust(item) !== wanted || audience(item) !== wantedAudience);
   const prefix = split < 0 ? alive : alive.slice(0, split);
-  const first = prefix.findIndex((item) => queuedCommand(laneId, item));
+  // a command, or words sent with stop and send now, is a turn of its own
+  const first = prefix.findIndex((item) => item.alone || queuedCommand(laneId, item));
   const size = first < 0 ? prefix.length : first === 0 && !continuation ? 1 : first;
   return { items: alive.slice(0, size), rest: alive.slice(size) };
 }
@@ -17906,7 +17907,7 @@ function maybeResumeAfterConnect(botId: string, threadId: string, resumeKey: str
 // (agentChain), which a restart forgets along with the rest of memory.
 const steerQueues = new Map<
   string,
-  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number; chainTask?: ChainTask; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup }> }
+  { botId: string; items: Array<{ messageId?: string; text?: string; source?: "webhook"; chain?: number; chainTask?: ChainTask; requester?: string; telegramPerson?: TelegramSender; telegramGroup?: TelegramOwnerGroup; alone?: true }> }
 >();
 
 /** What one waiting item says now, or null for a message that no longer
@@ -18099,6 +18100,9 @@ function queueOnLane(
     /** Told the words as written down, after the admission, so another
      * agent's record of sending them can follow them (tieRecord). */
     onQueued?: (laneId: string, waiting: Message) => void;
+    /** Stop and send now (GitHub 452): ahead of everything that waits,
+     * after any earlier such words, and in a turn of its own. */
+    first?: boolean;
   } = {},
 ) {
   // A routine's command keeps Claude Code's command path, as it does
@@ -18131,12 +18135,17 @@ function queueOnLane(
   options.onQueued?.(laneId, message);
   broadcast({ kind: "message", threadId: laneId, message });
   const entry = steerQueues.get(laneId) ?? { botId, items: [] };
-  entry.items.push({
+  const item = {
     messageId: message.id,
     ...(options.via === "webhook" ? { source: "webhook" as const } : {}),
     ...(options.chain ? { chain: options.chain } : {}),
     ...(options.chain && options.chainTask ? { chainTask: options.chainTask } : {}),
-  });
+    ...(options.first ? { alone: true as const } : {}),
+  };
+  if (options.first) {
+    const ahead = entry.items.findIndex((waiting) => !waiting.alone);
+    entry.items.splice(ahead < 0 ? entry.items.length : ahead, 0, item);
+  } else entry.items.push(item);
   steerQueues.set(laneId, entry);
   return message;
 }
@@ -18570,6 +18579,10 @@ async function sendUserMessage(
      * "answer" for words typed into a card, which are its answer. Unset
      * leaves it to the agent's delivery mode (server/delivery.ts). */
     delivery?: "now" | "wait" | "answer";
+    /** The person's stop and send now (Command-Enter): the running turn
+     * stops, and these words start the next one alone, ahead of what
+     * already waits (GitHub 452). */
+    stopFirst?: boolean;
   } = {},
 ) {
   const bot = store.bot(botId);
@@ -18616,6 +18629,9 @@ async function sendUserMessage(
   // Its engine paused (server/engine-pauses.ts): the words wait in the
   // lane, shown as waiting for the pause, as they would behind a turn.
   const paused = pauseHolding(bot, lane.id);
+  // A stop with nothing running still ends a failed turn's retry.
+  const first = Boolean(yours && options.stopFirst);
+  if (first && !laneWaits(lane) && !paused) await stopForYou(bot, lane.id);
   if (laneWaits(lane) || paused) {
     // The person's own words meeting a turn in progress: read for whether
     // they belong in it now, or after it (server/delivery.ts). Anything
@@ -18623,9 +18639,9 @@ async function sendUserMessage(
     // editor) has no turn to put them in, and they wait as before.
     let delivery: Delivery | undefined;
     let stopFor: DeliveryWhy | null = null;
-    const deciding = yours && options.steer && lane.busy && !paused;
+    const deciding = !first && yours && options.steer && lane.busy && !paused;
     const decided = deciding ? await deliveryFor(bot, lane, text, options.delivery) : null;
-    if (yours && options.steer && (!decided || decided.route === "now")) {
+    if (!first && yours && options.steer && (!decided || decided.route === "now")) {
       const into: Delivery | undefined = decided ? { route: "steered", why: decided.why, line: deliveryLine("steered", decided.why, bot.name) } : undefined;
       const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo, personal: options.personal, delivery: into });
       if (steered) {
@@ -18660,7 +18676,8 @@ async function sendUserMessage(
     // the turn, or they wait on purpose. Words meant to go in now that the
     // turn could not take wait like any such words always have, and keep
     // their place ahead of anything said after them.
-    if (stopFor) delivery = { route: "stopped", why: stopFor, line: deliveryLine("stopped", stopFor, bot.name) };
+    if (first) delivery = { route: "stopped", why: "you", line: deliveryLine("stopped", "you", bot.name) };
+    else if (stopFor) delivery = { route: "stopped", why: stopFor, line: deliveryLine("stopped", stopFor, bot.name) };
     else if (decided?.route === "queue") delivery = { route: "queued", why: decided.why, line: deliveryLine("queued", decided.why, bot.name) };
     if (stopFor) await stopForYou(bot, lane.id);
     // Another agent saying this changes what the running turn is doing
@@ -18700,13 +18717,17 @@ async function sendUserMessage(
       ...(drain.on && yours ? { waitsFor: "restart" as const } : paused ? { waitsFor: "pause" as const, waitsUntil: paused.until } : {}),
       ...(delivery ? { delivery } : {}),
       onQueued: options.onQueued,
+      first,
     });
+    // Queued first and stopped after: however soon the turn ends, the
+    // drain that follows finds these words ahead of what waited before.
+    if (first) await stopForYou(bot, lane.id);
     if (paused) sayPaused(lane.id, paused.id, `${pausedWhy(bot, paused)} What is said to it here waits, and goes on its own then.`);
     // Asking the engine took a moment, and the turn may have ended in it,
     // with nothing coming along after to take what now waits.
-    if ((yours && options.steer) || askedEngine) drainSteer(lane.id);
+    if ((yours && options.steer) || askedEngine || first) drainSteer(lane.id);
     heard();
-    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note, delivery };
+    return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note, delivery, stopped: first || undefined };
   }
   await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth, chainTask: options.chain?.task, admission, onQueued: options.onQueued });
   heard();
@@ -23236,6 +23257,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (!bot) return json(res, 404, { error: "no such agent" });
         const lane = bot.tasks.find((t) => t.id === (taskId ?? activeLaneOf(bot)));
         if (!lane) return json(res, 404, { error: "no such task" });
+        if (body.stopFirst === true) await stopForYou(bot, lane.id);
         withYou({ bot });
         const goal = startGoal(bot, lane, asked);
         return json(res, 202, { ok: true, goal: goalSummary(goal), taskId: lane.id, lane: lane.title });
@@ -23273,7 +23295,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           yours: !asAgent,
           // A stop-and-send follow-up must not join the dying turn, even
           // when its engine has not closed after acknowledging Stop.
-          steer: !asAgent && body.steer !== false,
+          steer: !asAgent && body.steer !== false && body.stopFirst !== true,
+          // the person's stop and send now, in one request (GitHub 452)
+          ...(!asAgent && body.stopFirst === true ? { stopFirst: true } : {}),
           // only another agent asks for this; the person's words normally try
           now: Boolean(from) && body.now === true,
           // the person's one tap on how these words meet a running turn
