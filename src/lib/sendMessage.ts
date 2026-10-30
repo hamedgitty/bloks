@@ -13,11 +13,13 @@ export interface MessageSend {
   delivery?: "now" | "wait";
 }
 
-/** Modifier-Enter stops before submitting, and never joins the dying turn.
- * Stop acknowledges the request, not necessarily the engine's exit, so the
- * follow-up waits in the normal queue until that turn has actually ended.
- * Capture its lane and words before waiting: the person may change either
- * on screen meanwhile. Errors go to the caller's normal draft recovery. */
+/** Modifier-Enter is one request: the server queues these words ahead of
+ * anything already waiting, then stops the turn, so they start the next
+ * turn alone however soon that turn ends (GitHub 452). An older server
+ * ignores stopFirst and queues them behind the turn, which is then stopped
+ * as before. Capture its lane and words before waiting: the person may
+ * change either on screen meanwhile. Errors go to the caller's normal
+ * draft recovery. */
 /** Sends to a conversation still waiting on a stop-then-send, by agent
  * and lane. A plain Enter pressed meanwhile used to go at once, steering
  * into the turn being stopped, so it was lost the same way the follow-up
@@ -47,12 +49,15 @@ async function send(api: Api, ref: MessageSend): Promise<any> {
     text: ref.text,
     replyTo: ref.replyTo,
     ...lane,
-    ...(stopFirst ? { steer: false } : {}),
+    // steer:false keeps an older server from putting them into the dying turn
+    ...(stopFirst ? { steer: false, stopFirst: true } : {}),
     // a stop-and-send has decided already; the tap is for everything else
     ...(ref.delivery && !stopFirst ? { delivery: ref.delivery } : {}),
   });
-  if (stopFirst) {
-    await api(`/api/bots/${botId}/interrupt`, { method: "POST", body: JSON.stringify(lane) });
+  const sent = await api(`/api/bots/${botId}/messages`, { method: "POST", body });
+  // Sent already, so a failed stop must not send the words to recovery too.
+  if (stopFirst && sent?.queued && !sent.stopped) {
+    await api(`/api/bots/${botId}/interrupt`, { method: "POST", body: JSON.stringify(lane) }).catch(() => {});
   }
-  return api(`/api/bots/${botId}/messages`, { method: "POST", body });
+  return sent;
 }
