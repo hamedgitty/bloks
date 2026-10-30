@@ -43,7 +43,7 @@ export function RequestCard({
     request.forName ? t("requestCard.fromInviteFor", { name: request.forName }) : t("requestCard.fromAnInvite"),
     request.role === "admin" ? t("requestCard.asAdmin") : t("requestCard.asMember"),
     // a kind this card does not know yet (a newer workspace's) is a computer
-    t(ON_DEVICE[request.device] ?? "requestCard.onComputer"),
+    t(ON_DEVICE[request.device] ?? ON_DEVICE.computer),
     ago(request.at),
     ...(request.password === "correct" ? [t("requestCard.passwordCorrect")] : []),
   ];

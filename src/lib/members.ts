@@ -14,6 +14,7 @@ import { ownerOrNull } from "./yourName";
 import { openWorkspaceDialog } from "@/lib/workspaces";
 import { formatDate, t, type MessageKey } from "./i18n.ts";
 import { thisComputer } from "./thisComputer.ts";
+import type { DeviceKind } from "../../server/this-machine.ts";
 
 export type WorkspaceRole = "admin" | "member";
 export type Role = WorkspaceRole | "owner";
@@ -43,7 +44,7 @@ export interface Member {
   role: WorkspaceRole;
   joinedAt: number;
   invitedBy: string;
-  device: "iphone" | "mac" | "pc" | "computer" | "browser" | null;
+  device: DeviceKind | null;
   devices: number;
   lastActive: number | null;
   soloAgents: number;
@@ -70,7 +71,7 @@ export interface JoinRequest {
   name: string;
   forName: string | null;
   role: WorkspaceRole;
-  device: "iphone" | "mac" | "pc" | "computer" | "browser";
+  device: DeviceKind;
   at: number;
   password: "correct" | "none";
   phrase: string | null;

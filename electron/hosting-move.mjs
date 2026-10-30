@@ -51,7 +51,10 @@ export const BACK_WITHIN_MS = 10 * 60_000;
 export const AUTO_DELAY_MS = 6_000;
 
 /** What to call the machine this app runs on, which is the local end of
- * every move. The same words as server/this-machine.ts. */
+ * every move. The same words as server/this-machine.ts, written out here
+ * because the app cannot import the server's files: they are TypeScript,
+ * built apart into Resources/server, outside the app's own files.
+ * test/this-machine.test.ts holds the two to each other. */
 export function thisMachine(platform = process.platform) {
   return platform === "darwin" ? "this Mac" : platform === "win32" ? "this PC" : "this computer";
 }

@@ -34,14 +34,12 @@ import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.ts";
 import { readSaved, isRecord } from "./atomic-write.ts";
+import type { DeviceKind } from "./this-machine.ts";
 
 export type MemberRole = "collaborator" | "viewer";
 /** A person's place in the workspace. The owner is not a role anyone
  * holds: it is whoever this computer belongs to, and has no Person. */
 export type WorkspaceRole = "admin" | "member";
-/** What a person joined from, as their app said it. A desktop says
- * "mac", "pc" or "computer"; older ones said "mac" whatever they ran on. */
-export type DeviceKind = "iphone" | "mac" | "pc" | "computer" | "browser";
 
 export interface Person {
   id: string;

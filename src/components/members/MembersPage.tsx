@@ -51,11 +51,11 @@ import { AlertTriangle } from "@/components/icons";
 import { distinctNames } from "@/lib/names";
 import { formatList, formatNumber, t, type MessageKey } from "@/lib/i18n";
 
-const DEVICE_WORD: Record<"iphone" | "mac" | "pc" | "computer" | "browser", MessageKey> = {
+const DEVICE_WORD: Record<NonNullable<Member["device"]>, MessageKey> = {
   iphone: "membersMembersPage.device.iphone",
   mac: "membersMembersPage.device.mac",
   pc: "membersMembersPage.device.pc",
-  computer: "membersMembersPage.device.computer",
+  computer: "settingsPanel.computer",
   browser: "membersMembersPage.device.browser",
 };
 const dollars = (n: number, cents = true) =>
@@ -571,7 +571,7 @@ function MemberRow({
     isNew ? t("membersMembersPage.joinedJustNow") : t("membersMembersPage.joinedOn", { date: shortDate(m.joinedAt) }),
     activeWords(m.lastActive),
     // a kind this page does not know yet (a newer workspace's) is a computer
-    m.device ? t(DEVICE_WORD[m.device] ?? "membersMembersPage.device.computer") : null,
+    m.device ? t(DEVICE_WORD[m.device] ?? DEVICE_WORD.computer) : null,
   ].filter(Boolean);
   const spend = m.spend && m.limits;
   const usage = spend

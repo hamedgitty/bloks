@@ -14,17 +14,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import * as invites from "./invites.ts";
-import { joinPhrase, type DeviceKind } from "./people.ts";
+import { joinPhrase } from "./people.ts";
 import { open, peek, seal } from "./relay-crypto.ts";
-import { thisMachine } from "./this-machine.ts";
+import { machineKind, thisMachine } from "./this-machine.ts";
 
 export type Fetch = typeof fetch;
-
-/** What this computer tells the host it is, for the owner's request card.
- * Mac, PC or computer, the words the window uses too (src/lib/thisComputer.ts). */
-export function deviceOf(platform: NodeJS.Platform): DeviceKind {
-  return platform === "darwin" ? "mac" : platform === "win32" ? "pc" : "computer";
-}
 
 export interface FoundInvite {
   publicId: string;
@@ -303,7 +297,7 @@ export class JoinClient {
       name: input.name,
       ...(typeof input.password === "string" && input.password ? { password: input.password } : {}),
       tokenHash: s.tokenHash,
-      device: deviceOf(process.platform),
+      device: machineKind(),
       ...(s.clientToken ? { relayClient: sha256(s.clientToken) } : {}),
     });
     return "ok" in answer ? answer : this.shape(s, answer);

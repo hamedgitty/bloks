@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { thisMachine } from "../server/this-machine.ts";
+import { machineKind, thisMachine } from "../server/this-machine.ts";
 import { thisMachine as appMachine } from "../electron/hosting-move.mjs";
 
 test("a Mac is this Mac, Windows this PC, anything else this computer, on both sides", () => {
@@ -13,4 +13,9 @@ test("a Mac is this Mac, Windows this PC, anything else this computer, on both s
     assert.equal(thisMachine(platform), said, platform);
     assert.equal(appMachine(platform), said, `the app on ${platform}`);
   }
+});
+
+test("a desktop is a Mac on macOS, a PC on Windows, else a computer", () => {
+  const kinds = { darwin: "mac", win32: "pc", linux: "computer", freebsd: "computer" };
+  for (const [platform, kind] of Object.entries(kinds)) assert.equal(machineKind(platform), kind, platform);
 });

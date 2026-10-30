@@ -41,7 +41,8 @@ import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { readSaved, isRecord, writeFileAtomic } from "./atomic-write.ts";
-import { cleanName, joinPhrase, type DeviceKind, type WorkspaceRole } from "./people.ts";
+import { cleanName, joinPhrase, type WorkspaceRole } from "./people.ts";
+import { DEVICE_KINDS, type DeviceKind } from "./this-machine.ts";
 
 // ── codes ──────────────────────────────────────────────────────────────
 
@@ -520,8 +521,6 @@ export type ClaimResult =
   | { ok: true; invite: WorkspaceInvite; fresh: boolean }
   | { ok: false; error: JoinError; invite?: WorkspaceInvite; triesLeft?: number; locked?: boolean };
 
-const DEVICES: readonly DeviceKind[] = ["iphone", "mac", "pc", "computer", "browser"];
-
 /**
  * Somebody with the code asks to join. Checks run in the order a person
  * would want to hear about them: the invite itself first (its state is
@@ -573,7 +572,7 @@ export function claim(
     password = "correct";
   }
   if (ctx.full()) return { ok: false, error: "full", invite: inv };
-  const device = DEVICES.includes(input.device as DeviceKind) ? (input.device as DeviceKind) : "iphone";
+  const device = DEVICE_KINDS.includes(input.device as DeviceKind) ? (input.device as DeviceKind) : "iphone";
   const relayClient = typeof input.relayClient === "string" && /^[0-9a-f]{64}$/.test(input.relayClient) ? input.relayClient : undefined;
   inv.claim = { name, tokenHash, device, at: Date.now(), password, hostKey: ctx.hostKey, via: ctx.via ?? "relay", ...(relayClient ? { relayClient } : {}) };
   inv.status = "waiting";

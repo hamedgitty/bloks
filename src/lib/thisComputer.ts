@@ -16,10 +16,9 @@
 // not "this" put beside a noun, because a language that agrees its
 // "this" with the noun has to see both.
 import { t } from "./i18n.ts";
+import type { MachineKind } from "../../server/this-machine.ts";
 
-type Device = "mac" | "pc" | "computer";
-
-function device(platform?: string): Device {
+function device(platform?: string): MachineKind {
   const word = deviceWord(platform);
   return word === "Mac" ? "mac" : word === "PC" ? "pc" : "computer";
 }
