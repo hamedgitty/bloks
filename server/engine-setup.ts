@@ -49,9 +49,14 @@ export const ENGINE_SETUP: Record<string, EngineSetup> = {
   cursor: { install: "curl https://cursor.com/install -fsS | bash", signIn: "cursor-agent login" },
   cline: { install: npmUser("cline"), signIn: "cline auth" },
   // Devin's installer writes devin into ~/.local/bin, then starts its
-  // login wizard, which exits 1 without a terminal: the binary decides
+  // login wizard, which exits 1 without a terminal: the binary decides.
+  // The app does not run installs on Windows, so there this is only the
+  // command shown: Devin's PowerShell installer, not the bash one.
   devin: {
-    install: 'curl -fsSL https://cli.devin.ai/install.sh | bash || [ -x "$HOME/.local/bin/devin" ]',
+    install:
+      process.platform === "win32"
+        ? "irm https://static.devin.ai/cli/setup.ps1 | iex"
+        : 'curl -fsSL https://cli.devin.ai/install.sh | bash || [ -x "$HOME/.local/bin/devin" ]',
     signIn: "devin auth login",
   },
 };

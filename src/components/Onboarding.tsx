@@ -135,7 +135,7 @@ const ENGINES: Array<{
   },
   {
     kind: "devin",
-    name: "Devin CLI",
+    name: "Devin",
     command: "curl -fsSL https://cli.devin.ai/install.sh | bash",
     have: "onboarding.engine.devin.have",
     want: "onboarding.engine.devin.want",

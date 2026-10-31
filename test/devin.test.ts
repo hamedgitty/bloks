@@ -7,8 +7,7 @@ import { test } from "node:test";
 import { runsAProcess } from "../server/agent-cli.ts";
 import { instanceConfigs } from "../server/config.ts";
 import { ACP_SPECS, acpDriver, signInFromOutput } from "../server/drivers/acp.ts";
-import { ENGINE_SETUP } from "../server/engine-setup.ts";
-import { engineName, engineResults } from "../server/run-export.ts";
+import { engineResults } from "../server/run-export.ts";
 import { shippedEnv, signInThereCommand } from "../server/workplace.ts";
 
 const devin = () => {
@@ -17,20 +16,17 @@ const devin = () => {
   return spec;
 };
 
-test("Devin CLI is offered to new and existing workspaces, with its own setup", () => {
+test("Devin is offered to new and existing workspaces, with its own setup", () => {
   const spec = devin();
   assert.deepEqual([spec.command, ...spec.args], ["devin", "acp"]);
   for (const cfg of [{}, { instances: { claude: { driver: "claudeAgent" } } }]) {
     assert.ok(Object.values(instanceConfigs(cfg)).some((entry) => entry.driver === "devin"));
   }
   assert.equal(runsAProcess("devin"), true);
-  assert.match(ENGINE_SETUP.devin?.install ?? "", /cli\.devin\.ai\/install\.sh/);
-  assert.equal(ENGINE_SETUP.devin?.signIn, "devin auth login");
-  assert.equal(engineName("devin"), "Devin CLI");
   assert.equal(engineResults("devin"), "partial");
 });
 
-test("Devin CLI reads its own words for signed out, from `devin auth status`", () => {
+test("Devin reads its own words for signed out, from `devin auth status`", () => {
   const check = devin().signInCheck;
   assert.ok(check);
   // what 3000.11.234 prints with no login
@@ -38,7 +34,7 @@ test("Devin CLI reads its own words for signed out, from `devin auth status`", (
   assert.equal(signInFromOutput(check, "Logged in as someone@example.com"), true);
 });
 
-test("Devin CLI signs in on the remote machine without shipping this machine's key", () => {
+test("Devin signs in on the remote machine without shipping this machine's key", () => {
   assert.match(signInThereCommand({ kind: "ssh", host: "vm", path: "~" }, "devin", "devin") ?? "", /devin auth login/);
   assert.deepEqual(shippedEnv({ WINDSURF_API_KEY: "local-key", BLOKS_TOKEN: "agent-token" }, {}, {}), { BLOKS_TOKEN: "agent-token" });
 });
@@ -83,7 +79,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   const spec = { ...devin(), command: process.execPath, args: [cli], probeModels: false, signInCheck: undefined };
   const instance = await acpDriver(spec).create({
     instanceId: "devin",
-    displayName: "Devin CLI",
+    displayName: "Devin",
     enabled: true,
     environment: {},
     config: { cli: process.execPath, fullAuto: options.fullAuto === true },

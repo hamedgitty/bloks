@@ -1261,10 +1261,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 export const ACP_SPECS: readonly AcpSpec[] = [
   {
     kind: "devin",
-    name: "Devin CLI",
+    name: "Devin",
     command: "devin",
     args: ["acp"],
-    install: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    install:
+      process.platform === "win32"
+        ? "irm https://static.devin.ai/cli/setup.ps1 | iex"
+        : "curl -fsSL https://cli.devin.ai/install.sh | bash",
     signIn: "run `devin auth login` in a terminal",
     // `devin acp` reads this before the login `devin auth login` stored
     keyEnv: ["WINDSURF_API_KEY"],

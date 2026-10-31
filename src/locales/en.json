@@ -4052,7 +4052,7 @@
   "onboarding.engine.cursor.have": "Installed. Uses your Cursor account.",
   "onboarding.engine.cursor.want": "Optional. The Cursor CLI, on your Cursor plan.",
   "onboarding.engine.devin.have": "Installed. Uses your Devin account.",
-  "onboarding.engine.devin.want": "Optional. Cognition's Devin CLI, on your Devin plan.",
+  "onboarding.engine.devin.want": "Optional. Cognition's coding agent, on your Devin plan.",
   "onboarding.engine.grokCli.have": "Installed. Uses your grok.com subscription.",
   "onboarding.engine.grokCli.want": "Optional. Runs on an existing Grok subscription.",
   "onboarding.engine.kimi.have": "Connected and ready.",
