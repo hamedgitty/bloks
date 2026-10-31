@@ -426,7 +426,8 @@ describe("a fold read in several requests", { concurrency: 4 }, () => {
     assert.ok(await waitFor(() => f.folds().length === 2), f.h.logs());
     f.release(2);
     assert.ok(await waitFor(() => f.stored()?.through > previous.through && f.turns().length === 3), f.h.logs());
-    await f.idle(3);
+    // the turn asked again has ended, and so has every request but the first, still held
+    assert.ok(await waitFor(async () => !(await f.busy()) && f.folds().every((c) => c.n === 1 || !existsSync(c.cwd))), f.h.logs());
     const saved = f.stored(), asked = f.folds().length;
     assert.ok(asked > 2);
     assert.equal(saved.summary, f.written().at(-1)!.said);

@@ -156,7 +156,8 @@ async function foldAfterLongTurn(t: TestContext, summary: (n: number) => any) {
 
 test("a replay provider still folds after a long measured turn, without summed usage driving the ring", async t => {
   const { folded, asked } = await foldAfterLongTurn(t, () => reply(undefined, "Earlier messages summarised."));
-  assert.equal(asked.summaries, 1);
+  // one fold, of the first two turns: 60,000 characters, read whole in two requests
+  assert.equal(asked.summaries, 2);
   assert.equal(folded.context.used, 120_000);
   assert.equal(folded.context.window, "table");
   assert.equal(folded.context.measured, true);
@@ -196,7 +197,8 @@ test("legacy input supplies neither bot fill nor Activity fill after a no-usage 
 test("a fold whose summary request fails tries again, without waiting for another turn", async t => {
   // the first summary request is refused, the way a busy provider's is
   const { folded, asked } = await foldAfterLongTurn(t, n => n === 1 ? { status: 503 } : reply(undefined, "Earlier messages summarised."));
-  assert.equal(asked.summaries, 2, "the fold never asked for its summary again");
+  // the refused one, then the whole fold again, in its two
+  assert.equal(asked.summaries, 3, "the fold never asked for its summary again");
   assert.equal(asked.turns, 5, "the fold waited for another turn");
   assert.equal(folded.context.used, 120_000);
 });
