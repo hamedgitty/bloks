@@ -85,8 +85,11 @@ process.stdin.on("data", (c) => (input += c));
   );
   assert.match(told ?? "", /A message from Manager, another agent/);
   assert.match(told ?? "", new RegExp(`bloks say ${manager.id}`));
-  // and that the bare quiet word ends a turn with nothing for the person
-  assert.match(told ?? "", /answer with exactly QUIET and nothing else; the turn then ends without a message/);
+  // CLI turns use the explicit action before any text; only an unavailable
+  // entry point permits the legacy word, never a refused or uncertain call.
+  assert.match(told ?? "", /run `bloks quiet` before writing any text, then end your turn/);
+  assert.match(told ?? "", /Only if the command is unavailable, answer with exactly QUIET and nothing else/);
+  assert.match(told ?? "", /A refused or uncertain call requires a substantive reply, never QUIET/);
 
   // What QA says in its own chat is a full reply for the person, never a
   // message to Manager: it carries the context, not the agent field that
