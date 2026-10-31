@@ -2036,6 +2036,7 @@
   "effort.medium": "Medium",
   "effort.noSetting": "{who} has no reasoning effort setting.",
   "effort.noSettingKept": "{who} has no reasoning effort setting. {label} is kept for an engine that has one.",
+  "effort.off": "Off",
   "effort.runsAt": "Saved as {label}. {who} has no {label}, so it runs at {runs}.",
   "effort.useEngineSetting": "Use engine setting",
   "effort.xhigh": "Extra high",
