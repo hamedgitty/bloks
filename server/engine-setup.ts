@@ -48,6 +48,12 @@ export const ENGINE_SETUP: Record<string, EngineSetup> = {
   // Cursor's own installer, which writes cursor-agent into ~/.local/bin
   cursor: { install: "curl https://cursor.com/install -fsS | bash", signIn: "cursor-agent login" },
   cline: { install: npmUser("cline"), signIn: "cline auth" },
+  // Devin's installer writes devin into ~/.local/bin, then starts its
+  // login wizard, which exits 1 without a terminal: the binary decides
+  devin: {
+    install: 'curl -fsSL https://cli.devin.ai/install.sh | bash || [ -x "$HOME/.local/bin/devin" ]',
+    signIn: "devin auth login",
+  },
 };
 
 /** Long enough for a slow download, short enough that a hung installer

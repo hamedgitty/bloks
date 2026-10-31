@@ -378,6 +378,15 @@ export const CLI_PROVIDERS = [
     docsUrl: "https://opencode.ai/docs",
   },
   {
+    kind: "devin",
+    name: "Devin CLI",
+    command: "devin",
+    auth: "cli" as const,
+    keyHint: "Install it with the button above, or run curl -fsSL https://cli.devin.ai/install.sh | bash",
+    signInHint: "Run devin auth login in a terminal to connect your Devin account",
+    docsUrl: "https://docs.devin.ai/cli/acp/zed",
+  },
+  {
     kind: "geminiCli",
     name: "Gemini CLI",
     command: "gemini",

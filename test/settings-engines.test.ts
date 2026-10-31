@@ -33,7 +33,7 @@ test('registry configuration observation clones already-retained inputs without 
 });
 
 test('known driver scalar defaults and explicit empty configurations match the pinned owner branches',()=>{
-  for(const driver of ['codex','antigravity','geminiCli','opencode','grokCli','pi']){
+  for(const driver of ['codex','antigravity','geminiCli','opencode','devin','grokCli','pi']){
     const rows=inspectEngineSettings({driver},ctx,true);
     assert.deepEqual(field(rows,'enabled').effective,value(true));assert.deepEqual(field(rows,'config.fullAuto').effective,value(false));
     assert.deepEqual(field(rows,'config.cli').effective,{status:'configured',configured:true});

@@ -32,6 +32,7 @@ function candidateDirs(): string[] {
       join(local, "Programs"),
       join(home, ".grok", "bin"),
       join(home, ".local", "bin"),
+      join(local, "devin", "cli", "bin"), // Devin's PowerShell installer
       // `npm i -g --prefix ~/.local`, the command the engine hints give,
       // writes its launchers into the prefix itself on Windows, not bin/
       join(home, ".local"),

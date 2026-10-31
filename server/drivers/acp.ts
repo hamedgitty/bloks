@@ -88,6 +88,12 @@ export interface AcpSpec {
    * whose documented flow has the client authenticate first (Cursor's
    * `cursor_login`). Called only when initialize lists it. */
   authMethod?: string;
+  /** The session modes for an ordinary turn and a full-auto one, one of
+   * them selected on every turn, for an agent whose session can open in
+   * a mode Bloks did not choose (a reloaded Devin session may keep the
+   * mode its last turn left). No prompt is sent when the mode is not
+   * offered or not taken. */
+  turnModes?: { normal: string; fullAuto: string };
   /** The oldest release that speaks ACP the way this driver does. An
    * older one is reported as unavailable with the reason, not left to
    * fail its first message in some stranger way. */
@@ -1056,7 +1062,18 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // agents use modes for something else entirely (pi-acp's are
             // thinking levels), so only ask for it where it exists.
             const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
-            if (((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) && modes.some((m) => m?.id === "yolo")) {
+            const fullAuto = (config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared);
+            if (spec.turnModes) {
+              // Devin's set_mode answers yes to an id it does not have, so
+              // the session's own list is the only proof
+              const modeId = fullAuto ? spec.turnModes.fullAuto : spec.turnModes.normal;
+              if (!modes.some((m) => m?.id === modeId)) {
+                throw new Error(`${spec.name} does not offer its ${modeId} mode, so the message was not sent. Update ${spec.name} and try again.`);
+              }
+              await rpc.request("session/set_mode", { sessionId, modeId }).catch((e: Error) => {
+                throw new Error(`${spec.name} did not take its ${modeId} mode (${e.message}), so the message was not sent.`);
+              });
+            } else if (fullAuto && modes.some((m) => m?.id === "yolo")) {
               try {
                 await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
               } catch (e) {
@@ -1242,6 +1259,29 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
 /** Every ACP agent Bloks knows how to launch. */
 export const ACP_SPECS: readonly AcpSpec[] = [
+  {
+    kind: "devin",
+    name: "Devin CLI",
+    command: "devin",
+    args: ["acp"],
+    install: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    signIn: "run `devin auth login` in a terminal",
+    // `devin acp` reads this before the login `devin auth login` stored
+    keyEnv: ["WINDSURF_API_KEY"],
+    // where that login lives on macOS/Linux and on Windows; one moved by
+    // XDG_DATA_HOME is for the CLI itself to report
+    authFiles: [".local/share/devin/credentials.toml", "AppData/Roaming/devin/credentials.toml"],
+    signInCheck: { args: ["auth", "status"], signedOut: /not logged in/i, signedIn: /logged in/i },
+    // "accept-edits" (its "Code" mode) is where a new ACP session starts;
+    // it asks before shell commands, like Claude Code's acceptEdits here
+    turnModes: { normal: "accept-edits", fullAuto: "bypass" },
+    // the account's plan and team settings decide its models
+    probeModels: true,
+    models: {
+      default: "auto",
+      options: [{ id: "auto", label: "Auto" }],
+    },
+  },
   {
     kind: "opencode",
     name: "OpenCode",
