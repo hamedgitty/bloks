@@ -13214,9 +13214,11 @@ async function foldAfterTurn(botId: string, threadId: string): Promise<void> {
 
 /** True when a lane's summary changed under a fold that was writing a
  * new one: dropped with `bloks summary --clear`, taken back with its
- * messages, or written by another fold. Each of those wins. */
+ * messages, or written by another fold, or the lane itself is gone. Each
+ * of those wins. */
 function contextMovedOn(botId: string, threadId: string, from: TaskRecord["context"]): boolean {
-  return store.bot(botId)?.tasks.find((t) => t.id === threadId)?.context !== from;
+  const lane = store.bot(botId)?.tasks.find((t) => t.id === threadId);
+  return !lane || lane.context !== from;
 }
 
 /** A new summary within the limit, said in the log when it was not. */
@@ -13258,8 +13260,9 @@ function toldTurn(task: TaskRecord, m: Message): Turn {
  * A part too long for one request is summarised in several, in order
  * (summaryPasses), each carrying the summary so far. Nothing is saved
  * until the last is done, and nothing at all if one fails or the lane
- * moves on meanwhile: its summary changes, a message the fold covers is
- * taken back, or the turn a story is for is stopped.
+ * moves on meanwhile: it is closed, its summary changes, a message the
+ * fold covers is taken back or edited, or the turn a story is for is
+ * stopped.
  *
  * `handoff` is the budget of a story about to be handed to a new session
  * (boundHandoff in server/context.ts), which is much smaller than the
@@ -13291,22 +13294,32 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   // A fold for a story keeps what the story will tell after it, measured
   // the way the story measures it (handoffKeep), and the turn's own words,
   // the last, which go to the engine apart from the story.
-  const fold = handoff !== undefined && !force
+  const story = handoff !== undefined && !force;
+  const fold = story
     ? asTurns.slice(0, Math.max(0, asTurns.length - 1 - handoffKeep(carried.slice(0, -1).map((m) => toldTurn(task, m)), handoff)))
     : planCompaction(asTurns, budget, force ? 2 : 6).fold;
   if (!fold.length) return false;
 
+  // What this fold reads is still the lane's before each request and at
+  // the save, with no wait between that last look and the save: the lane
+  // and the summary it started from, the same messages in the same places,
+  // and in those it covers the words it read, which an edit changes under
+  // the same message. A story's fold holds every later message in its
+  // place too, since the story leaves out the last, the turn's own, by its
+  // place; and the turn it is for must not have been stopped. A summary
+  // dropped meanwhile must not come back, and words changed meanwhile must
+  // not pass for read.
   const from = task.context;
-  const covered = settled.slice(0, already + fold.length).map((m) => m.id);
-  // What this fold read is still the lane's: the summary it started from,
-  // the same messages at the start, and the turn a story is for not
-  // stopped. A summary dropped meanwhile must not come back.
+  const ids = (story ? settled : settled.slice(0, already + fold.length)).map((m) => m.id);
+  const read = fold.map((turn) => turn.text);
   const holds = () => {
     if (contextMovedOn(botId, threadId, from)) return false;
-    if (handoff !== undefined && stoppedGettingReady.has(threadId)) return false;
+    if (story && stoppedGettingReady.has(threadId)) return false;
     const now = settledNow();
-    return covered.every((id, i) => now[i]?.id === id);
+    if (story && now.length !== ids.length) return false;
+    return ids.every((id, i) => now[i]?.id === id) && read.every((text, i) => summarisedText(now[already + i]) === text);
   };
+  if (!holds()) return false;
   let summary = task.context?.summary ?? null;
   let written: string | null = null;
   for (const pass of summaryPasses(fold)) {
@@ -13325,7 +13338,7 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   const notice = store.appendMessage(threadId, {
     role: "bot",
     kind: "notice",
-    text: compactionNotice(fold.length, handoff !== undefined && !force ? "handoff" : "limit"),
+    text: compactionNotice(fold.length, story ? "handoff" : "limit"),
   });
   broadcast({ kind: "message", threadId, message: notice });
   broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });

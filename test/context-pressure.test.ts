@@ -184,6 +184,36 @@ describe("what a new session is told", () => {
     }
   });
 
+  test("a story's fold keeps a message too long for the story, told clipped and saying so", () => {
+    const told = [
+      ...Array.from({ length: 60 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(1_500)}`)),
+      say("user", `newest ${"m".repeat(10_000)} middle ${"m".repeat(10_000)} end`),
+    ];
+    for (const budget of [4_800, HANDOFF_MAX_TOKENS]) {
+      const keep = handoffKeep(told, budget);
+      for (const length of [0, SUMMARY_MAX_CHARS]) {
+        const story = boundHandoff([summaryTurn("s".repeat(length)), ...told.slice(-keep)], budget);
+        // the summary once, then every kept message, the newest in it but
+        // not word for word
+        assert.equal(story.left, 0);
+        assert.equal(story.turns.length, 1 + keep);
+        const newest = story.turns.at(-1)!.text;
+        assert.ok(newest.startsWith("newest ") && newest.endsWith(" end") && !newest.includes("middle"), `at ${budget}`);
+        assert.match(newest, /\n\[\.\.\. \d+ characters left out \.\.\.\]\n/);
+      }
+      assert.equal(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-keep - 1)], budget).left, 1);
+    }
+  });
+
+  test("a story's fold measures a message that starts like a summary as a message", () => {
+    const rest = Array.from({ length: 40 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(2_000)}`));
+    const lookalike = say("user", summaryTurn(`not a summary ${"y".repeat(30_000)}`).text);
+    const plain = say("user", "z".repeat(lookalike.text.length));
+    for (const budget of [2_000, 4_800, HANDOFF_MAX_TOKENS]) {
+      assert.equal(handoffKeep([lookalike, ...rest], budget), handoffKeep([plain, ...rest], budget), `at ${budget}`);
+    }
+  });
+
   test("a new session after a lost cursor is told so", () => {
     assert.match(freshTurnText([say("user", "hi")], "next", { why: "session" }), /in a new session; the earlier one could not be carried on/);
   });

@@ -199,7 +199,43 @@ describe("a long stretch, read whole", () => {
     assert.deepEqual(summaryPasses(edge), [edge]);
     const over = [say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_988))];
     assert.deepEqual(summaryPasses(over), [[over[0]], [over[1]]]);
+    assert.equal(summaryPasses([say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_986))]).length, 1);
     assert.deepEqual(summaryPasses([]), []);
+  });
+
+  test("40,000 characters of a request's conversation counts the labels and the lines between messages", () => {
+    // one message, theirs or the agent's: 39,999 and 40,000 with its
+    // label are one request, and one more is read in two parts
+    for (const label of ["Them: ", "You: "]) {
+      const role = label === "You: " ? "assistant" : "user";
+      for (const length of [39_999, 40_000]) {
+        const turn = say(role, "w".repeat(length - label.length));
+        assert.deepEqual(summaryPasses([turn]), [[turn]], `${length} of ${role}`);
+        assert.equal(conversationOf(summaryPrompt(null, [turn])).length, length);
+      }
+      const longer = say(role, "w".repeat(40_001 - label.length));
+      const passes = summaryPasses([longer]);
+      assert.deepEqual(passes.flat().map((s) => s.part), [{ n: 1, of: 2 }, { n: 2, of: 2 }]);
+      assert.deepEqual(whole(passes.flat()), [longer]);
+      for (const pass of passes) assert.ok(conversationOf(summaryPrompt(null, pass)).length <= 40_000);
+    }
+    // in a longer stretch, a request is filled to 40,000 exactly and no further
+    const last = say("user", "the last words");
+    const full = [say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_987)), last];
+    assert.deepEqual(summaryPasses(full), [[full[0], full[1]], [last]]);
+    assert.equal(conversationOf(summaryPrompt(null, summaryPasses(full)[0])).length, 40_000);
+    const fuller = [say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_988)), last];
+    assert.deepEqual(summaryPasses(fuller), [[fuller[0]], [fuller[1], last]]);
+  });
+
+  test("a message read in ten parts or more says which each is, and each still fits", () => {
+    const pasted = "p".repeat(400_000);
+    const passes = summaryPasses([say("assistant", pasted)]);
+    const parts = passes.flat();
+    assert.deepEqual(parts.map((s) => s.part), Array.from({ length: 11 }, (_, i) => ({ n: i + 1, of: 11 })));
+    assert.equal(parts.map((s) => s.text).join(""), pasted);
+    for (const pass of passes) assert.ok(conversationOf(summaryPrompt(null, pass)).length <= 40_000);
+    assert.ok(summaryPrompt(null, passes[9]).includes("The conversation:\nYou (part 10 of 11): p"));
   });
 
   test("a long stretch is read whole, in order, in requests no longer than one was", () => {
@@ -252,9 +288,12 @@ describe("a long stretch, read whole", () => {
     const parts = passes.flat().filter((s) => s.part);
     assert.deepEqual(parts.map((s) => s.part), [{ n: 1, of: 3 }, { n: 2, of: 3 }, { n: 3, of: 3 }]);
     assert.equal(parts.map((s) => s.text).join(""), pasted);
+    // half a character alone, which the words had none of
+    const halved = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    assert.equal(halved.test(pasted), false);
     for (const part of parts) {
       assert.equal(part.role, "assistant");
-      assert.equal(/^[\udc00-\udfff]|[\ud800-\udbff]$/.test(part.text), false, "a character was cut in two");
+      assert.equal(halved.test(part.text), false, "a character was cut in two");
     }
     assert.deepEqual(whole(passes.flat()), fold);
     for (const pass of passes) assert.ok(conversationOf(summaryPrompt(null, pass)).length <= 40_000);
