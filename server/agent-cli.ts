@@ -33,6 +33,9 @@ export interface AgentToken {
   expiresAt: number;
   /** Changes made so far on this credential. */
   spent: number;
+  /** Which of its lane's turns it was minted for (laneTurns), so a write
+   * made with it belongs to that turn and no later one. */
+  seq?: number;
   /** This credential can only reply to its turn's Telegram sender. */
   reply?: { sender: import("./telegram-people.ts").TelegramReplySender; turn: number; attempted?: Set<string> };
   /** Only the final direct submission, retained through normal renewal. */
@@ -306,6 +309,7 @@ export const RULES: Rule[] = [
   { method: "PATCH", path: "/api/bots/:me/tasks/:id", why: "rename one of its own conversations" },
   { method: "DELETE", path: "/api/bots/:me/tasks/:id", why: "close one of its own conversations, once its turn there ends" },
   { method: "POST", path: "/api/bots/:me/tasks/:id/fresh", why: "start a fresh engine session in the conversation it is in, keeping the transcript" },
+  { method: "POST", path: "/api/bots/:me/tasks/:id/quiet", why: "finish the turn it is in quietly, when nothing in it needs the person" },
   { method: "GET", path: "/api/bots/:me/tasks/:id/summary", why: "read what the older messages of the conversation it is in were summarised into" },
   { method: "DELETE", path: "/api/bots/:me/tasks/:id/summary", why: "drop a stale summary of the conversation it is in, so the next turn replays and summarises again" },
 ];
@@ -497,20 +501,21 @@ export class AgentTokens {
   private byToken = new Map<string, AgentToken>();
 
   /** One turn, one credential. */
-  mint(botId: string, taskId: string, now: number): AgentToken {
+  mint(botId: string, taskId: string, now: number, seq?: number): AgentToken {
     const minted: AgentToken = {
       token: `blk_${randomBytes(24).toString("base64url")}`,
       botId,
       taskId,
       expiresAt: now + TOKEN_TTL_MS,
       spent: 0,
+      ...(seq !== undefined ? { seq } : {}),
     };
     this.byToken.set(minted.token, minted);
     return minted;
   }
 
   mintReply(botId: string, taskId: string, now: number, sender: import("./telegram-people.ts").TelegramReplySender, turn: number): AgentToken {
-    const minted: AgentToken = { token: `blr_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, reply: { sender, turn } };
+    const minted: AgentToken = { token: `blr_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, seq: turn, reply: { sender, turn } };
     this.byToken.set(minted.token, minted);
     return minted;
   }
@@ -518,8 +523,8 @@ export class AgentTokens {
   /** A credential for one thing: messaging a person on the asker's
    * behalf. For a turn the owner did not start but an admin did, which
    * must not carry the owner's whole workspace in its environment. */
-  mintMessenger(botId: string, taskId: string, now: number): AgentToken {
-    const minted: AgentToken = { token: `blm_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, messenger: true };
+  mintMessenger(botId: string, taskId: string, now: number, seq?: number): AgentToken {
+    const minted: AgentToken = { token: `blm_${randomBytes(24).toString("base64url")}`, botId, taskId, expiresAt: now + TOKEN_TTL_MS, spent: 0, messenger: true, ...(seq !== undefined ? { seq } : {}) };
     this.byToken.set(minted.token, minted);
     return minted;
   }
@@ -542,6 +547,13 @@ export class AgentTokens {
     if (!alive?.(held.taskId)) return false;
     held.expiresAt = now + TOKEN_TTL_MS;
     return true;
+  }
+
+  /** Whether the turn running in a lane holds the agent's own full
+   * credential, so it can run the CLI as itself. */
+  heldFull(taskId: string): boolean {
+    for (const held of this.byToken.values()) if (held.taskId === taskId && !held.reply && !held.messenger) return true;
+    return false;
   }
 
   /** The turn ended. Whatever it was given stops working now rather than

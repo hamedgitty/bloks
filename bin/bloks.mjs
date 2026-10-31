@@ -1026,6 +1026,17 @@ const COMMANDS = {
       return request("POST", `/api/bots/${me.botId}/tasks/${me.taskId}/fresh`);
     },
   },
+  quiet: {
+    use: "quiet",
+    about:
+      "finish the turn you are in quietly, when nothing in it needs the person: it then ends without a message or a notification. " +
+      "Run it before writing any text, then end your turn. Bloks checks the turn and says whether it accepted: " +
+      "a refusal means answer substantively, never QUIET. If it fails without an answer, run it again; it is safe to repeat",
+    run: async () => {
+      const me = await request("GET", "/api/agent/whoami");
+      return request("POST", `/api/bots/${me.botId}/tasks/${me.taskId}/quiet`);
+    },
+  },
   summary: {
     use: "summary [--clear]",
     about:
