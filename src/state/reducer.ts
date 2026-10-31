@@ -598,6 +598,14 @@ export function pingedLane(bot: LanedBot): string | null {
   return waiting[0]?.id ?? null;
 }
 
+/** The conversation a click on the agent's row opens, as `select` picks
+ * it: the one that pinged you, else the open one. The row's mark and line
+ * describe this one, so the row, the click and what opens agree. */
+export function rowLane<L extends Lane>(bot: { activeTaskId?: string; threadId: string; tasks?: L[] }): L | undefined {
+  const id = pingedLane(bot) ?? bot.activeTaskId ?? bot.threadId;
+  return bot.tasks?.find((t) => t.id === id);
+}
+
 /** The same agent with its open lane read. Its own flag follows as "any
  * lane still unread", which is what the server says too. */
 export function readOpenLane<T extends LanedBot>(bot: T): T {

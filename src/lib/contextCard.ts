@@ -135,15 +135,17 @@ export function ringLabel(context: LaneContext): string {
   return approximateLimit(context) ? t("contextCard.ringAbout", { percent }) : t("contextCard.ring", { percent });
 }
 
-/** What a chip or a sidebar row says on hover. */
+/** What the ring says on hover: how full, in tokens, and whether the
+ * earlier part was summarised. "About" when the window is a guess. */
 export function contextTitle(context: LaneContext): string {
   if (!measuredContext(context)) return t("contextCard.titleSummarised");
   const percent = contextPercent(context);
+  const { tokens } = contextCard(context);
   const about = approximateLimit(context);
   if (context.summarised) {
-    return about ? t("contextCard.titleAboutSummarised", { percent }) : t("contextCard.titleFullSummarised", { percent });
+    return about ? t("contextCard.titleAboutSummarised", { percent, tokens }) : t("contextCard.titleFullSummarised", { percent, tokens });
   }
-  return about ? t("contextCard.ringAbout", { percent }) : t("contextCard.ring", { percent });
+  return about ? t("contextCard.titleAbout", { percent, tokens }) : t("contextCard.title", { percent, tokens });
 }
 
 /** What Activity adds to a running lane's line once it is half full, or
