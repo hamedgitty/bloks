@@ -357,7 +357,7 @@ export function diskSource(dataDir: string, home: string = homedir()): ExportSou
 export type Completeness = "complete" | "partial" | "missing" | "none";
 
 const ENGINE_NAMES = new Map<string, string>([...PROVIDER_SPECS, CREDITS_SPEC, ...CLI_PROVIDERS].map((spec) => [spec.kind, spec.name]));
-const ACP_KINDS = new Set(["opencode", "grokCli", "cursor", "cline", "geminiCli", "pi"]);
+const ACP_KINDS = new Set(["opencode", "commandcode", "grokCli", "cursor", "cline", "geminiCli", "pi"]);
 
 export function engineName(kind: string): string {
   return ENGINE_NAMES.get(kind) ?? kind;

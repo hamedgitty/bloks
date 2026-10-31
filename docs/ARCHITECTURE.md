@@ -61,7 +61,7 @@ tool calls and permission requests.
 **CLI over the Agent Client Protocol.** `acp.ts` is generic: ACP is a
 JSON-RPC protocol that agent CLIs speak so editors can drive them, so one
 implementation serves any agent that speaks it. Gemini CLI was the first;
-OpenCode, the Grok CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline
+OpenCode, Command Code (`command-code acp`), the Grok CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline
 --acp`) followed. Adding another is an entry in `ACP_SPECS`, which can
 also say how the CLI reports its sign-in (`signInCheck`, a command, for
 Cursor's keychain login), which ACP auth method to call before a session
@@ -3457,8 +3457,8 @@ being down (GitHub 251). A workspace that is not running answers
 
 ## Reasoning effort
 
-An agent's `effort` is `low`, `medium`, `high`, `xhigh` or `max` (Low,
-Medium, High, Extra high and Max on screen), or unset for the engine's
+An agent's `effort` is `off`, `low`, `medium`, `high`, `xhigh` or `max`
+(Off, Low, Medium, High, Extra high and Max on screen), or unset for the engine's
 own. Each driver lists the levels it passes on as
 `capabilities.efforts`, and `GET /api/instances` reports them per engine
 as `efforts`: Claude Code all five, as `--effort <level>` on every turn
@@ -3466,7 +3466,13 @@ as `efforts`: Claude Code all five, as `--effort <level>` on every turn
 Codex all five as `turn/start.effort`, narrowed per model by the
 `supportedReasoningEfforts` in its own `model/list` (reported as each
 model option's `efforts`); Grok CLI `low`, `medium` and `high`, as
-`--reasoning-effort`. The other engines have no dial and are sent none.
+`--reasoning-effort`. Command Code reads each model's native `effort`
+selector over ACP and applies the bot's supported level after selecting
+its model, on fresh and resumed turns. Its provider-default token stays
+outside the saved levels. When ACP cannot reset an explicit effort to
+that default, Bloks opens a new native session with the conversation
+handoff; without the handoff it refuses to lose the conversation.
+The other engines have no dial and are sent no effort setting.
 
 A level being chosen (`PATCH /api/bots/:id`, `POST /api/bots`, which is
 `bloks hire --effort <level>`, or New agents with a model picked) has to

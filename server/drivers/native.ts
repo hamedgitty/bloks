@@ -62,12 +62,15 @@ export function appendNative(
 ) {
   try {
     const path = join(dir, `${threadId}.ndjson`);
-    let line = JSON.stringify({ at: new Date().toISOString(), ...entry, msg: slimFrame(entry.msg) }) + "\n";
-    // found in the text as written: a credential is base64url, which JSON
-    // never escapes, so no spelling of it is missed
-    for (const token of typeof hidden === "string" ? [hidden] : hidden ?? []) {
-      if (token && line.includes(token)) line = line.split(token).join("[redacted]");
-    }
+    const tokens = (typeof hidden === "string" ? [hidden] : hidden ?? []).filter(Boolean);
+    const redact = (value: string) => tokens.reduce((safe, token) => safe.split(token).join("[redacted]"), value);
+    // Redact strings before serialization: short keys must not replace
+    // numeric RPC ids, and quotes inside a credential must not evade it.
+    const line = JSON.stringify({ at: new Date().toISOString(), ...entry, msg: slimFrame(entry.msg) }, tokens.length
+      ? (_key, value) => typeof value === "string" ? redact(value)
+        : value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key), item])) : value
+      : undefined) + "\n";
     let size = sizes.get(path);
     // The count can run high (the slimming pass shrinks files under it),
     // so it is checked against the disk before anything is moved. A file

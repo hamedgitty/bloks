@@ -134,6 +134,27 @@ const ENGINES: Array<{
     want: "onboarding.engine.cline.want",
   },
   {
+    kind: "geminiCli",
+    name: "Gemini CLI",
+    command: "npm i -g --prefix ~/.local @google/gemini-cli",
+    have: "onboarding.engine.geminiCli.have",
+    want: "onboarding.engine.geminiCli.want",
+  },
+  {
+    kind: "opencode",
+    name: "OpenCode",
+    command: "npm i -g --prefix ~/.local opencode-ai",
+    have: "onboarding.engine.opencode.have",
+    want: "onboarding.engine.opencode.want",
+  },
+  {
+    kind: "commandcode",
+    name: "Command Code",
+    command: "npm i -g --prefix ~/.local command-code",
+    have: "onboarding.engine.commandcode.have",
+    want: "onboarding.engine.commandcode.want",
+  },
+  {
     kind: "kimi",
     name: "Kimi",
     byKey: true,

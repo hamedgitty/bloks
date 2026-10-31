@@ -378,6 +378,15 @@ export const CLI_PROVIDERS = [
     docsUrl: "https://opencode.ai/docs",
   },
   {
+    kind: "commandcode",
+    name: "Command Code",
+    command: "command-code",
+    auth: "cli" as const,
+    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local command-code",
+    signInHint: "Run command-code login in a terminal to connect your account",
+    docsUrl: "https://commandcode.ai/docs/acp",
+  },
+  {
     kind: "geminiCli",
     name: "Gemini CLI",
     command: "gemini",
