@@ -84,18 +84,18 @@ test("choosing a level the engine lacks is refused, and says what it has", () =>
   const narrow = engine(ALL, [{ id: "gpt-narrow", efforts: ["low", "medium"] }, { id: "gpt-none", efforts: [] }]).held;
   assert.equal(server.effortRefusal("xhigh", narrow, "gpt-narrow"), "Engine takes effort low or medium on gpt-narrow, not xhigh");
   assert.equal(server.effortRefusal("low", narrow, "gpt-none"), "Engine takes no reasoning effort on gpt-none");
-  assert.equal(server.effortRefusal("ultra", grok, "g"), "effort is low, medium, high, xhigh or max");
+  assert.equal(server.effortRefusal("ultra", grok, "g"), "effort is none, low, medium, high, xhigh or max");
   // an engine with no dial does nothing with any level, and keeps it for
   // one that has one; one that is not here is not judged either
   assert.equal(server.effortRefusal("max", engine(undefined).held, "m"), null);
   assert.equal(server.effortRefusal("max", engine([]).held, "m"), null);
-  assert.equal(server.effortRefusal("ultra", engine(undefined).held, "m"), "effort is low, medium, high, xhigh or max");
+  assert.equal(server.effortRefusal("ultra", engine(undefined).held, "m"), "effort is none, low, medium, high, xhigh or max");
   assert.equal(server.effortRefusal("max", null), null);
 });
 
 test("the desktop's levels and clamp are the server's", () => {
-  const values = [undefined, null, "", "ultra", ...ALL];
-  const shapes = [[], ["low", "medium", "high"], ["medium", "max"], [...ALL]] as server.Effort[][];
+  const values = [undefined, null, "", "ultra", ...server.EFFORTS];
+  const shapes = [[], ["low", "medium", "high"], ["medium", "max"], ["none", "low", "high"], [...server.EFFORTS]] as server.Effort[][];
   for (const levels of shapes) {
     for (const wanted of values) assert.equal(desktop.clampEffort(wanted, levels), server.clampEffort(wanted, levels), `${wanted} on ${levels}`);
   }
@@ -109,8 +109,17 @@ test("the desktop's levels and clamp are the server's", () => {
   assert.deepEqual(desktop.EFFORT_LABELS, server.EFFORT_LABELS);
 });
 
+test("a saved Auto placeholder uses the discovered default's reasoning choices", () => {
+  const { held, described } = engine(ALL, [{ id: "default", efforts: ["high", "max"] }]);
+  assert.deepEqual(server.effortLevels(held, "auto"), ["high", "max"]);
+  assert.deepEqual(desktop.effortLevels(described, "auto"), ["high", "max"]);
+  const actualAuto = engine(ALL, [{ id: "default", efforts: ["high", "max"] }, { id: "auto", efforts: ["low"] }]);
+  assert.deepEqual(server.effortLevels(actualAuto.held, "auto"), ["low"], "an advertised model called auto keeps its own choices");
+  assert.deepEqual(desktop.effortLevels(actualAuto.described, "auto"), ["low"]);
+});
+
 test("the labels are plain words", () => {
-  assert.deepEqual(Object.values(server.EFFORT_LABELS), ["Low", "Medium", "High", "Extra high", "Max"]);
+  assert.deepEqual(Object.values(server.EFFORT_LABELS), ["No thinking", "Low", "Medium", "High", "Extra high", "Max"]);
   assert.deepEqual(desktop.effortOptions(["low", "xhigh"]), [
     { value: undefined, label: "Use engine setting" },
     { value: "low", label: "Low" },
@@ -140,7 +149,7 @@ test("a picker shows the level a saved one runs at, and says so", () => {
   assert.equal(narrowed.value, "xhigh");
   assert.equal(narrowed.note, "Saved as Max. GPT-5.6 Luna has no Max, so it runs at Extra high.");
   // an engine not in the list yet is not narrowed
-  assert.deepEqual(desktop.effortChoice([], { instanceId: "gone", model: "" }, "max").levels, [...ALL]);
+  assert.deepEqual(desktop.effortChoice([], { instanceId: "gone", model: "" }, "max").levels, ["none", ...ALL]);
   // a server from before the levels were per engine took the first three everywhere
   assert.deepEqual(desktop.effortLevels({ models: { default: "m", options: [] } }), ["low", "medium", "high"]);
 });

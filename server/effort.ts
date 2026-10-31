@@ -17,12 +17,13 @@
 // to the same answers by test/effort-levels.test.ts.
 import type { ModelCatalog } from "./contracts.ts";
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type Effort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Every level Bloks knows, from the least thinking to the most. */
-export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export const EFFORTS: readonly Effort[] = ["none", "low", "medium", "high", "xhigh", "max"];
 
 export const EFFORT_LABELS: Record<Effort, string> = {
+  none: "No thinking",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -73,7 +74,9 @@ export interface EffortEngine {
  * with no dial, or one that is not here. */
 export function effortLevels(instance: EffortEngine | null | undefined, model?: string): Effort[] {
   const engine = instance?.adapter.capabilities.efforts ?? [];
-  const own = instance?.models.options.find((option) => option.id === (model || instance.models.default))?.efforts;
+  const selected = instance?.models.options.find((option) => option.id === (model || instance.models.default))
+    ?? (model === "auto" ? instance?.models.options.find((option) => option.id === instance.models.default) : undefined);
+  const own = selected?.efforts;
   return EFFORTS.filter((level) => engine.includes(level) && (!own || own.includes(level)));
 }
 

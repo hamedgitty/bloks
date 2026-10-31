@@ -70,7 +70,7 @@ describe("the levels each engine takes", () => {
     assert.equal((await cleared.json()).bot.effort, undefined);
     const strange = await patch(bot.id, { effort: "ultra" });
     assert.equal(strange.status, 400);
-    assert.equal((await strange.json()).error, "effort is low, medium, high, xhigh or max");
+    assert.equal((await strange.json()).error, "effort is none, low, medium, high, xhigh or max");
   });
 
   test("a level the engine lacks is refused, saying what it has, and nothing changes", async () => {
@@ -248,7 +248,7 @@ test("a Claude agent at Max is started with --effort max, and `bloks hire --effo
 
   const wrong = await bloks(s.h, token!, ["hire", "--name", "Odd", "--effort", "ultra"]);
   assert.notEqual(wrong.code, 0);
-  assert.match(wrong.out.error, /effort is low, medium, high, xhigh or max/);
+  assert.match(wrong.out.error, /effort is none, low, medium, high, xhigh or max/);
   const help = await bloks(s.h, "", ["help"]);
   assert.match(help.out.commands.find((c: any) => c.name === "hire").use, /--effort <level>/);
 });
