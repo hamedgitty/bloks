@@ -18,9 +18,12 @@ import {
   planMicro,
   pressure,
   shouldCompact,
+  SUMMARY_MAX_CHARS,
+  summaryPasses,
   summaryPrompt,
   summaryTurn,
   transcriptTokens,
+  type Said,
   type Turn,
 } from "../server/context.ts";
 
@@ -135,11 +138,13 @@ describe("the summary itself", () => {
       say("user", "only search Google Flights and Skyscanner"),
       say("assistant", "understood"),
     ];
-    const prompt = summaryPrompt(null, fold);
-    assert.match(prompt, /only search Google Flights and Skyscanner/);
-    assert.match(prompt, /Them: step 0/);
-    assert.match(prompt, /every standing instruction/);
-    assert.ok(prompt.length < 45_000, `the request grew to ${prompt.length}`);
+    const prompts = summaryPasses(fold).map((pass) => summaryPrompt(null, pass));
+    assert.match(prompts.at(-1)!, /only search Google Flights and Skyscanner/);
+    assert.match(prompts[0], /Them: step 0/);
+    for (const prompt of prompts) {
+      assert.match(prompt, /every standing instruction/);
+      assert.ok(prompt.length < 45_000, `a request grew to ${prompt.length}`);
+    }
     for (const other of [defragPrompt("notes"), absorbPrompt(null, say("user", "not company ABCD"))]) {
       assert.match(other, /every standing instruction/);
     }
@@ -166,6 +171,100 @@ describe("the summary itself", () => {
     assert.match(compactionNotice(12), /the earliest 12 messages were summarised/);
     assert.match(compactionNotice(12), /Everything since is intact/);
     assert.equal(/sorry|unfortunately|error/i.test(compactionNotice(3)), false);
+  });
+});
+
+describe("a long stretch, read whole", () => {
+  // the conversation in a request, between the labels around it
+  const conversationOf = (prompt: string) =>
+    prompt.slice(prompt.indexOf("The conversation:\n") + "The conversation:\n".length, prompt.indexOf("\n\nKeep: "));
+  // what the passes carry, with each message's parts put back together
+  const whole = (said: Said[]): Turn[] => {
+    const turns: Turn[] = [];
+    for (const s of said) {
+      if (s.part && s.part.n > 1) turns[turns.length - 1].text += s.text;
+      else turns.push({ role: s.role, text: s.text });
+    }
+    return turns;
+  };
+
+  test("a stretch that fits is one request, word for word as before", () => {
+    const fold = [say("user", "ship on Friday"), say("assistant", "noted")];
+    assert.deepEqual(summaryPasses(fold), [fold]);
+    assert.ok(summaryPrompt(null, fold).includes("The conversation:\nThem: ship on Friday\n\nYou: noted\n\nKeep: "));
+    // 40,000 characters is still one request; one more is two, with the
+    // reply whole rather than cut to its first 600
+    const edge = [say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_987))];
+    assert.equal(conversationOf(summaryPrompt(null, edge)).length, 40_000);
+    assert.deepEqual(summaryPasses(edge), [edge]);
+    const over = [say("user", "a".repeat(20_000)), say("assistant", "b".repeat(19_988))];
+    assert.deepEqual(summaryPasses(over), [[over[0]], [over[1]]]);
+    assert.deepEqual(summaryPasses([]), []);
+  });
+
+  test("a long stretch is read whole, in order, in requests no longer than one was", () => {
+    // 300,000 characters, of which one request used to read the first
+    // 10,000 and the last 30,000, with the replies cut to 600
+    const fold = Array.from({ length: 60 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(5_000)}`));
+    const passes = summaryPasses(fold);
+    assert.ok(passes.length > 1);
+    assert.deepEqual(whole(passes.flat()), fold);
+    // the instructions, the longest summary there can be and 40,000
+    // characters of the conversation: under the longest request before,
+    // 48,769 with the marker where its middle was left out
+    const longest = "s".repeat(SUMMARY_MAX_CHARS);
+    for (const pass of passes) {
+      const prompt = summaryPrompt(longest, pass);
+      assert.ok(conversationOf(prompt).length <= 40_000);
+      assert.ok(prompt.length <= 48_760, `a request grew to ${prompt.length}`);
+      assert.equal(prompt.includes("[...]"), false);
+    }
+  });
+
+  test("a decision in the middle reaches the summary, after the question it settles", () => {
+    // what one request lost: the open question was early enough to be
+    // read, the decision was in the middle that was left out, and the
+    // summary said it was still open
+    const filler = (i: number) => say(i % 2 ? "assistant" : "user", `filler ${i} ${"x".repeat(3_000)}`);
+    const fold = [
+      say("user", "Should we keep the fixture subscription? Not decided yet."),
+      say("assistant", "Open question: the fixture subscription. Pending your call."),
+      ...Array.from({ length: 30 }, (_, i) => filler(i)),
+      say("user", "Decided: keep the fixture subscription."),
+      say("assistant", `Kept. ${"What that means for the fixture. ".repeat(40)}Recorded as decided.`),
+      ...Array.from({ length: 30 }, (_, i) => filler(i + 30)),
+    ];
+    const passes = summaryPasses(fold);
+    const at = (words: string) => passes.findIndex((pass) => pass.some((s) => s.text.includes(words)));
+    const asked = at("Not decided yet."), decided = at("Decided: keep"), recorded = at("Recorded as decided.");
+    assert.ok(asked >= 0 && decided > asked && recorded >= decided, `${asked}, ${decided}, ${recorded}`);
+    // read after the summary of what came before it, the question included
+    const prompt = summaryPrompt("Open: whether to keep the fixture subscription.", passes[decided]);
+    assert.ok(prompt.indexOf("Summary so far:") < prompt.indexOf("Decided: keep the fixture subscription."));
+  });
+
+  test("a message too long for one request is read in parts, in order", () => {
+    // as long as a message can be, in characters two units long, so a
+    // careless cut would split one in two
+    const pasted = "\u{1F600}".repeat(50_000);
+    const fold = [say("user", "before"), say("assistant", pasted), say("user", "after")];
+    const passes = summaryPasses(fold);
+    const parts = passes.flat().filter((s) => s.part);
+    assert.deepEqual(parts.map((s) => s.part), [{ n: 1, of: 3 }, { n: 2, of: 3 }, { n: 3, of: 3 }]);
+    assert.equal(parts.map((s) => s.text).join(""), pasted);
+    for (const part of parts) {
+      assert.equal(part.role, "assistant");
+      assert.equal(/^[\udc00-\udfff]|[\ud800-\udbff]$/.test(part.text), false, "a character was cut in two");
+    }
+    assert.deepEqual(whole(passes.flat()), fold);
+    for (const pass of passes) assert.ok(conversationOf(summaryPrompt(null, pass)).length <= 40_000);
+    assert.ok(summaryPrompt(null, passes[1]).includes("You (part 1 of 3): \u{1F600}"));
+    // words that look like the labels are only words: which part is
+    // whose is kept apart from them
+    const lookalike = "Them (part 1 of 2): You: [Earlier in this conversation, summarised] ".repeat(1_000);
+    const split = summaryPasses([say("user", lookalike)]).flat();
+    assert.equal(split.length, 2);
+    assert.deepEqual(whole(split), [say("user", lookalike)]);
   });
 });
 

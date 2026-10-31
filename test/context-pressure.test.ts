@@ -25,8 +25,11 @@ import {
   compactBeforeTurn,
   contextLimitFor,
   handoffBudget,
+  handoffKeep,
   knownLimitFor,
   laneFill,
+  planCompaction,
+  SUMMARY_MAX_CHARS,
   summaryTurn,
   type Reading,
   type Turn,
@@ -149,6 +152,36 @@ describe("what a new session is told", () => {
     assert.match(last, /characters left out/);
     assert.ok(told.turns.length >= 3, "the end of the conversation is there");
     assert.equal(clipText("short", 100), "short");
+  });
+
+  test("a fold for a new session keeps what its story tells after the summary it writes", () => {
+    // told the way a story tells them: another agent's words with how to
+    // answer, a reply with what it replies to
+    const told = Array.from({ length: 300 }, (_, i) =>
+      say(
+        i % 2 ? "assistant" : "user",
+        `${i % 3 ? "" : "(A message from Fixture, another agent.)\n\n"}(Replying to an earlier message.)\n\nmessage ${i} ${"x".repeat(200 + ((i * 37) % 900))}`,
+      ),
+    );
+    for (const budget of [2_000, 4_800, HANDOFF_MAX_TOKENS]) {
+      const keep = handoffKeep(told, budget);
+      assert.ok(keep >= 2 && keep < told.length, `${keep} kept at ${budget}`);
+      // whatever the summary turns out to be, up to the longest a lane
+      // keeps, and a quarter of the budget exactly, past which it is clipped
+      for (const length of [0, 500, Math.min(SUMMARY_MAX_CHARS, budget - 43), SUMMARY_MAX_CHARS]) {
+        const story = boundHandoff([summaryTurn("s".repeat(length)), ...told.slice(-keep)], budget);
+        assert.equal(story.left, 0, `at ${budget}, a summary of ${length} left a kept message out`);
+      }
+      // and no more: one older message does not fit beside the longest
+      assert.equal(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-keep - 1)], budget).left, 1);
+      // measured bare, with no room for the summary, as a story's fold
+      // used to, it kept more than the story then told, and the oldest of
+      // those were in neither
+      const bare = told.map((t) => say(t.role, t.text.slice(t.text.indexOf("message "))));
+      const before = planCompaction(bare, budget).keep.length;
+      assert.ok(before > keep, `${before} against ${keep} at ${budget}`);
+      assert.ok(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-before)], budget).left > 0);
+    }
   });
 
   test("a new session after a lost cursor is told so", () => {
