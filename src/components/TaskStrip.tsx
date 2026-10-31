@@ -156,8 +156,8 @@ export function LaneMark({ state, unread, slot }: { state: string; unread?: bool
   if (state === "working") {
     return (
       <span role="img" aria-label={t("sidebarParts.working")} className="relative flex size-2 shrink-0">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand opacity-60 motion-reduce:hidden" />
-        <span className="relative inline-flex size-2 rounded-full bg-brand" />
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-working opacity-60 motion-reduce:hidden" />
+        <span className="relative inline-flex size-2 rounded-full bg-working" />
       </span>
     );
   }
