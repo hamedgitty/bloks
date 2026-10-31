@@ -287,6 +287,7 @@ import {
   needsDefrag,
   planMicro,
   shouldCompact,
+  summaryPasses,
   summaryPrompt,
   keptSummary,
   BEFORE_TURN_CEILING,
@@ -294,6 +295,7 @@ import {
   boundHandoff,
   compactBeforeTurn,
   handoffBudget,
+  handoffKeep,
   knownLimitFor,
   laneFill,
   selectionForContext,
@@ -7402,11 +7404,7 @@ async function startClaimedTurn(
       // agent's answers to the owner and the lane's summary of both stay
       // the owner's. The owner's next turn still hears the person's.
       .filter((m) => !personSource || personsOwn(m, personSource))
-      .map((m) => ({
-        role: m.role === "user" ? ("user" as const) : ("assistant" as const),
-        // in a team conversation several people write: each line says whose
-        text: task.team && m.role === "user" ? `[${speakerName(m.author)}] ${storedPrompt(m)}` : storedPrompt(m),
-      }));
+      .map((m) => toldTurn(task, m));
     return assembleTranscript(settled, personSource ? null : task.context ?? null, transcriptBudget);
   };
 
@@ -13216,9 +13214,11 @@ async function foldAfterTurn(botId: string, threadId: string): Promise<void> {
 
 /** True when a lane's summary changed under a fold that was writing a
  * new one: dropped with `bloks summary --clear`, taken back with its
- * messages, or written by another fold. Each of those wins. */
+ * messages, or written by another fold, or the lane itself is gone. Each
+ * of those wins. */
 function contextMovedOn(botId: string, threadId: string, from: TaskRecord["context"]): boolean {
-  return store.bot(botId)?.tasks.find((t) => t.id === threadId)?.context !== from;
+  const lane = store.bot(botId)?.tasks.find((t) => t.id === threadId);
+  return !lane || lane.context !== from;
 }
 
 /** A new summary within the limit, said in the log when it was not. */
@@ -13236,6 +13236,16 @@ function summarisedText(m: Message): string {
   return m.telegramPerson || m.telegramDelegate || m.telegramGroup || m.telegramSent ? storedPrompt(m) : m.text!;
 }
 
+/** A message as an engine is told it, in a transcript or a new session's
+ * story: who started it, and in a team conversation, where several people
+ * write, whose words they are. */
+function toldTurn(task: TaskRecord, m: Message): Turn {
+  return {
+    role: m.role === "user" ? "user" : "assistant",
+    text: task.team && m.role === "user" ? `[${speakerName(m.author)}] ${storedPrompt(m)}` : storedPrompt(m),
+  };
+}
+
 /**
  * Fold the older half of a lane into a summary.
  *
@@ -13246,6 +13256,13 @@ function summarisedText(m: Message): string {
  * would not be. A summary request that fails throws, so the fold after a
  * turn can try it again (foldAfterTurn); every other caller reads that
  * as no fold.
+ *
+ * A part too long for one request is summarised in several, in order
+ * (summaryPasses), each carrying the summary so far. Nothing is saved
+ * until the last is done, and nothing at all if one fails or the lane
+ * moves on meanwhile: it is closed, its summary changes, a message the
+ * fold covers is taken back or edited, or the turn a story is for is
+ * stopped.
  *
  * `handoff` is the budget of a story about to be handed to a new session
  * (boundHandoff in server/context.ts), which is much smaller than the
@@ -13259,9 +13276,9 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   // a summary or a review on an engine paused for this agent waits too
   if (!instance?.generateText || pausedOn(bot, bot.modelSelection)) return false;
 
-  const settled = store
-    .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent);
+  const settledNow = () =>
+    store.messagesFor(threadId).filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !m.unsent);
+  const settled = settledNow();
   const already = task.context?.through ?? 0;
   const carried = settled.slice(already);
   const asTurns: Turn[] = carried.map((m) => ({
@@ -13273,26 +13290,55 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   // provider has already refused the request, our estimate has been shown
   // to be wrong and its word is the one that counts, so fold hard: keep
   // the last exchange and summarise the rest.
-  const budget = force ? 1 : (handoff ?? Math.max(2_000, Math.floor(limit * COMPACT_AT) - 4_000));
-  const plan = planCompaction(asTurns, budget, force ? 2 : 6);
-  if (!plan.fold.length) return false;
+  const budget = force ? 1 : Math.max(2_000, Math.floor(limit * COMPACT_AT) - 4_000);
+  // A fold for a story keeps what the story will tell after it, measured
+  // the way the story measures it (handoffKeep), and the turn's own words,
+  // the last, which go to the engine apart from the story.
+  const story = handoff !== undefined && !force;
+  const fold = story
+    ? asTurns.slice(0, Math.max(0, asTurns.length - 1 - handoffKeep(carried.slice(0, -1).map((m) => toldTurn(task, m)), handoff)))
+    : planCompaction(asTurns, budget, force ? 2 : 6).fold;
+  if (!fold.length) return false;
 
+  // What this fold reads is still the lane's before each request and at
+  // the save, with no wait between that last look and the save: the lane
+  // and the summary it started from, the same messages in the same places,
+  // and in those it covers the words it read, which an edit changes under
+  // the same message. A story's fold holds every later message in its
+  // place too, since the story leaves out the last, the turn's own, by its
+  // place; and the turn it is for must not have been stopped. A summary
+  // dropped meanwhile must not come back, and words changed meanwhile must
+  // not pass for read.
   const from = task.context;
-  const summary = (await instance.generateText(summaryPrompt(task.context?.summary ?? null, plan.fold))).trim();
-  if (!summary) return false;
-  // dropped while this was being written: the old one must not come back
-  if (contextMovedOn(botId, threadId, from)) return false;
+  const ids = (story ? settled : settled.slice(0, already + fold.length)).map((m) => m.id);
+  const read = fold.map((turn) => turn.text);
+  const holds = () => {
+    if (contextMovedOn(botId, threadId, from)) return false;
+    if (story && stoppedGettingReady.has(threadId)) return false;
+    const now = settledNow();
+    if (story && now.length !== ids.length) return false;
+    return ids.every((id, i) => now[i]?.id === id) && read.every((text, i) => summarisedText(now[already + i]) === text);
+  };
+  if (!holds()) return false;
+  let summary = task.context?.summary ?? null;
+  let written: string | null = null;
+  for (const pass of summaryPasses(fold)) {
+    const said = (await instance.generateText(summaryPrompt(summary, pass))).trim();
+    if (!said || !holds()) return false;
+    summary = written = keptSummaryOf(threadId, said);
+  }
+  if (written === null) return false;
 
   store.setTaskContext(threadId, {
-    summary: keptSummaryOf(threadId, summary),
-    through: already + plan.fold.length,
+    summary: written,
+    through: already + fold.length,
     at: Date.now(),
   });
   // a normal state, said plainly, in the thread it happened in
   const notice = store.appendMessage(threadId, {
     role: "bot",
     kind: "notice",
-    text: compactionNotice(plan.fold.length, handoff !== undefined && !force ? "handoff" : "limit"),
+    text: compactionNotice(fold.length, story ? "handoff" : "limit"),
   });
   broadcast({ kind: "message", threadId, message: notice });
   broadcast({ kind: "bot", bot: clientBot(store.bot(botId)) });

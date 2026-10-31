@@ -25,8 +25,11 @@ import {
   compactBeforeTurn,
   contextLimitFor,
   handoffBudget,
+  handoffKeep,
   knownLimitFor,
   laneFill,
+  planCompaction,
+  SUMMARY_MAX_CHARS,
   summaryTurn,
   type Reading,
   type Turn,
@@ -149,6 +152,66 @@ describe("what a new session is told", () => {
     assert.match(last, /characters left out/);
     assert.ok(told.turns.length >= 3, "the end of the conversation is there");
     assert.equal(clipText("short", 100), "short");
+  });
+
+  test("a fold for a new session keeps what its story tells after the summary it writes", () => {
+    // told the way a story tells them: another agent's words with how to
+    // answer, a reply with what it replies to
+    const told = Array.from({ length: 300 }, (_, i) =>
+      say(
+        i % 2 ? "assistant" : "user",
+        `${i % 3 ? "" : "(A message from Fixture, another agent.)\n\n"}(Replying to an earlier message.)\n\nmessage ${i} ${"x".repeat(200 + ((i * 37) % 900))}`,
+      ),
+    );
+    for (const budget of [2_000, 4_800, HANDOFF_MAX_TOKENS]) {
+      const keep = handoffKeep(told, budget);
+      assert.ok(keep >= 2 && keep < told.length, `${keep} kept at ${budget}`);
+      // whatever the summary turns out to be, up to the longest a lane
+      // keeps, and a quarter of the budget exactly, past which it is clipped
+      for (const length of [0, 500, Math.min(SUMMARY_MAX_CHARS, budget - 43), SUMMARY_MAX_CHARS]) {
+        const story = boundHandoff([summaryTurn("s".repeat(length)), ...told.slice(-keep)], budget);
+        assert.equal(story.left, 0, `at ${budget}, a summary of ${length} left a kept message out`);
+      }
+      // and no more: one older message does not fit beside the longest
+      assert.equal(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-keep - 1)], budget).left, 1);
+      // measured bare, with no room for the summary, as a story's fold
+      // used to, it kept more than the story then told, and the oldest of
+      // those were in neither
+      const bare = told.map((t) => say(t.role, t.text.slice(t.text.indexOf("message "))));
+      const before = planCompaction(bare, budget).keep.length;
+      assert.ok(before > keep, `${before} against ${keep} at ${budget}`);
+      assert.ok(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-before)], budget).left > 0);
+    }
+  });
+
+  test("a story's fold keeps a message too long for the story, told clipped and saying so", () => {
+    const told = [
+      ...Array.from({ length: 60 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(1_500)}`)),
+      say("user", `newest ${"m".repeat(10_000)} middle ${"m".repeat(10_000)} end`),
+    ];
+    for (const budget of [4_800, HANDOFF_MAX_TOKENS]) {
+      const keep = handoffKeep(told, budget);
+      for (const length of [0, SUMMARY_MAX_CHARS]) {
+        const story = boundHandoff([summaryTurn("s".repeat(length)), ...told.slice(-keep)], budget);
+        // the summary once, then every kept message, the newest in it but
+        // not word for word
+        assert.equal(story.left, 0);
+        assert.equal(story.turns.length, 1 + keep);
+        const newest = story.turns.at(-1)!.text;
+        assert.ok(newest.startsWith("newest ") && newest.endsWith(" end") && !newest.includes("middle"), `at ${budget}`);
+        assert.match(newest, /\n\[\.\.\. \d+ characters left out \.\.\.\]\n/);
+      }
+      assert.equal(boundHandoff([summaryTurn("s".repeat(SUMMARY_MAX_CHARS)), ...told.slice(-keep - 1)], budget).left, 1);
+    }
+  });
+
+  test("a story's fold measures a message that starts like a summary as a message", () => {
+    const rest = Array.from({ length: 40 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(2_000)}`));
+    const lookalike = say("user", summaryTurn(`not a summary ${"y".repeat(30_000)}`).text);
+    const plain = say("user", "z".repeat(lookalike.text.length));
+    for (const budget of [2_000, 4_800, HANDOFF_MAX_TOKENS]) {
+      assert.equal(handoffKeep([lookalike, ...rest], budget), handoffKeep([plain, ...rest], budget), `at ${budget}`);
+    }
   });
 
   test("a new session after a lost cursor is told so", () => {
