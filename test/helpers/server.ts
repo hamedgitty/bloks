@@ -84,6 +84,7 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         // no inherited credentials: a test must never reach a real provider
         ...NO_PROVIDER_KEYS,
         XAI_API_KEY: "",
+        WINDSURF_API_KEY: "",
         GEMINI_API_KEY: "",
         COMPOSIO_KEY: "",
         BOX_TOKEN: "",

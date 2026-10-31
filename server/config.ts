@@ -536,6 +536,7 @@ const BUILT_IN_CLI_INSTANCES: InstanceConfigMap = {
   codex: { driver: "codex" },
   gemini_cli: { driver: "geminiCli" },
   opencode: { driver: "opencode" },
+  devin: { driver: "devin" },
   grok_cli: { driver: "grokCli" },
   cursor: { driver: "cursor" },
   cline: { driver: "cline" },

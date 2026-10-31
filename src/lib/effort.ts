@@ -11,13 +11,16 @@
 // line saying so, because that is what the agent is really doing.
 import { t } from "./i18n.ts";
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type Effort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Every level, from the least thinking to the most. */
-export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export const EFFORTS: readonly Effort[] = ["none", "low", "medium", "high", "xhigh", "max"];
 
 /** Each level's name, read when it is drawn so it follows the language. */
 export const EFFORT_LABELS: Readonly<Record<Effort, string>> = {
+  get none() {
+    return t("effort.none");
+  },
   get low() {
     return t("effort.low");
   },
@@ -64,7 +67,9 @@ export interface EffortEngine {
  * server said about the engine. */
 export function effortLevels(instance: EffortEngine | undefined, model?: string): Effort[] {
   const engine = instance?.efforts ?? (instance ? BEFORE_LEVELS : []);
-  const own = instance?.models.options.find((option) => option.id === (model || instance.models.default))?.efforts;
+  const selected = instance?.models.options.find((option) => option.id === (model || instance.models.default))
+    ?? (model === "auto" ? instance?.models.options.find((option) => option.id === instance.models.default) : undefined);
+  const own = selected?.efforts;
   return EFFORTS.filter((level) => engine.includes(level) && (!own || own.includes(level)));
 }
 
@@ -102,7 +107,8 @@ export function effortChoice(
   const engine = selection ? instances.find((instance) => instance.instanceId === selection.instanceId) : undefined;
   const levels = engine ? effortLevels(engine, selection?.model) : [...EFFORTS];
   // a model with levels of its own is the one that lacks the saved level
-  const model = engine?.models.options.find((option) => option.id === (selection?.model || engine.models.default));
+  const model = engine?.models.options.find((option) => option.id === (selection?.model || engine.models.default))
+    ?? (selection?.model === "auto" ? engine?.models.options.find((option) => option.id === engine.models.default) : undefined);
   const who = model?.efforts && model.label ? model.label : engine?.displayName;
   return {
     levels,

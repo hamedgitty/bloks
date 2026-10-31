@@ -257,7 +257,7 @@ describe("what the preview says before you say yes", () => {
 
 describe("how hard it thinks", () => {
   test("every level goes out and comes back, the highest two included", () => {
-    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+    for (const effort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
       const file = round({ bot: { ...bot, effort }, exportedAt: 1 });
       assert.equal(file.agent.effort, effort);
       // and an import gives the arriving agent that level, not a lower one
