@@ -45,6 +45,7 @@ import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
 import { ReplyNotifications, settledFrame, settledReply } from "./reply-notifications.ts";
 import { TextPreview } from "./text-preview.ts";
+import { belongs, QUIET_ACCEPTED, quietKind, quietRefused, SteerHolds, writer, type QuietGate, type QuietRefusal } from "./quiet-finish.ts";
 import { LaneTurns, buildTrace, emptyTrace, readTurn, turnAt, turnCovers, type LiveTraces, type Trace } from "./trace.ts";
 import { AnswerReady, answerDue, answersAllowed, attentionFrom, Viewing, viewingReport, type Attention } from "./answer-ready.ts";
 import { attentionRoute, keepAttention, readAttention, sameAttention } from "./attention.ts";
@@ -494,7 +495,7 @@ import {
 } from "./connections.ts";
 import { checkGitHubCli, execRunner, ghHint, GH_SETUP_GIT, GH_SIGN_IN, type GitHubCliStatus } from "./cli-plugins.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
+import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, QUIET_COMMAND_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -4757,7 +4758,14 @@ const textPreview = new TextPreview();
  * (server/trace.ts). Older turns are read back from the events file. */
 const turnTraces = new LaneTurns();
 
+// What an event writes is its turn's own, for a quiet finish to tell from
+// anybody else's (server/quiet-finish.ts, belongs).
 bus.subscribe((event: RuntimeEvent) => {
+  void writer.run({ lane: event.threadId, ...(event.turnId ? { turnId: event.turnId } : {}) }, () => onRuntimeEvent(event))
+    .catch((error) => console.error("bus: listener threw", error));
+});
+
+async function onRuntimeEvent(event: RuntimeEvent) {
   // Maintenance compaction (idle or before a turn) does not own a
   // command catalog: keep the latest agent turn's report.
   if (idleCompacting.has(event.threadId)) return onIdleCompaction(event);
@@ -4782,6 +4790,8 @@ bus.subscribe((event: RuntimeEvent) => {
   } else if (event.type === "item.completed" && event.itemType === "assistant_text") textPreview.complete(event);
   else if (event.type === "turn.completed" || event.type === "session.exited") textPreview.end(event);
   if (preview) broadcast({ kind: "runtime", event: preview });
+  // the person may have read it, so this turn can no longer finish quietly
+  if (preview?.type === "content.delta" && preview.streamKind === "assistant_text" && preview.delta) shownInTurn.set(event.threadId, laneTurns.get(event.threadId) ?? 0);
   const bot = store.botByThread(event.threadId);
   if (!bot) return;
 
@@ -4852,18 +4862,26 @@ bus.subscribe((event: RuntimeEvent) => {
         // check-in's QUIET is its own, below.
         const unasked = !inRoom && !checkInTurns.has(event.threadId) && unaskedTurn(event.threadId);
         const silent = unasked && isQuietReply(text);
-        if ((answering || inRoom || unasked) && text && !silent && !isProgressText(event.codexText)) spokeInTurn.add(event.threadId);
+        const said = text && !silent ? houseStyle(text) : undefined;
+        // The reply's interface, settled and checked, for a client
+        // that draws it without parsing it (server/genui.ts).
+        const ui = said !== undefined ? extractUi(said) : null;
+        // A turn finished quietly (`bloks quiet`) keeps what it says after
+        // that out of the person's attention. A card, a chart or a team
+        // proposal is something for them, so it cancels the finish before
+        // any of it is saved, and the turn ends as usual.
+        const gate = quietGateOf(event.threadId, event.turnId);
+        if (gate && (plan || components.length || ui)) cancelQuiet(event.threadId, gate);
+        const hiding = gate?.state === "accepted";
+        const spoke = Boolean((answering || inRoom || unasked) && text && !silent && !isProgressText(event.codexText));
+        if (spoke && !hiding) spokeInTurn.add(event.threadId);
         if (silent) quietEnds.set(event.threadId, text);
         else if (text) quietEnds.delete(event.threadId);
         // A check-in's QUIET is marked the moment it is said, so the frame
         // that carries it already says it is not news, to every client
         // that reads it, before the turn has even ended.
         const quiet = !inRoom && checkInTurns.has(event.threadId) && isQuietReply(text);
-        if (text && !silent) {
-          const said = houseStyle(text);
-          // The reply's interface, settled and checked, for a client
-          // that draws it without parsing it (server/genui.ts).
-          const ui = extractUi(said);
+        if (said !== undefined) {
           const savedReply = pushMessage({
             role: "bot",
             kind: "text",
@@ -4871,9 +4889,10 @@ bus.subscribe((event: RuntimeEvent) => {
             ...(ui ? { ui } : {}),
             ...(event.codexText ? { codexText: event.codexText } : {}),
             ...(answering ? { afterAgent: answering } : {}),
-            ...(quiet ? { quiet: true } : {}),
+            ...(quiet || hiding ? { quiet: true } : {}),
           });
-          replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase, event.syntheticText);
+          if (hiding && !quiet) gate.hidden.push({ id: savedReply.id, turnId: event.turnId, phase: event.replyPhase, synthetic: event.syntheticText, spoke });
+          else if (!hiding) replyNotifications.text(event.threadId, event.turnId, savedReply, event.replyPhase, event.syntheticText);
         }
         for (const component of components) {
           if (!mayRender(component.kind, bot.withoutComponents)) continue;
@@ -5528,8 +5547,6 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "turn.completed": {
-      // Capture before owner settlement or queue dispatch can replace this lane.
-      const endingReply = replyNotifications.take(event.threadId, event.turnId);
       const endingCheckIn = checkInTurns.has(event.threadId);
       // The bare quiet word this turn ended on, kept out of the chat. What
       // reads a turn's last words (settleOwners) still reads it.
@@ -5674,6 +5691,10 @@ bus.subscribe((event: RuntimeEvent) => {
         // anything said while the card was being made goes now
         drainSteer(event.threadId);
       });
+      // A file or changes card discovered at completion still belongs to
+      // this turn. Keep its quiet gate and reply bookkeeping until those
+      // writes have had their chance to cancel it, before any next turn.
+      if (quietGates.get(event.threadId)?.turnId === event.turnId) await carded;
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
       repeats.end(event.threadId);
@@ -5731,12 +5752,25 @@ bus.subscribe((event: RuntimeEvent) => {
       if (heldPerson && event.ok === false && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
         tellTelegramPersonHeld(heldPerson, failedTurnNotice(event.stopReason));
       }
+      // A turn its agent finished quietly (`bloks quiet`) ends as one that
+      // answered QUIET, if it ended well and nothing for the person came
+      // after: no card, file or ask, and not the person's words. Only this
+      // runtime turn's finish; an older turn's end leaves a newer one be.
+      const quietGate = quietGates.get(event.threadId)?.turnId === event.turnId ? quietGates.get(event.threadId) : undefined;
+      const quietAction = quietGate?.state === "accepted" && !inRoom && event.ok !== false && !handedOver &&
+        event.stopReason !== "interrupted" && !pickingUp && !refolding &&
+        !turnsForYou.has(event.threadId) && ![...askThreadByRequest.values()].includes(event.threadId);
+      if (quietGate && !quietAction) cancelQuiet(event.threadId, quietGate);
+      if (quietGate) quietGates.delete(event.threadId);
+      // Restored words take the same notification path as ordinary ones,
+      // including when a final file, failure or handover cancelled quiet.
+      const endingReply = replyNotifications.take(event.threadId, event.turnId);
       // A check-in that answered QUIET, with nobody else's words in it, is
       // folded away and announces nothing. One the person spoke into is
       // theirs now, and one that failed is something they should see.
       const quietRun =
         endingCheckIn && !inRoom && event.ok !== false && !handedOver &&
-        !turnsForYou.has(event.threadId) && foldQuietRun(event.threadId);
+        !turnsForYou.has(event.threadId) && (quietAction && quietGate ? foldFinished(event.threadId, quietGate) : foldQuietRun(event.threadId));
       checkInTurns.delete(event.threadId);
       // The reply this attempt has to say, once, now that it is over,
       // whether it ended well or not (server/reply-notifications.ts).
@@ -5769,7 +5803,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // the failure in its own words, for a routine's or a workflow's
       // incident, where the run itself keeps only the stop reason
       if (!handedOver && event.ok === false) failedWords.set(event.threadId, lastWords(endedErrors, event.stopReason ?? null));
-      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}), ...(quietWord !== undefined ? { said: quietWord } : {}) });
+      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}), ...(quietWord !== undefined ? { said: quietWord } : quietAction ? { said: "QUIET" } : {}) });
       failedWords.delete(event.threadId);
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
@@ -5782,7 +5816,8 @@ bus.subscribe((event: RuntimeEvent) => {
         (replyingTo.has(event.threadId) || codexAgentTurn) && (event.ok !== false || (codexAgentTurn && event.stopReason === "interrupted")) && !spokeInTurn.has(event.threadId);
       // So does one nobody asked for that ended on the bare quiet word
       // with nothing else said, unless the person has joined it since.
-      const quietEnd = quietWord !== undefined && event.ok !== false && !spokeInTurn.has(event.threadId) && !turnsForYou.has(event.threadId);
+      // So does one its agent finished quietly.
+      const quietEnd = (quietWord !== undefined || (quietAction && !endingCheckIn)) && event.ok !== false && !spokeInTurn.has(event.threadId) && !turnsForYou.has(event.threadId);
       spokeInTurn.delete(event.threadId);
       if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
       if (quietAgentTurn || quietRun || quietEnd) {
@@ -5859,7 +5894,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
   }
-});
+}
 
 // ── watching an agent's screen while it works ─────────────────────────
 // While a turn is running its box, or its browser, is photographed on a
@@ -6090,6 +6125,8 @@ const recallIndexes = new IndexCache();
 // started, or anything asking something of them, moves the conversation
 // it lands in.
 store.onAppend = (threadId, message) => {
+  // before it is sent anywhere: a quiet finish may have to give way to it
+  quietRowWritten(threadId, message);
   // an index already built grows with its conversation; one nobody has
   // searched yet is built whole when somebody does
   const index = recallIndexes.peek(threadId);
@@ -7371,8 +7408,12 @@ async function startClaimedTurn(
     ? store.messagesFor(task.id).filter((m) => opts.personalMessages!.includes(m.id) && m.namedSkills === true && m.role === "user" && m.kind === "text" && !m.deleted && !m.agent && !m.via).map((m) => m.text ?? "")
     : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
   const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
-  if (opts.from) text = fromAgentPrompt(opts.from, text);
-  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id));
+  // Whether this turn gets the agent's own full credential (minted below,
+  // on the same terms), and with it `bloks quiet`.
+  const quietCommand = !personSource && !sharing && runsAProcess(instance.driverKind) &&
+    (opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? turnPerson ?? "owner") === "owner";
+  if (opts.from) text = fromAgentPrompt(opts.from, text, quietCommand);
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id), quietCommand);
 
   // ── the transcript for API-backed drivers ──
   //
@@ -8182,9 +8223,9 @@ async function startClaimedTurn(
       const credential = personSource
         ? agentTokens.mintReply(bot.id, task.id, Date.now(), personSource, laneTurns.get(task.id) ?? 0)
         : !sharing && owners && runsAProcess(instance.driverKind)
-          ? agentTokens.mint(bot.id, task.id, Date.now())
+          ? agentTokens.mint(bot.id, task.id, Date.now(), laneTurns.get(task.id) ?? 0)
           : messageRoute === "cli"
-            ? agentTokens.mintMessenger(bot.id, task.id, Date.now())
+            ? agentTokens.mintMessenger(bot.id, task.id, Date.now(), laneTurns.get(task.id) ?? 0)
             : null;
       const replyCredential = personSource ? credential : groupSource ? agentTokens.mintReply(bot.id, task.id, Date.now(), groupSource, laneTurns.get(task.id) ?? 0) : null;
       // A connection's address and what the agent is told of it, or of gh
@@ -14335,13 +14376,109 @@ function foldQuietRun(laneId: string): boolean {
   const quietAsk = (prompt?.via === "routine" && prompt.routine?.quiet) || (prompt?.via === "incident" && prompt.incident?.kind === "note");
   if (!prompt || prompt.deleted || !quietAsk) return false;
   const turn = said.slice(at + 1);
-  const quietKind = (m: Message) =>
-    m.role === "bot" && !m.deleted && (m.kind === "text" || m.kind === "activity" || m.kind === "screen" || (m.kind === "notice" && Boolean(m.compaction)));
   const answer = [...turn].reverse().find((m) => m.kind === "text");
   if (!answer || !isQuietReply(answer.text) || !turn.every(quietKind)) return false;
   const folded = store.patchMessages(laneId, [prompt.id, ...turn.map((m) => m.id)], () => ({ quiet: true }));
   for (const message of folded) broadcast({ kind: "message.patch", threadId: laneId, message });
   return true;
+}
+
+// ── a turn its agent finished quietly (`bloks quiet`) ────────────────
+// The explicit way to answer QUIET (server/quiet-finish.ts). Accepted only
+// while nothing in the turn has reached the person: no text shown or
+// saved, no card, file or ask, and nobody's words joining it. From then
+// on what the turn says is kept out of their attention, unless it is
+// something for them, which cancels the finish and gives back what was
+// held. Every step reads the turn it was taken in (seq, turnId), so a
+// late call or event from one turn never touches another's.
+
+/** Each lane's quiet finish, for the turn it was taken in. */
+const quietGates = new Map<string, QuietGate>();
+/** The lane turn (laneTurns) whose text a preview has shown. */
+const shownInTurn = new Map<string, number>();
+/** Words on their way into each lane's running turn. */
+const steerHolds = new SteerHolds();
+
+function quietGateOf(laneId: string, turnId: string | undefined): QuietGate | undefined {
+  const gate = quietGates.get(laneId);
+  return gate && gate.state === "accepted" && turnId !== undefined && gate.turnId === turnId ? gate : undefined;
+}
+
+/** Something for the person came after the finish: from here on the turn
+ * is delivered as usual, and so is everything it held back. */
+function cancelQuiet(laneId: string, gate: QuietGate) {
+  if (quietGates.get(laneId) !== gate || gate.state !== "accepted") return;
+  gate.state = "superseded";
+  textPreview.reopen(laneId, gate.turnId);
+  for (const hidden of gate.hidden) {
+    const restored = store.patchMessage(laneId, hidden.id, { quiet: undefined });
+    if (!restored) continue;
+    broadcast({ kind: "message.patch", threadId: laneId, message: restored });
+    if (hidden.spoke) spokeInTurn.add(laneId);
+    replyNotifications.text(laneId, hidden.turnId, restored, hidden.phase, hidden.synthetic);
+  }
+  gate.hidden = [];
+}
+
+/** A row just written in a lane with a quiet finish: the turn's own quiet
+ * kinds are kept for the fold, anything else of its own cancels the
+ * finish before it is sent anywhere. Anybody else's rows are left be. */
+function quietRowWritten(laneId: string, message: Message) {
+  const gate = quietGates.get(laneId);
+  if (!gate || gate.state !== "accepted" || !belongs(gate, laneId, message, writer.getStore())) return;
+  if (quietKind(message)) gate.rows.push(message.id);
+  else cancelQuiet(laneId, gate);
+}
+
+/** A check-in finished quietly folds like one that answered QUIET: its
+ * prompt, what it had done at the call, and its own rows since. */
+function foldFinished(laneId: string, gate: QuietGate): boolean {
+  const ids = [...(gate.promptId ? [gate.promptId] : []), ...gate.checked, ...gate.rows];
+  const folded = store.patchMessages(laneId, ids, () => ({ quiet: true }));
+  for (const message of folded) broadcast({ kind: "message.patch", threadId: laneId, message });
+  return true;
+}
+
+/** `POST /api/bots/:me/tasks/:id/quiet`: checked and taken in one step,
+ * with nothing awaited, so a steer or an event cannot fall in between. */
+function acceptQuiet(credential: { seq?: number }, laneId: string): { status: number; body: Record<string, unknown> } {
+  const refuse = (reason: QuietRefusal) => ({ status: 409, body: quietRefused(reason) });
+  const seq = laneTurns.get(laneId) ?? 0;
+  const turnId = textPreview.turnOf(laneId);
+  if (!store.taskByThread(laneId)?.task.busy || credential.seq !== seq || !turnId) return refuse("not_running");
+  const held = quietGates.get(laneId);
+  if (held && held.seq === seq) {
+    if (held.state === "accepted" && held.turnId === turnId) return { status: 200, body: { ...QUIET_ACCEPTED, already: true } };
+    return refuse("superseded");
+  }
+  if ((activeRoom.get(laneId) ?? laneId) !== laneId) return refuse("not_eligible");
+  const arriving = steerHolds.refusal(laneId, seq);
+  if (arriving) return refuse(arriving);
+  if (turnsForYou.has(laneId)) return refuse("person_in_turn");
+  const checkIn = checkInTurns.has(laneId);
+  if (!checkIn && !unaskedTurn(laneId)) return refuse("not_eligible");
+  if ([...askThreadByRequest.values()].includes(laneId)) return refuse("open_request");
+  if (shownInTurn.get(laneId) === seq || spokeInTurn.has(laneId)) return refuse("already_shown");
+  // the turn so far: after the words it started on
+  const said = store.messagesFor(laneId).filter((m) => !m.queued && !m.unsent);
+  const started = turnStarted.get(laneId) ?? 0;
+  let at = said.length - 1;
+  while (at >= 0 && !(said[at].role === "user" && said[at].at <= started)) at--;
+  const prompt = at >= 0 ? said[at] : undefined;
+  const turn = said.slice(at + 1).filter((m) => m.role === "bot");
+  // Published text stays published: a check-in's earlier words, its
+  // progress included, are not folded away by a later quiet finish.
+  if (turn.some((m) => !quietKind(m) || (m.kind === "text" && !m.quiet))) return refuse("already_shown");
+  const quietAsk = (prompt?.via === "routine" && prompt.routine?.quiet) || (prompt?.via === "incident" && prompt.incident?.kind === "note");
+  if (checkIn && (!prompt || prompt.deleted || !quietAsk)) return refuse("not_eligible");
+  quietGates.set(laneId, {
+    seq, turnId, state: "accepted",
+    ...(checkIn && prompt ? { promptId: prompt.id } : {}),
+    checked: checkIn ? turn.map((m) => m.id) : [],
+    rows: [], hidden: [],
+  });
+  textPreview.close(laneId, turnId);
+  return { status: 200, body: QUIET_ACCEPTED };
 }
 
 function lastSaid(threadId: string): string {
@@ -18232,56 +18369,90 @@ async function steerOne(
   if (!adapter?.steerTurn) return null;
   if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   const { from } = options;
-  const words = withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text) : text, options.replyTo);
+  const words = withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text, agentTokens.heldFull(lane.id)) : text, options.replyTo);
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const sourceTurnId = !from && options.personal !== false ? codexOrigins.get(lane.id)?.turnId : undefined;
   let joinedTurnId: string | undefined;
-  const taking = adapter.steerTurn(lane.id, words, {
-    ...(names.length ? { skillNames: names } : {}),
-    ...(sourceTurnId ? { onAccepted: (acceptedTurnId: string) => { if (acceptedTurnId === sourceTurnId) joinedTurnId = sourceTurnId; } } : {}),
-    ...(options.admission ? { onDispatch: () => options.admission!.beforeEffect() } : {}),
-  });
-  // A thrown reserved steer may already have reached the engine. Its caller
-  // must retain uncertainty, rather than queue a second delivery.
-  const took = options.admission ? await taking : await taking.catch(() => false);
-  if (!took) return null;
-  // A steer joins this turn. Its stored return keeps this turn's fixed
-  // anchor too, so a restart cannot move the reply to the later words.
-  options = { ...options,
-    ...(options.telegramPerson?.group ? { telegramPerson: laneTelegramPerson.get(lane.id) ?? options.telegramPerson } : {}),
-    ...(options.telegramGroup ? { telegramGroup: laneTelegramGroup.get(lane.id) ?? options.telegramGroup } : {}) };
-  options.admission?.accepted("steered");
-  // A message that was waiting goes in as itself: moved to where the
-  // turn hears it, as a waiting message always is, and marked as joined.
-  const moved = options.moving ? moveIntoTurn(lane.id, options.moving, { joinedTurnId, delivery: options.delivery }) : null;
-  const message = moved ?? store.appendMessage(lane.id, {
-    role: "user",
-    kind: "text",
-    text,
-    // it joined a turn and did not start one, which the transcript could
-    // not otherwise say once the turn is over (Message.midTurn)
-    midTurn: true,
-    ...(joinedTurnId ? { joinedTurnId } : {}),
-    ...(options.replyTo ? { replyTo: options.replyTo } : {}),
-    ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
-    ...(options.fromTelegram ? { fromTelegram: true } : {}),
-    ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
-    ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
-    ...(options.telegramDelegate ? { telegramDelegate: options.telegramDelegate } : {}),
-    ...(options.delivery ? { delivery: options.delivery } : {}),
-    ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
-  });
-  if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
-  // what the turn says from here on is an answer to the person too, and
-  // with the person in it, a chain of agents' messages starts over
-  if (!from && !options.telegramPerson && !options.telegramDelegate) {
-    turnsForYou.add(lane.id);
-    agentChain.delete(lane.id);
-    chainTasks.delete(lane.id);
-    turnHops.delete(lane.id);
+  // A turn its agent finished quietly takes no more words: they wait for a
+  // turn of their own, which answers them. Otherwise they are counted on
+  // their way in, so a quiet finish cannot slip past them (acceptQuiet).
+  // Nothing is awaited between this check and the steer.
+  const seq = laneTurns.get(lane.id) ?? 0;
+  const finished = quietGates.get(lane.id);
+  if (finished?.seq === seq && finished.state === "accepted") return null;
+  steerHolds.hold(lane.id, seq);
+  // A steer that threw may have reached the engine: the turn cannot finish
+  // quietly any more. Its settle counts only in the turn it was made in.
+  const uncertain = (error: unknown) => {
+    steerHolds.taint(lane.id, seq);
+    if ((laneTurns.get(lane.id) ?? 0) === seq && !options.from && !options.telegramPerson && !options.telegramDelegate) {
+      // Their words may already be in this turn. Keep the obligation to
+      // answer, without queuing a second copy after a lost receipt.
+      turnsForYou.add(lane.id);
+      answerAsked.set(lane.id, true);
+    }
+    throw error;
+  };
+  try {
+    let taking: Promise<boolean>;
+    try {
+      taking = adapter.steerTurn(lane.id, words, {
+        ...(names.length ? { skillNames: names } : {}),
+        ...(sourceTurnId ? { onAccepted: (acceptedTurnId: string) => { if (acceptedTurnId === sourceTurnId) joinedTurnId = sourceTurnId; } } : {}),
+        // Ask the driver to distinguish an explicit refusal from a lost
+        // receipt for every steer, so an uncertain input is never retried
+        // as though the engine had said no.
+        onDispatch: () => options.admission?.beforeEffect(),
+      }).catch(uncertain);
+    } catch (error) {
+      return uncertain(error);
+    }
+    // A thrown reserved steer may already have reached the engine. Its caller
+    // must retain uncertainty, rather than queue a second delivery.
+    const took = await taking;
+    if (!took) return null;
+    // A steer joins this turn. Its stored return keeps this turn's fixed
+    // anchor too, so a restart cannot move the reply to the later words.
+    options = { ...options,
+      ...(options.telegramPerson?.group ? { telegramPerson: laneTelegramPerson.get(lane.id) ?? options.telegramPerson } : {}),
+      ...(options.telegramGroup ? { telegramGroup: laneTelegramGroup.get(lane.id) ?? options.telegramGroup } : {}) };
+    options.admission?.accepted("steered");
+    // A message that was waiting goes in as itself: moved to where the
+    // turn hears it, as a waiting message always is, and marked as joined.
+    const moved = options.moving ? moveIntoTurn(lane.id, options.moving, { joinedTurnId, delivery: options.delivery }) : null;
+    const message = moved ?? store.appendMessage(lane.id, {
+      role: "user",
+      kind: "text",
+      text,
+      // it joined a turn and did not start one, which the transcript could
+      // not otherwise say once the turn is over (Message.midTurn)
+      midTurn: true,
+      ...(joinedTurnId ? { joinedTurnId } : {}),
+      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+      ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
+      ...(options.fromTelegram ? { fromTelegram: true } : {}),
+      ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
+      ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
+      ...(options.telegramDelegate ? { telegramDelegate: options.telegramDelegate } : {}),
+      ...(options.delivery ? { delivery: options.delivery } : {}),
+      ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
+    });
+    if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
+    // what the turn says from here on is an answer to the person too, and
+    // with the person in it, a chain of agents' messages starts over
+    if (!from && !options.telegramPerson && !options.telegramDelegate) {
+      turnsForYou.add(lane.id);
+      agentChain.delete(lane.id);
+      chainTasks.delete(lane.id);
+      turnHops.delete(lane.id);
+    }
+    return message;
+  } finally {
+    // Keep the hold through the person's bookkeeping, not merely the
+    // adapter's receipt: quiet must see either pending input or its owner.
+    steerHolds.release(lane.id, seq);
   }
-  return message;
 }
 
 /** Why another agent's words may not go into the turn running in a lane
@@ -18334,9 +18505,14 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
  * from, how to answer, and that a turn with nothing for the person may
  * end on the bare quiet word, which then says nothing (unaskedTurn,
  * GitHub 363). The transcript keeps the words alone, with the sender as
- * data, so the person's chat can say who it was. */
-function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
-  return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`. If nothing in it needs the person, answer with exactly QUIET and nothing else; the turn then ends without a message.)\n\n${text}`;
+ * data, so the person's chat can say who it was. A turn with the CLI
+ * (quietCommand) is told to say so with `bloks quiet` instead, and keeps
+ * the word for when it cannot run it. */
+function fromAgentPrompt(from: { botId: string; name: string }, text: string, quietCommand = false) {
+  const quiet = quietCommand
+    ? "If nothing in it needs the person, run `bloks quiet` before writing any text, then end your turn; it then ends without a message. Only if the command is unavailable, answer with exactly QUIET and nothing else. A refused or uncertain call requires a substantive reply, never QUIET."
+    : "If nothing in it needs the person, answer with exactly QUIET and nothing else; the turn then ends without a message.";
+  return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`. ${quiet})\n\n${text}`;
 }
 
 /** Name the source without claiming whether the person is here. A quiet
@@ -18345,12 +18521,12 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
  * is what the routine reported last time (lastReportNote), said only in
  * the turn as it goes: a replayed transcript has that answer in it
  * already. */
-function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string, last?: string | null) {
+function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string, last?: string | null, quietCommand = false) {
   const quoted = routine.name ? JSON.stringify(routine.name).replace(/[\u0085\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : "";
   const name = quoted ? ` ${quoted}` : "";
   const started = routine.manual ? "was run by hand." : "started this turn on its schedule.";
-  const quiet = routine.quiet ? ` ${QUIET_ASK}` : "";
+  const quiet = routine.quiet ? ` ${quietCommand ? QUIET_COMMAND_ASK : QUIET_ASK}` : "";
   const brief = routine.brief ? ` ${BRIEF_ASK}` : "";
   return `(Your routine${name} ${started}${quiet}${brief})\n\n${last ? `${last}\n\n` : ""}${text}`;
 }
@@ -21560,7 +21736,12 @@ async function serveBackups(req: IncomingMessage, res: ServerResponse, method: s
 // unanswered request hangs the phone that asked, and a 401 would tell it
 // it is no longer paired.
 const server = createServer((req, res) => {
-  void handleRequest(req, res).catch((e) => {
+  // A request made with a turn's own credential writes as that turn, for
+  // as long as it runs and no longer (server/quiet-finish.ts, belongs).
+  // The same credential handleRequest identifies; anything else is nobody's.
+  const held = agentTokens.identify(bearerToken(req), Date.now(), turnAlive);
+  const as = held && held.seq !== undefined ? { lane: held.taskId, seq: held.seq } : undefined;
+  void writer.run(as, () => handleRequest(req, res)).catch((e) => {
     if (res.headersSent) return void res.end();
     json(res, (e as { status?: number })?.status ?? 503, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
   });
@@ -25495,6 +25676,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       startFresh(lane.id);
       return json(res, 200, { ok: true, fresh: "now" });
+    }
+
+    // The turn an agent is in, finished quietly when nothing in it needs
+    // the person (server/quiet-finish.ts). Only by that turn itself, with
+    // its own credential: it is the agent's own say about its own turn.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/quiet$/);
+    if (m && method === "POST") {
+      if (!asAgent || asAgent.botId !== m[1] || asAgent.taskId !== m[2]) {
+        return json(res, 403, { error: "only the turn running in a conversation can finish itself quietly, with its own credential" });
+      }
+      const { status, body } = acceptQuiet(asAgent, m[2]);
+      return json(res, status, body);
     }
 
     // What a conversation's older messages were folded into, read or
