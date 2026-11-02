@@ -3457,7 +3457,7 @@ function closeMemberStreams(personId: string) {
  * full re-download, which is most reconnects on a phone. A gap the ring
  * cannot cover gets told so, honestly, and re-hydrates. */
 let frameSeq = 0;
-const RING_SIZE = 512;
+const RING_SIZE = 4096;
 const frameRing: Array<{ seq: number; frame: string; payload: unknown; ownerHidden?: boolean }> = [];
 
 /** Look for engine releases on a schedule, so the news is waiting in the
@@ -34320,7 +34320,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
  * there is nothing to serve, so the caller answers. The web door serves
  * the same files, before anybody has signed in.
  */
-function serveStatic(_req: IncomingMessage, res: ServerResponse, path: string): boolean {
+function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): boolean {
   if (!STATIC_DIR) return false;
   // resolve, then require the result to stay inside STATIC_DIR,
   // string-stripping ".." is not a containment check
@@ -34337,13 +34337,27 @@ function serveStatic(_req: IncomingMessage, res: ServerResponse, path: string): 
     json(res, 403, { error: "forbidden" });
     return true;
   }
+  const wantsGzip = /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
   // and then opened as the file it really is, inside the folder, and
   // read from that open file (server/open-inside.ts)
   const held = file === root ? null : openInside(root, relative(root, file).split(sep));
   const data = held && readHeld(held);
   if (data) {
+    const type = MIME[extname(file)] ?? "application/octet-stream";
+    if (wantsGzip && data.length >= 1024 && /^(text\/|application\/(javascript|json)|image\/svg\+xml)/.test(type)) {
+      const gz = gzipSync(data);
+      res.writeHead(200, {
+        "content-type": type,
+        "content-encoding": "gzip",
+        "content-length": gz.length,
+        vary: "accept-encoding",
+        ...SECURITY_HEADERS,
+      });
+      res.end(gz);
+      return true;
+    }
     res.writeHead(200, {
-      "content-type": MIME[extname(file)] ?? "application/octet-stream",
+      "content-type": type,
       ...SECURITY_HEADERS,
     });
     res.end(data);
@@ -34413,7 +34427,11 @@ noteBound(BIND);
 // from a global IPv6 address is let go before a byte is read
 // (reachablePeer in server/pairing.ts).
 server.on("connection", (socket) => {
-  if (BIND === "::" && !reachablePeer(socket.remoteAddress)) socket.destroy();
+  if (BIND === "::" && !reachablePeer(socket.remoteAddress)) {
+    socket.destroy();
+    return;
+  }
+  socket.setNoDelay(true);
 });
 /** Tells the local network which port this Bloks is on, while a phone may
  * reach it here, so a phone with a stale port finds it (server/announce.ts).
