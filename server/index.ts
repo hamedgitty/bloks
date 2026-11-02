@@ -496,6 +496,8 @@ import {
   vmViewerTarget,
   VIEWER_ORIGIN,
 } from "./local-vm.ts";
+import { selfEditRefusal } from "./agent-self-edit.ts";
+import { carriesLocalKey, makeLocalKey, LOCAL_KEY_HEADER } from "./local-key.ts";
 import { resolveOnPath, widenPath } from "./path.ts";
 import {
   AuditLog,
@@ -834,6 +836,13 @@ const HOSTED = isHosted();
  * where it runs, who looks after it, and what the owner's own devices may
  * do on it. HOSTED above is its provider-managed case. */
 const DEPLOYMENT = deploymentOf({ inApp: Boolean((process as NodeJS.Process & { parentPort?: unknown }).parentPort) });
+/** On bloks-server, the owner's own commands carry a key made at each
+ * start, since loopback alone cannot tell them from a tunnel's stranger
+ * (server/local-key.ts). The launcher asks for it; the app never does. */
+const LOCAL_KEY = process.env.BLOKS_LOCAL_KEY === "1" ? makeLocalKey(DATA_DIR) : null;
+/** The person at this machine: loopback by every check http-guard.ts
+ * makes, and on a server, carrying this start's key too. */
+const ownerHere = (req: IncomingMessage) => isLocalRequest(req) && (LOCAL_KEY === null || carriesLocalKey(req, LOCAL_KEY));
 const VNC = HOSTED ? vncTarget(process.env.BLOKS_HOSTED_VNC) : null;
 const DOOR = HOSTED ? publicDoor(process.env.BLOKS_PUBLIC_URL) : null;
 /** This copy's work moved to another machine (server/moved-mark.ts): its
@@ -18369,7 +18378,7 @@ async function answerProposal(laneId: string, messageId: string, change: boolean
     // the change is the same change, whoever tapped where.
     const res = await fetch(`http://127.0.0.1:${PORT}${request.path}`, {
       method: request.method,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(LOCAL_KEY ? { [LOCAL_KEY_HEADER]: LOCAL_KEY } : {}) },
       body: JSON.stringify(request.body),
     });
     if (!res.ok) failed = String(((await res.json().catch(() => ({}))) as { error?: unknown }).error ?? `${res.status}`).slice(0, 200);
@@ -23983,13 +23992,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // request carries. On this computer only, and never a request replayed
   // off the relay line for a phone.
   if (path.startsWith("/connect/")) {
-    const here = isLocalRequest(req) && !relayDeviceFor(req) && !relayInviteFor(req);
+    const here = ownerHere(req) && !relayDeviceFor(req) && !relayInviteFor(req);
     return proxyConnection(req, res, path, url.search, here, connectionProxy);
   }
   const serviceRoute = path.match(/^\/api\/bots\/([\w-]+)\/wakes(?:\/([\w-]+))?$/);
   if (serviceRoute) {
     const refuse = (status: number, error: string) => json(res, status, { ok: false, accepted: false, error });
-    if (!serviceWakeLocal(req, Boolean(relayDeviceFor(req) || relayInviteFor(req)))) return refuse(403, "service wakes require a direct trusted-host request without Origin or Authorization");
+    if (!serviceWakeLocal(req, Boolean(relayDeviceFor(req) || relayInviteFor(req))) || !ownerHere(req)) return refuse(403, "service wakes require a direct trusted-host request without Origin or Authorization");
     const botId = serviceRoute[1];
     if (!wakeUuid(botId)) return refuse(400, "botId must be a UUID");
     const lookup = (taskId: string, wakeId: string) => {
@@ -24268,7 +24277,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // is ever local (server/http-guard.ts).
   const viaWeb = viaRelay ? null : webCallerFor(req);
   // Loopback is not a boundary in a browser, see server/http-guard.ts.
-  const local = viaRelay ? false : isLocalRequest(req);
+  const local = viaRelay ? false : ownerHere(req);
   // A credential that was sent but is not one this server knows (a turn's
   // token after the turn, a typo, an empty header) is refused rather than
   // read as no credential: whoever sent it meant to be someone in
@@ -24959,6 +24968,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // decision for the person.
       if (asAgent && body.hidden !== undefined) {
         return json(res, 403, { error: "an agent cannot retire itself" });
+      }
+      // and changing itself, it may narrow its reach, never widen it
+      // (server/agent-self-edit.ts)
+      if (asAgent && asAgent.botId === m[1]) {
+        const self = store.bot(m[1]);
+        const refused = self ? selfEditRefusal(body ?? {}, self) : null;
+        if (refused) return json(res, 403, { error: refused });
       }
       // Hiding is retiring now, so it goes through the pair rather than
       // setting one half of it. Assigning `hidden` on its own produced

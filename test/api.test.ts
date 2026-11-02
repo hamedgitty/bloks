@@ -1601,6 +1601,76 @@ process.stdin.resume();
     assert.deepEqual(JSON.parse(quiet[quiet.indexOf("--settings") + 1]), { disableAllHooks: true });
   });
 
+  test("an agent changing itself may narrow its reach, never widen it", async (t) => {
+    // the same stand-in as below: the real credential, the server's checks
+    const home = mkdtempSync(join(tmpdir(), "bloks-self-edit-"));
+    const out = join(home, "fake-out.json");
+    const cli = join(home, "fake-claude.mjs");
+    writeFileSync(
+      cli,
+      `#!${process.execPath}
+import { renameSync, writeFileSync } from "node:fs";
+const [first] = process.argv.slice(2);
+if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
+if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+process.stdin.resume();
+((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; process.stdin.off("data", take); go(); return; } }; process.stdin.on("data", take); })(async () => {
+  const url = process.env.BLOKS_URL;
+  const headers = { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" };
+  const call = (method, path, body) => fetch(url + path, { method, headers, body: body && JSON.stringify(body) });
+  const me = (await (await call("GET", "/api/agent/whoami")).json()).botId;
+  const status = async (body) => (await call("PATCH", "/api/bots/" + me, body)).status;
+  const seen = {
+    me,
+    screen: await status({ computer: "local" }),
+    home: await status({ cwd: process.env.HOME }),
+    engine: await status({ modelSelection: { instanceId: "other", model: "m" } }),
+    apps: await status({ composio: true }),
+    off: await status({ computer: "off" }),
+    rename: await status({ name: "Renamed" }),
+  };
+  writeFileSync(${JSON.stringify(out)} + ".tmp", JSON.stringify(seen)); renameSync(${JSON.stringify(out)} + ".tmp", ${JSON.stringify(out)});
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }));
+});
+`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(home, ".bloks"), { recursive: true });
+    writeFileSync(
+      join(home, ".bloks", "config.json"),
+      JSON.stringify({ instances: { claude: { driver: "claudeAgent", config: { cli } }, other: { driver: "claudeAgent", config: { cli } } } }),
+    );
+    const h2 = await startHarness({ HOME: home });
+    t.after(async () => {
+      await h2.stop();
+      rmSync(home, { recursive: true, force: true });
+    });
+    const { bot } = await h2.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Self" }) });
+    await h2.fetch(`/api/bots/${bot.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ computer: "sandbox", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }),
+    });
+    await h2.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "go" }) });
+    let seen: Record<string, unknown> | undefined;
+    for (let i = 0; i < 200 && !seen; i++) {
+      if (existsSync(out)) seen = JSON.parse(readFileSync(out, "utf8"));
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(seen, "the stand-in engine never ran a turn");
+    assert.equal(seen.me, bot.id);
+    assert.equal(seen.screen, 403, "an agent gave itself the screen");
+    assert.equal(seen.home, 403, "an agent moved its own working folder");
+    assert.equal(seen.engine, 403, "an agent moved itself to another engine");
+    assert.equal(seen.apps, 403, "an agent connected itself to the person's apps");
+    assert.equal(seen.off, 200, "turning its own computer off is always allowed");
+    assert.equal(seen.rename, 200, "renaming itself is its own business");
+    const { bots } = await h2.json("/api/bots");
+    const after = bots.find((b: any) => b.id === bot.id);
+    assert.equal(after.computer, "off");
+    assert.equal(after.modelSelection.instanceId, "claude");
+    assert.notEqual(after.composio, true);
+  });
+
   test("an agent never passes on or takes more approvals or seniority than it has", async (t) => {
     // A stand-in for Claude Code that uses the turn's real credential the
     // way the CLI does, so the checks under test are the server's own.

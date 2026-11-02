@@ -30,18 +30,33 @@ let base = process.env.BLOKS_URL || null;
 
 /** The port the running server wrote down, first: when the usual ports
  * are taken the app listens somewhere else. */
-function writtenPort() {
-  // in the data folder, which BLOKS_DATA_DIR can move
+function dataDir() {
+  // which BLOKS_DATA_DIR can move
   const said = process.env.BLOKS_DATA_DIR?.trim();
-  const dir = !said
+  return !said
     ? join(homedir(), ".bloks")
     : said === "~"
       ? homedir()
       : said.startsWith("~/")
         ? join(homedir(), said.slice(2))
         : resolve(said);
+}
+
+/** On bloks-server, the key that says this is the owner's own command
+ * (server/local-key.ts); nothing where there is none, as in the app. */
+function ownKey() {
   try {
-    const port = Number(readFileSync(join(dir, "port"), "utf8").trim());
+    const key = readFileSync(join(dataDir(), "local.key"), "utf8").trim();
+    return key ? { "x-bloks-local": key } : {};
+  } catch {
+    return {};
+  }
+}
+
+function writtenPort() {
+  // in the data folder
+  try {
+    const port = Number(readFileSync(join(dataDir(), "port"), "utf8").trim());
     return Number.isInteger(port) && port > 0 ? [port] : [];
   } catch {
     return [];
@@ -67,7 +82,7 @@ async function call(method, path, body, timeoutMs = 30_000) {
   const url = await findBloks();
   const res = await fetch(`${url}${path}`, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...ownKey() },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });

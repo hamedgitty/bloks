@@ -184,6 +184,18 @@ function knownPort() {
 const [command = "start", ...args] = process.argv.slice(2);
 const PORT = knownPort();
 const BASE = `http://127.0.0.1:${PORT}`;
+/** The key the running server made at its start, which says a request is
+ * the owner's own command and not a stranger a tunnel delivered to
+ * loopback (server/local-key.ts). Read each time: a restart makes a new
+ * one. Nothing when it cannot be read, and the server then says so. */
+function ownKey() {
+  try {
+    const key = readFileSync(join(dataDir(), "local.key"), "utf8").trim();
+    return key ? { "x-bloks-local": key } : {};
+  } catch {
+    return {};
+  }
+}
 
 function fail(message) {
   console.error(message);
@@ -195,7 +207,7 @@ async function call(method, path, body) {
   try {
     res = await fetch(`${BASE}${path}`, {
       method,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...ownKey() },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -312,7 +324,7 @@ function intoBackups(code, file, sealed) {
  * null from a server too old to say, which is Bloks Cloud alone. */
 async function reachOf() {
   try {
-    const res = await fetch(`${BASE}/api/config`);
+    const res = await fetch(`${BASE}/api/config`, { headers: ownKey() });
     return res.ok ? ((await res.json())?.deployment?.reach ?? null) : null;
   } catch {
     return null;
@@ -480,6 +492,10 @@ if (handOver) {
     // but a paired device's token gets past /api/health
     // (server/self-host.ts).
     process.env.BLOKS_LOOPBACK_ONLY = "1";
+    // and the owner's own commands here carry a key it makes at each start
+    // (server/local-key.ts), since loopback alone is not the owner on a
+    // machine that may have a tunnel or proxy pointed at it
+    process.env.BLOKS_LOCAL_KEY = "1";
     process.env.BLOKS_PORT = String(PORT);
     // which folder this version is, and the folder updates go beside, so
     // the server can tell it was started here and may restart itself
@@ -660,7 +676,7 @@ if (handOver) {
     let said = "";
     for (;;) {
       await new Promise((r) => setTimeout(r, 1000));
-      const state = await fetch(`${BASE}/api/backups/restore`)
+      const state = await fetch(`${BASE}/api/backups/restore`, { headers: ownKey() })
         .then((r) => r.json())
         .then((body) => body.restore)
         .catch(() => null);
@@ -708,7 +724,7 @@ if (handOver) {
     let said = "";
     for (;;) {
       await new Promise((r) => setTimeout(r, 1000));
-      const now = await fetch(`${BASE}/api/server-update`)
+      const now = await fetch(`${BASE}/api/server-update`, { headers: ownKey() })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
       const job = now?.job;
@@ -731,7 +747,7 @@ if (handOver) {
     // once it has gone back to this one
     for (let waited = 0; waited < 300; waited++) {
       await new Promise((r) => setTimeout(r, 1000));
-      const now = await fetch(`${BASE}/api/server-update`)
+      const now = await fetch(`${BASE}/api/server-update`, { headers: ownKey() })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
       const last = now?.last;

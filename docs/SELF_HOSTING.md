@@ -104,9 +104,15 @@ for the scripting commands on another machine.
 What keeps strangers out does not move:
 
 - Only a request that arrives on this machine's own loopback, with a
-  loopback `Host` and no foreign `Origin`, is the person at the server.
-  Everything else needs a paired device's token, and without one gets
-  `/api/health` and the pairing claim, nothing more.
+  loopback `Host` and no foreign `Origin`, and carrying the key the
+  server made when it started, is the person at the server. The key is
+  in `local.key` in the data folder, readable only by the account Bloks
+  runs as; `bloks-server` and the MCP bridge send it themselves. So a
+  tunnel or proxy that delivers a stranger to loopback, whatever it
+  sends, delivers no owner. A browser on the server itself is a device
+  like any other: pair it, or sign in at the web door. Everything else
+  needs a paired device's token, and without one gets `/api/health`
+  and the pairing claim, nothing more.
 - A request that says a proxy forwarded it (`Forwarded`,
   `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and the like) is
   never the person at the server, even when the proxy connects from
