@@ -377,6 +377,26 @@ test("a remote image addition is copied for the next turn", async (t) => {
   await s.settled();
 });
 
+test("the owner's Telegram words keep their own turn and answer when the preparing turn began in the app", async (t) => {
+  const s = await fixture(t);
+  s.spec({ hold: true, holdThread: true });
+  await s.say("FROM_APP");
+  await s.called("thread/start", 1);
+  const phone = s.push("FROM_PHONE");
+  await waitFor(() => s.polled.has(phone), "the fake Telegram update was not polled");
+  await waitFor(async () => (await s.messages()).some((m) => m.text === "FROM_PHONE"), "the phone's words were not kept");
+  s.threadGate();
+  await s.called("turn/start", 1);
+  const starts = () => s.calls().filter((c) => c.method === "turn/start");
+  assert.doesNotMatch(JSON.stringify(starts()[0].params.input), /FROM_PHONE/, "the phone's words joined a turn that answers in the app");
+  assert.ok(!(await s.messages()).some((m) => m.text === "FROM_PHONE" && m.preparation), "the phone's words were taken as a preparation addition");
+  s.gate();
+  await s.called("turn/start", 2);
+  assert.match(JSON.stringify(starts()[1].params.input), /FROM_PHONE/);
+  await waitFor(() => s.answers().some((m) => m.chat_id === CHAT), "the phone got no answer");
+  await s.settled();
+});
+
 test("a Telegram follow-up ready while Codex is preparing reaches the first turn once", async (t) => {
   const s = await fixture(t);
   s.spec({ hold: true, holdSkills: true });

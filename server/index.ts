@@ -18319,6 +18319,11 @@ function prepareFollowup(
   const requester = options.telegramPerson?.requester ?? options.telegramGroup?.requester ?? "owner";
   if (requester !== attempt.requester || telegramAudience(options.telegramPerson ?? options.telegramGroup) !== attempt.audience ||
       !sameTelegramDelegate(attempt.delegate, options.telegramDelegate)) return null;
+  // The owner's own Telegram chat is answered there by the turn it asked
+  // for. Its words join only a turn that chat started: joined to a turn
+  // started in the app, they would get no answer on the phone at all.
+  const ownerChat = options.fromTelegram && !options.telegramPerson && !options.telegramGroup && !options.telegramDelegate;
+  if (ownerChat && (!options.source || attempt.ownerTelegram?.chatId !== options.source.chatId)) return null;
   if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   if (options.telegramPerson && !telegramSenderCurrent(telegramBinding(bot.id), options.telegramPerson)) return null;
   if (options.telegramDelegate && !telegramDelegateCurrent(telegramBinding(bot.id), options.telegramDelegate)) return null;
