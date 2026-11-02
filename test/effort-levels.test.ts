@@ -109,6 +109,15 @@ test("the desktop's levels and clamp are the server's", () => {
   assert.deepEqual(desktop.EFFORT_LABELS, server.EFFORT_LABELS);
 });
 
+test("a saved Auto placeholder uses the discovered default's reasoning choices", () => {
+  const { held, described } = engine(ALL, [{ id: "default", efforts: ["high", "max"] }]);
+  assert.deepEqual(server.effortLevels(held, "auto"), ["high", "max"]);
+  assert.deepEqual(desktop.effortLevels(described, "auto"), ["high", "max"]);
+  const actualAuto = engine(ALL, [{ id: "default", efforts: ["high", "max"] }, { id: "auto", efforts: ["low"] }]);
+  assert.deepEqual(server.effortLevels(actualAuto.held, "auto"), ["low"], "an advertised model called auto keeps its own choices");
+  assert.deepEqual(desktop.effortLevels(actualAuto.described, "auto"), ["low"]);
+});
+
 test("the labels are plain words", () => {
   assert.deepEqual(Object.values(server.EFFORT_LABELS), ["Off", "Low", "Medium", "High", "Extra high", "Max"]);
   assert.deepEqual(desktop.effortOptions(["low", "xhigh"]), [

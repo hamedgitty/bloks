@@ -537,6 +537,7 @@ const BUILT_IN_CLI_INSTANCES: InstanceConfigMap = {
   gemini_cli: { driver: "geminiCli" },
   opencode: { driver: "opencode" },
   commandcode: { driver: "commandcode" },
+  devin: { driver: "devin" },
   grok_cli: { driver: "grokCli" },
   cursor: { driver: "cursor" },
   cline: { driver: "cline" },

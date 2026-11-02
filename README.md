@@ -503,8 +503,8 @@ picks its own.
 </p>
 
 The first-run check, and Settings, Engines and keys, install Claude Code,
-Codex, Gemini CLI, Pi, OpenCode, Command Code, Antigravity, the Grok CLI,
-Cursor and Cline with one button. They go into your own `~/.local`, so no admin password and no
+Codex, Gemini CLI, Pi, OpenCode, Command Code, Devin, Antigravity, the
+Grok CLI, Cursor and Cline with one button. They go into your own `~/.local`, so no admin password and no
 npm permission errors, and an engine that is installed but not signed in
 says so, with a button that opens Terminal at its sign-in. An engine
 installed somewhere else, or a build of your own, can be pointed at with
@@ -518,6 +518,7 @@ installed somewhere else, or a build of your own, can be pointed at with
 | Pi | `npm i -g --prefix ~/.local --ignore-scripts @earendil-works/pi-coding-agent pi-acp`, then `pi` | yes |
 | OpenCode | `npm i -g --prefix ~/.local opencode-ai`, then `opencode auth login` | yes |
 | Command Code | `npm i -g --prefix ~/.local command-code`, then `command-code login` | yes |
+| Devin | `curl -fsSL https://cli.devin.ai/install.sh \| bash` (or `brew install --cask devin-cli` on macOS, `irm https://static.devin.ai/cli/setup.ps1 \| iex` in PowerShell on Windows), then `devin auth login` | yes |
 | Grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash`, then `grok login` | yes |
 | Cursor | `curl https://cursor.com/install -fsS \| bash`, then `cursor-agent login` (the Cursor CLI, not the editor) | yes |
 | Cline | `npm i -g --prefix ~/.local cline` (3.0.68 or newer), then `cline auth` | yes |

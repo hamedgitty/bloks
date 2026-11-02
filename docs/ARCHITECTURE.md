@@ -61,13 +61,17 @@ tool calls and permission requests.
 **CLI over the Agent Client Protocol.** `acp.ts` is generic: ACP is a
 JSON-RPC protocol that agent CLIs speak so editors can drive them, so one
 implementation serves any agent that speaks it. Gemini CLI was the first;
-OpenCode, Command Code (`command-code acp`), the Grok CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline
---acp`) followed. Adding another is an entry in `ACP_SPECS`, which can
-also say how the CLI reports its sign-in (`signInCheck`, a command, for
-Cursor's keychain login), which ACP auth method to call before a session
-(`authMethod`, Cursor's `cursor_login`), and the oldest release that
-works (`minVersion`, 3.0.68 for Cline; an older one is unavailable with
-that reason, and its row offers an update). Every CLI engine can be
+OpenCode, Command Code (`command-code acp`), Devin (`devin acp`), the Grok
+CLI, Pi, Cursor (`cursor-agent acp`) and Cline (`cline --acp`) followed.
+Adding another is an entry in `ACP_SPECS`, which can also say how the CLI
+reports its sign-in (`signInCheck`, a command, for Cursor's keychain login
+and Devin's `devin auth status`), which ACP auth method to call before a
+session (`authMethod`, Cursor's `cursor_login`), which session mode every
+turn selects (`permissionModes`: Command Code's `default` or `bypass`,
+Devin's `accept-edits` or `bypass`; a mode the session does not list, or
+one it does not confirm, stops the turn before the prompt), and the oldest
+release that works (`minVersion`, 3.0.68 for Cline; an older one is
+unavailable with that reason, and its row offers an update). Every CLI engine can be
 started from a path of the person's choosing (`enginePaths` in
 `config.json`, set with `PUT /api/engines/:kind/path` from this computer
 only), which applies to each instance of that driver that names no CLI
@@ -3477,13 +3481,21 @@ as `efforts`: Claude Code `low` to `max`, as `--effort <level>` on every turn
 Codex `low` to `max` as `turn/start.effort`, narrowed per model by the
 `supportedReasoningEfforts` in its own `model/list` (reported as each
 model option's `efforts`); Grok CLI `low`, `medium` and `high`, as
-`--reasoning-effort`. Command Code reads each model's native `effort`
-selector over ACP and applies the bot's supported level after selecting
-its model, on fresh and resumed turns. Its provider-default token stays
-outside the saved levels. When ACP cannot reset an explicit effort to
-that default, Bloks opens a new native session with the conversation
-handoff; without the handoff it refuses to lose the conversation.
-The other engines have no dial and are sent no effort setting.
+`--reasoning-effort`. Command Code (its `effort` option) and Devin (its
+`thought_level` option) take their levels per model over ACP, one config
+option path for both (`effortOption` in `ACP_SPECS`): the catalog probe
+reads each model's choices in an empty session, and every turn, fresh or
+resumed, selects its model first and then the bot's level, nearest
+first, and stops before the prompt when either is not confirmed. Devin
+spells Off `none` (`effortValues`). Use engine setting on a resumed
+session restores the native default the probe read, rather than keep an
+override a turn left; Command Code's provider default (`default`) cannot
+be selected again once a level was, so there Bloks opens a new native
+session told the conversation, and without that handoff it refuses rather
+than lose the conversation. Devin's model names carry the lead's effort
+words, which the picker leaves out, since the separate selector decides;
+a Fusion sidekick keeps its level. The other engines have no dial and
+are sent no effort setting.
 
 A level being chosen (`PATCH /api/bots/:id`, `POST /api/bots`, which is
 `bloks hire --effort <level>`, or New agents with a model picked) has to

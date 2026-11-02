@@ -85,6 +85,7 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         ...NO_PROVIDER_KEYS,
         XAI_API_KEY: "",
         COMMAND_CODE_API_KEY: "",
+        WINDSURF_API_KEY: "",
         GEMINI_API_KEY: "",
         COMPOSIO_KEY: "",
         BOX_TOKEN: "",

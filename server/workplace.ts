@@ -367,6 +367,7 @@ const NEVER_SHIPPED = new Set([
   "GOOGLE_API_KEY",
   "XAI_API_KEY",
   "COMMAND_CODE_API_KEY",
+  "WINDSURF_API_KEY",
   "BLOKS_COMPOSIO_KEY",
   "BLOKS_COMPOSIO_URL",
   "BLOKS_BOX_TOKEN",
@@ -804,6 +805,7 @@ const SIGN_IN_COMMANDS: Record<string, string> = {
   grokCli: "grok login",
   opencode: "opencode auth login",
   commandcode: "command-code login",
+  devin: "devin auth login",
   pi: "pi",
   antigravity: "agy",
 };

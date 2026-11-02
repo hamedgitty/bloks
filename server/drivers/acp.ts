@@ -63,6 +63,12 @@ export interface AcpSpec {
   /** A separate per-model reasoning selector and its native default token. */
   effortOption?: string;
   effortDefault?: string;
+  /** A level the agent spells its own way (Devin's "none" is Off), so its
+   * choices read as Bloks levels and a level goes back as its word. */
+  effortValues?: Partial<Record<Effort, string>>;
+  /** A model's name as the picker shows it, for an agent whose names carry
+   * the effort its separate selector actually decides. */
+  modelLabel?: (label: string) => string;
   /** This agent carries choice questions in ACP permission requests. */
   questionRequests?: boolean;
   /** Inherited env vars to strip before spawning. A CLI that owns its own
@@ -283,7 +289,27 @@ function selectValues(option: any): { value: string; name: string }[] {
   return out;
 }
 
-function catalogFromSession(session: any, effortOption?: string, previous?: ModelCatalog): ModelCatalog | null {
+/** An agent's reasoning value as a Bloks level, or as it was when it is
+ * not one of the agent's own spellings (a default token stays a token). */
+function bloksEffort(spec: Pick<AcpSpec, "effortValues">, value: unknown): unknown {
+  const level = Object.entries(spec.effortValues ?? {}).find(([, native]) => native === value)?.[0];
+  return level ?? value;
+}
+
+/** A Bloks level, or the agent's default token, as the agent spells it. */
+function nativeEffort(spec: Pick<AcpSpec, "effortValues">, value: string): string {
+  return spec.effortValues?.[value as Effort] ?? value;
+}
+
+/** The Bloks levels a reasoning selector offers. */
+function effortChoices(spec: Pick<AcpSpec, "effortValues">, option: any): Effort[] {
+  return knownEfforts(selectValues(option).map((entry) => bloksEffort(spec, entry.value)));
+}
+
+type CatalogSpec = Pick<AcpSpec, "effortOption" | "effortValues" | "modelLabel">;
+
+function catalogFromSession(session: any, spec: CatalogSpec = {}, previous?: ModelCatalog): ModelCatalog | null {
+  const { effortOption } = spec;
   const option = configOption(session);
   const values = selectValues(option);
   const available: any[] = session?.models?.availableModels ?? [];
@@ -302,8 +328,10 @@ function catalogFromSession(session: any, effortOption?: string, previous?: Mode
       if (saved) model.efforts = saved;
       if (model.id === catalog.default) {
         const thought = configOption(session, effortOption);
-        if (thought || saved === undefined) model.efforts = knownEfforts(selectValues(thought).map((entry) => entry.value));
+        if (thought || saved === undefined) model.efforts = effortChoices(spec, thought);
       }
+      // only a model with a dial: a fixed one's name is all it has to say
+      if (spec.modelLabel && (model.efforts === undefined || model.efforts.length)) model.label = spec.modelLabel(model.label);
     }
   }
   return catalog;
@@ -472,7 +500,7 @@ async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, stri
     await authenticateIfAsked(spec, hello, rpc);
     session = await rpc.request("session/new", { cwd: tmpdir(), mcpServers: [] });
     rememberDefaults?.(session);
-    catalog = catalogFromSession(session, spec.effortOption);
+    catalog = catalogFromSession(session, spec);
     if (catalog && spec.effortOption) {
       // Choices belong to the selected model. Probe only this empty session.
       for (const model of catalog.options) {
@@ -482,7 +510,7 @@ async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, stri
         session = { ...session, ...changed };
         if (configOption(session)?.currentValue !== model.id) break;
         rememberDefaults?.(session);
-        const next = catalogFromSession(session, spec.effortOption, catalog);
+        const next = catalogFromSession(session, spec, catalog);
         if (next) catalog.options = next.options;
       }
     }
@@ -538,11 +566,11 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       const rememberDefaultEffort = (session: any) => {
         if (!spec.effortOption) return;
         const model = configOption(session)?.currentValue;
-        const effort = configOption(session, spec.effortOption)?.currentValue;
+        const effort = bloksEffort(spec, configOption(session, spec.effortOption)?.currentValue);
         if (typeof model === "string" && typeof effort === "string" && (isEffort(effort) || effort === spec.effortDefault)) defaultEfforts.set(model, effort);
       };
       const updateCatalog = (session: any) => {
-        const catalog = catalogFromSession(session, spec.effortOption, models);
+        const catalog = catalogFromSession(session, spec, models);
         if (catalog) {
           const defaultModel = spec.effortOption && catalog.options.some((entry) => entry.id === models.default) ? models.default : catalog.default;
           models.options = catalog.options;
@@ -1149,7 +1177,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue);
               // Command Code cannot reset an explicit effort to provider
               // default. Reopen with the story, rather than keep the override.
-              if (nativeDefault === spec.effortDefault && option && option.currentValue !== nativeDefault && !selectValues(option).some((entry) => entry.value === nativeDefault)) {
+              if (spec.effortDefault !== undefined && nativeDefault === spec.effortDefault && option && option.currentValue !== nativeDefault && !selectValues(option).some((entry) => entry.value === nativeDefault)) {
                 if (!turn.handoff) throw new Error(`${spec.name} needs a conversation handoff to restore its default reasoning effort, so the message was not sent. Start a new conversation.`);
                 leftBehind.add(String(sessionId));
                 session = await within(rpc.request("session/new", { cwd, mcpServers }), "restoring the default reasoning effort", spec.name);
@@ -1166,12 +1194,24 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
             const fullAuto = (config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared);
             if (spec.permissionModes) {
+              // An agent that also lists its modes as a config option (Devin)
+              // is set and confirmed there; one with only session modes is
+              // set with set_mode. Either way the session's own list is the
+              // proof the mode exists: Devin's set_mode says yes to any id.
               const modeId = fullAuto ? spec.permissionModes.fullAuto : spec.permissionModes.default;
-              if (!modes.some((mode) => mode?.id === modeId)) {
+              const option = configOption(session, "mode");
+              const offered = option ? selectValues(option).map((entry) => entry.value) : modes.map((mode) => mode?.id);
+              if (!offered.includes(modeId)) {
                 throw new Error(`${spec.name} does not offer the required permission mode (${modeId}), so the message was not sent. Update the engine and try again.`);
               }
               try {
-                await within(rpc.request("session/set_mode", { sessionId, modeId }), "selecting the approval mode", spec.name);
+                if (option) {
+                  const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value: modeId }), "selecting the approval mode", spec.name);
+                  session = { ...session, ...changed };
+                  if (configOption(session, "mode")?.currentValue !== modeId) throw new Error("the agent did not confirm the selected mode");
+                } else {
+                  await within(rpc.request("session/set_mode", { sessionId, modeId }), "selecting the approval mode", spec.name);
+                }
               } catch (e) {
                 throw new Error(`${spec.name} could not select the required permission mode (${modeId}): ${(e as Error).message}. The message was not sent.`);
               }
@@ -1191,18 +1231,19 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             if (spec.effortOption) {
               if (freshSession) rememberDefaultEffort(session);
               const option = configOption(session, spec.effortOption);
-              const levels = knownEfforts(selectValues(option).map((entry) => entry.value));
+              const levels = effortChoices(spec, option);
               const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue)
                 ?? (option?.currentValue === spec.effortDefault ? spec.effortDefault : undefined);
               const wanted = turn.effort ?? (!freshSession ? nativeDefault : undefined);
               if (wanted && !levels.length) throw new Error(`${spec.name} does not report reasoning choices for this model, so the message was not sent. Choose a model that reports them or start a new conversation.`);
               if (!freshSession && !wanted && levels.length) throw new Error(`${spec.name}'s default reasoning effort is not known for this model, so the message was not sent. Choose a reasoning level or start a new conversation.`);
               const effort = wanted === spec.effortDefault ? wanted : clampEffort(wanted, levels);
-              if (effort && (turn.effort || option.currentValue !== effort)) {
+              const value = effort && nativeEffort(spec, effort);
+              if (value && (turn.effort || option.currentValue !== value)) {
                 try {
-                  const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value: effort }), "selecting the reasoning effort", spec.name);
+                  const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value }), "selecting the reasoning effort", spec.name);
                   session = { ...session, ...changed };
-                  if (configOption(session, spec.effortOption)?.currentValue !== effort) throw new Error("the agent did not confirm the selected reasoning effort");
+                  if (configOption(session, spec.effortOption)?.currentValue !== value) throw new Error("the agent did not confirm the selected reasoning effort");
                 } catch (error) {
                   throw new Error(`${spec.name} could not select reasoning effort ${effort} (${(error as Error).message}), so the message was not sent.`);
                 }
@@ -1399,6 +1440,43 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     effortDefault: "default",
     efforts: EFFORTS,
     questionRequests: true,
+    probeModels: true,
+    models: {
+      default: "auto",
+      options: [{ id: "auto", label: "Auto" }],
+    },
+  },
+  {
+    kind: "devin",
+    name: "Devin",
+    command: "devin",
+    args: ["acp"],
+    install:
+      process.platform === "win32"
+        ? "irm https://static.devin.ai/cli/setup.ps1 | iex"
+        : "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    signIn: "run `devin auth login` in a terminal",
+    // `devin acp` reads this before the login `devin auth login` stored
+    keyEnv: ["WINDSURF_API_KEY"],
+    // where that login lives on macOS/Linux and on Windows; one moved by
+    // XDG_DATA_HOME is for the CLI itself to report
+    authFiles: [".local/share/devin/credentials.toml", "AppData/Roaming/devin/credentials.toml"],
+    signInCheck: { args: ["auth", "status"], signedOut: /not logged in/i, signedIn: /logged in/i },
+    // "accept-edits" (its "Code" mode) is where a new ACP session starts;
+    // it asks before shell commands, like Claude Code's acceptEdits here
+    permissionModes: { default: "accept-edits", fullAuto: "bypass" },
+    effortOption: "thought_level",
+    // Devin's no-thinking level is Off here
+    effortValues: { off: "none" },
+    efforts: EFFORTS,
+    // Devin's anchor says Medium even when its separate selector is Max.
+    // Only the lead's words go; a Fusion sidekick keeps its level.
+    modelLabel: (label) => {
+      const split = label.indexOf(" + ");
+      const lead = split < 0 ? label : label.slice(0, split);
+      return lead.replace(/ (?:No Thinking|None|Low|Medium|High|XHigh|Max)(?: Thinking)?$/, "") + (split < 0 ? "" : label.slice(split));
+    },
+    // the account's plan and team settings decide its models
     probeModels: true,
     models: {
       default: "auto",

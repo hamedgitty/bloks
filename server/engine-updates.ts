@@ -36,7 +36,7 @@ export const ENGINE_PACKAGES: Record<string, EnginePackage> = {
   geminiCli: { pkg: "@google/gemini-cli", cli: "gemini", update: inPlace("gemini", "@google/gemini-cli@latest") },
   opencode: { pkg: "opencode-ai", cli: "opencode", update: inPlace("opencode", "opencode-ai@latest") },
   commandcode: { pkg: "command-code", cli: "command-code", update: inPlace("command-code", "command-code@latest") },
-  // Cursor is not here: it is not on npm, and it updates itself
+  // Cursor and Devin are not here: neither is on npm, and both update themselves
   cline: { pkg: "cline", cli: "cline", update: inPlace("cline", "cline@latest") },
   pi: {
     pkg: "@earendil-works/pi-coding-agent",
