@@ -171,4 +171,9 @@ export const FEATURES: readonly string[] = [
   // proposal, `app` on each such watcher with its run history, and `apps`
   // on GET /api/watchers saying whether events can be heard
   "app-watchers",
+  // POST /api/bots/:id/messages { stopFirst: true }: the person's stop and
+  // send now in one request. The words go ahead of what already waits,
+  // in a turn of their own, before the turn is stopped; the answer says
+  // `stopped: true` when they wait for that turn to end (GitHub 452)
+  "stop-send-first",
 ];

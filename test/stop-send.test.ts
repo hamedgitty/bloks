@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { sendMessage } from "../src/lib/sendMessage.ts";
 import { codexCommands, waitFor } from "./helpers/codex-commands.ts";
 
 /** A real driver whose stand-in acknowledges steering but delays its exit
@@ -112,3 +113,40 @@ test("a delayed answer to earlier steering cannot consume the stop-and-send foll
     await earlier;
   }
 });
+
+// GitHub 452: message A already waits when the person presses
+// Command-Enter on draft B. B starts the next turn alone, then A, each once,
+// whether the stopped turn ends at once or only after the request is done.
+for (const quick of [true, false]) {
+  test(`stop and send now starts the draft alone, ahead of what already waits (${quick ? "turn ends at once" : "turn ends later"})`, async t => {
+    const s = await codexCommands(t);
+    delayedStop(s.root);
+    if (quick) writeFileSync(join(s.root, "stop-gate"), "");
+    s.spec({ hold: true, used: 0 });
+    await s.say("HOLD the original task");
+    await waitFor(() => s.count("turn/start") === 1);
+    try {
+      const waiting = await s.say("A: the separate follow-up", { delivery: "wait" });
+      assert.equal(waiting.queued, true);
+      s.spec({ hold: false, used: 0 });
+      // the composer's own path, against the real server
+      const api = (path: string, init?: RequestInit) => s.post(path, JSON.parse(String(init?.body ?? "{}")));
+      await sendMessage(api, { botId: s.bot.id, taskId: s.bot.threadId, text: "B: the revised plan", stopFirst: true });
+      writeFileSync(join(s.root, "stop-gate"), "");
+      const input = (n: number) => s.calls().filter(c => c.method === "turn/start")[n].params.input
+        .filter((i: { type: string }) => i.type === "text").map((i: { text: string }) => i.text).join("");
+      await waitFor(() => s.count("turn/start") >= 2);
+      assert.match(input(1), /B: the revised plan/);
+      assert.doesNotMatch(input(1), /A: the separate follow-up/, "A went in the turn meant for B");
+      await waitFor(() => s.count("turn/start") >= 3);
+      await s.settled();
+      assert.match(input(2), /A: the separate follow-up/);
+      assert.doesNotMatch(input(2), /B: the revised plan/);
+      assert.equal(s.count("turn/start"), 3);
+      const said = (await s.messages()).filter(m => m.role === "user" && /^[AB]: /.test(m.text ?? ""));
+      assert.deepEqual(said.map(m => [m.text, m.queued]), [["B: the revised plan", false], ["A: the separate follow-up", false]]);
+    } finally {
+      writeFileSync(join(s.root, "stop-gate"), "");
+    }
+  });
+}
