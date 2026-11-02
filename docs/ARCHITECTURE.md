@@ -1319,6 +1319,24 @@ its chat is waiting on, and one answer covers both; a turn that did not
 start from Telegram takes the words too, or they wait, and either way
 the answer goes back to the chat instead of a refusal.
 
+Words said while a turn is still getting ready, before its engine has
+the prompt, join that turn rather than waiting for its first answer.
+`prepareFollowup` admits only the requester, audience and delegate of
+the start that claimed the lane (`PreparationAttempt`), and the owner's
+Telegram chat joins only a turn that chat started, since that is where
+its answer goes. Each waiting row is its own record: at the engine's
+input boundary the driver commits the ready rows into the first input
+(`TurnPreparation` in `server/contracts.ts`), with their words, sender
+and grant read again then; later ones go in through `steerPrepared`,
+which tells a refusal from an outcome it cannot confirm. An engine that
+cannot tell (Claude Code below 2.1.300, or one in a workplace) is not
+offered this, and the rows go to the next turn as before. A row whose
+delivery could not be confirmed is never sent again on its own: it
+holds what was said after it, across a restart too, until the owner
+dismisses it in the strip. A file for a turn that runs elsewhere, or a
+picture past the turn's eight, waits for the next turn with everything
+said after it.
+
 Command/Ctrl+Enter in the app stops before submitting the follow-up
 (`src/lib/sendMessage.ts`). When a conversation is named, both requests
 name it. It waits for `/interrupt` to answer, then sends the message with

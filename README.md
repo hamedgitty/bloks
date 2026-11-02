@@ -300,7 +300,8 @@ file or a `bloks://install?url=` link through the same review, and use
   cards; undo works on a mounted folder and is said to be off elsewhere.
 - **Messages while it works.** Say something mid-turn and Bloks reads it:
   a stop stops, a correction goes in now, a new request waits its turn.
-  One press changes its mind.
+  What you add while it is still getting ready joins the request it is
+  starting. One press changes its mind.
 - **A record you can check.** Consequential actions land in an
   append-only log, hash-chained and signed by the agent they are about.
 
