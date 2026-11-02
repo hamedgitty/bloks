@@ -65,13 +65,19 @@ that carries a proxy's forwarding header (`Forwarded`,
 never taken as local either, even from loopback: a reverse proxy or
 tunnel on the same machine connects from there for somebody on the
 internet, and NGINX by default rewrites `Host` to `127.0.0.1`. See
-`server/http-guard.ts`.
+`server/http-guard.ts`. On a `bloks-server` that is still not enough:
+a proxy that adds no forwarding header, or a plain TCP tunnel, can
+deliver anybody to loopback with any `Host` and `Origin`. There the
+owner's own commands also carry a key the server makes at each start,
+in `local.key` in its data folder, readable only by the account it
+runs as (`server/local-key.ts`), and a request without it is a device
+like any other.
 
 **A local service's wake is labelled, not trusted as you.** A program on
 this computer can wake one agent in one exact private conversation
 (`POST /api/bots/:id/wakes`, `server/service-wakes.ts`). Only a direct
 loopback request with a loopback Host and no Origin or Authorization
-header is accepted, never a browser page, a phone, the relay or an
+header (and on a `bloks-server`, the owner's key above) is accepted, never a browser page, a phone, the relay or an
 agent's credential: no more than any local program could already do
 through the owner's API. Its words are kept as a local service's, which
 nobody can edit, and the agent is told they are that service's request,
