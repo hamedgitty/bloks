@@ -1,0 +1,101 @@
+name: Container image
+
+# The server image compose.yml runs, published to
+# ghcr.io/hamedgitty/bloks-server when a release is published. Not at the
+# tag: the release is a draft until a human publishes it (release.yml),
+# and the image is built from that release's own bloks-server tarball,
+# checked against its sha256, which is only downloadable once it is out.
+# So nothing reaches the registry before the release reaches people.
+#
+# By hand, for a release already out: Actions, Container image, Run, and
+# the version.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release to build, e.g. 3.2.1
+        required: true
+      latest:
+        description: Also tag it latest
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-${{ github.event.release.tag_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      # A prerelease, a draft, or anything that is not a plain version
+      # gets no image and never moves latest.
+      - name: Which version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          GIVEN: ${{ inputs.version }}
+          LATEST: ${{ inputs.latest }}
+        run: |
+          version="${GIVEN:-${TAG#v}}"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Not a release version: $version"
+            exit 1
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "A prerelease gets no image."
+            exit 1
+          fi
+          minor="${version%.*}"
+          latest=false
+          if [ -n "$TAG" ] || [ "$LATEST" = "true" ]; then latest=true; fi
+          {
+            echo "version=$version"
+            echo "minor=$minor"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bloks-server
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.minor }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.latest }}
+          labels: |
+            org.opencontainers.image.title=bloks-server
+            org.opencontainers.image.description=Bloks on a server of your own
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=FSL-1.1-MIT
+
+      # The server is plain JavaScript, so one tarball makes both images.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BLOKS_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

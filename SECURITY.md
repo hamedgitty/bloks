@@ -51,7 +51,12 @@ phone access for that workspace. But loopback alone is not a boundary. A browser
 happily send cross-origin requests to it from any page you visit, and a
 CORS "simple" request skips preflight entirely. So every request is
 checked: the `Origin` must be absent or loopback, and the `Host` must
-name the loopback interface, which defeats DNS rebinding. See
+name the loopback interface, which defeats DNS rebinding. A request
+that carries a proxy's forwarding header (`Forwarded`,
+`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and the like) is
+never taken as local either, even from loopback: a reverse proxy or
+tunnel on the same machine connects from there for somebody on the
+internet, and NGINX by default rewrites `Host` to `127.0.0.1`. See
 `server/http-guard.ts`.
 
 **A local service's wake is labelled, not trusted as you.** A program on
@@ -257,6 +262,19 @@ instead (see People in your workspaces).
   phone access off and removing every device answer only on the computer,
   since from a device they would cut that device off too. The one other
   way a pairing is made is for a phone you already paired, below.
+- **A server reached your own way.** A `bloks-server` listens on
+  loopback and is reached through Bloks Cloud unless its owner says
+  otherwise where it runs (`server/self-host.ts`, docs/SELF_HOSTING.md):
+  `BLOKS_LISTEN=0.0.0.0` to listen beyond loopback (in a container,
+  behind its published port), `BLOKS_PUBLIC_URL` for the address of
+  their reverse proxy, tunnel or VPN that devices pair at, and
+  `BLOKS_CLOUD=off` to send nothing to Bloks Cloud or bloks.dev. None of
+  them can be set from a device, and none widens what a request gets:
+  anything that is not the server's own loopback needs a paired device's
+  token, and without one reaches `/api/health` and the pairing claim
+  alone. Its codes are the ones above, made only at the server or on a
+  device of yours, and handed out with the address in a link that
+  `bloks-server pair` prints at the server.
 - **Finding the computer again.** On a Mac, while phone access is on and
   the workspace listens on the network, the desktop app announces it on
   the local network as `_bloks._tcp` (`server/announce.ts`): the

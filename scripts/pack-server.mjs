@@ -110,16 +110,20 @@ writeFileSync(
 
 Bloks on a computer that never sleeps: a small rented server, a Mac mini,
 a home server. Your agents keep working when your laptop is closed, and
-your phone and the desktop app use them through Bloks Cloud.
+your phone and the desktop app use them through Bloks Cloud, or at an
+address of your own behind your reverse proxy, tunnel or VPN.
 
-Needs Node 22.6 or newer, and a Bloks Cloud licence.
+Needs Node 22.6 or newer.
 
     node bin/bloks-server.mjs                    # run it, and keep it running
     node bin/bloks-server.mjs activate KEY       # turn on Bloks Cloud
     node bin/bloks-server.mjs pair               # pair a phone or the desktop app
 
 It listens on loopback only and opens no port: everything reaches it
-through Bloks Cloud. Your workspace lives in ~/.bloks on this machine.
+through Bloks Cloud, which takes a licence. Or set BLOKS_PUBLIC_URL to
+the address your proxy, tunnel or VPN gives it, and BLOKS_CLOUD=off to
+send nothing to Bloks Cloud at all; pair then prints links to that
+address. Your workspace lives in ~/.bloks on this machine.
 
 Agents run on the engines installed here. Install and sign in to Claude
 Code or Codex on this machine, or give agents API keys in the app.
@@ -139,7 +143,9 @@ release's checksum, and switched to; if it does not start, this one comes
 back. Under systemd, launchd or Docker it is updated by hand instead, and
 the app shows the steps. Your workspace in ~/.bloks is never touched.
 
-A Dockerfile and a systemd unit are included. Full guide:
+A Dockerfile and a systemd unit are included. For Docker Compose, with
+the published image and every setting in one .env file, see
+https://github.com/hamedgitty/bloks/blob/main/docs/DOCKER.md. Full guide:
 https://bloks.dev/docs#server
 `,
 );

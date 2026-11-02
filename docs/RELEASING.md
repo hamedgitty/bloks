@@ -12,6 +12,17 @@ sha256 beside it as `bloks-server-*.tar.gz.sha256`), and
 [`desktop-builds.yml`](../.github/workflows/desktop-builds.yml) produces
 the Windows and Linux ones. Nothing here needs to run on your machine.
 
+A third, [`container.yml`](../.github/workflows/container.yml), runs
+when the release is **published**, not at the tag: it builds the server
+image `compose.yml` runs from that release's `bloks-server` tarball,
+checked against its sha256, for amd64 and arm64, and pushes it to
+`ghcr.io/hamedgitty/bloks-server` as the version, the minor version and
+`latest`. A release published by the workflow's own token would not
+start it, so publish from the Releases page or with your own `gh`. For
+a release already out, run it by hand from Actions with the version.
+The first push makes the package, which GitHub keeps private until its
+visibility is set to public once, in the package's settings.
+
 ## Why signing and notarization matter
 
 An unsigned `.dmg` gets a Gatekeeper dialog saying the app "cannot be

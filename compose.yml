@@ -1,0 +1,56 @@
+# Bloks on a server of your own.
+#
+#   cp .env.example .env      # then fill it in
+#   docker compose up -d
+#   docker compose exec bloks bloks-server pair
+#
+# Every setting is in .env, and nothing here needs changing. docs/DOCKER.md
+# takes you from nothing to a paired desktop and phone, with snippets for
+# Caddy, NGINX, Cloudflare Tunnel and Tailscale.
+
+name: bloks
+
+services:
+  bloks:
+    image: ghcr.io/hamedgitty/bloks-server:${BLOKS_VERSION:-latest}
+    # With no published image to pull (or if you would rather build it):
+    # the same image, from the same release, checked against its sha256.
+    build:
+      context: .
+      args:
+        BLOKS_VERSION: ${BLOKS_VERSION:-latest}
+    restart: unless-stopped
+    # what your devices call it unless BLOKS_COMPUTER_NAME says otherwise
+    hostname: bloks
+    # Everything in .env reaches Bloks as it is written there. A setting
+    # left commented out is not set at all, which is not the same as set
+    # to nothing for some engines, so leave out what you do not use.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Off unless .env turns it on: nothing goes to Bloks Cloud or
+      # bloks.dev from a server set up this way.
+      BLOKS_CLOUD: ${BLOKS_CLOUD:-off}
+      # An update here is a newer image (docker compose pull, then
+      # docker compose up -d), so About checks and never installs.
+      BLOKS_SERVER_UPDATES: "off"
+    ports:
+      # Loopback on the host unless .env says otherwise, for a reverse
+      # proxy or tunnel on the same machine. BLOKS_BIND=0.0.0.0 publishes
+      # it on every interface; your VPN address (a Tailscale 100.x one)
+      # publishes it on that network alone.
+      - "${BLOKS_BIND:-127.0.0.1}:${BLOKS_HOST_PORT:-8799}:8799"
+    volumes:
+      # The workspace, the engines and their sign-ins, all of it. A host
+      # folder works too (BLOKS_DATA=./data), owned by uid 1000.
+      - ${BLOKS_DATA:-bloks-home}:/home/bloks
+    # A model server on this machine but outside compose (Ollama, vLLM,
+    # LM Studio) is host.docker.internal from in here.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # long enough for the server to save what it holds as it stops
+    stop_grace_period: 30s
+
+volumes:
+  bloks-home:

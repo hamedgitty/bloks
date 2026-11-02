@@ -1,0 +1,5 @@
+# The image is made from a release, fetched inside the build and checked
+# against its sha256, so nothing of this checkout goes into it: not the
+# code, not node_modules, and above all not a .env with keys in it.
+*
+!Dockerfile

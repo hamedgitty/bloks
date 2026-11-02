@@ -35,6 +35,8 @@ Routines UI Example/
 *.pem
 .env
 .env.*
+# the template compose.yml's settings are copied from, which holds none
+!.env.example
 **/DerivedData/
 DerivedData/
 

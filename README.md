@@ -462,6 +462,12 @@ over.
   its terminal once you allow it there, and it updates from the app,
   under systemd too, going back on its own if a new version doesn't
   start. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+  Or run it your own way: `docker compose up` with the `compose.yml` and
+  `.env` in this repository, behind your own reverse proxy, tunnel or
+  VPN, on your own models (a self-hosted Qwen on any OpenAI-compatible
+  server), with `BLOKS_CLOUD=off` sending nothing to Bloks Cloud or
+  bloks.dev; your desktop app pairs at your address and talks to it
+  directly. See [docs/DOCKER.md](docs/DOCKER.md).
   Or let Bloks run one for you: managed hosting is a private machine
   of your own that stays on, and moves your agents over when you sign up
   at [bloks.dev/pricing](https://bloks.dev/pricing). On Windows, the
@@ -736,6 +742,9 @@ your conversations:
   listening, so a paired phone finds it again: the computer's name, the
   workspace's name unless it is Personal, the port and a random tag for
   the workspace.
+
+A `bloks-server` started with `BLOKS_CLOUD=off` makes none of the
+bloks.dev requests above (docs/SELF_HOSTING.md).
 
 If the app crashes, its report stays on your computer; Bloks sends it
 nowhere.
