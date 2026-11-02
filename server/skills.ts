@@ -343,8 +343,8 @@ Approval: required before categorizing anything as personal or writing to an acc
   {
     id: "page-design",
     name: "Page design",
-    description: "Read before making a page, report, dashboard or deck someone will open as a file. How to make it clear at a glance and finished on a phone and a Mac, light and dark",
-    body: `Use this before you make a file a person will look at: a web page, a report, a comparison, a dashboard, a one pager, a slide deck. It opens in Bloks on a Mac and on an iPhone, so it has to read at 390 pixels wide and in dark mode, and it is judged in the first two seconds.
+    description: "Read before making a page, report, dashboard or deck someone will open as a file. How to make it clear at a glance and finished on a phone and a computer, light and dark",
+    body: `Use this before you make a file a person will look at: a web page, a report, a comparison, a dashboard, a one pager, a slide deck. It opens in Bloks on a computer and on an iPhone, so it has to read at 390 pixels wide and in dark mode, and it is judged in the first two seconds.
 
 Not for: a reply in the chat. A short answer, or one with some structure, belongs in the chat, drawn as interface when you can.
 

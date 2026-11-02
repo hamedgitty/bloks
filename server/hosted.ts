@@ -142,7 +142,7 @@ export function hostedRefusal(method: string, path: string): { status: number; e
     return { status: 409, error: `${NOT_HERE} The cloud box is not offered here.` };
   }
   if (method === "POST" && path === "/api/meetings") {
-    return { status: 409, error: `Meeting notes listen through your Mac's microphone. ${NEEDS_MAC}` };
+    return { status: 409, error: `Meeting notes listen through a computer's own microphone, so a hosted workspace cannot take them. ${NEEDS_MAC}` };
   }
   // Where the person is goes only to a computer of their own, never to a
   // machine run for them (server/location.ts), so the phone never offers

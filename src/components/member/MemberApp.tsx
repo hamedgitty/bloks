@@ -41,6 +41,7 @@ import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
 import { AboutYouPage, MembersAdminPage, NewSoloAgentDialog, UsagePage, WorkspacePage } from "./MemberPages";
 import { t, useLanguage } from "@/lib/i18n";
+import { thisComputer } from "@/lib/thisComputer";
 
 const isElectron = navigator.userAgent.includes("Electron");
 const PLACE_KEY = "bloks-member-place";
@@ -77,8 +78,8 @@ async function leaveWorkspace(id: string, name: string, owner: string, started: 
   if (said?.unreachable) {
     const anyway = await confirm({
       title: t("memberApp.leave.unreachableTitle", { owner }),
-      body: t("memberApp.leave.unreachableBody", { name, owner }),
-      confirmLabel: t("memberApp.leave.removeAnyway"),
+      body: t("memberApp.leave.unreachableBody", { name, owner, computer: thisComputer() }),
+      confirmLabel: t("memberApp.leave.removeAnyway", { computer: thisComputer() }),
       destructive: true,
     });
     if (!anyway) return false;

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { deviceWord, thisComputer, yourComputer } from "../src/lib/thisComputer.ts";
+import { deviceWord, meetingNotesHere, thisComputer, yourComputer } from "../src/lib/thisComputer.ts";
 
 describe("deviceWord", () => {
   test("a Mac is a Mac", () => {
@@ -25,5 +25,21 @@ describe("deviceWord", () => {
   test("an unknown platform is never guessed as a Mac", () => {
     assert.equal(deviceWord("Something else entirely"), "computer");
     assert.equal(deviceWord(""), "computer");
+  });
+});
+
+describe("meetingNotesHere", () => {
+  test("the desktop app on a Mac offers them", () => {
+    assert.equal(meetingNotesHere(true, false, "MacIntel"), true);
+  });
+
+  test("the desktop app on Windows or Linux does not, though its bridge has the call", () => {
+    assert.equal(meetingNotesHere(true, false, "Win32"), false);
+    assert.equal(meetingNotesHere(true, false, "Linux x86_64"), false);
+  });
+
+  test("a browser, or a window onto a hosted workspace, does not, even on a Mac", () => {
+    assert.equal(meetingNotesHere(false, false, "MacIntel"), false);
+    assert.equal(meetingNotesHere(true, true, "MacIntel"), false);
   });
 });

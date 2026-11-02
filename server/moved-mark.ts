@@ -21,6 +21,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
+import { thisMachine } from "./this-machine.ts";
 
 export const MOVED_FILE = "moved.json";
 
@@ -48,7 +49,7 @@ export function cleanMovedMark(raw: unknown, now = Date.now()): MovedMark | null
   const name = typeof raw.name === "string" ? raw.name.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) : "";
   return {
     to,
-    name: name || (to === "hosted" ? "Hosted" : "this Mac"),
+    name: name || (to === "hosted" ? "Hosted" : "your computer"),
     workspaceId: typeof raw.workspaceId === "string" && ID.test(raw.workspaceId) ? raw.workspaceId : null,
     at: typeof raw.at === "number" && Number.isFinite(raw.at) ? raw.at : now,
     pending: raw.pending === true,
@@ -69,11 +70,14 @@ export function clearMovedMark(dataDir: string): void {
   rmSync(join(dataDir, MOVED_FILE), { force: true });
 }
 
-/** The banner's sentence for a copy whose work moved. */
+/** The banner's sentence for a copy whose work moved. A copy moved to
+ * "mac" sits on the hosted machine, which cannot tell what the person's
+ * own computer is, so that side stays neutral; a copy moved to "hosted"
+ * sits on this machine. */
 export function movedWords(mark: MovedMark): string {
-  const where = mark.to === "hosted" ? "your hosted machine" : "this Mac";
+  const where = mark.to === "hosted" ? "your hosted machine" : "your computer";
   if (mark.pending) return `This workspace is moving to ${where}. Its routines, watchers, workflows and chat bots have stopped here while it does.`;
   return mark.to === "hosted"
-    ? "This workspace moved to your hosted machine. Its routines, watchers, workflows and chat bots run there now, not on this Mac."
-    : `This workspace moved to ${mark.name} on this Mac. Its routines, watchers, workflows and chat bots run there now, not here.`;
+    ? `This workspace moved to your hosted machine. Its routines, watchers, workflows and chat bots run there now, not on ${thisMachine()}.`
+    : "This workspace moved to your computer. Its routines, watchers, workflows and chat bots run there now, not here.";
 }

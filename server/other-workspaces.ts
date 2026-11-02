@@ -165,7 +165,7 @@ export interface MintDeps {
 /** Whether a pairing can be made for this workspace now, and why not. */
 export function pairCheck(relayOn: boolean, lanOn: boolean): LineAnswer {
   if (relayOn || lanOn) return { ok: true, pairable: true, why: null };
-  return { ok: true, pairable: false, why: "Phone access is off in this workspace. Turn it on there, on the Mac." };
+  return { ok: true, pairable: false, why: "Phone access is off in this workspace. Turn it on there, on the computer it runs on." };
 }
 
 /**
@@ -182,5 +182,5 @@ export function mintPairing(deps: MintDeps): LineAnswer {
     const made = deps.lanToken(OTHER_PAIR_TTL_MS);
     return { ok: true, via: "lan", lan: { addresses: lan.addresses, port: lan.port, token: made.token }, expiresAt: made.expiresAt, host: lan.name };
   }
-  return { ok: false, status: 409, error: "Phone access is off in this workspace. Turn it on there, on the Mac, then try again." };
+  return { ok: false, status: 409, error: "Phone access is off in this workspace. Turn it on there, on the computer it runs on, then try again." };
 }

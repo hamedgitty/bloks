@@ -24,6 +24,7 @@ import { MoveKeys } from "./MoveKeys";
 import { MoveSteps } from "./MoveSteps";
 import { said, useHostingMove } from "./useHostingMove";
 import { t } from "@/lib/i18n";
+import { thisComputer } from "@/lib/thisComputer";
 
 const LOCAL = new Set(["personal", "business", "custom"]);
 
@@ -183,7 +184,7 @@ function MoveThere({ state }: { state: HostingMoveState }) {
     <section aria-label={t("hostingHostingMove.moveToYourHostedMachine")} className="rounded-2xl border bg-card p-5">
       <h2 className="text-ui font-medium text-foreground">{t("hostingHostingMove.moveAWorkspaceToYour")}</h2>
       <p className="mt-0.5 max-w-[62ch] text-pretty text-body text-muted-foreground">
-        {state.bloksAi ? t("hostingHostingMove.everythingGoesBloksAi") : t("hostingHostingMove.everythingGoes")}
+        {t(state.bloksAi ? "hostingHostingMove.everythingGoesBloksAi" : "hostingHostingMove.everythingGoes", { computer: thisComputer() })}
       </p>
       <div className="mt-3">
         <ChooseFrom

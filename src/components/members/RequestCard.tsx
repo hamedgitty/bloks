@@ -8,7 +8,15 @@ import { useState } from "react";
 import { Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { initials, tintOf, type JoinRequest } from "@/lib/members";
-import { formatList, t } from "@/lib/i18n";
+import { formatList, t, type MessageKey } from "@/lib/i18n";
+
+const ON_DEVICE: Record<JoinRequest["device"], MessageKey> = {
+  iphone: "requestCard.onIphone",
+  mac: "requestCard.onMac",
+  pc: "requestCard.onPc",
+  computer: "requestCard.onComputer",
+  browser: "requestCard.onBrowser",
+};
 
 function ago(at: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - at) / 1000));
@@ -34,7 +42,8 @@ export function RequestCard({
   const facts = [
     request.forName ? t("requestCard.fromInviteFor", { name: request.forName }) : t("requestCard.fromAnInvite"),
     request.role === "admin" ? t("requestCard.asAdmin") : t("requestCard.asMember"),
-    request.device === "iphone" ? t("requestCard.onIphone") : request.device === "mac" ? t("requestCard.onMac") : t("requestCard.onBrowser"),
+    // a kind this card does not know yet (a newer workspace's) is a computer
+    t(ON_DEVICE[request.device] ?? ON_DEVICE.computer),
     ago(request.at),
     ...(request.password === "correct" ? [t("requestCard.passwordCorrect")] : []),
   ];

@@ -14,6 +14,7 @@ import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { said, useHostingMove } from "./useHostingMove";
 import { t } from "@/lib/i18n";
+import { thisComputer } from "@/lib/thisComputer";
 
 interface Mark {
   to: "hosted" | "mac";
@@ -22,10 +23,13 @@ interface Mark {
   pending: boolean;
 }
 
-/** The banner's sentence for a mark (the same words as server/moved-mark.ts). */
+/** The banner's sentence for a mark, in the same words as movedWords in
+ * server/moved-mark.ts. A copy moved home sits on the hosted machine,
+ * which cannot tell what the person's own computer is, so that side says
+ * "your computer"; a copy moved to hosted sits on the computer this runs on. */
 export function movedLine(mark: Mark): string {
-  if (mark.pending) return mark.to === "hosted" ? t("movedBanner.line.movingHosted") : t("movedBanner.line.movingMac");
-  return mark.to === "hosted" ? t("movedBanner.line.movedHosted") : t("movedBanner.line.movedMac", { name: mark.name });
+  if (mark.to === "mac") return mark.pending ? t("movedBanner.line.movingMac") : t("movedBanner.line.movedMac");
+  return mark.pending ? t("movedBanner.line.movingHosted") : t("movedBanner.line.movedHosted", { computer: thisComputer() });
 }
 
 export function MovedBanner() {
@@ -60,9 +64,9 @@ export function MovedBannerView({ mark, hostedId }: { mark: Mark; hostedId: stri
     if (!here) return;
     const personal = here.kind === "personal";
     const ok = await confirm({
-      title: t("movedBanner.remove.title", { name: here.name }),
+      title: t("movedBanner.remove.title", { name: here.name, computer: thisComputer() }),
       body: personal ? t("movedBanner.remove.personal") : t("movedBanner.remove.other", { name: here.name }),
-      confirmLabel: t("movedBanner.removeFromThisMac"),
+      confirmLabel: t("movedBanner.removeFromThisMac", { computer: thisComputer() }),
       destructive: true,
     });
     if (!ok) return;
@@ -88,7 +92,7 @@ export function MovedBannerView({ mark, hostedId }: { mark: Mark; hostedId: stri
             )}
             {here && window.bloks?.hostingMoveRemoveCopy && (
               <Button size="sm" variant="ghost" className="h-7" onClick={() => void remove()}>
-                {t("movedBanner.removeFromThisMac")}
+                {t("movedBanner.removeFromThisMac", { computer: thisComputer() })}
               </Button>
             )}
           </>

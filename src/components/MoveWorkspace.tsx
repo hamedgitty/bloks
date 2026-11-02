@@ -16,7 +16,7 @@ import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
-import { deviceWord } from "@/lib/thisComputer";
+import { deviceWord, yourComputer } from "@/lib/thisComputer";
 import { keysToEnter } from "@/lib/backups";
 import { SettingRow, SettingsGroup } from "./SettingsLayout";
 import { formatNumber, t } from "@/lib/i18n";
@@ -306,7 +306,7 @@ export function MoveWorkspace() {
           label={t("moveWorkspace.bringAWorkspaceHere")}
           description={
             status.hosted
-              ? t("moveWorkspace.thisHostedWorkspaceIsEmpty")
+              ? t("moveWorkspace.thisHostedWorkspaceIsEmpty", { computer: yourComputer() })
               : t("moveWorkspace.thisWorkspaceIsEmptySo")
           }
           control={

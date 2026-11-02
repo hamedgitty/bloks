@@ -1,5 +1,5 @@
 // Joining a workspace end to end: the owner's Members routes, the door on
-// this network, and this Mac's own joining client talking to it, sealed
+// this network, and this computer's own joining client talking to it, sealed
 // (server/members.ts, server/join-client.ts).
 //
 // The members module is handed fakes for everything the server owns (the
@@ -11,6 +11,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { machineKind } from "../server/this-machine.ts";
 
 const home = mkdtempSync(join(tmpdir(), "bloks-join-"));
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -152,7 +154,7 @@ test("an invite found on this network, asked for, approved with matching words, 
   const request = (await call("/api/workspace/members")).body.requests[0];
   assert.equal(request.name, "Sam Okafor");
   assert.equal(request.forName, "Sam");
-  assert.equal(request.device, "mac");
+  assert.equal(request.device, machineKind(), "the owner hears what the joiner runs on: Mac, PC or computer");
   assert.equal(request.password, "none");
   assert.equal(request.phrase, asked.phrase, "both screens show the same four words");
   assert.ok(frames.some((f) => f.kind === "workspace.request" && f.request.inviteId === inv.id));

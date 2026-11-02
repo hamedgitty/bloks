@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { formatDate, t, type MessageKey } from "@/lib/i18n";
+import { meetingNotesHere } from "@/lib/thisComputer";
 
 interface Item {
   owner: string;
@@ -95,7 +96,7 @@ function Items({ meeting, onChanged }: { meeting: MeetingRow; onChanged: () => v
 export function MeetingPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const bridge = window.bloks;
-  const available = Boolean(bridge?.meetingStart) && !state.config?.hosted?.on;
+  const available = meetingNotesHere(Boolean(bridge?.meetingStart), state.config?.hosted?.on);
   const [title, setTitle] = useState("");
   const [system, setSystem] = useState(true);
   const [meetingId, setMeetingId] = useState<string | null>(null);

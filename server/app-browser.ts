@@ -49,7 +49,7 @@ export const MAX_SITES = 200;
 
 /** Said whenever there is no app behind this server to ask. */
 export const UNAVAILABLE =
-  "The Bloks browser is part of the Bloks desktop app, and the app is not running this workspace. Open the workspace in the Bloks app on the Mac, or use a browser tool of your own.";
+  "The Bloks browser is part of the Bloks desktop app, and the app is not running this workspace. Open the workspace in the Bloks desktop app, or use a browser tool of your own.";
 
 // ── sites ──────────────────────────────────────────────────────────────
 

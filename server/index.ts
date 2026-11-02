@@ -22079,7 +22079,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       });
       if (answered) return json(res, answered.status, answered.body);
     }
-    // This Mac asking to join somebody else's workspace (join-client.ts).
+    // This computer asking to join somebody else's workspace (join-client.ts).
     // Only from this computer's own window: the device token it makes is
     // this computer's to keep.
     if (path.startsWith("/api/joining/")) {
@@ -22090,7 +22090,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         path === "/api/joining/lookup"
           ? await joinClient.lookup(body.input)
           : path === "/api/joining/claim"
-            ? await joinClient.claim(body.session, { name: body.name, password: body.password, device: "mac" })
+            ? await joinClient.claim(body.session, { name: body.name, password: body.password })
             : path === "/api/joining/status"
               ? await joinClient.status(body.session)
               : path === "/api/joining/cancel"

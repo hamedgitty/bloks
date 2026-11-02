@@ -133,6 +133,15 @@ test("a right claim waits for the owner, with the same four words on both sides"
   assert.ok(!late.ok && late.error === "used");
 });
 
+test("the host keeps the kind a desktop joiner said: Mac, PC or computer", () => {
+  // a new joiner's words, and the word every older desktop still sends
+  for (const device of ["pc", "computer", "mac"]) {
+    const out = inv.claim(made(), { name: "Sam", tokenHash: token(device[0]), device }, ctx());
+    assert.ok(out.ok);
+    assert.equal(out.invite.claim?.device, device);
+  }
+});
+
 test("every way a claim is refused has its own code", () => {
   const t = token("c");
   assert.equal((inv.claim(null, { name: "Sam", tokenHash: t }, ctx()) as { error: string }).error, "wrong_code");
