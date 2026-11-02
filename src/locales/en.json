@@ -1961,6 +1961,7 @@
   "desktopOverlay.dock.float": "Float",
   "desktopOverlay.dock.left": "Dock left",
   "desktopOverlay.dock.right": "Dock right",
+  "desktopOverlay.framesOnly": "Watching as pictures: Bloks Cloud cannot carry the live desktop. To work it yourself, pair this computer by the server's address.",
   "desktopOverlay.messageAgent": "Message {name}",
   "desktopOverlay.openInBrowser": "Open in browser",
   "desktopOverlay.resize": "Resize",

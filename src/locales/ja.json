@@ -1886,6 +1886,7 @@
   "desktopOverlay.dock.float": "フロート",
   "desktopOverlay.dock.left": "左にドック",
   "desktopOverlay.dock.right": "右にドック",
+  "desktopOverlay.framesOnly": "画像で表示中：Bloks Cloud ではライブのデスクトップを中継できません。自分で操作するには、サーバーのアドレスでこのコンピューターをペアリングしてください。",
   "desktopOverlay.messageAgent": "{name} にメッセージ",
   "desktopOverlay.openInBrowser": "ブラウザーで開く",
   "desktopOverlay.resize": "サイズ変更",

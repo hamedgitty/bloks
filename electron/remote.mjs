@@ -343,10 +343,90 @@ const EARLY_LIMIT = 2_000_000;
  * to know, not the machine's. */
 const WAKE_PATH = "/api/remote/wake";
 
-/** A path into a hosted workspace's virtual desktop, by its ticket
- * (server/hosted.ts). */
-const DESKTOP_PATH = /^\/hosted\/desktop\/([0-9a-f]{48})(?:\/|$)/;
+/** A path into a desktop's viewer, by its ticket: a hosted workspace's
+ * own machine, or the Local VM (server/hosted.ts, VM_DESKTOP_PATH). */
+const DESKTOP_PATH = /^\/(?:hosted|local-vm)\/desktop\/([0-9a-f]{48})(?:\/|$)/;
+/** The answers that mint a ticket, and may name where it answers. */
+const DESKTOP_MINTS = new Set(["/api/hosted/desktop", "/api/local-vm/viewer"]);
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
+
+/** A page or a file of a desktop's viewer, from where it answers. The
+ * ticket in the path is the whole credential, checked there on every
+ * request, so nothing of this device's (its token) goes along. */
+function passDesktopTo(door, req, res, url) {
+  if (!door || (req.method !== "GET" && req.method !== "HEAD")) {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
+  const target = new URL(url.pathname + url.search, door);
+  const headers = {};
+  for (const name of ["accept", "accept-language", "user-agent", "if-none-match", "if-modified-since"]) {
+    if (typeof req.headers[name] === "string") headers[name] = req.headers[name];
+  }
+  const upstream = (target.protocol === "https:" ? httpsRequest : httpRequest)(target, { method: req.method, headers }, (answer) => {
+    const back = {};
+    for (const [name, value] of Object.entries(answer.headers)) {
+      if (value !== undefined && !HOP_HEADERS.has(name) && name !== "set-cookie") back[name] = value;
+    }
+    res.writeHead(answer.statusCode ?? 502, { ...back, "referrer-policy": "no-referrer", "cache-control": "no-store" });
+    answer.pipe(res);
+  });
+  upstream.setTimeout(30_000, () => upstream.destroy());
+  upstream.on("error", () => {
+    if (!res.headersSent) {
+      res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "The desktop is not answering." }));
+    } else res.end();
+  });
+  upstream.end();
+}
+
+/** The viewer's socket, passed to where the desktop answers. Anything
+ * else asking to upgrade is closed. */
+function upgradeDesktopTo(door, req, socket, head) {
+  const url = new URL(req.url ?? "/", "http://x");
+  if (!fromThisComputer(req) || !door || !DESKTOP_PATH.test(url.pathname)) {
+    socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
+    return;
+  }
+  const target = new URL(url.pathname + url.search, door);
+  const headers = { connection: "Upgrade", upgrade: String(req.headers.upgrade ?? "websocket") };
+  for (const name of ["sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions", "user-agent"]) {
+    if (typeof req.headers[name] === "string") headers[name] = req.headers[name];
+  }
+  const upstream = (target.protocol === "https:" ? httpsRequest : httpRequest)(target, { method: "GET", headers });
+  const fail = () => socket.destroy();
+  upstream.on("upgrade", (answer, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 ${answer.statusCode ?? 101} ${answer.statusMessage ?? "Switching Protocols"}`];
+    for (const [name, value] of Object.entries(answer.headers)) {
+      for (const one of Array.isArray(value) ? value : [value]) if (one !== undefined) lines.push(`${name}: ${one}`);
+    }
+    socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    if (upHead?.length) socket.write(upHead);
+    if (head?.length) upSocket.write(head);
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+    const close = () => {
+      socket.destroy();
+      upSocket.destroy();
+    };
+    // a viewer that hangs up is gone both ways: an upgraded socket is
+    // left half open by the server it came in on, and would stay so
+    for (const side of [socket, upSocket]) {
+      side.on("error", close);
+      side.on("end", close);
+      side.on("close", close);
+    }
+  });
+  upstream.on("response", (answer) => {
+    answer.resume();
+    socket.end(`HTTP/1.1 ${answer.statusCode ?? 502} Refused\r\nconnection: close\r\n\r\n`);
+  });
+  upstream.on("error", fail);
+  socket.on("error", () => upstream.destroy());
+  upstream.end();
+}
 
 /** Where a hosted workspace's desktop answers from outside, as its answer
  * named it: an https origin, or http on loopback for a test. Null for
@@ -680,37 +760,6 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     }
   };
 
-  /** A page or a file of the desktop's viewer, from its door. */
-  const passDesktop = (req, res, ticket, url) => {
-    const door = doors.get(ticket);
-    if (!door || (req.method !== "GET" && req.method !== "HEAD")) {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
-      return;
-    }
-    const target = new URL(url.pathname + url.search, door);
-    const headers = {};
-    for (const name of ["accept", "accept-language", "user-agent", "if-none-match", "if-modified-since"]) {
-      if (typeof req.headers[name] === "string") headers[name] = req.headers[name];
-    }
-    const upstream = (target.protocol === "https:" ? httpsRequest : httpRequest)(target, { method: req.method, headers }, (answer) => {
-      const back = {};
-      for (const [name, value] of Object.entries(answer.headers)) {
-        if (value !== undefined && !HOP_HEADERS.has(name) && name !== "set-cookie") back[name] = value;
-      }
-      res.writeHead(answer.statusCode ?? 502, { ...back, "referrer-policy": "no-referrer", "cache-control": "no-store" });
-      answer.pipe(res);
-    });
-    upstream.setTimeout(30_000, () => upstream.destroy());
-    upstream.on("error", () => {
-      if (!res.headersSent) {
-        res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "The desktop is not answering." }));
-      } else res.end();
-    });
-    upstream.end();
-  };
-
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/api/plan" || url.pathname.startsWith("/api/plan/")) res.setHeader("cache-control", "no-store");
@@ -720,7 +769,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
       return;
     }
     const ticket = DESKTOP_PATH.exec(url.pathname)?.[1];
-    if (ticket) return passDesktop(req, res, ticket, url);
+    if (ticket) return passDesktopTo(doors.get(ticket), req, res, url);
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
     if (req.method === "GET" && STREAMABLE.some((route) => route.test(url.pathname))) return follow(req, res, url.pathname);
     // the wait for a waking workspace, as it is now and as it changes
@@ -764,7 +813,7 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
         ...(body && body.length ? { bodyB64: body.toString("base64"), type: req.headers["content-type"] ?? "application/json" } : {}),
       };
       const answer = await (req.method === "GET" ? askWhole : ask)(asked, { gone: () => read && left });
-      if (req.method === "POST" && url.pathname === "/api/hosted/desktop" && answer.status === 200) noteDoor(answer.bytes);
+      if (req.method === "POST" && DESKTOP_MINTS.has(url.pathname) && answer.status === 200) noteDoor(answer.bytes);
       const type = answer.type ?? "application/octet-stream";
       res.writeHead(answer.status, {
         "content-type": type,
@@ -783,48 +832,9 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
     }
   });
   // The desktop viewer's socket, passed to the door its ticket names.
-  // Anything else asking to upgrade is closed.
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://x");
-    const ticket = DESKTOP_PATH.exec(url.pathname)?.[1];
-    const door = ticket ? doors.get(ticket) : null;
-    if (!fromThisComputer(req) || !door) {
-      socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
-      return;
-    }
-    const target = new URL(url.pathname + url.search, door);
-    const headers = { connection: "Upgrade", upgrade: String(req.headers.upgrade ?? "websocket") };
-    for (const name of ["sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions", "user-agent"]) {
-      if (typeof req.headers[name] === "string") headers[name] = req.headers[name];
-    }
-    const upstream = (target.protocol === "https:" ? httpsRequest : httpRequest)(target, { method: "GET", headers });
-    const fail = () => socket.destroy();
-    upstream.on("upgrade", (answer, upSocket, upHead) => {
-      const lines = [`HTTP/1.1 ${answer.statusCode ?? 101} ${answer.statusMessage ?? "Switching Protocols"}`];
-      for (const [name, value] of Object.entries(answer.headers)) {
-        for (const one of Array.isArray(value) ? value : [value]) if (one !== undefined) lines.push(`${name}: ${one}`);
-      }
-      socket.write(`${lines.join("\r\n")}\r\n\r\n`);
-      if (upHead?.length) socket.write(upHead);
-      if (head?.length) upSocket.write(head);
-      upSocket.pipe(socket);
-      socket.pipe(upSocket);
-      const close = () => {
-        socket.destroy();
-        upSocket.destroy();
-      };
-      upSocket.on("error", close);
-      socket.on("error", close);
-      upSocket.on("close", close);
-      socket.on("close", close);
-    });
-    upstream.on("response", (answer) => {
-      answer.resume();
-      socket.end(`HTTP/1.1 ${answer.statusCode ?? 502} Refused\r\nconnection: close\r\n\r\n`);
-    });
-    upstream.on("error", fail);
-    socket.on("error", () => upstream.destroy());
-    upstream.end();
+    const ticket = DESKTOP_PATH.exec(new URL(req.url ?? "/", "http://x").pathname)?.[1];
+    upgradeDesktopTo(ticket ? doors.get(ticket) : null, req, socket, head);
   });
 
   // a port that is taken says so, rather than leaving this waiting forever
@@ -899,6 +909,8 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
       res.end(JSON.stringify({ error: "not from this computer" }));
       return;
     }
+    // a desktop's viewer answers on that computer, under its ticket
+    if (DESKTOP_PATH.test(url.pathname)) return passDesktopTo(base, req, res, url);
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
     if (url.pathname === "/api/events") {
       // the owner's computer's own stream, passed through as it comes; the
@@ -949,6 +961,8 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
       res.end(JSON.stringify({ error: status === 413 ? e.message : away }));
     }
   });
+  // and the viewer's socket the same way, straight to that computer
+  server.on("upgrade", (req, socket, head) => upgradeDesktopTo(base, req, socket, head));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {

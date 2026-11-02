@@ -4,12 +4,15 @@
 // it to either side or the bottom and drag its inner edge to taste, or
 // float it and move it like a window, with a corner handle to resize.
 // The close button never leaves the top corner, and Escape always works.
+// Where the viewer's live socket cannot reach (a window carried by Bloks
+// Cloud), the desktop is watched as the frames it is sent instead.
 // The arrangement is remembered, because a layout you fixed once should
 // stay fixed.
 import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink } from "@/components/icons";
 import { GripHorizontal } from "@/components/icons";
+import { Loader2 } from "@/components/icons";
 import { PanelBottom } from "@/components/icons";
 import { PanelLeft } from "@/components/icons";
 import { PanelRight } from "@/components/icons";
@@ -125,10 +128,13 @@ function SideChat({ bot }: { bot: Bot }) {
 export function DesktopOverlay({
   bot,
   url,
+  frame,
   onClose,
 }: {
   bot: Bot;
-  url: string;
+  /** The live viewer, framed; without one, `frame` is shown instead. */
+  url?: string;
+  frame?: string | null;
   onClose: () => void;
 }) {
   const [layout, setLayout] = useState<ChatLayout>(loadLayout);
@@ -314,13 +320,29 @@ export function DesktopOverlay({
     />
   );
 
-  const viewer = (
+  const viewer = url ? (
     <iframe
       src={url}
       title={t("desktopOverlay.agentDesktop", { name: bot.name })}
       className={cn("min-h-0 w-full flex-1 border-0 bg-black", dragging && "pointer-events-none")}
       allow="clipboard-read; clipboard-write"
     />
+  ) : (
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-black">
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        {frame ? (
+          <img
+            src={frame}
+            alt={t("desktopOverlay.agentDesktop", { name: bot.name })}
+            className="max-h-full max-w-full select-none object-contain"
+            draggable={false}
+          />
+        ) : (
+          <Loader2 size={18} className="animate-spin text-white/60" />
+        )}
+      </div>
+      <div className="shrink-0 px-3 py-1.5 text-center text-caption text-white/70">{t("desktopOverlay.framesOnly")}</div>
+    </div>
   );
 
   return (
@@ -336,11 +358,13 @@ export function DesktopOverlay({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <a href={url} target="_blank" rel="noreferrer" title={t("desktopOverlay.openInBrowser")}>
-            <Button variant="ghost" size="icon-sm" aria-label={t("desktopOverlay.openInBrowser")}>
-              <ExternalLink size={15} />
-            </Button>
-          </a>
+          {url && (
+            <a href={url} target="_blank" rel="noreferrer" title={t("desktopOverlay.openInBrowser")}>
+              <Button variant="ghost" size="icon-sm" aria-label={t("desktopOverlay.openInBrowser")}>
+                <ExternalLink size={15} />
+              </Button>
+            </a>
+          )}
           <Button variant="secondary" size="icon-sm" aria-label={t("desktopOverlay.closeDesktopView")} onClick={onClose}>
             <X size={16} />
           </Button>

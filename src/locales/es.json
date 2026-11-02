@@ -1961,6 +1961,7 @@
   "desktopOverlay.dock.float": "Flotante",
   "desktopOverlay.dock.left": "Anclar a la izquierda",
   "desktopOverlay.dock.right": "Anclar a la derecha",
+  "desktopOverlay.framesOnly": "Viéndolo como imágenes: Bloks Cloud no puede transmitir el escritorio en vivo. Para usarlo tú mismo, vincula este ordenador con la dirección del servidor.",
   "desktopOverlay.messageAgent": "Escribir a {name}",
   "desktopOverlay.openInBrowser": "Abrir en el navegador",
   "desktopOverlay.resize": "Cambiar tamaño",

@@ -1961,6 +1961,7 @@
   "desktopOverlay.dock.float": "Schwebend",
   "desktopOverlay.dock.left": "Links andocken",
   "desktopOverlay.dock.right": "Rechts andocken",
+  "desktopOverlay.framesOnly": "Ansicht als Bilder: Bloks Cloud kann den Live-Desktop nicht übertragen. Um ihn selbst zu bedienen, koppele diesen Computer über die Adresse des Servers.",
   "desktopOverlay.messageAgent": "{name} schreiben",
   "desktopOverlay.openInBrowser": "Im Browser öffnen",
   "desktopOverlay.resize": "Größe ändern",

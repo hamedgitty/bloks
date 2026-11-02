@@ -1886,6 +1886,7 @@
   "desktopOverlay.dock.float": "浮动",
   "desktopOverlay.dock.left": "停靠在左侧",
   "desktopOverlay.dock.right": "停靠在右侧",
+  "desktopOverlay.framesOnly": "以画面方式查看：Bloks Cloud 无法传输实时桌面。要亲自操作，请通过服务器地址配对这台电脑。",
   "desktopOverlay.messageAgent": "给 {name} 发消息",
   "desktopOverlay.openInBrowser": "在浏览器中打开",
   "desktopOverlay.resize": "调整大小",

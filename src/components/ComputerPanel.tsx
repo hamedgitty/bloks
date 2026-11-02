@@ -149,6 +149,8 @@ function LocalVmCard({ bot }: { bot: Bot }) {
   const [frame, setFrame] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  // watched as frames, where the live viewer cannot reach this window
+  const [watching, setWatching] = useState(false);
   // the viewer on this machine opens straight; anywhere else, or beside
   // Bloks on a server, it opens through Bloks under a ticket minted now
   const openDesktop = () => {
@@ -156,7 +158,7 @@ function LocalVmCard({ bot }: { bot: Bot }) {
     setOpening(true);
     setOpenError(null);
     api("/api/local-vm/viewer", { method: "POST", body: "{}" })
-      .then((r) => setDesktop(r.url))
+      .then((r) => (r.url ? setDesktop(r.url) : setWatching(Boolean(r.frames))))
       .catch((e: Error) => setOpenError(e.message))
       .finally(() => setOpening(false));
   };
@@ -176,7 +178,8 @@ function LocalVmCard({ bot }: { bot: Bot }) {
   }, [bot.id]);
 
   // the preview: one frame every few seconds while the desktop is up
-  // and somebody is looking; a hidden window captures nothing
+  // and somebody is looking, every second while it is watched full size;
+  // a hidden window captures nothing
   const visible = usePageVisible();
   useEffect(() => {
     if (!status?.ready || !visible) return;
@@ -193,12 +196,12 @@ function LocalVmCard({ bot }: { bot: Bot }) {
         });
     };
     shoot();
-    const timer = setInterval(shoot, 3_000);
+    const timer = setInterval(shoot, watching ? 1_000 : 3_000);
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [status?.ready, visible]);
+  }, [status?.ready, visible, watching]);
 
   return (
     <div className="mt-3">
@@ -250,6 +253,7 @@ function LocalVmCard({ bot }: { bot: Bot }) {
         </div>
       ) : null}
       {desktop && <DesktopOverlay bot={bot} url={desktop} onClose={() => setDesktop(null)} />}
+      {watching && <DesktopOverlay bot={bot} frame={frame} onClose={() => setWatching(false)} />}
     </div>
   );
 }

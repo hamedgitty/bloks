@@ -25775,11 +25775,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // never an agent's, as with a hosted machine's desktop.
     if (method === "POST" && path === "/api/local-vm/viewer") {
       if (asAgent) return json(res, 403, { error: "that is the person's" });
+      // Bloks Cloud carries a request and its answer, never the viewer's
+      // live socket: a window it carries watches the desktop as frames
+      // instead, unless this machine has a door of its own to send it to
+      if (viaRelay && !DOOR) return json(res, 200, { url: null, frames: true });
       try {
         const password = await vmViewerPassword();
         const url = viewerUrl(vmDesktopTickets.mint(), VM_DESKTOP_PATH);
         // the password rides in the fragment, which never leaves the browser
-        return json(res, 200, { url: password ? `${url}#password=${encodeURIComponent(password)}` : url });
+        return json(res, 200, { url: password ? `${url}#password=${encodeURIComponent(password)}` : url, ...(DOOR ? { door: DOOR } : {}) });
       } catch (e) {
         return json(res, 502, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
       }

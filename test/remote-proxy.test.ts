@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { doorOf, startRemoteProxy } from "../electron/remote.mjs";
+import { doorOf, startLanProxy, startRemoteProxy } from "../electron/remote.mjs";
 
 const ui = mkdtempSync(join(tmpdir(), "bloks-remote-ui-"));
 writeFileSync(join(ui, "index.html"), "<!doctype html><title>Bloks</title>");
@@ -175,5 +175,78 @@ test("a desktop path with no ticket this window was given goes nowhere, and neit
     assert.match(answer, /^HTTP\/1\.1 404/);
   } finally {
     proxy.stop();
+  }
+});
+
+// A server paired by its address, or a workspace joined on the owner's
+// network, answers its desktop's viewer itself, under a ticket. The
+// stand-in here once served its own page for that path instead, and the
+// expanded desktop was a blank frame on every paired computer.
+test("paired by address, a desktop's viewer and its socket are passed to that computer, without this device's token", async () => {
+  const asked: Array<{ url: string; authorization?: string }> = [];
+  const server = createHttpServer((req, res) => {
+    asked.push({ url: req.url ?? "", authorization: req.headers.authorization });
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end("<title>noVNC</title>");
+  });
+  server.on("upgrade", (req, socket) => {
+    asked.push({ url: req.url ?? "", authorization: req.headers.authorization });
+    socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    socket.on("data", (chunk) => socket.write(Buffer.concat([Buffer.from("echo:"), chunk])));
+    socket.on("end", () => socket.end());
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const at = `127.0.0.1:${(server.address() as { port: number }).port}`;
+  const ticket = "c".repeat(48);
+  try {
+    for (const profile of [{ url: `http://${at}`, deviceId: "d", deviceToken: "device-token" }, { lan: at, deviceId: "d", deviceToken: "device-token" }]) {
+      const proxy = await startLanProxy(profile, { staticDir: ui });
+      try {
+        for (const kind of ["local-vm", "hosted"]) {
+          const page = await fetch(`http://127.0.0.1:${proxy.port}/${kind}/desktop/${ticket}/vnc.html?autoconnect=true`);
+          assert.equal(page.status, 200);
+          assert.equal(await page.text(), "<title>noVNC</title>", `${kind} through ${Object.keys(profile)[0]}`);
+          assert.equal(asked.at(-1)?.url, `/${kind}/desktop/${ticket}/vnc.html?autoconnect=true`);
+        }
+        const { connect } = await import("node:net");
+        const echoed = await new Promise<string>((resolve, reject) => {
+          const socket = connect(proxy.port, "127.0.0.1", () => {
+            socket.write(
+              `GET /local-vm/desktop/${ticket}/websockify HTTP/1.1\r\nHost: 127.0.0.1:${proxy.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+            );
+          });
+          let got = "";
+          socket.on("data", (chunk) => {
+            got += chunk.toString();
+            if (got.includes("\r\n\r\n") && !got.includes("echo:")) socket.write("ping");
+            if (got.includes("echo:ping")) {
+              socket.destroy();
+              resolve(got);
+            }
+          });
+          socket.on("error", reject);
+          setTimeout(() => reject(new Error(`no echo: ${got}`)), 5_000);
+        });
+        assert.match(echoed, /^HTTP\/1\.1 101/);
+        assert.ok(asked.every((a) => a.authorization === undefined), "the ticket is the credential; the device's token stays here");
+        // the window's own pages are still its own, and nothing else upgrades
+        assert.equal(await (await fetch(`http://127.0.0.1:${proxy.port}/`)).text(), "<!doctype html><title>Bloks</title>");
+        const refused = await new Promise<string>((resolve) => {
+          const socket = connect(proxy.port, "127.0.0.1", () => {
+            socket.write(`GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:${proxy.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`);
+          });
+          let got = "";
+          socket.on("data", (chunk) => (got += chunk));
+          socket.on("close", () => resolve(got));
+          socket.on("error", () => resolve(got));
+        });
+        assert.match(refused, /^HTTP\/1\.1 404/);
+      } finally {
+        proxy.stop();
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
   }
 });

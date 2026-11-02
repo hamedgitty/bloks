@@ -1961,6 +1961,7 @@
   "desktopOverlay.dock.float": "Flutuante",
   "desktopOverlay.dock.left": "Fixar à esquerda",
   "desktopOverlay.dock.right": "Fixar à direita",
+  "desktopOverlay.framesOnly": "Vendo como imagens: o Bloks Cloud não consegue transmitir a área de trabalho ao vivo. Para usá-la você mesmo, emparelhe este computador pelo endereço do servidor.",
   "desktopOverlay.messageAgent": "Enviar mensagem para {name}",
   "desktopOverlay.openInBrowser": "Abrir no navegador",
   "desktopOverlay.resize": "Redimensionar",
