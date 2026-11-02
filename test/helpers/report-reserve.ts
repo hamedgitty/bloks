@@ -15,6 +15,10 @@ export async function until<T>(read:()=>T|Promise<T>,why='fixture did not settle
  while(Date.now()<end){const x=await read();if(x)return x as NonNullable<T>;await new Promise(r=>setTimeout(r,10));}
  throw new Error(why);
 }
+// The fake may still be appending a long call. A complete JSONL record ends
+// in a newline, so the unfinished last one waits for the next read; a
+// malformed complete record still fails.
+const recorded=(file:string)=>existsSync(file)?readFileSync(file,'utf8').split('\n').slice(0,-1).filter(Boolean).map(x=>JSON.parse(x)):[];
 export async function reporting(t:TestContext){
  const home=mkdtempSync(join(tmpdir(),'rr-')),host=join(dirname(server),'.report-test-'+randomUUID()+'.ts');
  mkdirSync(join(home,'.bloks'));
@@ -102,7 +106,7 @@ process.on('message',(m:any)=>{
   await Promise.race([new Promise(r=>child.once('exit',r)),new Promise(r=>setTimeout(r,1500))]);
   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
   const callFile=join(home,'calls.jsonl');
-  const pids=()=>existsSync(callFile)?[...new Set<number>(readFileSync(callFile,'utf8').split('\n').filter(Boolean).map(x=>JSON.parse(x).pid))]:[];
+  const pids=()=>[...new Set<number>(recorded(callFile).map(x=>x.pid))];
   const alive=(pid:number)=>{try{process.kill(pid,0);return true}catch{return false}};
   // Stop only an exact fixture executable, never a reused unrelated PID.
   for(const pid of pids().filter(alive)){
@@ -138,7 +142,7 @@ process.on('message',(m:any)=>{
  const say=(body:Record<string,unknown>={text:'FINAL'},to=target.id)=>request('POST',`/api/bots/${to}/messages`,body,token);
  const use=async(n=12)=>{for(let i=0;i<n;i++)assert.equal((await request('PUT',`/api/bots/${sender.id}/memory`,{text:'Synthetic '+i},token)).status,200)};
  const messages=async(bot=target)=> (await request('GET',`/api/bots/${bot.id}/messages?thread=${bot.threadId}&limit=200`)).body.messages as any[];
- const calls=()=>existsSync(join(home,'calls.jsonl'))?readFileSync(join(home,'calls.jsonl'),'utf8').split('\n').filter(Boolean).map(x=>JSON.parse(x)):[];
+ const calls=()=>recorded(join(home,'calls.jsonl'));
  const accepted=async(body:Record<string,unknown>={text:'FINAL'})=>until(async()=>{const x=await say(body);return x.body.ok?x:null},'same submission never reached an accepted receipt');
  const command=(args:string[])=>new Promise<{code:number|null;out:string;err:string}>(resolve=>{const p=spawn(process.execPath,[cli,...args],{env:{HOME:home,PATH:'/nonexistent',BLOKS_URL:url,BLOKS_TOKEN:token},stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.on('exit',code=>resolve({code,out,err}))});
  const restart=async()=>{child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));logs='';child=spawnHost();watch();await until(ready,'restarted isolated host did not listen')};
