@@ -245,6 +245,16 @@ instead (see People in your workspaces).
   may have five in ten minutes. The computer shows a notification each
   time one is made, whatever its notification settings, naming the phone
   and the workspace it asked from.
+- **A terminal from a device.** A terminal is a shell with the account
+  Bloks runs as, so on a computer running the desktop app it opens only
+  in that computer's own window, never from a paired device. A machine
+  nobody sits at is the exception, and only for its owner's own paired
+  devices (`server/deployment.ts`): a managed hosting machine always,
+  and a `bloks-server` of your own only when `BLOKS_OWNER_TERMINAL=1` is
+  set where it runs, which no device can switch on. Never a member's
+  device, a device nobody paired, or an agent's credential. A refused
+  device is told why. Through Bloks Cloud its live output is sealed for
+  the one device that follows it.
 - **Pictures of a screen.** While an agent works, its browser or cloud
   computer is pictured for the window and your phone, and a person can
   click, type, scroll and press keys in them from the chat or the phone;

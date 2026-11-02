@@ -122,6 +122,8 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         // repository's own; a test that browses one serves it
         BLOKS_CATALOG_URL: "http://127.0.0.1:9/catalog/index.json",
         BLOKS_HOSTED: "",
+        // the owner's devices opening a server's terminal (server/deployment.ts)
+        BLOKS_OWNER_TERMINAL: "",
         // the platform a test stands the server in for (server/hosted.ts);
         // a test that wants Windows or Linux says so itself
         BLOKS_TEST_PLATFORM: "",

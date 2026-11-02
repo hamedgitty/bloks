@@ -670,6 +670,7 @@ import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
 import { RUN_WAIT_MAX_MS, Runs, type RunFile, type SeenMessage } from "./runs.ts";
 import { briefOf, briefText, drawNames, planTeam, statedLooks, TeamPlanError, type TeamChange, type TeamPlan as TeamApplyPlan, type TeamWorld } from "./team-apply.ts";
 import { installFacts, installOf, ServerUpdater, startHelper, UpdateError } from "./server-update.ts";
+import { deploymentOf, deploymentView, terminalRefusal } from "./deployment.ts";
 import { covers, EnginePauses, FAMILY_NAMES, familyOf, PAUSE_MAX_MS, PauseRefusal, SELF_PAUSE_MAX_MS, type EnginePause, type EngineRoute, type PauseActor } from "./engine-pauses.ts";
 import {
   AUTO_KEEP,
@@ -808,6 +809,10 @@ creditsAccess.use(credits);
 // Hosted mode (server/hosted.ts): read once, since a workspace does not
 // become hosted while it runs.
 const HOSTED = isHosted();
+/** The machine's kind, asked as separate questions (server/deployment.ts):
+ * where it runs, who looks after it, and what the owner's own devices may
+ * do on it. HOSTED above is its provider-managed case. */
+const DEPLOYMENT = deploymentOf({ inApp: Boolean((process as NodeJS.Process & { parentPort?: unknown }).parentPort) });
 const VNC = HOSTED ? vncTarget(process.env.BLOKS_HOSTED_VNC) : null;
 const DOOR = HOSTED ? publicDoor(process.env.BLOKS_PUBLIC_URL) : null;
 /** This copy's work moved to another machine (server/moved-mark.ts): its
@@ -12385,6 +12390,8 @@ relayLink.pairClaim = (linkId, body) => {
 // A hosted workspace has nobody at it to run `bloks-server pair`, so its
 // owner asks Bloks Cloud for a link instead, signed with the licence
 // (server/owner-link.ts). A Mac never answers that: its owner pairs there.
+// Nor does a server of the person's own, whose owner has its shell for
+// `bloks-server pair`: the link is the provider's way in, not a remote one.
 relayLink.licence = () => licenceKey();
 relayLink.ownerLink = () => (HOSTED ? makePairLink() : null);
 
@@ -15405,7 +15412,8 @@ const routineTimer = setInterval(() => void runDueRoutines().catch(() => {}), 30
 // Cloud wakes it for the next routine or watcher look once it knows when
 // that is (server/next-due.ts). Worked out every minute, which is cheap,
 // and a moment after any routine or watcher changes; said only when it
-// changes. A Mac has no use for it and says nothing.
+// changes. A Mac has no use for it and says nothing, and neither does a
+// server of the person's own, which nothing puts to sleep.
 function sayNextDue() {
   if (!HOSTED) return;
   // a hosted copy whose work moved has nothing coming up to wake it for
@@ -21253,6 +21261,10 @@ function configStatus() {
     // a hosted workspace (server/hosted.ts): whether it is one, whether its
     // virtual desktop can be shown, and where an agent may act here
     hosted: { on: HOSTED, desktop: Boolean(VNC), computers: computerChoices(HOSTED) },
+    // the same machine asked apart (server/deployment.ts): an app, a
+    // server the person runs, or managed hosting, and whether the owner's
+    // own devices may open its terminal, for About to say rightly
+    deployment: deploymentView(DEPLOYMENT, computerName()),
     // what is already here, so a first run can offer to keep it rather
     // than silently dropping somebody into a stranger's-looking workspace
     workspace: (() => {
@@ -23211,7 +23223,9 @@ const server = createServer((req, res) => {
 server.on("upgrade", upgradeDesktop);
 
 /** What /api/health says. `hosted` tells a phone, and the platform that
- * runs a hosted workspace, which kind of machine this is. */
+ * runs a hosted workspace, which kind of machine this is; `managedBy` and
+ * `runs` say the same apart, so a server of the person's own is not taken
+ * for a hosted one. */
 function healthBody() {
   return {
     app: "bloks",
@@ -23220,6 +23234,10 @@ function healthBody() {
     version: APP_VERSION,
     features: FEATURES,
     hosted: HOSTED,
+    // who looks after this machine and where it runs, apart from `hosted`
+    // (server/deployment.ts); never what its owner's devices may do here
+    managedBy: DEPLOYMENT.managedBy,
+    runs: DEPLOYMENT.runs,
     // which workspace this is, as it is announced on the network, for a
     // phone to find it again after it moves (server/announce.ts)
     tag: workspaceTag(),
@@ -30213,27 +30231,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // relay would be a remote shell on somebody's laptop. Whatever else
     // pairing is for, it is not for that.
     //
-    // A hosted workspace is the exception, and only for its owner. Its
-    // shell is on the machine run for them, which nobody sits at, so the
-    // owner's own paired devices are the only way to it (and signing an
-    // engine in from its terminal is how such a workspace gets Claude Code
-    // or Codex). Never a member's device, and never an agent's credential.
-    // The live output comes back through Bloks Cloud as a followed stream
+    // A machine nobody sits at is the exception, and only for its owner
+    // (server/deployment.ts): a hosted one always, since the owner's own
+    // paired devices are the only way to its shell (and signing an engine
+    // in from its terminal is how such a workspace gets Claude Code or
+    // Codex), and a server of the person's own once they say so where it
+    // runs (BLOKS_OWNER_TERMINAL=1). Never a member's device, never an
+    // agent's credential, and never the desktop app's computer. The live
+    // output comes back through Bloks Cloud as a followed stream
     // (server/relay-link.ts, serveStream).
     //
     // An agent can have several (tabs), each with an id. The routes under
     // /terminals name one by that id; the older /terminal routes below
     // them mean the agent's first, so a client that only knows about one
     // shell keeps working.
-    const shellHere = local || (HOSTED && Boolean(caller) && !asAgent);
+    const shellHere = local || (DEPLOYMENT.ownerTerminal && Boolean(caller) && !asAgent);
+    // a paired device is told the real reason, and how its owner opens it
+    const noShell = () => json(res, 403, caller && !asAgent ? { error: terminalRefusal(DEPLOYMENT), code: "terminal" } : { error: "not from here" });
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminals$/);
     if (m && method === "GET") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       if (!store.bot(m[1])) return json(res, 404, { error: "no such agent" });
       return json(res, 200, { terminals: terminals.list(m[1]), max: MAX_TERMINALS_PER_AGENT });
     }
     if (m && method === "POST") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such agent" });
       if (bot.archivedAt) return json(res, 409, { error: `${bot.name} is archived` });
@@ -30263,7 +30285,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // change, which is how a second window sees a tab opened in the first.
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminals\/stream$/);
     if (m && method === "GET") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const botId = m[1];
       if (!store.bot(botId)) return json(res, 404, { error: "no such agent" });
       res.writeHead(200, {
@@ -30321,7 +30343,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminals\/([\w-]+)$/);
     if (m && (method === "GET" || method === "PATCH" || method === "DELETE")) {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const session = terminals.get(m[1], m[2]);
       if (!session) return json(res, 404, { error: "no such terminal" });
       if (method === "GET") return json(res, 200, { terminal: session.info() });
@@ -30337,7 +30359,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminals\/([\w-]+)\/(input|busy|restart|clear)$/);
     if (m && ((m[3] === "busy" && method === "GET") || (m[3] !== "busy" && method === "POST"))) {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const session = terminals.get(m[1], m[2]);
       if (!session) return json(res, 404, { error: "no such terminal" });
       if (m[3] === "busy") return json(res, 200, await session.foreground());
@@ -30365,7 +30387,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // agent's first shell.
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminal$/);
     if (m && method === "POST") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such agent" });
       if (bot.archivedAt) return json(res, 409, { error: `${bot.name} is archived` });
@@ -30385,12 +30407,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
     }
     if (m && method === "GET") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const session = terminals.get(m[1]);
       return json(res, 200, { terminal: session ? session.info() : null });
     }
     if (m && method === "DELETE") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       // the first shell only: the others are tabs this client never knew about
       const first = terminals.get(m[1]);
       if (first) terminals.close(m[1], first.id);
@@ -30399,7 +30421,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminal\/input$/);
     if (m && method === "POST") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const session = terminals.get(m[1]);
       if (!session) return json(res, 409, { error: "no terminal open" });
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
@@ -30411,7 +30433,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // no business in a ring buffer every other client replays.
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminal\/stream$/);
     if (m && method === "GET") {
-      if (!shellHere) return json(res, 403, { error: "not from here" });
+      if (!shellHere) return noShell();
       const session = terminals.get(m[1]);
       if (!session) return json(res, 409, { error: "no terminal open" });
       res.writeHead(200, {
@@ -31916,7 +31938,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // Moving the whole workspace to another machine. Never an agent's. On
     // a hosted workspace the owner's own paired devices write one out and
     // mark it moved too: it has no window of its own, and the owner's Mac
-    // is how its work comes home. A member never gets this far.
+    // is how its work comes home. A move is the way to and from managed
+    // hosting, so a server of the person's own keeps it on the server,
+    // where backups are made too. A member never gets this far.
     if (path === "/api/workspace/move" || path.startsWith("/api/workspace/move/")) {
       if (asAgent) return json(res, 403, { error: "not from here" });
       return serveMove(req, res, method, path, local, local || (HOSTED && Boolean(caller) && !caller?.personId), url.searchParams);

@@ -585,6 +585,18 @@ export interface ConfigStatus {
     desktop: boolean;
     computers: Array<{ id: "cloud" | "sandbox" | "local" | "off"; label: string }>;
   };
+  /** The same machine asked apart (server/deployment.ts): the app on this
+   * computer, a server the person runs, or managed hosting, and whether
+   * the owner's own devices may open its terminal. Absent on a server
+   * from before 3.2, which said only `hosted`. */
+  deployment?: {
+    kind: "app" | "self-hosted" | "managed";
+    runs: "app" | "server";
+    managedBy: "owner" | "provider";
+    computer: string;
+    ownerTerminal: boolean;
+    ownerTerminalFrom: "provider" | "setting" | null;
+  };
 }
 
 /** What the server says about Bloks AI on the stream and with the rest

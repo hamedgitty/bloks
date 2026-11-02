@@ -8,19 +8,64 @@ import { Check } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/state/store";
 import type { UpdateState } from "@/types/bridge";
+import type { ConfigStatus } from "@/state/reducer";
 import { drainingLine } from "../UpdateCard";
 import { SettingRow, SettingsGroup } from "../SettingsLayout";
 import { ServerUpdateRow, useServerUpdate } from "./ServerUpdate";
 import { t } from "@/lib/i18n";
 import { onYourComputer } from "@/lib/thisComputer";
 
-/** The small mark a hosted workspace wears in Settings, so nobody wonders
- * why the Mac's own options are not there. */
-export function HostedMark() {
+/** What kind of machine the workspace in this window runs on
+ * (server/deployment.ts): managed hosting, a server its owner runs, or
+ * null for the app on this computer. A server from before 3.2 said only
+ * whether it was hosted. */
+export function deploymentKindOf(config: ConfigStatus | null | undefined): "managed" | "self-hosted" | null {
+  const kind = config?.deployment?.kind ?? (config?.hosted?.on ? "managed" : null);
+  return kind === "managed" || kind === "self-hosted" ? kind : null;
+}
+
+/** The small mark a workspace on a machine of its own wears in Settings,
+ * so nobody wonders why this computer's own options are not there, and
+ * nobody takes a server they run for one run for them. */
+export function DeploymentMark({ kind }: { kind: "managed" | "self-hosted" }) {
   return (
     <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-caption font-medium text-muted-foreground">
-      {t("aboutPage.hosted")}
+      {kind === "managed" ? t("aboutPage.mark.managed") : t("aboutPage.mark.selfHosted")}
     </span>
+  );
+}
+
+/** The guide to running bloks-server on a machine of your own. */
+const SELF_HOSTING_GUIDE = "https://github.com/hamedgitty/bloks/blob/main/docs/SELF_HOSTING.md";
+
+/** Who looks after the machine this workspace runs on, and what its
+ * owner's own devices may do there. */
+function WorkspaceMachineRow({ kind, config }: { kind: "managed" | "self-hosted"; config: ConfigStatus | null }) {
+  const deployment = config?.deployment;
+  const description =
+    kind === "managed" ? (
+      t("aboutPage.itRunsOnAMachine", { computer: onYourComputer() })
+    ) : (
+      <>
+        <span className="block">{t("aboutPage.selfHosted.runsOn", { computer: deployment?.computer ?? "" })}</span>
+        <span className="mt-1 block">
+          {deployment?.ownerTerminal ? t("aboutPage.selfHosted.terminalOn") : t("aboutPage.selfHosted.terminalOff")}{" "}
+          <a href={SELF_HOSTING_GUIDE} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+            {t("aboutPage.selfHosted.guide")}
+          </a>
+        </span>
+      </>
+    );
+  return (
+    <SettingRow
+      rowId="this-workspace"
+      label={
+        <>
+          {t("aboutPage.thisWorkspace")} <DeploymentMark kind={kind} />
+        </>
+      }
+      description={description}
+    />
   );
 }
 
@@ -34,7 +79,7 @@ export function HostedMark() {
  */
 export function AboutPage() {
   const { state } = useStore();
-  const hosted = Boolean(state.config?.hosted?.on);
+  const machine = deploymentKindOf(state.config);
   const [version, setVersion] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateState>({ state: "idle" });
   // the workspace server, when it is not the one inside this app
@@ -101,16 +146,7 @@ export function AboutPage() {
   return (
     <>
     <SettingsGroup title={t("aboutPage.version")}>
-      {hosted && (
-        <SettingRow
-          label={
-            <>
-              {t("aboutPage.thisWorkspace")} <HostedMark />
-            </>
-          }
-          description={t("aboutPage.itRunsOnAMachine", { computer: onYourComputer() })}
-        />
-      )}
+      {machine && <WorkspaceMachineRow kind={machine} config={state.config} />}
       {/* A browser has no app of its own to update; the server row below
           says which Bloks it reaches. */}
       {(bridge || !apart) && (

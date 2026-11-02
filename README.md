@@ -423,7 +423,10 @@ over.
   delete, change settings or fill in a password.
 - **Always on.** `bloks-server` runs a workspace on a machine that stays
   on, and the desktop app, the phone and the browser reach it the same
-  way. Or let Bloks run one for you: managed hosting is a private machine
+  way. Settings calls it Self-hosted, your own paired devices can open
+  its terminal once you allow it there. See
+  [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+  Or let Bloks run one for you: managed hosting is a private machine
   of your own that stays on, and moves your agents over when you sign up
   at [bloks.dev/pricing](https://bloks.dev/pricing).
 - **Scripts, CI and a terminal.** `bloks-server run Ada "Review the open

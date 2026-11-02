@@ -4192,6 +4192,19 @@ signing in again changes.
 
 ## Hosted mode
 
+`server/deployment.ts` asks what kind of machine this is as separate
+questions: where it runs (`runs`: the app, or a `bloks-server` of its
+own), who looks after it (`managedBy`: the owner, or the provider when
+`BLOKS_HOSTED=1`), and what the owner's own paired devices may do there
+(`ownerTerminal`). `/api/config` says all of it as `deployment`, with
+`kind` (`app`, `self-hosted` or `managed`) for Settings, and
+`/api/health` says `managedBy` and `runs` beside `hosted`. The terminal
+routes take a paired owner device when `ownerTerminal` is on: always on
+a provider's machine, and on a server of the person's own only with
+`BLOKS_OWNER_TERMINAL=1`, never in the app. A refused device gets 403
+with code `terminal` and the reason. Everything below stays the
+provider's alone; docs/SELF_HOSTING.md says why for each.
+
 `BLOKS_HOSTED=1` says this workspace runs on a machine somebody runs for
 the person (`server/hosted.ts`). This is the server's side of managed
 hosting, a private machine that stays on, which is coming soon and not
