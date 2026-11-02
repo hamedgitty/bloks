@@ -79,7 +79,13 @@ process.stdin.on("data", take);
   const { bot } = await h.json("/api/bots", post({ name: "Planner" }));
   const selected = await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
   assert.equal(selected.status, 200);
-  const requests = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+  // the fake appends while this reads: an empty file or an unfinished last
+  // line is left for a later read that finds it whole
+  const requests = () => {
+    if (!existsSync(log)) return [];
+    const text = readFileSync(log, "utf8");
+    return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  };
   return {
     home, bot, requests,
     get h() { return h; },
