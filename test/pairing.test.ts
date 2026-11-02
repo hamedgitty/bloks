@@ -231,3 +231,28 @@ test("without a name given, the computer goes by its host name, .local dropped",
   assert.ok(plain.length > 0 && plain.length <= 60);
   assert.doesNotMatch(plain, /\.local$/i);
 });
+
+test("a paired device on the network gets bounded transcripts and gzipped JSON", async (t) => {
+  const h = await startHarness();
+  t.after(() => h.stop());
+
+  const paired = await pairADevice(h);
+  const token = paired.body.token as string;
+  const bot = (await h.json("/api/bots")).bots[0];
+  const chunk = "m".repeat(12_000);
+  for (let i = 0; i < 20; i++) {
+    await h.fetch(`/api/bots/${bot.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ text: `${i}: ${chunk}` }),
+    });
+  }
+
+  const remote = await h.fetchRemote("/api/bots", { token });
+  assert.equal(remote.status, 200);
+  const remoteBot = remote.body.bots.find((b: any) => b.id === bot.id);
+  assert.ok(remoteBot.olderMessages > 0, "a paired device should receive a bounded transcript tail with olderMessages");
+
+  const gzRes = await h.fetch("/api/bots", { headers: { "accept-encoding": "gzip" } });
+  assert.equal(gzRes.status, 200);
+  assert.equal(gzRes.headers.get("content-encoding"), "gzip");
+});

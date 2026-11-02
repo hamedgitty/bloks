@@ -18,6 +18,7 @@ import { pipeline, type Duplex } from "node:stream";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import * as attachments from "./attachments.ts";
 import { dismissedPreparation } from "./preparation-state.ts";
@@ -22855,6 +22856,18 @@ async function makeInvite(
 
 function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
+  const accept = (res as { req?: IncomingMessage }).req?.headers["accept-encoding"] ?? "";
+  if (data.length >= 1024 && /\bgzip\b/.test(String(accept))) {
+    const gz = gzipSync(data);
+    res.writeHead(status, {
+      "content-type": "application/json",
+      "content-encoding": "gzip",
+      "content-length": gz.length,
+      vary: "accept-encoding",
+    });
+    res.end(gz);
+    return;
+  }
   res.writeHead(status, { "content-type": "application/json" });
   res.end(data);
 }
@@ -24330,11 +24343,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // credential, which only works on this machine.
   const ownerDevice = Boolean(caller) && !caller?.personId;
   // One conversation's transcript as this caller may receive it: whole
-  // here and on the same network, its newest part through Bloks Cloud,
+  // here, its newest part for a paired device or through Bloks Cloud,
   // with the count of what is left to ask for. olderMessages is always
   // said, so switching lanes never keeps the last lane's count.
+  const remoteCaller = Boolean(viaRelay || ownerDevice);
   const laneFor = (threadId: string) =>
-    viaRelay
+    remoteCaller
       ? tailWithin(store.messagesFor(threadId), RELAY_TAIL, RELAY_TRANSCRIPT_BUDGET)
       : { messages: store.messagesFor(threadId), olderMessages: 0 };
 
@@ -24343,7 +24357,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const end = before ? list.findIndex((msg) => msg.id === before) : list.length;
     if (end < 0) return { messages: [], olderMessages: 0 };
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || RELAY_TAIL));
-    return tailWithin(list.slice(0, end), limit, viaRelay ? RELAY_TRANSCRIPT_BUDGET : Infinity);
+    return tailWithin(list.slice(0, end), limit, remoteCaller ? RELAY_TRANSCRIPT_BUDGET : Infinity);
   };
 
   if (caller?.personId) {
@@ -24557,7 +24571,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // Through Bloks Cloud the cut is made from the whole conversation, so
       // what stayed behind counts every older message, not only those past
       // a list already trimmed to the tail; a client pages back by it.
-      const fitted = viaRelay
+      const fitted = remoteCaller
         ? fitTranscripts(shown.map((b) => store.messagesFor(b.threadId)), Number.isFinite(tail) && tail >= 0 ? Math.floor(tail) : RELAY_TAIL)
         : null;
       // Another agent reads whether each one can answer now (GitHub 239);
@@ -29149,7 +29163,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, {
         bloks: (() => {
           // Fit the whole history so olderMessages counts everything omitted.
-          const fitted = viaRelay
+          const fitted = remoteCaller
             ? fitTranscripts(bloks.bloks.map((b) => store.messagesFor(b.id)), Number.isFinite(tail) && tail >= 0 ? Math.floor(tail) : RELAY_TAIL)
             : null;
           return bloks.bloks.map((b, i) =>
