@@ -2332,6 +2332,25 @@ ends (`reply.settled`, see Desktop banners). The chat folds a run of quiet messa
 quiet check-ins, last at 10:30", `quietRunAt`), which opens to show
 them; the sidebar's line and a lane's `lastAt` read past them.
 
+A turn that holds the agent's own credential is told to say the same
+thing with `bloks quiet` (`QUIET_COMMAND_ASK`, and the "command" wording
+of `fromAgentPrompt`), keeping the bare word for when the command is
+unavailable. That is `POST /api/bots/:me/tasks/:id/quiet`, accepted only
+from the turn's own credential (`seq`, the lane's turn count when it was
+minted), only for a check-in or a turn nobody waits on (`unaskedTurn`),
+and only while nothing of the turn has reached the person: no text
+previewed or saved, no card, file or open question, none of their words
+in it or on their way in (`SteerHolds`). A refusal is a 409 with a
+reason, and tells the agent to answer substantively. Once accepted
+(`QuietGate` in `server/quiet-finish.ts`), what the turn says is saved
+`quiet` and not previewed; a card, a file, a team proposal or a question
+from the same turn (`belongs`: the same runtime turn, or a request made
+with the same turn's credential) cancels it and gives back what it held,
+and so does a failure, a stop or a handover. Words that arrive after it
+wait for a turn of their own. A check-in finished this way folds like
+one that answered QUIET (`foldFinished`), and an agent's turn ends as
+one that said nothing.
+
 Each routine keeps what its last run that was not quiet said
 (`lastReport`, apart from the twenty `runs`, which quiet runs would
 otherwise push it out of), and its next turn carries it as a note before

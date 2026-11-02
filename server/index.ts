@@ -5854,7 +5854,12 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       // A file or changes card discovered at completion still belongs to
       // this turn. Keep its quiet gate and reply bookkeeping until those
       // writes have had their chance to cancel it, before any next turn.
-      if (quietGates.get(event.threadId)?.turnId === event.turnId) await carded;
+      // No longer than a queued burst waits for the same card (drainSteer):
+      // files coming back from elsewhere that never arrive must not leave
+      // the lane busy for good.
+      if (quietGates.get(event.threadId)?.turnId === event.turnId) {
+        await Promise.race([carded, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]);
+      }
       store.setTaskBusy(event.threadId, false);
       turnStarted.delete(event.threadId);
       repeats.end(event.threadId);
@@ -19277,15 +19282,14 @@ async function steerOne(
   steerHolds.hold(lane.id, seq);
   // A steer that threw may have reached the engine: the turn cannot finish
   // quietly any more. Its settle counts only in the turn it was made in.
-  const uncertain = (error: unknown) => {
+  // A reserved steer's throw is its caller's to settle, as before; any
+  // other words go to the next turn, as they always have. Dropping the
+  // person's words from the chat over a lost receipt, with an error for
+  // words the agent may well have read, is worse than hearing them twice.
+  const uncertain = (error: unknown): false => {
     steerHolds.taint(lane.id, seq);
-    if ((laneTurns.get(lane.id) ?? 0) === seq && !options.from && !options.telegramPerson && !options.telegramDelegate) {
-      // Their words may already be in this turn. Keep the obligation to
-      // answer, without queuing a second copy after a lost receipt.
-      turnsForYou.add(lane.id);
-      answerAsked.set(lane.id, true);
-    }
-    throw error;
+    if (options.admission) throw error;
+    return false;
   };
   try {
     let taking: Promise<boolean>;
@@ -19293,16 +19297,14 @@ async function steerOne(
       taking = adapter.steerTurn(lane.id, words, {
         ...(names.length ? { skillNames: names } : {}),
         ...(sourceTurnId ? { onAccepted: (acceptedTurnId: string) => { if (acceptedTurnId === sourceTurnId) joinedTurnId = sourceTurnId; } } : {}),
-        // Ask the driver to distinguish an explicit refusal from a lost
-        // receipt for every steer, so an uncertain input is never retried
-        // as though the engine had said no.
+        // Ask the driver to tell an explicit refusal from a lost receipt
+        // for every steer, so an uncertain one at least holds the finish.
         onDispatch: () => options.admission?.beforeEffect(),
       }).catch(uncertain);
     } catch (error) {
-      return uncertain(error);
+      uncertain(error);
+      return null;
     }
-    // A thrown reserved steer may already have reached the engine. Its caller
-    // must retain uncertainty, rather than queue a second delivery.
     const took = await taking;
     if (!took) return null;
     // A steer joins this turn. Its stored return keeps this turn's fixed
@@ -19450,8 +19452,10 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string, qu
  * words, and anybody else's. With the person's words in it the turn is
  * theirs, so another agent's words in it do not offer the quiet word;
  * with anybody else's in it too, the person's words say whose they are,
- * or they read as the end of the message before them (GitHub 461). */
-type Burst = { person: boolean; others: boolean };
+ * or they read as the end of the message before them (GitHub 461).
+ * `command` when the turn that takes it gets the agent's own credential,
+ * so another agent's words in it name `bloks quiet` (fromAgentPrompt). */
+type Burst = { person: boolean; others: boolean; command?: boolean };
 
 /** Whether a message is the person's own words as they wrote them here:
  * not another agent's, a routine's, a watcher's or a webhook's, and not
@@ -19541,7 +19545,7 @@ function storedPrompt(message: Message, burst?: Burst): string {
   const text = message.text ?? "";
   const command = Boolean(message.commandInstance && commandFor(text, message.commandInstance));
   const words = message.agent?.dir === "in"
-    ? fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text, burst?.person ? false : "word")
+    ? fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text, burst?.person ? false : burst?.command ? "command" : "word")
     : message.via === "routine" && message.routine && !command
       ? fromRoutinePrompt(message.routine, text)
       : message.telegramDelegate && !command ? delegateWords(message.telegramDelegate, text) : text;
@@ -20120,7 +20124,10 @@ function drainSteer(threadId: string) {
   // With the person's own words among anybody else's, theirs go last, in
   // the order they were written: the turn is theirs, and its answer reads
   // right under them in the chat, as the agent heard them (GitHub 461).
-  const burst = burstOf(live.map(({ message }) => message));
+  // An owner's burst in a lane whose engine runs a process gets the CLI,
+  // as startTurn mints it, and with it `bloks quiet` (GitHub 463).
+  const owned = live.every(({ item, message }) => (item.requester ?? "owner") === "owner" && !item.telegramPerson && !item.telegramGroup && !message?.telegramPerson && !message?.telegramGroup && !message?.telegramDelegate);
+  const burst = { ...burstOf(live.map(({ message }) => message)), ...(owned && runsAProcess(laneInstance(bot, threadId)?.driverKind ?? "") ? { command: true } : {}) };
   const ordered = burst.person && burst.others
     ? [...live.filter(({ message }) => !personsWords(message)), ...live.filter(({ message }) => personsWords(message))]
     : live;

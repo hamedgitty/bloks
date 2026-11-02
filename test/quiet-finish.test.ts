@@ -1,4 +1,4 @@
-// `bloks quiet` (QA-198): an agent finishes the turn it is in quietly,
+// `bloks quiet` (GitHub 463): an agent finishes the turn it is in quietly,
 // when nothing in it needs the person. The server decides: it accepts
 // only while nothing of the turn has reached the person, keeps what the
 // engine still writes out of their attention, gives way to anything for
@@ -452,7 +452,11 @@ test("an agent's turn the person joined cannot be finished quietly", async (t) =
   assert.notEqual((await saved(f, b, "Both checked.")).quiet, true);
 });
 
-for (const outcome of ["accepted", "uncertain"] as const) test(`pending steer blocks quiet through ${outcome} admission, without duplicate input`, async (t) => {
+// A steer the engine may or may not have taken still keeps the finish
+// from going through. It is not the person's reserved report, so it goes
+// to the next turn as it always has: their words are never dropped from
+// the chat over a lost receipt.
+for (const outcome of ["accepted", "uncertain"] as const) test(`pending steer blocks quiet through ${outcome} admission`, async (t) => {
   const f = await quietFixture(t, true);
   const phone = await phoneRelay(t, f.h);
   const a = await f.hire("Sender"), b = await f.hire("Worker");
@@ -468,19 +472,28 @@ for (const outcome of ["accepted", "uncertain"] as const) test(`pending steer bl
   writeFileSync(join(f.home, "steer-release"), outcome);
   const response = await sent;
   const receipt = await response.json();
-  assert.ok(!receipt.queued, JSON.stringify(receipt));
+  assert.ok(response.ok, JSON.stringify(receipt));
+  assert.equal(Boolean(receipt.queued), outcome === "uncertain", JSON.stringify(receipt));
   assert.ok(await waitFor(() => readSteers(f).some((s) => s.pid === worker.pid)));
   const after = await f.quiet(worker, b);
   assert.equal(after.status, 409);
   assert.equal(after.body.reason, outcome === "uncertain" ? "input_uncertain" : "person_in_turn");
+  const before = f.turns().length;
   f.text(worker, "The example calendar is clear.");
   f.end(worker, "The example calendar is clear.");
+  if (outcome === "uncertain") {
+    const next = await f.turn(before);
+    assert.match(next.text, /example calendar/, "the words that may not have arrived went again");
+    f.end(next, "Checked again.");
+  }
   assert.ok(await f.idle(b));
   await pause();
   assert.equal(readSteers(f).filter((s) => s.pid === worker.pid && /example calendar/.test(s.text)).length, 1);
-  assert.equal(f.turns().filter((turn) => /example calendar/.test(turn.text)).length, 0, "uncertainty does not queue a duplicate turn");
-  assert.equal(settledIn(frames, b.threadId).length, 1);
-  if (outcome === "accepted") assert.equal(phone.replies().length, 1);
+  if (outcome === "accepted") {
+    assert.equal(f.turns().filter((turn) => /example calendar/.test(turn.text)).length, 0, "words the turn took do not go again");
+    assert.equal(settledIn(frames, b.threadId).length, 1);
+    assert.equal(phone.replies().length, 1);
+  }
 });
 
 test("another agent's words sent now join before the finish, and wait for a turn of their own after it", async (t) => {

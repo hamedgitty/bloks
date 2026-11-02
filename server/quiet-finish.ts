@@ -1,5 +1,5 @@
 // `bloks quiet`: an agent finishes the turn it is in quietly, when nothing
-// in it needs the person (QA-198). The bare quiet word still works; this is
+// in it needs the person (GitHub 463). The bare quiet word still works; this is
 // the explicit way to say the same thing, decided by the server rather than
 // read from the words.
 //
