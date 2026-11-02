@@ -15139,11 +15139,44 @@ async function foldAfterTurn(botId: string, threadId: string): Promise<void> {
 
 /** True when a lane's summary changed under a fold that was writing a
  * new one: dropped with `bloks summary --clear`, taken back with its
- * messages, or written by another fold, or the lane itself is gone. Each
- * of those wins. */
+ * messages, dropped for a message it covers that was deleted or edited,
+ * or written by another fold, or the lane itself is gone. Each of those
+ * wins. */
 function contextMovedOn(botId: string, threadId: string, from: TaskRecord["context"]): boolean {
   const lane = store.bot(botId)?.tasks.find((t) => t.id === threadId);
   return !lane || lane.context !== from;
+}
+
+/** A message of those a saved summary's count (`through`) counts: said,
+ * settled and not taken back, as a fold reads them. The transcript a turn
+ * is told starts after the same ones (buildTranscript). */
+function summaryCounts(m: Message): boolean {
+  return m.kind === "text" && Boolean(m.text) && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent;
+}
+
+/**
+ * Drops the saved summary that covers a message about to be deleted or
+ * edited, before the message changes. The summary keeps the words it
+ * read and would hand them back with every later request, and once a
+ * deleted message stops counting, the count would start a message late
+ * and skip the next one. Covered is one of the first `through` messages
+ * the count counts (summaryCounts), found before the change. The next
+ * turn replays what is left and summarises again when that fills up, as
+ * after taking messages back. A drop that cannot be saved throws, and the
+ * message is then left as it was.
+ */
+function dropSummaryCovering(threadId: string, messageId: string): void {
+  const found = store.taskByThread(threadId);
+  const through = found?.task.context?.through ?? 0;
+  const at = store.messagesFor(threadId).filter(summaryCounts).findIndex((m) => m.id === messageId);
+  if (!found || at < 0 || at >= through) return;
+  try {
+    store.dropTaskContext(threadId);
+  } finally {
+    // said whichever way the save went: memory has the summary again
+    // only when the saved file still does (Store.dropTaskContext)
+    if (!found.task.context) broadcast({ kind: "bot", bot: clientBot(store.bot(found.bot.id)) });
+  }
 }
 
 /** A new summary within the limit, said in the log when it was not. */
@@ -15201,10 +15234,7 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   // a summary or a review on an engine paused for this agent waits too
   if (!instance?.generateText || pausedOn(bot, bot.modelSelection)) return false;
 
-  const settledNow = () =>
-    store
-      .messagesFor(threadId)
-      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent);
+  const settledNow = () => store.messagesFor(threadId).filter(summaryCounts);
   const settled = settledNow();
   const already = task.context?.through ?? 0;
   const carried = settled.slice(already);
@@ -15296,9 +15326,8 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
   // a summary or a review on an engine paused for this agent waits too
   if (!instance?.generateText || pausedOn(bot, bot.modelSelection)) return false;
 
-  const settled = store
-    .messagesFor(threadId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent);
+  const settledNow = () => store.messagesFor(threadId).filter(summaryCounts);
+  const settled = settledNow();
   const asTurns: Turn[] = settled.map((m) => ({
     role: m.role === "user" ? ("user" as const) : ("assistant" as const),
     text: summarisedText(m),
@@ -15313,6 +15342,11 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
   const microFrom = task.context?.microFrom ?? through;
   const from = task.context;
   let summary = task.context?.summary ?? "";
+  // The messages the cursor will have passed, in their places and as they
+  // were read, kept as values. One deleted or edited while a request is
+  // out would otherwise pass for read and move the count, and with no
+  // summary before this one there is nothing for that change to drop.
+  const read = settled.slice(0, plan.through).map((m) => ({ id: m.id, role: m.role, text: summarisedText(m) }));
 
   if (plan.absorb) {
     try {
@@ -15335,6 +15369,8 @@ async function microFold(botId: string, threadId: string): Promise<boolean> {
   }
 
   if (contextMovedOn(botId, threadId, from)) return false;
+  const now = settledNow();
+  if (!read.every((was, i) => now[i]?.id === was.id && now[i].role === was.role && summarisedText(now[i]) === was.text)) return false;
   store.setTaskContext(threadId, {
     summary: keptSummaryOf(threadId, summary),
     through: plan.through,
@@ -28417,8 +28453,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           return json(res, 409, { error: "These words may have reached the turn. Their delivery is unresolved, so they cannot be taken back here." });
         }
         // A tombstone, not a hole. Replies that point at this message
-        // still make sense, the transcript keeps its shape, and the
-        // words themselves are gone from disk and from every engine.
+        // still make sense and the transcript keeps its shape. The words
+        // leave the conversation's file and what is told from it later,
+        // a saved summary that read them included; what an engine holds
+        // in a session of its own, or was already sent, is not reached
+        // from here.
+        dropSummaryCovering(m[1], m[2]);
+        // Written before anything says it is gone: one that cannot be
+        // saved is still there, and the request says it failed.
         const patched = store.patchMessage(m[1], m[2], {
           deleted: true,
           text: "",
@@ -28427,7 +28469,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           png: undefined,
           component: undefined,
           ui: undefined,
-        });
+        }, { durable: true });
         broadcast({ kind: "message.patch", threadId: m[1], message: patched! });
         // taken back from under its own editor: nothing left to wait for
         editClosed(m[1], m[2], undefined, true);
@@ -28470,13 +28512,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const current = store.messagesFor(m[1]).find((msg) => msg.id === m![2]);
       const late = refused(current);
       if (late) return json(res, late.status, { error: late.error });
+      // New words for a message a saved summary read: the summary goes
+      // first, as for a deletion, and the edit is saved before it is said.
+      if (current!.text !== text) dropSummaryCovering(m[1], m[2]);
       const patched = store.patchMessage(m[1], m[2], {
         text,
         editedAt: Date.now(),
         ...(current?.queued && (remention || current.mentions || current.mentionContext)
           ? { mentions: remention?.notes.length ? remention.notes : undefined, mentionContext: remention?.context || undefined }
           : {}),
-      });
+      }, { durable: true });
       broadcast({ kind: "message.patch", threadId: m[1], message: patched! });
       // A save closes the editor it came from. Here rather than in a
       // second request from the app, so the burst it held can only go

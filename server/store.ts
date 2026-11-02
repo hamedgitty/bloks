@@ -2,7 +2,7 @@
 // thread to instance binding and per-instance resume cursors: persist
 // that binding from day one, because retrofitting it is painful).
 // messages-<threadId>.json holds the folded transcript.
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type { HeldSay } from "./agent-chain.ts";
@@ -807,6 +807,18 @@ const BOTS_FILE = join(DATA_DIR, "bots.json");
  * no agents at all. Not flushed: these are rewritten on every message. */
 function writeWhole(file: string, text: string) {
   writeFileAtomic(file, text, undefined, { flush: false });
+}
+
+/** A lane's saved summary as bots.json has it now, written out; null when
+ * the file has none for it or cannot be read as it stands. */
+function savedContextOf(threadId: string): string | null {
+  try {
+    const bots = JSON.parse(readFileSync(BOTS_FILE, "utf8")) as BotRecord[];
+    const task = bots.flatMap((bot) => bot.tasks ?? []).find((t) => t.id === threadId);
+    return task?.context ? JSON.stringify(task.context) : null;
+  } catch {
+    return null;
+  }
 }
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
 
@@ -1847,6 +1859,27 @@ export class Store {
     if (context) found.task.context = context;
     else delete found.task.context;
     this.saveBots();
+  }
+
+  /**
+   * Drops a lane's saved summary before a message it covers changes. True
+   * once that is saved. A drop that cannot be saved throws, so the message
+   * is left as it was, and the summary is back in memory only when
+   * bots.json still has it as it was: a write that fell back to writing in
+   * place (writeFileAtomic) can fail with the file already changed.
+   */
+  dropTaskContext(threadId: string): boolean {
+    const found = this.taskByThread(threadId);
+    const context = found?.task.context;
+    if (!found || !context) return false;
+    delete found.task.context;
+    try {
+      this.saveBots();
+    } catch (error) {
+      if (savedContextOf(threadId) === JSON.stringify(context)) found.task.context = context;
+      throw error;
+    }
+    return true;
   }
 
   markTaskDispatched(botId: string, taskId: string, instanceId: string, cli?: string): void {
