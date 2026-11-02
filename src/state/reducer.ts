@@ -77,6 +77,9 @@ export interface OptionCardData {
   /** Present when an agent proposed changing a setting
    * (server/settings-proposals.ts). Answered through its own route. */
   settingsProposal?: SettingsProposalPlan;
+  /** Present when an agent asked to add a new skill to the library and
+   * use it (server/skill-requests.ts). Answered through its own route. */
+  skillRequest?: SkillRequestPlan;
 }
 
 /** A place an agent's card opens, as server/where.ts writes it. */
@@ -111,6 +114,32 @@ export interface SettingsProposalPlan {
   told?: boolean;
   outcome?: "changed" | "kept" | "failed";
   error?: string;
+}
+
+/** A new skill an agent asked to add and use (server/skill-requests.ts). */
+export interface SkillRequestPlan {
+  id: string;
+  laneId: string;
+  botId: string;
+  agentName: string;
+  skillId: string;
+  name: string;
+  description: string;
+  chars: number;
+  files: SkillFileInfo[];
+  attach: boolean;
+  why?: string;
+  told?: boolean;
+  outcome?: "added" | "declined" | "failed" | "replaced";
+  attached?: boolean;
+  error?: string;
+  replacedBy?: string;
+}
+
+/** One of a skill's supporting files, by name and size in bytes. */
+export interface SkillFileInfo {
+  path: string;
+  size: number;
 }
 
 /** An app watcher an agent proposed, as its card shows it. */
@@ -857,6 +886,9 @@ export interface Skill {
   uses?: number;
   corrected?: number;
   lastUsed?: number | null;
+  /** Files it keeps beside its instructions (server/skill-files.ts),
+   * read on demand and never part of a prompt. */
+  files?: SkillFileInfo[];
 }
 
 /** The tabs of the Automations page (src/components/AutomationsPanel.tsx). */

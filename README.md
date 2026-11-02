@@ -344,6 +344,14 @@ who changed it and why, any two compared, any one restored, with how
 often each was used and then corrected. Agents can ask for a change too
 (`bloks skill revise`), against the version they read.
 
+Ask an agent to make a skill and use it, and it sends the whole skill
+(`bloks skill create`): one card in the conversation shows its
+instructions and files, and Add puts it in your library and gives it to
+that agent. A skill can keep supporting files beside its instructions,
+such as an API reference or a helper script, which agents read only
+when they need them. A skill already in your library is never written
+over.
+
 ### Work that runs without you
 
 - **Routines and check-ins** on a calendar you drag, that answer quietly
@@ -635,6 +643,8 @@ Inside each workspace's folder:
 | `reads.json` | How far each person has read each conversation |
 | `skills/` | Installed skills, one markdown file each |
 | `skill-history/` | Every version of each of your skills, with who changed it and why |
+| `skill-files/` | The supporting files a skill keeps beside its instructions |
+| `skill-requests/` | New skills agents asked for, until you answer the card |
 | `catalog/`, `catalog-installs.json` | The Catalogue's index and items as last fetched, checked by sha256, and the teams installed from it |
 | `workspaces/` | Each agent's own home folder, with its `MEMORY.md` and topic files |
 | `checkpoints/` | Each turn's before and after, kept once per file version, for undo |

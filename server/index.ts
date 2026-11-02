@@ -226,7 +226,9 @@ import {
   installSkill,
   listSkills,
   MAX_SKILL_CHARS as MAX_SKILL_BODY,
+  MAX_USER_SKILLS,
   migrateSkillHistory,
+  noteSupportingFiles,
   parseMarkdown,
   revisionOf,
   skillAt,
@@ -240,6 +242,8 @@ import {
   withPageDesign,
   type Skill,
 } from "./skills.ts";
+import { listSupportingFiles, readSupportingFile, readSupportingFiles, removeSupportingFiles, sameSupportingFiles, writeSupportingFiles } from "./skill-files.ts";
+import { fingerprintOf as skillRequestPrint, MAX_WAITING, readSkillRequest, SkillRequestStore, type SkillRequestCard, type WaitingSkillRequest } from "./skill-requests.ts";
 import {
   CATALOG_TTL_MS,
   MAX_CATALOG_BYTES,
@@ -7904,7 +7908,11 @@ async function startClaimedTurn(
     !guestMail &&
       skillsPrompt(
         runsAProcess(instance.driverKind) && !personSource
-          ? disclose(withPageDesign(!sharing && owners ? withBloksExplainer(withBloksGuide(attached)) : attached), true)
+          ? noteSupportingFiles(
+              disclose(withPageDesign(!sharing && owners ? withBloksExplainer(withBloksGuide(attached)) : attached), true),
+              (id) => listSupportingFiles(id).map((f) => f.path),
+              (id) => `\`${cliCommand} skill ${id} --file <path>\``,
+            )
           : disclose(attached, false),
         `To read one, run: ${cliCommand} skill <id>`,
       ),
@@ -8537,6 +8545,9 @@ async function startClaimedTurn(
       // answer, kept on the card, told once)
       const answeredNote = personSource || command ? null : proposalsAnswered(task.id, bot.id);
       if (answeredNote) turnText = `${answeredNote}\n\n${turnText}`;
+      // and the skills it asked to add, the same way
+      const skillNote = personSource || command ? null : skillRequestsAnswered(task.id, bot.id);
+      if (skillNote) turnText = `${skillNote}\n\n${turnText}`;
       const stalledNote = personSource ? undefined : stalledSince.get(task.id);
       if (stalledNote && !command) {
         stalledSince.delete(task.id);
@@ -13915,7 +13926,8 @@ function withVersion(skill: Skill) {
     /* a record that cannot be read now reads as no versions yet */
   }
   const { total } = skillUsage.of(skill.id);
-  return { ...skill, revision, uses: total.uses, corrected: total.corrected, lastUsed: total.lastUsed };
+  const files = skill.source === "user" ? listSupportingFiles(skill.id) : [];
+  return { ...skill, revision, uses: total.uses, corrected: total.corrected, lastUsed: total.lastUsed, ...(files.length ? { files } : {}) };
 }
 
 /** Who a kept suggestion's version is credited to. */
@@ -17869,6 +17881,295 @@ function proposalsAnswered(laneId: string, botId: string): string | null {
     );
     const patched = store.patchMessage(laneId, message.id, { card: { ...message.card!, settingsProposal: { ...plan, told: true } } });
     if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+  }
+  return lines.length ? `(Since your last turn here, ${lines.join("; ")}.)` : null;
+}
+
+// ── a new skill an agent asks for (server/skill-requests.ts) ──────────
+// The card carries what the person decides on; the skill's words wait
+// on disk until the answer, so a press after a restart still adds it.
+// Waiting reuses the settings proposals' waiters: one id space, one
+// "still waiting" for a command that has listened long enough.
+
+const skillRequests = new SkillRequestStore(join(DATA_DIR, "skill-requests"));
+
+/** A skill request card by its id, in the lanes of the agent that made it. */
+function findSkillRequest(botId: string, id: string, firstLane?: string): { laneId: string; message: Message } | null {
+  const bot = store.bot(botId);
+  const lanes = [...new Set([firstLane, ...(bot?.tasks ?? []).map((t) => t.id)].filter((x): x is string => Boolean(x)))];
+  for (const laneId of lanes) {
+    const message = store.messagesFor(laneId).find((m) => m.card?.skillRequest?.id === id);
+    if (message) return { laneId, message };
+  }
+  return null;
+}
+
+/** The requests still waiting on a card. One whose card is gone, with
+ * the conversation it was in, or was answered while Bloks stopped before
+ * its words were let go, is let go now. */
+function waitingSkillRequests(): WaitingSkillRequest[] {
+  return skillRequests.list().filter((request) => {
+    const card = store.messagesFor(request.laneId).find((m) => m.id === request.messageId)?.card?.skillRequest;
+    if (card?.id === request.id && !card.outcome) return true;
+    skillRequests.remove(request.id);
+    return false;
+  });
+}
+
+/** A skill request card changed, kept and shown. */
+function patchSkillRequest(laneId: string, message: Message, patch: Partial<SkillRequestCard>, answered?: string): Message | null {
+  const plan = message.card!.skillRequest!;
+  const patched = store.patchMessage(laneId, message.id, {
+    card: { ...message.card!, ...(answered ? { answered } : {}), skillRequest: { ...plan, ...patch } },
+  });
+  if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+  return patched;
+}
+
+/** The skill as it would be read once added, for an answer. */
+function skillAnswer(id: string) {
+  const skill = listSkills().find((s) => s.id === id);
+  if (!skill) return undefined;
+  const files = listSupportingFiles(skill.id);
+  return { id: skill.id, name: skill.name, version: revisionOf(skill), ...(files.length ? { files: files.map((f) => f.path) } : {}) };
+}
+
+/** How a request stands, for the agent: a status it can check and a
+ * sentence it can say. Marks it told once settled, so its next turn does
+ * not hear it twice. */
+function skillRequestOutcome(laneId: string, message: Message): { status: number; body: Record<string, unknown> } {
+  const plan = message.card!.skillRequest!;
+  const named = `${plan.name} (${plan.skillId})`;
+  if (!plan.outcome) {
+    return {
+      status: 202,
+      body: {
+        status: "waiting",
+        request: plan.id,
+        skill: plan.skillId,
+        note: `The person was asked on a card to add ${named} to the skill library${plan.attach ? " and give it to you" : ""}. Nothing is added yet. Run \`bloks skill request ${plan.id}\` to wait for the answer, or carry on: you will be told how it went at the start of your next turn here.`,
+      },
+    };
+  }
+  if (!plan.told) patchSkillRequest(laneId, message, { told: true });
+  if (plan.outcome === "added") {
+    return {
+      status: 200,
+      body: {
+        status: "added",
+        request: plan.id,
+        skill: skillAnswer(plan.skillId) ?? { id: plan.skillId, name: plan.name },
+        attached: Boolean(plan.attached),
+        note: `The person added ${named} to the skill library${plan.attached ? " and gave it to you" : ""}. Read it with \`bloks skill ${plan.skillId}\`.`,
+      },
+    };
+  }
+  if (plan.outcome === "declined") {
+    return { status: 200, body: { status: "declined", request: plan.id, skill: plan.skillId, note: `The person chose Not now: ${named} was not added. Do not ask again in this conversation unless they ask.` } };
+  }
+  if (plan.outcome === "replaced") {
+    return { status: 200, body: { status: "replaced", request: plan.id, replacedBy: plan.replacedBy, note: `You sent a newer version of ${named}; this request was replaced by ${plan.replacedBy}.` } };
+  }
+  return { status: 409, body: { status: "failed", request: plan.id, skill: plan.skillId, error: `The person pressed Add, but ${named} could not be added: ${plan.error ?? "the library refused it"}. Nothing changed.` } };
+}
+
+/** Give an agent a skill from the library, keeping every skill it has. */
+function attachSkill(botId: string, skillId: string): boolean {
+  const bot = store.bot(botId);
+  if (!bot) return false;
+  if (!(bot.skillIds ?? []).includes(skillId)) {
+    store.patchBot(bot.id, { skillIds: [...(bot.skillIds ?? []), skillId] });
+    broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  }
+  return true;
+}
+
+/** An agent asking for a new skill: refused, already done, or a card in
+ * the conversation its turn runs in, and then the person's answer if it
+ * comes while the command waits. */
+async function requestSkill(credential: AgentToken, raw: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const bot = store.bot(credential.botId);
+  if (!bot) return { status: 404, body: { error: "no such agent" } };
+  const read = readSkillRequest(raw);
+  if (!read.ok) return { status: read.status, body: { error: read.error } };
+  const draft = read.draft;
+  const fingerprint = skillRequestPrint(draft);
+  // An id already in the library is never written over. The one
+  // exception is the very same skill, which is a retry of a request the
+  // person already answered: say it is there, and give it to the agent
+  // if that is what it asked, which it may do with any skill it has.
+  const existing = listSkills().find((s) => s.id === draft.id);
+  if (existing) {
+    const same =
+      existing.source === "user" &&
+      existing.name === draft.name &&
+      existing.description === draft.description &&
+      existing.body.trim() === draft.body &&
+      sameSupportingFiles(readSupportingFiles(existing.id), draft.files);
+    if (same) {
+      const attached = draft.attach ? attachSkill(bot.id, existing.id) : (bot.skillIds ?? []).includes(existing.id);
+      return {
+        status: 200,
+        body: {
+          status: "added",
+          already: true,
+          skill: skillAnswer(existing.id),
+          attached,
+          note: `${existing.name} (${existing.id}) is in the skill library already, exactly as sent${attached ? ", and it is yours" : ""}. Nothing new was asked.`,
+        },
+      };
+    }
+    return {
+      status: 409,
+      body: {
+        error:
+          `There is already a ${existing.source === "builtin" ? "built-in " : ""}skill with the id ${existing.id}: ${existing.name}, version ${revisionOf(existing)}. Nothing was changed. ` +
+          `To change that skill, read it with \`bloks skill ${existing.id}\` and propose new text with \`bloks skill revise ${existing.id}\`. To add a separate skill, give it another id with --id.`,
+        existing: { id: existing.id, name: existing.name, version: revisionOf(existing), source: existing.source },
+      },
+    };
+  }
+  const waiting = waitingSkillRequests();
+  // the same request again: the card already there, not a second one
+  const again = waiting.find((w) => w.botId === bot.id && w.fingerprint === fingerprint);
+  if (again) {
+    await proposalWait(again.id);
+    const now = findSkillRequest(bot.id, again.id, again.laneId);
+    if (now) return skillRequestOutcome(now.laneId, now.message);
+  }
+  // A newer version of its own request replaces the one waiting, whose
+  // card says so; somebody else's request for the same id is theirs.
+  const sameId = waiting.find((w) => w.draft.id === draft.id && w.fingerprint !== fingerprint);
+  if (sameId && sameId.botId !== bot.id) {
+    return {
+      status: 409,
+      body: { error: `Another agent's request to add a skill with the id ${draft.id} is waiting on the person. Choose another id with --id, or wait for that answer.` },
+    };
+  }
+  if (waiting.length - (sameId ? 1 : 0) >= MAX_WAITING) {
+    return { status: 429, body: { error: `${MAX_WAITING} skill requests are already waiting on the person. Wait for them to answer some first.` } };
+  }
+  if (listSkills().filter((s) => s.source === "user").length >= MAX_USER_SKILLS) {
+    return { status: 507, body: { error: `The skill library is full: it holds ${MAX_USER_SKILLS} skills of the person's. Ask them to remove one they no longer use first.` } };
+  }
+  const laneId = credential.taskId;
+  const plan: SkillRequestCard = {
+    id: randomUUID(),
+    laneId,
+    botId: bot.id,
+    agentName: bot.name,
+    skillId: draft.id,
+    name: draft.name,
+    description: draft.description,
+    chars: countChars(draft.body),
+    files: draft.files.map((f) => ({ path: f.path, size: Buffer.byteLength(f.text, "utf8") })),
+    attach: draft.attach,
+    ...(draft.why ? { why: draft.why } : {}),
+    fingerprint,
+  };
+  const card = store.appendMessage(laneId, {
+    role: "bot",
+    kind: "options",
+    card: {
+      // what a client that does not know the card draws
+      title: `${bot.name} asks to add the skill ${draft.name}${draft.attach ? " and use it" : ""}`,
+      subtitle: `${draft.description} It is added only if you say so, on this card in Bloks.`,
+      options: [],
+      skillRequest: plan,
+    },
+  });
+  skillRequests.save({ id: plan.id, botId: bot.id, laneId, messageId: card.id, fingerprint, at: Date.now(), draft });
+  if (sameId) {
+    const older = findSkillRequest(bot.id, sameId.id, sameId.laneId);
+    if (older && !older.message.card!.skillRequest!.outcome) {
+      patchSkillRequest(older.laneId, older.message, { outcome: "replaced", replacedBy: plan.id, told: true }, "Replaced");
+    }
+    skillRequests.remove(sameId.id);
+    wakeProposal(sameId.id);
+  }
+  broadcast({ kind: "message", threadId: laneId, message: card });
+  store.markLane(bot.id, laneId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  await proposalWait(plan.id);
+  const now = store.messagesFor(laneId).find((m) => m.id === card.id) ?? card;
+  return skillRequestOutcome(laneId, now);
+}
+
+/** The person's answer to a skill request card: Add puts the skill in
+ * the library, its files beside it, and gives it to the agent that asked
+ * when it asked; Not now leaves everything as it is. */
+function answerSkillRequest(laneId: string, messageId: string, add: boolean): { status: number; body: Record<string, unknown> } {
+  const message = store.messagesFor(laneId).find((m) => m.id === messageId);
+  const plan = message?.card?.skillRequest;
+  if (!message || !plan) return { status: 404, body: { error: "no such request" } };
+  if (plan.outcome) return { status: 409, body: { error: "this request was answered already" } };
+  const waiting = skillRequests.get(plan.id);
+  const settle = (patch: Partial<SkillRequestCard>, answered: string) => {
+    patchSkillRequest(laneId, message, patch, answered);
+    skillRequests.remove(plan.id);
+    wakeProposal(plan.id);
+  };
+  if (!add) {
+    settle({ outcome: "declined" }, "Not now");
+    return { status: 200, body: { ok: true, outcome: "declined" } };
+  }
+  if (!waiting) {
+    settle({ outcome: "failed", error: "its text is no longer here; ask for it again" }, "Not added");
+    return { status: 410, body: { error: "This request's text is no longer here. Ask the agent to send it again." } };
+  }
+  const draft = waiting.draft;
+  // judged again as things stand now: the id may have been taken while
+  // the card waited, and that skill is never written over
+  const taken = listSkills().find((s) => s.id === draft.id);
+  if (taken) {
+    const error = `there is a skill with the id ${draft.id} now (${taken.name})`;
+    settle({ outcome: "failed", error }, "Not added");
+    return { status: 409, body: { error: `Not added: ${error}.` } };
+  }
+  let added: Skill & { revision: number };
+  try {
+    writeSupportingFiles(draft.id, draft.files);
+    added = installSkill(
+      { id: draft.id, name: draft.name, description: draft.description, body: draft.body },
+      {
+        by: { kind: "agent", name: plan.agentName, botId: plan.botId },
+        why: draft.why || `Asked for by ${plan.agentName} in a conversation`,
+        // a skill that is not there yet is version 0: one that appeared
+        // in between is refused rather than replaced
+        from: 0,
+      },
+    );
+  } catch (error) {
+    if (!listSkills().some((s) => s.id === draft.id)) removeSupportingFiles(draft.id);
+    const said = (error as Error).message.slice(0, 200) || "the library refused it";
+    settle({ outcome: "failed", error: said }, "Not added");
+    return { status: (error as { status?: number }).status ?? 400, body: { error: `Not added: ${said}` } };
+  }
+  const attached = draft.attach && attachSkill(plan.botId, added.id);
+  settle({ outcome: "added", attached }, "Added");
+  broadcast({ kind: "skills" });
+  record({
+    at: Date.now(),
+    kind: "skill.installed",
+    actor: "you",
+    summary: `Added the skill ${added.name}, asked for by ${plan.agentName}${attached ? ", and gave it to them" : ""}`,
+    detail: { skill: added.id, from: plan.agentName, files: draft.files.length, attached },
+  });
+  return { status: 200, body: { ok: true, outcome: "added", skill: added.id, attached } };
+}
+
+/** What the agent's next turn in a lane hears about skill requests the
+ * person answered since, once each. */
+function skillRequestsAnswered(laneId: string, botId: string): string | null {
+  const lines: string[] = [];
+  for (const message of store.messagesFor(laneId).slice(-300)) {
+    const plan = message.card?.skillRequest;
+    if (!plan || plan.botId !== botId || !plan.outcome || plan.told) continue;
+    const named = `${plan.name} (${plan.skillId})`;
+    if (plan.outcome === "added") lines.push(`the person added the skill ${named} you asked for${plan.attached ? ", and it is yours" : ""}`);
+    else if (plan.outcome === "declined") lines.push(`the person chose not to add the skill ${named} you asked for`);
+    else if (plan.outcome === "failed") lines.push(`the person pressed Add on the skill ${named}, but it could not be added (${plan.error ?? "refused"})`);
+    patchSkillRequest(laneId, message, { told: true });
   }
   return lines.length ? `(Since your last turn here, ${lines.join("; ")}.)` : null;
 }
@@ -30583,6 +30884,47 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const outcome = proposalOutcome(found.laneId, found.message);
       return json(res, outcome.status, outcome.body);
     }
+    // A new skill for the library, asked for by an agent with its own use
+    // of it, on one card the person answers (server/skill-requests.ts).
+    // Never in the library by itself.
+    if (path === "/api/agent/skills" && method === "POST") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const answered = await requestSkill(asAgent, await readBody(req));
+      return json(res, answered.status, answered.body);
+    }
+    m = path.match(/^\/api\/agent\/skills\/([\w-]+)$/);
+    if (m && method === "GET") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      let found = findSkillRequest(asAgent.botId, m[1], asAgent.taskId);
+      if (!found) return json(res, 404, { error: "no skill request of yours by that id" });
+      if (!found.message.card!.skillRequest!.outcome) {
+        await proposalWait(m[1]);
+        found = findSkillRequest(asAgent.botId, m[1], found.laneId) ?? found;
+      }
+      const outcome = skillRequestOutcome(found.laneId, found.message);
+      return json(res, outcome.status, outcome.body);
+    }
+    // The person's side of one: the skill in full for the card, and the
+    // answer. Theirs alone, like a proposed setting: no rule lets an
+    // agent's credential here, and this says so as well.
+    m = path.match(/^\/api\/skill-requests\/([\w:.-]+)\/([\w-]+)$/);
+    if (m && method === "GET") {
+      if (asAgent || namesMember()) return json(res, 403, { error: "the person reviews a skill an agent asks to add" });
+      const plan = store.messagesFor(m[1]).find((message) => message.id === m![2])?.card?.skillRequest;
+      if (!plan) return json(res, 404, { error: "no such request" });
+      const waiting = skillRequests.get(plan.id);
+      if (waiting) return json(res, 200, { body: waiting.draft.body, files: waiting.draft.files });
+      // once added, what the card shows is the skill as the library has it
+      const added = plan.outcome === "added" ? listSkills().find((s) => s.id === plan.skillId) : undefined;
+      if (added) return json(res, 200, { body: added.body, files: readSupportingFiles(added.id), current: true });
+      return json(res, 410, { error: "Its text is not kept once it is answered." });
+    }
+    m = path.match(/^\/api\/skill-requests\/([\w:.-]+)\/([\w-]+)\/(add|decline)$/);
+    if (m && method === "POST") {
+      if (asAgent || namesMember()) return json(res, 403, { error: "the person answers a skill an agent asks to add" });
+      const answered = answerSkillRequest(m[1], m[2], m[3] === "add");
+      return json(res, answered.status, answered.body);
+    }
     // The person's answer to one. Theirs alone: no rule lets an agent's
     // credential here (server/agent-cli.ts), and this says so as well.
     m = path.match(/^\/api\/settings-proposals\/([\w:.-]+)\/([\w-]+)\/(change|keep)$/);
@@ -31113,6 +31455,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         }),
       );
     }
+    // A skill's supporting files (server/skill-files.ts): the list, or one
+    // by its path. Read on demand by the agents that have the skill, when
+    // its instructions send them there; never part of a prompt.
+    m = path.match(/^\/api\/skills\/([\w-]+)\/files$/);
+    if (m && method === "GET") {
+      const found = listSkills().find((s) => s.id === m![1]);
+      if (!found) return json(res, 404, { error: "no such skill. `bloks skills` lists them." });
+      const files = found.source === "user" ? listSupportingFiles(found.id) : [];
+      const wanted = url.searchParams.get("path");
+      if (wanted === null) return json(res, 200, { skill: found.id, files });
+      const text = found.source === "user" ? readSupportingFile(found.id, wanted) : null;
+      if (text === null) {
+        return json(res, 404, {
+          error: files.length
+            ? `${found.name} has no file called ${wanted.slice(0, 200)}. Its files are: ${files.map((f) => f.path).join(", ")}.`
+            : `${found.name} has no supporting files; its instructions are all there is (\`bloks skill ${found.id}\`).`,
+        });
+      }
+      return json(res, 200, { skill: found.id, path: wanted, text });
+    }
     m = path.match(/^\/api\/skills\/([\w.-]+)$/);
     if (m && method === "GET") {
       // One skill, in full. This is the other half of keeping long skills
@@ -31135,7 +31497,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       // an agent reading the skill as it stands, from its turn, is using it
       if (asAgent) noteSkillUse(asAgent.taskId, found, current);
-      return json(res, 200, { skill: { ...found, revision: current, current } });
+      // its supporting files by name, so the paths its instructions give
+      // resolve: they are read one at a time, when needed
+      const files = found.source === "user" ? listSupportingFiles(found.id) : [];
+      return json(res, 200, {
+        skill: { ...found, revision: current, current, ...(files.length ? { files } : {}) },
+        ...(files.length ? { note: `Its supporting files are named relative to the skill. Read one with \`bloks skill ${found.id} --file <path>\`.` } : {}),
+      });
     }
     if (m && method === "PUT") {
       // The person editing a skill. `from` is the version they started

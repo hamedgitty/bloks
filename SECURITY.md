@@ -469,7 +469,19 @@ Bloks therefore:
   read versions and ask for a change against the version it read; it
   cannot edit, restore, install, or keep a suggestion, and a change
   written against a version that has since moved on is refused rather
-  than allowed to undo the newer one.
+  than allowed to undo the newer one,
+- lets an agent ask for a new skill (`bloks skill create`) only as a
+  request: the whole skill, files included, waits on a card in the
+  conversation that shows all of it, and nothing is in the library until
+  the person presses Add, through a route an agent's credential cannot
+  reach and a member is refused. Whatever the agent says the person
+  asked for, its words are an input, so the press is the approval. A
+  request never writes over a skill already there, built-in or the
+  person's, and Add is refused if the id was taken while the card waited,
+- keeps a skill's supporting files as plain text in a folder of the
+  skill's own, read only on demand and never put in a prompt, with names
+  judged as words and the file opened inside that folder, so a crafted
+  name or a planted link reaches nothing else.
 
 Teams and skills from the Catalogue, a link or a file go through the same
 gate, and a few more:

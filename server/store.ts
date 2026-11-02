@@ -109,6 +109,10 @@ export interface OptionCardData {
    * (server/settings-proposals.ts): answered through its own route, never
    * as a reply, and applied only on the person's Change. */
   settingsProposal?: import("./settings-proposals.ts").ProposalCard;
+  /** Present when an agent asked to add a new skill to the library and
+   * use it (server/skill-requests.ts): answered through its own route,
+   * and added only on the person's Add. */
+  skillRequest?: import("./skill-requests.ts").SkillRequestCard;
   /** Present when a lead has proposed hiring a team (server/teams.ts). */
   team?: {
     room: string;

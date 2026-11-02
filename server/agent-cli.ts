@@ -301,6 +301,14 @@ export const RULES: Rule[] = [
   { method: "GET", path: "/api/skills/:id/history/:id", why: "read one earlier version of a skill in full" },
   { method: "GET", path: "/api/skills/:id/diff", why: "see what changed in a skill between two versions" },
   { method: "POST", path: "/api/skills/:id/revisions", why: "propose a revision of a skill against the version it read, for the person to keep, edit or dismiss; it never changes the skill by itself" },
+  { method: "GET", path: "/api/skills/:id/files", why: "list a skill's supporting files, or read one by its path, when the skill's instructions send it there" },
+  // A new skill, asked for whole: its instructions, its supporting files
+  // and whether it wants it for itself, on one card the person answers
+  // (server/skill-requests.ts). Asking is all it is: the route never
+  // writes over a skill already there, and nothing is added until the
+  // person presses Add, through a route on NEVER.
+  { method: "POST", path: "/api/agent/skills", why: "ask to add a new skill to the library, with its supporting files, and to use it itself, on one card the person answers; nothing is added until they press Add" },
+  { method: "GET", path: "/api/agent/skills/:id", why: "wait for the person's answer to a skill it asked to add" },
 
   // Answering with something other than a paragraph.
   { method: "POST", path: "/api/bots/:me/show", why: "answer with a chart, a table or another component" },
@@ -383,6 +391,9 @@ export const NEVER = [
   // the person's answer to a setting an agent proposed: proposing is an
   // agent's, the Change is theirs
   "/api/settings-proposals",
+  // and to a skill an agent asked to add: asking is an agent's, the Add
+  // is theirs
+  "/api/skill-requests",
 ];
 
 const PATH_PART = /^[\w.-]+$/;

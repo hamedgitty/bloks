@@ -29,6 +29,7 @@ import { cn } from "@/lib/cn";
 import { stamp } from "@/lib/when";
 import { MAX_SKILL_CHARS } from "@/lib/skillLength";
 import { DiffLines, type DiffLine } from "./DiffLines";
+import { SkillFiles } from "./SkillFiles";
 import { SettingsSelect } from "./SettingsLayout";
 import { t } from "@/lib/i18n";
 
@@ -186,6 +187,15 @@ export function SkillDetail({ skill, onChanged }: { skill: Skill; onChanged: (ne
             <pre className="mt-3 max-h-[420px] min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-xl border bg-muted/40 p-3.5 font-mono text-small leading-relaxed text-foreground">
               {skill.body}
             </pre>
+            {skill.files?.length ? (
+              <SkillFiles
+                className="mt-3"
+                files={skill.files}
+                read={(path) =>
+                  api(`/api/skills/${encodeURIComponent(skill.id)}/files?path=${encodeURIComponent(path)}`).then((r: { text: string }) => r.text)
+                }
+              />
+            ) : null}
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {builtin ? (
                 <>

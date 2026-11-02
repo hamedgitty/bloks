@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { DATA_DIR, SKILLS_DIR } from "./config.ts";
 import { closeHeld, openInside, readHeld } from "./open-inside.ts";
 import { SkillHistory, sameText, type Author, type Revision } from "./skill-history.ts";
+import { removeSupportingFiles } from "./skill-files.ts";
 
 export interface Skill {
   id: string;
@@ -114,6 +115,23 @@ export function disclose(skills: Skill[], canFetch: boolean, under: number = INL
     else indexed.push(skill);
   }
   return { inline, indexed };
+}
+
+/**
+ * A skill sent whole, with the names of its supporting files after it
+ * (server/skill-files.ts), for an agent that can read them: its text names
+ * them as paths, which mean nothing until the agent knows how to open
+ * one. An indexed skill needs none of this; reading it lists them.
+ */
+export function noteSupportingFiles(disclosure: Disclosure, filesOf: (id: string) => string[], howToRead: (id: string) => string): Disclosure {
+  return {
+    ...disclosure,
+    inline: disclosure.inline.map((skill) => {
+      const files = skill.source === "user" ? filesOf(skill.id) : [];
+      if (!files.length) return skill;
+      return { ...skill, body: `${skill.body}\n\nIts supporting files, read one when the steps above send you there with ${howToRead(skill.id)}: ${files.join(", ")}.` };
+    }),
+  };
 }
 
 /**
@@ -471,6 +489,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 - \`secret\` asks for a key through a secure field; never ask for one in the chat. \`note\` suggests a fact about the person for them to keep or not.
 - \`questions\` lists the questions you asked without waiting that nobody has answered. Once the person settles one some other way, \`unask <id>\` withdraws it, so it stops asking for them; nothing is answered for them.
 - \`memory\` and \`recall\` are your own notes and past conversations. \`skills\` and \`skill\` read the library; \`skill revise\` only proposes a change.
+- A skill of your own, when the person asks for one: \`skill create\` asks to add it to the library and give it to you, on one card they answer. A SKILL.md you write in a folder is only a file until then: no agent reads it as a skill, and \`skills\` does not list it. Keep its instructions under 16,000 characters, saying what to do and when, and put references and scripts in files beside it: \`skill create --from <folder>\` brings the folder's SKILL.md and its files, and an agent with the skill reads one with \`skill <id> --file <path>\` when the instructions send it there. An id already in the library is never replaced: \`skill revise\` that skill instead. Sending the same request again is safe; the answer's status says where it stands.
 - \`settings\`, \`goal\` and \`location\` only read; \`settings propose\` only proposes. \`browser\` drives the Bloks browser while the person watches. \`home\` asks Home Assistant, and a change waits for their yes unless they marked it auto. \`reply\` answers the group message that started this turn.
 
 ## What only the person can do
@@ -485,7 +504,7 @@ Say so plainly, and show them where rather than naming a page from memory:
 Every command answers JSON. Report what it said: the tab's title and id, whether it started or is queued, an engine warning, a card waiting. A refusal means nothing happened: say why in a sentence and what the person can do, and do not look for another way around it.
 
 Return: a sentence or two on what changed, or on what the person needs to do.
-Approval: anything that waits on a card (an app watcher, an intent, a skill revision, a change to the home, a secret) is not done until the person says yes; say it is waiting.`,
+Approval: anything that waits on a card (an app watcher, an intent, a skill revision, a new skill, a change to the home, a secret) is not done until the person says yes; say it is waiting.`,
   },
   {
     id: "how-bloks-works",
@@ -544,7 +563,7 @@ An intent is up to twelve phrases; when one comes up in a conversation it posts 
 On Overview, written each morning from what is on disk, with no model call: what each agent did, what waits on the person and what it cost. They choose the time, the notification, whether a quiet morning notifies, and the sections. Where: Overview (\`overview\`), Customize the brief. You: \`settings propose\` brief.enabled, brief.time, brief.notify, brief.allClear, brief.section.<name>.
 
 ## Skills and their versions
-Skills are instructions agents pick up. With suggestions on, Bloks offers a new skill after a turn that worked something out, or a change after a skill was corrected. Every version is kept: who, why, compare, restore. Where: Plugins, Skills (\`plugins:skills\`); Settings, Behaviour, Suggest skills (\`behaviour\`); Settings, Plugins (\`plugins\`). You: \`skills\`, \`skill\`, \`skill revise\` (a proposal); \`settings propose skills.learn\`. Only the person: keeping, editing, restoring, installing.
+Skills are instructions agents pick up, from the library; a SKILL.md sitting in a folder is not one until it is added. A skill can keep supporting files beside its instructions (references, scripts), read only when needed. With suggestions on, Bloks offers a new skill after a turn that worked something out, or a change after a skill was corrected. An agent asked to make a skill sends it whole on a card in the conversation, and Add puts it in the library and gives it to that agent. Every version is kept: who, why, compare, restore. Where: Plugins, Skills (\`plugins:skills\`); Settings, Behaviour, Suggest skills (\`behaviour\`); Settings, Plugins (\`plugins\`). You: \`skills\`, \`skill\`, \`skill revise\` (a proposal), \`skill create\` (a request); \`settings propose skills.learn\`. Only the person: keeping, editing, restoring, installing, adding a skill you asked for.
 
 ## The catalogue
 Ready teams and skills, installed only after a review that names what each creates; routines start paused. Where: Plugins, Catalogue (\`plugins:catalog\`). Only the person installs.
@@ -945,6 +964,8 @@ export function deleteSkill(id: string): boolean {
   try {
     unlinkSync(join(SKILLS_DIR, `${slug}.md`));
     if (skillObservation) skillObservation.invalidatedAt = Date.now();
+    // its supporting files are part of it, and go with it
+    removeSupportingFiles(slug);
     // its versions stay: removing a skill is not forgetting what it said
     try {
       skillHistory().removed(slug);

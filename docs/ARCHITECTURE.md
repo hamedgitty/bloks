@@ -2689,6 +2689,73 @@ the current version, and refused again when kept if the skill has moved
 on since, because kept on top of a newer version it would quietly undo
 it. The person may still keep their own edit of it.
 
+### A new skill an agent asks for
+
+Asked to make a skill and use it (GitHub 455), an agent sends the whole
+of it with `POST /api/agent/skills` (`bloks skill create`), and the
+person answers one card in the conversation (`server/skill-requests.ts`,
+`src/components/SkillRequestCard.tsx`). A SKILL.md the agent writes in a
+folder is only a file: no agent reads it as a skill and `bloks skills`
+does not list it until it is in the library. `--from <folder>` reads the
+folder's SKILL.md the way the catalogue reads one (its `name` is the id
+it keeps, its `metadata.title` or first heading the name people see) and
+every other plain text file beside it, skipping hidden files and tool
+folders; `--file` takes a single SKILL.md; flags win over the file. The
+request is checked whole before any card: a name and a one line
+description, instructions within the 16,000 character limit, the files
+within theirs, and an id said exactly (lowercase, digits and dashes).
+
+An id already in the library is never written over. The answer is 409
+with that skill's name, version and source, and the two ways on:
+`bloks skill revise` it, or choose another `--id`. The one exception is
+the very same skill, words and files, which is a retry of a request the
+person already answered: the answer is `added` with `already`, and the
+skill is given to the agent if it asked, which it may do with any
+library skill through its own settings anyway. The same request sent
+again while its card waits finds that card (matched by a fingerprint of
+the whole request); a different version of the agent's own waiting
+request replaces it, and the older card says so. Another agent's
+waiting request for the same id is refused. At most 50 wait at once.
+
+The card carries what the person decides on (name, id, description,
+length, files by name and size, whether the agent wants it, why); the
+words themselves wait in `skill-requests/<id>.json` until the answer
+and are fetched when the card is opened (`GET
+/api/skill-requests/:lane/:message`). Add (`POST .../add`) judges the id
+again, writes the files, installs the skill as version 1 credited to
+the agent with `from: 0` (so a skill that appeared meanwhile is refused,
+not replaced), appends it to that agent's skills without touching the
+rest, and records `skill.installed`. Not now (`.../decline`) changes
+nothing. Both routes are the person's: on NEVER for an agent, and
+refused to a member. The command waits a while for the answer
+(`BLOKS_SETTINGS_WAIT_MS`, as for a proposed setting), and otherwise
+answers `waiting` with the request id; `bloks skill request <id>` waits
+again, and the agent's next turn in that conversation is told the
+outcome once. Statuses are `waiting`, `added`, `declined`, `failed` and
+`replaced`.
+
+### Supporting files
+
+The 16,000 character limit stays on a skill's instructions, because
+those may be sent whole on every turn. What does not belong in every
+prompt (an API reference, a helper script, a table) goes in supporting
+files beside it (`server/skill-files.ts`), under `skill-files/<id>/`:
+plain UTF-8 text, at most 40 files, 128 KB each and 768 KB in all,
+relative paths at most four folders deep with nothing hidden and never
+a root `SKILL.md`. A set is written to a folder of its own and swapped
+in whole, and removing a skill removes its files; they are not
+versioned with the skill's text. They are read only on demand: `GET
+/api/skills/:id/files` lists them and `?path=` reads one, opened inside
+the skill's folder (`server/open-inside.ts`) so a planted link leads
+nowhere. `bloks skill <id>` names them, `bloks skill <id> --file <path>`
+reads one and `--save <path>` writes it where the agent can run it. A
+short skill sent whole in the prompt carries one line naming its files
+and that command. An engine with no command line gets the instructions
+alone, which is why they have to stand on their own. The Skills page
+lists a skill's files under its instructions, each opening in place.
+Importing a skill in the app still takes one markdown file; a skill
+with files arrives through an agent's `--from`.
+
 ## The nightly memory tidy
 
 `server/memory-tidy.ts` tidies each agent's memory once a night, between

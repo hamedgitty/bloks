@@ -9,7 +9,7 @@
 // It reads its credential from the environment, which is where the turn
 // put it. Nothing is stored, nothing is cached, and there is no login: a
 // credential that outlives its turn would be a credential worth stealing.
-import { createReadStream, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -1138,16 +1138,27 @@ const COMMANDS = {
   },
   skill: {
     use:
-      'skill <id> [--version <n>] | skill history <id> | skill diff <id> [--from <n>] [--to <n>] | skill revise <id> --from <version> --why "..." [--file <path>]',
+      'skill <id> [--version <n>] [--file <path> [--save <path>]] | skill history <id> | skill diff <id> [--from <n>] [--to <n>] | skill revise <id> --from <version> --why "..." [--file <path>] | ' +
+      'skill create [--from <folder> | --file <SKILL.md>] [--name "<name>"] [--description "<when to use it>"] [--id <id>] [--why "..."] [--no-attach] | skill request <request-id>',
     about:
-      "read one skill in full, with the version it is at (--version reads an earlier one). " +
+      "read one skill in full, with the version it is at (--version reads an earlier one) and the names of its supporting files; --file reads one of those, and --save writes it where you can run or use it. " +
       "history: who changed it, when and why, and how often each version was used. diff: what changed between two versions, by default the last change. " +
       "revise: propose new text for the skill, written against the version you read (--from), with one line on why. The text comes from --file, or from stdin. " +
-      "It waits for the person to keep, edit or dismiss, and is refused if the skill changed since you read it: read it again and write against the new version. A built-in skill is version 0",
+      "It waits for the person to keep, edit or dismiss, and is refused if the skill changed since you read it: read it again and write against the new version. A built-in skill is version 0. " +
+      "create: ask to add a new skill to the library and to use it yourself, when the person asks for one. --from takes a folder with a SKILL.md and its supporting files (references, scripts), " +
+      "--file a single SKILL.md, or pipe the instructions in. The person answers one card in the conversation that adds it and gives it to you; --no-attach only adds it. " +
+      "The answer has the skill's id and a status: waiting, added, declined or failed. An id already in the library is never written over: revise that skill, or choose another --id. " +
+      "Sending the same skill again finds the same card or the skill already added. request: wait for the answer to one you asked for",
     run: async (args) => {
       const flags = parseFlags(args);
       const [first, second] = positional(args);
       const at = (id) => `/api/skills/${encodeURIComponent(id)}`;
+      // a skill could be called "create", so the word is a subcommand only
+      // with the flags that say what to create
+      if (first === "create" && !second && ["from", "file", "name", "description", "id"].some((key) => flags[key] !== undefined)) {
+        return request("POST", "/api/agent/skills", await skillToCreate(flags));
+      }
+      if (first === "request" && second) return request("GET", `/api/agent/skills/${encodeURIComponent(second)}`);
       // a skill could be called "history", so the word is a subcommand
       // only when an id follows it
       if (first === "history" && second) return request("GET", `${at(second)}/history`);
@@ -1169,16 +1180,83 @@ const COMMANDS = {
         return request("POST", `${at(second)}/revisions`, { from: Number(flags.from), why: flags.why, body: text });
       }
       if (!first) throw new Error("skill needs an id, from `skills`");
+      if (flags.file !== undefined) {
+        if (flags.file === "true") throw new Error("--file needs the path of one of the skill's files, as `skill <id>` lists them");
+        const read = await request("GET", `${at(first)}/files?path=${encodeURIComponent(flags.file)}`);
+        if (flags.save === undefined) return read;
+        if (flags.save === "true") throw new Error("--save needs a path to write the file to");
+        const to = resolve(flags.save);
+        // a script stays runnable once saved
+        writeFileSync(to, read.text, { mode: read.text.startsWith("#!") ? 0o755 : 0o644 });
+        return { skill: read.skill, path: read.path, saved: to, bytes: Buffer.byteLength(read.text) };
+      }
       if (flags.version !== undefined && !/^\d+$/.test(flags.version)) throw new Error("--version is a number, as `skill history <id>` lists them");
       return request("GET", `${at(first)}${flags.version !== undefined ? `?version=${flags.version}` : ""}`);
     },
   },
 };
 
+/** Folders a skill's own files are never in: made by tools, not written. */
+const NOT_SKILL_FILES = new Set(["node_modules", "__pycache__", ".git", ".venv", "venv", "dist", "build"]);
+
+/**
+ * A new skill as `skill create` sends it: a SKILL.md and the files beside
+ * it, read as the agent, or the instructions alone from --file or stdin,
+ * with what the flags say on top. The workspace judges all of it again;
+ * this only reads, and says early what it cannot send.
+ */
+async function skillToCreate(flags) {
+  const body = {};
+  if (flags.from && flags.from !== "true") {
+    if (flags.file) throw new Error("create takes --from a folder or --file a SKILL.md, not both");
+    let root;
+    try {
+      root = realpathSync(resolve(flags.from));
+    } catch {
+      throw new Error(`there is no folder at ${resolve(flags.from)}`);
+    }
+    if (!statSync(root).isDirectory()) throw new Error("--from is a folder with a SKILL.md in it; for a single file use --file");
+    const files = [];
+    let entry = null;
+    const walk = (dir, prefix, depth) => {
+      for (const item of readdirSync(dir, { withFileTypes: true })) {
+        if (item.name.startsWith(".") || NOT_SKILL_FILES.has(item.name)) continue;
+        const rel = prefix ? `${prefix}/${item.name}` : item.name;
+        const full = join(dir, item.name);
+        if (item.isDirectory()) {
+          if (depth >= 4) throw new Error(`${rel} is more than four folders deep; a skill's files sit closer to its SKILL.md`);
+          walk(full, rel, depth + 1);
+          continue;
+        }
+        if (!item.isFile()) continue;
+        if (statSync(full).size > 128 * 1024) throw new Error(`${rel} is larger than the 128 KB one file of a skill may be`);
+        const text = readFileSync(full, "utf8");
+        if (text.includes("\u0000")) throw new Error(`${rel} is not text: a skill's files are plain text, never binaries`);
+        if (!prefix && item.name.toLowerCase() === "skill.md") entry = text;
+        else files.push({ path: rel, text });
+        if (files.length > 40) throw new Error("that folder has more than the 40 files a skill keeps");
+      }
+    };
+    walk(root, "", 1);
+    if (entry === null) throw new Error(`there is no SKILL.md in ${root}: it is the skill's instructions, and the rest are its files`);
+    body.skillMd = entry;
+    body.files = files;
+  } else {
+    body.skillMd = await revisionText(flags.file, "create needs the skill: --from a folder with a SKILL.md in it, --file a SKILL.md, or its instructions piped in");
+  }
+  for (const key of ["name", "description", "id", "why"]) {
+    if (flags[key] === undefined) continue;
+    if (flags[key] === "true") throw new Error(`--${key} needs a value`);
+    body[key] = flags[key];
+  }
+  if (flags["no-attach"] !== undefined) body.attach = false;
+  return body;
+}
+
 /** The new text of a skill: a file the agent names, read as the agent,
  * or what was piped in. Never a terminal waiting for typing, which would
  * hang the turn. */
-async function revisionText(file) {
+async function revisionText(file, missing = "revise needs the new text: pass --file <path>, or pipe it in") {
   if (file && file !== "true" && file !== "-") {
     const at = resolve(file);
     let real;
@@ -1194,13 +1272,13 @@ async function revisionText(file) {
     if (stat.size > 100_000) throw new Error("that file is too large to be a skill");
     return readFileSync(real, "utf8");
   }
-  if (process.stdin.isTTY) throw new Error("revise needs the new text: pass --file <path>, or pipe it in");
+  if (process.stdin.isTTY) throw new Error(missing);
   let text = "";
   for await (const chunk of process.stdin) {
     text += chunk;
     if (text.length > 100_000) throw new Error("that is too much text to be a skill");
   }
-  if (!text.trim()) throw new Error("revise needs the new text: pass --file <path>, or pipe it in");
+  if (!text.trim()) throw new Error(missing);
   return text;
 }
 
