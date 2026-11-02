@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { thisComputer } from "@/lib/thisComputer";
 import { MUTE_CHOICES, act, currentWorkspace, muteLabel, useWorkspaces } from "@/lib/workspaces";
 import type { WorkspaceInfo, WorkspaceNotify } from "@/types/bridge";
 import { SettingRow, SettingsEmpty, SettingsGroup } from "./SettingsLayout";
@@ -120,13 +121,23 @@ function KindRows({ ws, all }: { ws: WorkspaceInfo; all: WorkspaceInfo[] }) {
               ? t("workspaceSettings.businessWearsTheSameMark")
               : ws.kind === "hosted"
                 ? t("workspaceSettings.yourWorkspaceOnAMachine")
-                : t("workspaceSettings.aWorkspaceWithAName")
+                : ws.kind === "remote"
+                  ? t("workspaceSettings.yourWorkspaceOnAServer", { host: ws.host || t("workspaceSettings.aServerOfYours") })
+                  : t("workspaceSettings.aWorkspaceWithAName")
         }
         control={
-          ws.kind === "personal" || ws.kind === "joined" || ws.kind === "hosted" || (ws.kind === "custom" && businessElsewhere) ? (
+          ws.kind === "personal" || ws.kind === "joined" || ws.kind === "hosted" || ws.kind === "remote" || (ws.kind === "custom" && businessElsewhere) ? (
             // one option is not a choice, so it is said rather than offered
             <span className="text-body text-muted-foreground">
-              {ws.kind === "personal" ? t("workspaceSettings.personal") : ws.kind === "joined" ? t("workspaceSettings.joined") : ws.kind === "hosted" ? t("workspaceSettings.hosted") : t("workspaceSettings.itsOwnName")}
+              {ws.kind === "personal"
+                ? t("workspaceSettings.personal")
+                : ws.kind === "joined"
+                  ? t("workspaceSettings.joined")
+                  : ws.kind === "hosted"
+                    ? t("workspaceSettings.hosted")
+                    : ws.kind === "remote"
+                      ? t("workspaceSettings.server")
+                      : t("workspaceSettings.itsOwnName")}
             </span>
           ) : (
             <Segmented<"business" | "custom">
@@ -141,7 +152,7 @@ function KindRows({ ws, all }: { ws: WorkspaceInfo; all: WorkspaceInfo[] }) {
           )
         }
       />
-      {ws.kind !== "joined" && ws.kind !== "hosted" && (
+      {ws.kind !== "joined" && ws.kind !== "hosted" && ws.kind !== "remote" && (
         <SettingRow
           label={t("workspaceSettings.whoUsesIt")}
           description={
@@ -182,7 +193,7 @@ function KindRows({ ws, all }: { ws: WorkspaceInfo; all: WorkspaceInfo[] }) {
 export function markWords(ws: Pick<WorkspaceInfo, "kind" | "logo">): string {
   if (ws.logo) return t("workspaceSettings.markWords.logo");
   if (ws.kind === "joined") return t("workspaceSettings.markWords.joined");
-  if (ws.kind === "hosted") return t("workspaceSettings.markWords.hosted");
+  if (ws.kind === "hosted" || ws.kind === "remote") return t("workspaceSettings.markWords.hosted");
   return t("workspaceSettings.markWords.own");
 }
 
@@ -259,6 +270,37 @@ function DeleteRow({ ws }: { ws: WorkspaceInfo }) {
   }
   const agents = state.bots.filter((b) => !b.hidden).length;
   const rooms = state.bloks.length;
+  // A server of yours is only forgotten here: its workspace stays on it,
+  // running, for every other device paired with it.
+  if (ws.kind === "remote") {
+    return (
+      <SettingRow
+        label={t("workspaceSettings.removeServer")}
+        description={t("workspaceSettings.removeServerDescription", { name: ws.name })}
+        control={
+          <Button
+            variant="destructive"
+            disabled={busy}
+            className="gap-1.5"
+            onClick={async () => {
+              const yes = await confirm({
+                title: t("remoteSection.removeTitle", { name: ws.name }),
+                body: t("remoteSection.removeBody", { computer: thisComputer() }),
+                confirmLabel: t("remoteSection.remove"),
+                destructive: true,
+              });
+              if (!yes) return;
+              setBusy(true);
+              if (!(await run(window.bloks?.workspaceDelete?.(ws.id)))) setBusy(false);
+            }}
+          >
+            {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+            {t("remoteSection.remove")}
+          </Button>
+        }
+      />
+    );
+  }
   return (
     <SettingRow
       label={t("workspaceSettings.deleteWorkspace")}

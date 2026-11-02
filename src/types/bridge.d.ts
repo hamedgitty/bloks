@@ -50,7 +50,7 @@ export interface WorkspaceMarkValue {
   pattern: string;
 }
 
-export type WorkspaceKind = "personal" | "business" | "custom" | "joined" | "hosted";
+export type WorkspaceKind = "personal" | "business" | "custom" | "joined" | "hosted" | "remote";
 export type WorkspaceNotify = "all" | "needs-me" | "nothing";
 
 /** One workspace as the main process tells the window about it
@@ -79,14 +79,15 @@ export interface WorkspaceInfo {
   notify: WorkspaceNotify;
   mute: { muted: boolean; until: number | "forever" | null };
   dataDir: string | null;
-  /** For a joined workspace: whose computer it is on. */
+  /** For a joined workspace: whose computer it is on. For one on a
+   * server of yours: the computer it runs on. */
   host?: string;
   /** For a joined workspace: what you are there. */
   role?: "member" | "admin";
   /** For a joined workspace reached only on its owner's own network. */
   lanOnly?: boolean;
-  /** Your own hosted workspace: on a machine run for you, reached through
-   * Bloks Cloud. */
+  /** Your own workspace elsewhere, reached through Bloks Cloud: hosted on
+   * a machine run for you, or on a server you run. */
   remote?: boolean;
   /** A copy whose work moved to the workspace with this id, kept here,
    * paused, until it is removed (electron/hosting-move.mjs). */
@@ -178,6 +179,10 @@ export type WorkspacesState =
       /** What the person is called in their own workspaces, once they
        * have said; null until then. Absent from an older app. */
       ownerName?: string | null;
+      /** "Run workspaces on this computer". Off, only workspaces
+       * elsewhere are listed, and nothing offered would start one here.
+       * Absent from an older app, which always runs them. */
+      local?: boolean;
     };
 
 /** What a workspace action answers: done, or why not, in words to show. */
@@ -364,14 +369,13 @@ declare global {
       /** The window's native state for a settings inspection, read only
        * when one asks (electron/settings-observation.mjs). */
       settingsObservation?(): Promise<unknown>;
-      /** Whether this app runs its own Bloks or uses one on another
-       * computer through Bloks Cloud (electron/remote.mjs). */
-      remoteStatus?(): Promise<{ mode: "local" } | { mode: "remote"; host: string; connected: boolean; revoked?: boolean }>;
-      /** Pairs with another computer from a bloks-server pairing link, then restarts the app. */
-      remoteConnect?(link: string): Promise<{ ok?: boolean; error?: string }>;
-      /** Back to this computer's own Bloks, then restarts the app. */
-      remoteDisconnect?(): Promise<{ ok: boolean }>;
-      onRemoteState?(callback: (state: { host: string; connected: boolean; revoked?: boolean }) => void): () => void;
+      /** Pairs with a server of yours from a bloks-server pairing link and
+       * lists it as a workspace beside the others, or points the one
+       * already listed for that server at the new pairing; then opens it.
+       * Nothing restarts (electron/main.mjs, GitHub 428). */
+      remoteConnect?(link: string, name?: string): Promise<{ ok?: boolean; id?: string; error?: string }>;
+      /** Turns "Run workspaces on this computer" on or off. */
+      workspaceLocal?(on: boolean): Promise<{ ok?: boolean; error?: string }>;
       /** One frame of updater state: idle, checking, downloading (with
        * percent), current, ready (with version), error, or dev. */
       /** Quit and start again. For settings that only apply at start. */

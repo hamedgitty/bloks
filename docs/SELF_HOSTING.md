@@ -114,7 +114,11 @@ sudo -u bloks BLOKS_DATA_DIR=/var/lib/bloks/.bloks node /opt/bloks-server/bin/bl
 sudo -u bloks BLOKS_DATA_DIR=/var/lib/bloks/.bloks node /opt/bloks-server/bin/bloks-server.mjs pair
 ```
 
-Open the printed link on the device to pair. Engines (Claude Code,
+Open the printed link on the device to pair. In the desktop app, paste
+it in Settings, Phone and devices, Your servers (or Add a server in the
+workspace switcher): each server you pair is a workspace of its own in
+the switcher, beside the others, and you can turn off Run workspaces on
+this computer to keep the app a window onto your servers alone. Engines (Claude Code,
 Codex and the rest) are installed and signed in as the `bloks` account,
 which the terminal from your own devices is the easiest way to do.
 

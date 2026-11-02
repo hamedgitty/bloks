@@ -274,11 +274,29 @@ the safety floor all read it from that one place, and
 The desktop app keeps the list (`electron/workspaces.mjs`, pure and
 tested in `test/workspaces.test.ts`) in `workspaces.json` in its own user
 data folder: each workspace's id, kind (`personal`, `business`, `custom`
-or `joined`, and `hosted` for the managed hosting that is coming), name,
+or `joined`, `hosted` for the managed hosting that is coming, and
+`remote` for one on a server of the person's own), name,
 whether it is a team's, mark or logo, data folder, mute, notification
 level, order, last port and accent, and the person's own preferences
-(theme, the accent shared by every workspace when that is on, and the
-name they go by). The order is the person's: holding a workspace in the
+(theme, the accent shared by every workspace when that is on, the
+name they go by, and `local`, "Run workspaces on this computer").
+
+A `remote` workspace is a `bloks-server` the app is paired with as one of
+the owner's devices (`remote:connect` with a link from `bloks-server
+pair`). There may be any number; each pairing is kept in the keychain as
+`joined-<id>.bin`, and each opens through its own `electron/remote.mjs`
+stand-in on loopback, like a hosted or a joined one. A server is known by
+the Bloks Cloud space its pairing goes through, so pairing the same one
+again keeps its entry (`addRemote` with `same`) and pairing another adds
+one. One added without a name takes its computer's name from
+`/api/config`. With `local` off, `shownWorkspaces` lists only the kinds
+elsewhere, `launch` refuses to start a local one by any route, the local
+servers are stopped, and the window opens a server; it can't be turned
+off with no server listed, and the last server can't be removed while
+it is off, so the app always has somewhere to open. Before 3.2 a pairing
+made the whole app one server's window and restarted it, kept in
+`remote.bin`; the next start lists it as a `remote` workspace on the same
+port, with `local` off, and removes the file. The order is the person's: holding a workspace in the
 switcher and dragging it, or Option and the arrow keys, rewrites it
 (`reorder`), and every list of workspaces follows it. The first launch
 with workspaces finds no list and writes one with the folder Bloks always
@@ -352,7 +370,7 @@ children (`process.parentPort`), never the network:
 
 A workspace joined on somebody else's computer has no folder here. It
 opens through the remote proxy (`electron/remote.mjs`) with the member's
-credentials, kept in the keychain like `remote.bin`, and the window
+credentials, kept in the keychain like a server's, and the window
 draws a member's app from the member routes (see People in a
 workspace). One joined without Bloks Cloud is reached on the owner's own
 network only, through `startLanProxy`, a loopback stand-in like the

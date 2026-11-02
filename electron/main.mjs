@@ -99,8 +99,14 @@ import {
   oneAtATime,
   readRegistry,
   addHosted,
+  addRemote,
   markMoved,
   isRemoteKind,
+  runsLocal,
+  setLocal,
+  shownWorkspaces,
+  fallbackWorkspace,
+  freeName,
   removeWorkspace,
   reorder,
   rerollMark,
@@ -565,6 +571,10 @@ function setStatus(run, status) {
 /** Brings a workspace's server up, or answers the start already under
  * way. Resolves true once it answers, false when it would not start. */
 function launch(id) {
+  // nothing starts here while workspaces on this computer are off, by
+  // whatever way it is asked for (GitHub 428)
+  const asked = entryOf(id);
+  if (registry && asked && !runsLocal(registry) && !isRemoteKind(asked.kind)) return Promise.resolve(false);
   const run = runFor(id);
   if (run.status === "running") return Promise.resolve(true);
   if (run.status === "starting" && run.ready) return run.ready;
@@ -992,11 +1002,19 @@ const mainWindow = () => BrowserWindow.getAllWindows().find((w) => isWorkspaceWi
  * switcher says what happened to the first. */
 async function openWorkspaces() {
   registry = settle(readRegistry(REGISTRY_FILE()), { personalDataDir: personalDataDir() });
+  // a pairing from before servers were listed with the rest (remote.bin)
+  // becomes a workspace of its own here, on the same port
+  const adopted = adoptRemoteProfile();
   saveRegistry();
   shownId = registry.current;
-  if (await launch(shownId)) return;
-  for (const ws of registry.workspaces) {
-    if (ws.id === shownId || isRemoteKind(ws.kind)) continue;
+  if (await launch(shownId)) {
+    if (adopted) void nameAfterServer(adopted);
+    return;
+  }
+  // the next one that opens; with nothing running here, only another one
+  // elsewhere, never one here started in its place (GitHub 428)
+  for (const ws of shownWorkspaces(registry)) {
+    if (ws.id === shownId || (runsLocal(registry) && isRemoteKind(ws.kind))) continue;
     if (await launch(ws.id)) {
       shownId = ws.id;
       return;
@@ -1008,6 +1026,8 @@ async function openWorkspaces() {
  * the last of five wait half a minute for its routines, and all at once
  * would make the first minute of a launch a crowd. */
 async function launchTheRest() {
+  // nothing here while workspaces on this computer are off
+  if (!runsLocal(registry)) return;
   const waiting = registry.workspaces.filter((ws) => !isRemoteKind(ws.kind) && !servers.has(ws.id)).map((ws) => ws.id);
   const lane = async () => {
     while (waiting.length && !quitting) await launch(waiting.shift());
@@ -1032,7 +1052,7 @@ function logoData(ws) {
 }
 
 function workspacesState() {
-  if (!registry || remoteProfile) return { available: false };
+  if (!registry) return { available: false };
   const live = {};
   for (const ws of registry.workspaces) {
     const run = servers.get(ws.id);
@@ -1086,6 +1106,8 @@ function tellWorkspaces() {
 async function switchWorkspace(id, { target = null, welcome = false, query = "" } = {}) {
   const ws = entryOf(id);
   if (!ws) throw new Error("There is no such workspace.");
+  // never started here while workspaces on this computer are off
+  if (!shownWorkspaces(registry).includes(ws)) throw new Error("Workspaces on this computer are turned off. Turn on Run workspaces on this computer to open it.");
   if (!(await launch(id))) throw new Error(`${ws.name} would not start. ${servers.get(id)?.problem ?? ""}`.trim());
   const moved = shownId !== id;
   shownId = id;
@@ -1164,7 +1186,7 @@ function insideWorkspacesDir(dir) {
 // ── a workspace joined on someone else's computer ─────────────────────
 // The joining itself (an invite's code, the claim, the owner's approval)
 // is the members work's. What lands here is its result: the member's
-// credentials, kept in the keychain like remote.bin, and an entry of kind
+// credentials, kept in the keychain like a server's, and an entry of kind
 // "joined" in the list. Opening one starts the remote proxy
 // (electron/remote.mjs) with those credentials, so the window loads it
 // like any other workspace.
@@ -1252,7 +1274,7 @@ async function pairHosted(link, { open = true } = {}) {
   const shown = shownId === added.entry.id;
   if (added.replaced) {
     // out of it while its proxy is swapped for one with the new pairing
-    if (shown) await switchWorkspace(PERSONAL_ID);
+    if (shown) await switchWorkspace(fallbackWorkspace(registry, added.entry.id)?.id ?? PERSONAL_ID);
     await halt(added.entry.id);
   }
   fs.writeFileSync(joinedFile(added.entry.id), safeStorage.encryptString(JSON.stringify(profile)), { mode: 0o600 });
@@ -1718,7 +1740,9 @@ handle("workspaces:leave", (_event, id, options) =>
       }
     }
     if (!told && options?.force !== true) return { ok: false, unreachable: true };
-    if (shownId === ws.id) await switchWorkspace(PERSONAL_ID);
+    // refused before anything goes, when it is the last one this app opens
+    const left = removeWorkspace(registry, ws.id).registry;
+    if (shownId === ws.id) await switchWorkspace(left.current);
     await halt(ws.id);
     registry = removeWorkspace(registry, ws.id).registry;
     saveRegistry();
@@ -1841,8 +1865,10 @@ async function deleteWorkspace(id) {
   const ws = entryOf(id);
   if (!ws) throw new Error("There is no such workspace.");
   if (ws.kind === "personal") throw new Error("Personal cannot be deleted.");
+  // refused before anything goes, when it is the last one this app opens
+  const left = removeWorkspace(registry, ws.id).registry;
   // out of it first, so nothing is showing a workspace on its way out
-  if (shownId === ws.id) await switchWorkspace(PERSONAL_ID);
+  if (shownId === ws.id) await switchWorkspace(left.current);
   await halt(ws.id);
   // its browser, and every sign-in it kept, go with it
   await forgetBrowser(ws.id).catch(() => {});
@@ -1997,8 +2023,7 @@ const isHttpUrl = (url) => {
 // it has proved itself again, since its old port is anybody's meanwhile.
 function ownOrigins() {
   const own = [];
-  if (remoteProfile && remotePort) own.push(`http://127.0.0.1:${remotePort}`);
-  else if (!HOSTS_SERVERS) own.push(DEV_URL);
+  if (!HOSTS_SERVERS) own.push(DEV_URL);
   for (const run of servers.values()) {
     if (run.status === "running" && run.port) own.push(`http://127.0.0.1:${run.port}`);
   }
@@ -2204,8 +2229,7 @@ function openingPage(name) {
  * saying it is starting, or the page saying why it will not. */
 function appUrl(query = "", id = shownId) {
   let base;
-  if (remoteProfile) base = `http://127.0.0.1:${remotePort}`;
-  else if (!HOSTS_SERVERS) base = DEV_URL;
+  if (!HOSTS_SERVERS) base = DEV_URL;
   else {
     const run = servers.get(id);
     base =
@@ -2567,7 +2591,6 @@ const BROWSER_GRANTS = new Set(["fullscreen", "clipboard-sanitized-write"]);
 function ownPorts() {
   const ports = [];
   for (const run of servers.values()) if (run.port) ports.push(run.port);
-  if (remotePort) ports.push(remotePort);
   try {
     ports.push(Number(new URL(DEV_URL).port));
   } catch {
@@ -3441,7 +3464,7 @@ handle("update:not-installed-seen", () => {
  * call it off (electron/drain-wait.mjs). Answers how the wait ended. */
 async function drainBeforeRestart() {
   // agents on another computer are that computer's to finish
-  if (remoteProfile || !runningServers().length) return "done";
+  if (!runningServers().length) return "done";
   // every workspace's server drains, and the wait is for the slowest
   // (mergeDrains in electron/workspaces.mjs)
   const askOne = async (port, method) => {
@@ -3690,13 +3713,7 @@ app.whenReady().then(async () => {
   // reports itself unavailable and everything else works.
   startCua().catch((error) => console.error("[cua] start failed:", error));
 
-  if (app.isPackaged) {
-    const remote = readRemoteProfile();
-    if (remote) await startRemote(remote);
-    else await openWorkspaces();
-  } else if (HOSTS_SERVERS) {
-    await openWorkspaces();
-  }
+  if (HOSTS_SERVERS) await openWorkspaces();
   // again, now that the list says which language the person chose
   if (registry) installAppMenu();
   createWindow();
@@ -3704,7 +3721,7 @@ app.whenReady().then(async () => {
   notch.sync(notchOn());
   // the others come up behind the window, one at a time, so the one you
   // are looking at never waits on them
-  if (registry && !remoteProfile) {
+  if (registry) {
     void launchTheRest().then(() => {
       // a move the last run was carrying carries on; one about to start
       // on its own starts; and the account is asked, for the first move
@@ -3846,8 +3863,8 @@ async function power(state) {
 }
 
 function watchPower() {
-  // agents on another computer are that computer's to keep awake
-  if (remoteProfile) return;
+  // agents on another computer are that computer's to keep awake, and
+  // power() asks only the servers this app runs
   const check = async () => {
     const status = await power();
     const working = Boolean(status?.working);
@@ -3863,24 +3880,24 @@ function watchPower() {
   powerMonitor.on("resume", () => void power("resume"));
 }
 
-// ── a Bloks on another computer ───────────────────────────────────────
-// When this app is paired with an always-on computer (bloks-server), it
-// runs no server of its own: electron/remote.mjs stands in on loopback
-// and carries every call through Bloks Cloud. Running both would mean two
-// copies of the same agents answering, so it is one or the other, and
-// switching restarts the app.
+// ── workspaces on servers you run ─────────────────────────────────────
+// This app as a window onto your own bloks-servers elsewhere (GitHub 428):
+// each one paired as a device of yours, listed as a workspace of kind
+// "remote", and opened through electron/remote.mjs on loopback like a
+// hosted or a joined one. As many as you pair, each its own pairing in
+// the keychain, so adding, pairing again or removing one never touches
+// another. With "Run workspaces on this computer" off, the ones here are
+// kept but neither listed nor started, and the app runs no agents.
 //
-// The profile holds the device token its keys come from, so it is kept
-// encrypted by the operating system's keychain, never in plain text.
-let remoteProfile = null;
-let remoteState = { connected: false };
-/** The loopback port the remote proxy stands in on. */
-let remotePort = null;
+// Before this, a pairing made the whole app that one server's window and
+// restarted it, with one pairing kept in remote.bin. A remote.bin still
+// here becomes a workspace of its own on the next start (adoptRemoteProfile).
 
 function remoteFile() {
   return path.join(app.getPath("userData"), "remote.bin");
 }
 
+/** The one pairing of the app from before, as remote.bin held it. */
 function readRemoteProfile() {
   try {
     if (!fs.existsSync(remoteFile()) || !safeStorage.isEncryptionAvailable()) return null;
@@ -3891,19 +3908,8 @@ function readRemoteProfile() {
   }
 }
 
-function saveRemoteProfile(profile) {
-  if (!profile) {
-    fs.rmSync(remoteFile(), { force: true });
-    return;
-  }
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer cannot keep the pairing safely, so it was not saved.");
-  fs.writeFileSync(remoteFile(), safeStorage.encryptString(JSON.stringify(profile)), { mode: 0o600 });
-}
-
-/** The port the remote proxy had last time. The window's storage (folded
- * sections, the sidebar's width, cards you closed) belongs to its origin,
- * and the origin includes the port, so a fresh port every launch quietly
- * forgot all of it. */
+/** The port that pairing's stand-in had, so the window's storage, which
+ * belongs to its origin, port and all, is still there once it is listed. */
 const REMOTE_PORT_FILE = () => path.join(app.getPath("userData"), "remote-port.json");
 
 function readRemotePort() {
@@ -3915,73 +3921,126 @@ function readRemotePort() {
   }
 }
 
-async function startRemote(profile) {
+/** remote.bin, listed: a workspace of its own, on screen, with nothing on
+ * this computer started, as the app was before. Its file goes only once
+ * the pairing is kept beside the others. */
+function adoptRemoteProfile() {
+  const profile = readRemoteProfile();
+  if (!profile) return null;
   try {
-    const system = { darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] ?? process.platform;
-    const options = {
-      staticDir: path.join(process.resourcesPath, "ui"),
-      client: `${system} ${app.getVersion()}`,
-      onState: (state) => {
-        remoteState = state;
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send("remote:state", { host: profile.host, ...state });
-        }
-      },
-    };
-    const remembered = readRemotePort();
-    let proxy;
-    try {
-      proxy = await startRemoteProxy(profile, { ...options, port: remembered ?? 0 });
-    } catch (error) {
-      // that port is someone else's now; any free one, remembered from here
-      if (!remembered) throw error;
-      proxy = await startRemoteProxy(profile, { ...options, port: 0 });
-    }
-    try {
-      fs.writeFileSync(REMOTE_PORT_FILE(), JSON.stringify({ port: proxy.port }));
-    } catch {
-      /* next launch picks another, as before */
-    }
-    remoteProfile = profile;
-    remotePort = proxy.port;
-    return true;
+    // named after its computer once it answers (nameAfterServer): the
+    // pairing only knows what its owner is called
+    const added = addRemote(registry, { relayUrl: profile.relayUrl, same: sameServer(profile) });
+    keepRemoteProfile(added.entry.id, profile);
+    registry = added.registry;
+    const port = readRemotePort();
+    if (port && !added.replaced) registry = updateWorkspace(registry, added.entry.id, { port });
+    registry = settle(setLocal({ ...registry, current: added.entry.id }, false), { personalDataDir: personalDataDir() });
+    fs.rmSync(remoteFile(), { force: true });
+    fs.rmSync(REMOTE_PORT_FILE(), { force: true });
+    return added.entry.id;
   } catch (error) {
-    console.error("[remote] could not start:", error?.message ?? error);
-    return false;
+    console.error("[remote] could not list the paired server:", error?.message ?? error);
+    return null;
+  }
+}
+
+function keepRemoteProfile(id, profile) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer cannot keep the pairing safely, so it was not saved.");
+  fs.writeFileSync(joinedFile(id), safeStorage.encryptString(JSON.stringify(profile)), { mode: 0o600 });
+}
+
+/** The server workspace already paired with the server this pairing is
+ * for: the same Bloks Cloud space, which only that server has. */
+function sameServer(profile) {
+  for (const ws of registry.workspaces) {
+    if (ws.kind !== "remote") continue;
+    const kept = readJoinedProfile(ws.id);
+    if (kept?.relayToken && kept.relayToken === profile.relayToken && kept.relayUrl === profile.relayUrl) return ws.id;
+  }
+  return null;
+}
+
+/**
+ * A pairing link from `bloks-server pair`, spent as a device of yours:
+ * a new workspace listed for that server, or the one already listed for
+ * it pointed at the new pairing, keeping its name and place. Opened once
+ * it is listed. Unnamed, it takes the name its server goes by.
+ */
+async function pairServer(link, name) {
+  const profile = await claimPairLink(link, `${os.hostname().replace(/\.local$/, "")} (desktop)`);
+  const added = addRemote(registry, { name, relayUrl: profile.relayUrl, same: sameServer(profile) });
+  if (added.replaced) {
+    // out of it while its stand-in is swapped for one with the new pairing
+    if (shownId === added.entry.id) {
+      const other = fallbackWorkspace(registry, added.entry.id);
+      if (other) await switchWorkspace(other.id).catch(() => {});
+    }
+    await halt(added.entry.id);
+  }
+  keepRemoteProfile(added.entry.id, profile);
+  attentionThere().forget(added.entry.id);
+  registry = settle(added.registry, { personalDataDir: personalDataDir() });
+  saveRegistry();
+  tellWorkspaces();
+  await switchWorkspace(added.entry.id);
+  if (!added.replaced) void nameAfterServer(added.entry.id, { rename: !String(name ?? "").trim() });
+  return added.entry;
+}
+
+/** Which computer a server listed here runs on, as it says itself
+ * (server/deployment.ts), once it answers: said beside it, and its name
+ * too when it was listed without one and has not been renamed since. */
+async function nameAfterServer(id, { rename = true } = {}) {
+  const port = servers.get(id)?.port;
+  if (!port) return;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/config`, { signal: AbortSignal.timeout(20_000) });
+    const computer = res.ok ? (await res.json())?.deployment?.computer : null;
+    const ws = entryOf(id);
+    if (typeof computer !== "string" || !computer.trim() || !ws) return;
+    if (rename && /^Server(?: \d+)?$/.test(ws.name)) registry = updateWorkspace(registry, id, { name: freeName(registry, computer, id) });
+    registry = { ...registry, workspaces: registry.workspaces.map((w) => (w.id === id ? { ...w, host: { relayUrl: "", lan: "", ...w.host, name: computer.slice(0, 60) } } : w)) };
+    saveRegistry();
+    tellWorkspaces();
+  } catch {
+    /* it keeps the name it has */
   }
 }
 
 handle("settings:observation", (event) => nativeSettingsObservation({
   window: BrowserWindow.fromWebContents(event.sender),
-  remote: Boolean(remoteProfile), shortcut: quickAccelerator, update: updaterState.state,
+  remote: isRemoteKind(entryOf(senderWorkspace(event) ?? shownId)?.kind), shortcut: quickAccelerator, update: updaterState.state,
   media: (kind) => systemPreferences.getMediaAccessStatus?.(kind),
 }));
 
-handle("remote:status", () =>
-  remoteProfile ? { mode: "remote", host: remoteProfile.host, ...remoteState } : { mode: "local" },
+// Settings, Servers: pairing another server, and whether this computer
+// runs workspaces of its own. Both change only the list: nothing restarts.
+handle("remote:connect", (_event, link, name) =>
+  answer(async () => {
+    needsList();
+    if (!app.isPackaged && process.env.BLOKS_DEV_WORKSPACES !== "1") throw new Error("Connecting to another computer works in the installed app.");
+    const entry = await pairServer(String(link ?? ""), typeof name === "string" ? name : "");
+    return { ok: true, id: entry.id };
+  }),
 );
-handle("remote:connect", async (event, link) => {
-  if (!app.isPackaged) return { error: "Connecting to another computer works in the installed app." };
-  try {
-    const profile = await claimPairLink(String(link ?? ""), `${os.hostname().replace(/\.local$/, "")} (desktop)`);
-    saveRemoteProfile(profile);
-  } catch (error) {
-    return { error: error?.message ?? String(error) };
-  }
-  // exit skips before-quit, so the server is stopped here, or on Windows
-  // it would be ended outright and leave its lock behind
-  quitting = true;
-  await stopAllServers();
-  app.relaunch();
-  app.exit(0);
-  return { ok: true };
-});
-handle("remote:disconnect", () => {
-  saveRemoteProfile(null);
-  app.relaunch();
-  app.exit(0);
-  return { ok: true };
-});
+handle("workspaces:local", (_event, on) =>
+  answer(async () => {
+    needsList();
+    if (typeof on !== "boolean") throw new Error("Say on or off.");
+    const was = shownId;
+    registry = setLocal(registry, on);
+    saveRegistry();
+    if (registry.current !== was) await switchWorkspace(registry.current);
+    if (on) void launchTheRest();
+    else {
+      // the ones here stop, their folders kept as they are
+      for (const ws of registry.workspaces) if (!isRemoteKind(ws.kind) && servers.has(ws.id)) await halt(ws.id);
+    }
+    tellWorkspaces();
+    applyBadge();
+  }),
+);
 
 // The system keeps handing us these keys until we say otherwise.
 app.on("will-quit", () => {

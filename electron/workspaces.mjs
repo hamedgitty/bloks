@@ -22,12 +22,13 @@ import { defaultMark, fixedMark, generateMark, isChoosableMark, sameMark } from 
 export const REGISTRY_VERSION = 1;
 export const PERSONAL_ID = "personal";
 
-export const KINDS = Object.freeze(["personal", "business", "custom", "joined", "hosted"]);
+export const KINDS = Object.freeze(["personal", "business", "custom", "joined", "hosted", "remote"]);
 
 /** Kinds whose server is on another machine, reached through the remote
  * proxy (electron/remote.mjs) rather than started here: a workspace
- * somebody else owns and let you into, and your own hosted one. */
-export const REMOTE_KINDS = Object.freeze(["joined", "hosted"]);
+ * somebody else owns and let you into, your own hosted one, and your own
+ * on a server you run (bloks-server), as many of those as you pair. */
+export const REMOTE_KINDS = Object.freeze(["joined", "hosted", "remote"]);
 export const isRemoteKind = (kind) => REMOTE_KINDS.includes(kind);
 export const NOTIFY_LEVELS = Object.freeze(["all", "needs-me", "nothing"]);
 
@@ -132,11 +133,11 @@ export function normalizeEntry(raw, index = 0) {
     // `mark` stays what the owner's server says, for going back to.
     entry.ownMark = isChoosableMark(raw.ownMark) ? { color: raw.ownMark.color, pattern: raw.ownMark.pattern } : null;
   }
-  // Your own workspace on a machine run for you, reached through Bloks
-  // Cloud with a device of yours paired there. Yours, so named and marked
-  // like any of your own; its credentials live in the keychain like a
-  // joined one's.
-  if (kind === "hosted") {
+  // Your own workspace on a machine run for you, or on a server you run,
+  // reached through Bloks Cloud with a device of yours paired there.
+  // Yours, so named and marked like any of your own; its credentials live
+  // in the keychain like a joined one's.
+  if (kind === "hosted" || kind === "remote") {
     const host = raw.host && typeof raw.host === "object" ? raw.host : {};
     entry.host = {
       name: typeof host.name === "string" ? host.name.slice(0, 60) : "",
@@ -189,6 +190,9 @@ export function parseRegistry(text) {
       // the language the interface and the menu bar are read in; none
       // is "System", whatever the OS speaks
       language: LANGUAGE_CODES.includes(raw?.prefs?.language) ? raw.prefs.language : null,
+      // "Run workspaces on this computer": on unless turned off, which
+      // leaves this app a window onto servers elsewhere (GitHub 428)
+      local: raw?.prefs?.local !== false,
     },
     workspaces: sorted(workspaces),
   };
@@ -269,6 +273,96 @@ export function setLanguage(registry, language) {
   return { ...registry, prefs: { ...registry.prefs, language: next } };
 }
 
+// ── workspaces on servers you run ──────────────────────────────────────
+// The desktop app as a client of your own servers elsewhere (GitHub 428):
+// any number of them, each paired as a device of yours, named and
+// switched between like the workspaces here. With "Run workspaces on this
+// computer" off, the ones here are kept, folders and all, but neither
+// listed nor started, so the app runs no agents of its own.
+
+/** Whether a workspace's server is started on this computer. */
+export const isLocalKind = (kind) => !isRemoteKind(kind);
+
+/** Whether the app shows and starts workspaces on this computer. */
+export const runsLocal = (registry) => registry.prefs.local !== false;
+
+/** The workspaces the app shows and may open: all of them, or only those
+ * elsewhere while nothing runs here. */
+export function shownWorkspaces(registry) {
+  return runsLocal(registry) ? registry.workspaces : registry.workspaces.filter((w) => isRemoteKind(w.kind));
+}
+
+/** The workspace to show when the one asked for is not shown: the first
+ * one that is, Personal first while the ones here run. Null for none. */
+export function fallbackWorkspace(registry, except = null) {
+  const shown = shownWorkspaces(registry).filter((w) => w.id !== except);
+  return (runsLocal(registry) && shown.find((w) => w.kind === "personal")) || shown[0] || null;
+}
+
+/** A name for a server not yet named: the one given, else its own, kept
+ * apart from every other name here with a number. */
+export function freeName(registry, wanted, self = null) {
+  const base = cleanName(wanted) || "Server";
+  const taken = (name) => registry.workspaces.some((w) => w.id !== self && w.name.toLowerCase() === name.toLowerCase());
+  if (!taken(base)) return base;
+  for (let n = 2; n < 100; n++) {
+    const name = cleanName(`${base.slice(0, NAME_MAX - 4)} ${n}`);
+    if (!taken(name)) return name;
+  }
+  return cleanName(`${base.slice(0, NAME_MAX - 7)} ${Date.now() % 1000}`);
+}
+
+/**
+ * Lists a workspace on a server of yours, or points the one already
+ * listed for that server at a fresh pairing. A server is known by the
+ * Bloks Cloud space its pairing goes through (`relayToken`, never kept
+ * here): pairing the same server again keeps its place, name and mark,
+ * and pairing another adds one beside it, so neither replaces the other.
+ * `same` is the id of the entry already paired with that server, which
+ * the caller finds from the credentials it keeps.
+ */
+export function addRemote(registry, { name = "", host = "", relayUrl = "", same = null } = {}, { now = Date.now(), random = Math.random, id = newId() } = {}) {
+  const hostInfo = { name: typeof host === "string" ? host.slice(0, 60) : "", relayUrl: typeof relayUrl === "string" ? relayUrl : "", lan: "" };
+  const was = same ? registry.workspaces.find((w) => w.id === same && w.kind === "remote") : null;
+  if (was) {
+    const entry = { ...was, host: hostInfo, ...(cleanName(name) ? { name: freeName(registry, name, was.id) } : {}) };
+    return { registry: { ...registry, workspaces: registry.workspaces.map((w) => (w.id === was.id ? entry : w)) }, entry, replaced: true };
+  }
+  const entry = normalizeEntry({
+    id,
+    kind: "remote",
+    name: freeName(registry, name || "Server"),
+    mark: generateMark(marksInUse(registry), { random }),
+    notify: "all",
+    order: registry.workspaces.length,
+    createdAt: now,
+    host: hostInfo,
+  });
+  return { registry: { ...registry, workspaces: [...registry.workspaces, entry] }, entry, replaced: false };
+}
+
+/** Why "Run workspaces on this computer" can't be turned off now, or null:
+ * the app has to have somewhere to open. */
+export function localOffRefusal(registry) {
+  if (!registry.workspaces.some((w) => isRemoteKind(w.kind))) {
+    return "Add a server first: with nothing running on this computer, the app opens your workspaces elsewhere.";
+  }
+  return null;
+}
+
+/** Turns "Run workspaces on this computer" on or off. Off moves the one
+ * on screen to a workspace elsewhere; the ones here are kept as they are. */
+export function setLocal(registry, on) {
+  if (typeof on !== "boolean" || runsLocal(registry) === on) return registry;
+  if (!on) {
+    const why = localOffRefusal(registry);
+    if (why) throw new Error(why);
+  }
+  const next = { ...registry, prefs: { ...registry.prefs, local: on } };
+  const current = shownWorkspaces(next).some((w) => w.id === next.current) ? next.current : (fallbackWorkspace(next)?.id ?? next.current);
+  return { ...next, current };
+}
+
 /** "Show working agents in the notch" (electron/notch.mjs), on or off.
  * Anything but a yes or a no leaves it as it was. */
 export function setNotch(registry, on) {
@@ -306,8 +400,11 @@ export function settle(registry, { personalDataDir, now = Date.now(), random = M
     return { ...w, mark };
   });
   workspaces = sorted(workspaces).map((w, i) => ({ ...w, order: i }));
-  const current = workspaces.some((w) => w.id === registry.current) ? registry.current : workspaces[0].id;
-  return { ...registry, current, workspaces };
+  let next = { ...registry, workspaces };
+  // nothing elsewhere to open is no way to run with nothing here
+  if (!runsLocal(next) && !workspaces.some((w) => isRemoteKind(w.kind))) next = { ...next, prefs: { ...next.prefs, local: true } };
+  const current = shownWorkspaces(next).some((w) => w.id === registry.current) ? registry.current : (fallbackWorkspace(next) ?? workspaces[0]).id;
+  return { ...next, current };
 }
 
 /** The mark a workspace is drawn with on this computer: for one you
@@ -508,8 +605,14 @@ export function removeWorkspace(registry, id) {
   if (!was) throw new Error("There is no such workspace.");
   if (was.kind === "personal") throw new Error("Personal cannot be deleted.");
   const workspaces = registry.workspaces.filter((w) => w.id !== id).map((w, i) => ({ ...w, order: i }));
-  const current = registry.current === id ? (workspaces.find((w) => w.kind === "personal") ?? workspaces[0]).id : registry.current;
-  return { registry: { ...registry, workspaces, current }, removed: was };
+  const next = { ...registry, workspaces };
+  // the last one elsewhere, while nothing runs here, would leave the app
+  // nothing to open; it says so rather than quietly start one here
+  if (!runsLocal(next) && !workspaces.some((w) => isRemoteKind(w.kind))) {
+    throw new Error(`${was.name} is the only workspace this app opens. Turn on Run workspaces on this computer, or add another server, first.`);
+  }
+  const current = registry.current === id ? (fallbackWorkspace(next) ?? workspaces[0]).id : registry.current;
+  return { registry: { ...next, current }, removed: was };
 }
 
 /**
@@ -542,6 +645,9 @@ export function reorder(registry, ids) {
 
 export function setCurrent(registry, id) {
   if (!registry.workspaces.some((w) => w.id === id)) throw new Error("There is no such workspace.");
+  if (!shownWorkspaces(registry).some((w) => w.id === id)) {
+    throw new Error("Workspaces on this computer are turned off. Turn on Run workspaces on this computer to open it.");
+  }
   return { ...registry, current: id };
 }
 
@@ -670,7 +776,10 @@ export function snapshot(registry, live = {}, now = Date.now()) {
     // what the person is called in their own workspaces, for a window
     // that has to ask before a Team workspace is made
     ownerName: registry.prefs.ownerName ?? null,
-    workspaces: registry.workspaces.map((w) => {
+    // "Run workspaces on this computer": off, only those elsewhere are
+    // listed, and nothing here is offered that would start one
+    local: runsLocal(registry),
+    workspaces: shownWorkspaces(registry).map((w) => {
       const here = live[w.id] ?? {};
       return {
         id: w.id,
@@ -696,8 +805,9 @@ export function snapshot(registry, live = {}, now = Date.now()) {
               lanOnly: !w.host?.relayUrl && Boolean(w.host?.lan),
             }
           : {}),
-        // your own, on a machine run for you
+        // your own, on a machine run for you or a server you run
         ...(w.kind === "hosted" ? { remote: true } : {}),
+        ...(w.kind === "remote" ? { remote: true, host: w.host?.name ?? "" } : {}),
         // its work moved to the workspace named, and it is kept, paused
         ...(w.moved ? { movedTo: w.moved.to } : {}),
       };

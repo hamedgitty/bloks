@@ -107,6 +107,16 @@ you: everything, only what needs you, or nothing.
 With Bloks Cloud, each workspace can also be **reachable online** on its
 own switch, for your phone and the people you invite.
 
+Workspaces on **servers you run** sit in the same switcher. Pair as many
+`bloks-server`s as you like from Settings, Phone and devices, Your
+servers (or Add a server in the switcher), name each, and switch with
+Cmd or Ctrl and a number. Each keeps its own pairing, so adding, pairing
+again or removing one never touches another, and one that can't be
+reached leaves the rest working. Turn off **Run workspaces on this
+computer** there and the app is only a window onto your servers: it
+starts no workspace and runs no agents of its own, and the ones on the
+computer wait, untouched, until you turn it back on.
+
 <p align="center">
   <img alt="The workspace switcher open at the top of the window: Personal, Brightwater with three members and Maple Street Bakery, then Join a workspace, New workspace, Workspace settings, Plan and Mute" src="docs/screenshots/workspaces.png" width="470">
   <img alt="New workspace: a name, Just me or Team, and the mark it will wear, with a button to draw another" src="docs/screenshots/new-workspace.png" width="350">

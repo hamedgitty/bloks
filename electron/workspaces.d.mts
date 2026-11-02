@@ -2,7 +2,7 @@
 // the same shapes the main process uses.
 import type { Mark } from "./workspace-marks.mjs";
 
-export type WorkspaceKind = "personal" | "business" | "custom" | "joined" | "hosted";
+export type WorkspaceKind = "personal" | "business" | "custom" | "joined" | "hosted" | "remote";
 export type NotifyLevel = "all" | "needs-me" | "nothing";
 
 export interface WorkspaceEntry {
@@ -32,7 +32,7 @@ export interface WorkspaceEntry {
 export interface Registry {
   version: number;
   current: string;
-  prefs: { theme: "light" | "dark" | "system" | null; sameAccent: boolean; accent: string | null; ownerName?: string | null; notch?: boolean; language?: string | null };
+  prefs: { theme: "light" | "dark" | "system" | null; sameAccent: boolean; accent: string | null; ownerName?: string | null; notch?: boolean; language?: string | null; local?: boolean };
   workspaces: WorkspaceEntry[];
 }
 
@@ -69,6 +69,18 @@ export function addHosted(
   host?: { host?: string; relayUrl?: string },
   options?: { now?: number; random?: () => number; id?: string },
 ): { registry: Registry; entry: WorkspaceEntry; replaced: boolean };
+export function isLocalKind(kind: unknown): boolean;
+export function runsLocal(registry: Registry): boolean;
+export function shownWorkspaces(registry: Registry): WorkspaceEntry[];
+export function fallbackWorkspace(registry: Registry, except?: string | null): WorkspaceEntry | null;
+export function freeName(registry: Registry, wanted: unknown, self?: string | null): string;
+export function addRemote(
+  registry: Registry,
+  input?: { name?: string; host?: string; relayUrl?: string; same?: string | null },
+  options?: { now?: number; random?: () => number; id?: string },
+): { registry: Registry; entry: WorkspaceEntry; replaced: boolean };
+export function localOffRefusal(registry: Registry): string | null;
+export function setLocal(registry: Registry, on: unknown): Registry;
 export function updateWorkspace(
   registry: Registry,
   id: string,
@@ -133,6 +145,7 @@ export function snapshot(
   available: true;
   current: string;
   ownerName: string | null;
+  local: boolean;
   workspaces: Array<{
     id: string;
     kind: WorkspaceKind;
@@ -151,5 +164,6 @@ export function snapshot(
     host?: string;
     role?: "member" | "admin";
     lanOnly?: boolean;
+    remote?: boolean;
   }>;
 };

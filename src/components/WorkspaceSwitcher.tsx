@@ -12,7 +12,7 @@
 // and this component is drawn again by the workspace it now shows.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { BellOff, Check, ChevronsUpDown, Loader2, LogIn, Plus, RefreshCw, Settings, Sparkles, Wifi, LogOut } from "@/components/icons";
+import { BellOff, Check, ChevronsUpDown, Loader2, LogIn, Plus, RefreshCw, Server, Settings, Sparkles, Wifi, LogOut } from "@/components/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -419,10 +419,15 @@ export function WorkspaceSwitcher({
   const waitingElsewhere = s.workspaces.some((w) => hasWaiting(w, s.current));
   const muted = muteLabel(current.mute);
   const reach = reachLine(current);
-  // Joining runs on a server of this computer's own, which a joined or a
-  // hosted workspace's window does not have: it is done from Personal.
-  const joinHere = current.kind !== "joined" && current.kind !== "hosted";
-  const home = s.workspaces.find((w) => w.kind === "personal") ?? s.workspaces.find((w) => w.kind !== "joined" && w.kind !== "hosted");
+  // Joining runs on a server of this computer's own, which a workspace
+  // elsewhere does not have: it is done from Personal. With nothing
+  // running here there is none, so neither joining nor making a workspace
+  // here is offered, and pairing another server is (GitHub 428).
+  const elsewhere = (w: WorkspaceInfo) => w.kind === "joined" || w.kind === "hosted" || w.kind === "remote";
+  const local = s.local !== false;
+  const joinHere = !elsewhere(current);
+  const home = s.workspaces.find((w) => w.kind === "personal") ?? s.workspaces.find((w) => !elsewhere(w));
+  const toServers = () => store?.dispatch({ type: "toggleAppSettings", open: true, page: "devices" });
 
   const mute = async (choice: string) => {
     const error = await act(window.bloks?.workspaceMute?.(current.id, choice));
@@ -487,21 +492,31 @@ export function WorkspaceSwitcher({
           <WorkspaceList s={s} />
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator className="mx-1 my-1.5" />
-        <DropdownMenuItem className="gap-2.5 rounded-[9px] py-2 text-ui font-medium" onSelect={() => {
-            if (!joinHere && home) return void goToWorkspace(home.id, { open: "join" });
-            toDialog.current = true;
-            openWorkspaceDialog("join");
-          }}>
-          <LogIn />
-          {t("workspaceSwitcher.joinAWorkspace")}
-        </DropdownMenuItem>
-        <DropdownMenuItem className="gap-2.5 rounded-[9px] py-2 text-ui font-medium" onSelect={() => {
-            toDialog.current = true;
-            openWorkspaceDialog("new");
-          }}>
-          <Plus />
-          {t("workspaceSwitcher.newWorkspace")}
-        </DropdownMenuItem>
+        {local && (joinHere || home) && (
+          <DropdownMenuItem className="gap-2.5 rounded-[9px] py-2 text-ui font-medium" onSelect={() => {
+              if (!joinHere && home) return void goToWorkspace(home.id, { open: "join" });
+              toDialog.current = true;
+              openWorkspaceDialog("join");
+            }}>
+            <LogIn />
+            {t("workspaceSwitcher.joinAWorkspace")}
+          </DropdownMenuItem>
+        )}
+        {local && (
+          <DropdownMenuItem className="gap-2.5 rounded-[9px] py-2 text-ui font-medium" onSelect={() => {
+              toDialog.current = true;
+              openWorkspaceDialog("new");
+            }}>
+            <Plus />
+            {t("workspaceSwitcher.newWorkspace")}
+          </DropdownMenuItem>
+        )}
+        {store && window.bloks?.remoteConnect && (
+          <DropdownMenuItem className="gap-2.5 rounded-[9px] py-2 text-ui font-medium" onSelect={toServers}>
+            <Server />
+            {t("workspaceSwitcher.addAServer")}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator className="mx-1 my-1.5" />
         {reach && <p className="max-w-[270px] text-pretty px-2.5 pb-1.5 pt-0.5 text-small text-muted-foreground">{reach}</p>}
         <DropdownMenuItem

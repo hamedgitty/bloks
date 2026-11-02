@@ -69,6 +69,7 @@ export function peopleLabel(ws: Pick<WorkspaceInfo, "team" | "members" | "kind">
  * network carries, or your hosted one, or null. */
 export function reachLine(ws: Pick<WorkspaceInfo, "kind" | "host"> & { lanOnly?: boolean }): string | null {
   if (ws.kind === "hosted") return t("workspaces.reach.hosted");
+  if (ws.kind === "remote") return ws.host ? t("workspaces.reach.server", { host: ws.host }) : t("workspaces.reach.serverUnnamed");
   if (ws.kind !== "joined" || !ws.lanOnly) return null;
   return ws.host ? t("workspaces.reach.hostsNetwork", { host: ws.host }) : t("workspaces.reach.ownersNetwork");
 }
@@ -77,6 +78,7 @@ export function reachLine(ws: Pick<WorkspaceInfo, "kind" | "host"> & { lanOnly?:
 export function kindLabel(ws: Pick<WorkspaceInfo, "kind" | "team">): string {
   if (ws.kind === "joined") return t("workspaces.kind.joined");
   if (ws.kind === "hosted") return t("workspaces.kind.hosted");
+  if (ws.kind === "remote") return t("workspaces.kind.remote");
   return ws.team ? t("workspaces.kind.team") : t("workspaces.justMe");
 }
 
