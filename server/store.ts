@@ -1020,7 +1020,7 @@ export class Store {
     const card = "card" in patch ? patch.card : before.card;
     list[idx] = { ...before, ...patch, card };
     try { this.save(threadId, list, soon, durable); }
-    catch (error) { list[idx] = before; throw error; }
+    catch (error) { if (durable) list[idx] = before; throw error; }
     this.onRewrite?.(threadId, [list[idx]]);
     return list[idx];
   }
