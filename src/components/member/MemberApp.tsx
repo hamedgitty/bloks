@@ -8,7 +8,7 @@
 // agents this person reaches, their own solo agents (each marked "Only
 // you"), and their rooms; the pages that are theirs sit at its foot.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Gauge, Menu, Plus, Settings, UserRound, Users, X } from "@/components/icons";
+import { Gauge, Menu, Plus, Puzzle, Settings, UserRound, Users, X } from "@/components/icons";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -39,7 +39,8 @@ import { AgentFace, OnlyYou } from "./MemberParts";
 import { AgentView, RoomView } from "./MemberViews";
 import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
-import { AboutYouPage, MembersAdminPage, NewSoloAgentDialog, UsagePage, WorkspacePage } from "./MemberPages";
+import { AboutYouPage, MembersAdminPage, NewSoloAgentDialog, UsagePage, WelcomePanel, WorkspacePage } from "./MemberPages";
+import { ConnectionsPage } from "./MemberConnections";
 import { t, useLanguage } from "@/lib/i18n";
 import { fromThisComputer } from "@/lib/thisComputer";
 
@@ -62,7 +63,7 @@ function keepPlace(place: MemberPlace) {
   }
 }
 
-const PAGE_ICON = { usage: Gauge, about: UserRound, members: Users, settings: Settings } as const;
+const PAGE_ICON = { usage: Gauge, about: UserRound, connections: Puzzle, members: Users, settings: Settings } as const;
 
 /** Leaves the joined workspace this window shows, after asking. */
 async function leaveWorkspace(id: string, name: string, owner: string, started: () => void): Promise<boolean> {
@@ -221,9 +222,21 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
     });
   }, [loaded, agents, rooms, workspace?.you.role]);
   const go = (next: MemberPlace) => {
+    // going anywhere from the welcome is past it
+    if (welcoming) welcomed();
     setPlace(next);
     keepPlace(next);
     setNavigationOpen(false);
+  };
+
+  // The welcome, once per person, on whichever device they open first:
+  // kept on the server, so a phone does not ask again what a Mac was told.
+  const [welcomeGone, setWelcomeGone] = useState(false);
+  const welcoming = member && Boolean(workspace) && !workspace?.paused && workspace?.you.welcomed === false && !welcomeGone;
+  const welcomed = (then?: () => void) => {
+    setWelcomeGone(true);
+    void memberApi.welcomed().catch(() => {});
+    then?.();
   };
 
   const groups = useMemo(() => agentGroups(agents), [agents]);
@@ -384,6 +397,14 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-tl-xl border-l border-t bg-background">
             {paused && workspace ? (
               <PausedPanel workspace={workspace} line={paused} onLeave={() => void leave()} leaving={leaving} />
+            ) : welcoming && workspace ? (
+              <WelcomePanel
+                workspace={workspace}
+                onDone={() => welcomed()}
+                onAbout={() => welcomed(() => go({ kind: "page", page: "about" }))}
+                onConnections={() => welcomed(() => go({ kind: "page", page: "connections" }))}
+                onAgent={workspace.solo.max > 0 && workspace.engines.length > 0 ? () => welcomed(makeSolo) : null}
+              />
             ) : !place || !workspace && member ? null : place.kind === "agent" && openAgent ? (
               <AgentView
                 key={openAgent.id}
@@ -405,6 +426,8 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
                 <UsagePage usage={usage} workspace={workspace} />
               ) : place.page === "about" ? (
                 <AboutYouPage workspace={workspace} />
+              ) : place.page === "connections" ? (
+                <ConnectionsPage workspace={workspace} />
               ) : place.page === "members" ? (
                 <MembersAdminPage />
               ) : (

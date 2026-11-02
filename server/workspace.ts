@@ -10,7 +10,7 @@
 //
 // Permissions are tight (0700 dir, 0600 files): memories carry
 // personal detail and have no business being world-readable.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -42,11 +42,71 @@ export function workspaceDir(botId: string): string {
 }
 
 export function ensureWorkspace(botId: string): string {
-  const dir = workspaceDir(botId);
+  return seeded(workspaceDir(botId));
+}
+
+function seeded(dir: string): string {
   mkdirSync(join(dir, "memory"), { recursive: true, mode: 0o700 });
   const memoryFile = join(dir, "MEMORY.md");
   if (!existsSync(memoryFile)) writeFileSync(memoryFile, SEED, { mode: 0o600 });
   return dir;
+}
+
+// ── a member's own desk with a team agent ──────────────────────────────
+//
+// In a member's private conversation with a team agent, the agent works
+// and keeps its memory here rather than in its own workspace: what that
+// member tells it stays with that member, and what the agent learned in
+// the owner's conversations or another member's is not lying in the
+// folder it starts in (GitHub 431). It lives with the member's other
+// things, so removing them from the workspace removes it too
+// (server/members.ts removeMember).
+
+const ID = /^[\w-]{1,64}$/;
+
+/** The folder for one member's private conversations with one agent. */
+export function personDeskDir(personId: string, botId: string): string {
+  // both ids are the server's own, but a path is never made of anything else
+  if (!ID.test(personId) || !ID.test(botId)) throw new Error("not an id");
+  return join(DATA_DIR, "people", personId, "agents", botId);
+}
+
+/** The same, made with its memory seeded, private to this account. */
+export function ensurePersonDesk(personId: string, botId: string): string {
+  const dir = personDeskDir(personId, botId);
+  mkdirSync(join(DATA_DIR, "people", personId), { recursive: true, mode: 0o700 });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return seeded(dir);
+}
+
+/** Every agent a member has a memory with, and what it holds, for that
+ * member's own page: MEMORY.md and each topic, the seed left out. */
+export function personMemories(personId: string): Array<{ botId: string; files: Array<{ name: string; text: string }> }> {
+  if (!ID.test(personId)) return [];
+  let ids: string[] = [];
+  try {
+    ids = readdirSync(join(DATA_DIR, "people", personId, "agents")).filter((id) => ID.test(id));
+  } catch {
+    return [];
+  }
+  return ids.flatMap((botId) => {
+    const files = filesAt(personDeskDir(personId, botId), true)
+      .map((file) => ({ name: file.name, text: file.read() }))
+      .filter((file) => file.text.trim());
+    return files.length ? [{ botId, files }] : [];
+  });
+}
+
+/** Forgets what one agent remembers of one member: the memory files of
+ * their desk. Files the agent made there for them are left. */
+export function forgetPersonMemory(personId: string, botId: string): boolean {
+  if (!ID.test(personId) || !ID.test(botId)) return false;
+  const dir = personDeskDir(personId, botId);
+  if (!existsSync(dir)) return false;
+  rmSync(join(dir, "memory"), { recursive: true, force: true });
+  rmSync(join(dir, "MEMORY.md"), { force: true });
+  seeded(dir);
+  return true;
 }
 
 function readWhole(botId: string): string | null {
@@ -78,7 +138,11 @@ function readMemoryIn(dir: string): string | null {
 
 /** The prompt's share of memory: whole file up to the budget. */
 export function loadMemory(botId: string): { text: string; truncated: boolean } | null {
-  const whole = readWhole(botId);
+  return loadMemoryAt(workspaceDir(botId));
+}
+
+function loadMemoryAt(dir: string): { text: string; truncated: boolean } | null {
+  const whole = readMemoryIn(dir);
   return whole === null ? null : cutToBudget(whole);
 }
 
@@ -99,9 +163,14 @@ export function cutToBudget(whole: string): { text: string; truncated: boolean }
 
 /** The editor's view: the whole file, plus whether the budget cuts it. */
 export function readMemoryFile(botId: string): { text: string; truncated: boolean } {
-  const whole = readWhole(botId);
+  return readMemoryAt(workspaceDir(botId));
+}
+
+/** The same for any memory folder: an agent's, or a member's desk. */
+export function readMemoryAt(dir: string): { text: string; truncated: boolean } {
+  const whole = readMemoryIn(dir);
   if (whole === null) return { text: "", truncated: false };
-  return { text: whole, truncated: Boolean(loadMemory(botId)?.truncated) };
+  return { text: whole, truncated: cutToBudget(whole).truncated };
 }
 
 /** Whether an agent has any memory worth tidying: a MEMORY.md that is
@@ -188,12 +257,15 @@ export function sharedMemoryStats(): MemoryStats {
   return statsAt(sharedMemoryDir(), false);
 }
 
-/** The shared memory as an agent is told it, or null while it is empty. */
-export function sharedMemoryPrompt(): string | null {
+/** The shared memory as an agent is told it, or null while it is empty.
+ * On a member's turn it is said to be the owner's, named, since "the
+ * person you work for" is the member there. */
+export function sharedMemoryPrompt(owner?: string): string | null {
   const whole = readMemoryIn(sharedMemoryDir());
   if (whole === null) return null;
   const { text, truncated } = cutToBudget(whole);
-  return `Shared memory, kept by the person you work for for every agent in this workspace. You can read it but not change it; if something in it looks wrong, say so:\n${text}${truncated ? "\n[shared memory truncated]" : ""}`;
+  const by = owner ? `${owner}, who owns this workspace, for every agent and everyone in it` : "the person you work for for every agent in this workspace";
+  return `Shared memory, kept by ${by}. You can read it but not change it; if something in it looks wrong, say so:\n${text}${truncated ? "\n[shared memory truncated]" : ""}`;
 }
 
 /** Whether a memory path is a link. An agent can make one with its own
@@ -209,7 +281,12 @@ export function isLink(path: string): boolean {
 
 export function writeMemoryFile(botId: string, text: string): boolean {
   ensureWorkspace(botId);
-  const path = join(workspaceDir(botId), "MEMORY.md");
+  return writeMemoryAt(workspaceDir(botId), text);
+}
+
+/** MEMORY.md in a memory folder that is already made, never through a link. */
+export function writeMemoryAt(dir: string, text: string): boolean {
+  const path = join(dir, "MEMORY.md");
   if (isLink(path)) return false;
   writeFileSync(path, text, { mode: 0o600 });
   return true;
@@ -222,6 +299,10 @@ export function isTopicName(name: string): boolean {
 
 export function listMemoryTopics(botId: string): Array<{ name: string; bytes: number; changedAt: number }> {
   return topicsIn(workspaceDir(botId));
+}
+
+export function listTopicsAt(dir: string): Array<{ name: string; bytes: number; changedAt: number }> {
+  return topicsIn(dir);
 }
 
 function topicsIn(dir: string): Array<{ name: string; bytes: number; changedAt: number }> {
@@ -242,9 +323,13 @@ function topicsIn(dir: string): Array<{ name: string; bytes: number; changedAt: 
 }
 
 export function readMemoryTopic(botId: string, name: string): string | null {
+  return readTopicAt(workspaceDir(botId), name);
+}
+
+export function readTopicAt(dir: string, name: string): string | null {
   // re-checked here so no future caller can turn this into an open read
   if (!TOPIC_NAME.test(name)) return null;
-  return readTextIn(workspaceDir(botId), `memory/${name}`)?.text ?? null;
+  return readTextIn(dir, `memory/${name}`)?.text ?? null;
 }
 
 /** How much of one memory file recall reads. Topic files are the agent's
@@ -260,6 +345,11 @@ export const MEMORY_RECALL_BYTES = 256 * 1024;
  */
 export function memoryFiles(botId: string): MemoryFileRead[] {
   return filesAt(workspaceDir(botId), true);
+}
+
+/** The same for any memory folder: a member's desk with an agent. */
+export function memoryFilesAt(dir: string): MemoryFileRead[] {
+  return filesAt(dir, true);
 }
 
 /** The shared MEMORY.md, the same way, for the person's search. */
@@ -315,19 +405,39 @@ export function writeMemoryTopic(botId: string, name: string, text: string): boo
   return true;
 }
 
+/** A topic in a memory folder that is already made; an empty text
+ * forgets it. Never through a link. */
+export function writeTopicAt(dir: string, name: string, text: string): boolean {
+  if (!TOPIC_NAME.test(name)) return false;
+  const path = join(dir, "memory", name);
+  if (isLink(path) || isLink(join(dir, "memory"))) return false;
+  if (!text.trim()) {
+    rmSync(path, { force: true });
+    return true;
+  }
+  writeFileSync(path, text, { mode: 0o600 });
+  return true;
+}
+
 /**
  * The standing prompt block: where memory lives and how to keep it.
  * `how` is what this engine keeps it with: its own file tools, or the
  * memory_read and memory_write tools of an API engine that has no files.
  */
 export function memoryPrompt(botId: string, how: "files" | "tools" | "cli" | "readonly" = "files", cli = 'node "$BLOKS_CLI"'): string {
-  const dir = workspaceDir(botId);
+  return memoryPromptAt(workspaceDir(botId), how, cli);
+}
+
+/** The same block for any memory folder. A member's desk is never kept
+ * through the command line, which reads the agent's own memory, so its
+ * caller asks for "readonly" where the folder cannot be reached. */
+export function memoryPromptAt(dir: string, how: "files" | "tools" | "cli" | "readonly" = "files", cli = 'node "$BLOKS_CLI"'): string {
   const loaded = `auto-loaded each turn, the first ${MEMORY_MAX_LINES} lines and ${MEMORY_MAX_BYTES / 1000} KB; the rest is cut`;
   // An agent working in a container or on another machine has none of
   // this computer's files: its memory is reached through the command
   // line, or, where that cannot run, only read.
   if (how === "readonly") {
-    const memory = loadMemory(botId);
+    const memory = loadMemoryAt(dir);
     const said = "Your memory is kept on the person's computer, and where you work now you cannot change it. Say in your reply anything worth remembering, and the person can add it.";
     return memory ? `${said}\n\nYour memory (MEMORY.md):\n${memory.text}${memory.truncated ? "\n[memory truncated]" : ""}` : said;
   }
@@ -346,7 +456,7 @@ export function memoryPrompt(botId: string, how: "files" | "tools" | "cli" | "re
     // after its date, so a temporary fact does not outlive its truth
     "A fact that is only true for a while (a trip, a deadline, someone away) ends with its last day as (until YYYY-MM-DD); it is removed after that day.",
   ].join(" ");
-  const memory = loadMemory(botId);
+  const memory = loadMemoryAt(dir);
   if (!memory) return guidance;
   return `${guidance}\n\nYour memory (MEMORY.md):\n${memory.text}${memory.truncated ? "\n[memory truncated, trim the file]" : ""}`;
 }

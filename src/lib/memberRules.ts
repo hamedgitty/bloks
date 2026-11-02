@@ -19,7 +19,8 @@ export interface MemberWorkspace {
    * this is the line that says so. Nothing of theirs is gone. */
   paused?: string;
   workspace: { id: string; name: string; kind: string; mark: { color: string; pattern: string } };
-  you: { personId: string; name: string; role: MemberRole };
+  /** `welcomed` once they have seen the welcome, on any device of theirs. */
+  you: { personId: string; name: string; role: MemberRole; welcomed?: boolean };
   owner: { name: string };
   privacy: { privateReadable: boolean; line: string };
   members: Array<{ id: string; name: string; role: MemberRole }>;
@@ -102,6 +103,21 @@ export interface MemberUsage {
   stopped: string | null;
 }
 
+/** What is the member's own: their apps key (by its last four), the
+ * apps offered, and their keys by name. Never a value. */
+export interface MemberConnections {
+  apps: { connected: boolean; ending: string | null; savedAt: number | null; list?: Array<{ slug: string; label: string; blurb: string }> };
+  secrets: Array<{ name: string; savedAt: number }>;
+}
+
+/** What one agent remembers of this member, from their private
+ * conversation with it. `agent` is null for one no longer here. */
+export interface MemberMemory {
+  botId: string;
+  agent: string | null;
+  files: Array<{ name: string; text: string }>;
+}
+
 export interface MemberNote {
   id: string;
   text: string;
@@ -175,7 +191,7 @@ export function modeFrom(
 export type MemberPlace =
   | { kind: "agent"; id: string; lane: "team" | "private" }
   | { kind: "room"; id: string }
-  | { kind: "page"; page: "usage" | "about" | "members" | "settings" };
+  | { kind: "page"; page: "usage" | "about" | "connections" | "members" | "settings" };
 
 /** The pages a member's app has, in the rail's order. Members (managing
  * people) is an admin's; everything of the owner's is left out entirely,
@@ -184,6 +200,7 @@ export function memberPages(role: MemberRole | null): Array<{ page: Extract<Memb
   return [
     { page: "usage", label: t("memberRules.page.usage") },
     { page: "about", label: t("memberRules.page.about") },
+    { page: "connections", label: t("memberRules.page.connections") },
     ...(role === "admin" ? [{ page: "members" as const, label: t("memberRules.page.members") }] : []),
     { page: "settings", label: t("memberRules.page.settings") },
   ];

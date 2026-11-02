@@ -590,6 +590,28 @@ and the server asks it before anything leaves:
   lists them for the owner, to read only.
 - A solo agent is its maker's alone: not listed for anyone else, its
   conversations theirs, and only they can put it in a room.
+- A private conversation is private past its transcript (GitHub 431).
+  The agent keeps a memory of that member's own there (`memoryOf`), at a
+  desk of theirs with the agent, `people/<id>/agents/<botId>/`, which is
+  also where it works unless the owner gave the agent a folder. The
+  standing prompt loads that memory, not the agent's own; `memory_read`
+  and `memory_write` reach it; the owner's Memory place and the nightly
+  tidy never do. On Claude Code the turn's file tools may not read or
+  change any agent's workspace or anybody else's folder, even with a yes
+  (`SendTurnInput.deniedDirs`), and Claude Code's own per-folder memory is
+  off. A conversation from before desks starts a new session at the desk
+  once, told the conversation (`TaskRecord.desk`).
+- Looking back is held to the same line (`mayRecall`): from a member's
+  private conversation, that conversation and the team conversation they
+  are on; from the team conversation, itself; from the owner's own, never
+  a member's private conversation, whatever the reading setting, which
+  lets the owner read and does not hand the words to an agent. The
+  owner's own `GET /api/search` and recall from their device reach a
+  member's private conversation only while reading them is on, and a
+  member's solo agent never.
+- A member's own apps and keys (`server/personal.ts`, below) are used by
+  a turn they asked for in their private conversation or their solo
+  agent (`personalAccountsFor`), and by nothing else.
 - Approvals in a team conversation or a room are answered by the person
   whose message started the work, the owner or an admin; in a private
   conversation or a solo agent, by its person.
@@ -609,11 +631,35 @@ routes (`/api/member/...`) give the workspace as a member sees it, the
 agents they reach and their own solo agents (made within their cap, on
 the engines they are allowed, and deleted by them alone), each agent's
 `team` and `private` messages and cards, their usage, their own notes
-about themselves (kept apart in `people/<id>/profile-notes.json`), their
-read positions, and leaving (`POST /api/member/leave`, which revokes
-every device, closes their streams, archives their solo agents and drops
-their private conversations, and tells the owner with a
-`workspace.left` frame). The event stream reaches a member only through
+about themselves (kept apart in `people/<id>/profile-notes.json`), what
+each agent remembers of them (`GET /api/member/memory`, and
+`DELETE /api/member/memory/:botId` to forget it), their own apps and keys
+(below), whether they have seen the welcome (`you.welcomed` on
+`GET /api/member/workspace`, set by `POST /api/member/welcomed`, so one
+device's welcome is every device's), their read positions, and leaving
+(`POST /api/member/leave`, which revokes every device, closes their
+streams, archives their solo agents, drops their private conversations
+and removes their folder with its desks, apps and keys, and tells the
+owner with a `workspace.left` frame).
+
+A member's own apps and keys (`server/personal.ts`,
+`people/<id>/own.json`, 0600) are theirs to manage from their own
+device and nobody else's: `GET /api/member/connections` (their Composio
+key by its last four characters, the apps offered, their keys by name;
+never a value), `PUT` and `DELETE /api/member/connections/apps` (a
+Connect key, `ck_`, checked with Composio before it is kept),
+`GET .../apps/services`, `POST` and `DELETE .../apps/:slug` (a sign-in
+link to open, or every account of that app removed, all under the
+member's key), and `PUT` and `DELETE .../secrets/:NAME` (the owner's
+reserved names refused the same way). A turn that uses them gets the
+member's key as its Composio access and their keys in its environment
+on an engine with a shell, and is told so by name. In that turn
+`request_secret` and `request_connection` plant no card: the agent is
+told, and a line in the conversation tells the member, to add it under
+Your connections. The owner's own card routes refuse a card in a
+member's private conversation, so nothing there is ever saved into the
+owner's keys or signed in under the owner's account. The values are in
+`redactSecrets`. The event stream reaches a member only through
 `memberFrame()`, which strips what is the owner's (tool arguments,
 screenshots of the owner's screen, file paths, the buttons on
 approvals); a reply's words stream to whoever may read its
@@ -3133,8 +3179,13 @@ its memory files (MEMORY.md and `memory/*.md`, each cut into pieces under
 their headings and named by file), words in any order, with the message
 before each hit. From a lane of a shared room it reaches only that room,
 and no memory; the lane that answers mail from anyone reaches nothing,
-and no other lane reaches it. Agents reach it with the CLI's `recall` and
-chat engines with the `search_history` tool.
+and no other lane reaches it. In a workspace with other people in it,
+the rest is `mayRecall` in `server/access.ts` (People in a workspace):
+a member's private conversation reaches itself, the team conversation
+they are on and their own memory with the agent; the team conversation
+reaches itself; the owner's own lanes never reach a member's private
+one. Agents reach it with the CLI's `recall` and chat engines with the
+`search_history` tool.
 
 Ranking is BM25 in plain TypeScript (`server/recall-index.ts`): a word
 counts for more the rarer it is in this agent's own past (its lanes,
@@ -3161,7 +3212,9 @@ answers in well under a second.
 
 The person's own search, the command palette and the MCP server's
 `search` (`GET /api/search`), reads the same indexes over every
-conversation of every agent still in the list and every room, ranked the
+conversation of every agent still in the list and every room (a member's
+private conversation only while the owner reads those, and a member's
+solo agent never), ranked the
 same way and wanting most of the words, so the message that answers comes
 before the one that happens to be newest. Nothing taken back, rewound or
 still waiting is in an index. A query of nothing but small words ("to be
@@ -3987,6 +4040,15 @@ tool if the person let it read outside its folders, and gh's own sign-in,
 when there is one, is open to any agent with a shell; Settings says this
 beside the grants. Codex in its `workspace-write` sandbox has no network,
 so the address needs the same allowance a `bloks` command does.
+
+A connection here is the owner's, as the saved secrets and the Composio
+key in Settings are: used in the owner's own turns. A member's own apps
+and keys are kept apart, per person, and used in that member's private
+turns alone (People in a workspace). A member's own GitHub connection
+through this gateway is not built yet: a member's turn holds no
+credential of the agent's, and an address rides on one; giving a
+member's turn a credential that can do nothing but reach its own
+connection comes first.
 
 Not built yet: `gh` itself through a connection (gh will not talk to an
 address over plain HTTP for github.com, and teaching it to would need a

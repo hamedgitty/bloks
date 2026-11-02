@@ -151,6 +151,21 @@ What they get is decided by you:
 - **Private one to ones.** Anyone who can reach an agent can also talk to
   it privately. Nobody else reads that, unless you turn on reading
   members' private conversations, and members are told which way it is.
+  What the agent remembers there is kept for that person alone, apart
+  from its memory everywhere else, and when it looks back it finds only
+  what that person could already read. Your own conversations, search
+  and recall never reach a member's private words either.
+- **Their own apps and keys.** Each member connects their own mail,
+  calendar and other apps (with a Composio key of their own) and saves
+  their own keys, under Your connections in their app. Their private
+  conversations and solo agents use them, so "pull my email" means the
+  inbox of whoever asked; a room, a team conversation, you and everyone
+  else never do. Your own apps and keys stay yours the same way.
+- **A welcome of their own.** Someone who joins is shown, once, who they
+  are signed in as, what is shared and what is theirs, and where to tell
+  agents about themselves, connect their apps or make their own agent.
+  A household works the same way: make a workspace for it beside
+  Personal, invite the family, and each of them keeps their own.
 - **On your behalf.** In a team conversation or a room, you or an admin
   can ask an agent to message someone ("message Sam about the draft"),
   and it writes in Sam's private conversation, marked as sent for you.
@@ -160,8 +175,10 @@ What they get is decided by you:
   month, their share of Bloks AI, and how many solo agents they may
   make. A member at their limit is stopped; nobody else notices.
 
-Every agent they talk to runs on your computer, with your keys, and they
-never reach your settings, your keys or your own conversations.
+Every agent they talk to runs on your computer, with your engines, and
+they never reach your settings, your keys or your own conversations.
+Whoever runs the computer can read what is kept on it, and the app says
+so to everyone who joins.
 Conversations with more than two people are drawn as bubbles, with faces
 under the latest message showing who has read how far. Members in a
 workspace come with [Bloks Team](https://bloks.dev); a single room can

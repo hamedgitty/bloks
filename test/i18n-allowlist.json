@@ -96,6 +96,10 @@
       "claude",
       "codex"
     ],
+    "src/components/member/MemberConnections.tsx": [
+      "ck_…",
+      "TRANSISTOR_API_KEY"
+    ],
     "src/components/settings/BrowserPage.tsx": [
       "example.com"
     ],

@@ -93,8 +93,8 @@ test("where a member's app opens, what its sidebar and rail list", () => {
   // the place last open, while it still exists, and its lane while that is theirs
   assert.deepEqual(firstPlace([chief, scout], [], { kind: "agent", id: "scout", lane: "team" }), { kind: "agent", id: "scout", lane: "private" });
   assert.deepEqual(firstPlace([chief], [], { kind: "agent", id: "gone", lane: "team" }), { kind: "agent", id: "chief", lane: "team" });
-  assert.deepEqual(memberPages("member").map((p) => p.page), ["usage", "about", "settings"]);
-  assert.deepEqual(memberPages("admin").map((p) => p.page), ["usage", "about", "members", "settings"]);
+  assert.deepEqual(memberPages("member").map((p) => p.page), ["usage", "about", "connections", "settings"]);
+  assert.deepEqual(memberPages("admin").map((p) => p.page), ["usage", "about", "connections", "members", "settings"]);
 });
 
 test("making a solo agent says plainly when it cannot", () => {

@@ -340,6 +340,12 @@ export interface SendTurnInput {
    * harness grants its own workspace (memory lives there) so an agent
    * with a custom working folder can still keep notes. */
   extraDirs?: string[];
+  /** Folders this turn's file tools may not read or change, even with a
+   * yes: in a member's private conversation, the agent's own workspace
+   * and every other person's folder (GitHub 431). A driver whose engine
+   * takes such rules (Claude Code) passes them on; a shell the person
+   * approves is not held by them, which the documentation says. */
+  deniedDirs?: string[];
   /** Extra environment for the process this turn runs in, where there is
    * one. This is how a turn's own credential reaches the agent: a driver
    * that runs a CLI merges it into the child's environment, and a driver

@@ -113,6 +113,7 @@ import { type WakePreview, RAW_PARTS_MAX_BYTES, RelayLink, relayDeviceFor, relay
 import * as people from "./people.ts";
 import { mayApprove, memberCan, memberFrame, memberMessage, type MemberAction, type MemberView, type Standing as PersonStanding } from "./member-access.ts";
 import * as access from "./access.ts";
+import { appsKey, Personal, secretName, secretNameRefusal } from "./personal.ts";
 import { asWho, createMembers, savedMarkDefault, setIdentityMark, workspaceIdentity } from "./members.ts";
 import { instanceName, mayAnnounce, stopAnnouncing, syncAnnouncement, workspaceTag } from "./announce.ts";
 import { PLAN_LIMITS, ROOM_SHARING_WORDS, membersActive, pausedWords, roomSharingAllowed, workspaceMemberLimit } from "./plan-limits.ts";
@@ -1119,6 +1120,10 @@ const agentTokens = new AgentTokens();
 // each riding on that turn's credential, and the line kept per use.
 const connectionHandles = new ConnectionHandles();
 const connectionAudit = new AuditLog(join(DATA_DIR, "connections-audit.jsonl"));
+/** What is each member's own: the apps they connected and the keys
+ * they saved, used by the turns they ask for in their own private
+ * conversations and nowhere else (server/personal.ts). */
+const personal = new Personal(DATA_DIR);
 
 // ── connections and local CLI plugins (GitHub 386, 387) ──
 
@@ -5439,10 +5444,18 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       // into the room, as the standing prompt does.
       if ((event.tool === "memory_read" || event.tool === "memory_write") && event.requestId) {
         const room = bloks.bloks.find((b) => b.sharing && b.lanes?.[bot.id] === event.threadId);
+        // a member's private conversation keeps its own, at their desk
+        const lane = bot.tasks.find((t) => t.id === event.threadId);
+        const mine = lane && !room ? access.memoryOf(bot, lane) : null;
+        const input = (event.input as Record<string, unknown> | undefined) ?? {};
         const answer =
           room && (event.tool === "memory_write" || !room.sharing?.memoryFor?.includes(bot.id))
             ? { message: "Not in a shared room: your memory is private to the person you work for.", changed: false }
-            : memoryTool(bot.id, event.tool, (event.input as Record<string, unknown> | undefined) ?? {});
+            : mine?.kind === "person"
+              ? whoIs(mine.personId)
+                ? { message: deskMemoryTool(workspace.ensurePersonDesk(mine.personId, bot.id), event.tool, input), changed: false }
+                : { message: "This conversation's person is no longer in this workspace.", changed: false }
+              : memoryTool(bot.id, event.tool, input);
         if (answer.changed) broadcast({ kind: "memory.changed", botId: bot.id, changes: 1 });
         void asker
           ?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "answer", message: answer.message })
@@ -5470,6 +5483,44 @@ async function onRuntimeEvent(event: RuntimeEvent) {
             message: recallText(recallFor(bot, query, event.threadId), query),
           })
           .catch(() => {});
+        break;
+      }
+      // A member's own turn in their own private conversation: a key or an
+      // app is theirs to add, on their own device, and never the owner's
+      // to answer. No card the owner could save into their own keys, no
+      // sign-in under the owner's Composio key. The agent is told, and so
+      // is the member, in a line of the conversation they can read.
+      const keyAsker = (event.tool === "request_connection" || event.tool === "request_secret") && event.requestId ? laneRequester.get(event.threadId) : undefined;
+      const askLane = keyAsker ? bot.tasks.find((t) => t.id === event.threadId) : undefined;
+      const askOwn = keyAsker && askLane && whoIs(keyAsker) ? access.personalAccountsFor(bot, askLane, keyAsker, { room: inRoom }) : null;
+      if (askOwn && event.requestId) {
+        const name = people.person(askOwn)?.name ?? "This member";
+        const input = (event.input ?? {}) as { name?: unknown; apps?: unknown };
+        let answer: string;
+        let line: string | null = null;
+        if (event.tool === "request_secret") {
+          const label = clamp(input.name, 60);
+          const envName = label ? secretName(label) : "";
+          const refused = label ? secretNameRefusal(envName) : "The secret needs a name, like \"Transistor API key\". Try again with one.";
+          if (refused) answer = refused;
+          else {
+            line = `${bot.name} asked for a key: ${label}. Add it as ${envName} under Your connections, then carry on here.`;
+            answer = `${name} adds keys under Your connections in their Bloks app; nobody can hand you one in this conversation. Tell them briefly to add "${label}" there as ${envName}, then end your turn. Once saved it is in your shell environment as ${envName} on their next message.`;
+          }
+        } else {
+          const slugs = [...new Set((Array.isArray(input.apps) ? input.apps : []).filter((a): a is string => typeof a === "string").map((a) => a.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "")).filter(Boolean))].slice(0, 5);
+          if (!slugs.length) answer = "No valid app names were given; ask which app they mean.";
+          else {
+            const names = slugs.map(connectorLabel).join(", ");
+            line = `${bot.name} asked to use ${names}. Connect ${slugs.length === 1 ? "it" : "them"} under Your connections, then carry on here.`;
+            answer = `${name} connects their own apps under Your connections in their Bloks app, signed in as themselves. Tell them briefly to connect ${names} there, then end your turn; never paste a sign-in link yourself.`;
+          }
+        }
+        if (line) {
+          const notice = store.appendMessage(roomId, { role: "bot", kind: "notice", text: line });
+          broadcast({ kind: "message", threadId: roomId, message: notice });
+        }
+        void asker?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "answer", message: answer }).catch(() => {});
         break;
       }
       if (
@@ -7816,6 +7867,27 @@ async function startClaimedTurn(
   // where the reply lands: the lane's own thread, or the shared room
   const roomId = opts.roomId ?? task.id;
   const blok = roomId === task.id ? null : bloks.get(roomId);
+  // A member's private conversation with a team agent keeps its memory,
+  // and works by default, at a desk of that member's own with the agent
+  // (access.memoryOf): what they say there is not written where the
+  // agent's other conversations read, and what those wrote is not in the
+  // folder this one starts in (GitHub 431). The lane goes with its member;
+  // one left behind is never run in the agent's own folder instead.
+  const deskOwner = !sharing && !blok && !guestMail ? access.memoryOf(bot, task) : null;
+  if (deskOwner?.kind === "person" && !whoIs(deskOwner.personId)) {
+    throw Object.assign(new Error("This conversation belonged to somebody who is no longer in this workspace."), { status: 404 });
+  }
+  const personDesk = deskOwner?.kind === "person" ? workspace.ensurePersonDesk(deskOwner.personId, bot.id) : null;
+  // Whose own apps and keys this turn uses: the member who asked, in
+  // their own private conversation or their own solo agent, and nobody
+  // else's, ever (access.personalAccountsFor). Who asked is the turn's
+  // own record of it, never a name in the words.
+  const ownAccounts = turnPerson && !guestMail && !personSource
+    ? access.personalAccountsFor(bot, task, turnPerson, { room: Boolean(sharing || blok) })
+    : null;
+  const ownName = ownAccounts ? (people.person(ownAccounts)?.name ?? "this member") : null;
+  const ownSecrets = ownAccounts ? personal.secretsOf(ownAccounts) : {};
+  const ownApps = ownAccounts && bot.composio !== false ? personal.appsKeyOf(ownAccounts) : null;
   // Private rooms can share a provider lane with solo turns. Their
   // switch context still belongs to each agent in each room separately.
   const awayId = blok ? `${task.id}:${roomId}` : task.id;
@@ -8064,14 +8136,20 @@ async function startClaimedTurn(
   // (guestMail) is told of neither: it gets no connector, and whoever
   // wrote is not the one to ask for a key or a connection.
   const asksByTool = instance.driverKind === "claudeAgent" || apiTools;
-  const connectorHint = [
-    asksByTool && !guestMail && cfg.composio?.key && bot.composio !== false
-      ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
-      : null,
-    secretHint(guestMail ? null : asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const connectorHint = ownName
+    ? personalHint(ownName, {
+        keys: runsAProcess(instance.driverKind) ? Object.keys(ownSecrets) : [],
+        apps: Boolean(ownApps),
+        asks: asksByTool,
+      })
+    : [
+        asksByTool && !guestMail && cfg.composio?.key && bot.composio !== false
+          ? "When a task needs an app the user has not connected yet (Slack, Gmail, GitHub, and so on), call the request_connection tool with the app slugs. A sign-in card appears in the chat; never paste sign-in or OAuth links into the conversation yourself."
+          : null,
+        secretHint(guestMail ? null : asksByTool ? "tool" : !personSource && !sharing && runsAProcess(instance.driverKind) ? "cli" : null, cliCommand),
+      ]
+        .filter(Boolean)
+        .join(" ");
   // The parts of the persona that move between turns, which a resumed
   // Claude Code session keeps as they were when it started (see
   // server/standing-prompt.ts). The room's history is told in the turn's
@@ -8088,18 +8166,25 @@ async function startClaimedTurn(
     // One working elsewhere has none of this computer's files, so it
     // keeps its memory through the command line, or only reads it where
     // that cannot run.
-    memory: !guestMail && !personSource && (!sharing || sharing.memoryFor?.includes(bot.id))
-      ? workspace.memoryPrompt(
-          bot.id,
-          placeNow
-            ? seenThere?.node === false ? "readonly" : "cli"
-            : !runsAProcess(instance.driverKind) && instance.driverKind !== "claudeAgent" && apiTools ? "tools" : "files",
-          cliCommand,
+    // A member's private conversation keeps its own, at their desk, never
+    // through the command line, which reaches the agent's own memory.
+    memory: personDesk
+      ? workspace.memoryPromptAt(
+          personDesk,
+          placeNow ? "readonly" : !runsAProcess(instance.driverKind) && instance.driverKind !== "claudeAgent" && apiTools ? "tools" : "files",
         )
-      : null,
-    // what the person keeps for every agent: private to them, under the
-    // same gate as the notes about them
-    shared: (!sharing && !guestMail && !personSource && workspace.sharedMemoryPrompt()) || null,
+      : !guestMail && !personSource && (!sharing || sharing.memoryFor?.includes(bot.id))
+        ? workspace.memoryPrompt(
+            bot.id,
+            placeNow
+              ? seenThere?.node === false ? "readonly" : "cli"
+              : !runsAProcess(instance.driverKind) && instance.driverKind !== "claudeAgent" && apiTools ? "tools" : "files",
+            cliCommand,
+          )
+        : null,
+    // what the owner keeps for every agent, under the same gate as the
+    // notes about the person; a member's turn is told it is the owner's
+    shared: (!sharing && !guestMail && !personSource && workspace.sharedMemoryPrompt(turnPerson ? hostName() : undefined)) || null,
   };
   const roomInMessage = Boolean(blok) && instance.driverKind === "claudeAgent";
   // Where its deliverables go: its own files here, or, working elsewhere,
@@ -8420,7 +8505,12 @@ async function startClaimedTurn(
       // a connector or the computer with nothing to ask the owner first,
       // and the answer goes back to whoever wrote.
       const othersTurn = Boolean(sharing) || !owners;
-      if ((!othersTurn || roomTools?.connectors) && cfg.composio?.key && bot.composio !== false) {
+      // A member's own turn in their own private conversation acts on the
+      // apps they connected, under their own key, and never the owner's
+      // (access.personalAccountsFor): no key of theirs, no apps at all.
+      if (ownAccounts) {
+        if (ownApps) integrations.composio = { key: ownApps, url: cfg.composio?.url };
+      } else if ((!othersTurn || roomTools?.connectors) && cfg.composio?.key && bot.composio !== false) {
         integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
       }
       const attached = (cfg.mcpServers ?? []).filter(
@@ -8606,6 +8696,13 @@ async function startClaimedTurn(
         });
         broadcast({ kind: "message", threadId: roomId, message: notice });
       }
+      // A member's private conversation from before it had a desk of its
+      // own ran in the agent's workspace, and its session lives there. It
+      // starts a new one at the member's desk, told the conversation, once.
+      if (personDesk && !task.desk) {
+        if (!placeNow && (task.cwd ?? null) === null && Object.keys(task.resumeCursors).length) store.moveTaskCwd(task.id, null);
+        store.markDesk(task.id);
+      }
       const pinned = sharing
         ? store.pinTaskCwd(task.id, sharedDesk(sharedRoom!.id))
         : onCloud
@@ -8615,7 +8712,7 @@ async function startClaimedTurn(
         ? sharedDesk(sharedRoom!.id)
         : onCloud
           ? undefined
-          : (roomDesk ?? pinned ?? workspace.ensureWorkspace(bot.id));
+          : (roomDesk ?? pinned ?? personDesk ?? workspace.ensureWorkspace(bot.id));
       // A session lives where its engine ran. A lane whose agent now works
       // somewhere else (or here again) starts a new session where it is,
       // told the conversation so far, the way a moved folder does.
@@ -8998,6 +9095,8 @@ async function startClaimedTurn(
                 // Listed first so a secret can never shadow the lines below.
                 // Only on the owner's own turns: they are the owner's keys.
                 ...(owners ? usableSecrets(cfg.secrets) : {}),
+                // a member's own keys, in their own private conversation
+                ...ownSecrets,
                 // a connection's address, never its credential
                 ...(linked?.env ?? {}),
                 BLOKS_URL: `http://127.0.0.1:${PORT}`,
@@ -9006,11 +9105,18 @@ async function startClaimedTurn(
                 ...(replyCredential ? { BLOKS_REPLY_TOKEN: replyCredential.token, BLOKS_REPLY_PATH: `/api/bots/${bot.id}/telegram/reply` } : {}),
               },
             }
-          : {}),
+          : Object.keys(ownSecrets).length && runsAProcess(instance.driverKind)
+            ? // A member's own turn has no credential of the agent's, only
+              // the keys the member saved for themselves.
+              { env: { ...ownSecrets } }
+            : {}),
         // its own workspace is always the agent's to edit: memory notes
         // must not queue approval cards behind a custom working folder.
         // Not in a shared room, where those notes are the owner's.
-        ...(onCloud || sharing || guestMail || personSource ? {} : { extraDirs: [workspace.ensureWorkspace(bot.id)] }),
+        ...(onCloud || sharing || guestMail || personSource ? {} : { extraDirs: [personDesk ?? workspace.ensureWorkspace(bot.id)] }),
+        // and in a member's private conversation, neither the agents' own
+        // folders nor anybody else's are this turn's to read, asked or not
+        ...(personDesk && deskOwner?.kind === "person" ? { deniedDirs: deskDenials(deskOwner.personId) } : {}),
         ...(sharing ? { shared: { tools: sharing.tools } } : guestMail ? { shared: { tools: "conversation" as const } } : {}),
         // full access takes the engine's own guards off too; never in a
         // shared room, where the approvals protect other people, and
@@ -11027,18 +11133,22 @@ interface RecallPlace {
  * people reaches that room only, so a guest cannot ask their way into the
  * owner's private conversations. The lane that answers mail from anyone
  * reaches nothing, and nothing reaches it: what strangers wrote is not
- * the owner's past to bring up.
+ * the owner's past to bring up. Everywhere else what may be reached is
+ * access.mayRecall's: what everybody reading the conversation the
+ * agent is in could already read (GitHub 431). No lane is the owner
+ * reading from their own device, never an agent.
  */
-function recallPlaces(bot: BotRecord, laneId?: string | null): { places: RecallPlace[]; private: boolean } {
+function recallPlaces(bot: BotRecord, laneId?: string | null): { places: RecallPlace[]; memory: { dir: string; key: string } | null } {
   const lane = laneId ? bot.tasks.find((task) => task.id === laneId) : undefined;
-  if (lane?.guestMail) return { places: [], private: false };
+  if (lane?.guestMail) return { places: [], memory: null };
   const sharedRoom = laneId ? bloks.bloks.find((b) => b.sharing && b.lanes?.[bot.id] === laneId) : undefined;
   if (sharedRoom) {
-    return { places: [{ threadId: sharedRoom.id, where: `room ${sharedRoom.name}`, kind: "room", label: sharedRoom.name }], private: false };
+    return { places: [{ threadId: sharedRoom.id, where: `room ${sharedRoom.name}`, kind: "room", label: sharedRoom.name }], memory: null };
   }
+  const from = recallStart(laneId, lane);
   const sharedLanes = new Set(bloks.bloks.filter((b) => b.sharing).map((b) => b.lanes?.[bot.id]).filter(Boolean));
   const places: RecallPlace[] = bot.tasks
-    .filter((task) => !sharedLanes.has(task.id) && !task.guestMail)
+    .filter((task) => !sharedLanes.has(task.id) && !task.guestMail && access.mayRecall(bot, from, task))
     .map((task) => ({
       threadId: task.id,
       // a conversation brought over says where it was had, so an agent
@@ -11047,21 +11157,45 @@ function recallPlaces(bot: BotRecord, laneId?: string | null): { places: RecallP
       kind: "conversation" as const,
       label: task.title,
     }));
-  for (const room of bloks.bloks) {
-    if (room.sharing || !room.memberIds.includes(bot.id)) continue;
-    places.push({ threadId: room.id, where: `room ${room.name}`, kind: "room", label: room.name });
+  if (access.mayRecall(bot, from, { room: true })) {
+    for (const room of bloks.bloks) {
+      if (room.sharing || !room.memberIds.includes(bot.id)) continue;
+      places.push({ threadId: room.id, where: `room ${room.name}`, kind: "room", label: room.name });
+    }
   }
-  return { places, private: true };
+  // a member's private conversation keeps a memory of its own, and looks
+  // in that one alone (access.memoryOf)
+  const mine = lane ? access.memoryOf(bot, lane) : { kind: "agent" as const };
+  // nor a member's solo agent's memory, read from the owner's device
+  if (!laneId && bot.solo && bot.solo.by !== "owner") return { places, memory: null };
+  const memory = mine.kind === "person"
+    ? { dir: workspace.personDeskDir(mine.personId, bot.id), key: `person:${mine.personId}:${bot.id}` }
+    : { dir: workspace.workspaceDir(bot.id), key: bot.id };
+  return { places, memory };
+}
+
+/** Where recall is asked from, in access.mayRecall's terms. */
+function recallStart(laneId: string | null | undefined, lane: TaskRecord | undefined): access.RecallFrom {
+  if (!laneId) return { reader: "owner", privateReadable: invites.joiningSettings().privateReadable };
+  const shape: access.LaneShape = lane ?? { id: laneId };
+  const person = shape.personId ? people.person(shape.personId) : null;
+  // a former member's conversation reaches itself and nothing more
+  const who: access.Who = !shape.personId
+    ? { kind: "owner" }
+    : person?.role
+      ? asWho(person)
+      : { kind: "member", personId: shape.personId, role: "member" };
+  return { lane: shape, who };
 }
 
 type PlacedSource = IndexedSource & { place: RecallPlace };
 
-/** The agent's memory files as places to search: MEMORY.md and its
- * topic files, or the topic files alone. */
-function memorySources(bot: BotRecord, which: "all" | "topics"): PlacedSource[] {
-  return workspace.memoryFiles(bot.id).flatMap((file) => {
+/** A memory folder's files as places to search: MEMORY.md and its topic
+ * files, or the topic files alone. */
+function memorySources(memory: { dir: string; key: string }, which: "all" | "topics"): PlacedSource[] {
+  return workspace.memoryFilesAt(memory.dir).flatMap((file) => {
     if (which === "topics" && file.name === "MEMORY.md") return [];
-    const index = recallIndexes.get(`memory:${bot.id}:${file.name}`, () => indexMemory(file.read(), file.mtimeMs), file.stamp);
+    const index = recallIndexes.get(`memory:${memory.key}:${file.name}`, () => indexMemory(file.read(), file.mtimeMs), file.stamp);
     if (!index.docs.length) return [];
     const place: RecallPlace = { threadId: `memory:${file.name}`, where: `your memory file ${file.name}`, kind: "memory", label: file.name };
     return [{ threadId: place.threadId, where: place.where, index, memory: file.name, place }];
@@ -11076,7 +11210,7 @@ function recallSources(bot: BotRecord, laneId?: string | null, options: { memory
   const sources: PlacedSource[] = reach.places
     .filter((place) => place.threadId !== options.except)
     .map((place) => ({ threadId: place.threadId, where: place.where, index: laneIndex(place.threadId), messages: store.messagesFor(place.threadId), place }));
-  return reach.private ? [...sources, ...memorySources(bot, options.memory ?? "all")] : sources;
+  return reach.memory ? [...sources, ...memorySources(reach.memory, options.memory ?? "all")] : sources;
 }
 
 /** The cache back under budget, once a search is done with it. */
@@ -11127,6 +11261,40 @@ function searchMemory(query: string, limit: number): Array<{ botId: string; file
   recallDone();
   const ownerOf = new Map(sources.map((source, i) => [source.threadId, owners[i]]));
   return hits.map((hit) => ({ botId: ownerOf.get(hit.threadId)!, file: hit.memory!, text: hit.text, at: hit.at }));
+}
+
+/**
+ * memory_read and memory_write in a member's private conversation: the
+ * same names judged the same way, on that member's desk with the agent
+ * (server/workspace.ts personDeskDir). Not journaled with the agent's
+ * memory, which the owner's Memory place shows: it is not the owner's.
+ */
+function deskMemoryTool(dir: string, tool: "memory_read" | "memory_write", input: Record<string, unknown>): string {
+  const name = (typeof input.file === "string" ? input.file.trim() : "").replace(/^memory\//, "");
+  const file = !name ? "" : name === "MEMORY.md" ? "MEMORY.md" : `memory/${/\.md$/i.test(name) ? name : `${name}.md`}`;
+  const badName = "A topic is a file name ending in .md, like people.md.";
+  if (tool === "memory_read") {
+    if (!file) {
+      const topics = workspace.listTopicsAt(dir);
+      return topics.length ? `Your topic files:\n${topics.map((t) => `- ${t.name} (${t.bytes} bytes)`).join("\n")}` : "You have no topic files yet.";
+    }
+    if (file === "MEMORY.md") {
+      const { text, truncated } = workspace.readMemoryAt(dir);
+      return text ? `${text}${truncated ? "\n[only the first part of this loads each turn; trim it]" : ""}` : "MEMORY.md is empty.";
+    }
+    if (!workspace.isTopicName(file.slice(7))) return badName;
+    return workspace.readTopicAt(dir, file.slice(7)) ?? `There is no topic ${file.slice(7)}.`;
+  }
+  if (!file) return "memory_write needs a file: MEMORY.md or a topic name.";
+  const text = typeof input.text === "string" ? input.text : null;
+  if (text === null) return "memory_write needs the file's new text.";
+  if (Buffer.byteLength(text, "utf8") > workspace.MEMORY_FILE_MAX_BYTES) return "That is over 256KB. Keep memory short, with detail in topic files.";
+  if (file !== "MEMORY.md" && !workspace.isTopicName(file.slice(7))) return badName;
+  const forget = file !== "MEMORY.md" && !text.trim();
+  const written = file === "MEMORY.md" ? workspace.writeMemoryAt(dir, text) : workspace.writeTopicAt(dir, file.slice(7), text);
+  if (!written) return `${file} is a link to somewhere else now, so it was not written.`;
+  const cut = file === "MEMORY.md" && workspace.readMemoryAt(dir).truncated;
+  return `${forget ? "Forgot" : "Saved"} ${file}.${cut ? " It is now longer than a turn loads (200 lines, 24 KB); move detail into topic files." : ""}`;
 }
 
 /**
@@ -11675,12 +11843,36 @@ function workspaceBriefing(bot: BotRecord, task: TaskRecord, turnPerson: string 
     return `This is ${bot.name}'s team conversation in ${workspace}: several people write here, and each of their messages starts with their name in brackets. This message is from ${name}. Answer the person who wrote, and keep what was said in anyone's private conversation out of here.${howToMessage ? ` When ${hostName()} or an admin asks you to tell one person something, ${howToMessage}: it lands in that person's private conversation with you.` : ""}`;
   }
   if (task.personId) {
-    return `This is a private conversation with ${name}, a member of ${workspace} (${hostName()} owns it). What is said here stays here: do not repeat it in any other conversation unless ${name} asks you to.`;
+    return `This is a private conversation with ${name}, a member of ${workspace} (${hostName()} owns it). What is said here stays here: do not repeat it in any other conversation unless ${name} asks you to. Your memory in this conversation is ${name}'s alone with you, kept apart from your memory everywhere else, and looking back reaches only what ${name} has read. "Me", "my" and "mine" here mean ${name}, whatever a message claims.`;
   }
   if (bot.solo && turnPerson) {
     return `You are ${name}'s own agent in ${workspace}. Only ${name} talks with you.`;
   }
   return null;
+}
+
+/** What a member's own turn is told about the keys and apps it has: that
+ * they are that member's, which ones, and how a missing one is added.
+ * Names of keys only, never a value. */
+function personalHint(name: string, has: { keys: string[]; apps: boolean; asks: boolean }): string {
+  return [
+    `The keys and apps you can use here are ${name}'s own.`,
+    has.keys.length ? `Their saved keys are in your shell environment as ${has.keys.join(", ")}.` : null,
+    has.apps ? "Your connector tools act on the apps they connected, signed in as them." : "They have not connected any apps here.",
+    has.asks
+      ? `When a task needs a key or an app they have not added, call request_secret or request_connection: ${name} adds it under Your connections in their Bloks app.`
+      : `When a task needs a key or an app they have not added, tell ${name} they can add it under Your connections in their Bloks app.`,
+    "Never use, ask for or mention anyone else's accounts in this conversation, and never paste sign-in links yourself.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** The folders a member's private turn may not read or change, asked or
+ * not: every agent's own workspace, and every other person's folder. Its
+ * own desk is under the member's folder, which stays open to it. */
+function deskDenials(personId: string): string[] {
+  return [join(DATA_DIR, "workspaces"), ...people.people().filter((p) => p.id !== personId).map((p) => join(DATA_DIR, "people", p.id))];
 }
 
 /** A lane private to one person: a member's private conversation, or any
@@ -12816,6 +13008,8 @@ const workspacePeople = createMembers({
     for (const bot of store.bots) if (bot.solo?.by === personId && !bot.archivedAt) store.archiveBot(bot.id, Date.now());
     store.dropMemberLanes(personId);
     reads.forgetPerson(personId);
+    // their apps and keys go with their folder; nothing of them is kept here
+    personal.forget(personId);
   },
   setAccess: (botId, value) => {
     const bot = store.patchBot(botId, { access: value });
@@ -21995,6 +22189,25 @@ function memberRoom(roomId: string, personId: string) {
   };
 }
 
+/** The apps a member is offered to connect for themselves: the ones a
+ * person's own day runs on, from the shipped list, so labels need no
+ * catalog key of the owner's. */
+const MEMBER_APPS = ["gmail", "googlecalendar", "googledrive", "googledocs", "googlesheets", "outlook", "notion", "todoist", "slack", "whatsapp"];
+
+function memberAppList(): Array<{ slug: string; label: string; blurb: string }> {
+  const shipped = composio.connectorCatalogFallback();
+  return MEMBER_APPS.flatMap((slug) => {
+    const card = shipped.find((c) => c.slug === slug);
+    return card ? [{ slug, label: card.label, blurb: card.blurb }] : [];
+  });
+}
+
+/** The Composio calls made for a member, under their own key and nothing
+ * else of the owner's configuration but where Composio is reached. */
+function memberComposio(key: string): AppConfig {
+  return { composio: { key, ...(cfg.composio?.url ? { url: cfg.composio.url } : {}) } } as AppConfig;
+}
+
 /**
  * Everything a member's device can do. Reached only through
  * member-access.ts's allowlist, and never falls through to the owner's
@@ -22182,7 +22395,8 @@ async function serveMember(
       const limit = workspacePeople.limits.limitOf(personId);
       return json(res, 200, {
         workspace: workspacePeople.identity(),
-        you: { personId, name: who.name, role: who.role },
+        // welcomed on any device of theirs is welcomed on all of them
+        you: { personId, name: who.name, role: who.role, welcomed: personal.welcomed(personId) },
         owner: { name: hostName() },
         privacy: { privateReadable: settings.privateReadable, line: access.privacyLine(settings.privateReadable, hostName()) },
         members: people.workspaceMembers().map((p) => ({ id: p.id, name: p.name, role: p.role })),
@@ -22342,6 +22556,76 @@ async function serveMember(
 
     case "appWatchers":
       return memberAppWatchers(req, res, action, { id: personId, name: who.name });
+
+    // ── what is the member's own (server/personal.ts) ──
+    // Every one of these is about the person this device belongs to, and
+    // nobody else: no route here names another person, and none sends a
+    // value back, the member's own included.
+    case "connections":
+      return json(res, 200, { ...personal.view(personId), apps: { ...personal.view(personId).apps, list: memberAppList() } });
+
+    case "appsKey": {
+      if (action.method === "DELETE") {
+        personal.setAppsKey(personId, null);
+        return json(res, 200, personal.view(personId));
+      }
+      const key = appsKey((await readBody(req)).key);
+      if (!key) return json(res, 400, { error: "That is not a Composio Connect key. It starts with ck_." });
+      // only a definite no refuses it: a network that is not there now is
+      // not a wrong key (composio.keyVerdict)
+      if ((await composio.validateConnectKey(cfg, key)) === false) {
+        return json(res, 400, { error: "Composio did not accept that key. Check it and paste it again." });
+      }
+      personal.setAppsKey(personId, key);
+      return json(res, 200, personal.view(personId));
+    }
+
+    case "apps": {
+      const key = personal.appsKeyOf(personId);
+      if (!key) return json(res, 200, { connected: false, services: {} });
+      try {
+        return json(res, 200, { connected: true, services: await composio.connectorStates(memberComposio(key), MEMBER_APPS) });
+      } catch (e) {
+        return json(res, 502, { error: redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200) });
+      }
+    }
+
+    case "app": {
+      const key = personal.appsKeyOf(personId);
+      if (!key) return json(res, 409, { error: "Add your Composio key first." });
+      try {
+        if (action.method === "POST") return json(res, 200, await composio.beginConnectorAuth(memberComposio(key), action.slug));
+        return json(res, 200, await composio.disconnectConnector(memberComposio(key), action.slug));
+      } catch (e) {
+        return json(res, 502, { error: redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200) });
+      }
+    }
+
+    case "secret": {
+      if (action.method === "DELETE") {
+        return personal.forgetSecret(personId, action.name) ? json(res, 200, personal.view(personId)) : json(res, 404, { error: "no such key of yours" });
+      }
+      const saved = personal.saveSecret(personId, action.name, (await readBody(req)).value);
+      if ("error" in saved) return json(res, 400, { error: saved.error });
+      return json(res, 200, personal.view(personId));
+    }
+
+    case "memories": {
+      const named = (botId: string) => {
+        const bot = store.bot(botId);
+        return bot && !bot.archivedAt ? bot.name : null;
+      };
+      return json(res, 200, {
+        memories: workspace.personMemories(personId).map((m) => ({ botId: m.botId, agent: named(m.botId), files: m.files })),
+      });
+    }
+
+    case "forgetMemory":
+      return workspace.forgetPersonMemory(personId, action.botId) ? json(res, 200, { ok: true }) : json(res, 404, { error: "nothing remembered there" });
+
+    case "welcomed":
+      personal.welcome(personId);
+      return json(res, 200, { ok: true });
 
     case "notes":
       return json(res, 200, { notes: workspacePeople.notesOf(personId).list() });
@@ -26357,7 +26641,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           break;
         }
       }
-      if (!card?.connector || !threadId) return json(res, 404, { error: "no such connector card" });
+      // A member's private conversation is never the owner's to answer in:
+      // a sign-in there would be under the owner's key (server/personal.ts)
+      if (!card?.connector || !threadId || privateTo(threadId)) return json(res, 404, { error: "no such connector card" });
       const patch = (changes: Partial<NonNullable<Message["connector"]>>) => {
         const patched = store.patchMessage(threadId!, card!.id, {
           connector: { ...card!.connector!, ...changes },
@@ -26550,7 +26836,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           break;
         }
       }
-      if (!card?.secret || !threadId) return json(res, 404, { error: "no such secret card" });
+      // nor to save a key in, which would land in the owner's own keys and
+      // start a turn there as the owner
+      if (!card?.secret || !threadId || privateTo(threadId)) return json(res, 404, { error: "no such secret card" });
       const patch = (changes: Partial<NonNullable<Message["secret"]>>) => {
         const patched = store.patchMessage(threadId!, card!.id, {
           secret: { ...card!.secret!, ...changes },
@@ -30509,11 +30797,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // that answers comes before the one that happens to be newest and
       // "vendors" finds "vendor". Nothing taken back, rewound or still
       // waiting to be said is in them.
+      // A member's private conversation only while the owner may read
+      // those, and a member's solo agent never (server/access.ts).
+      const ownerMayRead = (threadId: string) => {
+        const hidden = privateTo(threadId);
+        return !hidden || hidden.ownerReads;
+      };
       if (termsOf(q).length) {
         const places = [
           ...store.bots
             .filter((bot) => !bot.hidden)
-            .flatMap((bot) => bot.tasks.map((task) => ({ threadId: task.id, about: { botId: bot.id, name: bot.name, task: task.title } }))),
+            .flatMap((bot) => bot.tasks.filter((task) => ownerMayRead(task.id)).map((task) => ({ threadId: task.id, about: { botId: bot.id, name: bot.name, task: task.title } }))),
           ...bloks.bloks.map((blok) => ({ threadId: blok.id, about: { blokId: blok.id, name: blok.name } })),
         ];
         const ranked = rank(q, places.map((place) => laneIndex(place.threadId)), { limit, need: mostOf });
@@ -30546,6 +30840,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       for (const bot of store.bots) {
         if (bot.hidden) continue;
         for (const task of bot.tasks) {
+          if (!ownerMayRead(task.id)) continue;
           for (const message of store.messagesFor(task.id)) {
             if (message.kind !== "text" || !message.text) continue;
             if (!message.text.toLowerCase().includes(q)) continue;
@@ -33863,6 +34158,8 @@ function storedSecrets(): Array<string | undefined | null> {
     ...(cfg.custom ?? []).flatMap((endpoint) => endpoint.keys.map((cred) => cred.key)),
     ...Object.values(cfg.secrets ?? {}),
     ...connectionRecords().map((record) => record.token),
+    // and every member's own apps key and keys
+    ...personal.values(people.workspaceMembers().map((p) => p.id)),
     cfg.credits?.licence,
     cfg.credits?.token,
     creditsEnvToken() ?? undefined,

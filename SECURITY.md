@@ -404,7 +404,22 @@ behind it are built to be narrow.
   may make and which engines those use.
 - **Private means private.** A member's one to one with an agent is
   theirs. You can turn on reading members' private conversations for the
-  workspace, and every member is told which way it is set.
+  workspace, and every member is told which way it is set. Past the
+  transcript too: the agent keeps a memory of that member's own there and
+  works in a folder of theirs, what it looks back on is only what that
+  member could already read, and your own conversations, search and
+  recall never reach a member's private words (only reading them, when
+  you turn it on). On Claude Code a member's private turn may not read
+  or change any agent's own folder or anybody else's, even with a yes.
+- **Each member's apps and keys are theirs.** A member's own Composio
+  key and keys are kept apart from yours and from each other's
+  (`people/<id>/own.json`, 0600), are never shown back to anybody, and
+  are used only by a turn that member asked for in their own private
+  conversation or solo agent: never a team conversation, a room, your
+  turns or another member's. Who asked is the turn's own record, never a
+  name in the words. Removing a member removes them. In that turn a
+  request for a key or an app asks the member, never you, so nothing
+  lands in your keys or signs in under your account.
 - **A room's Auto reads the room as data.** In a room set to Auto, a
   message that names nobody is shown to a small model, with the members'
   names, roles and briefs and the last few lines, so it can pick who
@@ -640,4 +655,11 @@ from source. See [docs/RELEASING.md](docs/RELEASING.md).
   beyond what the provider CLI enforces, unless you set it to work in a
   container (see Agents that work somewhere else). That includes agents
   a member of your workspace talks to: give a team agent only the folder
-  and the tools you would let those people near.
+  and the tools you would let those people near. A member's private turn
+  on an engine with a shell can, with their own yes, run a command that
+  reads what your account can, other members' files on this computer
+  included, which the file rules do not stop. Where members should be
+  kept apart from each other as well as from you, give their agents an
+  API engine or Bloks AI, whose only tools are Bloks' own, or a
+  container. And whoever runs the computer can read everything kept on
+  it; every member is told so when they join.

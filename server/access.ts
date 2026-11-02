@@ -26,6 +26,13 @@
 //   A solo agent is its maker's alone: not listed for anyone else, its
 //   conversations theirs, and only they can put it in a room.
 //
+//   What is private is more than the transcript. In a member's private
+//   conversation the agent keeps a memory of that member's own and works
+//   in a folder of that member's own; looking back (recall) reaches only
+//   what that member could read anyway; and the apps and keys the member
+//   connected are used there and nowhere else. Nothing from it reaches
+//   the agent's other conversations, the owner's included.
+//
 //   Approvals: in a team conversation or a room, the person whose message
 //   started the work, the owner and the admins. In a private conversation
 //   or a solo agent, its person (and the owner, for the owner's own).
@@ -168,6 +175,77 @@ export function mayMessageOnBehalf(
   if (from.asker.kind !== "owner" && !isAdmin(from.asker)) return false;
   if (target.kind === "owner") return false;
   return canReach(agent, target, world);
+}
+
+/**
+ * Where an agent may look back from: one of its conversations (a turn's
+ * recall and search_history), or the owner reading from their own device
+ * (the Memory place, a search). What an agent finds is said into the
+ * conversation it is in, so it may only look where everybody reading
+ * that conversation could already read:
+ *
+ *   From the owner's own conversations: everything of the owner's, the
+ *   team conversation, the owner's own rooms. Never a member's private
+ *   conversation, whatever the reading setting says: that setting lets
+ *   the owner read, it does not hand the words to an agent.
+ *
+ *   From a member's private conversation: that conversation, and the
+ *   team conversation when they are on its list. Never the owner's own,
+ *   never another member's, never a room.
+ *
+ *   From the team conversation: the team conversation alone.
+ *
+ *   The owner reading: everything but members' private conversations,
+ *   which only while reading them is on, and never a member's solo agent.
+ *
+ * A solo agent's conversations are all its maker's, so it looks back
+ * across all of them. A room shared with other people is decided where
+ * recall is asked (only the room itself), before this.
+ */
+export type RecallFrom = { lane: LaneShape; who: Who } | { reader: "owner"; privateReadable: boolean };
+
+export function mayRecall(agent: AgentShape, from: RecallFrom, other: LaneShape | { room: true }): boolean {
+  if ("reader" in from) {
+    // a member's solo agent is theirs alone, the reading setting aside
+    if (agent.solo) return agent.solo.by === "owner";
+    return "room" in other || !other.personId || from.privateReadable;
+  }
+  if (agent.solo) return true;
+  const lane = from.lane;
+  if (lane.personId) {
+    if ("room" in other) return false;
+    if (other.id === lane.id) return true;
+    return Boolean(other.team) && from.who.kind === "member" && from.who.personId === lane.personId && inTeamConversation(agent, from.who);
+  }
+  if (lane.team) return !("room" in other) && other.id === lane.id;
+  // one of the owner's own conversations
+  return "room" in other || !other.personId;
+}
+
+/** Whose memory a turn in this conversation keeps and reads: the agent's
+ * own, or the member's own with this agent in their private
+ * conversation, which no other conversation of the agent's reads. */
+export function memoryOf(agent: AgentShape, lane: LaneShape): { kind: "agent" } | { kind: "person"; personId: string } {
+  if (!agent.solo && !lane.team && lane.personId) return { kind: "person", personId: lane.personId };
+  return { kind: "agent" };
+}
+
+/**
+ * Whose own connected apps and saved keys a turn uses (GitHub 386, 431).
+ * A member's are used only where what the agent does with them is read
+ * by that member alone: their private conversation with an agent, or
+ * their own solo agent, on a turn they asked for themselves. Never in a
+ * team conversation or a room, where other people read the answers, and
+ * never on the owner's turns, which use the owner's own as they always
+ * have. Null means none of anybody's personal ones.
+ *
+ * `requester` is who asked for the turn ("owner" or a person id), never a
+ * name the words of the message claim.
+ */
+export function personalAccountsFor(agent: AgentShape, lane: LaneShape, requester: string, where: { room: boolean }): string | null {
+  if (where.room || requester === "owner" || lane.team) return null;
+  if (agent.solo) return agent.solo.by === requester ? requester : null;
+  return lane.personId === requester ? requester : null;
 }
 
 /** The line every member is shown about who reads their private

@@ -285,7 +285,7 @@ export function isLimitNotice(text: unknown): text is string {
  */
 export function turnEnvironment(
   base: NodeJS.ProcessEnv,
-  turn: Pick<SendTurnInput, "env" | "shared" | "person" | "account">,
+  turn: Pick<SendTurnInput, "env" | "shared" | "person" | "account" | "deniedDirs">,
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...base,
@@ -298,6 +298,10 @@ export function turnEnvironment(
     env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
     env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   }
+  // A member's private conversation keeps its memory where Bloks puts it,
+  // at their own desk. Claude Code's own memory is kept per folder, and a
+  // folder the owner chose for the agent is one everybody's turns share.
+  if (turn.deniedDirs?.length) env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   if (turn.person) env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   // A subscription login gets billed as pay-as-you-go if a key leaks
   // through, and the two CLAUDECODE markers would make the child think
@@ -520,6 +524,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // one value per flag, so a folder name with a comma or a space in
         // it cannot split a rule in two
         for (const rule of personClaudeDenials(DATA_DIR)) argv.push("--disallowedTools", rule);
+      }
+      // a member's private conversation: the agent's own folder and other
+      // people's are not this turn's to read, asked or not
+      for (const dir of turn.place ? [] : (turn.deniedDirs ?? [])) {
+        for (const rule of personClaudeDenials(dir)) argv.push("--disallowedTools", rule);
       }
       // extra editable folders, chiefly the agent's own workspace: memory
       // updates must not stall on approval cards when cwd points elsewhere.

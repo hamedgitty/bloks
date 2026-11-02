@@ -9,7 +9,10 @@
 // A member reaches what server/access.ts says they may: team
 // conversations they are on the list for, rooms they are in with every
 // agent there, their own private conversation with any agent they can
-// reach, and the solo agents they made. This file names the routes and
+// reach, and the solo agents they made, and what is theirs alone: the
+// apps and keys their private turns use and what each agent remembers of
+// them (server/personal.ts), each route about the person whose device it
+// is and never naming anybody else. This file names the routes and
 // shapes what crosses them; access.ts holds the rules. An admin also reaches the people routes: invites,
 // requests to join, roles, limits, who is in which room and agent. The
 // join password and the approval switch stay the owner's.
@@ -47,6 +50,16 @@ export type MemberAction =
   | { kind: "reply"; botId: string; lane: "team" | "private"; messageId: string }
   | { kind: "notes" }
   | { kind: "note" }
+  // what is the member's own: the apps and keys their private turns use,
+  // what each agent remembers of them, and whether they were welcomed
+  | { kind: "connections" }
+  | { kind: "appsKey"; method: "PUT" | "DELETE" }
+  | { kind: "apps" }
+  | { kind: "app"; method: "POST" | "DELETE"; slug: string }
+  | { kind: "secret"; method: "PUT" | "DELETE"; name: string }
+  | { kind: "memories" }
+  | { kind: "forgetMemory"; botId: string }
+  | { kind: "welcomed" }
   | { kind: "noteKeep"; noteId: string }
   | { kind: "noteDrop"; noteId: string }
   // the people routes: anyone may list who is in, an admin may change it
@@ -129,6 +142,26 @@ const ROUTES: Array<{ method: string; pattern: RegExp; action: (m: RegExpMatchAr
     pattern: new RegExp(`^/api/member/notes/${ID}$`),
     action: (m) => ({ kind: "noteDrop", noteId: m[1] }),
   },
+  { method: "GET", pattern: /^\/api\/member\/connections$/, action: () => ({ kind: "connections" }) },
+  ...(["PUT", "DELETE"] as const).map((method) => ({
+    method,
+    pattern: /^\/api\/member\/connections\/apps$/,
+    action: () => ({ kind: "appsKey" as const, method }),
+  })),
+  { method: "GET", pattern: /^\/api\/member\/connections\/apps\/services$/, action: () => ({ kind: "apps" }) },
+  ...(["POST", "DELETE"] as const).map((method) => ({
+    method,
+    pattern: /^\/api\/member\/connections\/apps\/([a-z0-9_-]{1,64})$/,
+    action: (m: RegExpMatchArray) => ({ kind: "app" as const, method, slug: m[1] }),
+  })),
+  ...(["PUT", "DELETE"] as const).map((method) => ({
+    method,
+    pattern: /^\/api\/member\/connections\/secrets\/([A-Z][A-Z0-9_]{0,59})$/,
+    action: (m: RegExpMatchArray) => ({ kind: "secret" as const, method, name: m[1] }),
+  })),
+  { method: "GET", pattern: /^\/api\/member\/memory$/, action: () => ({ kind: "memories" }) },
+  { method: "DELETE", pattern: new RegExp(`^/api/member/memory/${ID}$`), action: (m) => ({ kind: "forgetMemory", botId: m[1] }) },
+  { method: "POST", pattern: /^\/api\/member\/welcomed$/, action: () => ({ kind: "welcomed" }) },
   { method: "GET", pattern: /^\/api\/workspace\/members$/, action: () => ({ kind: "people" }) },
   // how many are waiting to be let in: an admin's badge, nought for anyone else
   { method: "GET", pattern: /^\/api\/workspace\/waiting$/, action: () => ({ kind: "people" }) },
@@ -176,7 +209,11 @@ export function memberCan(
   const action = route.action(path.match(route.pattern)!);
   // A guest from a chat channel is in rooms, not in the workspace: the
   // workspace's agents and people are not theirs to reach.
-  const workspaceWide = ["workspace", "agents", "newAgent", "usage", "dropAgent", "leaveWorkspace", "conversation", "say", "reply", "notes", "note", "noteKeep", "noteDrop", "people", "admin", "appWatchers", "appTriggers"];
+  const workspaceWide = [
+    "workspace", "agents", "newAgent", "usage", "dropAgent", "leaveWorkspace", "conversation", "say", "reply",
+    "notes", "note", "noteKeep", "noteDrop", "people", "admin", "appWatchers", "appTriggers",
+    "connections", "appsKey", "apps", "app", "secret", "memories", "forgetMemory", "welcomed",
+  ];
   if (workspaceWide.includes(action.kind) && !workspaceRole) return { ok: false, status: 403, error: "not available to room guests" };
   if (action.kind === "admin" && workspaceRole !== "admin") {
     return { ok: false, status: 403, error: "only the owner and admins can manage people" };

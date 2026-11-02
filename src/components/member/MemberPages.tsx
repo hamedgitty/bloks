@@ -1,12 +1,15 @@
 // The pages of a member's app beside its conversations: their own usage
-// and limit, their "about you" notes, the workspace (what they are there,
-// and leaving it), Members for an admin, and making a solo agent.
+// and limit, their "about you" notes and what agents remember of them,
+// their own apps and keys, the workspace (what they are there, and
+// leaving it), Members for an admin, making a solo agent, and the welcome
+// they see once.
 //
 // Everything of the owner's (engines and keys, automations, the rest of
 // the settings) is not drawn at all. The workspace page says, once and
 // plainly, whose those are.
 import { useEffect, useState } from "react";
-import { Check, Loader2, Lock, LogOut, Trash2, Wifi, Cloud } from "@/components/icons";
+import { Bot, Check, Cloud, Loader2, Lock, LogOut, MessagesSquare, Puzzle, Trash2, UserRound, Wifi } from "@/components/icons";
+import { confirm } from "@/components/ui/confirm";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -15,7 +18,8 @@ import { SettingRow, SettingsGroup, SettingsPageHeader } from "@/components/Sett
 import { WorkspaceMark } from "@/components/WorkspaceMark";
 import { MembersPage } from "@/components/members/MembersPage";
 import { cn } from "@/lib/cn";
-import { memberApi, soloRoom, type MemberAgent, type MemberNote, type MemberUsage, type MemberWorkspace } from "@/lib/memberMode";
+import { memberApi, soloRoom, type MemberAgent, type MemberMemory, type MemberNote, type MemberUsage, type MemberWorkspace } from "@/lib/memberMode";
+import { firstName } from "@/lib/names";
 import { act, reachLine, useWorkspaces } from "@/lib/workspaces";
 import { MarkPicker } from "@/components/MarkPicker";
 import { toast } from "@/components/ui/toast";
@@ -179,7 +183,64 @@ export function AboutYouPage({ workspace }: { workspace: MemberWorkspace }) {
           )}
         </>
       )}
+      <Remembered />
     </Page>
+  );
+}
+
+/** What each agent remembers of this member, from their private
+ * conversation with it: kept for them alone, read here, and forgotten
+ * with one press. */
+function Remembered() {
+  const [memories, setMemories] = useState<MemberMemory[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => memberApi.memories().then((r) => setMemories(r.memories)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    void load();
+  }, []);
+  const forget = async (m: MemberMemory) => {
+    const agent = m.agent ?? t("memberMemory.formerAgent");
+    const yes = await confirm({
+      title: t("memberMemory.forgetTitle", { agent }),
+      body: t("memberMemory.forgetBody", { agent }),
+      confirmLabel: t("memberMemory.forget"),
+      destructive: true,
+    });
+    if (!yes) return;
+    try {
+      await memberApi.forgetMemory(m.botId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <SettingsGroup title={t("memberMemory.title")} footnote={t("memberMemory.footnote")} className="mt-9">
+      {error && <p role="alert" className="px-5 py-3 text-small text-destructive">{error}</p>}
+      {!memories ? (
+        <div className="px-5 py-4"><Skeleton className="h-10 rounded-xl" /></div>
+      ) : memories.length ? (
+        memories.map((m) => (
+          <SettingRow
+            key={m.botId}
+            label={m.agent ?? t("memberMemory.formerAgent")}
+            description={t("memberMemory.files", { count: m.files.length })}
+            control={
+              <Button size="sm" variant="ghost" onClick={() => void forget(m)}>
+                <Trash2 size={13} />
+                {t("memberMemory.forget")}
+              </Button>
+            }
+          >
+            <div className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/50 px-3 py-2.5 text-small leading-relaxed text-muted-foreground">
+              {m.files.map((f) => f.text.replace(/^# Memory\s*/, "").trim()).filter(Boolean).join("\n\n")}
+            </div>
+          </SettingRow>
+        ))
+      ) : (
+        <p className="px-5 py-4 text-pretty text-body text-muted-foreground">{t("memberMemory.none")}</p>
+      )}
+    </SettingsGroup>
   );
 }
 
@@ -366,5 +427,77 @@ export function NewSoloAgentDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * What a member sees once, the first time they open a workspace they
+ * joined, on whichever device that is (GitHub 431): who they are signed
+ * in as, whose computer this runs on, what is shared and what is theirs,
+ * and the things worth doing first. Everything it says is what the
+ * server holds to, not a promise of its own.
+ */
+export function WelcomePanel({
+  workspace,
+  onDone,
+  onAbout,
+  onConnections,
+  onAgent,
+}: {
+  workspace: MemberWorkspace;
+  onDone: () => void;
+  onAbout: () => void;
+  onConnections: () => void;
+  onAgent: (() => void) | null;
+}) {
+  const owner = workspace.owner.name;
+  const name = workspace.workspace.name;
+  const first = firstName(workspace.you.name) || workspace.you.name;
+  const points = [
+    { icon: MessagesSquare, title: t("memberWelcome.sharedTitle"), text: t("memberWelcome.sharedText") },
+    { icon: Lock, title: t("memberWelcome.privateTitle"), text: `${workspace.privacy.line} ${t("memberWelcome.privateMemory")}` },
+    { icon: Puzzle, title: t("memberWelcome.ownTitle"), text: t("memberWelcome.ownText") },
+  ];
+  return (
+    <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-background">
+      <div className="mx-auto flex w-full max-w-[560px] flex-col px-4 pb-16 pt-12 sm:px-8">
+        <WorkspaceMark mark={workspace.workspace.mark} size={44} />
+        <h1 className="mt-5 text-balance text-heading font-semibold text-foreground">{t("memberWelcome.title", { workspace: name, name: first })}</h1>
+        <p className="mt-1.5 text-pretty text-ui leading-relaxed text-muted-foreground">
+          {t("memberWelcome.signedIn", { name: workspace.you.name, owner, workspace: name })}
+        </p>
+        <ul className="mt-7 flex flex-col gap-4">
+          {points.map(({ icon: Icon, title, text }) => (
+            <li key={title} className="flex gap-3">
+              <span aria-hidden className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+                <Icon size={16} />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-ui font-medium text-foreground">{title}</h2>
+                <p className="mt-0.5 text-pretty text-body leading-relaxed text-muted-foreground">{text}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-6 text-pretty text-small leading-relaxed text-muted-foreground">{t("memberWelcome.host", { owner })}</p>
+        <div className="mt-7 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button onClick={onDone} autoFocus>{t("memberWelcome.start")}</Button>
+          <Button variant="secondary" onClick={onAbout}>
+            <UserRound size={14} />
+            {t("memberWelcome.about")}
+          </Button>
+          <Button variant="secondary" onClick={onConnections}>
+            <Puzzle size={14} />
+            {t("memberWelcome.connect")}
+          </Button>
+          {onAgent && (
+            <Button variant="secondary" onClick={onAgent}>
+              <Bot size={14} />
+              {t("memberWelcome.agent")}
+            </Button>
+          )}
+        </div>
+      </div>
+    </main>
   );
 }

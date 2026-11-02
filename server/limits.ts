@@ -108,6 +108,12 @@ export const MAX_GOAL_CHARS = 2_000;
 export const MAX_GOAL_CHECK_CHARS = 500;
 export const MAX_GOAL_TURNS = 100;
 
+/** A member's own keys (server/personal.ts): how many, and how long one
+ * may be, the same length the owner's secret card takes. They ride in
+ * every turn that member asks for, so the list stays short. */
+export const MAX_PERSONAL_SECRETS = 30;
+export const MAX_PERSONAL_SECRET_CHARS = 4_000;
+
 /** Trims a value to a cap, returning undefined when there is nothing
  * left. Callers decide whether absent means "skip" or "reject". */
 export function clamp(value: unknown, max: number): string | undefined {

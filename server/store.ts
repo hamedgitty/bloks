@@ -456,6 +456,12 @@ export interface TaskRecord {
    * see moveTaskCwd). null means "the default", a cloud run, or the
    * workspace. */
   cwd?: string | null;
+  /** A member's private conversation that works, by default, at that
+   * member's own desk with the agent (server/workspace.ts personDeskDir).
+   * One made before desks existed had its session in the agent's own
+   * workspace, and starts a new one at the desk once, the first turn
+   * after; this marks that done. */
+  desk?: true;
   /** Where this lane's session lives when its agent works elsewhere:
    * the place and its folder (laneWhere in server/workplace.ts). Absent
    * is this computer. A session there is not one here, so a lane whose
@@ -1363,7 +1369,7 @@ export class Store {
     if (!bot) return null;
     const found = bot.tasks.find((t) => t.personId === personId);
     if (found) return found;
-    const task: TaskRecord = { id: newId(), title: "Private", resumeCursors: {}, createdAt: Date.now(), personId };
+    const task: TaskRecord = { id: newId(), title: "Private", resumeCursors: {}, createdAt: Date.now(), personId, desk: true };
     bot.tasks.push(task);
     this.saveBots();
     return task;
@@ -1556,6 +1562,14 @@ export class Store {
     // a reading measured a session that is not coming back
     delete found.task.reading;
     delete found.task.pendingCompaction;
+    this.saveBots();
+  }
+
+  /** A member's private conversation now works at their own desk. */
+  markDesk(threadId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found || found.task.desk) return;
+    found.task.desk = true;
     this.saveBots();
   }
 
