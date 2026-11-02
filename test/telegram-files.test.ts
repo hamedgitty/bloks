@@ -278,6 +278,13 @@ describe("refusal notes and cards", () => {
     assert.deepEqual(f.seen.delivered, []);
     assert.deepEqual(f.seen.replies, ["That one needs a tap or a typed answer. Tap a button on the card, or reply yes / no."]);
   });
+
+  test("a question that appears during transcription receives the voice answer", async (t) => {
+    const f = fixture(t, { transcriber: () => async () => { f.setCard(false); return "heard words"; } });
+    await f.box.take(incoming({ voice: { file_id: "voice", file_size: 6 } }));
+    assert.deepEqual(f.seen.answers, [{ free: "heard words" }]);
+    assert.deepEqual(f.seen.delivered, []);
+  });
 });
 
 describe("mixed albums", () => {

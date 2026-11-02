@@ -92,7 +92,7 @@ function personsWords(m: Message): boolean {
 }
 
 function startsTurn(m: Message): boolean {
-  return said(m) && !m.midTurn;
+  return said(m) && !m.midTurn && !(m.preparation?.dismissed && m.preparation.state !== "joined");
 }
 
 /** Words the agent wrote in its own chat. A message to another agent is

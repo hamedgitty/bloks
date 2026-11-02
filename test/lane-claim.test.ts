@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { startHarness } from "./helpers/server.ts";
 import { agentOn, fakeProvider, idle, messagesOf, waitFor } from "./helpers/turns.ts";
 
-test("words for a lane whose turn is still getting ready wait for that turn, rather than starting beside it", async (t) => {
+test("words for a lane whose turn is still getting ready join it, rather than starting beside it", async (t) => {
   const fake = await fakeProvider(t);
   fake.state.answerAtOnce = true;
   const h = await startHarness();
@@ -33,6 +33,7 @@ test("words for a lane whose turn is still getting ready wait for that turn, rat
     await new Promise((r) => setTimeout(r, 1_000));
   }
 
+  const callsBefore = fake.state.calls.length;
   fake.state.folding = "hold";
   const first = say("FIRST");
   assert.ok(await waitFor(() => fake.state.folds.length >= 1), "the turn did not fold first, so this proves nothing");
@@ -55,15 +56,60 @@ test("words for a lane whose turn is still getting ready wait for that turn, rat
   await first;
   await second;
 
-  // SECOND waits at the end of the chat until its turn, so FIRST's
-  // answer lands after it for a moment; it moves when it goes
+  // Both words were ready before the input was committed. They join
+  // the same turn, with one answer after them.
   const said = await waitFor(async () => {
     const list = await messagesOf(h, ivy);
     const texts = list.filter((m) => m.kind === "text" && !m.deleted).map((m) => m.text);
     return !list.some((m) => m.queued) && texts.at(-2) === "SECOND" && texts.at(-1) === "Done." ? texts : null;
   });
   assert.ok(said, "the waiting message was never answered");
-  assert.deepEqual(said.slice(-4), ["FIRST", "Done.", "SECOND", "Done."]);
-  // and the engine heard it once, in a turn of its own
+  assert.deepEqual(said.slice(-3), ["FIRST", "SECOND", "Done."]);
+  assert.equal(fake.state.calls.length - callsBefore, 1, "a second turn started beside or after the first");
+  const sent = JSON.parse(fake.state.calls.at(-1)!).messages.at(-1).content;
+  assert.equal(sent, "FIRST\n\nSECOND");
+  // and the engine heard the follow-up once
   assert.equal(fake.sent("SECOND"), 1);
+});
+
+test("an unsupported engine keeps a later input behind an unconfirmed preparation input", async (t) => {
+  const fake = await fakeProvider(t);
+  fake.state.answerAtOnce = true;
+  const h = await startHarness();
+  t.after(() => h.stop());
+  const ivy = await agentOn(h, fake.port, "Ivy");
+  await h.fetch(`/api/bots/${ivy.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "grok", model: "small-model" } }) });
+  fake.state.folding = "fail";
+  const say = async (text: string) =>
+    (await h.fetch(`/api/bots/${ivy.id}/messages`, { method: "POST", body: JSON.stringify({ text }) })).json();
+  for (const text of ["x".repeat(99_000), "two", "three", "four"]) {
+    await say(text);
+    assert.ok(await idle(h, ivy), "the setup turn did not end");
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  const before = fake.state.calls.length;
+  fake.state.folding = "hold";
+  const first = say("ORIGINAL");
+  assert.ok(await waitFor(() => fake.state.folds.length > 0), "the turn did not pause before its input");
+  await say("PREPARED_A");
+  fake.state.answerAtOnce = false;
+  fake.state.folding = "fail";
+  fake.state.folds.splice(0).forEach((release) => release());
+  await first;
+  assert.ok(await waitFor(() => fake.state.held.length === 1), "the first input did not reach the provider");
+  const afterDispatch = await messagesOf(h, ivy);
+  assert.equal(afterDispatch.find((m) => m.text === "PREPARED_A")?.preparation?.state, "dispatching");
+  const later = await say("LATER_B");
+  assert.equal(later.delivery.route, "pending");
+  assert.equal(fake.state.calls.length - before, 1, "the later input stopped or overtook the first");
+  const current = await messagesOf(h, ivy);
+  assert.equal(current.find((m) => m.text === "LATER_B")?.preparation?.state, "pending");
+  fake.state.answerAtOnce = true;
+  fake.state.held.splice(0).forEach((release) => release());
+  assert.ok(await waitFor(async () => fake.state.calls.length - before === 2 && !(await messagesOf(h, ivy)).some((m) => m.queued)),
+    "the later input did not get its next turn");
+  const firstInput = JSON.parse(fake.state.calls[before]).messages.at(-1).content;
+  const nextInput = JSON.parse(fake.state.calls[before + 1]).messages.at(-1).content;
+  assert.equal(firstInput, "ORIGINAL\n\nPREPARED_A");
+  assert.equal(nextInput, "LATER_B");
 });

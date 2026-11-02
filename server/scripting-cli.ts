@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 // Bloks from a script, a CI job and a terminal: `bloks-server run`,
 // `bloks-server team apply` and `bloks-server chat` (bin/bloks-server.mjs).
 //
@@ -618,7 +619,7 @@ async function chatCommand(ctx: Context, args: string[]): Promise<number> {
     // where the conversation stands, so the first line typed is not a
     // reply to something unseen
     const history = await api.call("GET", `/api/bots/${bot.id}/messages?thread=${encodeURIComponent(lane.id)}&limit=40`);
-    const said = ((history.body?.messages ?? []) as any[]).filter((m) => m.kind === "text" && m.text && !m.queued).slice(-6);
+    const said = ((history.body?.messages ?? []) as any[]).filter((m) => m.kind === "text" && m.text && !m.queued && !dismissedPreparation(m)).slice(-6);
     for (const m of said) out(`${m.role === "user" ? "you" : bot.name}: ${String(m.text).replace(/\s+/g, " ").slice(0, 300)}`);
     if (said.length) out("");
   }

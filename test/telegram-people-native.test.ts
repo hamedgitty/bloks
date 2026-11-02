@@ -7,6 +7,36 @@ import { LEE, SAM, personFixture, until } from "./helpers/telegram-person.ts";
 /** The permission mode a Claude turn was started in. */
 const mode = (record: any): string => record.args[record.args.indexOf("--permission-mode") + 1];
 
+test("an older Claude queues a restricted person's addition until after the guarded input", async (t) => {
+  const f = await personFixture(t, "claude", { seed: (root) => writeFileSync(join(root, "hold-person-guard"), "1") });
+  await f.admit("FIRST_PERSON");
+  await until(() => existsSync(join(f.root, "person-guard-held")), "Claude did not reach the guard");
+  f.say("SECOND_PERSON", LEE);
+  await until(async () => (await f.messages()).find((m) => m.text === "SECOND_PERSON" && m.preparation?.state === "pending"), "the addition was not retained");
+  assert.equal(f.records().filter((r) => typeof r.text === "string").length, 0, "input escaped before the guard");
+  writeFileSync(join(f.root, "release-person-guard"), "1");
+  const first = await until(() => f.records().find((r) => r.person && r.text?.includes("FIRST_PERSON")), "the guarded first input did not arrive");
+  assert.doesNotMatch(first.text, /SECOND_PERSON/);
+  const later = await until(() => f.records().find((r) => r.person && r.text?.includes("SECOND_PERSON")), "the addition did not get its next turn");
+  assert.match(later.text, /--- the new message ---[\s\S]*SECOND_PERSON/);
+  assert.equal(mode(first), "default");
+  assert.equal(mode(later), "default");
+});
+
+test("a refused Claude person guard sends neither original nor prepared addition", async (t) => {
+  const f = await personFixture(t, "claude", { seed: (root) => {
+    writeFileSync(join(root, "hold-person-guard"), "1");
+    writeFileSync(join(root, "guard-case"), "claude-mode");
+  } });
+  await f.admit("FIRST_PERSON");
+  await until(() => existsSync(join(f.root, "person-guard-held")), "Claude did not reach the guard");
+  f.say("SECOND_PERSON", LEE);
+  await until(async () => (await f.messages()).find((m) => m.text === "SECOND_PERSON" && m.preparation?.state === "pending"), "the addition was not retained");
+  writeFileSync(join(f.root, "release-person-guard"), "1");
+  await until(async () => !(await f.ownerJson("/api/bots?messages=0")).bots.find((b: any) => b.id === f.bot.id).busy, "the refused guard did not settle");
+  assert.equal(f.records().filter((r) => typeof r.text === "string").length, 0, "input escaped a refused guard");
+});
+
 test("claude: a let-in person's full-agent turn asks only the owner and replies explicitly", async (t) => {
   const f = await personFixture(t);
   f.say("FAKE_APPROVE", LEE);

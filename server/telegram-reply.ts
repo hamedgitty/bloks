@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 import type { Message } from "./store.ts";
 import { withoutUi } from "./genui.ts";
 
@@ -23,7 +24,7 @@ function startsTurn(m: Message): boolean {
  * Waiting rows are outside the desktop transcript until delivered. A
  * delivered burst has adjacent heads; steering has no remaining head. */
 export function replySpan(messages: readonly Message[], requestId: string | undefined): Message[] {
-  const visible = messages.filter((m) => !m.queued && !m.unsent);
+  const visible = messages.filter((m) => !m.queued && !m.unsent && !dismissedPreparation(m));
   const at = visible.findIndex((m) => m.id === requestId);
   const request = visible[at];
   if (!request || request.deleted || request.role !== "user" || request.kind !== "text") return [];

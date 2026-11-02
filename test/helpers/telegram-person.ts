@@ -134,6 +134,10 @@ createInterface({input:process.stdin}).on('line',async line=>{
  const m=JSON.parse(line);
  if(kind==='claude'){
    if(m.type==='control_request'){
+     if(person&&m.request.subtype==='mcp_status'&&existsSync(join(root,'hold-person-guard'))){
+       writeFileSync(join(root,'person-guard-held'),'1');
+       while(!existsSync(join(root,'release-person-guard')))await new Promise(r=>setTimeout(r,20));
+     }
      const mount=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8')).mcpServers.bloks;
      const names=mount.env?.BLOKS_PUBLISH?.split(',')??['approve','ask_user','request_secret'];
      const response=m.request.subtype==='initialize'?{commands:[],current_permission_mode:'default'}:{mcpServers:[{name:'bloks',status:'connected',tools:names.map(name=>({name}))}]};
@@ -159,6 +163,10 @@ createInterface({input:process.stdin}).on('line',async line=>{
  if(m.method==='config/read')return respond({config:{cli_auth_credentials_store:'file'}});
  if(m.method==='thread/start'||m.method==='thread/resume'){
    guard=m.params;thread=m.params.threadId??thread;
+   if(existsSync(join(root,'hold-thread'))){
+     writeFileSync(join(root,'thread-held'),'1');
+     while(!existsSync(join(root,'release-thread')))await new Promise(r=>setTimeout(r,20));
+   }
    return respond({thread:{id:thread},model:'gpt-6.1-sol',approvalPolicy:m.params.approvalPolicy,approvalsReviewer:'user',sandbox:{type:'dangerFullAccess',networkAccess:true},activePermissionProfile:null});
  }
  if(m.method==='turn/steer'){log({steered:m.params});return respond({})}

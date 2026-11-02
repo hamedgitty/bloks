@@ -1,3 +1,4 @@
+import { dismissedPreparation } from "./preparation-state.ts";
 // An agent looking something up in its own past.
 //
 // A person can search every conversation from the command palette; until
@@ -23,6 +24,7 @@
 import { excerpt, queryTerms, rank, TermIndex, type IndexedDoc, type RankOptions } from "./recall-index.ts";
 
 export interface RecallMessage {
+  preparation?: { dismissed?: boolean; state: string };
   id: string;
   at: number;
   role: "user" | "bot";
@@ -96,7 +98,7 @@ export interface RecallHit {
 /** The words of a message recall can find, or null for one it never
  * should: taken back or rewound, not words at all, or not said yet. */
 export function searchableText(message: RecallMessage): string | null {
-  if (message.deleted || message.queued || message.unsent) return null;
+  if (message.deleted || message.queued || message.unsent || dismissedPreparation(message)) return null;
   if ((message.kind ?? "text") !== "text") return null;
   return message.text?.trim() ? message.text : null;
 }

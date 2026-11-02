@@ -139,20 +139,33 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
 
       const turnId = newId();
       const model = turn.model || MODELS.default;
+      const prepared = turn.preparation?.freeze().commit();
+      const words = prepared?.text ? `${turn.text}\n\n${prepared.text}` : turn.text;
 
       const prompt = [
         turn.system,
         "This machine is yours: the desktop, the browser and the shell all belong to you, and nothing here is shared with anyone else.",
         "",
-        turn.text,
+        words,
       ]
         .filter((part) => part !== undefined)
         .join("\n");
 
-      const started: any = await call(`/sandboxes/${boxId}/prompt`, {
-        method: "POST",
-        body: JSON.stringify({ provider: agentFor(model), model, prompt }),
-      });
+      let started: any;
+      try {
+        const pending = call(`/sandboxes/${boxId}/prompt`, {
+          method: "POST",
+          body: JSON.stringify({ provider: agentFor(model), model, prompt }),
+        });
+        turn.preparation?.withoutSteering?.();
+        started = await pending;
+        prepared?.settle("accepted");
+      } catch (error) {
+        prepared?.settle("uncertain");
+        turn.preparation?.unavailable();
+        throw error;
+      }
+      turn.preparation?.unavailable();
       appendNative(threadId, {
         dir: "out",
         source: "box.prompt",

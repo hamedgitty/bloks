@@ -53,7 +53,8 @@ export function workingLineOwed(
 export function turnStartedAt(messages: readonly Message[]): number | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === "user" && m.kind === "text" && !m.midTurn && !m.queued && !m.unsent) return m.at ?? null;
+    if (m.role === "user" && m.kind === "text" && !m.midTurn && !m.queued && !m.unsent &&
+        !(m.preparation?.dismissed && m.preparation.state !== "joined")) return m.at ?? null;
   }
   return null;
 }

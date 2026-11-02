@@ -67,7 +67,7 @@ export interface Reading {
 
 /** What actually happened, kept on the message for the line under it. */
 export interface Delivery {
-  route: "steered" | "stopped" | "queued";
+  route: "steered" | "stopped" | "queued" | "pending" | "uncertain" | "not-sent";
   why: DeliveryWhy;
   line: string;
 }
@@ -189,6 +189,9 @@ const TAKES: Partial<Record<DeliveryWhy, string>> = {
 /** The quiet line under a message, or above it while it waits. */
 export function deliveryLine(route: Delivery["route"], why: DeliveryWhy, agent: string): string {
   if (route === "queued") return `Queued until ${agent} finishes`;
+  if (route === "pending") return "Waiting for this turn to start";
+  if (route === "uncertain") return "Delivery could not be confirmed";
+  if (route === "not-sent") return "Not sent";
   if (why === "you") return route === "stopped" ? `Stopped ${agent} to send this now` : "Sent now, as you asked";
   if (route === "stopped") return why === "stop" ? `Stopped ${agent}` : `Stopped ${agent} to take ${TAKES[why] ?? "your message"}`;
   if (why === "urgent") return "Interrupted: this sounded urgent";

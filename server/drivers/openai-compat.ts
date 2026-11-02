@@ -21,6 +21,7 @@ import type {
   RuntimeEvent,
   RuntimeEventListener,
   SendTurnInput,
+  FrozenPreparation,
 } from "../contracts.ts";
 import { callMcpTool, listMcpTools, type McpAccess } from "../composio.ts";
 import { newEventId, newId } from "../contracts.ts";
@@ -631,16 +632,17 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
        * refused gets one refresh and one more try; the body is a string,
        * so sending it twice is the same request twice. A 402 from it is
        * the balance, not a fault. */
-      const send = async (url: string, init: RequestInit, tags?: CallTags): Promise<Response> => {
+      const send = async (url: string, init: RequestInit, tags?: CallTags, makeBody?: () => string): Promise<Response> => {
         await credential();
         const extra = access ? tagHeaders(tags) : {};
-        let res = await fetch(url, { ...init, headers: { ...headers(), ...extra } });
+        const request = makeBody ? { ...init, body: makeBody() } : init;
+        let res = await fetch(url, { ...request, headers: { ...headers(), ...extra } });
         if (res.status === 401 && access) {
           const fresh = await access.refresh(apiKey);
           if (fresh && fresh !== apiKey) {
             await res.body?.cancel().catch(() => {});
             apiKey = fresh;
-            res = await fetch(url, { ...init, headers: { ...headers(), ...extra } });
+            res = await fetch(url, { ...request, headers: { ...headers(), ...extra } });
           }
         }
         if (res.status === 402 && access) {
@@ -710,19 +712,20 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       const complete = async (
         messages: Array<{ role: string; content: string | ReturnType<typeof withImages> }>,
         model: string,
-        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; tags?: CallTags },
+        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; tags?: CallTags; boundary?: { before: () => void; accepted: () => void } },
       ): Promise<{ text: string; usage: Usage | null }> => {
         const res = await send(`${config.url}/chat/completions`, {
           method: "POST",
           body: JSON.stringify({ model, messages, stream: opts.stream }),
           signal: opts.signal ?? AbortSignal.timeout(120_000),
-        }, opts.tags);
+        }, opts.tags, opts.boundary ? () => { opts.boundary!.before(); return JSON.stringify({ model, messages, stream: opts.stream }); } : undefined);
         if (!res.ok) {
           const body = await res.text().catch(() => "");
           throw refused(res.status, body, messages);
         }
         if (!opts.stream) {
           const json: any = await res.json();
+          if (Array.isArray(json?.choices)) opts.boundary?.accepted();
           return { text: json.choices?.[0]?.message?.content ?? "", usage: readUsage(json.usage, priced) };
         }
         let text = "";
@@ -775,6 +778,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             }
             // some gateways surface provider failures inside the stream
             if (chunk.error) throw new Error(String(chunk.error.message ?? chunk.error).slice(0, 200));
+            if (Array.isArray(chunk.choices) || chunk.usage) opts.boundary?.accepted();
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
               text += delta;
@@ -806,6 +810,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         tools: any[],
         signal: AbortSignal,
         tags?: CallTags,
+        boundary?: { before: () => void; accepted: () => void },
       ): Promise<{ message: any; usage: Usage | null }> => {
         // The turn's own signal ends it on stop; the bound ends it when the
         // provider simply never answers, which the turn signal never does.
@@ -816,7 +821,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             method: "POST",
             body: JSON.stringify({ model, messages, tools, stream: false }),
             signal: bounded,
-          }, tags);
+          }, tags, boundary ? () => { boundary.before(); return JSON.stringify({ model, messages, tools, stream: false }); } : undefined);
         } catch (e) {
           if ((e as Error).name === "TimeoutError") {
             throw new Error(`${spec.name} took more than ${ROUND_TIMEOUT_MS / 60_000} minutes to answer, so this reply was stopped. Send it again.`);
@@ -839,6 +844,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           if (config.tools && /tool|function/i.test(said)) throw toolsRefused(null, said);
           throw new Error(`${spec.name}: ${said.slice(0, 200)}`);
         }
+        if (Array.isArray(json?.choices)) boundary?.accepted();
         return { message: json.choices?.[0]?.message ?? {}, usage: readUsage(json.usage, priced) };
       };
 
@@ -859,6 +865,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         turn: SendTurnInput,
         signal: AbortSignal,
         spent: Spent,
+        boundary?: { before: () => void; accepted: () => void },
       ) => {
         const computer = turn.integrations?.computer;
         const sandbox = turn.integrations?.sandbox;
@@ -895,7 +902,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         let usageTotal = { input: 0, output: 0 };
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const { message, usage } = await completeRaw(messages, model, tools, signal, turn.tags);
+          const { message, usage } = await completeRaw(messages, model, tools, signal, turn.tags, round === 0 ? boundary : undefined);
           if (usage) {
             usageTotal = { input: usageTotal.input + usage.input, output: usageTotal.output + usage.output };
             addPrice(spent, usage);
@@ -1146,11 +1153,28 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           // each turn, which a small local window could not hold
           { role: "user", content: sees ? withImages(turn.text, turn.images) : turn.text },
         ];
-        appendNative(threadId, {
-          dir: "out",
-          source: `${spec.kind}.chat.completions`,
-          msg: { model, messages: described(messages) },
-        });
+        let prepared: ReturnType<FrozenPreparation["commit"]> | undefined;
+        let confirmed = false;
+        const boundary = {
+          before() {
+            prepared = turn.preparation?.freeze().commit();
+            if (prepared?.text) {
+              const words = `${turn.text}\n\n${prepared.text}`;
+              messages[messages.length - 1].content = sees ? withImages(words, [...(turn.images ?? []), ...prepared.images]) : words;
+            }
+            appendNative(threadId, {
+              dir: "out", source: `${spec.kind}.chat.completions`,
+              msg: { model, messages: described(messages) },
+            });
+            turn.preparation?.withoutSteering?.();
+          },
+          accepted() {
+            if (confirmed) return;
+            confirmed = true;
+            prepared?.settle("accepted");
+            turn.preparation?.unavailable();
+          },
+        };
 
         emit({ ...base(threadId, turnId), type: "turn.started" });
         emit({
@@ -1173,7 +1197,8 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         (async () => {
           try {
             if (toolLoop) {
-              await runWithTools(threadId, turnId, messages, model, turn, abort.signal, spent);
+              await runWithTools(threadId, turnId, messages, model, turn, abort.signal, spent, boundary);
+              if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
               active.delete(threadId);
               emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: priceOf(spent), ...unpriced() });
               return;
@@ -1182,9 +1207,11 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               stream: true,
               signal: abort.signal,
               tags: turn.tags,
+              boundary,
               onDelta: (delta) =>
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
             });
+            if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
             appendNative(threadId, { dir: "in", source: `${spec.kind}.chat.completions`, msg: { text, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
@@ -1198,6 +1225,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             active.delete(threadId);
             emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: priceOf(spent), ...unpriced() });
           } catch (e) {
+            if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
             const entry = active.get(threadId);
             for (const settle of entry?.asks.values() ?? []) settle("The turn ended before you answered.", "turn-ended");
             active.delete(threadId);

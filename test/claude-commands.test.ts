@@ -496,6 +496,25 @@ test("automatic compaction before ordinary words initializes and settles without
   assert.ok(!(await s.messages()).some((m) => m.role === "user" && m.text === "/compact"));
 });
 
+test("older Claude queues words ready during pre-turn compaction without folding them into the first input", async (t) => {
+  const s = await setup(t);
+  s.spec({ used: 210000, window: 1000000 });
+  await s.turn("fill the session");
+  s.spec({ used: 210000, window: 1000000, compact: true, holdCompact: true });
+  await s.say("ORIGINAL_AFTER_COMPACT");
+  await until(() => s.calls().length === 2, "automatic compact never started");
+  assert.equal(s.calls()[1].text, "/compact");
+  const followup = await s.say("READY_DURING_COMPACT");
+  assert.equal(followup.queued, true);
+  writeFileSync(join(s.home, "compact-gate"), "");
+  await until(async () => s.calls().some((call) => call.text === "READY_DURING_COMPACT") && !(await s.busy()), "the queued follow-up did not run after compaction");
+  assert.equal(s.calls()[2].text, "ORIGINAL_AFTER_COMPACT");
+  assert.ok(s.calls().findIndex((call) => call.text === "READY_DURING_COMPACT") > 2);
+  assert.equal(s.calls().filter((call) => call.text.includes("READY_DURING_COMPACT")).length, 1);
+  const row = (await s.messages()).find((m) => m.text === "READY_DURING_COMPACT");
+  assert.notEqual(row.preparation.state, "uncertain");
+});
+
 test("idle compaction initializes and settles without replacing the command catalog", async (t) => {
   const s = await setup(t, undefined, { BLOKS_IDLE_CACHE_MS: "6000" });
   await s.h.json("/api/config", { method: "PUT", body: JSON.stringify({ compaction: { idle: true, beforeTurn: 0 } }) });

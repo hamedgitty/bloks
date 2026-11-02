@@ -191,7 +191,8 @@ export interface Message {
   midTurn?: boolean;
   /** Sent while a turn ran: whether it went in, stopped the turn, or
    * waited, and the quiet line that says so (server/delivery.ts). */
-  delivery?: { route: "steered" | "stopped" | "queued"; why: string; line: string };
+  delivery?: { route: "steered" | "stopped" | "queued" | "pending" | "uncertain" | "not-sent"; why: string; line: string };
+  preparation?: { state: "pending" | "dispatching" | "joined" | "next" | "uncertain" | "not-sent"; dismissed?: boolean };
   /** In a room set to Auto: who a message naming nobody went to and why,
    * or that the lead took it (server/room-route.ts). */
   route?: RoomRoute;

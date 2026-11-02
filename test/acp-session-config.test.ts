@@ -91,7 +91,7 @@ async function withAgent(agent: Agent, fn: (received: () => any[]) => Promise<vo
     }
 }
 
-async function runTurn(opts: { model?: string; fullAuto?: boolean }) {
+async function runTurn(opts: { model?: string; fullAuto?: boolean; preparation?: import("../server/contracts.ts").TurnPreparation }) {
     const spec = ACP_SPECS.find((s) => s.kind === "pi")!;
     const inst = await acpDriver(spec).create({
         instanceId: "pi",
@@ -103,7 +103,7 @@ async function runTurn(opts: { model?: string; fullAuto?: boolean }) {
     await inst.catalogReady;
     const events: any[] = [];
     inst.adapter.onEvent((e) => events.push(e));
-    await inst.adapter.sendTurn({ threadId: "t1", text: "hello", model: opts.model });
+    await inst.adapter.sendTurn({ threadId: "t1", text: "hello", model: opts.model, ...(opts.preparation ? { preparation: opts.preparation } : {}) });
     for (let i = 0; i < 50 && !events.some((e) => e.type === "turn.completed"); i++) {
         await new Promise((r) => setTimeout(r, 100));
     }
@@ -112,6 +112,27 @@ async function runTurn(opts: { model?: string; fullAuto?: boolean }) {
 }
 
 const methods = (received: any[]) => received.map((m) => m.method);
+
+test("an ACP turn includes additions before session/prompt and keeps next-turn fallback", async () => {
+    const outcomes: string[] = [];
+    let unavailable = 0;
+    await withAgent({ session: { models: MODELS } }, async (received) => {
+        const { events } = await runTurn({ preparation: {
+            freeze: () => ({
+                hasInputs: true, skillNames: [],
+                commit: () => ({ text: "READY_A", skillNames: [], images: [], settle: status => outcomes.push(status) }),
+            }),
+            ready: () => assert.fail("ACP has no mid-turn steering"),
+            unavailable: () => { unavailable++; },
+        } });
+        const prompts = received().filter(m => m.method === "session/prompt");
+        assert.equal(prompts.length, 1);
+        assert.match(JSON.stringify(prompts[0].params.prompt), /hello.*READY_A/);
+        assert.deepEqual(outcomes, ["accepted"]);
+        assert.equal(unavailable, 1);
+        assert.equal(events.find(e => e.type === "turn.completed")?.ok, true);
+    });
+});
 
 test("the model is chosen through the model config option when the agent has one", async () => {
     await withAgent({ session: { configOptions: [SELECT], models: MODELS, modes: THINKING_MODES } }, async (received) => {

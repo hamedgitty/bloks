@@ -210,6 +210,27 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
 // ── running a turn ─────────────────────────────────────────────────────
 
+/** Frozen membership for additions to one initial input. The words are
+ * re-read and authorized by commit at the physical input boundary. */
+export interface FrozenPreparation {
+  hasInputs: boolean;
+  skillNames: string[];
+  commit(): {
+    text: string;
+    skillNames: string[];
+    images: import("./attachments.ts").TurnImage[];
+    settle(outcome: "accepted" | "refused" | "uncertain"): void;
+  };
+}
+
+export interface TurnPreparation {
+  freeze(): FrozenPreparation;
+  ready(turnId: string): void;
+  /** The initial input has been dispatched and this adapter cannot steer. */
+  withoutSteering?(): void;
+  unavailable(): void;
+}
+
 export interface SendTurnInput {
   /** The owner or an admin started this turn in a team conversation or a
    * room, so the agent may message one person privately on their behalf
@@ -220,6 +241,9 @@ export interface SendTurnInput {
   codexSpeed?: import("./codex-speed.ts").CodexSpeedChoice;
   threadId: ThreadId;
   text: string;
+  /** Internal callbacks for personal words admitted while this turn is
+   * being prepared. Never supplied by a client. */
+  preparation?: TurnPreparation;
   /** The pictures `text` attaches, read back as bytes, for an engine that
    * takes pictures rather than paths (capabilities.images). The words
    * still name each one. Set only for such an engine. */
@@ -444,6 +468,9 @@ export interface ProviderAdapter {
    * the physical write. Errors after that attempt must propagate, not fall back.
    */
   steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void }): Promise<boolean>;
+  /** Preparation-bound steering distinguishes refusal from an outcome
+   * that may have reached the engine but has no matching receipt. */
+  steerPrepared?(threadId: ThreadId, expectedTurnId: TurnId, text: string, options: { skillNames?: string[]; onDispatch: () => void; onAcceptedLate?: () => void }): Promise<"accepted" | "refused" | "uncertain">;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
   respondToRequest(
     threadId: ThreadId,

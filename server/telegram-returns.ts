@@ -13,9 +13,12 @@ export interface TelegramReply {
    * stable even when its queued inputs are moved after dispatch. */
   after?: string;
   parts?: number;
+  /** A full-access delegate's private chat and grant, rechecked at send. */
+  delegate?: import("./telegram-people.ts").TelegramSender;
 }
 
-export const queuedTelegramReply = (chatId: number, binding?: { botId: string; generation: string }): TelegramReply => ({ chatId, state: "queued", ...binding });
+export const queuedTelegramReply = (chatId: number, binding?: { botId: string; generation: string }, delegate?: TelegramReply["delegate"]): TelegramReply =>
+  ({ chatId, state: "queued", ...binding, ...(delegate ? { delegate } : {}) });
 
 export class TelegramReturns {
   private store: Store;
@@ -101,7 +104,7 @@ export class TelegramReturns {
     const requests = this.requests(laneId).filter((m) =>
       m.telegramReply!.state === "bound" || (m.telegramReply!.state === "queued" && ids.has(m.id)),
     );
-    const address = (reply: TelegramReply) => JSON.stringify([reply.botId, reply.generation, reply.chatId]);
+    const address = (reply: TelegramReply) => JSON.stringify([reply.botId, reply.generation, reply.chatId, reply.delegate?.requester]);
     const chats = new Set(requests.map((m) => address(m.telegramReply!)));
     const transcript = this.store.messagesFor(laneId);
     for (const destination of chats) {

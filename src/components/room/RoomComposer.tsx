@@ -469,6 +469,7 @@ export function RoomComposer({
   const queuedNotice = useQueuedNotice({
     messages: waiting,
     threadId: blok.id,
+    recoveryKey: draftKey,
     senderOf,
     working: busy,
     onSendNow: stopAll,
