@@ -1,5 +1,6 @@
-// Settings, General: what you are called, how Bloks looks, and the one
-// shortcut that reaches it from anywhere.
+// Settings, General: what you are called, how Bloks looks, what its
+// window's close button does on Windows, and the one shortcut that
+// reaches it from anywhere.
 //
 // The person's own page, so it holds only what is theirs: their name,
 // the theme and the language (which follow them into every workspace),
@@ -241,8 +242,12 @@ export function GeneralPage() {
             }
           />
         )}
-        {/* the app says whether there is one: only on Windows */}
-        {window.bloks?.prefsTray && workspaces.available && typeof workspaces.tray === "boolean" && (
+      </SettingsGroup>
+      {/* What the close button does, a choice only Windows has: the app
+          says whether there is one. A Mac keeps running with its window
+          closed anyway. */}
+      {window.bloks?.prefsTray && workspaces.available && typeof workspaces.tray === "boolean" && (
+        <SettingsGroup title={t("generalPage.window")}>
           <SettingRow
             label={t("generalPage.minimizeToTheSystemTray")}
             description={t("generalPage.theCloseButtonHidesThe")}
@@ -254,8 +259,8 @@ export function GeneralPage() {
               />
             }
           />
-        )}
-      </SettingsGroup>
+        </SettingsGroup>
+      )}
       {window.bloks && (
         <SettingsGroup title={t("generalPage.shortcut")}>
           <QuickAskShortcut />
