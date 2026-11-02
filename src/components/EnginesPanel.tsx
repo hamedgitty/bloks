@@ -20,6 +20,7 @@ import { CREDITS_ENGINE } from "@/lib/credits";
 import { CodexSpeedControl } from "./CodexSpeed";
 import { EngineReport } from "./EngineReport";
 import { EnginePauses } from "./EnginePauses";
+import { EngineAccounts } from "./EngineAccounts";
 import { EngineOutdatedActions, EnginePathControl, EngineSetupActions, EngineUpdateNote } from "./EngineSetup";
 import { TeamSignInNotice } from "./TeamSignInNotice";
 import { t, type MessageKey } from "@/lib/i18n";
@@ -328,6 +329,7 @@ export function EnginesPanel() {
           rows={chat}
         />
       </div>
+      <EngineAccounts />
       <EnginePauses />
       <CodexSpeedControl className="mt-4" />
       <EngineReport />

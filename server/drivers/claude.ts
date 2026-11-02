@@ -30,6 +30,7 @@ import { DATA_DIR } from "../config.ts";
 import { lineSplitter } from "../ndjson.ts";
 import { apiRefusal, isRefusal, outReason } from "../failover.ts";
 import { claudePlanUsage } from "../plan-usage.ts";
+import { MAIN_ACCOUNT } from "../engine-accounts.ts";
 import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
@@ -284,7 +285,7 @@ export function isLimitNotice(text: unknown): text is string {
  */
 export function turnEnvironment(
   base: NodeJS.ProcessEnv,
-  turn: Pick<SendTurnInput, "env" | "shared" | "person">,
+  turn: Pick<SendTurnInput, "env" | "shared" | "person" | "account">,
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...base,
@@ -308,6 +309,29 @@ export function turnEnvironment(
   // that waits on its background work knows the agent has finished
   // answering what that work found (server/background-work.ts).
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
+  // Another of the person's accounts (server/engine-accounts.ts): the CLI
+  // reads its sign-in from that account's own config folder. Set last, so
+  // nothing in the turn's own environment can point it elsewhere, and a
+  // token this machine's environment carries for the main sign-in is not
+  // used in its place, which would run the turn on the account it left.
+  if (turn.account) {
+    env.CLAUDE_CONFIG_DIR = turn.account.dir;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+  return env;
+}
+
+/** The environment Claude Code's own commands about a sign-in run in:
+ * this machine's, pointed at an added account's folder, with nothing that
+ * would answer for another account instead. */
+function accountEnvironment(dir: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: dir };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
   return env;
 }
 
@@ -352,8 +376,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
     // What the plan signed in here has left, as the CLI last said, for
     // the composer's card (server/plan-usage.ts). The limits belong to
-    // the account, so one for the instance, whichever turn said it.
-    let plan: PlanUsage | null = null;
+    // the account, so one per account, whichever turn on it said it: the
+    // main sign-in's under MAIN_ACCOUNT, an added account's under its id.
+    const plans = new Map<string, PlanUsage>();
 
     interface RunningTurn {
       turnId: string;
@@ -1217,7 +1242,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               resetsAt = Math.floor(at > 1e12 ? at / 1000 : at);
             }
             // and how much of each window is used, which it says every turn
-            plan = claudePlanUsage(info, plan);
+            const planKey = turn.account?.id ?? MAIN_ACCOUNT;
+            const heard = claudePlanUsage(info, plans.get(planKey) ?? null);
+            if (heard) plans.set(planKey, heard);
             break;
           }
 
@@ -1615,7 +1642,30 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       enabled: input.enabled,
       models: MODELS,
       snapshot,
-      planUsage: () => plan,
+      planUsage: (account = MAIN_ACCOUNT) => plans.get(account) ?? null,
+
+      // `claude auth status` answers in JSON, and exits 1 when signed out,
+      // so stdout is read before the error, as snapshot does above.
+      accountStatus: (dir: string) =>
+        new Promise((resolve) => {
+          execFile(config.cli, ["auth", "status"], { timeout: 8_000, windowsHide: true, env: accountEnvironment(dir) }, (_error, stdout) => {
+            try {
+              const said = JSON.parse(stdout) as { loggedIn?: unknown; email?: unknown };
+              if (typeof said.loggedIn === "boolean") {
+                return resolve({ signedIn: said.loggedIn, email: typeof said.email === "string" ? said.email.slice(0, 200) : null });
+              }
+            } catch {
+              /* not JSON: an older CLI, or one that died before printing */
+            }
+            resolve({ signedIn: null });
+          });
+        }),
+
+      accountSignOut: (dir: string) =>
+        new Promise<void>((resolve) => {
+          const child = execFile(config.cli, ["auth", "logout"], { timeout: 10_000, windowsHide: true, env: accountEnvironment(dir) }, () => resolve());
+          child.stdin?.end();
+        }),
 
       adapter: {
         provider: DRIVER_KIND,

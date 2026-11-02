@@ -510,6 +510,7 @@ import { standingFor, type Standing, type StandingRecord } from "./standing-prom
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { redoCounts, redoPlan, takenBack, type RedoRefusal } from "./redo.ts";
 import { clockTime, Cooldowns, describeRest, errorWords, failureOf, outReason, REASON_WORDS, restIsNews, RETRY_WAIT_MS, RETRY_INTERVAL_MS, STAY_MS, toldOf, type Rest, type Told } from "./failover.ts";
+import { blockedWords, checkLabel, EngineAccounts, linkSetup, MAIN_ACCOUNT, mainFolder, MAX_ACCOUNTS, signInCommand, takesAccounts, type AccountPick } from "./engine-accounts.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
 import { indexMemory, indexMessages, mostOf, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
 import { excerpt, IndexCache, rank, type TermIndex } from "./recall-index.ts";
@@ -1921,6 +1922,12 @@ const checkpoints = new Checkpoints(join(DATA_DIR, "checkpoints"));
 // lane's turn so far, and the rest each lane has already been told about.
 const cooldowns = new Cooldowns();
 const laneEngine = new Map<string, ModelSelection>();
+// The engines' added accounts (server/engine-accounts.ts), the account
+// each running lane's turn is on, and the lanes whose move to another
+// account a failed turn's notice has already said.
+const engineAccounts = new EngineAccounts({ file: join(DATA_DIR, "engine-accounts.json"), root: join(DATA_DIR, "engine-accounts") });
+const laneAccount = new Map<string, { instanceId: string; id: string }>();
+const accountMoveSaid = new Map<string, string>();
 const turnErrors = new Map<string, string[]>();
 const toldOfRest = new Map<string, Told>();
 /** Errors kept off the chat while the turn might be asked again or
@@ -2058,6 +2065,97 @@ function engineUsable(selection: ModelSelection | null | undefined): selection i
   if (!selection?.instanceId) return false;
   const instance = registry.get(selection.instanceId);
   return Boolean(instance && instance.enabled !== false && !cooldowns.of(selection.instanceId) && !spendStopped(selection.instanceId));
+}
+
+// ── an engine's added accounts (server/engine-accounts.ts) ──
+
+/** What each account of an engine last said about its plan. */
+function planOfAccount(instanceId: string): (account: string) => PlanUsage | null {
+  const instance = registry.get(instanceId);
+  return (account) => instance?.planUsage?.(account) ?? null;
+}
+
+/** Whether a turn on this engine chooses among accounts: an engine that
+ * takes them, with at least one added besides its own sign-in. */
+function accountsInPlay(instance: ProviderInstance | null | undefined): instance is ProviderInstance {
+  return Boolean(instance && takesAccounts(instance.driverKind) && engineAccounts.has(instance.instanceId));
+}
+
+/** The account an engine's next turn would start on, as far as anything
+ * shown about it goes: the one in use, or the own sign-in. */
+function accountInUse(instance: ProviderInstance): string {
+  return accountsInPlay(instance) ? engineAccounts.current(instance.instanceId) : MAIN_ACCOUNT;
+}
+
+/** An account as a notice names it. */
+function accountPhrase(id: string): string {
+  return id === MAIN_ACCOUNT ? "the main sign-in" : `the account ${JSON.stringify(engineAccounts.label(id))}`;
+}
+
+/** What each added account's CLI last said about its sign-in, kept half
+ * a minute like an engine's snapshot: asking runs the CLI. */
+const accountStatusSeen = new Map<string, { at: number; status: Promise<{ signedIn: boolean | null; email?: string | null }> }>();
+function accountStatus(instance: ProviderInstance, id: string, fresh: boolean) {
+  const seen = accountStatusSeen.get(id);
+  if (!fresh && seen && Date.now() - seen.at < SNAPSHOT_FRESH_MS) return seen.status;
+  const status = (instance.accountStatus?.(engineAccounts.dir(id)) ?? Promise.resolve({ signedIn: null }))
+    .catch((): { signedIn: boolean | null; email?: string | null } => ({ signedIn: null }))
+    .then((said) => {
+      if (said.signedIn !== null) engineAccounts.noteSignedIn(instance.instanceId, id, said.signedIn);
+      return said;
+    });
+  accountStatusSeen.set(id, { at: Date.now(), status });
+  return status;
+}
+
+/** The fullest window of an account's plan, as the person reads it. */
+function planSummary(plan: PlanUsage | null): { usedPercent: number; resetsAt: number | null } | null {
+  const now = Date.now();
+  const live = (plan?.windows ?? []).filter((w) => Number.isFinite(w.used) && (w.resetsAt === null || w.resetsAt > now));
+  if (!live.length) return null;
+  const fullest = live.reduce((a, b) => (b.used > a.used ? b : a));
+  return { usedPercent: Math.min(100, Math.max(0, Math.round(fullest.used * 100))), resetsAt: fullest.resetsAt };
+}
+
+/** Every engine that takes accounts, with its accounts, for Settings.
+ * Ids, names, whether each is signed in and whether it can take a turn;
+ * never a folder or anything in one. */
+async function accountsView(fresh: boolean) {
+  const now = Date.now();
+  return Promise.all(
+    registry.instances().filter((instance) => takesAccounts(instance.driverKind)).map(async (instance) => {
+      const planOf = planOfAccount(instance.instanceId);
+      const current = engineAccounts.current(instance.instanceId);
+      const snapshot = await recentSnapshot(instance);
+      const row = async (id: string, label: string | null, signedIn: Promise<{ signedIn: boolean | null; email?: string | null }>) => {
+        const said = await signedIn;
+        const blocked = engineAccounts.blocked(instance.instanceId, id, planOf, now);
+        return {
+          id,
+          label,
+          main: id === MAIN_ACCOUNT,
+          inUse: id === current,
+          signedIn: said.signedIn,
+          ...(said.email ? { email: said.email } : {}),
+          blocked: blocked ? { why: blocked.why, reason: blocked.reason, until: blocked.until } : null,
+          plan: planSummary(planOf(id)),
+          running: [...laneAccount.values()].filter((ran) => ran.instanceId === instance.instanceId && ran.id === id).length,
+        };
+      };
+      const accounts = await Promise.all([
+        row(MAIN_ACCOUNT, null, Promise.resolve({ signedIn: snapshot.state === "available" ? (snapshot.authenticated ?? null) : null })),
+        ...engineAccounts.list(instance.instanceId).map((account) => row(account.id, account.label, accountStatus(instance, account.id, fresh))),
+      ]);
+      return {
+        instanceId: instance.instanceId,
+        driverKind: instance.driverKind,
+        name: instance.displayName ?? instance.instanceId,
+        available: snapshot.state === "available",
+        enabled: instance.enabled !== false,
+        accounts,
+      };
+    }),
+  );
 }
 
 // ── spending limits on the person's own keys (server/spend-limits.ts) ──
@@ -3524,6 +3622,11 @@ function recoverTurn(
   say: (text: string, phoneText?: string) => void,
 ): boolean {
   const used = laneEngine.get(laneId);
+  // the account it ran on, when its engine has several, and only while
+  // that is still the engine the turn ran on
+  const account = laneAccount.get(laneId);
+  const ranOn = account && used && account.instanceId === used.instanceId ? account : undefined;
+  laneAccount.delete(laneId);
   const errors = turnErrors.get(laneId) ?? [];
   const held = heldErrors.get(laneId) ?? [];
   const asked = turnAsked.get(laneId);
@@ -3551,6 +3654,8 @@ function recoverTurn(
   if (end.ok && used) {
     if (cooldowns.of(used.instanceId)?.reason === "signedOut") cooldowns.clear(used.instanceId);
     else if (!command && startedAt !== undefined) cooldowns.answered(used.instanceId, startedAt);
+    // and so can the account it ran on
+    if (ranOn && !command && startedAt !== undefined) engineAccounts.answered(ranOn.instanceId, ranOn.id, startedAt);
   }
   // Fast refused before the words went in. The engine did not fail and
   // is not out, so nothing rests and nothing is asked again; only a
@@ -3597,7 +3702,25 @@ function recoverTurn(
     if (creditsRun.empty) kind = "out";
     out = null;
   }
-  const rest: Rest | null = out ? cooldowns.rest(used.instanceId, out, evidence) : null;
+  // On an engine with more than one account (server/engine-accounts.ts),
+  // a usage limit or a lapsed sign-in is the account's, not the engine's:
+  // that account rests, and while another can take the turn the engine
+  // does not, so the same model goes on there. Only when every account
+  // is out does the engine rest, until the first of them is back, and
+  // then everything below goes on as it does for an engine with one.
+  const accountOut = Boolean(out && ranOn && (out === "limit" || out === "signedOut"));
+  const accountRest = accountOut ? engineAccounts.markOut(used.instanceId, ranOn!.id, out!, evidence) : null;
+  const planOf = planOfAccount(used.instanceId);
+  const nextAccount = accountOut && engineAccounts.anotherEligible(used.instanceId, ranOn!.id, planOf);
+  const everyAccount = accountOut && !nextAccount;
+  const rest: Rest | null = out && !nextAccount
+    ? cooldowns.rest(used.instanceId, out, evidence, Date.now(), everyAccount ? (engineAccounts.firstBack(used.instanceId, planOf) ?? undefined) : undefined)
+    : null;
+  /** What an engine out on every account it has says, for the notices. */
+  const outEverywhere = () =>
+    out === "limit" && rest
+      ? `${engineName(used)} is out of usage on all of its accounts ${describeRest(rest)}.`
+      : `${engineName(used)} ${REASON_WORDS[out!]} on any of its accounts.`;
   // a refused session refuses every message after it, so it is never
   // resumed: the next turn, here or in a room, is told the conversation
   if (kind === "refusal") store.dropSession(laneId, used.instanceId);
@@ -3620,6 +3743,23 @@ function recoverTurn(
     const shown = store.appendMessage(laneId, { role: "bot", kind: "notice", text });
     broadcast({ kind: "message", threadId: laneId, message: shown });
   };
+
+  // 0. Another account of the same engine, at once, with the same model
+  // and everything else as it was: the limit was the account's. Each
+  // account at most once per message, since the one that ran out now
+  // rests. The conversation starts a new session on it, told the
+  // conversation so far, which the turn's opening says.
+  if (goesOn && nextAccount && ranOn && accountRest) {
+    const next = engineAccounts.pick(used.instanceId, planOf);
+    accountMoveSaid.set(laneId, next.id);
+    const why = out === "limit"
+      ? `${engineName(used)} is at its usage limit on ${accountPhrase(ranOn.id)} ${describeRest(accountRest)}`
+      : `${engineName(used)} is not signed in on ${accountPhrase(ranOn.id)}`;
+    notice(`${why}. Asking again on ${accountPhrase(next.id)}, with the same model, in a new session told the conversation so far.`);
+    told(`Bloks asked again on ${accountPhrase(next.id)}, another account of the same engine, with the same model, in a new session told the conversation so far.`);
+    askAgain(bot, laneId, { asked: asked!, stage: recovery?.stage ?? "retry", tried }, 0);
+    return true;
+  }
 
   // 1. Asked again once per message. Not a refusal in a session that was
   // already new and told the conversation: that would only repeat it. Not
@@ -3650,7 +3790,7 @@ function recoverTurn(
     const alreadyTold = Boolean(trying && rest && !restIsNews(toldOfRest.get(laneId), rest));
     if (rest) toldOfRest.set(laneId, toldOf(rest));
     const why = rest
-      ? `${engineName(used)} ${REASON_WORDS[out!]} ${describeRest(rest)}.`
+      ? everyAccount ? outEverywhere() : `${engineName(used)} ${REASON_WORDS[out!]} ${describeRest(rest)}.`
       : recovery
         ? `${engineName(used)} failed again: ${said}.`
         : `${engineName(used)} ${kind === "refusal" ? "declined this message" : "failed"}: ${said}.`;
@@ -3681,7 +3821,8 @@ function recoverTurn(
     explainSilence();
     return false;
   }
-  const stopped = `${tried.length > 1 ? "Asking again did not help, so " : ""}${bot.name} has stopped here.`;
+  // out on every account: said plainly, and no other model is picked
+  const stopped = `${everyAccount ? `${outEverywhere()} ` : ""}${tried.length > 1 ? "Asking again did not help, so " : ""}${bot.name} has stopped here.`;
   const first = tried[0];
   const why =
     recovery?.stage === "backup"
@@ -3832,6 +3973,7 @@ function cancelRecovery(bot: BotRecord, laneId: string, why: string): boolean {
   if (!recovery?.timer) return false;
   clearTimeout(recovery.timer);
   recoveries.delete(laneId);
+  accountMoveSaid.delete(laneId);
   const last = recovery.tried.at(-1);
   if (last) failureNotes.set(laneId, { text: failureLine(last.selection, last.at, last.said, "Bloks was going to ask again, but it was stopped. This is the next message.") });
   settleOwners(bot, laneId, { ok: false, why: last?.said ?? null });
@@ -5746,7 +5888,10 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         return asked && whoIs(asked) ? asked : undefined;
       })();
       const priced = turnPrice(event);
-      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated, bookedTo, turnRan(event));
+      // the account it ran on, for an engine with more than one
+      const accountRan = laneAccount.get(event.threadId);
+      const bookedAccount = accountRan && accountRan.instanceId === event.providerInstanceId ? accountRan.id : undefined;
+      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated, bookedTo, turnRan(event), bookedAccount);
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
       if (bookedTo && !onBloksAi(event.providerInstanceId, event.provider)) {
@@ -5837,6 +5982,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         botId: bot.id,
         laneId: event.threadId,
         instanceId: ranOn.instanceId,
+        ...(bookedAccount && ranOn.instanceId === accountRan?.instanceId ? { account: bookedAccount } : {}),
         model: onBloksAi(event.providerInstanceId, event.provider) ? BLOKS_AI_MODEL : ranOn.model,
         ok: event.ok !== false,
         ...(event.ok === false && outReason([...(turnErrors.get(event.threadId) ?? []), event.stopReason ?? ""].join("\n"))
@@ -8134,6 +8280,9 @@ async function startClaimedTurn(
   const settleUnsent = (failure?: string) => {
     codexDispatches.delete(task.id);
     if (claim.preparation) finishPreparation(claim.preparation);
+    // never ran on the account it was going to
+    laneAccount.delete(task.id);
+    accountMoveSaid.delete(task.id);
     claim.cancelPrimaryTry?.();
     commandTurns.delete(task.id);
     checkInTurns.delete(task.id);
@@ -8416,6 +8565,46 @@ async function startClaimedTurn(
       // agent's own working folder, not a room's or a project's.
       const placeFolder = bot.cwd ?? workspace.ensureWorkspace(bot.id);
 
+      // The account this turn runs on, for an engine with more than one
+      // (server/engine-accounts.ts): chosen now and kept for the whole
+      // turn, the same model, effort, tools and approvals whichever it
+      // is. Only on this computer, where the accounts' folders are: a
+      // turn working elsewhere or on a cloud computer uses the sign-in
+      // that place has. A command acts on the session it names, so it
+      // stays on the account that made it.
+      // A lane whose session was on an account since removed moves too,
+      // to the main sign-in, even with no other account left.
+      let turnAccount: AccountPick | null = null;
+      let accountMoved = false;
+      if (!placeNow && !onCloud && takesAccounts(instance.driverKind) && (engineAccounts.has(selection.instanceId) || task.sessionAccounts?.[selection.instanceId])) {
+        const engineId = selection.instanceId;
+        const lanes = task.sessionAccounts?.[engineId] ?? MAIN_ACCOUNT;
+        turnAccount = command && engineAccounts.order(engineId).includes(lanes)
+          ? { id: lanes, label: engineAccounts.label(lanes), dir: lanes === MAIN_ACCOUNT ? null : engineAccounts.dir(lanes), eligible: true }
+          : engineAccounts.pick(engineId, planOfAccount(engineId));
+        // the person's settings, skills and plugins, as on the main sign-in
+        if (turnAccount.dir) linkSetup(instance.driverKind, turnAccount.dir, mainFolder(instance.driverKind));
+        // A Telegram person's session is new and kept nowhere, so the
+        // lane's own session stays where it is.
+        if (!personSource) {
+          accountMoved = store.moveTaskAccount(task.id, engineId, turnAccount.id, MAIN_ACCOUNT);
+          const said = accountMoveSaid.get(task.id);
+          accountMoveSaid.delete(task.id);
+          if (accountMoved && said !== turnAccount.id) {
+            const from = turnAccount.from;
+            const notice = store.appendMessage(roomId, {
+              role: "bot",
+              ...(blok ? { from: bot.id } : {}),
+              kind: "notice",
+              text: from
+                ? `${engineName(selection)} goes on with ${accountPhrase(turnAccount.id)} from here: ${accountPhrase(from.id)} ${blockedWords(from.blocked)}${from.blocked.until !== null && from.blocked.why !== "signedOut" ? ` ${describeRest({ until: from.blocked.until, reason: from.blocked.reason })}` : ""}. Same model; it starts a new session there, told this conversation so far.`
+                : `${engineName(selection)} runs on ${accountPhrase(turnAccount.id)} now, the account in use for this engine. Same model; it starts a new session there, told this conversation so far.`,
+            });
+            broadcast({ kind: "message", threadId: roomId, message: notice });
+          }
+        }
+      }
+
       // A lane served by a different engine last time has a blind spot:
       // any cursor the new engine holds predates the other engine's
       // turns. Session-cursor engines get the story replayed inline;
@@ -8524,9 +8713,11 @@ async function startClaimedTurn(
             ? { from: broughtFrom }
             : moved
               ? { why: "folder" as const, folder: turnCwd ? shownPath(turnCwd) : undefined }
-              : task.lastInstanceId === ""
-                ? { why: "session" as const }
-                : {}),
+              : accountMoved
+                ? { why: "account" as const }
+                : task.lastInstanceId === ""
+                  ? { why: "session" as const }
+                  : {}),
         });
       } else if (replaceSession) {
         const told = await story(true);
@@ -8690,6 +8881,8 @@ async function startClaimedTurn(
 
       // what this turn runs on, and a fresh slate for what goes wrong in it
       laneEngine.set(task.id, selection);
+      if (turnAccount) laneAccount.set(task.id, { instanceId: selection.instanceId, id: turnAccount.id });
+      else laneAccount.delete(task.id);
       // The busy frame preceded selection. Publish its display origin now,
       // before a first reading, or a client keeps the previous engine's fill.
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -8755,6 +8948,7 @@ async function startClaimedTurn(
         text: turnText,
         ...(command && instance.driverKind === "codex" ? { compactOnly: true } : {}),
         ...(skillNames.length ? { skillNames } : {}),
+        ...(turnAccount?.dir ? { account: { id: turnAccount.id, dir: turnAccount.dir } } : {}),
         stallMs: stallLimitMs(),
         backgroundWork: resolveBackgroundWork(bot.backgroundWork, cfg.turns?.backgroundWork),
         model: selection.model,
@@ -13004,7 +13198,7 @@ async function usageNotices(threadId: string | null): Promise<UsageNotice[]> {
   };
   const engine = (instance: ProviderInstance | null | undefined): UsageNotice[] =>
     instance && instance.driverKind !== CREDITS_KIND
-      ? [...planNotices(instance.instanceId, instance.planUsage?.() ?? null), ...ownKeyNotices(instance)]
+      ? [...planNotices(instance.instanceId, instance.planUsage?.(accountInUse(instance)) ?? null), ...ownKeyNotices(instance)]
       : [];
   if (threadId === null) return sortNotices([...(await bloksAi()), ...registry.instances().flatMap(engine)]);
   // A phone asks with the agent's main thread whichever lane is busy, so
@@ -27736,7 +27930,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (asAgent) return json(res, 403, { error: "not from here" });
       const usage: Record<string, PlanUsage> = {};
       for (const instance of registry.instances()) {
-        const latest = instance.planUsage?.();
+        // the account the next turn would start on, for an engine with
+        // more than one (server/engine-accounts.ts)
+        const latest = instance.planUsage?.(accountInUse(instance));
         if (latest) usage[instance.instanceId] = latest;
       }
       return json(res, 200, { usage });
@@ -28006,6 +28202,87 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const result = await installEngine(m[1]);
       record({ at: Date.now(), kind: "engine.installed", actor: "you", summary: `${m[1]}: ${result.ok ? "installed" : "failed"}` });
       return json(res, 200, result);
+    }
+
+    // ── an engine's added accounts (server/engine-accounts.ts) ──
+    // The person's, and never an agent's or a member's: which account
+    // pays for the work is theirs to say. Seeing them and choosing the
+    // one in use works from any of their devices. Adding, signing in and
+    // removing are this machine only: they open Terminal, and the
+    // account's folder, with its sign-in, is on this computer.
+    if (path === "/api/engine-accounts" || path.startsWith("/api/engine-accounts/")) {
+      if (asAgent || namesMember()) return json(res, 403, { error: "not from here" });
+      if (method === "GET" && path === "/api/engine-accounts") {
+        return json(res, 200, { engines: await accountsView(url.searchParams.has("fresh")), max: MAX_ACCOUNTS, canManage: local });
+      }
+      if (method === "PUT" && path === "/api/engine-accounts/current") {
+        const body = await readBody(req);
+        const instance = typeof body.instanceId === "string" ? registry.get(body.instanceId) : null;
+        if (!instance || !takesAccounts(instance.driverKind)) return json(res, 404, { error: "no such engine" });
+        if (typeof body.accountId !== "string" || !engineAccounts.choose(instance.instanceId, body.accountId)) return json(res, 404, { error: "no such account" });
+        record({ at: Date.now(), kind: "settings.changed", actor: "you", summary: `${instance.displayName ?? instance.instanceId}: uses ${accountPhrase(body.accountId)}` });
+        broadcast({ kind: "engineAccounts" });
+        return json(res, 200, { engines: await accountsView(false) });
+      }
+      if (method === "POST" && path === "/api/engine-accounts") {
+        if (!local) return json(res, 403, { error: "Add an account on the computer Bloks runs on." });
+        const body = await readBody(req);
+        const instance = typeof body.instanceId === "string" ? registry.get(body.instanceId) : null;
+        if (!instance || !takesAccounts(instance.driverKind)) return json(res, 404, { error: "no such engine" });
+        const named = checkLabel(body.label ?? `Account ${engineAccounts.list(instance.instanceId).length + 2}`);
+        if ("error" in named) return json(res, 400, named);
+        let added;
+        try {
+          added = engineAccounts.add(instance.instanceId, named.label);
+        } catch (e) {
+          return json(res, (e as { status?: number }).status ?? 500, { error: e instanceof Error ? e.message : "Could not add the account." });
+        }
+        linkSetup(instance.driverKind, engineAccounts.dir(added.id), mainFolder(instance.driverKind));
+        record({ at: Date.now(), kind: "settings.changed", actor: "you", summary: `${instance.displayName ?? instance.instanceId}: added the account ${JSON.stringify(added.label)}` });
+        broadcast({ kind: "engineAccounts" });
+        return json(res, 201, { account: { id: added.id, label: added.label } });
+      }
+      const am = path.match(/^\/api\/engine-accounts\/([a-f0-9]{12})(\/signin)?$/);
+      const account = am ? engineAccounts.get(am[1]) : undefined;
+      if (!am || !account) return json(res, 404, { error: "no such account" });
+      const owner = registry.get(account.instanceId);
+      const ownerName = owner?.displayName ?? account.instanceId;
+      if (am[2] && method === "POST") {
+        if (!local) return json(res, 403, { error: "Sign in on the computer Bloks runs on." });
+        if (!owner || !takesAccounts(owner.driverKind)) return json(res, 409, { error: `${ownerName} is not here to sign in with.` });
+        const dir = engineAccounts.dir(account.id);
+        linkSetup(owner.driverKind, dir, mainFolder(owner.driverKind));
+        // the CLI this engine runs from, which may not be the one on PATH
+        const configured = registry.configuredInput(owner.instanceId)?.config as Record<string, unknown> | undefined;
+        const cli = typeof configured?.cli === "string" && configured.cli ? configured.cli : owner.driverKind === "codex" ? "codex" : "claude";
+        const command = signInCommand(owner.driverKind, cli, dir)!;
+        accountStatusSeen.delete(account.id);
+        return json(res, 200, { opened: openInTerminal(`signin-${account.id}`, command), command });
+      }
+      if (!am[2] && method === "PATCH") {
+        const body = await readBody(req);
+        const named = checkLabel(body.label);
+        if ("error" in named) return json(res, 400, named);
+        engineAccounts.rename(account.id, named.label);
+        broadcast({ kind: "engineAccounts" });
+        return json(res, 200, { account: { id: account.id, label: named.label } });
+      }
+      if (!am[2] && method === "DELETE") {
+        if (!local) return json(res, 403, { error: "Remove an account on the computer Bloks runs on." });
+        // a turn running on it is reading its folder right now
+        if ([...laneAccount.values()].some((ran) => ran.id === account.id)) {
+          return json(res, 409, { error: "A turn is running on this account. Remove it when the turn has ended." });
+        }
+        // the engine's own sign-out first, while its folder still says
+        // whose sign-in it is, so one it keeps elsewhere goes too
+        await owner?.accountSignOut?.(engineAccounts.dir(account.id)).catch(() => {});
+        engineAccounts.remove(account.id);
+        accountStatusSeen.delete(account.id);
+        record({ at: Date.now(), kind: "settings.changed", actor: "you", summary: `${ownerName}: removed the account ${JSON.stringify(account.label)}` });
+        broadcast({ kind: "engineAccounts" });
+        return json(res, 200, { engines: await accountsView(false) });
+      }
+      return json(res, 405, { error: "method not allowed" });
     }
 
     // ── engines: what you can connect, and how ──
@@ -32456,7 +32733,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const asked = url.searchParams.get("range") ?? "";
       const range: UsageRange = (USAGE_RANGES as readonly string[]).includes(asked) ? (asked as UsageRange) : "30d";
       const filter = { bot: url.searchParams.get("bot") || null, engine: url.searchParams.get("engine") || null };
-      return json(res, 200, usageReport(usage.since(Math.min(365, rangeDays(range) * 2)), range, filter));
+      const report = usageReport(usage.since(Math.min(365, rangeDays(range) * 2)), range, filter);
+      // each account row by the name the person gave it; a removed one
+      // has no name left, and the page says so
+      const accountLabels: Record<string, string> = {};
+      for (const row of report.byAccount) {
+        const id = row.id.slice(row.id.lastIndexOf("/") + 1);
+        const named = id === MAIN_ACCOUNT ? undefined : engineAccounts.get(id);
+        if (named) accountLabels[row.id] = named.label;
+      }
+      return json(res, 200, { ...report, accountLabels });
     }
     // Spending limits on the person's own keys (server/spend-limits.ts).
     // Never an agent's to read or to move: the line is there to stop

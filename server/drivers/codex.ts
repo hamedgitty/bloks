@@ -36,6 +36,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { knownEfforts, type Effort } from "../effort.ts";
 import { codexPlanUsage } from "../plan-usage.ts";
+import { MAIN_ACCOUNT } from "../engine-accounts.ts";
 import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
 import { installCommand } from "../engine-commands.ts";
@@ -50,6 +51,15 @@ import { checkCodexReplyEndpoint, makeCodexReplyFolder } from "../person-turn.ts
 import { isConnectionEnvName } from "../connections.ts";
 
 const DRIVER_KIND = "codex";
+
+/** The environment Codex's own commands about a sign-in run in: this
+ * machine's, pointed at an added account's home, with no key that would
+ * answer for it instead. */
+function accountEnvironment(dir: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, CODEX_HOME: dir };
+  delete env.OPENAI_API_KEY;
+  return env;
+}
 const NATIVE_SOURCE = "codex.app-server";
 
 /** What the picker shows until the CLI says what it serves. The installed
@@ -697,8 +707,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     };
     // What the plan signed in here has left, as Codex last said, for the
     // composer's card (server/plan-usage.ts). The limits belong to the
-    // account, so one for the instance, whichever turn heard it.
-    let plan: PlanUsage | null = null;
+    // account, so one per account, whichever turn on it heard it: the main
+    // sign-in's under MAIN_ACCOUNT, an added account's under its id.
+    const plans = new Map<string, PlanUsage>();
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -740,6 +751,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // The CLI holds its own ChatGPT login. An inherited API key would
       // silently move the user onto pay-as-you-go billing.
       delete env.OPENAI_API_KEY;
+      // Another of the person's accounts (server/engine-accounts.ts): Codex
+      // reads its sign-in from that account's own home. Set after the
+      // turn's environment, so nothing in it can point Codex elsewhere.
+      if (turn.account) env.CODEX_HOME = turn.account.dir;
       // This turn's credential, kept out of everything written down: the
       // native copy (appendNative takes it out), and any error that quotes
       // back the thread config carrying it (shellConfig). The agent's MCP
@@ -1269,7 +1284,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
           case "account/rateLimits/updated": {
             // about the account, not this thread, so nothing is elsewhere
-            plan = codexPlanUsage(params.rateLimits) ?? plan;
+            const heard = codexPlanUsage(params.rateLimits);
+            if (heard) plans.set(turn.account?.id ?? MAIN_ACCOUNT, heard);
             break;
           }
 
@@ -1799,7 +1815,25 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       snapshot,
       catalogReady,
       skills,
-      planUsage: () => plan,
+      planUsage: (account = MAIN_ACCOUNT) => plans.get(account) ?? null,
+
+      // `codex login status` answers with its exit code, as in snapshot.
+      // A key in this machine's environment says nothing about an added
+      // account: turns never send it (OPENAI_API_KEY is taken out above).
+      accountStatus: (dir: string) =>
+        new Promise((resolve) => {
+          execFile(config.cli, ["login", "status"], { timeout: 8_000, windowsHide: true, env: accountEnvironment(dir) }, (error, stdout, stderr) => {
+            if (!error) return resolve({ signedIn: true });
+            if (/not logged in|logged out/i.test(`${stdout}\n${stderr}`)) return resolve({ signedIn: false });
+            resolve({ signedIn: existsSync(join(dir, "auth.json")) ? null : false });
+          });
+        }),
+
+      accountSignOut: (dir: string) =>
+        new Promise<void>((resolve) => {
+          const child = execFile(config.cli, ["logout"], { timeout: 10_000, windowsHide: true, env: accountEnvironment(dir) }, () => resolve());
+          child.stdin?.end();
+        }),
 
       adapter: {
         provider: DRIVER_KIND,

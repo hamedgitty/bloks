@@ -577,7 +577,21 @@ supports tool calls; if the host refuses them, the turn stops and says so.
 
 Give an agent a **backup engine** and a turn that hits a usage limit, a
 rate limit or an outage is picked up by the backup, with the conversation
-so far. **Engine scout** learns from what you undo, rewind and discard
+so far.
+
+To keep the same model through a plan limit instead, sign in to a second
+(or third) **account** of Claude Code or Codex under **Accounts** in
+Settings, Engines and keys. Each one signs in with the engine's own login
+in Terminal, into a folder of its own; Bloks never sees the password or
+the token. The workspace uses one account at a time. When that account
+reaches its limit, or its plan says it has, the next turn starts on the
+next account that can take it, with the same model, effort, tools and
+approvals, and the workspace stays there, even after the first one
+resets, until you choose another. A turn already running finishes where
+it started. A conversation that moves starts a new session on the new
+account, told the conversation so far, and the chat says so. When every
+account is out, the agent stops and says why, or goes to its backup
+engine if you gave it one. Usage shows which account ran what. **Engine scout** learns from what you undo, rewind and discard
 which engine does your work well, and says when a lighter model has been
 doing as well. Engines and keys belong to a workspace, so each workspace
 can run on different ones.
@@ -653,7 +667,8 @@ Inside each workspace's folder:
 | `messages-<id>.json` | One transcript per agent or room |
 | `config.json` | Connected engines and keys, spending limits, `0600` in a `0700` folder |
 | `people.json`, `joining.json` | The people in the workspace, and its invites |
-| `usage.json` | What each agent and engine used, by day |
+| `usage.json` | What each agent and engine used, by day, and on which account |
+| `engine-accounts.json`, `engine-accounts/` | The names of an engine's added accounts and which one is in use, and each one's own config folder with the sign-in the engine wrote there (left out of backups) |
 | `reads.json` | How far each person has read each conversation |
 | `skills/` | Installed skills, one markdown file each |
 | `skill-history/` | Every version of each of your skills, with who changed it and why |

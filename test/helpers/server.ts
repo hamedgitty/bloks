@@ -100,6 +100,11 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         CURSOR_API_KEY: "",
         CURSOR_AUTH_TOKEN: "",
         CLINE_API_KEY: "",
+        // nor the engines' own sign-in folders: an engine's added accounts
+        // link the person's setup from there (server/engine-accounts.ts)
+        CLAUDE_CONFIG_DIR: "",
+        CODEX_HOME: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
         // a test run from inside a Bloks agent would otherwise act as it
         BLOKS_TOKEN: "",
         // the throwaway HOME is the whole point: a data folder named by the

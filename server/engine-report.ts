@@ -27,6 +27,10 @@ export interface TurnLog {
   botId: string;
   laneId: string;
   instanceId: string;
+  /** The account it ran on, for an engine with more than one
+   * (server/engine-accounts.ts): an added account's id, or "main" for
+   * the engine's own sign-in. Absent on an engine with one. */
+  account?: string;
   model: string;
   ok: boolean;
   /** The engine ran out (a limit, credit, an outage): not its quality. */

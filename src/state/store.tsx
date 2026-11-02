@@ -982,6 +982,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "intents":
         case "meetings":
         case "enginePauses":
+        case "engineAccounts":
         case "routines":
         case "incidents":
         case "secrets":

@@ -302,9 +302,13 @@ export function restIsNews(told: Told | undefined, rest: Rest, now = Date.now())
 export class Cooldowns {
   private resting = new Map<string, { rest: Rest; since: number; lastOut: number; lastTry?: number; trying?: object }>();
 
-  rest(instanceId: string, reason: OutReason, text: string, now = Date.now()): Rest {
+  /** `until`, when given, is when the engine is known to be back instead
+   * of what the text says: the first of its accounts to be back, for an
+   * engine with several (server/engine-accounts.ts). Never longer than
+   * any other rest may be. */
+  rest(instanceId: string, reason: OutReason, text: string, now = Date.now(), known?: number): Rest {
     const previous = this.of(instanceId, now);
-    const until = restUntil(reason, text, now);
+    const until = known !== undefined && known > now ? Math.min(known, now + MAX_REST) : restUntil(reason, text, now);
     // The same reset rounded a little differently is still the same
     // rest, so it does not repeat the dispatch notice in every lane.
     const rest = { until: previous?.reason === reason && Math.abs(previous.until - until) <= MINUTE ? previous.until : until, reason };

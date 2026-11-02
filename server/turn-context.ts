@@ -36,14 +36,15 @@ export function engineIsFresh(input: FreshnessInput): boolean {
  * server/context.ts); `left` is how many messages that left out, said so
  * the agent knows the story has a gap rather than assuming it has all of
  * it. `why` is what the opening line says happened: another engine had
- * the conversation, or the old session could not be carried on. `from`
+ * the conversation, the old session could not be carried on, or it was
+ * left in another folder or on another account of the engine. `from`
  * names the tool a conversation brought over from before Bloks was had
  * in (server/session-import.ts), which says more than either.
  */
 export function freshTurnText(
   transcript: ReadonlyArray<{ role: "user" | "assistant"; text: string }>,
   turnText: string,
-  opts: { left?: number; why?: "engine" | "session" | "folder"; folder?: string; from?: string } = {},
+  opts: { left?: number; why?: "engine" | "session" | "folder" | "account"; folder?: string; from?: string } = {},
 ): string {
   if (transcript.length === 0) return turnText;
   const history = transcript
@@ -55,7 +56,9 @@ export function freshTurnText(
       ? "You are picking up this conversation in a new session; the earlier one could not be carried on."
       : opts.why === "folder"
         ? `You are picking up this conversation in a new session${opts.folder ? ` in ${opts.folder}` : ""}: the person changed the working folder, and the earlier session belonged to the folder it ran in.`
-        : "You are picking up this conversation mid-thread; a different engine handled it until now.";
+        : opts.why === "account"
+          ? "You are picking up this conversation in a new session, on another account of the same engine and the same model: the earlier session belonged to the account it ran on."
+          : "You are picking up this conversation mid-thread; a different engine handled it until now.";
   const left = opts.left ?? 0;
   const gap =
     left > 0

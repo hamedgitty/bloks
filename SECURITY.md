@@ -70,6 +70,21 @@ written `0600` inside a `0700` directory. That keeps
 other user accounts out, but it is not encrypted at rest. Moving these
 into the macOS Keychain is the top open item.
 
+**An engine's added accounts sign in on this computer, into folders of
+their own.** A second Claude Code or Codex account is signed in with the
+engine's own login, in Terminal, into a folder under the workspace's data
+folder (`engine-accounts/`, `0700`). The engine writes its credential
+there or in the macOS Keychain; Bloks never reads, copies, logs or sends
+it, and only points a turn's CLI at the folder. Only the person's setup
+(settings, instructions, skills, plugins) is linked in from the main
+sign-in's folder, never its credential or its sessions. The folders are
+left out of backups and workspace moves, and are never used for a turn
+that works in a container or on another machine. Only a window on this
+computer can add, sign in or remove an account; the owner's paired
+devices can see them and choose the one in use; an agent's token and a
+member get nothing. Removing one runs the engine's own sign-out, then
+deletes the folder.
+
 **Which program runs as an engine is the person's choice, on this
 computer.** An engine's CLI can be started from a path other than PATH's
 copy. Only a window on this computer can set it (never a phone, a remote

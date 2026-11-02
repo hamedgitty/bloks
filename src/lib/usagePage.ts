@@ -19,7 +19,7 @@ import { formatDate, formatNumber, t, type MessageKey } from "./i18n.ts";
 
 export type UsageRange = "7d" | "30d" | "90d" | "month";
 export type UsageMetric = "cost" | "tokens" | "turns";
-export type BreakdownTab = "agent" | "engine" | "day";
+export type BreakdownTab = "agent" | "engine" | "account" | "day";
 
 /** One span's tally, as GET /api/usage/report sends it. */
 export interface UsageTotals {
@@ -55,6 +55,12 @@ export interface UsageReport {
   daily: UsageDay[];
   byAgent: UsageRow[];
   byEngine: UsageRow[];
+  /** Per account of an engine with more than one, id `engine/account`
+   * ("main" for the engine's own sign-in). Absent from an older server. */
+  byAccount?: UsageRow[];
+  /** The names the person gave those accounts, by row id. A removed
+   * account has none. */
+  accountLabels?: Record<string, string>;
   total: UsageTotals;
   previous: UsageTotals;
   priced: boolean;
@@ -138,7 +144,7 @@ export function readView(storage: Pick<Storage, "getItem"> | null = safeStorage(
       metric: one(saved.metric, METRICS.map((m) => m.value), DEFAULT_VIEW.metric),
       bot: id(saved.bot),
       engine: id(saved.engine),
-      tab: one(saved.tab, ["agent", "engine", "day"] as const, DEFAULT_VIEW.tab),
+      tab: one(saved.tab, ["agent", "engine", "account", "day"] as const, DEFAULT_VIEW.tab),
     };
   } catch {
     return DEFAULT_VIEW;

@@ -446,7 +446,10 @@ function Breakdown({
   // the day tab's names are dates, written in the reader's language
   const language = useLanguage();
   const metric = view.metric;
-  const tab = view.tab;
+  // Accounts only once an engine has run on more than one; a tab left
+  // on them when there is nothing to show reads as engines instead.
+  const accounts = report.byAccount ?? [];
+  const tab = view.tab === "account" && !accounts.length ? "engine" : view.tab;
 
   const rows: Line[] = useMemo(() => {
     if (tab === "agent") {
@@ -473,6 +476,22 @@ function Breakdown({
         pick: view.engine === row.id ? undefined : () => set({ engine: row.id }),
       }));
     }
+    if (tab === "account") {
+      return accounts.map((row) => {
+        const engine = row.id.slice(0, row.id.lastIndexOf("/"));
+        const account = row.id.slice(row.id.lastIndexOf("/") + 1);
+        const label = account === "main" ? t("engineAccounts.mainSignIn") : (report.accountLabels?.[row.id] ?? t("usagePage.removedAccount"));
+        return {
+          ...row,
+          name: `${names.engine(engine)} · ${label}`,
+          icon: (
+            <span className="flex size-[22px] shrink-0 items-center justify-center rounded-md bg-muted">
+              <ProviderMark driverKind={names.kind(engine)} size={13} />
+            </span>
+          ),
+        };
+      });
+    }
     return report.daily
       .filter((d) => d.turns > 0)
       .map((d) => ({ ...d, id: d.date, name: longDay(d.date), priced: d.cost > 0 }));
@@ -494,7 +513,7 @@ function Breakdown({
     }
     // an engine on a plan that gives no price, or any row of one when the
     // page is narrowed to it: what the plan has left is in Limits
-    const plan = tab === "engine" ? row.id : view.engine;
+    const plan = tab === "engine" ? row.id : tab === "account" ? row.id.slice(0, row.id.lastIndexOf("/")) : view.engine;
     if (metric === "cost" && !row.priced && row.turns > 0 && plan && planWithoutPrice(names.kind(plan))) {
       return <ToLimits label={t("usagePage.seePlan")} title={seePlanTitle(names.engine(plan))} onLimits={onPlans} />;
     }
@@ -517,6 +536,7 @@ function Breakdown({
           options={[
             { value: "agent", label: t("common.agent") },
             { value: "engine", label: t("common.engine") },
+            ...(accounts.length ? [{ value: "account" as const, label: t("usagePage.account") }] : []),
             { value: "day", label: t("usagePage.day") },
           ]}
         />
@@ -528,7 +548,7 @@ function Breakdown({
           <table className="w-full table-fixed text-body">
             <thead className="border-b bg-muted/40">
               <tr className="text-left">
-                <HeaderCell label={tab === "day" ? t("usagePage.day") : tab === "agent" ? t("common.agent") : t("common.engine")} sortKey="name" sort={sort} onSort={onSort} className="pl-2.5" />
+                <HeaderCell label={tab === "day" ? t("usagePage.day") : tab === "agent" ? t("common.agent") : tab === "account" ? t("usagePage.account") : t("common.engine")} sortKey="name" sort={sort} onSort={onSort} className="pl-2.5" />
                 <HeaderCell label={t(METRICS.find((m) => m.value === metric)!.label)} sortKey="value" sort={sort} onSort={onSort} className="w-[30%] text-right sm:w-[22%]" />
                 <HeaderCell label={t("usagePage.share")} sortKey="share" sort={sort} onSort={onSort} className="hidden w-[24%] pl-3 sm:table-cell" />
                 <HeaderCell label={fourth} sortKey="tokens" sort={sort} onSort={onSort} className="w-[22%] pr-2.5 text-right sm:w-[14%]" />

@@ -28,7 +28,9 @@
 //
 // Left out: what Bloks makes again by itself, or what is too big and too
 // tied to one machine to be worth carrying (raw engine logs, browser
-// profiles, rehearsal copies, caches, dependency folders, temp files), the
+// profiles, rehearsal copies, caches, dependency folders, temp files), an
+// engine's added accounts, whose folders hold the sign-ins the engine wrote
+// there (server/engine-accounts.ts), the
 // files of the running server (its lock and port), and the Undo history
 // unless asked for, since it holds a version of every file any agent has
 // changed.
@@ -406,6 +408,9 @@ export function leftOutBecause(rel: string, isDir: boolean, undo: boolean): stri
   if (parts.length === 1) {
     if (isDir && name === "native") return "raw engine logs";
     if (isDir && name === "browser") return "browser profiles";
+    // an engine's added accounts keep their sign-ins here, written by the
+    // engine itself; they stay on this computer, like the engine's own
+    if (isDir && name === "engine-accounts") return "engine sign-ins, which stay on this computer";
     if (isDir && (name === "cache" || name === "tmp")) return "cache";
     if (isDir && name === "checkpoints" && !undo) return "Undo history, not asked for";
     if (!isDir && (name === "server.lock" || name === "port")) return "belongs to the running server";

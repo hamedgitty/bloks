@@ -382,6 +382,15 @@ export interface SendTurnInput {
   /** Names found only in this segment's personal messages, before notes. */
   skillNames?: string[];
   /**
+   * One of the engine's added accounts, for an engine that takes them
+   * (server/engine-accounts.ts): the CLI is pointed at `dir`, the
+   * account's own config folder, the way the engine's documentation says
+   * to, and whatever the engine reports about its plan is kept under
+   * `id`. Absent is the engine's own sign-in, as it always was. Never set
+   * on a turn that works elsewhere: the folder is on this computer.
+   */
+  account?: { id: string; dir: string };
+  /**
    * Set when the agent works somewhere else: in a Docker container or on
    * another machine over SSH (server/workplace-run.ts). A driver that
    * runs a process starts it with `place.spawn` instead of spawn, hands
@@ -615,8 +624,18 @@ export interface ProviderInstance {
   /** The latest the engine said about its plan's limits, kept in memory
    * on the instance and null until it says anything. Optional: only an
    * engine signed in to a subscription has limits to report. For the
-   * person to read; never part of a prompt. */
-  planUsage?(): PlanUsage | null;
+   * person to read; never part of a prompt. `account` is an added
+   * account's id (SendTurnInput.account); absent is the own sign-in. */
+  planUsage?(account?: string): PlanUsage | null;
+  /** Whether the engine is signed in with the config folder `dir`, an
+   * added account's (server/engine-accounts.ts), as its own CLI says,
+   * with the address it is signed in as when it says one. Null when the
+   * CLI did not answer. Only an engine that takes accounts has it. */
+  accountStatus?(dir: string): Promise<{ signedIn: boolean | null; email?: string | null }>;
+  /** The engine's own sign-out for an added account's folder, run before
+   * the folder is deleted, so a sign-in the engine keeps elsewhere (the
+   * macOS Keychain) goes with it. Best effort. */
+  accountSignOut?(dir: string): Promise<void>;
   dispose(): Promise<void>;
 }
 

@@ -905,6 +905,64 @@ when, on which engine and model, and what Bloks did (`failureNotes`).
 All of this is in memory: after a restart the own engine is simply tried
 again.
 
+### More than one account of an engine
+
+Claude Code and Codex can have accounts besides their own sign-in
+(`server/engine-accounts.ts`, GitHub 465). An account belongs to one
+engine instance and to the workspace, never to an agent. The engine's own
+sign-in is always the first (`MAIN_ACCOUNT`); each added one is a folder
+under `engine-accounts/` in the data folder, signed in with the engine's
+own login in Terminal (`CLAUDE_CONFIG_DIR=<folder> claude`,
+`CODEX_HOME=<folder> codex login`). Bloks never reads what the engine
+writes there. The person's setup in the main folder (Claude Code's
+`settings.json`, `CLAUDE.md`, agents, commands, skills, plugins and output
+styles; Codex's `config.toml`, `AGENTS.md`, skills, prompts and rules) is
+linked into each added folder, so a turn has the same settings,
+permissions and skills on any account; the credential, `.claude.json` and
+the sessions are never linked. User MCP servers that Claude Code keeps in
+`.claude.json` stay with the main sign-in.
+
+The account is chosen as the turn is dispatched (`engineAccounts.pick`),
+only on this computer (not working elsewhere, not on a cloud computer),
+and is kept for the whole turn: the driver sets `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` from `SendTurnInput.account`, after the turn's own
+environment, and Claude Code's turn drops `CLAUDE_CODE_OAUTH_TOKEN` and
+`ANTHROPIC_AUTH_TOKEN` so the main sign-in's token cannot run it. The
+workspace has one account in use per engine. It moves, to the next account
+in the list that can take a turn, only when the one in use cannot: it
+rests after a turn on it ran out (a usage limit or a lapsed sign-in, read
+as for an engine, in a table keyed by instance and account), its plan
+windows say it is spent (`planBlockedUntil`, from the plan usage the
+drivers now keep per account), or its CLI said it is signed out. It never
+moves back on its own when the first account resets. With no account
+able, the turn goes to the one back soonest.
+
+A session lives in its account's folder, so a lane records the account
+each engine's session was made on (`TaskRecord.sessionAccounts`). A lane
+whose account changes leaves that engine's session (`store.moveTaskAccount`:
+its cursor goes and `lastInstanceId` is emptied) and its next turn is told
+the bounded story with an opening that says it is a new session on
+another account of the same engine and model (`freshTurnText`, `why:
+"account"`). The chat says so once. A command stays on the account that
+made the session it names.
+
+In `recoverTurn` a usage limit or a lapsed sign-in on an account rests
+the account, not the engine. While another account can take it, a solo
+turn is asked again at once on the next one, with the same model, before
+any retry or backup (step 0), and the next turn's opening line says
+where it went. Only when every account is out does the engine rest, until
+the first account is back, and the turn goes on as for an engine with one
+account: to the backup the person chose, said as out on all of its
+accounts, or it stops and says so. Turns record their account in
+`usage.json` and the engine report's turn log; the Usage page has an
+Account breakdown once an engine has run on more than one.
+
+Accounts are the owner's: never an agent's token or a member's. Seeing
+them and choosing the one in use work from the owner's devices; adding,
+signing in and removing (which runs the engine's own sign-out first, then
+deletes the folder) are this computer only. The folders are left out of
+backups and workspace moves, like a sign-in in the macOS Keychain.
+
 A Fast Codex turn that cannot have Fast (see Codex speed) is refused
 before any words reach the model, and its end carries `preInputRefusal`.
 It is not an engine failing: nothing rests, it is not asked again, and

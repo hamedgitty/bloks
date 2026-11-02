@@ -498,6 +498,13 @@ export interface TaskRecord {
   /** Per-engine conversation cursors, one set per lane so parallel
    * lanes never share a session. */
   resumeCursors: Record<string, unknown>;
+  /** The account each engine's session in this lane was made on, by
+   * instance id, for an engine with more than one account
+   * (server/engine-accounts.ts). Absent is the engine's own sign-in, which
+   * is every session from before there were accounts. A session lives in
+   * its account's folder, so a lane whose account changes starts a new
+   * one (moveTaskAccount). Never shipped to clients. */
+  sessionAccounts?: Record<string, string>;
   /** A person used a separate session. The next owner turn receives the
    * bounded conversation so it learns that exchange without resuming it. */
   telegramExchangePending?: boolean;
@@ -1565,6 +1572,38 @@ export class Store {
     delete found.task.reading;
     delete found.task.pendingCompaction;
     this.saveBots();
+  }
+
+  /**
+   * The account this lane's turns on an engine run on now
+   * (server/engine-accounts.ts). The engine keeps a session in the
+   * folder of the account that made it, so a session from another
+   * account cannot be resumed: its cursor goes, and, marked as served by
+   * no engine in particular, the next turn is told the conversation so
+   * far, as after a move to another folder. Only that engine's session
+   * goes; another engine's, in its own folder, is untouched. True when a
+   * session was left behind, which the chat then says.
+   */
+  moveTaskAccount(threadId: string, instanceId: string, accountId: string, main: string): boolean {
+    const found = this.taskByThread(threadId);
+    if (!found) return false;
+    const task = found.task;
+    const was = task.sessionAccounts?.[instanceId] ?? main;
+    if (was === accountId) return false;
+    const accounts = { ...task.sessionAccounts };
+    if (accountId === main) delete accounts[instanceId];
+    else accounts[instanceId] = accountId;
+    if (Object.keys(accounts).length) task.sessionAccounts = accounts;
+    else delete task.sessionAccounts;
+    const left = typeof task.resumeCursors[instanceId] === "string";
+    if (left) {
+      delete task.resumeCursors[instanceId];
+      task.lastInstanceId = "";
+      if (task.reading?.instanceId === instanceId) delete task.reading;
+      if (task.pendingCompaction?.instanceId === instanceId) delete task.pendingCompaction;
+    }
+    this.saveBots();
+    return left;
   }
 
   /** A new engine session on the lane's next turn, without the old one's
