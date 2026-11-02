@@ -12053,6 +12053,18 @@ function inviteLink(input: { inviteId: string; secret: string; relayToken: strin
 /** Post into a room and wake whoever it was addressed to. */
 /** One dispatch loop per room at a time; latecomers chain behind it. */
 const roomPosting = new Map<string, Promise<unknown>>();
+interface RoomRoundState {
+  steeredTexts: string[];
+  steeredByYou: boolean;
+  extraMembers: BotRecord[];
+  heardInitial: Set<string>;
+  heardCount: Map<string, number>;
+  stopped: boolean;
+}
+/** Active room round state so "Send now" in a room can steer into the
+ * currently speaking agent and update the remaining speakers in the round
+ * without interrupting them. */
+const activeRoomRounds = new Map<string, RoomRoundState>();
 
 /** Who is posting into a room: an agent (botId), a member of a shared
  * room (personId), or, with neither, the owner. */
@@ -12093,7 +12105,7 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
   const run = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
     const current = store.messagesFor(blok.id).find((m) => m.id === message.id);
     const room = bloks.get(blok.id);
-    if (!room || !current || current.deleted) return message;
+    if (!room || !current || current.deleted || current.midTurn) return message;
     // into the room's history after what the room said while it waited
     if (current.queued) deliverQueued(blok.id, [message.id]);
     const delivered = store.messagesFor(blok.id).find((m) => m.id === message.id) ?? current;
@@ -12129,67 +12141,82 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
   // message: it is stored, nobody answers, which is the readable
   // tombstone this is for.
   if (!members.length) throw Object.assign(new Error("this room has no agents"), { status: 409 });
-  const awake = members.filter((m) => !m.archivedAt);
+  const roundState: RoomRoundState = {
+    steeredTexts: [],
+    steeredByYou: false,
+    extraMembers: [],
+    heardInitial: new Set(),
+    heardCount: new Map(),
+    stopped: false,
+  };
+  activeRoomRounds.set(blok.id, roundState);
+  try {
+    const awake = members.filter((m) => !m.archivedAt);
 
-  // Names resolve against everyone in the room, not only those who can
-  // answer. addressees returns the whole list when nothing matched, so
-  // naming an archived member against the awake list looked like naming
-  // nobody, and a message meant for one retired agent woke the entire
-  // room instead.
-  const { ids, mentioned } = addressees(text, members);
-  // In a shared room, a message that names a person and no agent is for
-  // that person: it wakes nobody. Without this, "@Sam can you check?"
-  // would wake every agent in the room to reply to a question not meant
-  // for them.
-  const forPeopleOnly =
-    Boolean(blok.sharing) &&
-    !mentioned &&
-    [hostName(), ...people.membersOf(blok.id).map((m) => m.person.name)].some((name) =>
-      text.toLowerCase().includes(`@${name.toLowerCase()}`),
+    // Names resolve against everyone in the room, not only those who can
+    // answer. addressees returns the whole list when nothing matched, so
+    // naming an archived member against the awake list looked like naming
+    // nobody, and a message meant for one retired agent woke the entire
+    // room instead.
+    const { ids, mentioned } = addressees(text, members);
+    // In a shared room, a message that names a person and no agent is for
+    // that person: it wakes nobody. Without this, "@Sam can you check?"
+    // would wake every agent in the room to reply to a question not meant
+    // for them.
+    const forPeopleOnly =
+      Boolean(blok.sharing) &&
+      !mentioned &&
+      [hostName(), ...people.membersOf(blok.id).map((m) => m.person.name)].some((name) =>
+        text.toLowerCase().includes(`@${name.toLowerCase()}`),
+      );
+    // who asked, for every turn this message starts: approvals from a
+    // member's turn go to the owner
+    const requester = author.botId ? undefined : (author.personId ?? "owner");
+    // An agent never wakes itself, and a message from an agent only reaches
+    // someone it named, otherwise every reply would wake the whole room. The
+    // exception is a kickoff brief, which is meant for everyone.
+    let reach = forPeopleOnly ? [] : !author.botId ? ids : author.toAll ? awake.map((m) => m.id) : mentioned ? ids : [];
+    // A lead-only room narrows the unaddressed case to its lead, and an
+    // Auto room to whoever its chooser picks, the lead when it cannot.
+    // Naming someone still reaches exactly who was named, and never asks.
+    const answers = answersOf(blok);
+    if (answers !== "everyone" && !author.botId && !mentioned && !forPeopleOnly) {
+      // the lead among those who can actually answer, or a lead-only room
+      // whose lead is archived swallows every message
+      const lead = leadOf(awake, blok.leadId);
+      if (lead) reach = [lead.id];
+      if (answers === "auto" && lead) reach = await routeRoomMessage(blok, message, text, author, awake);
+    }
+    if (roundState.stopped) return message;
+    const asked = reach.filter((id) => id !== author.botId);
+    const targets = asked.filter((id) => !store.bot(id)?.archivedAt);
+    // Somebody was named and cannot answer. Say so once, in the room,
+    // rather than letting the room go quiet and read as broken.
+    const retired = asked
+      .filter((id) => store.bot(id)?.archivedAt)
+      .map((id) => store.bot(id)!.name);
+    if (mentioned && retired.length) {
+      const notice = store.appendMessage(blok.id, {
+        role: "bot",
+        kind: "notice",
+        text: `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} archived and will not answer. Restore ${retired.length === 1 ? "it" : "them"} to bring ${retired.length === 1 ? "it" : "them"} back into the room.`,
+      });
+      broadcast({ kind: "message", threadId: blok.id, message: notice });
+    }
+
+    await dispatchRound(
+      blok.id,
+      targets.map((id) => [id, text] as const),
+      author.hops,
+      requester,
+      author.byYou,
+      Boolean(author.botId),
+      roundState,
     );
-  // who asked, for every turn this message starts: approvals from a
-  // member's turn go to the owner
-  const requester = author.botId ? undefined : (author.personId ?? "owner");
-  // An agent never wakes itself, and a message from an agent only reaches
-  // someone it named, otherwise every reply would wake the whole room. The
-  // exception is a kickoff brief, which is meant for everyone.
-  let reach = forPeopleOnly ? [] : !author.botId ? ids : author.toAll ? awake.map((m) => m.id) : mentioned ? ids : [];
-  // A lead-only room narrows the unaddressed case to its lead, and an
-  // Auto room to whoever its chooser picks, the lead when it cannot.
-  // Naming someone still reaches exactly who was named, and never asks.
-  const answers = answersOf(blok);
-  if (answers !== "everyone" && !author.botId && !mentioned && !forPeopleOnly) {
-    // the lead among those who can actually answer, or a lead-only room
-    // whose lead is archived swallows every message
-    const lead = leadOf(awake, blok.leadId);
-    if (lead) reach = [lead.id];
-    if (answers === "auto" && lead) reach = await routeRoomMessage(blok, message, text, author, awake);
+    return message;
+  } finally {
+    if (activeRoomRounds.get(blok.id) === roundState) activeRoomRounds.delete(blok.id);
   }
-  const asked = reach.filter((id) => id !== author.botId);
-  const targets = asked.filter((id) => !store.bot(id)?.archivedAt);
-  // Somebody was named and cannot answer. Say so once, in the room,
-  // rather than letting the room go quiet and read as broken.
-  const retired = asked
-    .filter((id) => store.bot(id)?.archivedAt)
-    .map((id) => store.bot(id)!.name);
-  if (mentioned && retired.length) {
-    const notice = store.appendMessage(blok.id, {
-      role: "bot",
-      kind: "notice",
-      text: `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} archived and will not answer. Restore ${retired.length === 1 ? "it" : "them"} to bring ${retired.length === 1 ? "it" : "them"} back into the room.`,
-    });
-    broadcast({ kind: "message", threadId: blok.id, message: notice });
-  }
-
-  await dispatchRound(
-    blok.id,
-    targets.map((id) => [id, text] as const),
-    author.hops,
-    requester,
-    author.byYou,
-    Boolean(author.botId),
-  );
-  return message;
 }
 
 /** An engine as the person knows it, with the model its one-shot runs
@@ -12291,6 +12318,7 @@ async function dispatchRound(
   requester?: string,
   byYou?: boolean,
   agentStarted = false,
+  existingRound = activeRoomRounds.get(roomId),
 ) {
   // While this loop runs, handoffs queue instead of firing. Otherwise the
   // lead would be pulled in the moment the first member reported, spend
@@ -12298,25 +12326,41 @@ async function dispatchRound(
   // each of the rest.
   const queue = new Map<string, RoundTag>();
   dispatching.set(roomId, queue);
+  const roundState: RoomRoundState = existingRound ?? {
+    steeredTexts: [],
+    steeredByYou: false,
+    extraMembers: [],
+    heardInitial: new Set(),
+    heardCount: new Map(),
+    stopped: false,
+  };
+  activeRoomRounds.set(roomId, roundState);
   try {
-    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou, agentStarted);
+    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou, agentStarted, roundState);
     // whoever was named while the room was busy speaks now, and anyone
     // they name in turn goes round again until the chain runs out
-    for (let round = 0; round < MAX_AGENT_HOPS && queue.size; round++) {
-      const waiting = [...queue].map(([id, tag]) => [id, tag.text, tag.hops] as const);
+    for (let round = 0; round < MAX_AGENT_HOPS && queue.size && !roundState.stopped; round++) {
+      const waiting = [...queue].map(([id, tag]) => {
+        roundState.heardInitial.add(id);
+        roundState.heardCount.set(id, Math.max(roundState.heardCount.get(id) ?? 0, roundState.steeredTexts.length));
+        return [id, tag.text, tag.hops] as const;
+      });
       queue.clear();
-      await speakInTurn(roomId, waiting, requester, undefined, true);
+      await speakInTurn(roomId, waiting, requester, undefined, true, roundState);
     }
     // Someone can still be named when the rounds run out: an agent that
     // said so into the room from a turn of its own elsewhere, late in the
     // last one, was inside its own count. Held as a mention past the
     // bound is, and said, where it used to be dropped without a word.
-    for (const from of new Set([...queue.values()].map((tag) => tag.from))) {
-      const names = [...queue].filter(([, tag]) => tag.from === from).flatMap(([id]) => store.bot(id)?.name ?? []);
-      if (names.length) sayMentionHeld(roomId, hopsNotice(store.bot(from)?.name ?? "An agent", names));
+    if (!roundState.stopped) {
+      for (const from of new Set([...queue.values()].map((tag) => tag.from))) {
+        const names = [...queue].filter(([, tag]) => tag.from === from).flatMap(([id]) => store.bot(id)?.name ?? []);
+        if (names.length) sayMentionHeld(roomId, hopsNotice(store.bot(from)?.name ?? "An agent", names));
+      }
     }
   } finally {
     dispatching.delete(roomId);
+    if (!existingRound && activeRoomRounds.get(roomId) === roundState) activeRoomRounds.delete(roomId);
   }
 }
 
@@ -12662,6 +12706,7 @@ async function speakInTurn(
   requester?: string,
   byYou?: boolean,
   agentStarted = false,
+  roundState = activeRoomRounds.get(roomId),
 ) {
   // In a shared room an agent speaks in the room's own lane, so what it is
   // doing elsewhere is no reason to skip it or to wait on it.
@@ -12671,23 +12716,59 @@ async function speakInTurn(
     .map(([id, text, hops]) => [store.bot(id), text, hops] as const)
     .filter((entry): entry is readonly [BotRecord, string, number] => entry[0] !== null);
   // a busy agent hears it when its turn ends, rather than never
-  for (const [member, text, hops] of named) if (!idleHere(member)) queueRoomTag(member.id, roomId, text, requester, hops);
+  for (const [member, text, hops] of named) {
+    if (!idleHere(member)) {
+      const unseen = roundState ? roundState.steeredTexts.slice(roundState.heardCount.get(member.id) ?? 0) : [];
+      const effectiveText = [text, ...unseen].filter(Boolean).join("\n\n") || text;
+      roundState?.heardInitial.add(member.id);
+      roundState?.heardCount.set(member.id, roundState.steeredTexts.length);
+      queueRoomTag(member.id, roomId, effectiveText, requester, hops);
+    }
+  }
   // Junior first, so the lead speaks last, having heard the rest. A
   // crowned lead may be junior to someone in the room, so it is put last
   // by name; a room on seniority gets there by rank, as it always has.
   const crowned = bloks.get(roomId)?.leadId;
   const rank = (bot: BotRecord) => (bot.id === crowned ? Number.MAX_SAFE_INTEGER : (bot.seniority ?? 1));
-  const ordered = named
+  const ordered: Array<readonly [BotRecord, string, number]> = named
     .filter(([member]) => idleHere(member))
     .sort(([a], [b]) => rank(a) - rank(b));
 
-  for (const [member, text, hops] of ordered) {
+  const drainExtraMembers = (afterIdx: number) => {
+    if (!roundState?.extraMembers.length) return;
+    const remainingIds = new Set(ordered.slice(afterIdx + 1).map(([m]) => m.id));
+    for (const extraMember of roundState.extraMembers.splice(0)) {
+      if (!remainingIds.has(extraMember.id)) {
+        ordered.push([extraMember, "", 0] as const);
+        remainingIds.add(extraMember.id);
+      }
+    }
+  };
+  drainExtraMembers(-1);
+
+  for (let idx = 0; idx < ordered.length; idx++) {
+    if (roundState?.stopped) break;
+    const [member, text, hops] = ordered[idx];
+    const unseen = roundState ? roundState.steeredTexts.slice(roundState.heardCount.get(member.id) ?? 0) : [];
+    const base = roundState?.heardInitial.has(member.id) ? "" : text;
+    const effectiveText = [base, ...unseen].filter(Boolean).join("\n\n") || text;
+    const effectiveByYou = Boolean(byYou || unseen.length);
+    const effectiveAgentStarted = unseen.length ? false : agentStarted;
+    roundState?.heardInitial.add(member.id);
+    roundState?.heardCount.set(member.id, roundState.steeredTexts.length);
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
-    await startTurn(member.id, text, { roomId, hops, requester, byYou, roomAgentStarted: agentStarted }).catch((e) =>
-      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
+    await startTurn(member.id, effectiveText, {
+      roomId,
+      hops,
+      requester,
+      byYou: effectiveByYou,
+      roomAgentStarted: effectiveAgentStarted,
+    }).catch((e) =>
+      waitsForTurn(e) ? queueRoomTag(member.id, roomId, effectiveText, requester, hops) : sayTurnedAway(roomId, e),
     );
     await waitForRoomTurn(member.id, roomId);
+    drainExtraMembers(idx);
   }
 }
 
@@ -20623,6 +20704,97 @@ async function sendWaitingNow(bot: BotRecord, lane: TaskRecord): Promise<"steere
   return "stopped";
 }
 
+/**
+ * Send now for a room: steers the person's waiting room messages into
+ * whichever agent(s) are currently speaking in the room and appends them
+ * to the active room round so remaining speakers in the round hear them
+ * without interrupting any running turn.
+ */
+async function sendRoomWaitingNow(blok: BlokRecord): Promise<"steered" | "stopped" | "nothing"> {
+  const waiting = store
+    .messagesFor(blok.id)
+    .filter((m) => m.role === "user" && m.queued && !m.deleted && !m.author && !m.via && m.text);
+  if (!waiting.length) return "nothing";
+  const combined = waiting.map((m) => withReply(m.text ?? "", m.replyTo)).join("\n\n");
+  const members = blok.memberIds.map((id) => store.bot(id)).filter(Boolean) as BotRecord[];
+  const awake = members.filter((m) => !m.archivedAt);
+  const speaking: Array<{ bot: BotRecord; task: TaskRecord }> = [];
+  for (const member of awake) {
+    for (const task of member.tasks) {
+      if (activeRoom.get(task.id) === blok.id && (task.busy || claimedLanes.has(task.id))) {
+        speaking.push({ bot: member, task });
+      }
+    }
+  }
+  const steeredIds = new Set<string>();
+  for (const { bot, task } of speaking) {
+    const adapter = laneInstance(bot, task.id)?.adapter;
+    if (!adapter?.steerTurn) continue;
+    const took = await adapter.steerTurn(task.id, combined, {}).catch(() => false);
+    if (took) {
+      steeredIds.add(bot.id);
+      turnsForYou.add(task.id);
+      agentChain.delete(task.id);
+      chainTasks.delete(task.id);
+      turnHops.delete(task.id);
+    }
+  }
+  const roundState = activeRoomRounds.get(blok.id);
+  if (steeredIds.size || roundState) {
+    deliverQueued(
+      blok.id,
+      waiting.map((m) => m.id),
+    );
+    const line = { route: "steered" as const, why: "you" as const, line: deliveryLine("steered", "you", blok.name) };
+    for (const m of waiting) {
+      const patched = store.patchMessage(blok.id, m.id, { midTurn: true, delivery: line });
+      if (patched) broadcast({ kind: "message.patch", threadId: blok.id, message: patched });
+    }
+    roomChain.delete(blok.id);
+    if (roundState) {
+      roundState.steeredTexts.push(combined);
+      roundState.steeredByYou = true;
+      for (const id of steeredIds) {
+        roundState.heardCount.set(id, roundState.steeredTexts.length);
+      }
+      const { ids, mentioned } = addressees(combined, members);
+      const unsteeredSpeaking = speaking.filter(({ bot }) => !steeredIds.has(bot.id)).map(({ bot }) => bot);
+      const candidates: BotRecord[] = [];
+      if (mentioned) {
+        for (const id of ids) {
+          const target = awake.find((m) => m.id === id);
+          if (target && !steeredIds.has(id)) candidates.push(target);
+        }
+      } else {
+        for (const bot of unsteeredSpeaking) {
+          candidates.push(bot);
+        }
+        if (!steeredIds.size && !candidates.length) {
+          const answers = answersOf(blok);
+          const fallback = answers === "everyone" ? awake : ([leadOf(awake, blok.leadId)].filter(Boolean) as BotRecord[]);
+          for (const bot of fallback) {
+            if (bot && !steeredIds.has(bot.id)) candidates.push(bot);
+          }
+        }
+      }
+      for (const target of candidates) {
+        if (roomTags.of(target.id).some((e) => e.roomId === blok.id)) {
+          roundState.heardCount.set(target.id, roundState.steeredTexts.length);
+          queueRoomTag(target.id, blok.id, combined, "owner", 0);
+        } else if (!roundState.extraMembers.some((m) => m.id === target.id)) {
+          roundState.extraMembers.push(target);
+        }
+      }
+    }
+    return "steered";
+  }
+  if (!speaking.length) return "nothing";
+  for (const { bot, task } of speaking) {
+    await stopForYou(bot, task.id).catch(() => {});
+  }
+  return "stopped";
+}
+
 /** Per-request observation at recipient admission, used only by the final say. */
 interface DirectAdmission {
   beforeEffect(): void;
@@ -28330,6 +28502,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const outcome = await sendWaitingNow(bot, lane);
       return json(res, 200, { ok: outcome !== "nothing", outcome });
     }
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/queued\/now$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "this is for the person's own words" });
+      const blok = bloks.get(m[1]);
+      if (!blok) return json(res, 404, { error: "no such room" });
+      const outcome = await sendRoomWaitingNow(blok);
+      return json(res, 200, { ok: outcome !== "nothing", outcome });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
@@ -28367,6 +28547,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         typeof body.taskId === "string" && bot.tasks.some((t) => t.id === body.taskId)
           ? body.taskId
           : bot.threadId;
+      const speakingRoomId = activeRoom.get(laneId);
+      const speakingRoom = speakingRoomId && speakingRoomId !== laneId ? bloks.get(speakingRoomId) : null;
+      if (speakingRoom) {
+        const roundState = activeRoomRounds.get(speakingRoom.id);
+        if (roundState) roundState.stopped = true;
+        dispatching.get(speakingRoom.id)?.clear();
+      }
       await stopForYou(bot, laneId);
       return json(res, 200, { ok: true });
     }
@@ -29329,9 +29516,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         replyTo: replyRef(roomBody.replyTo),
         byYou: true,
       });
+      if (message.queued && roomBody.now === true) {
+        await sendRoomWaitingNow(blok);
+      }
       withYou({ room: blok }, message.at);
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });
-      return json(res, message.queued ? 202 : 201, { message });
+      const latest = store.messagesFor(blok.id).find((msg) => msg.id === message.id) ?? message;
+      return json(res, latest.queued ? 202 : 201, { message: latest });
     }
 
 

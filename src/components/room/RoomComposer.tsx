@@ -423,23 +423,28 @@ export function RoomComposer({
       }).catch((e: Error) => dispatch({ type: "error", message: e.message }));
     }
   };
+  const sendWaitingNow = () => {
+    void api(`/api/bloks/${blok.id}/queued/now`, { method: "POST" }).catch((e: Error) =>
+      dispatch({ type: "error", message: e.message }),
+    );
+  };
 
-  const send = (stopFirst = false) => {
+  const send = (sendNow = false) => {
     const { text, attachments } = latest.current;
     // the message waits for a picture still on its way, as in a chat,
     // rather than going without it
     if (heldLine(images.now())) return setSendHeld(true);
     if (!text.trim() && !attachments.length) {
-      if (stopFirst) stopAll();
+      if (sendNow) stopAll();
       return;
     }
-    if (stopFirst) stopAll();
     const sent = { text, attachments };
     dispatch({
       type: "sendToRoom",
       blokId: blok.id,
       text: composeOutgoing(text, attachments),
       replyTo: replyTo ?? undefined,
+      now: sendNow,
       onFailed: () => giveBack(sent),
     });
     // empty now, before a quick refusal can hand the words back
@@ -471,8 +476,8 @@ export function RoomComposer({
     threadId: blok.id,
     recoveryKey: draftKey,
     senderOf,
-    working: busy,
-    onSendNow: stopAll,
+    working: busy || waiting.some((m) => m.queued && !m.deleted),
+    onSendNow: sendWaitingNow,
     onSendAgain: sendAgain,
     editAsk,
   });

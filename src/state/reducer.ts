@@ -1058,7 +1058,7 @@ export type Action =
   /** The person dragged a heading: the new order, to show and to keep. */
   | { type: "moveSections"; order: string[] }
   /** `onFailed`: the send did not go, so the box can have it back. */
-  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
+  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; now?: boolean; onFailed?: () => void }
   /** `preset` fills the dialog in as it opens; any toggle without one
    * leaves it empty, so a preset never outlives the dialog it was for. */
   | { type: "toggleNewRoom"; open?: boolean; preset?: NewRoomPreset }

@@ -504,7 +504,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             () =>
               api(`/api/bloks/${action.blokId}/messages`, {
                 method: "POST",
-                body: JSON.stringify({ text: action.text, replyTo: action.replyTo }),
+                body: JSON.stringify({ text: action.text, replyTo: action.replyTo, ...(action.now ? { now: true } : {}) }),
               }),
             { after: room?.messages[room.messages.length - 1]?.id ?? null },
           ).catch((e) => {

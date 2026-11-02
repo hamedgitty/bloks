@@ -502,6 +502,7 @@ export function useQueuedNotice({
               threadId={threadId}
               sender={senderOf(m)}
               working={working}
+              onSendNow={working ? onSendNow : undefined}
               onSendAgain={onSendAgain}
               editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
               onEditing={onEditing}

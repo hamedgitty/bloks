@@ -121,3 +121,24 @@ test("a compaction that finishes after the limit is not the new session's reply"
   const readings = h.events.slice(switched).filter((e) => e.type === "context.reading").map((e: any) => e.used);
   assert.deepEqual(readings, [30_000], "the old session's usage was read as the new one's");
 });
+
+test("an interrupted ACP turn settles as interrupted when the agent answers cancelled", async (t) => {
+  const h = await setup(t);
+  await h.instance.adapter.sendTurn({
+    threadId: "lane-stop", text: "do the work",
+  });
+  await h.until(() => Boolean(h.prompt("new-session")));
+  const asked = h.prompt("new-session");
+  assert.ok(asked);
+
+  const stopping = h.instance.adapter.interruptTurn("lane-stop");
+  h.send({ jsonrpc: "2.0", id: asked.id, result: { stopReason: "cancelled" } });
+  t.mock.timers.tick(3_000);
+  await stopping;
+  await h.until(() => h.events.some((e) => e.type === "turn.completed"));
+
+  const ended = h.events.find((e) => e.type === "turn.completed") as any;
+  assert.equal(ended?.ok, false);
+  assert.equal(ended?.stopReason, "interrupted");
+  assert.equal(h.events.filter((e) => e.type === "runtime.error").length, 0);
+});

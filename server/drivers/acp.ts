@@ -21,7 +21,7 @@
 // A turn spawns a process and kills it on settle, the same as the codex
 // driver. Continuity comes from session/load with the stored id.
 import { spawn, execFile } from "node:child_process";
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,6 +145,97 @@ const COMPACT_LIMIT_MS = 10 * 60_000;
  * why, when it has not said yet. Short, since an empty turn with no
  * reason anywhere waits this long for nothing. */
 const STDERR_GRACE_MS = 200;
+
+function childPidsOf(pid: number): number[] {
+  const out = new Set<number>();
+  try {
+    for (const tid of readdirSync(`/proc/${pid}/task`)) {
+      try {
+        const raw = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").trim();
+        for (const tok of raw.split(/\s+/)) {
+          const n = Number(tok);
+          if (Number.isInteger(n) && n > 0) out.add(n);
+        }
+      } catch {
+        /* thread gone */
+      }
+    }
+  } catch {
+    /* process gone */
+  }
+  return [...out];
+}
+
+/**
+ * Discover the internal `opencode serve --stdio --port 0` HTTP server
+ * spawned by `opencode acp` on Linux via `/proc` so mid-turn steering can
+ * POST `/api/session/:sessionID/prompt` with `{ delivery: "steer" }`.
+ */
+function discoverOpencodeServe(acpPid: number | undefined): { url: string; auth: string } | null {
+  if (!acpPid || process.platform !== "linux") return null;
+  try {
+    const queue = [...childPidsOf(acpPid)];
+    const visited = new Set<number>([acpPid, ...queue]);
+    while (queue.length) {
+      const cpid = queue.shift()!;
+      for (const grand of childPidsOf(cpid)) {
+        if (!visited.has(grand)) {
+          visited.add(grand);
+          queue.push(grand);
+        }
+      }
+      let envRaw = "";
+      try {
+        envRaw = readFileSync(`/proc/${cpid}/environ`, "utf8");
+      } catch {
+        continue;
+      }
+      let password: string | null = null;
+      let username = "opencode";
+      for (const entry of envRaw.split("\0")) {
+        if (entry.startsWith("OPENCODE_PASSWORD=")) password = entry.slice("OPENCODE_PASSWORD=".length);
+        else if (entry.startsWith("OPENCODE_USERNAME=")) username = entry.slice("OPENCODE_USERNAME=".length) || "opencode";
+      }
+      if (!password) continue;
+      const inodes = new Set<string>();
+      for (const fd of readdirSync(`/proc/${cpid}/fd`)) {
+        try {
+          const target = readlinkSync(`/proc/${cpid}/fd/${fd}`);
+          const m = target.match(/^socket:\[(\d+)\]$/);
+          if (m) inodes.add(m[1]);
+        } catch {
+          /* fd closed */
+        }
+      }
+      if (!inodes.size) continue;
+      for (const netFile of ["tcp", "tcp6"]) {
+        let tcp = "";
+        try {
+          tcp = readFileSync(`/proc/${cpid}/net/${netFile}`, "utf8");
+        } catch {
+          continue;
+        }
+        for (const line of tcp.split("\n")) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 10 || parts[3] !== "0A") continue;
+          if (!inodes.has(parts[9])) continue;
+          const [addrHex, portHex] = parts[1].split(":");
+          if (addrHex !== "0100007F" && addrHex !== "00000000000000000000000001000000") continue;
+          const port = parseInt(portHex, 16);
+          if (port > 0 && port < 65536) {
+            return {
+              url: `http://127.0.0.1:${port}`,
+              auth: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+            };
+          }
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 /**
  * How full a session is, from a `usage_update`: `used` is the tokens in
@@ -554,6 +645,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
          * once its process is gone, or a little after the kill. */
         interrupt: () => Promise<void>;
         stop: () => void;
+        steer: (text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void }) => Promise<boolean>;
         turnId: string;
         asks: Map<string, (behavior: string, message?: string, source?: string) => void>;
       }
@@ -681,6 +773,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const state = {
           settled: false,
           text: "",
+          hadText: false,
+          lastMessageId: null as string | null,
           live: false,
           banner: null as string | null,
           tools: 0,
@@ -689,10 +783,34 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           compacting: false,
           stopping: false,
           deciding: false,
+          steeredBeforeLive: [] as Array<{
+            text: string;
+            options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void };
+            resolve: (ok: boolean) => void;
+          }>,
         };
         const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string, source?: string) => void>();
         let session: any = null;
+        let currentPrepared: ReturnType<import("../contracts.ts").FrozenPreparation["commit"]> | null = null;
+        let preparedSettled = false;
+        let sessionActiveSeen = false;
+        const steersInFlight = new Set<Promise<boolean>>();
+        const flushText = () => {
+          if (!state.text.trim()) return;
+          const text = state.text;
+          state.text = "";
+          state.hadText = true;
+          emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+        };
+        const markSessionActive = () => {
+          sessionActiveSeen = true;
+          if (spec.kind === "opencode" && !preparedSettled && !state.settled && !state.stopping && currentPrepared !== null) {
+            preparedSettled = true;
+            currentPrepared.settle("accepted");
+            turn.preparation?.ready(turnId);
+          }
+        };
 
         const stop = () => {
           if (process.platform === "win32") {
@@ -732,6 +850,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // the kill, after the person had been told it was stopped (GitHub
         // 220). Anything it was waiting to be allowed is refused now.
         let sessionId: string | null = null;
+        let opencodeEndpoint: { url: string; auth: string } | null = null;
         // sessions this turn gave up on, which can still talk (see handleUpdate)
         const leftBehind = new Set<string>();
         let exited = false;
@@ -740,27 +859,126 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const interrupt = async () => {
           state.stopping = true;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn was stopped", "turn-ended");
-          if (exited) return;
-          if (sessionId) rpc.notify("session/cancel", { sessionId });
+          if (exited) {
+            if (!state.settled) settle(false, "interrupted");
+            return;
+          }
+          const cancelId = sessionId ?? session?.sessionId ?? (typeof turn.resumeCursor === "string" ? turn.resumeCursor : null);
+          if (cancelId) rpc.notify("session/cancel", { sessionId: String(cancelId) });
+          if (!state.live && !state.compacting) {
+            settle(false, "interrupted");
+            return;
+          }
           setTimeout(stop, 2_000).unref?.();
           await Promise.race([gone, new Promise<void>((resolve) => setTimeout(resolve, 3_000).unref?.())]);
+          if (!state.settled) settle(false, "interrupted");
+        };
+
+        const steer = (text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void }): Promise<boolean> => {
+          if (state.settled || state.stopping || exited) return Promise.resolve(false);
+          if (!state.live) {
+            return new Promise<boolean>((resolve) => {
+              state.steeredBeforeLive.push({ text, options, resolve });
+            });
+          }
+          if (spec.kind !== "opencode" || !sessionId || state.compacting) return Promise.resolve(false);
+          const op = (async () => {
+            opencodeEndpoint ??= discoverOpencodeServe(child.pid);
+            if (!opencodeEndpoint) return false;
+            const headers = {
+              "content-type": "application/json",
+              authorization: opencodeEndpoint.auth,
+            };
+            try {
+              let isActive = false;
+              const deadline = Date.now() + (sessionActiveSeen ? 0 : 1_500);
+              while (!state.settled && !state.stopping && !exited) {
+                const activeRes = await fetch(`${opencodeEndpoint.url}/api/session/active`, {
+                  headers,
+                  signal: AbortSignal.timeout(2_000),
+                }).catch(() => null);
+                const activeBody: any = activeRes?.ok ? await activeRes.json().catch(() => null) : null;
+                if (activeBody?.data?.[sessionId]) {
+                  isActive = true;
+                  markSessionActive();
+                  break;
+                }
+                if (Date.now() >= deadline) break;
+                await new Promise((r) => setTimeout(r, 50));
+              }
+              if (!isActive || state.settled || state.stopping || exited) return false;
+              options?.onDispatch?.();
+              const promptRes = await fetch(`${opencodeEndpoint.url}/api/session/${encodeURIComponent(sessionId)}/prompt`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ text, delivery: "steer", resume: false }),
+                signal: AbortSignal.timeout(5_000),
+              });
+              if (!promptRes.ok) return false;
+              const promptBody: any = await promptRes.json().catch(() => null);
+              const inboxId = promptBody?.data?.id;
+              if (inboxId) {
+                const verifyRes = await fetch(`${opencodeEndpoint.url}/api/session/active`, {
+                  headers,
+                  signal: AbortSignal.timeout(2_000),
+                }).catch(() => null);
+                const verifyBody: any = verifyRes?.ok ? await verifyRes.json().catch(() => null) : null;
+                if (state.settled || state.stopping || !verifyBody?.data?.[sessionId]) {
+                  const inboxRes = await fetch(`${opencodeEndpoint.url}/api/session/${encodeURIComponent(sessionId)}/inbox`, {
+                    headers,
+                    signal: AbortSignal.timeout(2_000),
+                  }).catch(() => null);
+                  const inboxBody: any = inboxRes?.ok ? await inboxRes.json().catch(() => null) : null;
+                  const stillPending = !Array.isArray(inboxBody?.data) || inboxBody.data.some((item: any) => item?.id === inboxId);
+                  if (stillPending) {
+                    await fetch(`${opencodeEndpoint.url}/api/session/${encodeURIComponent(sessionId)}/inbox/${encodeURIComponent(inboxId)}`, {
+                      method: "DELETE",
+                      headers,
+                      signal: AbortSignal.timeout(2_000),
+                    }).catch(() => null);
+                    return false;
+                  }
+                }
+              }
+              flushText();
+              options?.onAccepted?.(turnId);
+              return true;
+            } catch {
+              return false;
+            }
+          })();
+          steersInFlight.add(op);
+          void op.finally(() => steersInFlight.delete(op));
+          return op;
         };
 
         const settle = (ok: boolean, stopReason: string | null) => {
           if (state.settled) return;
           state.settled = true;
+          for (const item of state.steeredBeforeLive.splice(0)) {
+            try {
+              item.resolve(false);
+            } catch {
+              /* ignored */
+            }
+          }
+          const finalOk = state.stopping ? false : ok;
+          const finalReason = state.stopping ? "interrupted" : stopReason;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn ended", "turn-ended");
           rpc.failPending(new Error("turn settled"));
           active.delete(threadId);
-          if (state.text.trim()) {
-            emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: state.text });
+          flushText();
+          emit({ ...base(threadId, turnId), type: "turn.completed", ok: finalOk, stopReason: finalReason, cost: null });
+          if (steersInFlight.size) {
+            void Promise.allSettled([...steersInFlight]).finally(() => stop());
+          } else {
+            stop();
           }
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
-          stop();
         };
 
         // ── agent asks the user for permission ──
         function handlePermission(msg: any) {
+          if (state.live) markSessionActive();
           const params = msg.params ?? {};
           const options: any[] = Array.isArray(params.options) ? params.options : [];
           const call = params.toolCall ?? {};
@@ -886,11 +1104,16 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           // turn uses. Until we have sent session/prompt, none of it is
           // this turn's output.
           if (!state.live) return;
+          markSessionActive();
           switch (update.sessionUpdate) {
             case "agent_message_chunk": {
               const text = update.content?.type === "text" ? String(update.content.text ?? "") : "";
               if (!text) break;
               if (spec.statusText?.test(text.trim())) break;
+              if (typeof update.messageId === "string" && update.messageId) {
+                if (state.lastMessageId && state.lastMessageId !== update.messageId) flushText();
+                state.lastMessageId = update.messageId;
+              }
               state.text += text;
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: text });
               break;
@@ -985,6 +1208,10 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         });
         child.on("close", (code) => {
           if (state.settled || state.deciding) return;
+          if (state.stopping) {
+            settle(false, "interrupted");
+            return;
+          }
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
@@ -1013,7 +1240,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             });
             state.commandsHeard = null;
           }
-          if (!state.commands?.has("compact") || state.settled) return false;
+          if (!state.commands?.has("compact") || state.settled || state.stopping) return false;
           state.compacting = true;
           let running = true;
           try {
@@ -1037,7 +1264,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           return true;
         }
 
-        active.set(threadId, { interrupt, stop, turnId, asks });
+        active.set(threadId, { interrupt, stop, steer, turnId, asks });
         emit({ ...base(threadId, turnId), type: "turn.started" });
 
         (async () => {
@@ -1128,13 +1355,25 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 leftBehind.add(cursor);
               }
             }
+            if (state.stopping) {
+              settle(false, "interrupted");
+              return;
+            }
             // The session has grown past the lane's line. An agent with a
             // /compact of its own (pi) compacts it before the words go; one
             // without, or one whose compaction fails, gets a new session
             // told the bounded story instead of the old one at full size.
             if (session && turn.compactFirst && !(await compactSession(String(session.sessionId)))) {
+              if (state.stopping) {
+                settle(false, "interrupted");
+                return;
+              }
               leftBehind.add(String(session.sessionId));
               session = null;
+            }
+            if (state.stopping) {
+              settle(false, "interrupted");
+              return;
             }
             // a cursor that did not lead back to its session is a new one,
             // and is told the story rather than only the words
@@ -1270,7 +1509,17 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             }
             state.live = true;
             const prepared = turn.preparation?.freeze().commit();
-            const words = prepared?.text ? `${baseWords}\n\n${prepared.text}` : baseWords;
+            currentPrepared = prepared ?? null;
+            const preSteeredItems = state.steeredBeforeLive.splice(0);
+            for (const item of preSteeredItems) {
+              try {
+                item.options?.onDispatch?.();
+              } catch {
+                /* ignored */
+              }
+            }
+            const preSteered = preSteeredItems.map((item) => item.text).join("\n\n");
+            const words = [baseWords, prepared?.text, preSteered].filter(Boolean).join("\n\n");
             if (prepared?.images.length && hello?.agentCapabilities?.promptCapabilities?.image === true) {
               pictures = [...pictures, ...pictureBlocks(prepared.images)];
             }
@@ -1280,11 +1529,54 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 sessionId,
                 prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words }, ...pictures],
               });
-              turn.preparation?.withoutSteering?.();
+              for (const item of preSteeredItems) {
+                try {
+                  item.options?.onAccepted?.(turnId);
+                  item.resolve(true);
+                } catch {
+                  /* ignored */
+                }
+              }
+              if (spec.kind === "opencode") {
+                void (async () => {
+                  const deadline = Date.now() + 2_000;
+                  while (!state.settled && !state.stopping && !exited && !sessionActiveSeen) {
+                    opencodeEndpoint ??= discoverOpencodeServe(child.pid);
+                    if (opencodeEndpoint) {
+                      const activeRes = await fetch(`${opencodeEndpoint.url}/api/session/active`, {
+                        headers: { authorization: opencodeEndpoint.auth },
+                        signal: AbortSignal.timeout(1_500),
+                      }).catch(() => null);
+                      const activeBody: any = activeRes?.ok ? await activeRes.json().catch(() => null) : null;
+                      if (activeBody?.data?.[sessionId!]) {
+                        markSessionActive();
+                        break;
+                      }
+                    }
+                    if (Date.now() >= deadline) break;
+                    await new Promise((r) => setTimeout(r, 50));
+                  }
+                })();
+              } else {
+                turn.preparation?.withoutSteering?.();
+              }
               result = await pending;
-              prepared?.settle("accepted");
+              if (!preparedSettled) {
+                preparedSettled = true;
+                prepared?.settle("accepted");
+              }
             } catch (error) {
-              prepared?.settle("uncertain");
+              for (const item of preSteeredItems) {
+                try {
+                  item.resolve(false);
+                } catch {
+                  /* ignored */
+                }
+              }
+              if (!preparedSettled) {
+                preparedSettled = true;
+                prepared?.settle("uncertain");
+              }
               turn.preparation?.unavailable();
               throw error;
             }
@@ -1297,6 +1589,10 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 input: usage.inputTokens ?? 0,
                 output: usage.outputTokens ?? 0,
               });
+            }
+            if (state.stopping) {
+              settle(false, "interrupted");
+              return;
             }
             const reason = String(result?.stopReason ?? "end_turn");
             const ended = reason === "end_turn" || reason === "max_tokens";
@@ -1311,7 +1607,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               return;
             }
             // Or the provider's error came through as the whole reply.
-            if (ended && !state.tools && isErrorReply(state.text)) {
+            if (ended && !state.tools && !state.hadText && isErrorReply(state.text)) {
               const said = state.text.trim();
               state.text = "";
               emit({ ...base(threadId, turnId), type: "runtime.error", message: `${spec.name} could not answer: ${providerWords(said)}` });
@@ -1321,7 +1617,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // A turn that said nothing and did nothing is never an answer.
             // Silence reads as the message being ignored, so say so, with
             // whatever the agent's stderr gave as the reason.
-            if (ended && !state.tools && !state.text.trim()) {
+            if (ended && !state.tools && !state.hadText && !state.text.trim()) {
               state.deciding = true;
               await stderrCaughtUp();
               state.deciding = false;
@@ -1340,6 +1636,10 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             settle(ended, reason === "end_turn" ? null : reason);
           } catch (e) {
             if (state.settled) return;
+            if (state.stopping) {
+              settle(false, "interrupted");
+              return;
+            }
             // what went wrong is often in the error's data, not its message
             const data = (e as any)?.data;
             const detail = [data?.details, data?.message].find((d): d is string => typeof d === "string" && d.trim().length > 0);
@@ -1416,6 +1716,37 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           // agent whose initialize says it takes them (pictureBlocks)
           capabilities: { sessionModelSwitch: "in-session", compactsFirst: true, images: true, ...(spec.efforts ? { efforts: spec.efforts } : {}) },
           sendTurn,
+          ...(spec.kind === "opencode"
+            ? {
+                steerTurn: async (threadId: string, text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void }) =>
+                  (await active.get(threadId)?.steer(text, options)) ?? false,
+                steerPrepared: async (
+                  threadId: string,
+                  expectedTurnId: string,
+                  text: string,
+                  options: { skillNames?: string[]; onDispatch: () => void; onAcceptedLate?: () => void },
+                ) => {
+                  const current = active.get(threadId);
+                  if (!current || current.turnId !== expectedTurnId) return "refused";
+                  let dispatched = false;
+                  let matched = false;
+                  try {
+                    const took = await current.steer(text, {
+                      onDispatch: () => {
+                        options.onDispatch();
+                        dispatched = true;
+                      },
+                      onAccepted: (id) => {
+                        matched = id === expectedTurnId;
+                      },
+                    });
+                    return took ? (matched ? "accepted" : "uncertain") : "refused";
+                  } catch {
+                    return dispatched ? "uncertain" : "refused";
+                  }
+                },
+              }
+            : {}),
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),
           respondToRequest: async (threadId, requestId, decision) => {
             const finish = active.get(threadId)?.asks.get(requestId);
