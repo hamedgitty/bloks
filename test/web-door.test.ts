@@ -310,3 +310,51 @@ test("the web door: who signs in, as whom, and every way it is refused", async (
     assert.equal((await owner.fetch("/api/bots")).status, 401);
   });
 });
+
+test("when the address is who somebody is, an address the provider has not verified signs nobody in", async (t) => {
+  const idp = await fakeOidc();
+  t.after(() => idp.close());
+  const licence = await teamPlan();
+  t.after(() => licence.close());
+  const home = mkdtempSync(join(tmpdir(), "bloks-web-door-email-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, ".bloks"), { recursive: true });
+  writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ profile: { name: "Hamed" }, ...licence.config }));
+  const port = await freePort();
+  const door = `http://127.0.0.1:${port}`;
+  const h = await startHarness({
+    HOME: home,
+    ...licence.env,
+    BLOKS_WEB_URL: door,
+    BLOKS_WEB_LISTEN: `127.0.0.1:${port}`,
+    BLOKS_OIDC_ISSUER: idp.issuer,
+    BLOKS_OIDC_CLIENT_ID: idp.clientId,
+    BLOKS_OIDC_CLIENT_SECRET: idp.clientSecret,
+    BLOKS_OIDC_PERSON_CLAIM: "email",
+    BLOKS_OIDC_OWNER: "hamed@example.com",
+    // a group lets people in, which never looks at the address
+    BLOKS_OIDC_ALLOWED_GROUPS: "family",
+    BLOKS_OIDC_AUTO_CREATE: "1",
+  });
+  t.after(() => h.stop());
+  for (let i = 0; i < 100; i++) {
+    const up = await fetch(`${door}/auth/session`).then((r) => r.ok, () => false);
+    if (up) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const as = (user: FakeUser) => {
+    idp.state.user = user;
+    idp.state.mode = "good";
+    return new Browser(door);
+  };
+  const partner = await as({ sub: "partner-1", name: "Partner", email: "partner@example.com", email_verified: true, groups: ["family"] }).signIn();
+  assert.equal(partner.location, "/", "a verified address signs in");
+  const impostor = as({ sub: "someone-else", name: "Impostor", email: "partner@example.com", email_verified: false, groups: ["family"] });
+  const refused = await impostor.signIn();
+  assert.equal(refused.location, "/?signin=not_allowed");
+  assert.ok(!impostor.jar.has("bloks_session"));
+  assert.match(h.logs(), /has not verified partner@example\.com/);
+  // a provider that never says either way is taken at its word
+  const silent = await as({ sub: "silent-1", name: "Quiet", email: "quiet@example.com", groups: ["family"] }).signIn();
+  assert.equal(silent.location, "/");
+});

@@ -260,3 +260,14 @@ test("a cancelled turn is forgotten and a finished one is not swept twice", () =
   assert.deepEqual(turns.finish("general"), []);
   assert.deepEqual(turns.finish("unknown"), []);
 });
+
+test("a file's name said inside a longer name is not the file's name said", async () => {
+  const { saysName } = await import("../server/artifact-turns.ts");
+  assert.equal(saysName("I wrote notes.md for you", "notes.md"), true);
+  assert.equal(saysName("saved to /tmp/out/notes.md.", "notes.md"), true);
+  assert.equal(saysName("see `notes.md`", "notes.md"), true);
+  assert.equal(saysName("meeting-notes.md is done", "notes.md"), false);
+  assert.equal(saysName("old.notes.md", "notes.md"), false);
+  assert.equal(saysName("notes.md2", "notes.md"), false);
+  assert.equal(saysName("meeting-notes.md and then notes.md", "notes.md"), true);
+});

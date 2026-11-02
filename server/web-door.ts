@@ -312,6 +312,15 @@ export function startWebDoor(settings: WebDoorSettings, deps: WebDoorDeps): { se
       return refuse(res, "failed", joining);
     }
 
+    // An address the provider says it has not verified is not who it
+    // names when the address is who somebody is: anybody can type one in
+    // where the provider lets people sign themselves up. Said only when
+    // the provider says so; one that never sends the claim is taken at
+    // its word, as isOwner does.
+    if (settings.oidc.personClaim === "email" && !identity.emailVerified) {
+      deps.log(`[bloks] web sign-in refused: the provider has not verified ${identity.subject}`);
+      return refuse(res, "not_allowed", joining);
+    }
     // the owner stays the owner, whatever the allow lists say
     if (isOwner(identity, settings.oidc)) return signedIn(res, "owner", identity, issuer, flow.next);
     if (!allowed(identity, settings.oidc)) {

@@ -964,7 +964,7 @@ function PairingCode({
                         code.chosen === a ? "bg-background text-foreground ring-1 ring-border" : "text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      {a.includes(":") ? `[${a}]` : a}
+                      {isUrl(a) ? a : a.includes(":") ? `[${a}]` : a}
                       {isOverlayAddress(a) && <span className="ml-1 font-sans text-caption text-muted-foreground">{t("devicesSection.tailscale")}</span>}
                     </button>
                   ))}

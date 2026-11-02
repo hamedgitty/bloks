@@ -214,7 +214,7 @@ export class ArtifactTurns {
    * its that may write unnamed files ran when the file was written. */
   private evidence(turn: Turn, name: string, at: number): number {
     if (turn.named.has(name)) return 3;
-    if (turn.words.includes(name)) return 2;
+    if (saysName(turn.words, name)) return 2;
     for (const span of turn.calls.values()) {
       const to = span.to ?? turn.endedAt ?? this.now();
       if (at >= span.from - WINDOW_SLACK_MS && at <= to + WINDOW_SLACK_MS) return 1;
@@ -262,4 +262,18 @@ export class ArtifactTurns {
     for (const turn of this.turns.values()) if (turn.running) for (const id of turn.alongside) needed.add(id);
     for (const [id, turn] of this.turns) if (!turn.running && !needed.has(id)) this.turns.delete(id);
   }
+}
+
+/** Whether the words say this file's name as a name: on its own, or at
+ * the end of a path, not inside a longer one ("meeting-notes.md" does not
+ * say "notes.md"). */
+export function saysName(words: string, name: string): boolean {
+  let at = words.indexOf(name);
+  while (at !== -1) {
+    const before = at === 0 ? "" : words[at - 1];
+    const after = words[at + name.length] ?? "";
+    if (!/[\w.-]/.test(before) && !/[\w-]/.test(after)) return true;
+    at = words.indexOf(name, at + 1);
+  }
+  return false;
 }
