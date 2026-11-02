@@ -214,6 +214,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       // agy frames as {event, conversation_id, <event-name>: payload}
       let conversationId: string | null = null;
+      // Result usage is the conversation's lifetime total, even after a
+      // resume. Only this turn's indexed requests belong in its bill.
+      const requests = new Map<number, { input: number; output: number }>();
+      let inputTokens = 0;
+      let outputTokens = 0;
       const consume = (raw: string) => {
         let frame: any;
         try {
@@ -260,11 +265,18 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 });
               }
             } else if (payload.step_type === "agent_response" && payload.usage) {
+              const input = (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0);
+              const output = payload.usage.output_tokens || 0;
+              const before = requests.get(payload.step_index);
+              inputTokens += input - (before?.input ?? 0);
+              outputTokens += output - (before?.output ?? 0);
+              requests.set(payload.step_index, { input, output });
               emit({
                 ...envelope(threadId, turnId),
                 type: "thread.token-usage.updated",
-                input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
-                output: payload.usage.output_tokens || 0,
+                input: inputTokens,
+                output: outputTokens,
+                context: input,
               });
             }
             break;
@@ -286,12 +298,22 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 text,
               });
             }
-            if (payload.usage) {
+            // Older result-only streams can measure a fresh turn, but a
+            // resumed conversation's total cannot tell what this turn spent.
+            if (!requests.size && !resume && payload.usage) {
               emit({
                 ...envelope(threadId, turnId),
                 type: "thread.token-usage.updated",
                 input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
                 output: payload.usage.output_tokens || 0,
+              });
+            }
+            if (payload.status !== "SUCCESS") {
+              emit({
+                ...envelope(threadId, turnId),
+                type: "runtime.error",
+                message: typeof payload.error === "string" && payload.error
+                  ? payload.error : `Antigravity ended with status ${payload.status ?? "unknown"}.`,
               });
             }
             finish(payload.status === "SUCCESS", payload.status ?? null);
