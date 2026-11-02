@@ -241,9 +241,11 @@ describe("a real shell's foreground", { skip: hasPty ? false : "no pty on this p
       await wait(300);
       assert.equal((await session.foreground()).running, false);
       session.write("sleep 20\n");
+      // the shell can hand the terminal to the new job a moment before ps
+      // lists its leader: running, with no name yet, is that moment
       const busy = await until(async () => {
         const now = await session.foreground();
-        return now.running ? now : null;
+        return now.running && now.command ? now : null;
       });
       assert.ok(busy, "a foreground sleep was not seen");
       assert.equal(busy!.command, "sleep");
