@@ -381,6 +381,11 @@ describe("a fold read in several requests", { concurrency: 4 }, () => {
       assert.equal(f.folds().length, 2, "a request went out after the summary was dropped");
       assert.equal(f.stored(), undefined);
       assert.equal(await f.summarised(), 0);
+      // and the turn that waited on it is told the lane as it is now
+      const told = f.turns()[0].input;
+      assert.equal(told.includes("Previous fixture summary"), false, "the turn was told the dropped summary");
+      assert.equal(has(told, "FACT-0"), false);
+      assert.match(told, LEFT_OUT);
     });
   }
 
