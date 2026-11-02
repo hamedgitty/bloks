@@ -18,6 +18,7 @@ import { thisComputer } from "../src/lib/thisComputer.ts";
 import { stripSecrets } from "../server/backup.ts";
 import { MoveUploads, PART_BYTES, UploadError, readPart, sha256 } from "../server/move-upload.ts";
 import { cleanMovedMark, clearMovedMark, movedWords, readMovedMark, writeMovedMark } from "../server/moved-mark.ts";
+import { thisMachine } from "../server/this-machine.ts";
 import {
   countsDiffer,
   emptyEnoughForMove,
@@ -97,6 +98,11 @@ test("the note a moved copy keeps never travels, and is cleaned like a name", ()
   assert.equal(cleanMovedMark({ to: "elsewhere" }), null);
   assert.equal(cleanMovedMark({ to: "mac", workspaceId: "../x" })?.workspaceId, null);
   assert.match(movedWords({ ...mark!, pending: false }), /^This workspace moved to your hosted machine\./);
+  assert.ok(movedWords({ ...mark!, pending: false }).endsWith(`not on ${thisMachine()}.`), "the copy left here is on this machine, named as it is");
+  // the hosted machine cannot tell what the person's computer is, so it
+  // names the workspace there and says "your computer"
+  assert.match(movedWords({ to: "mac", name: "Personal", workspaceId: null, at: 5, pending: false }), /^This workspace moved to Personal on your computer\./);
+  assert.equal(cleanMovedMark({ to: "mac" })?.name, "your computer");
   assert.match(movedWords(mark!), /is moving to your hosted machine/);
   const dir = mkdtempSync(join(tmpdir(), "bloks-moved-mark-"));
   try {

@@ -9,7 +9,7 @@
 import type { HostingMove, HostingMoveCounts, HostingMoveKey, HostingMoveStep } from "../types/bridge.d.ts";
 import { SETTINGS_PAGE_LIST } from "./settingsPages.ts";
 import { formatList, formatNumber, hasMessage, t, type MessageKey } from "./i18n.ts";
-import { thisComputer } from "./thisComputer.ts";
+import { onThisComputer, toThisComputer } from "./thisComputer.ts";
 
 // Each step's label is a key, read in the language it is drawn in.
 export const MOVE_STEPS: ReadonlyArray<{ step: HostingMoveStep; label: MessageKey }> = [
@@ -53,8 +53,8 @@ export function stepLabel(move: Pick<HostingMove, "step" | "phase" | "sent" | "s
   return label ? t(label) : step;
 }
 
-/** Where it goes: the hosted machine, a named workspace on this Mac, or
- * this Mac. Each is said as part of a whole sentence, so a language can
+/** Where it goes: the hosted machine, a named workspace on this computer,
+ * or this computer. Each is said as part of a whole sentence, so a language can
  * put the place where its grammar wants it. */
 export function destination(move: Pick<HostingMove, "direction" | "to">): "hosted" | "named" | "mac" {
   return move.direction === "to-hosted" ? "hosted" : move.to.id ? "named" : "mac";
@@ -62,8 +62,10 @@ export function destination(move: Pick<HostingMove, "direction" | "to">): "hoste
 
 /** The card's heading for a move as it stands. */
 export function headline(move: Pick<HostingMove, "direction" | "from" | "to" | "phase">): string {
-  const params = { name: move.from.name, to: move.to.name, computer: thisComputer() };
   const where = destination(move);
+  // going "to this PC", or landed "on" it, or into a workspace "on" it
+  const computer = where === "mac" && move.phase !== "done" ? toThisComputer() : onThisComputer();
+  const params = { name: move.from.name, to: move.to.name, computer };
   switch (move.phase) {
     case "done":
       return move.direction === "to-hosted" ? t("libHostingMove.headline.doneHosted", params) : t("libHostingMove.headline.doneMac", params);
@@ -80,13 +82,15 @@ export function headline(move: Pick<HostingMove, "direction" | "from" | "to" | "
 
 /** "Personal starts moving to your hosted machine in 5 s." */
 export function startsIn(move: Pick<HostingMove, "direction" | "from" | "to">, seconds: number): string {
-  return t(`libHostingMove.startsIn.${destination(move)}`, { name: move.from.name, to: move.to.name, seconds, computer: thisComputer() });
+  const where = destination(move);
+  const computer = where === "mac" ? toThisComputer() : onThisComputer();
+  return t(`libHostingMove.startsIn.${where}`, { name: move.from.name, to: move.to.name, seconds, computer });
 }
 
 /** The line under it. */
 export function subline(move: Pick<HostingMove, "direction" | "from" | "phase" | "step">): string {
   const side = move.direction === "to-hosted" ? "mac" : "hosted";
-  const params = { name: move.from.name, computer: thisComputer() };
+  const params = { name: move.from.name, computer: onThisComputer() };
   switch (move.phase) {
     case "done":
       return move.direction === "to-hosted" ? t("libHostingMove.subline.doneHosted", params) : t("libHostingMove.subline.doneMac");

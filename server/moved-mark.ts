@@ -79,5 +79,5 @@ export function movedWords(mark: MovedMark): string {
   if (mark.pending) return `This workspace is moving to ${where}. Its routines, watchers, workflows and chat bots have stopped here while it does.`;
   return mark.to === "hosted"
     ? `This workspace moved to your hosted machine. Its routines, watchers, workflows and chat bots run there now, not on ${thisMachine()}.`
-    : "This workspace moved to your computer. Its routines, watchers, workflows and chat bots run there now, not here.";
+    : `This workspace moved to ${mark.name} on your computer. Its routines, watchers, workflows and chat bots run there now, not here.`;
 }

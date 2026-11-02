@@ -90,3 +90,17 @@ French and Brazilian Portuguese read 0 as `_one` ("0 agent"); Spanish
 and German read it as `_other`. Always write `_other`: it is what every
 missing form falls back to. Keep `{count}` in each form unless the
 English form leaves it out (a `_one` that says "an agent" may too).
+
+## The computer
+
+`{computer}` names the machine the way the person has it: "this Mac",
+"this PC" or "this computer", or "your Mac" and the rest. Each form is
+a whole entry under `thisComputer.`, so a language agrees its "this"
+with its own noun ("ce Mac", "cet ordinateur").
+
+Where English puts it after "on", "to" or "from", the code fills it
+from `thisComputer.thisOn`, `thisTo`, `thisFrom` or `yourOn` instead,
+so each language can say it the way that place needs. German declines
+it ("auf diesem Mac", and a move "auf diesen Mac"). Portuguese folds its
+"em" and "de" into it ("neste Mac", "deste Mac", "no seu Mac"), so a
+Portuguese sentence leaves those words out before `{computer}`.
