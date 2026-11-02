@@ -497,6 +497,7 @@ import {
   VIEWER_ORIGIN,
 } from "./local-vm.ts";
 import { selfEditRefusal } from "./agent-self-edit.ts";
+import { fetchWatchedPage } from "./watched-fetch.ts";
 import { carriesLocalKey, makeLocalKey, LOCAL_KEY_HEADER } from "./local-key.ts";
 import { resolveOnPath, widenPath } from "./path.ts";
 import {
@@ -9972,14 +9973,9 @@ function armWatcher(w: Watcher) {
 }
 
 async function fetchWatched(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { "user-agent": "Bloks watcher (https://bloks.dev)", accept: "text/html,application/xhtml+xml,application/xml,application/rss+xml,application/atom+xml,*/*" },
-    signal: AbortSignal.timeout(20_000),
-    redirect: "follow",
-  });
-  if (!res.ok) throw new Error(`the address answered ${res.status}`);
-  const text = await res.text();
-  return text.slice(0, 2_000_000);
+  // never this server itself, and never inward from a page out there
+  // (server/watched-fetch.ts)
+  return fetchWatchedPage(url, { ownPorts: [PORT, ...(WEB_DOOR ? [WEB_DOOR.port] : [])] });
 }
 
 /** Checks running right now, across every watcher. A few at a time is
