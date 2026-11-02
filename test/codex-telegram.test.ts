@@ -1132,6 +1132,36 @@ test("a new input does not overtake an unresolved preparation before dismissal",
   assert.doesNotMatch(JSON.stringify(starts[1].params.input), /UNRESOLVED_BARRIER/);
 });
 
+test("stop and send now goes ahead of an unresolved preparation, which still holds what follows it", async (t) => {
+  const s = await fixture(t);
+  s.spec({ hold: true, holdSkills: true, wrongSteerId: true });
+  await s.say("FIRST $selected");
+  await s.called("skills/list", 1);
+  await s.say("UNRESOLVED_HOLD");
+  s.skillsGate();
+  await s.called("turn/steer", 1);
+  await waitFor(async () => (await s.messages()).some((m) => m.text === "UNRESOLVED_HOLD" && m.preparation?.state === "uncertain"));
+  await s.say("AFTER_HOLD");
+  s.spec({ hold: false });
+  const sent = await s.post(`/api/bots/${s.bot.id}/messages`, { text: "STOP_AND_SEND", taskId: s.bot.threadId, steer: false, stopFirst: true });
+  assert.equal(sent.stopped, true);
+  s.gate();
+  await s.called("turn/start", 2);
+  await s.settled();
+  const starts = () => s.calls().filter((c) => c.method === "turn/start").map((c) => JSON.stringify(c.params.input));
+  assert.match(starts()[1], /STOP_AND_SEND/);
+  assert.doesNotMatch(starts()[1], /AFTER_HOLD|UNRESOLVED_HOLD/);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(s.count("turn/start"), 2, "the unresolved row stopped holding what was said after it");
+  const row = (await s.messages()).find((m) => m.text === "UNRESOLVED_HOLD")!;
+  assert.equal(row.queued, true);
+  assert.equal((await s.h.fetch(`/api/threads/${s.bot.threadId}/messages/${row.id}/dismiss-preparation`, { method: "POST" })).status, 200);
+  await s.called("turn/start", 3);
+  await s.settled();
+  assert.match(starts()[2], /AFTER_HOLD/);
+  assert.doesNotMatch(starts()[2], /UNRESOLVED_HOLD|STOP_AND_SEND/);
+});
+
 for (const mode of ["dismissed", "fail-dismiss"] as const) test(`${mode}: dismissal is durable before the waiting row is released`, async (t) => {
   const s = await fixture(t, { crashOn: "DURABLE_DISMISS", crashStage: mode });
   s.spec({ hold: true, holdSkills: true, wrongSteerId: true });

@@ -18530,7 +18530,10 @@ function settlePreparationInput(attempt: PreparationAttempt, ids: readonly strin
   if (state === "next") {
     const queue = steerQueues.get(attempt.laneId) ?? { botId: attempt.botId, items: [] };
     const missing = changed.filter((m) => m.preparation?.state === "next" && !queue.items.some((item) => item.messageId === m.id));
-    queue.items.unshift(...missing.map((m) => ({ messageId: m.id })));
+    // Back at the front, behind only words sent with stop and send now,
+    // which go ahead of everything that was waiting.
+    const ahead = queue.items.findIndex((item) => !item.alone);
+    queue.items.splice(ahead < 0 ? queue.items.length : ahead, 0, ...missing.map((m) => ({ messageId: m.id })));
     if (queue.items.length) steerQueues.set(attempt.laneId, queue);
   }
   for (const m of changed) {
@@ -19335,7 +19338,9 @@ async function sendUserMessage(
       const state = store.messagesFor(lane.id).find((m) => m.id === id)?.preparation?.state;
       return state === "pending" || state === "dispatching" || state === "uncertain";
     });
-    if (yours && options.steer && !paused && preparing && (!preparing.unsupported || earlierPreparing || preparing.deferred ||
+    // Stop and send now is never an addition: it ends the turn getting
+    // ready and goes ahead of what waits (queueOnLane's `first`).
+    if (!first && yours && options.steer && !paused && preparing && (!preparing.unsupported || earlierPreparing || preparing.deferred ||
         (preparing.remotePlace && preparationHasFile(withReply(text, options.replyTo))))) {
       const mode = resolveMode(bot.delivery, cfg.delivery?.mode);
       const choice = options.delivery === "answer" ? "now" : options.delivery;
@@ -19574,10 +19579,13 @@ function drainSteer(threadId: string) {
   if (lane.busy || claimedLanes.has(threadId) || queueStarts.has(threadId) || steerAttempts.has(threadId)) return;
   // Dispatching and uncertain preparation rows are evidence, not queued
   // work. They hold later work until the owner explicitly dismisses them.
-  if (entry.items.some((item) => {
+  // Words sent with stop and send now were put ahead of them on purpose,
+  // and go in a turn of their own (queuedSegment), so they are not held.
+  const unresolved = (item: (typeof entry.items)[number]) => {
     const row = item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined;
-    return row?.queued && !row.preparation?.dismissed && ["dispatching", "uncertain"].includes(row.preparation?.state ?? "");
-  })) return;
+    return Boolean(row?.queued && !row.preparation?.dismissed && ["dispatching", "uncertain"].includes(row.preparation?.state ?? ""));
+  };
+  if (!entry.items[0]?.alone && entry.items.some(unresolved)) return;
   const card = cardsPending.get(threadId);
   if (card) {
     void Promise.race([card, new Promise((done) => setTimeout(done, CARD_WAIT_MS).unref?.())]).then(() => {
@@ -19645,7 +19653,10 @@ function drainSteer(threadId: string) {
   // Claim only this segment before any async work; a command is a turn
   // of its own, and the suffix stays ahead of any newly arriving words.
   const segment = queuedSegment(threadId, entry.items);
-  if (segment.rest.length) steerQueues.set(threadId, { ...entry, items: segment.rest });
+  // An unresolved row reads as no words, so the segment leaves it out of
+  // the rest. It stays, in its place, still holding what follows it.
+  const rest = entry.items.filter((item) => segment.rest.includes(item) || (!segment.items.includes(item) && unresolved(item)));
+  if (rest.length) steerQueues.set(threadId, { ...entry, items: rest });
   else steerQueues.delete(threadId);
   // the words as they stand now, not as they stood when they were queued
   const alive = segment.items.flatMap((item) => {
