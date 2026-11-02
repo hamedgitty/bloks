@@ -701,6 +701,7 @@ import { PriceBook, PRICES_URL, readOwnPrice, type OwnPrice } from "./model-pric
 import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, MAX_TEAM_ROUTINES, parseTeamFile, TeamFileError, teamFromManifest, type GalleryTeam, type TeamFile, type TeamFileMember, type TeamFileRoutine } from "./team-file.ts";
 import * as artifacts from "./artifacts.ts";
+import { ArtifactTurns } from "./artifact-turns.ts";
 import { closeHeld, openInside, openUnder, readHeld, streamHeld } from "./open-inside.ts";
 import * as workspace from "./workspace.ts";
 import * as places from "./workplace.ts";
@@ -4990,6 +4991,8 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       break;
     case "item.completed":
       if (event.itemType === "assistant_text") {
+        // a reply naming a file it saved is evidence of whose it is
+        if (!event.syntheticText) artifactTurns.say(event.threadId, event.text);
         // a lead may have proposed a team; the plan becomes a card the
         // user approves, never something that happens on its own. Never
         // from a stranger's mail, which would be writing the agents the
@@ -5067,6 +5070,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
           teamPlans.set(card.id, { plan, leadId: bot.id });
         }
       } else if (event.itemType === "tool" && event.itemId) {
+        artifactTurns.callEnded(event.threadId, event.itemId);
         const messageId = toolMessageByItem.get(event.itemId);
         if (messageId) {
           const tool = store.messagesFor(roomId).find((m) => m.id === messageId)?.tool;
@@ -5087,6 +5091,9 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         // it may have written files it did not name
         if (event.paths?.length) checkpoints.noteEdits(event.threadId, event.paths);
         if (event.mayWrite) checkpoints.noteUnnamedWrites(event.threadId);
+        // and which of the agent's files it may be writing, for telling
+        // its cards from those of another conversation running beside it
+        artifactTurns.call(event.threadId, { itemId: event.itemId, paths: event.paths, mayWrite: event.mayWrite, command: event.command });
         // The same call made again and again is said as a chip on this
         // row, and the row that had the turn's chip gives it up. Nothing
         // is stopped: a loop is a guess, and stopping is the person's.
@@ -5790,7 +5797,9 @@ async function onRuntimeEvent(event: RuntimeEvent) {
             .end(event.threadId, artifacts.artifactsDir(bot.id), (name) => artifacts.safeName(name) === name)
             .catch(() => ({ fetched: [] as string[], dropped: undefined, failed: undefined }))
             .then((ended) => {
-              sweepArtifacts(bot.id, event.threadId, pushMessage);
+              // what came back from there is this turn's own
+              artifactTurns.brought(event.threadId, ended.fetched);
+              sweepArtifacts(event.threadId, pushMessage);
               const said = ended.dropped
                 ? `${ended.dropped} Bloks reconnects for the next message.`
                 : ended.failed
@@ -5799,7 +5808,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
               if (said) pushMessage({ role: "bot", kind: "notice", text: said });
             })
         : null;
-      if (!broughtBack) sweepArtifacts(bot.id, event.threadId, pushMessage);
+      if (!broughtBack) sweepArtifacts(event.threadId, pushMessage);
       // what the turn changed in the agent's memory, into its journal
       try {
         const remembered = memoryJournal.finish(event.threadId);
@@ -6613,20 +6622,19 @@ function armDrainLapse() {
  * total for the turn, so this holds a high-water mark, popped when the
  * turn settles and folded into the lane's lifetime tally. */
 const turnTokens = new Map<string, { input: number; output: number }>();
-/** What the deliverables dir looked like when each lane's turn began. */
-const artifactBaseline = new Map<string, Map<string, string>>();
+/** What the deliverables dir looked like when each lane's turn began,
+ * and which of the agent's other turns ran beside it, so a file one
+ * conversation makes is not carded in another (GitHub 460). */
+const artifactTurns = new ArtifactTurns({ alive: (taskId) => turnAlive(taskId) });
 
-/** New or changed deliverables since the lane's turn began become
- * artifact cards in whatever thread the turn was speaking to. */
+/** New or changed deliverables since the lane's turn began, that this
+ * turn made, become artifact cards in whatever thread the turn was
+ * speaking to. */
 function sweepArtifacts(
-  botId: string,
   taskId: string,
   push: (m: Omit<Message, "id" | "at">) => Message,
 ) {
-  const before = artifactBaseline.get(taskId);
-  if (!before) return;
-  artifactBaseline.delete(taskId);
-  for (const info of artifacts.producedSince(botId, before)) {
+  for (const info of artifactTurns.finish(taskId)) {
     push({ role: "bot", kind: "artifact", artifact: info });
   }
 }
@@ -8088,7 +8096,7 @@ async function startClaimedTurn(
   // reply they have not seen yet would lose its dot to a run that, being
   // quiet, puts none back.
   if (!checkIn) store.markLane(bot.id, task.id, false);
-  artifactBaseline.set(task.id, artifacts.snapshot(bot.id));
+  artifactTurns.begin(task.id, bot.id);
   turnTokens.delete(task.id);
   broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
 
@@ -8129,6 +8137,7 @@ async function startClaimedTurn(
     // what was got ready for it goes with it: the folder's photograph,
     // the Local VM, and the credential it would have run with
     checkpoints.cancel(task.id);
+    artifactTurns.cancel(task.id);
     releaseVm(task.id);
     void workplaces.end(task.id, null).catch(() => {});
     agentTokens.revokeTask(task.id);
@@ -8659,6 +8668,7 @@ async function startClaimedTurn(
         if (filesAreHere(placeNow)) await checkpoints.begin(task.id, bot.id, placeFolder, memoryPaths(bot.id, placeFolder)).catch(() => {});
       } else {
         await checkpoints.begin(task.id, bot.id, turnCwd, memoryPaths(bot.id, turnCwd)).catch(() => {});
+        artifactTurns.workingIn(task.id, turnCwd);
       }
       memoryJournal.begin(task.id, bot.id);
 
@@ -9027,7 +9037,7 @@ async function startClaimedTurn(
         ...(personSource ? { kind: "notice" as const, text: `Could not answer: ${message}` } : { kind: "activity" as const, tool: { name: `error: ${message.slice(0, 160)}`, ok: false } }),
       });
       broadcast({ kind: "message", threadId: roomId, message: failure });
-      sweepArtifacts(bot.id, task.id, (m) => {
+      sweepArtifacts(task.id, (m) => {
         const message = store.appendMessage(roomId, blok ? { ...m, from: bot.id } : m);
         broadcast({ kind: "message", threadId: roomId, message });
         return message;
@@ -26441,9 +26451,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           : asAgent?.taskId && bot.tasks.some((t) => t.id === asAgent.taskId)
             ? asAgent.taskId
             : activeLaneOf(bot);
-      // shared now, so the sweep at the end of the turn does not card it again
-      const print = artifacts.fingerprint(bot.id, info.name);
-      if (print) artifactBaseline.get(laneId)?.set(info.name, print);
+      // shared now, so the sweep at the end of the turn does not card it
+      // again: not the conversation it went to, not the turn that shared
+      // it, and not another conversation of the agent running meanwhile
+      artifactTurns.shared(bot.id, info.name, [laneId, ...(asAgent?.taskId ? [asAgent.taskId] : [])]);
       const destination = activeRoom.get(laneId) ?? laneId;
       const message = store.appendMessage(destination, { role: "bot", from: bot.id, kind: "artifact", artifact: info });
       broadcast({ kind: "message", threadId: destination, message });

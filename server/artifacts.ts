@@ -6,6 +6,9 @@
 // download. Detection is a snapshot-and-diff around the turn, not a
 // watcher: watchers are flaky across platforms and the interesting
 // moment is "what did this turn produce", which a diff answers exactly.
+// Exactly while one turn of the agent runs, that is: two conversations of
+// one agent working at once share this directory, and which of them made
+// a file is settled in server/artifact-turns.ts.
 //
 // The directory is also the one boundary a file is served from. A name is
 // a path relative to it, folders included ("reports/q3.pdf"), and every
@@ -440,9 +443,14 @@ export function fingerprint(botId: string, name: string): string | null {
   return `${stat.mtimeMs}:${stat.size}`;
 }
 
-/** Files that are new or changed since `before`, newest last. */
-export function producedSince(botId: string, before: Map<string, string>): ArtifactInfo[] {
-  const produced: Array<ArtifactInfo & { at: number }> = [];
+/** Files that are new or changed since `before`, newest last, each with
+ * when it was last written and its fingerprint, for telling which of two
+ * turns running at once wrote it (server/artifact-turns.ts). */
+export function changedSince(
+  botId: string,
+  before: Map<string, string>,
+): Array<ArtifactInfo & { at: number; print: string }> {
+  const produced: Array<ArtifactInfo & { at: number; print: string }> = [];
   const dir = artifactsDir(botId);
   try {
     for (const name of readdirSync(dir)) {
@@ -452,10 +460,10 @@ export function producedSince(botId: string, before: Map<string, string>): Artif
         if (!stat.isFile()) continue;
         const print = `${stat.mtimeMs}:${stat.size}`;
         if (before.get(name) !== print) {
-          produced.push({ name, mime: mimeOf(name), size: stat.size, at: stat.mtimeMs });
+          produced.push({ name, mime: mimeOf(name), size: stat.size, at: stat.mtimeMs, print });
         }
       } catch {}
     }
   } catch {}
-  return produced.sort((a, b) => a.at - b.at).map(({ at: _at, ...info }) => info);
+  return produced.sort((a, b) => a.at - b.at);
 }

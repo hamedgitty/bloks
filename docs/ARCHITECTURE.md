@@ -744,8 +744,25 @@ written to a hidden file and renamed in once complete. The route never
 opens a path it is handed, so sharing cannot become a way to read the
 disk. Only this computer can share in. The answer carries the card's
 `href` and a markdown link to write in the reply, and the shared file's
-fingerprint goes into the turn's baseline so the sweep does not card it
-twice.
+fingerprint goes into the baselines of the conversation it went to and
+of the turn that shared it, so the sweep does not card it twice, and
+every other turn of the agent running at the time leaves that version
+alone.
+
+Every conversation of an agent saves into the one folder, so two of them
+running at once both see a new file between their two snapshots
+(GitHub 460). `server/artifact-turns.ts` knows which turns of an agent
+overlapped, kept while both run, the way the change card does for a
+shared working folder. A turn that ran alone cards everything that
+changed, as before. One that overlapped others cards a file only on the
+strongest evidence any of them has for it: its engine named the file in
+a write or edit (or brought it back from its outbox elsewhere), then it
+said the file's name in a command or its reply, then one of its calls
+that may write without naming files (a shell command) was running when
+the file was last written. Two turns tied at either of the first two
+both card it, in their own conversations; a tie at the third, or no
+evidence at all, cards it nowhere rather than under the wrong reply, and
+the file stays in the agent's files to share on purpose.
 
 A link in a reply that is the file route, a path or a `file:` URL is a
 `file` token in `src/lib/inlineMarkdown.ts`, never an `<a>`. Clicking it
