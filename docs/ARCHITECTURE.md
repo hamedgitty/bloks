@@ -2308,6 +2308,15 @@ rehearsal (`openRehearsals`), with the message marked `via: "watcher"`.
 A look is skipped while the agent is busy, so its own edits are not news
 to it, and `mayFire` caps a watcher at six turns an hour.
 
+A workspace keeps fifty watchers (`MAX_WATCHERS`), finished ones
+included, so the list doubles as a history of what ran. At the limit,
+every way of filing one (the person, an agent, an admin's app watcher)
+lets the watcher that finished longest ago go to make room
+(`roomForWatcher`). A paused watcher is never taken, nor a finished one
+whose look or turn is still going, nor an app watcher whose trigger is
+still at Composio, which only Remove takes down. With none of those to
+spare, the new one is refused.
+
 A place watcher (`kind: "place"`) waits for the owner to arrive at a
 place or leave it, by a name as the phone gives it ("Toronto", "Paris,
 France": every part has to be one of the reading's names) or by

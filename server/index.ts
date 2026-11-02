@@ -536,6 +536,7 @@ import {
   orphanWatcherLanes,
   pageText,
   parseFeed,
+  roomForWatcher,
   runCheck,
   SETTLE_MS,
   watcherTurn,
@@ -9600,6 +9601,28 @@ function watcherFinished(w: Watcher, now = Date.now()): boolean {
   return true;
 }
 
+/** Whether something a watcher started is still going: a look, a turn
+ * on its folder, or a turn in the conversation it speaks in. */
+function watcherAtWork(w: Watcher): boolean {
+  if (checking.has(w.id) || ownTurns.has(w.id)) return true;
+  return Boolean(w.laneId && (claimedLanes.has(w.laneId) || store.taskByThread(w.laneId)?.task.busy));
+}
+
+const NO_WATCHER_ROOM = "fifty watchers is the limit, and none of them has finished to make room; remove one first";
+
+/** Room for one more watcher, letting the one that finished longest ago
+ * go if it takes that (roomForWatcher), or false when there is none.
+ * `dry` only asks, for a path that has a slow step still to come before
+ * it adds the watcher. */
+function makeWatcherRoom(dry = false): boolean {
+  const kept = roomForWatcher(watchers, watcherAtWork);
+  if (!kept) return false;
+  if (dry || kept.length === watchers.length) return true;
+  for (const gone of watchers.filter((w) => !kept.includes(w))) disarmWatcher(gone.id);
+  watchers = kept;
+  return true;
+}
+
 /** Why where the owner is may not be told to this agent in this
  * conversation, or null. Only the owner's own agents, in the owner's own
  * conversations: never a member's solo agent, and never a team agent's
@@ -10167,7 +10190,7 @@ async function memberAppWatchers(
     if (!bot || !lane) return json(res, 404, { error: "no agent whose team conversation you are on" });
     const checked = cleanWatcher({ ...body, kind: "app", botId: bot.id, mode: "act", thread: undefined }, () => true);
     if (!checked.ok) return json(res, 400, { error: checked.error });
-    if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
+    if (!makeWatcherRoom(true)) return json(res, 409, { error: NO_WATCHER_ROOM });
     const { app: fields, ...rest } = checked.value;
     const w: Watcher = {
       id: newId(),
@@ -10184,6 +10207,7 @@ async function memberAppWatchers(
       return json(res, failed.status, { error: failed.error });
     }
     if (!(typeof body.name === "string" && body.name.trim()) && w.app!.triggerName) w.name = w.app!.triggerName.slice(0, 60);
+    makeWatcherRoom();
     watchers.push(w);
     saveWatchers();
     syncAppDelivery();
@@ -27758,7 +27782,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // An app watcher: made at Composio when the person files it, and
       // only proposed when an agent does, on a card the person answers.
       if (checked.value.kind === "app") {
-        if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
+        if (!makeWatcherRoom(true)) return json(res, 409, { error: NO_WATCHER_ROOM });
         const { app: fields, ...rest } = checked.value;
         const bot = store.bot(rest.botId)!;
         const w: Watcher = {
@@ -27778,6 +27802,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           }
           await proposeAppWatcher(w, bot, asAgent.taskId, api);
           if (!namedApp && w.app!.triggerName) w.name = w.app!.triggerName.slice(0, 60);
+          makeWatcherRoom();
           watchers.push(w);
           saveWatchers();
           broadcast({ kind: "watchers" });
@@ -27794,6 +27819,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           return json(res, failed.status, { error: failed.error });
         }
         if (!namedApp && w.app!.triggerName) w.name = w.app!.triggerName.slice(0, 60);
+        makeWatcherRoom();
         watchers.push(w);
         saveWatchers();
         syncAppDelivery();
@@ -27805,7 +27831,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (checked.value.kind === "place" && HOSTED) return json(res, 409, { error: "This workspace is hosted, and location from the iPhone goes only to a computer of your own, so a place watcher has nothing to go on here." });
       const placeRefused = checked.value.kind === "place" ? locationRefusal(checked.value.botId, asAgent?.taskId) : null;
       if (placeRefused) return json(res, 403, { error: placeRefused });
-      if (watchers.length >= 50) return json(res, 409, { error: "fifty watchers is the limit" });
+      if (!makeWatcherRoom()) return json(res, 409, { error: NO_WATCHER_ROOM });
       const { app: _app, ...made } = checked.value;
       const w: Watcher = {
         id: newId(),
