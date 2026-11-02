@@ -145,7 +145,9 @@ async function withFakes(
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+    // a fake CLI the harness stopped can still be writing its last file
+    // here for a moment on a slow machine; that is not this test's failure
+    try { rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
   }
 }
 
@@ -312,7 +314,9 @@ test("a path is a whole path to a file that runs, and never the Cursor editor", 
     assert.match((checkEnginePath("cline", "/x\n/y", home) as any).error, /characters/);
     assert.match((checkEnginePath("cline", "", home) as any).error, /full path/);
   } finally {
-    rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+    // a fake CLI the harness stopped can still be writing its last file
+    // here for a moment on a slow machine; that is not this test's failure
+    try { rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
   }
 });
 
