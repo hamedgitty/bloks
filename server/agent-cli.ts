@@ -190,6 +190,10 @@ export const RULES: Rule[] = [
   // between one agent and one person into a workspace.
   { method: "POST", path: "/api/bots/:id/messages", why: "say something to another agent" },
   { method: "POST", path: "/api/bots/:id/take-back", why: "take back its own messages still waiting for another agent" },
+  // Its own questions asked without waiting, and withdrawing one the
+  // person settled some other way. Never an approval, never another's.
+  { method: "GET", path: "/api/bots/:me/questions", why: "list the questions it asked without waiting that nobody has answered yet" },
+  { method: "DELETE", path: "/api/bots/:me/questions/:id", why: "withdraw a question of its own that the person settled some other way, with no answer given for them" },
   // A new conversation is only ever opened by saying something in it, to
   // itself or to an agent it may message, and the words go through every
   // check `say`'s do (GitHub 408). The person's own route for an empty

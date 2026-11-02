@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -217,6 +217,67 @@ test("the blocking question keeps its own card and reply", async (t) => {
   assert.equal(h.resolved()[0].answer, undefined);
 });
 
+test("the agent withdraws a question it asked without waiting: settled once, with no answer", async (t) => {
+  const h = await setup(t);
+  const peer = await h.start();
+  const item = asked("q-env", [{ title: "Which environment?", options: ["Local", "Staging"] }]);
+  peer.send(item);
+  await setImmediate();
+  const before = peer.frames.length;
+  const [ask] = h.opened();
+  assert.equal(h.instance.adapter.withdrawAsk!("task-a", ask.requestId!), true);
+  assert.deepEqual(
+    h.resolved().map((e) => ({ requestId: e.requestId, behavior: e.behavior, source: e.source, answer: e.answer })),
+    [{ requestId: ask.requestId, behavior: "withdrawn", source: "agent", answer: undefined }],
+  );
+  // nothing went to Codex, and nothing is left to answer or withdraw
+  assert.equal(peer.frames.length, before);
+  assert.equal(h.instance.adapter.withdrawAsk!("task-a", ask.requestId!), false);
+  await assert.rejects(h.instance.adapter.respondToRequest("task-a", ask.requestId!, { behavior: "answer", message: "Local" }), /no such pending request/);
+  // the same item said again does not open it again
+  peer.send(item);
+  await setImmediate();
+  assert.equal(h.opened().length, 1);
+  assert.equal(h.resolved().length, 1);
+});
+
+test("only a question asked without waiting, in its own conversation, can be withdrawn", async (t) => {
+  const h = await setup(t);
+  const peer = await h.start();
+  peer.send({ id: "question", method: "item/tool/requestUserInput", params: {
+    threadId: "codex-thread", turnId: "codex-turn",
+    questions: [{ id: "date", question: "When?", options: [{ label: "Friday" }] }],
+  } });
+  peer.send({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: "codex-thread", turnId: "codex-turn", itemId: "c1", command: "ls" } });
+  peer.send(asked("q-env", [{ title: "Which environment?" }]));
+  await setImmediate();
+  const [blocking, approval, later] = h.opened();
+  assert.equal(later.async, true);
+  for (const ask of [blocking, approval]) assert.equal(h.instance.adapter.withdrawAsk!("task-a", ask.requestId!), false);
+  assert.equal(h.instance.adapter.withdrawAsk!("task-a", "no-such-request"), false);
+  // another conversation's agent cannot withdraw it either
+  assert.equal(h.instance.adapter.withdrawAsk!("task-b", later.requestId!), false);
+  assert.equal(h.resolved().length, 0);
+  // and each is still the person's to answer
+  await h.instance.adapter.respondToRequest("task-a", blocking.requestId!, { behavior: "answer", message: "Friday" });
+  await h.instance.adapter.respondToRequest("task-a", approval.requestId!, { behavior: "allow" });
+  await h.instance.adapter.respondToRequest("task-a", later.requestId!, { behavior: "answer", message: "Local" });
+  assert.ok(peer.frames.some((f) => f.id === "question" && f.result), "the blocking question was not answered");
+  assert.ok(peer.frames.some((f) => f.id === "approval" && f.result), "the approval was not answered");
+  assert.equal(h.resolved().find((e) => e.requestId === later.requestId)?.answer, "Local");
+});
+
+test("an answer given first stands: the question is no longer there to withdraw", async (t) => {
+  const h = await setup(t);
+  const peer = await h.start();
+  peer.send(asked("q-env", [{ title: "Which environment?", options: ["Local", "Staging"] }]));
+  await setImmediate();
+  const [ask] = h.opened();
+  await h.instance.adapter.respondToRequest("task-a", ask.requestId!, { behavior: "answer", message: "Staging" });
+  assert.equal(h.instance.adapter.withdrawAsk!("task-a", ask.requestId!), false);
+  assert.deepEqual(h.resolved().map((e) => [e.source, e.answer]), [["user", "Staging"]]);
+});
+
 test("only an async item with something to ask is read as a question", () => {
   assert.equal(asyncQuestion({ type: "agentMessage", text: "Done." }), null);
   assert.equal(asyncQuestion({ delivery: "async", questions: [] }), null);
@@ -232,11 +293,14 @@ test("only an async item with something to ask is read as a question", () => {
 // ── where the answer goes, in the real harness ──
 
 /** A Codex that asks without waiting. ASYNC-WORKING asks and keeps its
- * turn open until it is told more, saying what it was told; ASYNC-ENDS
- * asks and ends its turn. Each says its question twice, as a replay. A
- * turn that quotes a question says what it was answered with, and in
- * which sandbox it ran, which is whose authority it had; WHICH-SANDBOX
- * says only that. */
+ * turn open until it is told more, saying what it was told; ASYNC-TWO
+ * does the same with two questions; ASYNC-ENDS and ASYNC-LATER ask and
+ * end their turn. Each says its question twice, as a replay. A turn that
+ * quotes a question says what it was answered with, and in which sandbox
+ * it ran, which is whose authority it had; WHICH-SANDBOX says only that.
+ * BLOCKED asks a question its turn waits on and an approval, and waits.
+ * CLI[tag|args] runs the agent's command line and says what it answered,
+ * as CLI-tag. Each turn notes its words and credential in turns.jsonl. */
 function codexHome(extra: Record<string, unknown> = {}): string {
   const home = mkdtempSync(join(tmpdir(), "bloks-async-questions-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
@@ -245,6 +309,8 @@ function codexHome(extra: Record<string, unknown> = {}): string {
     join(home, "fake-codex.mjs"),
     `#!${process.execPath}
 import { createInterface } from "node:readline";
+import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 if (process.argv[2] === "--version") { console.log("codex-cli 0.164.0"); process.exit(0); }
 if (process.argv[2] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }
 process.stdin.on("end", () => process.exit(0));
@@ -274,7 +340,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   turn = "work-" + Date.now(); reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
+  appendFileSync(${JSON.stringify(join(home, "turns.jsonl"))}, JSON.stringify({ text, token: process.env.BLOKS_TOKEN }) + "\\n");
   if (text.includes("ASYNC-WORKING")) return ask("q-env", [{ title: "Which environment should I inspect?", options: ["Local", "Staging"] }]);
+  if (text.includes("ASYNC-TWO")) {
+    ask("q-env", [{ title: "Which environment should I inspect?", options: ["Local", "Staging"] }]);
+    return ask("q-region", [{ title: "Which region?", options: ["eu", "us"] }]);
+  }
+  if (text.includes("ASYNC-LATER")) { ask("q-day", [{ title: "Which day works?", options: ["Monday", "Tuesday"] }]); return finish("Carried on without it."); }
+  if (text.includes("BLOCKED")) {
+    out({ id: "blocking", method: "item/tool/requestUserInput", params: { threadId: thread, turnId: turn, questions: [{ id: "date", question: "When should it ship?", options: [{ label: "Friday" }] }] } });
+    return out({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: thread, turnId: turn, itemId: "c1", command: "rm -rf build" } });
+  }
+  const cli = text.match(/CLI\\[(\\w+)\\|([^\\]]+)\\]/);
+  if (cli) return execFile(process.execPath, [process.env.BLOKS_CLI, ...cli[2].trim().split(/\\s+/)], (_error, stdout) => finish("CLI-" + cli[1] + " " + stdout.trim()));
   if (text.includes("ASYNC-ENDS")) { ask("q-name", [{ title: "What should the release be called?" }]); return finish("Carried on without it."); }
   if (text.includes("Replying to")) return finish("GOT " + JSON.stringify({ text, sandbox }));
   if (text.includes("WHICH-SANDBOX")) return finish("SANDBOX " + JSON.stringify(sandbox));
@@ -288,7 +366,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
 async function fixture(t: TestContext) {
   const home = codexHome();
-  const h = await startHarness({ HOME: home });
+  let h = await startHarness({ HOME: home });
   t.after(async () => {
     await h.stop();
     rmSync(home, { recursive: true, force: true });
@@ -313,7 +391,39 @@ async function fixture(t: TestContext) {
     assert.ok(said, `the agent never said ${word}`);
     return JSON.parse(String(said.text).slice(word.length + 1));
   };
-  return { h, bot, messages, say, card, respond, lane, heard };
+  /** The cards still asking, once there are `count` of them. */
+  const asking = async (count: number) => {
+    const open = await waitFor(async () => {
+      const found = (await messages()).filter((m) => m.kind === "options" && m.card?.requestId && !m.card.answered);
+      return found.length === count ? found : null;
+    });
+    assert.ok(open, `${count} open cards never appeared`);
+    return open;
+  };
+  /** The credential of the latest turn whose words include `marker`, to
+   * act as its agent with while that turn runs. */
+  const token = async (marker: string) => {
+    const turns = join(home, "turns.jsonl");
+    const found = await waitFor(() =>
+      existsSync(turns)
+        ? readFileSync(turns, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { text: string; token?: string }).filter((turn) => turn.text.includes(marker)).at(-1)?.token
+        : undefined,
+    );
+    assert.ok(found, `no turn said ${marker}`);
+    return found;
+  };
+  const as = (token: string, method: string, path: string) => h.fetch(path, { method, headers: { authorization: `Bearer ${token}` } });
+  return {
+    get h() {
+      return h;
+    },
+    home, bot, messages, say, card, respond, lane, heard, asking, token, as,
+    /** Gone with no chance to tidy up, then started again on the same data. */
+    async reboot() {
+      await h.crash();
+      h = await startHarness({ HOME: home });
+    },
+  };
 }
 
 test("an answer to a question asked mid-turn goes into that turn, quoting the question", async (t) => {
@@ -415,4 +525,198 @@ test("a collaborator's answer arrives as their own words, with their authority a
   assert.equal(after.length, 1);
   assert.equal(after[0].author, sam.personId);
   assert.equal(after[0].replyTo?.id, asked.id);
+});
+
+// ── the agent withdrawing a question of its own ──
+
+test("an agent withdraws a question it asked without waiting: it closes saying so, and nothing is answered", async (t) => {
+  const f = await fixture(t);
+  await f.say("ASYNC-TWO on the outage");
+  const [env, region] = await f.asking(2);
+  assert.equal(env.card.subtitle, "Which environment should I inspect?");
+  assert.equal(region.card.subtitle, "Which region?");
+  const token = await f.token("ASYNC-TWO");
+  const questions = `/api/bots/${f.bot.id}/questions`;
+
+  // its own, by the id it withdraws them with, oldest first
+  const listed = await f.as(token, "GET", questions);
+  assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json()).questions.map((q: any) => [q.id, q.question, q.choices, q.conversation?.taskId]), [
+    [env.id, "Which environment should I inspect?", ["Local", "Staging"], f.bot.threadId],
+    [region.id, "Which region?", ["eu", "us"], f.bot.threadId],
+  ]);
+  // the agent's, from its own turn: not the person's window
+  assert.equal((await f.h.fetch(questions)).status, 403);
+  assert.equal((await f.h.fetch(`${questions}/${env.id}`, { method: "DELETE" })).status, 403);
+
+  const withdrawn = await f.as(token, "DELETE", `${questions}/${env.id}`);
+  assert.equal(withdrawn.status, 200, await withdrawn.clone().text());
+  assert.deepEqual(await withdrawn.json(), { ok: true, withdrawn: env.id });
+  const closed = (await f.messages()).find((m) => m.id === env.id).card;
+  assert.equal(closed.withdrawn, true);
+  assert.equal(closed.closed, "Kat withdrew this question. No answer is needed.");
+  assert.equal(closed.answered, "Closed without an answer");
+  // the other question still waits on the person
+  assert.ok(!(await f.messages()).find((m) => m.id === region.id).card.answered, "the other question closed with it");
+  assert.equal((await f.lane()).state, "needs-you");
+
+  // with both withdrawn the turn is still at work, and nothing waits on the person
+  assert.equal((await f.as(token, "DELETE", `${questions}/${region.id}`)).status, 200);
+  assert.equal((await f.lane()).state, "working");
+  assert.deepEqual((await f.h.json("/api/trace/live")).agents.filter((a: any) => a.taskId === f.bot.threadId).map((a: any) => a.state), ["working"]);
+  const activity = await f.h.json("/api/activity");
+  assert.ok(!activity.waiting.some((w: any) => w.threadId === f.bot.threadId), "Activity still has it waiting on the person");
+  assert.ok(activity.running.some((r: any) => r.threadId === f.bot.threadId), "Activity lost the work going on");
+  assert.deepEqual((await (await f.as(token, "GET", questions)).json()).questions, []);
+
+  // again changes nothing, and an answer now is not taken
+  assert.equal((await f.as(token, "DELETE", `${questions}/${env.id}`)).status, 404);
+  assert.equal((await f.respond(env.card.requestId, { behavior: "answer", message: "Staging" })).outcome, "unavailable");
+  const after = await f.messages();
+  assert.deepEqual(after.find((m) => m.id === env.id).card, closed);
+  // nothing was answered for the person or said to the agent, and no turn started
+  assert.deepEqual(after.filter((m) => m.role === "user").map((m) => m.text), ["ASYNC-TWO on the outage"]);
+  assert.ok(!after.some((m) => (m.text ?? "").startsWith("TOLD ")), "the agent was told something");
+  // the record says the agent withdrew each, once
+  const records = await waitFor(async () => {
+    const found = (await f.h.json("/api/ledger")).entries.filter((e: any) => e.kind === "approval");
+    return found.length >= 2 ? found : null;
+  });
+  assert.deepEqual(records?.map((e: any) => [e.summary, e.detail.answer, e.detail.decidedBy]).sort(), [
+    ["Which environment should I inspect?", "withdrawn", "agent"],
+    ["Which region?", "withdrawn", "agent"],
+  ]);
+});
+
+test("an agent withdraws only its own questions asked without waiting, in a room as in its conversation", async (t) => {
+  const f = await fixture(t);
+  const { bot: lee } = await f.h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Lee" }) });
+  await f.h.fetch(`/api/bots/${lee.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+  const { blok: room } = await f.h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Ship", memberIds: [f.bot.id, lee.id] }) });
+  const inRoom = async () => (await f.h.json(`/api/bloks/${room.id}/messages?limit=50`)).messages as any[];
+
+  // Lee asks in the room without waiting
+  await f.h.fetch(`/api/bloks/${room.id}/messages`, { method: "POST", body: JSON.stringify({ text: "@Lee ASYNC-WORKING on the release" }) });
+  const lees = await waitFor(async () => (await inRoom()).find((m) => m.kind === "options" && m.card?.requestId && !m.card.answered));
+  assert.ok(lees, "Lee's question never reached the room");
+  const leeToken = await f.token("ASYNC-WORKING");
+  // Kat's turn waits on a question and an approval
+  await f.say("BLOCKED until it is decided");
+  const kats = await f.asking(2);
+  const blocking = kats.find((m) => m.card.title === "Your agent has a question");
+  const approval = kats.find((m) => m.card.title === "Approval needed");
+  assert.ok(blocking && approval, "Kat's question or approval is missing");
+  const katToken = await f.token("BLOCKED");
+  const kat = `/api/bots/${f.bot.id}/questions`;
+
+  // what Kat's turn waits on stays the person's, and Lee's is not Kat's to touch
+  assert.deepEqual((await (await f.as(katToken, "GET", kat)).json()).questions, []);
+  for (const id of [blocking.id, approval.id]) {
+    const refused = await f.as(katToken, "DELETE", `${kat}/${id}`);
+    assert.equal(refused.status, 409);
+    assert.match((await refused.json()).error, /^Only a question you asked without waiting can be withdrawn\./);
+  }
+  for (const id of [lees.id, "no-such-question"]) assert.equal((await f.as(katToken, "DELETE", `${kat}/${id}`)).status, 404);
+  assert.equal((await f.as(katToken, "GET", `/api/bots/${lee.id}/questions`)).status, 403);
+  assert.equal((await f.as(katToken, "DELETE", `/api/bots/${lee.id}/questions/${lees.id}`)).status, 403);
+  assert.ok(!(await inRoom()).find((m) => m.id === lees.id).card.answered, "Lee's question closed");
+
+  // Lee finds it in the room, and withdraws it there
+  const listed = (await (await f.as(leeToken, "GET", `/api/bots/${lee.id}/questions`)).json()).questions;
+  assert.deepEqual(listed.map((q: any) => [q.id, q.room?.id, q.room?.name]), [[lees.id, room.id, "Ship"]]);
+  assert.equal((await f.as(leeToken, "DELETE", `/api/bots/${lee.id}/questions/${lees.id}`)).status, 200);
+  const closed = (await inRoom()).find((m) => m.id === lees.id).card;
+  assert.equal(closed.withdrawn, true);
+  assert.equal(closed.closed, "Lee withdrew this question. No answer is needed.");
+
+  // and Kat's are answered as ever
+  assert.equal((await f.respond(blocking.card.requestId, { behavior: "answer", message: "Friday" })).outcome, "delivered");
+  assert.equal((await f.respond(approval.card.requestId, { behavior: "allow" })).outcome, "delivered");
+});
+
+test("a question whose engine was rebuilt since is withdrawn without asking another engine, and stays so after a restart", async (t) => {
+  const f = await fixture(t);
+  // the agent's own flag says a turn is running; a lane's summary does not
+  const idle = () =>
+    waitFor(async () => {
+      const kat = (await f.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === f.bot.id);
+      const now = kat?.tasks.find((task: any) => task.id === f.bot.threadId);
+      return kat && !kat.busy && now && !now.settling ? now : null;
+    });
+  await f.say("ASYNC-ENDS the release notes");
+  const old = await f.card();
+  assert.ok(await idle(), "the turn never ended");
+  // switched off and on again, so the engine now is not the one that asked
+  for (const enabled of [false, true]) {
+    const switched = await f.h.fetch("/api/instances/codex/enabled", { method: "PUT", body: JSON.stringify({ enabled }) });
+    assert.equal(switched.status, 200, await switched.text());
+  }
+  await f.say("ASYNC-LATER the launch");
+  const [, later] = await f.asking(2);
+  assert.equal(later.card.subtitle, "Which day works?");
+  assert.ok(await idle(), "the second turn never ended");
+
+  // from a turn of its own, with its command line
+  await f.say("CLI[list|questions]");
+  assert.deepEqual((await f.heard("CLI-list")).map((q: any) => q.id), [old.id, later.id]);
+  assert.ok(await idle(), "the listing turn never ended");
+  await f.say(`CLI[unask|unask ${old.id}]`);
+  assert.deepEqual(await f.heard("CLI-unask"), { ok: true, withdrawn: old.id });
+  assert.ok(await idle(), "the withdrawing turn never ended");
+  const withdrawn = (await f.messages()).find((m) => m.id === old.id).card;
+  assert.equal(withdrawn.withdrawn, true);
+  assert.equal(withdrawn.closed, "Kat withdrew this question. No answer is needed.");
+
+  // the new engine's question is still the person's, and answered as ever
+  assert.equal((await f.lane()).state, "needs-you");
+  assert.equal((await f.respond(old.card.requestId, { behavior: "answer", message: "Lighthouse" })).outcome, "unavailable");
+  assert.equal((await f.respond(later.card.requestId, { behavior: "answer", message: "Tuesday" })).outcome, "delivered");
+  const got = (await f.heard("GOT")).text;
+  assert.match(got, /Which day works\?/);
+  assert.match(got, /Tuesday$/);
+  assert.ok(await idle(), "the answer's turn never ended");
+  // answered first, the answer stands: there is nothing left to withdraw
+  await f.say(`CLI[again|unask ${later.id}]`);
+  assert.deepEqual(await f.heard("CLI-again"), { error: "No open question of yours has that id, so nothing changed. `bloks questions` lists them." });
+  assert.ok(await idle(), "the second withdrawing turn never ended");
+  const answered = (await f.messages()).find((m) => m.id === later.id).card;
+  assert.equal(answered.answered, "answer");
+  assert.equal(answered.withdrawn, undefined);
+
+  // after a restart it is as it was, and nothing asks again
+  const cards = (await f.messages()).filter((m) => m.kind === "options");
+  await f.reboot();
+  assert.deepEqual((await f.messages()).filter((m) => m.kind === "options"), cards);
+  assert.equal((await f.lane()).state, "idle");
+});
+
+test("a withdrawal whose card could not be saved says so, and trying again finishes it", async (t) => {
+  const f = await fixture(t);
+  await f.say("ASYNC-TWO on the outage");
+  const [env, region] = await f.asking(2);
+  const token = await f.token("ASYNC-TWO");
+  const questions = `/api/bots/${f.bot.id}/questions`;
+  // the conversation cannot be written for now: something else is where its file goes
+  const file = join(f.home, ".bloks", `messages-${f.bot.threadId}.json`);
+  renameSync(file, `${file}.aside`);
+  mkdirSync(file);
+  const failed = await f.as(token, "DELETE", `${questions}/${env.id}`);
+  assert.equal(failed.status, 500);
+  assert.equal((await failed.json()).error, "The question was withdrawn, but its card could not be closed. Nothing was answered; run unask again to finish it.");
+  rmSync(file, { recursive: true });
+  renameSync(`${file}.aside`, file);
+
+  const again = await f.as(token, "DELETE", `${questions}/${env.id}`);
+  assert.equal(again.status, 200, await again.clone().text());
+  // written down this time, and the other question as it was
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(saved.find((m: any) => m.id === env.id).card.withdrawn, true);
+  assert.ok(!saved.find((m: any) => m.id === region.id).card.answered, "the other question closed with it");
+  // nothing left behind: the other still asks, and only it
+  assert.equal((await f.lane()).state, "needs-you");
+  assert.deepEqual((await (await f.as(token, "GET", questions)).json()).questions.map((q: any) => q.id), [region.id]);
+  assert.equal((await f.as(token, "DELETE", `${questions}/${env.id}`)).status, 404);
+  // and recorded once
+  const records = (await f.h.json("/api/ledger")).entries.filter((e: any) => e.kind === "approval");
+  assert.deepEqual(records.map((e: any) => [e.summary, e.detail.answer]), [["Which environment should I inspect?", "withdrawn"]]);
 });

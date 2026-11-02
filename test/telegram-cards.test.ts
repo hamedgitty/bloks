@@ -163,4 +163,31 @@ describe("a card answered somewhere else", () => {
     card.sent("req-1", 10);
     assert.equal(card.settle("req-1", (c) => outcomeOf(c, "deny", "turn-ended"))?.settled, "Closed without an answer.");
   });
+
+  test("a question its agent withdrew closes with no answer, even when Telegram said which message it became only after", () => {
+    const cards = new CardButtons();
+    const sent = cards.forward(question());
+    // withdrawn while the copy was still on its way, with what had been typed for it
+    cards.expect("req-2", "Green");
+    assert.equal(cards.settle("req-2", (card) => outcomeOf(card, "withdrawn", "agent")), undefined);
+    const late = cards.sent("req-2", 10);
+    assert.equal(settledText(late!), "Your agent has a question\nWhich colour?\n\nClosed without an answer.");
+    // its buttons answer nothing, and a tap is told it closed
+    assert.deepEqual(cards.press(CHAT, 10, data(sent, 2)), { settled: "Closed without an answer." });
+  });
+
+  test("a provisional tap that loses to a withdrawal is reworded when it cannot reach the engine", () => {
+    const cards = new CardButtons();
+    const sent = cards.forward(question());
+    cards.sent("req-2", 10);
+    const press = cards.press(CHAT, 10, data(sent, 1));
+    assert.ok(press && "card" in press);
+    assert.equal(press.card.settled, "Answered: Blue");
+    // The local press is provisional; the engine can settle first.
+    assert.equal(cards.settle("req-2", (card) => outcomeOf(card, "withdrawn", "agent")), undefined);
+    // pressTelegramCard rewords a press rejected by the engine.
+    cards.reword(press.card, "That card had already closed, so nothing was done.");
+    assert.equal(settledText(press.card), "Your agent has a question\nWhich colour?\n\nThat card had already closed, so nothing was done.");
+    assert.deepEqual(cards.press(CHAT, 10, data(sent, 0)), { settled: "That card had already closed, so nothing was done." });
+  });
 });

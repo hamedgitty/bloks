@@ -88,6 +88,15 @@ describe("what an agent can do", () => {
     assert.equal(allows(ME, "GET", `/api/bots/${ME}/secrets`).ok, false);
   });
 
+  test("it lists and withdraws its own questions, never another's, and never answers one", () => {
+    assert.equal(allows(ME, "GET", `/api/bots/${ME}/questions`).ok, true);
+    assert.equal(allows(ME, "DELETE", `/api/bots/${ME}/questions/card-1`).ok, true);
+    assert.equal(allows(ME, "GET", `/api/bots/${SOMEONE_ELSE}/questions`).ok, false);
+    assert.equal(allows(ME, "DELETE", `/api/bots/${SOMEONE_ELSE}/questions/card-1`).ok, false);
+    // the person's answer stays the person's
+    assert.equal(allows(ME, "POST", `/api/bots/${ME}/respond`).ok, false);
+  });
+
   test("its own settings, and nobody else's", () => {
     assert.equal(allows(ME, "PATCH", `/api/bots/${ME}`).ok, true);
     // another agent's record is reachable only to file it into a section;
@@ -464,4 +473,20 @@ describe("a shell without the CLI's environment says so", { skip: process.platfo
     // a written-out path is still a move
     assert.match(cliMovedNote(CLI_FROM_ENV, 'node "/old/bin/bloks.mjs"'), /^\(Bloks has moved/);
   });
+});
+
+// `unask` takes one id, and says so before it asks the workspace anything.
+test("unask without an id says what it needs", () => {
+  const home = mkdtempSync(join(tmpdir(), "bloks-cli-unask-"));
+  try {
+    const ran = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url)), "unask"], {
+      env: { HOME: home, BLOKS_DATA_DIR: home, BLOKS_URL: "http://127.0.0.1:9", BLOKS_TOKEN: "fixture-token" },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(ran.status, 1, ran.stderr);
+    assert.deepEqual(JSON.parse(ran.stdout), { error: "unask needs one question id, from `questions`" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

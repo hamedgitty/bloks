@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { fixture, sleep, waitFor } from "./helpers/telegram-native.ts";
+import { agentCli, fixture, sleep, waitFor } from "./helpers/telegram-native.ts";
 import { AGENT_ACI, AGENT_NUMBER, OWNER_ACI, OWNER_NUMBER, STRANGER_ACI, STRANGER_NUMBER, fakeSignal } from "./helpers/fake-signal.ts";
 
 const STRANGER = { number: STRANGER_NUMBER, aci: STRANGER_ACI, name: "Lee" };
@@ -87,6 +87,26 @@ test("an approval is asked on Signal and answered by typing yes", async (t) => {
   await waitFor(() => f.sig.sent().find((m) => m.text === "Sent."), "the answer was never taken");
   assert.deepEqual(f.replies().map((r) => r.result), [{ decision: "accept" }]);
   await waitFor(() => f.sig.sent().find((m) => m.text === "DECIDED accept"), "the turn never finished");
+});
+
+test("a question its agent withdrew is let go of on Signal without a word, and what is typed next is a message", async (t) => {
+  // Signal cannot rewrite what it sent, and the person settled the
+  // question themselves, so nothing is said there for a withdrawal.
+  const f = await signalFixture(t);
+  f.sig.say("ASYNC_ASK which colour");
+  await waitFor(() => f.sig.sent().find((m) => m.to === OWNER_ACI && m.text.startsWith("Your agent has a question")), "the question never reached the chat");
+  await waitFor(() => f.sig.sent().find((m) => m.text === "Carried on."), "the turn never ended");
+  const asked = (await f.messages()).find((m) => m.kind === "options" && m.card?.requestId);
+  const before = f.sig.sent().length;
+  const ran = await agentCli(f, ["unask", asked.id]);
+  assert.deepEqual(ran, { status: 0, answer: { ok: true, withdrawn: asked.id } });
+  await sleep(500);
+  assert.deepEqual(f.sig.sent().slice(before).map((m) => m.text).filter((text) => text !== "RAN"), []);
+  // what is typed next reaches the agent as a message, never as the answer
+  f.sig.say("2");
+  await waitFor(() => f.sig.sent().find((m) => m.text === "ANSWER"), "the next words never reached the agent");
+  assert.ok((await f.messages()).some((m) => m.role === "user" && m.text === "2"), "the next words were not a message");
+  assert.ok(!f.sig.sent().some((m) => m.text === "Sent." || /already closed/.test(m.text)), "they were taken as an answer to the closed question");
 });
 
 test("files the agent made come back after the answer, a few at most", async (t) => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CHAT, STRANGER, cardIn, fixture, sleep, waitFor } from "./helpers/telegram-native.ts";
+import { CHAT, STRANGER, agentCli, cardIn, fixture, sleep, waitFor } from "./helpers/telegram-native.ts";
 
 for (const path of ["immediate", "drain"] as const) for (const [prompt, expected] of [
   ["ENGINE_NOTICE", "synthetic engine refusal"],
@@ -122,6 +122,32 @@ test("a card answered in the app is rewritten on the phone, and its buttons do n
   const told = await waitFor(() => f.tg.calls("answerCallbackQuery")[0], "the late press was never answered");
   assert.equal(told.body.text, "Denied");
   assert.equal(f.replies().length, 1);
+});
+
+test("a question its agent withdrew closes on the phone where it is, and a late tap answers nothing", async (t) => {
+  const f = await fixture(t);
+  f.tg.say("ASYNC_ASK which colour");
+  const card = await cardIn(f, "Your agent has a question");
+  await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "Carried on."), "the turn never ended");
+  const asked = (await f.messages()).find((m) => m.kind === "options" && m.card?.requestId);
+  const before = f.tg.sent().length;
+  const ran = await agentCli(f, ["unask", asked.id]);
+  assert.deepEqual(ran, { status: 0, answer: { ok: true, withdrawn: asked.id } });
+  const edited = await waitFor(() => f.tg.calls("editMessageText").find((c) => c.body.message_id === card.id), "the phone's copy was never closed");
+  assert.equal(edited.body.text, "Your agent has a question\nWhich colour?\n\nClosed without an answer.");
+  assert.deepEqual(edited.body.reply_markup, { inline_keyboard: [] });
+  // closed in place: nothing new is said in the chat for it
+  assert.deepEqual(f.tg.sent().slice(before).map((m) => m.body.text).filter((text) => text !== "RAN"), []);
+  // a tap already on its way is told it closed, and is no answer
+  f.tg.press(card.id, card.body.reply_markup.inline_keyboard[0][0].callback_data);
+  const told = await waitFor(() => f.tg.calls("answerCallbackQuery")[0], "the late press was never answered");
+  assert.equal(told.body.text, "Closed without an answer.");
+  // and what is typed next is a message of its own, not an answer to it
+  f.tg.say("NEXT please");
+  await waitFor(() => f.tg.calls("sendMessage").some((c) => c.body.text === "ANSWER"), "the next words never reached the agent");
+  const said = (await f.messages()).filter((m) => m.role === "user").map((m) => m.text);
+  assert.ok(said.includes("NEXT please"), "the next words were not a message");
+  assert.ok(!said.some((text) => text === "Red" || text === "Blue"), "the late tap was taken as an answer");
 });
 
 test("a question with no choices is still answered by typing, and says so once it is", async (t) => {

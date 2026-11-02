@@ -823,7 +823,7 @@ function QuestionCard({
     <AnimatePresence mode="wait" initial={false}>
       {card.answered ? (
         <motion.div key="settled" {...enter} className="w-full max-w-[560px]">
-          <SettledQuestion card={card} at={at} question={question} hint={hint} forWhom={forWhom} />
+          <SettledQuestion card={card} at={at} question={question} hint={hint} forWhom={forWhom} name={name} />
         </motion.div>
       ) : (
         // Above the composer it takes the composer's width, edge to edge,
@@ -970,18 +970,24 @@ function SettledQuestion({
   question,
   hint,
   forWhom,
+  name,
 }: {
   card: OptionCardData;
   at: number;
   question: string;
   hint?: string;
   forWhom?: string;
+  name: string;
 }) {
   const closed = Boolean(card.cutOff || card.closed) || card.answered === CLOSED_UNANSWERED;
   // A live engine question settles on the server as "answer", the kind
   // of reply rather than its words, so there is nothing more to show.
   const said = closed || card.answered === "answer" ? undefined : card.answered;
-  const why = card.cutOff ? t("optionCard.closedWhenBloksStopped") : card.closed;
+  const why = card.cutOff
+    ? t("optionCard.closedWhenBloksStopped")
+    : card.withdrawn
+      ? t("optionCard.withdrawnBy", { agent: name })
+      : card.closed;
   return (
     <SettledLine
       icon={closed ? <Minus size={12} /> : <Check size={12} className="text-brand-ink" />}
