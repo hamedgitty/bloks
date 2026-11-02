@@ -292,6 +292,31 @@ test("the web door: who signs in, as whom, and every way it is refused", async (
     assert.equal((await new Browser(door).json("/auth/join/lookup", { method: "POST", body: { code } })).status, 410);
   });
 
+  await t.test("let in after closing the tab, a joiner signs in from any browser", async () => {
+    const made = await h.json("/api/workspace/invites", { method: "POST", body: JSON.stringify({ role: "member", name: "Kit" }) });
+    const code = (made.invite.webLink as string).split("#")[1];
+    const laptop = as({ sub: "kit-sub", name: "Kit", email: "kit@elsewhere.example", groups: ["family"] });
+    assert.equal((await laptop.signIn({ code })).location, "/join");
+    // the tab is closed; the owner lets them in later
+    assert.equal((await h.fetch(`/api/workspace/requests/${made.invite.id}/approve`, { method: "POST" })).status, 200);
+    const phone = as({ sub: "kit-sub", name: "Kit", email: "kit@elsewhere.example", groups: ["family"] });
+    assert.equal((await phone.signIn()).location, "/", "signed in as Kit, not refused as never invited");
+    assert.equal((await phone.json("/api/member/workspace")).body.you.name, "Kit");
+    // and the laptop, looking again, is in too
+    assert.equal((await laptop.json("/auth/join/status", { method: "POST", body: {} })).body.status, "approved");
+    assert.equal((await laptop.fetch("/api/member/workspace")).status, 200);
+  });
+
+  await t.test("a waiting browser that signs out takes its request with it", async () => {
+    const made = await h.json("/api/workspace/invites", { method: "POST", body: JSON.stringify({ role: "member", name: "Ash" }) });
+    const code = (made.invite.webLink as string).split("#")[1];
+    const ash = as({ sub: "ash-sub", name: "Ash", email: "ash@elsewhere.example", groups: ["family"] });
+    assert.equal((await ash.signIn({ code })).location, "/join");
+    assert.ok((await h.json("/api/workspace/members")).requests.some((r: any) => r.inviteId === made.invite.id));
+    await ash.fetch("/auth/logout", { method: "POST", body: {} });
+    assert.ok(!(await h.json("/api/workspace/members")).requests.some((r: any) => r.inviteId === made.invite.id), "nobody is let in to a browser that left");
+  });
+
   await t.test("removing a member signs their browser out at once", async () => {
     assert.equal((await sam.fetch("/api/member/workspace")).status, 200);
     assert.equal((await h.fetch(`/api/workspace/members/${samId}`, { method: "DELETE" })).status, 200);

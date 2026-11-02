@@ -53,7 +53,10 @@ interface AccountsState {
 
 /** Where a sign-in stands after Add or Sign in: Terminal opened with it
  * running, or the command to run where there is no Terminal to open. */
-type SigningIn = { accountId: string; command: string | null };
+/** A sign-in being waited for, and how the account stood when it began:
+ * signing in again to an account already signed in is done when it comes
+ * back as someone else, not the moment it is looked at. */
+type SigningIn = { accountId: string; command: string | null; before: { signedIn: boolean; email: string | null } };
 
 const nameOf = (account: AccountRow) => account.label ?? t("engineAccounts.mainSignIn");
 
@@ -92,10 +95,19 @@ export function EngineAccounts() {
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState<SigningIn | null>(null);
 
+  // Answers are numbered, so one that set out before a change and lands
+  // after it never puts the old state back. Only a server too old to
+  // know accounts takes the card away; one look that fails keeps it.
+  const asked = useRef(0);
   const load = useCallback((fresh = false) => {
+    const mine = ++asked.current;
     api(`/api/engine-accounts${fresh ? "?fresh=1" : ""}`)
-      .then((body: AccountsState) => setData({ engines: body.engines ?? [], max: body.max ?? 8, canManage: Boolean(body.canManage) }))
-      .catch(() => setData(null));
+      .then((body: AccountsState) => {
+        if (mine === asked.current) setData({ engines: body.engines ?? [], max: body.max ?? 8, canManage: Boolean(body.canManage) });
+      })
+      .catch((e: { status?: number }) => {
+        if (mine === asked.current && e.status === 404) setData(null);
+      });
   }, []);
   useEffect(() => load(), [load, state.ticks.engineAccounts, state.instances]);
 
@@ -115,8 +127,9 @@ export function EngineAccounts() {
   // signed in: nothing left to wait for
   const waitingOn = signingIn ? data?.engines.flatMap((e) => e.accounts).find((a) => a.id === signingIn.accountId) : undefined;
   useEffect(() => {
-    if (waitingOn?.signedIn) setSigningIn(null);
-  }, [waitingOn?.signedIn]);
+    if (!signingIn || !waitingOn?.signedIn) return;
+    if (!signingIn.before.signedIn || (waitingOn.email ?? null) !== signingIn.before.email) setSigningIn(null);
+  }, [signingIn, waitingOn?.signedIn, waitingOn?.email]);
 
   if (!data || !data.engines.length) return null;
 
@@ -135,8 +148,9 @@ export function EngineAccounts() {
 
   const signIn = (accountId: string) =>
     run(async () => {
+      const was = data?.engines.flatMap((e) => e.accounts).find((a) => a.id === accountId);
       const said: { opened: boolean; command: string } = await api(`/api/engine-accounts/${accountId}/signin`, { method: "POST" });
-      setSigningIn({ accountId, command: said.opened ? null : said.command });
+      setSigningIn({ accountId, command: said.opened ? null : said.command, before: { signedIn: was?.signedIn === true, email: was?.email ?? null } });
     });
 
   const add = (engine: EngineRow) =>
@@ -148,7 +162,7 @@ export function EngineAccounts() {
       setAdding(null);
       setName("");
       const said: { opened: boolean; command: string } = await api(`/api/engine-accounts/${account.id}/signin`, { method: "POST" });
-      setSigningIn({ accountId: account.id, command: said.opened ? null : said.command });
+      setSigningIn({ accountId: account.id, command: said.opened ? null : said.command, before: { signedIn: false, email: null } });
     });
 
   const use = (engine: EngineRow, account: AccountRow) =>

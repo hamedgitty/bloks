@@ -474,6 +474,12 @@ export function startWebDoor(settings: WebDoorSettings, deps: WebDoorDeps): { se
     if (method === "POST" && path === "/auth/logout") {
       const session = sessionOf(req);
       if (session) {
+        // a browser still waiting withdraws its request as it goes, as
+        // Cancel would: nobody is let in to a browser that left
+        if (session.waiting) {
+          const inv = invites.invite(session.waiting.inviteId);
+          if (inv) await deps.members.webJoin("/api/join/cancel", { code: inv.code, tokenHash: session.hash }, addressOf(req)).catch(() => {});
+        }
         signIns.endSession(session.hash);
         if (session.personId && session.personId !== "owner") deps.closeStreams(session.personId);
       }
@@ -492,6 +498,10 @@ export function startWebDoor(settings: WebDoorSettings, deps: WebDoorDeps): { se
 
     if (path === "/auth/join/status" || path === "/auth/join/cancel") {
       const session = sessionOf(req);
+      // let in from the Members page while this browser waited: in already
+      if (path === "/auth/join/status" && method === "POST" && session && !session.waiting && session.personId && session.personId !== "owner") {
+        return json(res, 200, { status: "approved" });
+      }
       if (!session?.waiting) return json(res, 404, { code: "no_request", error: "There is no request from this browser." });
       if (path === "/auth/join/cancel" && method === "POST") {
         const inv = invites.invite(session.waiting.inviteId);

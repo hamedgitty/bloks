@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "./config.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import * as people from "./people.ts";
+import * as webSignIns from "./web-sign-in.ts";
 import * as invites from "./invites.ts";
 import { addMemberDevice, memberDevices, revokePerson, seenAt } from "./pairing.ts";
 import { open, seal, type Envelope, type RelayRequest } from "./relay-crypto.ts";
@@ -444,6 +445,9 @@ export function createMembers(deps: MembersDeps) {
       },
     );
     invites.markApproved(inv.id, { personId: person.id, deviceId, ...(handover ? { handover } : {}) });
+    // and a browser is linked now, not only if the same tab asks again: a
+    // joiner who closed it, or comes back on another browser, is still in
+    if (web) webSignIns.admitWaiting(claim.tokenHash, person.id);
     // the invite is used: out of Bloks Cloud's index, and its token gone
     // unless the person now holds it
     await retire(inv, keeps).catch(() => {});

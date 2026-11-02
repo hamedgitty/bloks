@@ -113,8 +113,12 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const bridge = window.bloks;
   const { ears, macApp } = useEars();
-  const available = ears.kind !== "none";
-  const onMac = ears.kind === "mac";
+  // How a running meeting listens is decided once, when it starts: who
+  // hears can change under it (a key removed from a phone), and Stop must
+  // still close what was opened, and still be there to press.
+  const [listensOnMac, setListensOnMac] = useState<boolean | null>(null);
+  const available = listensOnMac !== null || ears.kind !== "none";
+  const onMac = listensOnMac ?? ears.kind === "mac";
   const [title, setTitle] = useState("");
   const [system, setSystem] = useState(true);
   const [meetingId, setMeetingId] = useState<string | null>(null);
@@ -131,6 +135,11 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
   const [past, setPast] = useState<MeetingRow[]>([]);
   const pending = useRef<Array<{ at: number; who: "you" | "them"; text: string }>>([]);
   const page = useRef<PageListening | null>(null);
+  /** Whether the panel is still here, for a start still waiting on the
+   * microphone or the server when it goes. */
+  const here = useRef(true);
+  /** The meeting running now and how it listens, for the panel's going. */
+  const live = useRef<{ id: string; onMac: boolean } | null>(null);
   const close = () => dispatch({ type: "openMeeting", botId: null });
 
   const load = useCallback(() => {
@@ -187,20 +196,41 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
     };
   }, [meetingId, onMac, bridge]);
 
-  // a panel that goes away takes the microphone with it
-  useEffect(
-    () => () => {
-      page.current?.recorder.close();
-      page.current?.stream.getTracks().forEach((track) => track.stop());
+  // A panel that goes away takes the microphone with it, and a meeting
+  // running then ends as Stop would end it: what was heard so far is kept
+  // and written up, rather than left open on the server with no way back
+  // to it (opening another agent or Settings takes the panel away).
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+      const listening = page.current;
       page.current = null;
-    },
-    [],
-  );
+      listening?.recorder.close();
+      listening?.stream.getTracks().forEach((track) => track.stop());
+      const was = live.current;
+      live.current = null;
+      if (!was) return;
+      if (was.onMac) void bridge?.meetingStop?.();
+      const batch = pending.current.splice(0);
+      void (batch.length ? api(`/api/meetings/${was.id}/segments`, { method: "POST", body: JSON.stringify({ segments: batch }) }) : Promise.resolve())
+        .catch(() => {})
+        .then(() => api(`/api/meetings/${was.id}/end`, { method: "POST" }))
+        .catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** The page's microphone, cut at the pauses, each stretch written down
    * in turn so the lines stay in the order they were said. */
   const listenInPage = async () => {
     const stream = await openMicrophone("meeting");
+    // the panel went while the microphone was being asked for: nothing
+    // listens for a panel that is not there
+    if (!here.current) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("closed");
+    }
     const listening: PageListening = { stream, written: Promise.resolve(), recorder: null as unknown as SpeechRecorder };
     listening.recorder = new SpeechRecorder(stream, MEETING_PAUSES, true, {
       onLevel: setLevel,
@@ -235,16 +265,24 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
     try {
       const r = await api("/api/meetings", { method: "POST", body: JSON.stringify({ botId: bot.id, title, system: onMac && system }) });
       id = r.meeting.id as string;
+      if (!here.current) throw new Error("closed");
       if (onMac) await bridge?.meetingStart?.({ system });
       else await listenInPage();
+      if (!here.current) {
+        // gone while the helper started: it stops, and the meeting with it
+        if (onMac) void bridge?.meetingStop?.();
+        throw new Error("closed");
+      }
+      live.current = { id, onMac };
+      setListensOnMac(onMac);
       setMeetingId(id);
       setStartedAt(Date.now());
     } catch (e) {
       // a meeting nobody could listen to is not kept as an empty one
       if (id) void api(`/api/meetings/${id}`, { method: "DELETE" }).catch(() => {});
-      setError(e instanceof TroubleError ? troubleText(e.trouble) : (e as Error).message);
+      if (here.current) setError(e instanceof TroubleError ? troubleText(e.trouble) : (e as Error).message);
     } finally {
-      setStarting(false);
+      if (here.current) setStarting(false);
     }
   };
 
@@ -268,6 +306,8 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
     try {
       await flush(meetingId);
       const r = await api(`/api/meetings/${meetingId}/end`, { method: "POST" });
+      live.current = null;
+      setListensOnMac(null);
       setMeetingId(null);
       setPartial(null);
       load();

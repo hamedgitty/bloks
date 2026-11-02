@@ -182,6 +182,18 @@ export function admitSession(hash: string, personId: string): WebSession | null 
   return s;
 }
 
+/** A browser's request let in from the Members page, wherever that browser
+ * is by then: who it signed in as is linked to the person, so they sign
+ * in from any browser, and the waiting one is in at its next look. False
+ * when no browser is waiting under that hash. */
+export function admitWaiting(hash: string, personId: string): boolean {
+  const s = load().sessions.find((x) => x.hash === hash && x.waiting);
+  if (!s) return false;
+  link(s.issuer, s.subject, personId, s.waiting!.label);
+  admitSession(hash, personId);
+  return true;
+}
+
 export function endSession(hash: string): boolean {
   const data = load();
   const before = data.sessions.length;
