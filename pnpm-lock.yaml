@@ -62,14 +62,14 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       electron-updater:
-        specifier: ^6.8.9
-        version: 6.8.9(supports-color@7.2.0)
+        specifier: ^6.8.11
+        version: 6.8.11(supports-color@7.2.0)
       motion:
         specifier: ^14.6.0
         version: 14.6.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       posthog-js:
-        specifier: ^1.438.12
-        version: 1.438.13(@types/react@19.3.0)(react@19.3.1)
+        specifier: ^1.438.23
+        version: 1.438.23(@types/react@19.3.0)(react@19.3.1)
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -530,14 +530,17 @@ packages:
     resolution: {integrity: sha512-ODOov0sGMJMf3jPonOkgGqPknTsu+DdQ7kD++gz8aI+aFMOMHFbWAA2taqXXVTdP+OTOQR/znGvSpmkeI0WTYQ==}
     engines: {node: '>=14.18.0'}
 
-  '@posthog/browser-common@0.9.5':
-    resolution: {integrity: sha512-oXnBgZvM8UQ84IcBLfGP0WSGd9rA0PCGR37H8Pw0NszJRwxwbJnFXIUih0pvI/ze2eGmzkIEC9i3SwC+bMAgjQ==}
+  '@posthog/browser-common@0.9.11':
+    resolution: {integrity: sha512-ZCwJIgiDBRoEAlrlYxaIIIAUfITmBDpWDQJp+IZmAcTyvJka5/ebEKu8uV+jSSA/RhpvDKKte1WmhLUbkIWQjA==}
 
-  '@posthog/core@1.59.1':
-    resolution: {integrity: sha512-P39YgzQVDh6oz6wAzQXEnoHgTYpM7gifonmVKq1scAJco79h31XmmNVurRq9tTmmyIrr1uX8FHT0riCsyfV9AQ==}
+  '@posthog/core@1.60.1':
+    resolution: {integrity: sha512-UpswaG2957O6Ywfx1aCeI8BbXcfoKduKwq1ytBml80AQuAmgK672OmhDcldA7wg4vGP49LpDTgxcNbLvZwQOqw==}
 
   '@posthog/types@1.416.0':
     resolution: {integrity: sha512-0/9+02s/0uDyrH4G/qUg1yyl6gXUg8Uuxw/PlDad3KLzo9FFS9zS/kAQaEshx/saVGupj1aAy/4EUBxWisBogw==}
+
+  '@posthog/types@1.416.1':
+    resolution: {integrity: sha512-PG06HE2axHNyyZ9CKSSHKSW4pWfQwEtPA1dewFqIwggcIgk1BsQ+tHSNqvZz+IvE2WnBZ8OcOkF9SWI55VxQfA==}
 
   '@radix-ui/primitive@1.2.0':
     resolution: {integrity: sha512-KABY+VMIRPJL+Vyzv/335FEhXXD/xDv8BMb1kl48/aXJZMH0LtHCTx5ga5RnxaEP3nZHtmTLf1P9vanmFX46bw==}
@@ -1568,8 +1571,8 @@ packages:
   electron-to-chromium@1.5.404:
     resolution: {integrity: sha512-3WJtd7/lVq2Jnuz6wed1l9+1ZD2u2Tet1/1NBc4Iedkmgbu+I7YuAqdAQ8T+VZtnwysMsAf3IqSq9D1gyZjA2g==}
 
-  electron-updater@6.8.9:
-    resolution: {integrity: sha512-ZhVxM9iGONUpZGI1FxdMRgJjUFXi7AYGVa5PwKlO1tV1/4zDxQmfKpXOHVztKrd6L9rLcFjERvi1Mf2vxyTkig==}
+  electron-updater@6.8.11:
+    resolution: {integrity: sha512-12U/mbzaIKQS3Q543aQ7DjyAZMXeVJy1Wpu0qdq5ne4RXpIQDpWYm25zRjgXngAoo6swMrm4C4owGyiIipelsg==}
 
   electron-winstaller@5.4.0:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
@@ -2166,8 +2169,8 @@ packages:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
-  posthog-js@1.438.13:
-    resolution: {integrity: sha512-fcRhMZ/TKvpDjmDGTlf4KCBqqTnpLWLplZ76NfeLNEE1P6N6qCGGZzqZ6gEzJoOfYLNLgjd0sRM5fC8F/Ky9fA==}
+  posthog-js@1.438.23:
+    resolution: {integrity: sha512-dwpAxwqqFUbpucLo5fpSvAosNB59w4FvnJ5zXHCBfb6temCf4LDWl0pvBUpn5twvQQaoWThKS6rak0+JhH9e5g==}
     peerDependencies:
       '@types/react': '>=16.8.0'
       react: '>=16.8.0'
@@ -3050,16 +3053,21 @@ snapshots:
       tslib: 2.8.1
       webcrypto-core: 1.9.2
 
-  '@posthog/browser-common@0.9.5':
+  '@posthog/browser-common@0.9.11':
     dependencies:
-      '@posthog/core': 1.59.1
+      '@posthog/core': 1.60.1
       '@posthog/types': 1.416.0
+      preact: 10.29.8
+    transitivePeerDependencies:
+      - preact-render-to-string
 
-  '@posthog/core@1.59.1':
+  '@posthog/core@1.60.1':
     dependencies:
       '@posthog/types': 1.416.0
 
   '@posthog/types@1.416.0': {}
+
+  '@posthog/types@1.416.1': {}
 
   '@radix-ui/primitive@1.2.0': {}
 
@@ -4061,7 +4069,7 @@ snapshots:
 
   electron-to-chromium@1.5.404: {}
 
-  electron-updater@6.8.9(supports-color@7.2.0):
+  electron-updater@6.8.11(supports-color@7.2.0):
     dependencies:
       builder-util-runtime: 9.7.0(supports-color@7.2.0)
       fs-extra: 10.1.0
@@ -4653,11 +4661,11 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  posthog-js@1.438.13(@types/react@19.3.0)(react@19.3.1):
+  posthog-js@1.438.23(@types/react@19.3.0)(react@19.3.1):
     dependencies:
-      '@posthog/browser-common': 0.9.5
-      '@posthog/core': 1.59.1
-      '@posthog/types': 1.416.0
+      '@posthog/browser-common': 0.9.11
+      '@posthog/core': 1.60.1
+      '@posthog/types': 1.416.1
       core-js: 3.50.0
       dompurify: 3.4.14
       fflate: 0.4.9
