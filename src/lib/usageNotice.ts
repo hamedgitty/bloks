@@ -11,6 +11,7 @@
 // titles remain in the server's own words.
 import { formatLocale, t } from "./i18n.ts";
 import { reportedPlanWindow } from "../../server/plan-window.ts";
+import { planWindowLabel, resetPhrase } from "./contextCard.ts";
 
 /** How much a notice asks for: worth knowing, near a limit, at one. */
 export type UsageLevel = "info" | "warn" | "stop";
@@ -70,43 +71,13 @@ function reportedWindow(notice: Pick<UsageNotice, "planWindow" | "kind"> & Parti
   return reportedPlanWindow(notice.planWindow);
 }
 
-/** Localize a known window without rounding a nonstandard duration. */
-function noticeWindowLabel(window: NonNullable<ReturnType<typeof reportedPlanWindow>>): string {
-  const { id } = window;
-  const { minutes } = window;
-  let label: string;
-  if (id === "seven_day_opus" || id === "seven_day_sonnet") {
-    label = t("contextCard.weeklyFor", { model: id === "seven_day_opus" ? "Opus" : "Sonnet" });
-  } else if (id === "seven_day_overage_included") {
-    label = t("contextCard.weeklyExtra");
-  } else if (minutes === null) {
-    label = t("contextCard.limit");
-  } else if (minutes === 24 * 60) {
-    label = t("contextCard.dailyLimit");
-  } else if (minutes === 7 * 24 * 60) {
-    label = t("contextCard.weeklyLimit");
-  } else if (minutes % (24 * 60) === 0) {
-    label = t("contextCard.dayLimit", { count: minutes / (24 * 60) });
-  } else if (minutes % 60 === 0) {
-    label = t("contextCard.hourLimit", { count: minutes / 60 });
-  } else {
-    label = t("contextCard.minuteLimit", { count: minutes });
-  }
-  const known = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included"];
-  if (known.includes(id)) return label;
-  const name = id === "primary" ? t("libUsageNotice.primaryWindow")
-    : id === "secondary" ? t("libUsageNotice.secondaryWindow")
-      : window.name;
-  return name ? t("libUsageNotice.namedWindow", { window: label, name }) : label;
-}
-
 /** The old title remains the fallback for other notices and older servers. */
 export function noticeTitle(notice: UsageNotice, now: number): string {
   if (notice.kind === "spend" || notice.source === "bloks-ai") return notice.title;
   const window = reportedWindow(notice);
   if (!window) return notice.title;
   const status = notice.level === "stop" ? t("contextCard.limitReached") : t("libUsageNotice.approachingLimit");
-  const title = t("libUsageNotice.windowTitle", { window: noticeWindowLabel(window), status });
+  const title = t("libUsageNotice.windowTitle", { window: planWindowLabel(window), status });
   return notice.resetsAt !== null && Number.isFinite(new Date(notice.resetsAt).getTime()) && notice.resetsAt <= now
     ? t("libUsageNotice.lastReported", { title }) : title;
 }
@@ -117,22 +88,14 @@ export function noticeCountsDown(notice: Pick<UsageNotice, "kind" | "planWindow"
   return reportedWindow(notice) !== null && notice.resetsAt !== null && Number.isFinite(new Date(notice.resetsAt).getTime());
 }
 
-/** Remaining time for a reported plan reset, never zero before it arrives.
- * Rounded up throughout, so it never reads as sooner than it is. */
-export function planResetLine(resetsAt: number | null, now: number): string | null {
+/** When a reported plan window starts again, said the way the Usage card
+ * says it (resetPhrase): the hours and minutes left while it is under a
+ * day, rounded up so it never reads as sooner than it is, and the day and
+ * time after that. A reset already past says so, and that the status is
+ * not known, rather than that the limit is lifted. */
+export function planResetLine(resetsAt: number | null, now: number, format: { locale?: string; timeZone?: string } = {}): string | null {
   if (resetsAt === null || !Number.isFinite(new Date(now).getTime()) || !Number.isFinite(new Date(resetsAt).getTime())) return null;
-  const left = resetsAt - now;
-  if (left <= 0) return t("libUsageNotice.resetPassed");
-  if (left < 60_000) return t("libUsageNotice.resetsWithinMinute");
-  if (left < 24 * 60 * 60_000) {
-    const minutes = Math.ceil(left / 60_000);
-    if (minutes < 60) return t("contextCard.resetsInMinutes", { minutes });
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return rest ? t("contextCard.resetsInHoursMinutes", { hours, minutes: rest }) : t("contextCard.resetsInHours", { hours });
-  }
-  const hours = Math.ceil(left / (60 * 60_000));
-  return t("libUsageNotice.resetsInDaysHours", { days: Math.floor(hours / 24), hours: hours % 24 });
+  return resetsAt <= now ? t("libUsageNotice.resetPassed") : resetPhrase(resetsAt, now, format);
 }
 
 /** A day as a count, for telling today from tomorrow in one time zone. */
@@ -170,7 +133,7 @@ export function noticeLine(notice: Pick<UsageNotice, "kind" | "usedPercent" | "r
     ? t("libUsageNotice.percentUsed", { percent: Math.round(notice.usedPercent) })
     : t("libUsageNotice.usageUnknown");
   if (notice.kind !== "spend") {
-    const when = reportedWindow(notice) ? planResetLine(notice.resetsAt, now) : resetLine(notice.resetsAt, now, format);
+    const when = reportedWindow(notice) ? planResetLine(notice.resetsAt, now, format) : resetLine(notice.resetsAt, now, format);
     return t("libUsageNotice.line", { used, when: when ?? t("libUsageNotice.resetUnknown") });
   }
   if (notice.resetsAt === null || !Number.isFinite(notice.resetsAt) || notice.resetsAt <= now || !Number.isFinite(new Date(notice.resetsAt).getTime())) {

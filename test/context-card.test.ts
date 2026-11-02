@@ -82,6 +82,15 @@ test("a plan's windows are named by their length", () => {
   assert.equal(planWindowLabel({ id: "secondary", minutes: 1_440 }), "Daily limit");
   assert.equal(planWindowLabel({ id: "secondary", minutes: 43_200 }), "30-day limit");
   assert.equal(planWindowLabel({ id: "primary", minutes: null }), "Limit");
+  // a length that is not whole hours or days is said as it is, not rounded
+  assert.equal(planWindowLabel({ id: "primary", minutes: 90 }), "90-minute limit");
+  assert.equal(planWindowLabel({ id: "secondary", minutes: 1_500 }), "25-hour limit");
+  assert.equal(planWindowLabel({ id: "secondary", minutes: 2_880 }), "2-day limit");
+  // a window Bloks has no name for says the engine's, cleaned and bounded
+  assert.equal(planWindowLabel({ id: "seven_day_haiku", minutes: null }), "Limit (seven_day_haiku)");
+  assert.equal(planWindowLabel({ id: "toString", minutes: null }), "Limit (toString)");
+  assert.equal(planWindowLabel({ id: "\u202eseven_day_opus", minutes: 10_080 }), "Weekly limit (seven_day_opus)");
+  assert.equal(planWindowLabel({ id: "x".repeat(200), minutes: 300 }), `5-hour limit (${"x".repeat(80)})`);
 });
 
 const NOW = Date.UTC(2026, 9, 9, 12, 0); // a Friday, at noon

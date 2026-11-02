@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
 import { startFakeCredits, type FakeCredits } from "./helpers/fake-credits.ts";
+import { resetPhrase } from "../src/lib/contextCard.ts";
 import { noticeCountsDown, noticeLine, noticeSource, noticeTitle, noticeToShow, planResetLine, readDismissed, readNotices, resetLine, saveDismissed, withDismissed, type UsageNotice } from "../src/lib/usageNotice.ts";
 import { setLanguage } from "../src/lib/i18n.ts";
 import { planNotices } from "../server/plan-usage.ts";
@@ -198,24 +199,22 @@ test("plan reset counts down from the reported instant across midnight and at ea
   const midnight = Date.UTC(2026, 9, 20, 23, 45);
   assert.equal(planResetLine(midnight + 2 * 3_600_000 + 14 * 60_000, midnight), "Resets in 2 h 14 min");
   assert.equal(planResetLine(midnight + 2 * 3_600_000 + 14 * 60_000, midnight + 60_000), "Resets in 2 h 13 min");
+  // rounded up, so it never reads as sooner than it is, and never as zero
   assert.equal(planResetLine(NOW + 60_000, NOW), "Resets in 1 min");
-  assert.equal(planResetLine(NOW + 59_999, NOW), "Resets in less than 1 min");
-  assert.equal(planResetLine(NOW + 1, NOW), "Resets in less than 1 min");
+  assert.equal(planResetLine(NOW + 1, NOW), "Resets in 1 min");
   assert.equal(planResetLine(NOW, NOW), "Reset time passed; status unknown");
   assert.equal(planResetLine(NOW - 1, NOW), "Reset time passed; status unknown");
-  assert.equal(planResetLine(NOW + 2 * 24 * 3_600_000 + 3 * 3_600_000, NOW), "Resets in about 2 d 3 h");
   for (const invalid of [null, NaN, Infinity, 1e100]) assert.equal(planResetLine(invalid, NOW), null);
   assert.equal(planResetLine(NOW + 60_000, NaN), null);
   assert.equal(planResetLine(NOW + 60_001, NOW), "Resets in 2 min");
   assert.equal(planResetLine(NOW + 3_600_000 - 1, NOW), "Resets in 1 h");
   assert.equal(planResetLine(NOW + 3_600_000, NOW), "Resets in 1 h");
   assert.equal(planResetLine(NOW + 3_600_001, NOW), "Resets in 1 h 1 min");
-  assert.equal(planResetLine(NOW + 86_400_000 - 1, NOW), "Resets in 24 h");
-  assert.equal(planResetLine(NOW + 86_400_000, NOW), "Resets in about 1 d 0 h");
-  // longer waits round up too, so they never read as sooner than they are
-  assert.equal(planResetLine(NOW + 86_400_001, NOW), "Resets in about 1 d 1 h");
-  assert.equal(planResetLine(NOW + (2 * 24 + 2) * 3_600_000 + 50 * 60_000, NOW), "Resets in about 2 d 3 h");
-  assert.equal(planResetLine(NOW + 7 * 86_400_000 - 1, NOW), "Resets in about 7 d 0 h");
+  // a day or more away, the day and time it resets, as the Usage card says it
+  const utc = { locale: "en-US", timeZone: "UTC" };
+  const later = NOW + 2 * 24 * 3_600_000 + 3 * 3_600_000;
+  assert.equal(planResetLine(later, NOW, utc), "Resets Thu 3:00 PM");
+  assert.equal(planResetLine(later, NOW, utc), resetPhrase(later, NOW, utc));
   // In Berlin this interval crosses the spring DST change: two elapsed hours,
   // although the wall clock advances three hours.
   const beforeDst = Date.parse("2026-03-29T01:30:00+01:00");
@@ -279,8 +278,8 @@ test("plan notice titles identify reported windows without assigning scope to ot
   assert.equal(noticeLine(base, NOW), "100% used · Resets in 1 h 30 min");
   const weekly = { ...base, id: "b", planWindow: { id: "seven_day_opus", minutes: 10_080 } };
   assert.equal(noticeTitle(weekly, NOW), "Weekly limit, Opus: Limit reached");
-  assert.equal(noticeTitle({ ...base, planWindow: { id: "primary", minutes: 90 } }, NOW), "90-minute limit (primary): Limit reached");
-  assert.equal(noticeTitle({ ...base, planWindow: { id: "secondary", minutes: 90 } }, NOW), "90-minute limit (secondary): Limit reached");
+  assert.equal(noticeTitle({ ...base, planWindow: { id: "primary", minutes: 90 } }, NOW), "90-minute limit: Limit reached");
+  assert.equal(noticeTitle({ ...base, planWindow: { id: "secondary", minutes: 10_080 } }, NOW), "Weekly limit: Limit reached");
   assert.equal(noticeTitle({ ...base, planWindow: { id: "model_new", minutes: null } }, NOW), "Limit (model_new): Limit reached");
   const past = { ...base, resetsAt: NOW - 1 };
   assert.equal(noticeTitle(past, NOW), "Last reported: 5-hour limit: Limit reached");
@@ -315,7 +314,7 @@ test("plan identity and reset are localized together", async () => {
   try {
     assert.equal(noticeTitle(notice, NOW), "Límite de 5 horas: Límite alcanzado");
     assert.equal(noticeLine(notice, NOW), "100 % usado · Se restablece en 1 h 30 min");
-    assert.equal(planResetLine(NOW + 30_000, NOW), "Se restablece en menos de 1 min");
+    assert.equal(planResetLine(NOW + 30_000, NOW), "Se restablece en 1 min");
   } finally {
     await setLanguage("en");
   }

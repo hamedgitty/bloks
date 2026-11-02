@@ -3867,7 +3867,14 @@ going faster than it renews; Bloks AI's own notice from its balance; and
 a spending limit near (80%), on pace to run out, or reached. Each says
 "Approaching limit" or "Limit reached" and when it resets, and View usage
 opens the Usage page on that conversation's agent, at Limits. Dismissing
-one holds until it says something new.
+one holds until it says something new. A plan window's notice also
+carries `planWindow` (`id`, `minutes`), and its title names the window
+the way the Usage card does ("5-hour limit: Limit reached", "Weekly
+limit, Opus: Approaching limit"), so a client that does not read
+`planWindow` still says which one. The composer counts its reset down in
+hours and minutes while it is under a day away, and says the day and
+time after that; a reset already past is marked last reported, with the
+status unknown.
 
 ## Your plan
 

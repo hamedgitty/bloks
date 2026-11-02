@@ -10,6 +10,7 @@
 // the reader's language: "about" belongs to each sentence whole, since
 // it does not sit in the same place in every language.
 import { formatLocale, t } from "./i18n.ts";
+import { NAMED_PLAN_WINDOWS, planWindowName } from "../../server/plan-window.ts";
 
 /** How full a lane is, as the server sends it with each lane and with
  * each of Activity's running rows. */
@@ -163,17 +164,29 @@ const WEEKLY_FOR: Record<string, string> = {
   seven_day_sonnet: "Sonnet",
 };
 
-/** A window by its length, which is how both engines describe them. */
+/** A window by its length, which is how both engines describe them. A
+ * length that is not whole hours or days is said in minutes rather than
+ * rounded: ninety minutes is not a 2-hour limit. A window Bloks has no
+ * name for says the engine's beside its length, so two are told apart.
+ * The composer's notice names a window the same way. */
 export function planWindowLabel(window: Pick<PlanWindow, "id" | "minutes">): string {
-  if (WEEKLY_FOR[window.id]) return t("contextCard.weeklyFor", { model: WEEKLY_FOR[window.id] });
+  const label = windowLength(window);
+  if (NAMED_PLAN_WINDOWS.has(window.id)) return label;
+  const name = planWindowName(window.id);
+  return name ? t("contextCard.namedWindow", { window: label, name }) : label;
+}
+
+function windowLength(window: Pick<PlanWindow, "id" | "minutes">): string {
+  // an own key only: an engine's window called "toString" is not a model
+  if (Object.hasOwn(WEEKLY_FOR, window.id)) return t("contextCard.weeklyFor", { model: WEEKLY_FOR[window.id] });
   if (window.id === "seven_day_overage_included") return t("contextCard.weeklyExtra");
   const minutes = window.minutes;
-  if (!minutes || minutes <= 0) return t("contextCard.limit");
-  if (minutes < 60) return t("contextCard.minuteLimit", { count: minutes });
-  if (minutes < 24 * 60) return t("contextCard.hourLimit", { count: Math.round(minutes / 60) });
+  if (!minutes || minutes <= 0 || !Number.isSafeInteger(minutes)) return t("contextCard.limit");
   if (minutes === 24 * 60) return t("contextCard.dailyLimit");
   if (minutes === 7 * 24 * 60) return t("contextCard.weeklyLimit");
-  return t("contextCard.dayLimit", { count: Math.round(minutes / (24 * 60)) });
+  if (minutes % (24 * 60) === 0) return t("contextCard.dayLimit", { count: minutes / (24 * 60) });
+  if (minutes % 60 === 0) return t("contextCard.hourLimit", { count: minutes / 60 });
+  return t("contextCard.minuteLimit", { count: minutes });
 }
 
 /**

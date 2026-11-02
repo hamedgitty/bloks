@@ -20,7 +20,7 @@
 // Everything here is pure.
 
 import type { PlanUsage, PlanWindow, UsageLevel, UsageNotice } from "./contracts.ts";
-import { reportedPlanWindow } from "./plan-window.ts";
+import { NAMED_PLAN_WINDOWS, reportedPlanWindow } from "./plan-window.ts";
 
 /** How long each of Claude Code's windows is, by its name for it. */
 const CLAUDE_WINDOW_MINUTES: Record<string, number> = {
@@ -126,8 +126,10 @@ const PACE_FROM = 0.25;
 /** Worst first, for sorting. */
 export const LEVEL_ORDER: Record<UsageLevel, number> = { stop: 0, warn: 1, info: 2 };
 
-/** A readable fallback for clients which do not yet understand planWindow.
- * Null for a window whose details cannot be used, which keeps the old title. */
+/** A readable fallback for clients which do not yet understand planWindow,
+ * in the words the Usage card uses for the same window (planWindowLabel in
+ * src/lib/contextCard.ts). Null for a window whose details cannot be used,
+ * which keeps the old title. */
 function noticeWindow(window: PlanWindow): string | null {
   const reported = reportedPlanWindow(window);
   if (!reported) return null;
@@ -143,11 +145,7 @@ function noticeWindow(window: PlanWindow): string | null {
     else if (minutes % 60 === 0) label = `${minutes / 60}-hour limit`;
     else label = `${minutes}-minute limit`;
   }
-  if (!["five_hour", "seven_day", "primary", "secondary"].includes(id)) {
-    return `${label} (${name})`;
-  }
-  if (id === "primary" || id === "secondary") return `${label} (${id})`;
-  return label;
+  return NAMED_PLAN_WINDOWS.has(id) ? label : `${label} (${name})`;
 }
 
 /**

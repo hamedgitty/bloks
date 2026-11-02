@@ -130,11 +130,11 @@ test("a window at its limit stops and near it warns, in the few words Bloks AI u
   const warned = planNotices("claude", planOf(windowAt("seven_day", 10_080, 0.7, 0.9, { status: "warning" })), NOW);
   assert.deepEqual([warned[0].level, warned[0].title], ["warn", "Weekly limit: Approaching limit"]);
   const near = planNotices("codex", planOf(windowAt("primary", 300, 0.8, 0.95)), NOW);
-  assert.deepEqual([near[0].source, near[0].level, near[0].title, near[0].usedPercent], ["codex", "warn", "5-hour limit (primary): Approaching limit", 80]);
+  assert.deepEqual([near[0].source, near[0].level, near[0].title, near[0].usedPercent], ["codex", "warn", "5-hour limit: Approaching limit", 80]);
   // over the cap is said as all of it
   assert.equal(planNotices("claude", planOf(windowAt("five_hour", 300, 1.04, 0.5)), NOW)[0].usedPercent, 100);
   // a window of no known length or reset still says it is used up
-  assert.deepEqual(planNotices("codex", planOf({ id: "primary", minutes: null, used: 1, resetsAt: null }), NOW).map((n) => [n.title, n.resetsAt]), [["Limit (primary): Limit reached", null]]);
+  assert.deepEqual(planNotices("codex", planOf({ id: "primary", minutes: null, used: 1, resetsAt: null }), NOW).map((n) => [n.title, n.resetsAt]), [["Limit: Limit reached", null]]);
 });
 
 test("pace is a share used ahead of the share of the window gone by", () => {
@@ -172,8 +172,8 @@ test("simultaneous plan limits retain their reported window and model in the wir
   assert.deepEqual(notices.map((n) => n.planWindow), windows.map(({ id, minutes }) => ({ id, minutes })));
   assert.deepEqual(notices.map((n) => n.title), [
     "5-hour limit: Limit reached", "Weekly limit: Limit reached", "Weekly limit, Opus: Limit reached",
-    "Weekly limit, Sonnet: Limit reached", "90-minute limit (primary): Limit reached",
-    "90-minute limit (secondary): Limit reached", "Limit (model_new): Limit reached",
+    "Weekly limit, Sonnet: Limit reached", "90-minute limit: Limit reached",
+    "90-minute limit: Limit reached", "Limit (model_new): Limit reached",
   ]);
   assert.equal(new Set(notices.map((n) => n.id)).size, windows.length);
 });
