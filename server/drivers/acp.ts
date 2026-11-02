@@ -44,6 +44,7 @@ import { isNewer, versionOf } from "../engine-updates.ts";
 import { killTree, launchSpec, onPath, widenPath } from "../path.ts";
 import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
+import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
@@ -974,7 +975,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             message: describeSpawnError(e, {
               name: spec.name,
               command: config.cli,
-              install: spec.install,
+              // the line for this computer, which may be Windows; the
+              // spec's own is for the POSIX side of a workplace
+              install: installCommand(spec.kind) ?? spec.install,
               signIn: spec.signIn,
             }),
           });

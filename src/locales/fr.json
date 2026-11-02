@@ -2097,6 +2097,7 @@
   "engineSetup.installing": "Installation…",
   "engineSetup.isOut": "{name} {version} est disponible.",
   "engineSetup.orRunItYourself": "Ou lance-le toi-même dans Terminal :",
+  "engineSetup.runThisInPowerShell": "Lance ceci dans PowerShell, puis reviens ici :",
   "engineSetup.runThisInTerminal": "Lance ceci dans un terminal :",
   "engineSetup.runs": "Exécute {path}",
   "engineSetup.saving": "Enregistrement…",

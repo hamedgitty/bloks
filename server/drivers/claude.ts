@@ -73,6 +73,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import type { Effort } from "../effort.ts";
 import { appendNative } from "./native.ts";
+import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { OWN_GROUP } from "../no-console.ts";
@@ -1293,7 +1294,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           message: describeSpawnError(error, {
             name: "Claude Code",
             command: config.cli,
-            install: "curl -fsSL https://claude.ai/install.sh | bash",
+            install: installCommand("claudeAgent"),
             signIn: "run `claude` once to sign in",
           }),
         });

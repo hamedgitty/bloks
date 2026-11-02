@@ -795,6 +795,9 @@ export interface ProviderRow {
   signInHint?: string;
   /** For CLI engines: the name it is looked up by on PATH. */
   command?: string;
+  /** For CLI engines: the line that installs it on the computer Bloks
+   * runs on, PowerShell's on Windows. */
+  install?: string;
   keyPrefix?: string;
   docsUrl: string;
   connected: boolean;

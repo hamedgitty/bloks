@@ -2010,6 +2010,7 @@
   "engineSetup.installing": "正在安装…",
   "engineSetup.isOut": "{name} {version} 已发布。",
   "engineSetup.orRunItYourself": "或在终端中自行运行：",
+  "engineSetup.runThisInPowerShell": "在 PowerShell 中运行以下命令，然后回到这里：",
   "engineSetup.runThisInTerminal": "在终端中运行以下命令：",
   "engineSetup.runs": "运行 {path}",
   "engineSetup.saving": "正在保存…",

@@ -34,6 +34,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
@@ -345,7 +346,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           message: describeSpawnError(error, {
             name: "Antigravity",
             command: config.cli,
-            install: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            install: installCommand("antigravity"),
             signIn: "run `agy` once to sign in with Google",
           }),
         });

@@ -508,7 +508,10 @@ Grok CLI, Cursor and Cline with one button. They go into your own `~/.local`, so
 npm permission errors, and an engine that is installed but not signed in
 says so, with a button that opens Terminal at its sign-in. An engine
 installed somewhere else, or a build of your own, can be pointed at with
-**Use a different copy** under its row. To do it by hand:
+**Use a different copy** under its row. On Windows the app does not run
+installers: each row shows the engine maker's own PowerShell line to copy
+instead, such as `irm https://claude.ai/install.ps1 | iex`, and the same
+for an update. To do it by hand on a Mac or Linux:
 
 | Engine | How you connect | Works in your folders |
 | --- | --- | --- |

@@ -2010,6 +2010,7 @@
   "engineSetup.installing": "インストール中…",
   "engineSetup.isOut": "{name} {version} がリリースされました。",
   "engineSetup.orRunItYourself": "または、ターミナルで自分で実行してください:",
+  "engineSetup.runThisInPowerShell": "PowerShellでこれを実行してから、ここに戻ってください:",
   "engineSetup.runThisInTerminal": "ターミナルでこれを実行してください:",
   "engineSetup.runs": "{path} を実行",
   "engineSetup.saving": "保存中…",

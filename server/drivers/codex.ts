@@ -38,6 +38,7 @@ import { knownEfforts, type Effort } from "../effort.ts";
 import { codexPlanUsage } from "../plan-usage.ts";
 import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
+import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
@@ -1337,7 +1338,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           message: describeSpawnError(error, {
             name: "Codex",
             command: config.cli,
-            install: "npm i -g --prefix ~/.local @openai/codex",
+            install: installCommand("codex"),
             signIn: "run `codex login`",
           }),
         });

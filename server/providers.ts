@@ -11,6 +11,7 @@
 // this machine and asks for nothing.
 import type { ModelCatalog } from "./contracts.ts";
 import { CREDITS_SPEC } from "./credits.ts";
+import { installCommand } from "./engine-commands.ts";
 
 export type AuthKind = "oauth" | "key" | "cli" | "none";
 
@@ -306,6 +307,12 @@ export function normalizeCompatUrl(url: string): string | undefined {
   }
 }
 
+/** A CLI engine's install hint. On Windows the app runs no installer, so
+ * there is no button to point at, and the line is PowerShell's, not the
+ * Mac's (server/engine-commands.ts, GitHub 438). */
+const installHint = (kind: string, posix: string, after = ""): string =>
+  process.platform === "win32" ? `Install it by running ${installCommand(kind, "win32")} in PowerShell${after}` : posix;
+
 /** Engines that come from a CLI on this machine. They are not configured
  * here, only described, so the connections screen can tell you why one is
  * dark and what to install. */
@@ -318,7 +325,7 @@ export const CLI_PROVIDERS = [
     name: "Claude Code",
     command: "claude",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run curl -fsSL https://claude.ai/install.sh | bash",
+    keyHint: installHint("claudeAgent", "Install it with the button above, or run curl -fsSL https://claude.ai/install.sh | bash"),
     signInHint: "Run claude once in a terminal to sign in",
     docsUrl: "https://claude.com/claude-code",
   },
@@ -327,7 +334,7 @@ export const CLI_PROVIDERS = [
     name: "Codex",
     command: "codex",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local @openai/codex",
+    keyHint: installHint("codex", "Install it with the button above, or run npm i -g --prefix ~/.local @openai/codex"),
     signInHint: "Run codex login in a terminal",
     docsUrl: "https://developers.openai.com/codex/cli",
   },
@@ -336,7 +343,7 @@ export const CLI_PROVIDERS = [
     name: "Grok CLI",
     command: "grok",
     auth: "cli" as const,
-    keyHint: "Install with: curl -fsSL https://x.ai/cli/install.sh | bash",
+    keyHint: installHint("grokCli", "Install with: curl -fsSL https://x.ai/cli/install.sh | bash"),
     signInHint: "Run grok login to bind your grok.com subscription",
     docsUrl: "https://x.ai/cli",
   },
@@ -346,7 +353,7 @@ export const CLI_PROVIDERS = [
     command: "cursor-agent",
     auth: "cli" as const,
     // the CLI, not the editor: having Cursor the app is not enough
-    keyHint: "Install the Cursor CLI with the button above, or run curl https://cursor.com/install -fsS | bash",
+    keyHint: installHint("cursor", "Install the Cursor CLI with the button above, or run curl https://cursor.com/install -fsS | bash"),
     signInHint: "Run cursor-agent login in a terminal",
     docsUrl: "https://cursor.com/docs/cli/acp",
   },
@@ -355,7 +362,7 @@ export const CLI_PROVIDERS = [
     name: "Cline",
     command: "cline",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local cline (3.0.68 or newer)",
+    keyHint: installHint("cline", "Install it with the button above, or run npm i -g --prefix ~/.local cline (3.0.68 or newer)", " (3.0.68 or newer)"),
     signInHint: "Run cline auth in a terminal to connect a provider",
     docsUrl: "https://docs.cline.bot/usage/acp",
   },
@@ -364,7 +371,7 @@ export const CLI_PROVIDERS = [
     name: "Antigravity",
     command: "agy",
     auth: "cli" as const,
-    keyHint: "Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    keyHint: installHint("antigravity", "Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash"),
     signInHint: "Run agy once to sign in with Google",
     docsUrl: "https://github.com/google-antigravity/antigravity-cli",
   },
@@ -373,7 +380,7 @@ export const CLI_PROVIDERS = [
     name: "OpenCode",
     command: "opencode",
     auth: "cli" as const,
-    keyHint: "Install with npm i -g --prefix ~/.local opencode-ai",
+    keyHint: installHint("opencode", "Install with npm i -g --prefix ~/.local opencode-ai"),
     signInHint: "Run opencode auth login to connect a provider",
     docsUrl: "https://opencode.ai/docs",
   },
@@ -403,7 +410,7 @@ export const CLI_PROVIDERS = [
     name: "Gemini CLI",
     command: "gemini",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local @google/gemini-cli",
+    keyHint: installHint("geminiCli", "Install it with the button above, or run npm i -g --prefix ~/.local @google/gemini-cli"),
     // it reads GEMINI_API_KEY, so connecting Gemini below is enough; a
     // Google account sign-in through the CLI works too
     signInHint: "Connect a Gemini key below, or run gemini to sign in with Google",
@@ -414,7 +421,7 @@ export const CLI_PROVIDERS = [
     name: "Pi",
     command: "pi-acp",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local --ignore-scripts @earendil-works/pi-coding-agent pi-acp",
+    keyHint: installHint("pi", "Install it with the button above, or run npm i -g --prefix ~/.local --ignore-scripts @earendil-works/pi-coding-agent pi-acp"),
     signInHint: "Run pi (or pi-acp --terminal-login) and configure providers/login",
     docsUrl: "https://pi.dev/docs/latest",
   },

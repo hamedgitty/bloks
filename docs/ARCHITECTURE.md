@@ -3701,6 +3701,20 @@ only a window on this computer and never an agent. Claude Code and Codex
 report signed in or not (`claude auth status`, `codex login status`), and
 the first-run check counts an engine as ready only when it is both.
 
+What a person runs by hand comes from `server/engine-commands.ts`: one
+line per engine for macOS and Linux and one for Windows, each the line
+its maker documents (the native PowerShell installers for Claude Code,
+Antigravity, the Grok CLI and Cursor, plain `npm install -g` for the npm
+ones, which on Windows install into the person's own folder). The
+settings hint (`keyHint`), the catalog row's `install`, the first-run
+check and a driver's "not installed" error all read it. On Windows the
+install and update scripts, which are POSIX shell, do not run:
+`GET /api/engines/setup` answers `runs: false` with the PowerShell lines
+to install and, where the engine does not update itself, to update, and
+the app shows those to copy in place of the buttons. A workplace is
+reached with `sh`, so its install line is the POSIX one whatever this
+computer is.
+
 ## Where an agent works
 
 An agent whose engine runs a program (Claude Code, Codex, Antigravity and

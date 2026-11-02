@@ -23,6 +23,15 @@ import { t, tr, type MessageKey } from "@/lib/i18n";
 
 type SetupTable = Record<string, { install: string; signIn?: string }>;
 
+/** GET /api/engines/setup. `runs` is false on Windows, where the app runs
+ * no installer and every line is PowerShell's, to copy; `updates` are
+ * those lines for updating, since the Update button cannot run either. */
+interface SetupInfo {
+  setup: SetupTable;
+  runs: boolean;
+  updates: Record<string, string>;
+}
+
 /** Whose plan a sign-in spends, for the engines that sign in with a
  * person's own subscription. */
 const PLAN_OWNER: Record<string, { plan: string; maker: string; first?: MessageKey }> = {
@@ -55,30 +64,50 @@ function HostedPlanNote({ kind }: { kind: string }) {
   );
 }
 
-let cached: Promise<SetupTable | null> | null = null;
+let cached: Promise<SetupInfo | null> | null = null;
 
 /** What this computer can set up, or null for a window that is not on it
  * (the phone, the web app, a remote Mac), where only copying makes sense. */
-function loadSetup(): Promise<SetupTable | null> {
+function loadSetup(): Promise<SetupInfo | null> {
   cached ??= fetch("/api/engines/setup")
     .then((r) => (r.ok ? r.json() : null))
-    .then((d) => (d?.setup as SetupTable) ?? null)
+    .then((d) => (d?.setup ? { setup: d.setup as SetupTable, runs: d.runs !== false, updates: (d.updates ?? {}) as Record<string, string> } : null))
     .catch(() => null);
   return cached;
+}
+
+/** This computer's setup, or null for a window that is not on it.
+ * Undefined until it is known. */
+function useSetup(): SetupInfo | null | undefined {
+  const [info, setInfo] = useState<SetupInfo | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    void loadSetup().then((s) => alive && setInfo(s));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return info;
 }
 
 /** Whether this window is on the computer Bloks runs on, where it can
  * install, update and choose which CLI runs. Null until it is known. */
 function useOnThisComputer(): boolean | null {
-  const [local, setLocal] = useState<boolean | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void loadSetup().then((s) => alive && setLocal(Boolean(s)));
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return local;
+  const info = useSetup();
+  return info === undefined ? null : Boolean(info);
+}
+
+/** On a computer where the app cannot run the update itself (Windows),
+ * the line that does, to copy. Nothing for an engine that updates on its
+ * own. */
+function UpdateItYourself({ command }: { command: string | undefined }) {
+  if (!command) return null;
+  return (
+    <div className="text-small leading-relaxed text-muted-foreground">
+      {t("engineSetup.runThisInPowerShell")}
+      <CopyCommand command={command} className="mt-1" />
+    </div>
+  );
 }
 
 /**
@@ -96,12 +125,19 @@ export function EngineOutdatedActions({
   name: string;
   onChanged: () => void;
 }) {
-  const local = useOnThisComputer();
+  const info = useSetup();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  if (local === null) return null;
-  if (!local) {
+  if (info === undefined) return null;
+  if (!info) {
     return <div className="mt-1.5 text-small text-muted-foreground">{t("engineSetup.updateItOnTheComputer")}</div>;
+  }
+  if (!info.runs) {
+    return (
+      <div className="mt-2">
+        <UpdateItYourself command={info.updates[kind]} />
+      </div>
+    );
   }
   const update = async () => {
     setBusy(true);
@@ -302,20 +338,12 @@ export function EngineSetupActions({
   fallback?: string;
   onChanged: () => void;
 }) {
-  const [setup, setSetup] = useState<SetupTable | null | undefined>(undefined);
+  const info = useSetup();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [log, setLog] = useState("");
   const [showLog, setShowLog] = useState(false);
   const [signingIn, setSigningIn] = useState<"opened" | "manual" | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void loadSetup().then((s) => alive && setSetup(s));
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // Signing in finishes in another window, so look again every few
   // seconds for a while rather than asking for a click to say it is done.
@@ -331,7 +359,7 @@ export function EngineSetupActions({
     };
   }, [signingIn]);
 
-  const entry = setup?.[kind];
+  const entry = info?.setup[kind];
   const install = async () => {
     setBusy(true);
     setProblem(null);
@@ -360,10 +388,20 @@ export function EngineSetupActions({
     }
   };
 
-  if (setup === undefined) return null;
+  if (info === undefined) return null;
 
   if (!installed) {
     const command = entry?.install ?? fallback;
+    // Windows: the line its maker gives for PowerShell, since a button
+    // here could only fail (server/engine-setup.ts)
+    if (info && !info.runs) {
+      return command ? (
+        <div className="mt-2 text-small leading-relaxed text-muted-foreground">
+          {t("engineSetup.runThisInPowerShell")}
+          <CopyCommand command={command} className="mt-1" />
+        </div>
+      ) : null;
+    }
     return (
       <div className="mt-2 flex flex-col gap-1.5">
         {entry ? (
@@ -443,17 +481,9 @@ export function EngineSetupActions({
 export function EngineUpdateNote({ kind, name, className }: { kind: string; name: string; className?: string }) {
   const { state, dispatch } = useStore();
   const update = state.engineUpdates[kind];
-  const [local, setLocal] = useState<boolean | null>(null);
+  const info = useSetup();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void loadSetup().then((s) => alive && setLocal(Boolean(s)));
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   if (!update) return null;
   const run = async () => {
@@ -487,7 +517,11 @@ export function EngineUpdateNote({ kind, name, className }: { kind: string; name
           {t("engineSetup.youHave", { version: String(update.installed) })}
         </span>
       </div>
-      {local ? (
+      {info && !info.runs ? (
+        <div className="mt-1.5">
+          <UpdateItYourself command={info.updates[kind]} />
+        </div>
+      ) : info ? (
         <Button size="sm" variant="secondary" className="mt-1.5 h-6 px-2 text-small" disabled={busy} onClick={() => void run()}>
           {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
           {busy ? t("engineSetup.updating") : t("engineSetup.update", { name })}

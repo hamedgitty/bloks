@@ -40,7 +40,8 @@ import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { legacyToolTitle } from "./tool-command.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
-import { ENGINE_SETUP, checkEnginePath, installEngine, openInTerminal, openSignIn, runSetupScript } from "./engine-setup.ts";
+import { installCommand } from "./engine-commands.ts";
+import { ENGINE_SETUP, checkEnginePath, engineSetupView, installEngine, openInTerminal, openSignIn, runSetupScript } from "./engine-setup.ts";
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
 import { ReplyNotifications, settledFrame, settledReply } from "./reply-notifications.ts";
@@ -19900,6 +19901,9 @@ async function providerCatalog() {
     connected: cliReady.get(p.kind)?.installed ?? false,
     needsSignIn: cliReady.get(p.kind)?.signedOut ?? false,
     outdated: cliReady.get(p.kind)?.outdated ?? false,
+    // the line that installs it on this computer, for a window that
+    // cannot press Install (server/engine-commands.ts)
+    install: installCommand(p.kind),
     // where it is started from when not PATH's copy; the person's own
     // setting, read only by the person's screens (never an agent's)
     path: cfg.enginePaths?.[p.kind] ?? null,
@@ -26158,7 +26162,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // phone, remote window or agent may ask for.
     if (method === "GET" && path === "/api/engines/setup") {
       if (!local || asAgent) return json(res, 403, { error: "not from here" });
-      return json(res, 200, { setup: ENGINE_SETUP, platform: process.platform });
+      return json(res, 200, { ...engineSetupView(), platform: process.platform });
     }
     // Engines with a newer release than the one installed: the reason a
     // model everyone is talking about is missing from the list. Checked
