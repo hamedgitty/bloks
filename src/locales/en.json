@@ -5780,6 +5780,7 @@
   "sidebarParts.setAGoal": "Set a goal",
   "sidebarParts.setANewGoal": "Set a new goal",
   "sidebarParts.stopItBeforeClosing": "Stop it before closing",
+  "sidebarParts.unread": "unread",
   "sidebarParts.waiting": "waiting",
   "sidebarParts.waitingOnYou": "{count} waiting on you",
   "sidebarParts.working": "working",

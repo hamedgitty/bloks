@@ -10,7 +10,7 @@
 // conversation reads the same on both (in English; here the words are
 // the catalogue's, so they follow the language chosen).
 import type { Message } from "@/state/reducer";
-import { rowLane } from "../state/reducer.ts";
+import { rowState } from "../state/reducer.ts";
 import { toolLabel } from "./tool-summary.ts";
 import { t } from "./i18n.ts";
 
@@ -123,6 +123,7 @@ export function changedLine(total: number, shared = 0): string {
 interface RowAgent {
   title?: string;
   busy?: boolean;
+  unread?: boolean;
   messages: Message[];
   olderMessages?: number;
   threadId: string;
@@ -154,11 +155,11 @@ export function lastHeardAt(bot: RowAgent): number | undefined {
  * not come along is not a new one, which is what an empty transcript used
  * to say: it reads as who it is until its words arrive. */
 export function agentPreview(bot: RowAgent): string {
-  // the conversation a click on the row opens (rowLane): the line says
+  // the conversation a click on the row opens (rowState): the line says
   // what that one is doing, as the mark beside it does
-  const lane = rowLane(bot);
-  if (lane?.state === "needs-you") return t("preview.waitingForYou");
-  if (lane?.state ? lane.state === "working" : bot.busy) return t("preview.workingNow");
+  const { lane, state } = rowState(bot);
+  if (state === "needs-you") return t("preview.waitingForYou");
+  if (state === "working") return t("preview.workingNow");
   // one that pinged you from behind the open one: its words are not
   // here, its name is
   if (lane && lane.id !== (bot.activeTaskId ?? bot.threadId)) return lane.title?.trim() || t("preview.openToSee");

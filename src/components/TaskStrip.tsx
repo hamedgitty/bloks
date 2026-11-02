@@ -161,8 +161,12 @@ export function LaneMark({ state, unread, slot }: { state: string; unread?: bool
       </span>
     );
   }
-  if (state === "needs-you") return <span className="size-2 shrink-0 rounded-full bg-warning" />;
-  if (unread) return <span className="size-2 shrink-0 rounded-full bg-success" />;
+  // named as the working one is, so a tab or a row read aloud says what
+  // its colour says
+  if (state === "needs-you") {
+    return <span role="img" aria-label={t("sidebarParts.waiting")} className="size-2 shrink-0 rounded-full bg-warning" />;
+  }
+  if (unread) return <span role="img" aria-label={t("sidebarParts.unread")} className="size-2 shrink-0 rounded-full bg-success" />;
   return slot ? <span className="size-2 shrink-0" /> : null;
 }
 

@@ -607,6 +607,25 @@ export function rowLane<L extends Lane>(bot: { activeTaskId?: string; threadId: 
   return bot.tasks?.find((t) => t.id === id);
 }
 
+/** What an agent's row says, its mark and its line alike: the state of
+ * the conversation a click opens (rowLane), and whether that one is
+ * unread. When it has nothing to say, the agent working in another of
+ * its conversations still shows: one busy behind a quiet open
+ * conversation read as idle in the list, with nothing anywhere else in
+ * the sidebar to say otherwise. */
+export function rowState<L extends Lane>(bot: {
+  activeTaskId?: string;
+  threadId: string;
+  unread?: boolean;
+  busy?: boolean;
+  tasks?: L[];
+}): { lane: L | undefined; state: string; unread: boolean } {
+  const lane = rowLane(bot);
+  const unread = lane && lane.id !== (bot.activeTaskId ?? bot.threadId) ? Boolean(lane.unread) : openLaneUnread(bot);
+  const says = lane?.state === "working" || lane?.state === "needs-you" || unread;
+  return { lane, state: !says && bot.busy ? "working" : (lane?.state ?? "idle"), unread };
+}
+
 /** The same agent with its open lane read. Its own flag follows as "any
  * lane still unread", which is what the server says too. */
 export function readOpenLane<T extends LanedBot>(bot: T): T {

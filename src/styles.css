@@ -78,8 +78,9 @@
   --warning: #8f5a09;
   /* A conversation that is working. Fixed, unlike --brand, which follows
      the workspace accent: a green or amber accent would then read as
-     finished (--success) or waiting on you (--warning). The value is the
-     default accent's blue, so nothing changes on a default workspace. */
+     finished (--success) or waiting on you (--warning). The mark's deep
+     blue, the default accent, so a default workspace looks as it did.
+     Dark mode lifts it: the logo blue on near black is about 2 to 1. */
   --working: #004aad;
 
   --border: rgba(18, 18, 21, 0.09);
@@ -144,6 +145,9 @@
   --destructive-foreground: #1a0d0e;
   --success: #3dd68c;
   --warning: #f5a524;
+  /* the same deep blue, lifted in lightness only until it reads on every
+     dark surface it sits on, the selected row's grey included */
+  --working: #2e86ff;
 
   --border: rgba(255, 255, 255, 0.09);
   --input: rgba(255, 255, 255, 0.13);

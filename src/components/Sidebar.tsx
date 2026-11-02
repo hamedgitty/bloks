@@ -18,7 +18,7 @@ import { Users } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { Target } from "@/components/icons";
 import { api, sidebarRows, useStore, formatWhen, workingInRoom, type Action, type Blok, type Bot } from "@/state/store";
-import { openLaneUnread, rowLane } from "@/state/reducer";
+import { rowState } from "@/state/reducer";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
@@ -476,9 +476,8 @@ function BotListItem({
     );
   }
   // The conversation a click on this row opens, and its mark and line:
-  // all three are about the same one (rowLane).
-  const lane = rowLane(bot);
-  const laneUnread = lane && lane.id !== (bot.activeTaskId ?? bot.threadId) ? Boolean(lane.unread) : openLaneUnread(bot);
+  // all three are about the same one (rowState).
+  const row = rowState(bot);
   return (
     <button
       data-sidebar-row={bot.id}
@@ -508,12 +507,12 @@ function BotListItem({
           <span
             className={cn(
               "truncate text-body",
-              laneUnread ? "font-medium text-foreground" : "text-muted-foreground",
+              row.unread ? "font-medium text-foreground" : "text-muted-foreground",
             )}
           >
             {agentPreview(bot)}
           </span>
-          <LaneMark state={lane?.state ?? (bot.busy ? "working" : "idle")} unread={laneUnread} />
+          <LaneMark state={row.state} unread={row.unread} />
         </div>
       </div>
     </button>

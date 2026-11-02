@@ -127,6 +127,16 @@ describe("light mode reads", () => {
     );
   });
 
+  test("the working mark can be told from every surface it sits on", () => {
+    // a state colour, held to the status colours' bar although it is only
+    // ever a dot: on a tab, a sidebar row, the selected row, the drawer
+    const working = hex(token("working", "light"));
+    for (const [where, surface] of Object.entries(surfaces)) {
+      const ratio = contrast(working, surface);
+      assert.ok(ratio >= AA, `--working on --${where} is ${ratio.toFixed(2)}:1, wanted ${AA}`);
+    }
+  });
+
   test("the focus ring can be seen, which is the whole job of a focus ring", () => {
     // WCAG 2.2 wants 3 to 1 for a focus indicator. The ring was the fill
     // blue at seventy percent, which came out at 2.6 against the page,
@@ -158,7 +168,7 @@ describe("dark mode reads", () => {
   };
 
   test("body, muted and every status colour clear the bar", () => {
-    for (const name of ["foreground", "muted-foreground", "destructive", "success", "warning", "brand-ink"]) {
+    for (const name of ["foreground", "muted-foreground", "destructive", "success", "warning", "working", "brand-ink"]) {
       const ink = hex(token(name, "dark"));
       for (const [where, surface] of Object.entries(surfaces)) {
         const ratio = contrast(ink, surface);
