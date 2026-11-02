@@ -8508,7 +8508,11 @@ async function startClaimedTurn(
   // the trimming is exactly the silent forgetting this replaces.
   let built = buildTranscript();
   if (!personSource && !command && !blok && built.dropped > 0) {
-    if (await foldContext(bot.id, task.id).catch(() => false)) built = buildTranscript();
+    // Built again whatever the fold did. One stopped by a message deleted
+    // or edited while it ran leaves the lane without its summary, and what
+    // was built before it still has the summary and the old words.
+    await foldContext(bot.id, task.id).catch(() => false);
+    built = buildTranscript();
   }
   const transcript = built.turns;
 
@@ -9326,7 +9330,9 @@ async function startClaimedTurn(
       // first, so what is left out is carried by the summary instead.
       const story = async (fold: boolean) => {
         let bounded = boundHandoff(transcript, handoffTokens);
-        if (fold && bounded.left > 0 && (await foldContext(bot.id, task.id, false, handoffTokens).catch(() => false))) {
+        if (fold && bounded.left > 0) {
+          // told the lane as it is after the fold, whatever it did, as above
+          await foldContext(bot.id, task.id, false, handoffTokens).catch(() => false);
           bounded = boundHandoff(buildTranscript().turns, handoffTokens);
         }
         return bounded;

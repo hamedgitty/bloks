@@ -406,6 +406,36 @@ describe("a summary written one message at a time while a message changes", { co
   });
 });
 
+describe("a turn that summarises first while a message changes", () => {
+  test("a message the summary read, deleted meanwhile: the turn is told the lane as it is now, not as it was", async (t) => {
+    // past what grok-4's window leaves for the transcript, so the turn
+    // summarises the older part before it is asked
+    const rows: Row[] = [
+      { role: "user", text: "FACT-0 OLD-0 where it started." },
+      ...Array.from({ length: 64 }, (_, k): Row => ({ role: k % 2 ? "bot" : "user", text: `FACT-${k + 1} ${"x".repeat(8_000)}` })),
+    ];
+    const context: Context = { summary: "Notes: FACT-0 OLD-0 SUMMARY-ONLY", through: 1, at: 1234 };
+    const f = await fixture(t, { rows, context, hold: ["fold"] });
+    // The send is answered only once its turn has summarised, so it is
+    // not waited for here; the turn told its words is the proof it went.
+    void f.h.fetch(`/api/bots/${f.id}/messages`, { method: "POST", body: JSON.stringify({ text: "FACT-NEXT the turn that summarises first.", taskId: f.threadId }) }).catch(() => {});
+    assert.ok(await waitFor(() => f.held() > 0), f.h.logs());
+    assert.ok(f.requests.find((r) => r.kind === "fold")!.told.includes("SUMMARY-ONLY"), "the summary request did not carry the saved summary");
+    assert.equal((await f.remove(0)).status, 200);
+    assert.equal(await f.summary(), null);
+    await f.release();
+    const told = await f.told("FACT-NEXT");
+    assert.ok(told, f.h.logs());
+    // the summary request stopped there and saved nothing
+    const asked = f.requests.findIndex((r) => r.told === told);
+    assert.equal(f.requests.slice(0, asked).filter((r) => r.kind === "fold").length, 1, "a request went out after the summary was dropped");
+    assert.equal(f.stored(), undefined);
+    assert.equal(told!.includes(SUMMARISED), false, "the turn was told the dropped summary");
+    assert.equal(has(told!, "OLD-0"), false, "the turn was told the deleted words");
+    assert.ok(has(told!, "FACT-64"), "the newest messages were not told");
+  });
+});
+
 describe("a change that cannot be saved", { concurrency: 4 }, () => {
   test("when the summary cannot be dropped, the message and the summary stay as they were, and so after a restart", async (t) => {
     const f = await fixture(t);
