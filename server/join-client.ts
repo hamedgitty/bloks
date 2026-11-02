@@ -87,8 +87,13 @@ export class JoinClient {
   private readonly relayBase: () => string;
   private readonly fetcher: Fetch;
 
-  constructor(relayBase: () => string, fetcher: Fetch = fetch) {
+  /** Bloks Cloud turned off where this runs (BLOKS_CLOUD=off): an invite
+   * is found on this network or not at all. */
+  private readonly cloudOff: () => boolean;
+
+  constructor(relayBase: () => string, fetcher: Fetch = fetch, cloudOff: () => boolean = () => false) {
     this.relayBase = relayBase;
+    this.cloudOff = cloudOff;
     this.fetcher = fetcher;
   }
 
@@ -192,6 +197,9 @@ export class JoinClient {
       }
     }
 
+    if (this.cloudOff()) {
+      return { ok: false, status: 409, code: "cloud_off", error: "Bloks Cloud is off where this runs, so an invite is found only on this network. Use the invite's link from the same network as its computer." };
+    }
     const relay = this.relayBase();
     let res: Response;
     try {

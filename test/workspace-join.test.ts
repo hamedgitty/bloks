@@ -141,6 +141,22 @@ async function invite(body: Record<string, unknown> = {}) {
 
 const joiner = () => new JoinClient(() => "http://127.0.0.1:9");
 
+test("with Bloks Cloud off, an invite is looked for on this network and never through Bloks Cloud", async () => {
+  const inv = await invite({ name: "Off" });
+  const asked: string[] = [];
+  const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+    asked.push(String(url));
+    return fetch(url, init);
+  }) as typeof fetch;
+  const client = new JoinClient(() => "http://relay.invalid", fetcher, () => true);
+  const nowhere = (await client.lookup(inv.link)) as any;
+  assert.equal(nowhere.ok, false);
+  assert.equal(nowhere.code, "cloud_off");
+  assert.ok(!asked.some((url) => url.startsWith("http://relay.invalid")), "nothing went to Bloks Cloud");
+  const found = await client.lookup(`${inv.link}~${lan}`);
+  assert.ok(found.ok, JSON.stringify(found));
+});
+
 test("an invite found on this network, asked for, approved with matching words, and the joiner is in", async () => {
   const inv = await invite({ name: "Sam" });
   assert.match(inv.code, /^[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}$/);

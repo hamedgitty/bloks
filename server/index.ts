@@ -13082,7 +13082,7 @@ relayLink.joinAsk = (envelope) => workspacePeople.joinAsk(envelope, "relay");
 setInterval(() => void workspacePeople.sweep().catch(() => {}), 10 * 60_000).unref?.();
 
 /** This Mac joining somebody else's workspace (server/join-client.ts). */
-const joinClient = new JoinClient(() => relayBase());
+const joinClient = new JoinClient(() => relayBase(), fetch, cloudOff);
 
 /** Questions for the desktop app that started this server, and its
  * questions for this one (server/desktop-line.ts). No app, no line. */
@@ -24316,6 +24316,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         ? null
         : deviceForToken(bearerToken(req));
   if (caller) noteClient(caller.id, req.headers["x-bloks-client"]);
+  // A device removed between the relay's look and this one is nobody,
+  // not a caller to fall through to the routes below with
+  if (viaRelay && !caller) return json(res, 401, { error: "this device is no longer paired" });
   // On this machine the guard above takes a valid member credential as the
   // owner at the keyboard. A route that is the owner's alone asks this as
   // well, and takes a credential that names a member at its word instead.
