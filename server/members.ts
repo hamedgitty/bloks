@@ -35,7 +35,7 @@ import { open, seal, type Envelope, type RelayRequest } from "./relay-crypto.ts"
 import { SeenNonces, type RelayLink } from "./relay-link.ts";
 import { MemberLimits, monthOf } from "./member-limits.ts";
 import { ProfileNotes } from "./profile-notes.ts";
-import { inTeamConversation, privacyLine, type Who } from "./access.ts";
+import { inTeamConversation, privacyLine, type AgentAccess, type Who } from "./access.ts";
 import { audienceOf, type BlokRecord } from "./bloks.ts";
 import type { BotRecord } from "./store.ts";
 import { membersActive, pausedWords, teamRequiredWords, workspaceMemberLimit, type Plan } from "./plan-limits.ts";
@@ -804,7 +804,18 @@ export function createMembers(deps: MembersDeps) {
       const listed = [...new Set((body.people as string[] | undefined) ?? bot.access?.people ?? [])].filter((id) => known.has(id));
       const admins = typeof body.admins === "boolean" ? body.admins : bot.access?.admins !== false;
       const before = new Set(people.workspaceMembers().filter((p) => inTeamConversation(bot, asWho(p))).map((p) => p.id));
-      deps.setAccess(bot.id, mode === "everyone" && admins ? undefined : { mode, people: mode === "everyone" ? [] : listed, ...(admins ? {} : { admins: false }) });
+      const next: AgentAccess | undefined = mode === "everyone" && admins ? undefined : { mode, people: mode === "everyone" ? [] : listed, ...(admins ? {} : { admins: false }) };
+      // The owner keeping admins out of an agent's conversation is the
+      // owner's to undo, by any road: an admin cannot let everyone in, or
+      // put an admin on the list, any more than flip the switch itself.
+      if (!owner && bot.access?.admins === false) {
+        const after = { ...bot, access: next };
+        if (people.workspaceMembers().some((p) => p.role === "admin" && !before.has(p.id) && inTeamConversation(after, asWho(p)))) {
+          json(res, 403, { error: "only the owner lets admins into this agent's conversation" });
+          return true;
+        }
+      }
+      deps.setAccess(bot.id, next);
       deps.broadcast({ kind: "workspace.access", botId: bot.id });
       // whoever just lost the conversation loses it mid-stream, not at
       // their next start

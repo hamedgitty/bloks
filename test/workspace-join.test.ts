@@ -369,6 +369,10 @@ test("who is in a team agent's conversation is set per agent, and those taken of
   // an admin cannot decide whether admins are always in
   const leila = people.workspaceMembers().find((p) => p.name === "Leila")!;
   assert.equal((await call("/api/workspace/agents/b1/access", { method: "PATCH", body: { mode: "everyone", admins: true }, actor: `${leila.id}:admin` })).status, 403);
+  // nor by another road: letting everyone in, or putting an admin on the list
+  assert.equal((await call("/api/workspace/agents/b1/access", { method: "PATCH", body: { mode: "everyone" }, actor: `${leila.id}:admin` })).status, 403);
+  assert.equal((await call("/api/workspace/agents/b1/access", { method: "PATCH", body: { mode: "only", people: [leila.id] }, actor: `${leila.id}:admin` })).status, 403);
+  assert.deepEqual(bots[0].access, { mode: "only", people: [], admins: false }, "and nothing of it was changed");
   assert.ok(!(await call("/api/workspace/access", { actor: `${leila.id}:admin` })).body.agents.some((a: any) => a.id === "b3"), "nor see the owner's solo agent");
   await call("/api/workspace/agents/b1/access", { method: "PATCH", body: { mode: "everyone", admins: true } });
   assert.equal(bots[0].access, undefined);
