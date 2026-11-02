@@ -320,7 +320,8 @@ test("a remote file is not delivered after its Telegram binding is revoked", asy
   const file = join(s.root, "revoked.txt");
   writeFileSync(file, "revoked attachment");
   s.spec({ hold: true, holdThread: true });
-  await s.say("FIRST_FROM_APP");
+  // started from the phone, since only that chat's own turn takes its words
+  s.push("FIRST_FROM_PHONE");
   await s.called("thread/start", 1);
   s.push(`REVOKED_FILE <attached-file path="${file}" />`);
   await waitFor(async () => (await s.messages()).some((m) => m.text?.startsWith("REVOKED_FILE")));
