@@ -1,8 +1,9 @@
 // A stand-in for Bloks Cloud that does what it does and nothing more:
 // carries sealed asks from a device to the workspace and its sealed
-// answers back. With the app's own remote proxy (electron/remote.mjs) in
-// front, a request takes the path the Mac app takes to a workspace on a
-// server elsewhere, and the server sees it exactly as it would then.
+// answers back, and the workspace's sealed frames out to every device's
+// stream. With the app's own remote proxy (electron/remote.mjs) in front,
+// a request takes the path the Mac app takes to a workspace on a server
+// elsewhere, and the server sees it exactly as it would then.
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -10,6 +11,7 @@ import { createServer, type ServerResponse } from "node:http";
 export async function sealedRelay() {
   const pending = new Map<string, ServerResponse>();
   let upstream: ServerResponse | null = null;
+  const devices = new Set<ServerResponse>();
   let connected!: () => void;
   const connection = new Promise<void>((resolve) => (connected = resolve));
   const server = createServer(async (req, res) => {
@@ -24,6 +26,8 @@ export async function sealedRelay() {
     if (path === "/space/client/stream") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write('data: {"kind":"hello","online":true}\n\n');
+      devices.add(res);
+      req.on("close", () => devices.delete(res));
       return;
     }
     let raw = "";
@@ -41,6 +45,11 @@ export async function sealedRelay() {
       pending.delete(body.id);
       answer?.writeHead(200, { "content-type": "application/json" });
       answer?.end(JSON.stringify({ payload: body.payload }));
+    }
+    if (path === "/space/agent/events") {
+      for (const payload of body.frames ?? []) {
+        for (const device of devices) device.write(`data: ${JSON.stringify({ kind: "frame", payload })}\n\n`);
+      }
     }
     res.writeHead(200, { "content-type": "application/json" });
     res.end("{}");

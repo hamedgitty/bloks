@@ -11,6 +11,19 @@
 // frame since the request went out, which can repeat what the list already
 // holds, but each of them is whole or keyed by id, so the result is still
 // what the stream said last.
+//
+// A frame says where it stands in `_seq`. Through Bloks Cloud that is the
+// desktop's stand-in server's own count, kept for freshness, and the
+// server's comes as `_serverSeq` (electron/remote.mjs). Ordered by the
+// stand-in's count, every frame read as older than a list from a server
+// that had been up longer, and the list put the old states back.
+
+/** Where a frame stands in the server's count, as an agent list or an
+ * answer says it; undefined when the server did not say. */
+export function serverSeq(frame: { _seq?: unknown; _serverSeq?: unknown }): number | undefined {
+  const seq = "_serverSeq" in frame ? frame._serverSeq : frame._seq;
+  return typeof seq === "number" ? seq : undefined;
+}
 
 export interface SnapshotLoad<A> {
   /** The frames this load's list does not hold, oldest first, and the
