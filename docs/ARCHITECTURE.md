@@ -530,6 +530,23 @@ any of the person's screens shows that conversation: windows and phones
 say what they have in front of the person with `POST /api/viewing`
 (feature `viewing`), again every thirty seconds while they do and null
 when they stop, and a word older than 75 seconds no longer counts.
+
+While the owner is actively using Bloks on a computer, their phones stay
+quiet altogether (`server/presence.ts`, feature `presence`): no wake of
+any reason reaches the owner's own phones (a wake that also names a
+member still reaches the member), no new Live Activity starts on them,
+and the activities already there end, in silence, the moment the person
+sits down. The owner's own windows say it with `POST /api/presence`
+`{window, active, seq}` (`src/lib/presence.ts`): active is a window that
+is shown and focused, on a computer with a fine pointer, with the
+person's own input in it in the last two minutes, said again every
+thirty seconds and said to be over the moment it is not. A word older
+than 75 seconds no longer counts, so a computer that sleeps or locks
+releases the phone soon after. A turn still running when the person
+leaves gets its phone activity then; nothing held back is ever replayed,
+and a turn that ended meanwhile gets nothing. The word is a yes and a
+time, kept in memory only; agents and members are refused, and a device
+that is unpaired says nothing more.
 The tokens are kept per paired device, swept against the pairing every
 minute (which also ends what a restart left behind), and dropped when the
 device is unpaired. Without Bloks Cloud there is no way to push, and the

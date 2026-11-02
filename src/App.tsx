@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Loader2 } from "@/components/icons";
-import { StoreProvider, useStore } from "@/state/store";
+import { StoreProvider, api, useStore } from "@/state/store";
+import { usePresenceReport } from "@/lib/presence";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/Onboarding";
 import { WorkspaceWelcome } from "@/components/WorkspaceWelcome";
@@ -287,6 +288,9 @@ function OwnerApp() {
     () => (introPending() && !setupDone()) || forced,
   );
   const [setupOpen, setSetupOpen] = useState(() => !setupDone());
+  // While the person is using Bloks here, their phone stays quiet
+  // (src/lib/presence.ts). The owner's app only: a member's phone is theirs.
+  usePresenceReport((body) => api("/api/presence", { method: "POST", body: JSON.stringify(body) }));
   // Until the workspace answers, showing the dashboard would be a guess,
   // and a wrong guess flashes the whole app for a moment before the
   // welcome covers it. A workspace that has clearly never been set up

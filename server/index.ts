@@ -50,6 +50,7 @@ import { TextPreview } from "./text-preview.ts";
 import { belongs, QUIET_ACCEPTED, quietKind, quietRefused, SteerHolds, writer, type QuietGate, type QuietRefusal } from "./quiet-finish.ts";
 import { LaneTurns, buildTrace, emptyTrace, readTurn, turnAt, turnCovers, type LiveTraces, type Trace } from "./trace.ts";
 import { AnswerReady, answerDue, answersAllowed, attentionFrom, Viewing, viewingReport, type Attention } from "./answer-ready.ts";
+import { Presence, presenceReport, quietWake } from "./presence.ts";
 import { attentionRoute, keepAttention, readAttention, sameAttention } from "./attention.ts";
 import { LiveActivities } from "./live-activities.ts";
 import { deviceKey, seal } from "./relay-crypto.ts";
@@ -3516,8 +3517,11 @@ function broadcast(payload: unknown) {
     try {
       // with where it stands on this stream, as every window's frame has
       // it: an agent list or an answer through Bloks Cloud says the same
-      // count, and the app orders the two by it (GitHub 398)
-      relayLink.publish({ ...(payload as object), _seq: seq }, ownerHidden ? undefined : wakeFor(payload), false, ownerHidden ? hidden!.personId : undefined);
+      // count, and the app orders the two by it (GitHub 398). The owner's
+      // phones stay quiet while the owner is at a computer: the frame
+      // still goes, only the interruption is held back
+      const wake = ownerHidden ? undefined : quietWake(wakeFor(payload), ownerClientDigest(), presence.present());
+      relayLink.publish({ ...(payload as object), _seq: seq }, wake, false, ownerHidden ? hidden!.personId : undefined);
     } catch (error) {
       // Device settings may be unreadable. Do not turn an already saved
       // message into a failed request that the sender repeats.
@@ -5095,6 +5099,10 @@ const replyNotifications = new ReplyNotifications();
 const answerReady = new AnswerReady();
 const answerAsked = new Map<string, boolean>();
 const viewing = new Viewing();
+/** Whether the owner is at a computer, in Bloks, right now
+ * (server/presence.ts): their phones stay quiet while they are, and the
+ * Live Activities on them end when they sit down. */
+const presence = new Presence((present) => (present ? liveActivities.present() : liveActivities.away()));
 /** The workspace's mute and level as this server last heard them, from
  * the app that started it or on the owner's route, kept in the data
  * folder so a restart, or a server no app started, still has them
@@ -13548,6 +13556,7 @@ const liveActivities = new LiveActivities({
     return device ? seal(deviceKey(device.hash, "mac-to-phone"), device.id, { kind: "activity", ...words }) : null;
   },
   send: (push) => relayLink.activity(push),
+  quiet: () => presence.present(),
   ...(Number(process.env.BLOKS_ACTIVITY_DELAY_MS) >= 0 && process.env.BLOKS_ACTIVITY_DELAY_MS
     ? { startDelayMs: Number(process.env.BLOKS_ACTIVITY_DELAY_MS), endDelayMs: Number(process.env.BLOKS_ACTIVITY_DELAY_MS) }
     : {}),
@@ -28244,6 +28253,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, { ok: true });
     }
 
+    // ── whether the person is at a computer (server/presence.ts) ──
+    // Said by the owner's own windows while they are in use, and false
+    // the moment they are not. Same door as viewing: never an agent's,
+    // never a member's, whose phones are not the owner's to quiet.
+    if (method === "POST" && path === "/api/presence") {
+      if (asAgent || caller?.personId || namesMember()) return json(res, 403, { error: "only the person's own screens say whether they are in use" });
+      const said = presenceReport(await readBody(req));
+      if ("error" in said) return json(res, 400, said);
+      presence.say(`${caller?.id ?? "here"}:${said.window}`, said.active, said.seq);
+      return json(res, 200, { ok: true });
+    }
+
     // A paired phone's Live Activity tokens (server/live-activities.ts):
     // the one that lets this computer start an activity on it, and one per
     // activity, which is what ends it while the phone sleeps. The owner's
@@ -33475,8 +33496,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (ok) deviceSettings.forget(m[1]);
       // its Live Activity tokens go with it
       if (ok) liveActivities.forget(m[1]);
-      // and what it last said it had on screen
+      // and what it last said it had on screen, and whether in use
       if (ok) viewing.forget(`${m[1]}:`);
+      if (ok) presence.forget(`${m[1]}:`);
       // and where it last said it was, with whether it was sharing
       if (ok) {
         const had = whereabouts.sharing();

@@ -85,6 +85,9 @@ interface Tracked {
   asking?: string;
   /** The card a push-started activity already showed when it started. */
   startedOn?: string;
+  /** Ended because the person sat down at a computer, before its token
+   * came: when the token does come, it ends at once. */
+  quieted?: boolean;
 }
 
 interface DeviceRecord {
@@ -105,6 +108,9 @@ export interface LiveActivityDeps {
   turn: (laneId: string) => ActivityTurn | null;
   seal: (deviceId: string, words: ActivityWords) => string | null;
   send: (push: ActivityPush) => Promise<PushResult>;
+  /** Whether the owner is actively using Bloks on a computer right now
+   * (server/presence.ts), when no new activity starts on a phone. */
+  quiet?: () => boolean;
   /** How long a turn runs before other devices are given an activity for
    * it. A turn over in a moment is not one anybody waits on, and the
    * phone that sent the message has started its own by then and said so. */
@@ -170,6 +176,10 @@ export class LiveActivities {
   private records: Map<string, DeviceRecord>;
   private starting = new Map<string, ReturnType<typeof setTimeout>>();
   private ending = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Turns the person waits on whose activities were held back, or ended,
+   * because they were at a computer: given one when they leave it, if the
+   * turn is still going. Never written down; a restart forgets them. */
+  private held = new Set<string>();
 
   constructor(deps: LiveActivityDeps) {
     this.deps = deps;
@@ -210,6 +220,11 @@ export class LiveActivities {
       if (known) {
         const first = known.token === null;
         Object.assign(known, { token, laneId, env });
+        // ended for the computer while it waited for this token
+        if (first && known.quieted) {
+          this.end(record, known);
+          continue;
+        }
         // a card came while the push-started activity had no token yet
         if (first && known.waitingOn && known.waitingOn !== known.startedOn && this.deps.running(laneId)) this.update(deviceId, known);
       } else record.activities.push({ agentId: a.agentId, laneId, token, env, at: this.now() });
@@ -238,6 +253,12 @@ export class LiveActivities {
 
   private async startNow(laneId: string) {
     if (!this.deps.running(laneId)) return;
+    // at a computer: no new activity anywhere, but the turn is kept in
+    // mind, so leaving the computer while it runs still gives the phone one
+    if (this.deps.quiet?.()) {
+      this.held.add(laneId);
+      return;
+    }
     const turn = this.deps.turn(laneId);
     if (!turn) return;
     const owners = this.owners();
@@ -283,9 +304,37 @@ export class LiveActivities {
     this.save();
   }
 
+  /**
+   * The person sat down at a computer. Every activity on their phones
+   * ends, in silence (an end push alerts nobody), and the turns they were
+   * for are kept in mind for when the person leaves again.
+   */
+  present() {
+    let changed = false;
+    for (const record of this.records.values()) {
+      for (const a of [...record.activities]) {
+        if (this.deps.running(a.laneId)) this.held.add(a.laneId);
+        if (a.token) this.end(record, a);
+        else a.quieted = true;
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
+  /** The person left the computer. A turn still going that an activity
+   * was held back or ended for gets one now; nothing is replayed for a
+   * turn that finished meanwhile. */
+  away() {
+    const lanes = [...this.held];
+    this.held.clear();
+    for (const laneId of lanes) if (this.deps.running(laneId)) void this.startNow(laneId);
+  }
+
   /** A lane stopped being busy. Its activities end unless it is busy
    * again by the time the wait is over. */
   settled(laneId: string) {
+    if (!this.deps.running(laneId)) this.held.delete(laneId);
     const pending = this.starting.get(laneId);
     if (pending && !this.deps.running(laneId)) {
       clearTimeout(pending);

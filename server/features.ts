@@ -176,4 +176,8 @@ export const FEATURES: readonly string[] = [
   // in a turn of their own, before the turn is stopped; the answer says
   // `stopped: true` when they wait for that turn to end (GitHub 452)
   "stop-send-first",
+  // POST /api/presence {window, active, seq}: a window of the owner's says
+  // whether the person is using Bloks on it right now, and while one does
+  // their phones are not woken and no Live Activity starts on them
+  "presence",
 ];

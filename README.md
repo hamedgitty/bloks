@@ -427,7 +427,8 @@ over.
   With the iPhone and Apple Watch update, watch an agent's browser or
   cloud computer live and take over with taps and typing, or see your
   Mac's own screen while an agent drives it, once Bloks has Screen
-  Recording.
+  Recording. While you are using Bloks on a computer, your phone stays
+  quiet: no notifications and no new Live Activities until you step away.
 - **Any browser.** With Bloks Cloud, the same app opens at
   [bloks.dev/web](https://bloks.dev/web), every request sealed in the
   browser for your computer alone.
