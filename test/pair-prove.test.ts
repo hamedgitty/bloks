@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { proveDevice } from "../server/pairing.ts";
 import { startHarness } from "./helpers/server.ts";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -38,10 +39,10 @@ test("the Bloks a phone paired with can prove it, and nothing else can be asked"
   assert.equal(proof, createHmac("sha256", digest).update(`bloks-prove:${nonce}`).digest("hex"));
 
   // another phone's hint, and asks of the wrong shape, get nothing
+  const otherHint = `${hint[0] === "0" ? "1" : "0"}${hint.slice(1)}`;
   for (const body of [
-    { hint: "0123456789abcdef", nonce },
+    { hint: otherHint, nonce },
     { hint, nonce: "short" },
-    { hint: hint.toUpperCase(), nonce },
     { hint, nonce: 42 },
   ]) {
     const res = await h.fetchRemote("/api/pair/prove", { method: "POST", body: JSON.stringify(body) });
@@ -54,4 +55,27 @@ test("the Bloks a phone paired with can prove it, and nothing else can be asked"
   await h.stop();
   h = await startHarness({ HOME: home });
   assert.equal((await h.json("/api/health")).tag, tag);
+});
+
+// A hint is lowercase hex, so a phone's hint in capitals is the wrong shape
+// and gets nothing. A paired phone's hint is random and can be only digits,
+// which are the same in capitals, so this takes two made-up phones whose
+// hints are known: one with letters, one of only digits.
+test("a hint in capitals gets nothing, and a hint of only digits has no capitals", () => {
+  // token digests: phone 1's hint has letters, phone 327's is only digits
+  const lettered = sha256("phone 1");
+  const numeric = sha256("phone 327");
+  const config = {
+    remote: { devices: [lettered, numeric].map((hash, i) => ({ id: `phone-${i}`, name: "Test iPhone", hash, pairedAt: 0 })) },
+  };
+  const nonce = "n0nce-for-this-one-check";
+  const hintOf = (digest: string) => sha256(digest).slice(0, 16);
+  const proofOf = (digest: string) => createHmac("sha256", digest).update(`bloks-prove:${nonce}`).digest("hex");
+
+  assert.notEqual(hintOf(lettered).toUpperCase(), hintOf(lettered));
+  assert.equal(proveDevice(hintOf(lettered), nonce, config), proofOf(lettered));
+  assert.equal(proveDevice(hintOf(lettered).toUpperCase(), nonce, config), null);
+
+  assert.equal(hintOf(numeric).toUpperCase(), hintOf(numeric));
+  assert.equal(proveDevice(hintOf(numeric).toUpperCase(), nonce, config), proofOf(numeric));
 });
