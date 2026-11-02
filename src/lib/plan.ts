@@ -88,7 +88,9 @@ export function keyIsHere(snapshot: Pick<PlanSnapshot, "sameComputer">): boolean
 /** Why the page has no plan to show: this device is not shown it, or it
  * could not be asked. Never the same as having no plan. */
 export interface PlanProblem {
-  kind: "refused" | "unreachable";
+  /** "cloud-off": Bloks Cloud is turned off where the workspace runs
+   * (BLOKS_CLOUD=off), so there is no plan to ask for, now or later. */
+  kind: "refused" | "unreachable" | "cloud-off";
   words: string;
 }
 
@@ -106,7 +108,11 @@ export interface PlanProblem {
 export function failedLook(
   kept: PlanSnapshot | null,
   status: number | null,
+  code?: string,
 ): { snapshot: PlanSnapshot | null; stale: boolean; problem: PlanProblem | null } {
+  // not a look that failed: one that is never made, so nothing is kept
+  // and nothing offers to try again
+  if (code === "cloud-off") return { snapshot: null, stale: false, problem: { kind: "cloud-off", words: t("plan.problem.cloudOff") } };
   if (status === 401 || status === 403) {
     return {
       snapshot: null,

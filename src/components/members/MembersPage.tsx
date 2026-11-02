@@ -15,6 +15,7 @@ import { Check, Copy, MoreHorizontal, Plus, Search, Trash2, UserPlus, Users } fr
 import { BlokAvatar } from "@/components/Avatar";
 import type { BlokColor, BlokShape } from "@/lib/mascot";
 import { Button } from "@/components/ui/button";
+import { useOptionalStore } from "@/state/store";
 import { confirm } from "@/components/ui/confirm";
 import {
   DropdownMenu,
@@ -123,6 +124,7 @@ export function MembersPage({
   /** How many people are in it, the owner included, for the switcher. */
   onCount?: (count: number) => void;
 } = {}) {
+  const cloudOff = useOptionalStore()?.state.config?.deployment?.reach?.cloud === "off";
   const [data, setData] = useState<MembersData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -323,10 +325,12 @@ export function MembersPage({
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <h2 className="text-pretty text-ui font-semibold text-foreground">{t("membersMembersPage.bringPeopleInto", { workspace: ws.name })}</h2>
             <p className="max-w-[52ch] text-pretty text-body leading-relaxed text-muted-foreground">
-              {t("membersMembersPage.withBloksTeamInvitePeople")}
+              {/* with Bloks Cloud off the way to Bloks Team is not here at
+                  all, so say why instead of offering a page that cannot load */}
+              {cloudOff ? t("plan.problem.cloudOff") : t("membersMembersPage.withBloksTeamInvitePeople")}
             </p>
           </div>
-          <UpgradeButton />
+          {cloudOff ? null : <UpgradeButton />}
         </section>
       )}
 

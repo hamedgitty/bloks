@@ -599,6 +599,9 @@ export interface ConfigStatus {
     computer: string;
     ownerTerminal: boolean;
     ownerTerminalFrom: "provider" | "setting" | null;
+    /** How it is reached (server/self-host.ts reachView); `cloud` is off
+     * where BLOKS_CLOUD=off, and then nothing of Bloks Cloud is offered. */
+    reach?: { cloud: "on" | "off" };
   };
 }
 

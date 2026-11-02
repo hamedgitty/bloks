@@ -1300,6 +1300,14 @@ export function PlanPage() {
   };
 
   if (!snapshot) {
+    if (problem?.kind === "cloud-off") {
+      // nothing to try again: a plan is bloks.dev's, and nothing goes there
+      return (
+        <SettingsGroup>
+          <SettingsEmpty icon={<Lock size={18} />} title={t("planPage.cloudOff.title")} body={problem.words} />
+        </SettingsGroup>
+      );
+    }
     if (problem) {
       // could not look is not the same as no plan, and is not said as one
       return (

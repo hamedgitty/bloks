@@ -67,7 +67,9 @@
       "dashboard.bloks.dev"
     ],
     "src/components/LocalVmSection.tsx": [
-      "container system start"
+      "container system start",
+      "COMPOSE_PROFILES=desktop",
+      "docker compose up -d"
     ],
     "src/components/McpServers.tsx": [
       "https://example.com/mcp",

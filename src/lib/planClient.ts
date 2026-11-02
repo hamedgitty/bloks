@@ -47,7 +47,9 @@ export function loadPlan(fresh = false): Promise<PlanSnapshot | null> {
     .then(async (res) => {
       if (look !== latestLook) return state.snapshot;
       if (!res.ok) {
-        set({ loading: false, ...failedLook(state.snapshot, res.status), ...(res.status === 401 || res.status === 403 ? { news: null } : {}) });
+        const code = res.status === 409 ? ((await res.json().catch(() => ({}))) as { code?: string }).code : undefined;
+        if (look !== latestLook) return state.snapshot;
+        set({ loading: false, ...failedLook(state.snapshot, res.status, code), ...(res.status === 401 || res.status === 403 ? { news: null } : {}) });
         return state.snapshot;
       }
       const snapshot = (await res.json()) as PlanSnapshot;
