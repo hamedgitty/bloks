@@ -89,6 +89,12 @@ Don't route around it. Engines reach Bloks over protocols that can carry
 a permission request (Claude Code and Codex natively, Gemini CLI over
 the Agent Client Protocol) precisely so this gate exists; a headless
 "approve everything" mode is not used.
+The one card an agent's credential may close is its own question asked
+without waiting (Codex's async question), which nothing is held on:
+`bloks unask` withdraws it, from that agent's own turn, with nothing
+answered for you. Approvals, questions it waits on, workflow gates and
+another agent's questions are refused, and an answer you gave first
+stands.
 
 **Scripts are the owner, and ask like the owner.** `bloks-server run`,
 `team apply` and `chat` ([docs/SCRIPTING.md](docs/SCRIPTING.md)) speak

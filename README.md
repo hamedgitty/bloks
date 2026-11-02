@@ -304,6 +304,11 @@ file or a `bloks://install?url=` link through the same review, and use
   a stop stops, a correction goes in now, a new request waits its turn.
   What you add while it is still getting ready joins the request it is
   starting. One press changes its mind.
+- **Questions that do not hold the turn.** A Codex agent can ask you
+  something and carry on. When you settle it some other way, the agent
+  takes its own question back (`bloks questions`, `bloks unask`) and the
+  card says it was withdrawn, with nothing answered for you. An answer you
+  gave first stands, and approvals and questions it waits on stay yours.
 - **A record you can check.** Consequential actions land in an
   append-only log, hash-chained and signed by the agent they are about.
 

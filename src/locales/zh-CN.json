@@ -4093,6 +4093,7 @@
   "optionCard.what.useTool": "使用 {tool}",
   "optionCard.what.webSearch": "搜索网页",
   "optionCard.what.write": "写入文件",
+  "optionCard.withdrawn": "已撤回",
   "optionCard.withdrawnBy": "{agent} 撤回了这个问题。无需回答。",
   "optionCard.workflowWaiting": "工作流等待中",
   "optionCard.yourAgent": "你的智能体",

@@ -998,7 +998,7 @@ function SettledQuestion({
         <>
           {(closed || !said) && (
             <span className="shrink-0 font-medium text-foreground/80">
-              {closed ? t("optionCard.notAnswered") : card.answeredBy ? t("optionCard.answeredBy", { name: card.answeredBy }) : t("optionCard.answered")}
+              {card.withdrawn ? t("optionCard.withdrawn") : closed ? t("optionCard.notAnswered") : card.answeredBy ? t("optionCard.answeredBy", { name: card.answeredBy }) : t("optionCard.answered")}
             </span>
           )}
           <span className="min-w-0 truncate">{question}</span>
