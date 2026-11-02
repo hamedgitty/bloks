@@ -32,14 +32,22 @@ day, with no key and nothing about you, to estimate what unpriced turns
 cost; and with a Bloks key, bloks.dev is asked, with that key, about your
 plan. Everything else on the wire is the engines (Claude Code, Codex and
 the rest), the voice vendors whose keys you save (the text being read
-aloud, to ElevenLabs, OpenAI, Fish Audio or xAI), and whatever connectors
+aloud, to ElevenLabs, OpenAI, Fish Audio or xAI; and what you say on a
+call or in meeting notes, as sound, a stretch at a time, to whichever
+of ElevenLabs or OpenAI hears for you, unless a Whisper server of your
+own or the Mac's on-device recognizer does), and whatever connectors
 you configure, talking to their own services (with an app watcher on,
 that includes a WebSocket to the realtime service Composio delivers
 events through), and Bloks Cloud when you turn it on, which carries
 sealed traffic it cannot read. A Chatterbox server for voices must be on
 this computer or its local network (a loopback, private or link-local
 address, or a local name): Bloks refuses an address on the internet,
-since every reply read aloud is sent there as text with no key. On a Mac
+since every reply read aloud is sent there as text with no key. A
+Whisper server for hearing has the same rule, for the same reason: what
+you say goes there as sound with no key. Recorded speech is held in
+memory for the one request that turns it into text and is never written
+to disk or logged; the page sends it to the workspace and never holds a
+vendor key, and an agent's token cannot use that route. On a Mac
 with phone access on, the desktop app
 also says on the local network where each listening workspace is (see
 Phones and other devices).

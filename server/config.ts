@@ -85,6 +85,13 @@ export interface AppConfig {
     /** A Chatterbox server on this computer or the local network. Not a
      * secret, and no key: it is the person's own machine. */
     chatterboxUrl?: string;
+    /** A Whisper server on this computer or the local network, for
+     * turning speech into text with no key and no account. */
+    whisperUrl?: string;
+    /** Who turns speech into text for calls, meeting notes and voice
+     * messages: "auto", "whisper", "elevenlabs", "openai" or "mac"
+     * (server/speech.ts hearer). Unset is automatic. */
+    hearing?: string;
     /** The user's explicit yes to using a key discovered in the
      * environment or Codex's auth file for voice billing. */
     useDiscoveredOpenAI?: boolean;

@@ -42,7 +42,7 @@ interface Status {
   migrationError?: string | null;
   pendingMigration?: boolean;
   bots?: Array<Status & { botId: string }>;
-  voiceVendor?: "elevenlabs" | "openai" | null;
+  voiceVendor?: "whisper" | "elevenlabs" | "openai" | null;
   people?: Array<{ id: string; name: string; state: "pending" | "allowed" | "declined" | "removed"; userId?: number; username?: string; first?: string; sameName?: boolean; full?: boolean }>;
   upgradeNotices?: Array<{ state: string }>;
   admissionFull?: boolean;
@@ -444,7 +444,7 @@ export function TelegramSection({ botId }: { botId?: string }) {
       {status?.configured && (
         <div className="mt-4 border-t pt-3">
           <p className="text-small leading-relaxed text-muted-foreground">
-            {status.voiceVendor ? t("telegramSection.voiceTranscribedBy", { vendor: status.voiceVendor === "openai" ? "OpenAI" : "ElevenLabs" }) : t("telegramSection.voiceMessagesNeedAnOpenai")}
+            {status.voiceVendor === "whisper" ? t("telegramSection.voiceTranscribedByWhisper") : status.voiceVendor ? t("telegramSection.voiceTranscribedBy", { vendor: status.voiceVendor === "openai" ? "OpenAI" : "ElevenLabs" }) : t("telegramSection.voiceMessagesNeedAnOpenai")}
           </p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-small text-muted-foreground">
             <button disabled={busy} onClick={() => { setToken(""); setEditingToken(!editingToken); }} className="underline-offset-2 transition-colors duration-150 hover:text-foreground hover:underline">

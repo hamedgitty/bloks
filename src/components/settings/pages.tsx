@@ -16,8 +16,10 @@ import { LocalVmSection } from "../LocalVmSection";
 import { RulesPanel } from "../RulesPanel";
 import { SavedSecrets } from "../SavedSecrets";
 import { UseFromOtherApps } from "../UseFromOtherApps";
-import { SavedMark, SettingRow, SettingsGroup } from "../SettingsLayout";
-import { t } from "@/lib/i18n";
+import { SavedMark, SettingRow, SettingsGroup, SettingsSelect } from "../SettingsLayout";
+import { t, type MessageKey } from "@/lib/i18n";
+import type { HearingChoice } from "@/lib/hearing";
+import { missingText, useEars } from "@/lib/hearingWords";
 
 export function AboutYouPage() {
   const { state, dispatch } = useStore();
@@ -213,31 +215,124 @@ export function VoicesPage() {
           placeholder="xai-…"
         />
       </SettingsGroup>
+      <HearingGroup />
       <SettingsGroup title={t("pages.onYourOwnMachine")} footnote={t("pages.repliesReadAloudGoOnly")}>
-        <ChatterboxRow />
+        <LocalServerRow
+          field="chatterboxUrl"
+          rowId="chatterbox-server"
+          label={t("pages.chatterboxServer")}
+          unset={t("pages.aChatterboxServerYouRun")}
+          placeholder="http://localhost:4123"
+          removeLabel={t("pages.removeTheChatterboxServer")}
+        />
       </SettingsGroup>
     </>
   );
 }
 
+/** Who is hearing now, said in the row that chooses it. */
+const HEARING_NOW: Record<"whisper" | "elevenlabs" | "openai" | "mac", MessageKey> = {
+  whisper: "pages.hearingNow.whisper",
+  elevenlabs: "pages.hearingNow.elevenlabs",
+  openai: "pages.hearingNow.openai",
+  mac: "pages.hearingNow.mac",
+};
+
 /**
- * Where a Chatterbox server listens, on this computer or the local
- * network. Not a key, so it is shown back once saved; the server checks
- * the address is local before keeping it, and says why when it is not.
+ * Who turns what you say into text, for calls, meeting notes and voice
+ * messages (server/speech.ts hearer). Automatic takes a Whisper server
+ * of your own first, then ElevenLabs, then OpenAI, and the Mac's own
+ * recognizer in the Mac app when none is set up. The Mac is offered only
+ * where it can hear: this window, in the app on a Mac.
  */
-function ChatterboxRow() {
+function HearingGroup() {
   const { state, dispatch } = useStore();
-  const saved = state.config?.speech?.chatterboxUrl ?? "";
+  const { ears, macApp } = useEars();
+  const choice = state.config?.speech?.hearing?.choice ?? "auto";
+  const [error, setError] = useState<string | null>(null);
+
+  const choose = (next: string) => {
+    setError(null);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ speech: { hearing: next } }) })
+      .then((status) => dispatch({ type: "configStatus", config: status }))
+      .catch((e: Error) => setError(e.message));
+  };
+
+  const options: Array<[HearingChoice, string]> = [
+    ["auto", t("pages.hearing.auto")],
+    ["whisper", t("pages.hearing.whisper")],
+    // product names, the same in every language
+    ["elevenlabs", "ElevenLabs"],
+    ["openai", "OpenAI"],
+    ...(macApp || choice === "mac" ? [["mac", t("pages.hearing.mac")] as [HearingChoice, string]] : []),
+  ];
+  const now = ears.kind === "none" ? missingText(ears.missing) : t(HEARING_NOW[ears.kind === "server" ? ears.by : "mac"]);
+
+  return (
+    <SettingsGroup title={t("pages.hearingTitle")} footnote={t("pages.hearingFootnote")}>
+      <SettingRow
+        label={t("pages.whoHearsYou")}
+        htmlFor="hearing-choice"
+        description={now}
+        error={error}
+        control={
+          <SettingsSelect id="hearing-choice" value={choice} onChange={(e) => choose(e.target.value)} disabled={!state.config}>
+            {options.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </SettingsSelect>
+        }
+      />
+      <LocalServerRow
+        field="whisperUrl"
+        rowId="whisper-server"
+        label={t("pages.whisperServer")}
+        unset={t("pages.aWhisperServerYouRun")}
+        placeholder="http://localhost:8000"
+        removeLabel={t("pages.removeTheWhisperServer")}
+      />
+    </SettingsGroup>
+  );
+}
+
+/**
+ * Where a server of the person's own listens, on this computer or the
+ * local network: a Chatterbox server that speaks, or a Whisper server
+ * that hears. Not a key, so it is shown back once saved; the server
+ * checks the address is local before keeping it, and says why when it
+ * is not.
+ */
+function LocalServerRow({
+  field,
+  rowId,
+  label,
+  unset,
+  placeholder,
+  removeLabel,
+}: {
+  field: "chatterboxUrl" | "whisperUrl";
+  rowId: string;
+  label: string;
+  unset: string;
+  placeholder: string;
+  removeLabel: string;
+}) {
+  const { state, dispatch } = useStore();
+  const speech = state.config?.speech;
+  const saved = (field === "chatterboxUrl" ? speech?.chatterboxUrl : speech?.hearing?.whisperUrl) ?? "";
   const [value, setValue] = useState("");
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const open = Boolean(state.config) && (!saved || editing);
+  const inputId = `${rowId}-url`;
 
   const put = (url: string) => {
     setBusy(true);
     setError(null);
-    api("/api/config", { method: "PUT", body: JSON.stringify({ speech: { chatterboxUrl: url } }) })
+    api("/api/config", { method: "PUT", body: JSON.stringify({ speech: { [field]: url } }) })
       .then((status) => {
         dispatch({ type: "configStatus", config: status });
         setEditing(false);
@@ -248,18 +343,14 @@ function ChatterboxRow() {
   };
 
   return (
-    <div data-setting-row="chatterbox-server" className="px-5 py-4">
+    <div data-setting-row={rowId} className="px-5 py-4">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="min-w-0 flex-1 basis-[220px]">
-          <label htmlFor="chatterbox-url" className="text-ui font-medium text-foreground">
-            {t("pages.chatterboxServer")}
+          <label htmlFor={inputId} className="text-ui font-medium text-foreground">
+            {label}
           </label>
           <div className="mt-0.5 text-pretty text-body text-muted-foreground">
-            {saved ? (
-              <code className="font-mono text-small text-foreground">{saved}</code>
-            ) : (
-              t("pages.aChatterboxServerYouRun")
-            )}
+            {saved ? <code className="font-mono text-small text-foreground">{saved}</code> : unset}
           </div>
         </div>
         {saved && (
@@ -278,7 +369,7 @@ function ChatterboxRow() {
               size="sm"
               disabled={busy}
               onClick={() => put("")}
-              aria-label={t("pages.removeTheChatterboxServer")}
+              aria-label={removeLabel}
               className="hover:bg-destructive/10 hover:text-destructive"
             >
               {t("common.remove")}
@@ -289,7 +380,7 @@ function ChatterboxRow() {
       {open && (
         <div className="mt-3 flex gap-2">
           <Input
-            id="chatterbox-url"
+            id={inputId}
             value={value}
             onChange={(e) => {
               setValue(e.target.value);
@@ -302,7 +393,7 @@ function ChatterboxRow() {
                 setEditing(false);
               }
             }}
-            placeholder="http://localhost:4123"
+            placeholder={placeholder}
             autoComplete="off"
             spellCheck={false}
             aria-invalid={error ? true : undefined}

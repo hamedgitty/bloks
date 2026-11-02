@@ -123,6 +123,8 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         // ones; a test that wants one serves its own
         BLOKS_FISH_AUDIO_URL: "http://127.0.0.1:9",
         BLOKS_XAI_SPEECH_URL: "http://127.0.0.1:9",
+        BLOKS_ELEVENLABS_URL: "http://127.0.0.1:9",
+        BLOKS_OPENAI_SPEECH_URL: "http://127.0.0.1:9",
         // the catalogue of teams and skills (server/catalog.ts): never the
         // repository's own; a test that browses one serves it
         BLOKS_CATALOG_URL: "http://127.0.0.1:9/catalog/index.json",

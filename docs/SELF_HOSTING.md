@@ -79,6 +79,7 @@ and does not lose anything it needs because of it:
 | Pairing link from bloks.dev | `bloks-server pair` on the server | asked of Bloks Cloud | Nobody can run `bloks-server pair` on a hosted machine. |
 | Waking for routines | not needed | Bloks Cloud wakes the machine | Only a hosted machine is put to sleep. |
 | Moving the workspace | backups, on the server | to and from your Mac, from the app | A move is the way into and out of managed hosting. |
+| Meeting notes | offered | not offered | They listen through a computer of your own. |
 
 Authorization is enforced on the server either way: a control the app
 hides is also refused by the route, with the reason.
@@ -320,6 +321,28 @@ apart from the join password and the switches that are yours.
 by name and maker, for you and your admins. Delete one and it goes with
 its conversations: nobody reads them first, and the record says who
 deleted it and whose it was.
+
+## Voices, calls and meeting notes
+
+Agents speak with any voice key saved in Settings, Voices, or a
+Chatterbox server; the Mac's own voices are there only when the server
+itself is a Mac. Calls and meeting notes record what you say in the app
+or the browser you are using and send it, a stretch at a time, to the
+server, which hands it to whoever hears for the workspace (Settings,
+Voices, Hearing): a Whisper server of your own, ElevenLabs or OpenAI with
+your key. In the desktop app on a Mac, the Mac's own recognizer can hear
+instead. No audio is saved. A browser lets only a secure page use the
+microphone, which bloks.dev/web, the desktop app and a web door at an
+https address all are.
+
+A Whisper server is reached from the server, so its address is the one
+the server sees: `http://localhost:8000` when it runs beside Bloks on the
+same machine, the service's name (`http://whisper:8000`) in the same
+Compose project, or `http://host.docker.internal:8000` for one on the
+container's host. Any server that answers OpenAI's
+`/v1/audio/transcriptions` works, such as faster-whisper, whisper.cpp,
+LocalAI or Speaches. It has to be on the server's own machine or
+network.
 
 ## A systemd service
 

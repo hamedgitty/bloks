@@ -2334,6 +2334,8 @@ describe("agent voices", () => {
       xaiSource: "grok",
       chatterbox: false,
       system: mac,
+      // and nothing to hear with: xAI speaks, but does not listen
+      hearing: { choice: "auto", engine: null, whisper: false },
     });
     assert.ok(r.voices.every((v: any) => v.provider === "system" || v.provider === "xai"), "no paid voice without its key");
     if (!mac) assert.ok(r.voices.every((v: any) => v.provider === "xai"));

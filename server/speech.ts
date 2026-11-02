@@ -44,6 +44,8 @@ const LIST_TIMEOUT_MS = 10_000;
  * in their place; nothing in the app sets them. */
 const fishBase = () => (process.env.BLOKS_FISH_AUDIO_URL?.trim() || "https://api.fish.audio").replace(/\/+$/, "");
 const xaiBase = () => (process.env.BLOKS_XAI_SPEECH_URL?.trim() || "https://api.x.ai").replace(/\/+$/, "");
+const elevenlabsBase = () => (process.env.BLOKS_ELEVENLABS_URL?.trim() || "https://api.elevenlabs.io").replace(/\/+$/, "");
+const openaiBase = () => (process.env.BLOKS_OPENAI_SPEECH_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
 
 export const SPEAK_MAX_CHARS = 2_500;
 
@@ -233,38 +235,67 @@ export function isLocalHost(host: string): boolean {
   return LOCAL_NAMES.test(name);
 }
 
+/** Each server of the person's own: its name, an address it usually has,
+ * and the endpoint path a pasted address is folded back from. */
+const LOCAL_SERVERS = {
+  chatterbox: { name: "Chatterbox", example: "http://localhost:4123", endpoint: /\/v1(?:\/audio(?:\/speech)?)?$/i },
+  whisper: { name: "Whisper", example: "http://localhost:8000", endpoint: /\/v1(?:\/audio(?:\/transcriptions)?)?$/i },
+} as const;
+
 /**
- * The Chatterbox address a person meant, or why it cannot be one. A
- * pasted endpoint path is folded back to the server's root. It has to be
- * on this computer or its network: every reply read aloud goes there as
- * text, and a server out on the internet with no key is not the "my own
- * machine" this row promises.
+ * The address of a server of the person's own they meant, or why it
+ * cannot be one. A pasted endpoint path is folded back to the server's
+ * root. It has to be on this computer or its network: every reply read
+ * aloud goes to Chatterbox as text, and what you say goes to Whisper as
+ * sound, both with no key, and a server out on the internet is not the
+ * "my own machine" these rows promise.
  */
-export function normalizeChatterboxUrl(raw: unknown): { url: string } | { error: string } {
+function localServerUrl(raw: unknown, kind: keyof typeof LOCAL_SERVERS): { url: string } | { error: string } {
+  const { name, example, endpoint } = LOCAL_SERVERS[kind];
   const said = typeof raw === "string" ? raw.trim() : "";
-  if (!said) return { error: "Give the address of the Chatterbox server, like http://localhost:4123." };
+  if (!said) return { error: `Give the address of the ${name} server, like ${example}.` };
   if (said.length > 400) return { error: "That address is too long." };
   let parsed: URL;
   try {
     parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(said) ? said : `http://${said}`);
   } catch {
-    return { error: "That is not an address. Try http://localhost:4123." };
+    return { error: `That is not an address. Try ${example}.` };
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { error: "The address must start with http:// or https://." };
-  if (parsed.username || parsed.password) return { error: "Leave the name and password out of the address: Chatterbox takes no sign-in." };
+  if (parsed.username || parsed.password) return { error: `Leave the name and password out of the address: ${name} takes no sign-in.` };
   if (!isLocalHost(parsed.hostname)) {
     return {
-      error: "Chatterbox has to run on this computer or your own network: use localhost, a .local name, or a private address like 192.168.1.20.",
+      error: `${name} has to run on this computer or your own network: use localhost, a .local name, or a private address like 192.168.1.20.`,
     };
   }
-  const path = parsed.pathname.replace(/\/+$/, "").replace(/\/v1(?:\/audio(?:\/speech)?)?$/i, "");
+  const path = parsed.pathname.replace(/\/+$/, "").replace(endpoint, "");
   return { url: `${parsed.protocol}//${parsed.host}${path}` };
+}
+
+/** The Chatterbox address a person meant, or why it cannot be one. */
+export function normalizeChatterboxUrl(raw: unknown): { url: string } | { error: string } {
+  return localServerUrl(raw, "chatterbox");
+}
+
+/** The Whisper server address a person meant, or why it cannot be one:
+ * anything that answers OpenAI's /v1/audio/transcriptions, as the
+ * Whisper servers people run (faster-whisper, whisper.cpp, LocalAI,
+ * Speaches) all do. */
+export function normalizeWhisperUrl(raw: unknown): { url: string } | { error: string } {
+  return localServerUrl(raw, "whisper");
 }
 
 function chatterboxUrl(cfg: AppConfig): string | null {
   const saved = cfg.speech?.chatterboxUrl;
   if (!saved) return null;
   const checked = normalizeChatterboxUrl(saved);
+  return "url" in checked ? checked.url : null;
+}
+
+function whisperUrl(cfg: AppConfig): string | null {
+  const saved = cfg.speech?.whisperUrl;
+  if (!saved) return null;
+  const checked = normalizeWhisperUrl(saved);
   return "url" in checked ? checked.url : null;
 }
 
@@ -420,6 +451,8 @@ export function speechConfigured(cfg: AppConfig): {
   openaiSource?: "env" | "codex";
   /** Found but NOT in use: awaiting the user's yes. */
   openaiAvailable?: "env" | "codex";
+  /** What turns speech into text, and what it could be. */
+  hearing: HearingStatus;
 } {
   const discovered = cfg.speech?.openaiKey ? null : discoveredOpenAIKey();
   const consented = Boolean(cfg.speech?.useDiscoveredOpenAI);
@@ -436,13 +469,14 @@ export function speechConfigured(cfg: AppConfig): {
     system: MAC_VOICES,
     ...(discovered && consented ? { openaiSource: discovered.source } : {}),
     ...(discovered && !consented ? { openaiAvailable: discovered.source } : {}),
+    hearing: hearingStatus(cfg),
   };
 }
 
 async function elevenlabsVoices(key: string): Promise<Voice[]> {
   const voices: Voice[] = [];
   try {
-    const res = await fetch("https://api.elevenlabs.io/v1/voices", {
+    const res = await fetch(`${elevenlabsBase()}/v1/voices`, {
       headers: { "xi-api-key": key },
       signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
     });
@@ -498,7 +532,7 @@ export async function speak(
     const key = cfg.speech?.elevenlabsKey;
     if (!key) throw new Error("no ElevenLabs key configured");
     const res = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice.id)}/stream?output_format=mp3_44100_128`,
+      `${elevenlabsBase()}/v1/text-to-speech/${encodeURIComponent(voice.id)}/stream?output_format=mp3_44100_128`,
       {
         method: "POST",
         headers: { "xi-api-key": key, "content-type": "application/json" },
@@ -522,7 +556,7 @@ export async function speak(
 
   const key = openaiKey(cfg);
   if (!key) throw new Error("no OpenAI speech key configured");
-  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+  const res = await fetch(`${openaiBase()}/v1/audio/speech`, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({
@@ -634,55 +668,216 @@ async function speakChatterbox(cfg: AppConfig, voice: BotVoice, text: string): P
 }
 
 // ── hearing, as well as speaking ──────────────────────────────────────
-// The same keys turn speech into text, which is how a voice message sent
-// from a phone becomes something an agent can read. Either vendor will
-// do; ElevenLabs first, the same order as everything else here.
+// The same keys turn speech into text: a voice message sent from a phone,
+// what you say on a call, and a meeting being taken down. A Whisper
+// server of the person's own does it with no key and no account; after
+// that ElevenLabs, then OpenAI, the same order as everything else here.
+// The Mac's own recognizer hears in the app's window instead
+// (electron/resources/speech-helper.swift), so it is a choice the person
+// makes here but never one a server can carry out.
+//
+// Sound comes in a stretch at a time, is passed on, and is gone: held in
+// memory for the one request, never written down and never logged.
+
+export const HEARING_CHOICES = ["auto", "whisper", "elevenlabs", "openai", "mac"] as const;
+export type HearingChoice = (typeof HEARING_CHOICES)[number];
+/** The ones that hear here, on the server. */
+export type Hearer = "whisper" | "elevenlabs" | "openai";
+const HEARERS: readonly Hearer[] = ["whisper", "elevenlabs", "openai"];
+const HEARER_NAMES: Record<Hearer, string> = { whisper: "The Whisper server", elevenlabs: "ElevenLabs", openai: "OpenAI" };
 
 /** OpenAI's newer transcription model, which hears names and noisy
  * rooms better than whisper-1 does. */
 export const OPENAI_TRANSCRIBE_MODEL = "gpt-transcribe";
 export const ELEVENLABS_TRANSCRIBE_MODEL = "scribe_v2";
+/** The model a Whisper server is asked for: most serve one and ignore
+ * the name, and the rest take OpenAI's own name for it. */
+export const WHISPER_MODEL = "whisper-1";
 
-/** Who a voice message would be sent to, or null with no key at all. */
-export function transcriptionVendor(cfg: AppConfig): "elevenlabs" | "openai" | null {
-  if (cfg.speech?.elevenlabsKey) return "elevenlabs";
-  if (openaiKey(cfg)) return "openai";
-  return null;
+/** The most one stretch of speech may be. A minute of what a page
+ * records is about a quarter of a megabyte; this leaves room for a
+ * browser that records something less compressed. */
+export const HEAR_MAX_BYTES = 8 * 1024 * 1024;
+
+export interface HearingStatus {
+  choice: HearingChoice;
+  /** Who hears on the server: the one chosen, when it is set up; the
+   * first that is, for automatic and for the Mac (whose recognizer only
+   * the app's window has, so anything else hears with this); or null. */
+  engine: Hearer | null;
+  whisper: boolean;
+  /** Not a secret: the person's own server, shown so the field prefills. */
+  whisperUrl?: string;
+}
+
+export function hearingChoice(cfg: AppConfig): HearingChoice {
+  const saved = cfg.speech?.hearing;
+  return (HEARING_CHOICES as readonly string[]).includes(saved ?? "") ? (saved as HearingChoice) : "auto";
+}
+
+/** Who turns speech into text here, or null with nothing set up. */
+export function hearer(cfg: AppConfig): Hearer | null {
+  const ready: Record<Hearer, boolean> = {
+    whisper: Boolean(whisperUrl(cfg)),
+    elevenlabs: Boolean(cfg.speech?.elevenlabsKey),
+    openai: Boolean(openaiKey(cfg)),
+  };
+  const choice = hearingChoice(cfg);
+  if (choice === "whisper" || choice === "elevenlabs" || choice === "openai") return ready[choice] ? choice : null;
+  return HEARERS.find((h) => ready[h]) ?? null;
+}
+
+export function hearingStatus(cfg: AppConfig): HearingStatus {
+  const whisper = whisperUrl(cfg);
+  return {
+    choice: hearingChoice(cfg),
+    engine: hearer(cfg),
+    whisper: Boolean(whisper),
+    ...(whisper ? { whisperUrl: whisper } : {}),
+  };
+}
+
+/** Why nothing can hear, said as the thing to set up. */
+export function nobodyHears(cfg: AppConfig): string {
+  switch (hearingChoice(cfg)) {
+    case "whisper":
+      return "Hearing is set to your Whisper server, but none is saved. Add its address in Settings, Voices.";
+    case "elevenlabs":
+      return "Hearing is set to ElevenLabs, but no ElevenLabs key is saved. Add one in Settings, Voices.";
+    case "openai":
+      return "Hearing is set to OpenAI, but no OpenAI key is saved for speech. Add one in Settings, Voices.";
+    default:
+      return "Nothing is set up to hear you. Add an OpenAI or ElevenLabs key, or a Whisper server of your own, in Settings, Voices.";
+  }
+}
+
+/** A recording that could not be turned into text. `status` is the
+ * answer when one came; `vendor` is null when nothing could hear at all. */
+export class HearingError extends Error {
+  readonly vendor: Hearer | null;
+  readonly status?: number;
+  constructor(message: string, vendor: Hearer | null, status?: number) {
+    super(message);
+    this.vendor = vendor;
+    this.status = status;
+  }
 }
 
 /**
- * Audio to text. `name` matters more than it looks: the vendors read
- * the format from the filename, and refuse a Telegram voice note named
- * `.oga` though it is the same Ogg Opus they take as `.ogg`.
+ * A refused transcription, said as what to do about it. Never the
+ * vendor's own words: what they echo back can be the audio's words, or
+ * the key, and this is shown on screens and sent to phones.
  */
-export async function transcribe(cfg: AppConfig, audio: Uint8Array, name: string, mime: string): Promise<string> {
-  const vendor = transcriptionVendor(cfg);
-  if (!vendor) throw new Error("no speech key is set");
-  const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(audio)], { type: mime }), name);
-  let res: Response;
-  if (vendor === "elevenlabs") {
-    form.append("model_id", ELEVENLABS_TRANSCRIBE_MODEL);
-    res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-      method: "POST",
-      headers: { "xi-api-key": cfg.speech!.elevenlabsKey! },
-      body: form,
-      signal: AbortSignal.timeout(120_000),
-    });
-  } else {
-    form.append("model", OPENAI_TRANSCRIBE_MODEL);
-    res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { authorization: `Bearer ${openaiKey(cfg)}` },
-      body: form,
-      signal: AbortSignal.timeout(120_000),
-    });
+export function hearingError(vendor: Hearer, status: number, where?: string): string {
+  if (vendor === "whisper") {
+    const at = where ?? "the Whisper server";
+    if (status === 404 || status === 405) {
+      return `${at} answered, but not as a Whisper server: it has no /v1/audio/transcriptions. Check the address in Settings, Voices.`;
+    }
+    if (status === 400 || status === 413 || status === 415 || status === 422) return `The Whisper server could not read that recording (${status}). Try again.`;
+    if (status >= 500) return `The Whisper server failed to hear that (${status}). Its own log says why.`;
+    return `The Whisper server at ${at} answered ${status}.`;
   }
-  // Only the status: this ends up in a reply on somebody's phone, and a
-  // vendor's error body can echo more than belongs there.
-  if (!res.ok) throw new Error(`${vendor === "elevenlabs" ? "ElevenLabs" : "OpenAI"} answered ${res.status}`);
+  const name = HEARER_NAMES[vendor];
+  if (status === 401 || status === 403) return `${name} did not accept the key. Paste a new one in Settings, Voices.`;
+  if (status === 402) return `${name} says the account has no credit left. Add some, then try again.`;
+  if (status === 429) return `${name} is limiting requests just now, or the account is out of credit. Try again shortly.`;
+  if (status === 400 || status === 413 || status === 415 || status === 422) return `${name} could not read that recording (${status}). Try again.`;
+  if (status >= 500) return `${name} is not answering properly right now (${status}). Try again shortly.`;
+  return `${name} answered ${status}.`;
+}
+
+/** Why a transcription never got an answer at all. */
+function unheard(vendor: Hearer, where: string | undefined, error: unknown): HearingError {
+  const slow = ["TimeoutError", "AbortError"].includes((error as { name?: string })?.name ?? "");
+  if (vendor === "whisper") {
+    return new HearingError(
+      slow
+        ? `The Whisper server at ${where} took too long to answer. A first request can be slow while the model loads; try again.`
+        : `Nothing answered at ${where}. Start the Whisper server, or check the address in Settings, Voices.`,
+      vendor,
+    );
+  }
+  const name = HEARER_NAMES[vendor];
+  return new HearingError(
+    slow ? `${name} took too long to answer. Try again in a moment.` : `${name} could not be reached. Check the internet connection, then try again.`,
+    vendor,
+  );
+}
+
+/** The filename a recording goes under. The vendors read the format from
+ * it, so it has to say what the bytes are. */
+export function clipName(mime: string): string {
+  const type = mime.split(";")[0].trim().toLowerCase();
+  const ext: Record<string, string> = {
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mp4": "m4a",
+    "audio/m4a": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/wave": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+  };
+  return `speech.${ext[type] ?? "webm"}`;
+}
+
+/**
+ * A recording to text, by whoever hears here. `name` matters more than
+ * it looks: the vendors read the format from the filename, and refuse a
+ * Telegram voice note named `.oga` though it is the same Ogg Opus they
+ * take as `.ogg`.
+ */
+export async function hear(cfg: AppConfig, audio: Uint8Array, mime: string, name = clipName(mime)): Promise<{ text: string; by: Hearer }> {
+  const by = hearer(cfg);
+  if (!by) throw new HearingError(nobodyHears(cfg), null);
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(audio)], { type: mime.split(";")[0].trim() }), name);
+  let url: string;
+  let headers: Record<string, string> = {};
+  const where = by === "whisper" ? whisperUrl(cfg)! : undefined;
+  if (by === "elevenlabs") {
+    form.append("model_id", ELEVENLABS_TRANSCRIBE_MODEL);
+    url = `${elevenlabsBase()}/v1/speech-to-text`;
+    headers = { "xi-api-key": cfg.speech!.elevenlabsKey! };
+  } else if (by === "openai") {
+    form.append("model", OPENAI_TRANSCRIBE_MODEL);
+    url = `${openaiBase()}/v1/audio/transcriptions`;
+    headers = { authorization: `Bearer ${openaiKey(cfg)}` };
+  } else {
+    form.append("model", WHISPER_MODEL);
+    form.append("response_format", "json");
+    url = `${where}/v1/audio/transcriptions`;
+  }
+  let res: Response;
+  try {
+    // a local model on a small machine can take a while over a minute of speech
+    res = await fetch(url, { method: "POST", headers, body: form, signal: AbortSignal.timeout(120_000) });
+  } catch (e) {
+    throw unheard(by, where, e);
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new HearingError(hearingError(by, res.status, where), by, res.status);
+  }
   const body: any = await res.json().catch(() => null);
-  return typeof body?.text === "string" ? body.text.trim() : "";
+  return { text: typeof body?.text === "string" ? body.text.trim().slice(0, 20_000) : "", by };
+}
+
+/** A voice message from a phone, to text. */
+export async function transcribe(cfg: AppConfig, audio: Uint8Array, name: string, mime: string): Promise<string> {
+  try {
+    return (await hear(cfg, audio, mime, name)).text;
+  } catch (e) {
+    // Only the status: this ends up in a reply on somebody's phone, said
+    // inside a sentence of its own.
+    if (e instanceof HearingError && e.vendor && e.status) throw new Error(`${HEARER_NAMES[e.vendor]} answered ${e.status}`);
+    throw e;
+  }
 }
 
 /** A client-supplied voice, shape-checked. */

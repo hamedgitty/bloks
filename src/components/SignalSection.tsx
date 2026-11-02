@@ -62,7 +62,7 @@ interface AgentStatus {
   command: string;
   connection: Connection;
   link: { uri: string; state: "waiting" | "failed"; error?: string } | null;
-  voiceVendor: "elevenlabs" | "openai" | null;
+  voiceVendor: "whisper" | "elevenlabs" | "openai" | null;
   engineReady: boolean;
 }
 
@@ -451,7 +451,7 @@ export function SignalSection({ botId }: { botId?: string }) {
       {status?.configured && (
         <div className="mt-4 border-t pt-3">
           <p className="text-small leading-relaxed text-muted-foreground">
-            {status.voiceVendor ? t("signalSection.voiceTranscribedBy", { vendor: status.voiceVendor === "openai" ? "OpenAI" : "ElevenLabs" }) : t("signalSection.voiceNotesNeedAnOpenai")}
+            {status.voiceVendor === "whisper" ? t("signalSection.voiceTranscribedByWhisper") : status.voiceVendor ? t("signalSection.voiceTranscribedBy", { vendor: status.voiceVendor === "openai" ? "OpenAI" : "ElevenLabs" }) : t("signalSection.voiceNotesNeedAnOpenai")}
           </p>
           <ConnectionNote>{t("signalSection.toUnlinkThisComputerFor")}</ConnectionNote>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-small text-muted-foreground">

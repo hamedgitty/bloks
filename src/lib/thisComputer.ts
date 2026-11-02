@@ -94,11 +94,21 @@ export function modKey(platform?: string): string {
 }
 
 /**
- * Whether meeting notes can run here. They listen through the native
- * macOS helper and this computer's own microphone, so they need the
- * desktop app on a Mac, and a window onto a hosted workspace is not
- * listening through either. The bridge offers the call on every platform.
+ * Whether the Mac's own recognizer can hear in this window: the desktop
+ * app's native helper, on a Mac. The bridge offers the call on every
+ * platform, so the platform is asked too.
  */
-export function meetingNotesHere(bridge: boolean, hosted: boolean | undefined, platform?: string): boolean {
-  return bridge && !hosted && deviceWord(platform) === "Mac";
+export function macRecognizerHere(bridge: boolean, platform?: string): boolean {
+  return bridge && deviceWord(platform) === "Mac";
+}
+
+/**
+ * Whether meeting notes are offered here. Anything that can hear will do
+ * (src/lib/hearing.ts pickEars): the page's microphone with the server's
+ * hearer, in any browser, or the Mac's recognizer in the app. On a Mac in
+ * the app they are offered even with nothing set up, where opening them
+ * says what is missing. A hosted workspace refuses them (server/hosted.ts).
+ */
+export function meetingNotesHere(ears: "server" | "mac" | "none", hosted: boolean | undefined, macApp: boolean): boolean {
+  return !hosted && (ears !== "none" || macApp);
 }

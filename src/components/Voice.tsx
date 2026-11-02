@@ -5,11 +5,12 @@
 // agent's own voice.
 //
 // CallOverlay is the call itself: a loop of listen → think → speak.
-// Your words go through speech recognition and become an ordinary turn;
-// the reply comes back as ordinary text and is synthesized through the
-// harness (which holds the vendor keys); when the audio ends, the mic
-// opens again. The transcript is just the chat, a call leaves the same
-// record a typed conversation would.
+// Your words are recorded in the page and written down by whoever hears
+// for the workspace (src/lib/listen.ts), or by the Mac's own recognizer,
+// and become an ordinary turn; the reply comes back as ordinary text and
+// is synthesized through the harness (which holds the vendor keys); when
+// the audio ends, the mic opens again. The transcript is just the chat,
+// a call leaves the same record a typed conversation would.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check } from "@/components/icons";
 import { Mic } from "@/components/icons";
@@ -24,6 +25,8 @@ import { cn } from "@/lib/cn";
 import { routeSpokenToRoom } from "@/lib/spokenRouting";
 import { thisComputer } from "@/lib/thisComputer";
 import { t } from "@/lib/i18n";
+import { callEars, type CallEars } from "@/lib/listen";
+import { heardBy, troubleText, useEars } from "@/lib/hearingWords";
 
 interface VoiceOption {
   provider: VoiceProvider;
@@ -51,7 +54,11 @@ async function fetchSpeech(botId: string, text?: string): Promise<HTMLAudioEleme
     body: JSON.stringify({ text }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? t("voice.speechFailed"));
-  const url = URL.createObjectURL(await res.blob());
+  const clip = await res.blob();
+  // anything but sound (a page, an empty answer) would only reach the
+  // player as "no supported source", which names nothing to fix
+  if (!clip.size || !/^audio\//.test(clip.type)) throw new Error(t("voice.noSoundCameBack"));
+  const url = URL.createObjectURL(clip);
   const audio = new Audio(url);
   audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
   return audio;
@@ -274,77 +281,47 @@ export function VoiceCard({ bot }: { bot: Bot }) {
 
 type CallState = "listening" | "transcribing" | "thinking" | "speaking" | "idle";
 
-/** Start speech recognition with whatever this platform has: the
- * browser engine (endpoints on silence, hands-free), else the desktop
- * dictation bridge (tap-to-finish). Returns a stop handle, or null when
- * neither exists. */
-function startRecognition(handlers: {
-  onPartial: (text: string) => void;
-  onFinal: (text: string) => void;
-  onSilence: () => void;
-  onError: (message: string) => void;
-}): { stop: () => void; needsManualFinish: boolean } | null {
-  const Recognition =
-    (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-  const bridge = (window as any).bloks;
-  if (Recognition) {
-    const recog = new Recognition();
-    recog.continuous = false;
-    recog.interimResults = true;
-    recog.onresult = (event: any) => {
-      const result = event.results[event.results.length - 1];
-      handlers.onPartial(result[0].transcript);
-      if (result.isFinal) {
-        recog.stop();
-        handlers.onFinal(result[0].transcript);
-      }
-    };
-    recog.onerror = (event: any) => {
-      if (event.error === "no-speech") handlers.onSilence();
-      else handlers.onError(t("voice.micError", { error: event.error }));
-    };
-    recog.start();
-    return { stop: () => recog.stop(), needsManualFinish: false };
-  }
-  if (bridge?.speechStart) {
-    const offTranscript = bridge.onSpeechTranscript((line: { text?: string }) => {
-      if (typeof line.text === "string") handlers.onPartial(line.text);
-    });
-    void bridge.speechStart();
-    return {
-      stop: () => {
-        offTranscript?.();
-        void bridge.speechStop?.();
-      },
-      needsManualFinish: true,
-    };
-  }
-  handlers.onError(t("voice.noMicrophone"));
-  return null;
+/** Who is hearing the call, under the state line: a call says plainly
+ * where your voice goes. */
+function HeardBy({ text }: { text: string | null }) {
+  if (!text) return null;
+  return <div className="mt-1.5 text-small text-muted-foreground">{text}</div>;
 }
 
-
+/** The round button that opens the mic again: to barge in while the
+ * agent speaks, or to try again after something went wrong. */
+function TalkButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="flex size-14 items-center justify-center rounded-full border bg-card text-foreground shadow-sm transition-transform active:scale-95"
+    >
+      <Mic size={20} />
+    </button>
+  );
+}
 
 /**
- * The call. Speech recognition prefers the browser engine (it endpoints
- * on silence, which is what makes the loop hands-free); inside the
- * desktop shell it falls back to the native dictation bridge with a
- * tap-to-finish control.
+ * The call. What you say is recorded and written down when you pause,
+ * which is what makes the loop hands-free; with the Mac's own recognizer
+ * the words appear as you speak and a button says when you are done.
  */
 export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void }) {
   const { dispatch } = useStore();
+  const { ears } = useEars();
   const [callState, setCallState] = useState<CallState>("idle");
   const [heard, setHeard] = useState("");
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const recogRef = useRef<any>(null);
+  const earsRef = useRef<CallEars | null>(null);
   const baselineCount = useRef(bot.messages.length);
   const live = useRef(true);
   const botRef = useRef(bot);
   botRef.current = bot;
 
   const [needsManualFinish, setNeedsManualFinish] = useState(false);
-  const heardRef = useRef("");
 
   const stopAudio = () => {
     audioRef.current?.pause();
@@ -354,21 +331,9 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
   const listen = useCallback(() => {
     if (!live.current) return;
     setHeard("");
-    heardRef.current = "";
     setError(null);
     setCallState("listening");
-    const session = startRecognition({
-      onPartial: (text) => {
-        setHeard(text);
-        heardRef.current = text;
-      },
-      onFinal: (text) => finishUtterance(text),
-      onSilence: () => listen(),
-      onError: (message) => setError(message),
-    });
-    recogRef.current = session;
-    setNeedsManualFinish(Boolean(session?.needsManualFinish));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    earsRef.current?.listen();
   }, []);
 
   const finishUtterance = (text: string) => {
@@ -403,6 +368,14 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
 
   useEffect(() => {
     setCallActive(true);
+    const callsEars = callEars(ears, {
+      onPartial: setHeard,
+      onHeard: (text) => live.current && finishUtterance(text),
+      onTranscribing: () => setCallState("transcribing"),
+      onTrouble: (trouble) => setError(troubleText(trouble)),
+    });
+    earsRef.current = callsEars;
+    setNeedsManualFinish(callsEars.manualFinish);
     void claimCall(bot.id).then((claim) => {
       if (!claim.ok) {
         setError(claim.reason);
@@ -414,7 +387,7 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
     return () => {
       setCallActive(false);
       live.current = false;
-      recogRef.current?.stop?.();
+      callsEars.close();
       stopAudio();
       lease.current?.stop();
     };
@@ -423,7 +396,7 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
 
   const hangUp = () => {
     live.current = false;
-    recogRef.current?.stop?.();
+    earsRef.current?.close();
     stopAudio();
     onClose();
   };
@@ -437,11 +410,15 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
   const stateLabel =
     callState === "listening"
       ? heard || t("voice.state.listening")
-      : callState === "thinking"
-        ? t("voice.state.thinking")
-        : callState === "speaking"
-          ? t("voice.state.speaking")
-          : "";
+      : callState === "transcribing"
+        ? t("voice.state.transcribing")
+        : callState === "thinking"
+          ? t("voice.state.thinking")
+          : callState === "speaking"
+            ? t("voice.state.speaking")
+            : "";
+  // after a trouble the mic is shut; the same button opens it again
+  const stuck = Boolean(error) && lease.current !== null && (callState === "listening" || callState === "transcribing");
 
   return (
     <div className="fixed inset-0 z-50 flex animate-fade-in flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
@@ -452,7 +429,7 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
         <div
           className={cn(
             "rounded-full p-2 transition-shadow duration-500",
-            callState === "listening" && "shadow-[0_0_0_10px_color-mix(in_srgb,var(--brand)_14%,transparent)]",
+            callState === "listening" && !error && "shadow-[0_0_0_10px_color-mix(in_srgb,var(--brand)_14%,transparent)]",
             callState === "speaking" && "call-speaking-ring",
           )}
           style={{ "--ring-tint": BLOK_COLORS[bot.color as BlokColor] } as React.CSSProperties}
@@ -461,35 +438,24 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
         </div>
         <div className="text-center">
           <div className="text-heading font-semibold text-foreground">{bot.name}</div>
-          <div className="mt-1 min-h-[20px] max-w-[340px] px-4 text-ui text-muted-foreground">
+          <div role="status" className="mt-1 min-h-[20px] max-w-[340px] px-4 text-ui text-muted-foreground">
             {error ?? stateLabel}
           </div>
+          <HeardBy text={heardBy(ears)} />
         </div>
 
         <div className="mt-4 flex items-center gap-4">
-          {callState === "speaking" && (
-            <button
-              onClick={bargeIn}
-              title={t("voice.interruptAndTalk")}
-              className="flex size-14 items-center justify-center rounded-full border bg-card text-foreground shadow-sm transition-transform active:scale-95"
-            >
-              <Mic size={20} />
-            </button>
-          )}
-          {needsManualFinish && callState === "listening" && (
-            <Button
-              variant="secondary"
-              onClick={() => {
-                recogRef.current?.stop?.();
-                finishUtterance(heardRef.current);
-              }}
-            >
+          {callState === "speaking" && <TalkButton onClick={bargeIn} title={t("voice.interruptAndTalk")} />}
+          {stuck && <TalkButton onClick={listen} title={t("voice.talkAgain")} />}
+          {needsManualFinish && callState === "listening" && !error && (
+            <Button variant="secondary" onClick={() => earsRef.current?.finish()}>
               {t("voice.doneTalking")}
             </Button>
           )}
           <button
             onClick={hangUp}
             title={t("voice.endCall")}
+            aria-label={t("voice.endCall")}
             className="flex size-14 items-center justify-center rounded-full bg-destructive text-white shadow-md transition-transform active:scale-95"
           >
             <PhoneOff size={20} />
@@ -541,6 +507,7 @@ export function GroupCallOverlay({
   onClose: () => void;
 }) {
   const { state, dispatch } = useStore();
+  const { ears } = useEars();
   const [callState, setCallState] = useState<CallState>("idle");
   const [heard, setHeard] = useState("");
   const [caption, setCaption] = useState("");
@@ -548,8 +515,7 @@ export function GroupCallOverlay({
   const [error, setError] = useState<string | null>(null);
   const [needsManualFinish, setNeedsManualFinish] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const recogRef = useRef<{ stop: () => void } | null>(null);
-  const heardRef = useRef("");
+  const earsRef = useRef<CallEars | null>(null);
   const baseline = useRef(blok.messages.length);
   const spoken = useRef(new Set<string>());
   const callStateRef = useRef<CallState>("idle");
@@ -570,23 +536,11 @@ export function GroupCallOverlay({
   const listen = useCallback(() => {
     if (!live.current) return;
     setHeard("");
-    heardRef.current = "";
     setSpeakingId(null);
     setError(null);
     setCallState("listening");
     callStateRef.current = "listening";
-    const session = startRecognition({
-      onPartial: (text) => {
-        setHeard(text);
-        heardRef.current = text;
-      },
-      onFinal: (text) => finishUtterance(text),
-      onSilence: () => listen(),
-      onError: (message) => setError(message),
-    });
-    recogRef.current = session;
-    setNeedsManualFinish(Boolean(session?.needsManualFinish));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    earsRef.current?.listen();
   }, []);
 
   const finishUtterance = (text: string) => {
@@ -661,6 +615,17 @@ export function GroupCallOverlay({
     setCallActive(true);
     // the backlog is never recited: a call starts in the present
     for (const m of blok.messages) spoken.current.add(m.id);
+    const callsEars = callEars(ears, {
+      onPartial: setHeard,
+      onHeard: (text) => live.current && finishUtterance(text),
+      onTranscribing: () => {
+        setCallState("transcribing");
+        callStateRef.current = "transcribing";
+      },
+      onTrouble: (trouble) => setError(troubleText(trouble)),
+    });
+    earsRef.current = callsEars;
+    setNeedsManualFinish(callsEars.manualFinish);
     void claimCall(blok.id).then((claim) => {
       if (!claim.ok) {
         setError(claim.reason);
@@ -673,7 +638,7 @@ export function GroupCallOverlay({
       setCallActive(false);
       live.current = false;
       generation.current += 1;
-      recogRef.current?.stop?.();
+      callsEars.close();
       stopAudio();
       lease.current?.stop();
     };
@@ -695,7 +660,7 @@ export function GroupCallOverlay({
   const hangUp = () => {
     live.current = false;
     generation.current += 1;
-    recogRef.current?.stop?.();
+    earsRef.current?.close();
     stopAudio();
     onClose();
   };
@@ -703,9 +668,12 @@ export function GroupCallOverlay({
   const stateLabel =
     callState === "listening"
       ? heard || t("voice.state.roomListening")
-      : callState === "thinking"
-        ? t("voice.state.roomThinking")
-        : caption;
+      : callState === "transcribing"
+        ? t("voice.state.transcribing")
+        : callState === "thinking"
+          ? t("voice.state.roomThinking")
+          : caption;
+  const stuck = Boolean(error) && lease.current !== null && (callState === "listening" || callState === "transcribing");
 
   return (
     <div className="fixed inset-0 z-50 flex animate-fade-in flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
@@ -737,34 +705,23 @@ export function GroupCallOverlay({
         </div>
         <div className="text-center">
           <div className="text-title font-semibold text-foreground">{blok.name}</div>
-          <div className="mt-1 min-h-[20px] max-w-[420px] px-4 text-ui text-muted-foreground">
+          <div role="status" className="mt-1 min-h-[20px] max-w-[420px] px-4 text-ui text-muted-foreground">
             {error ?? stateLabel}
           </div>
+          <HeardBy text={heardBy(ears)} />
         </div>
         <div className="flex items-center gap-4">
-          {callState === "speaking" && (
-            <button
-              onClick={interrupt}
-              title={t("voice.interruptAndTalk")}
-              className="flex size-14 items-center justify-center rounded-full border bg-card text-foreground shadow-sm transition-transform active:scale-95"
-            >
-              <Mic size={20} />
-            </button>
-          )}
-          {needsManualFinish && callState === "listening" && (
-            <Button
-              variant="secondary"
-              onClick={() => {
-                recogRef.current?.stop?.();
-                finishUtterance(heardRef.current);
-              }}
-            >
+          {callState === "speaking" && <TalkButton onClick={interrupt} title={t("voice.interruptAndTalk")} />}
+          {stuck && <TalkButton onClick={listen} title={t("voice.talkAgain")} />}
+          {needsManualFinish && callState === "listening" && !error && (
+            <Button variant="secondary" onClick={() => earsRef.current?.finish()}>
               {t("voice.doneTalking")}
             </Button>
           )}
           <button
             onClick={hangUp}
             title={t("voice.endCall")}
+            aria-label={t("voice.endCall")}
             className="flex size-14 items-center justify-center rounded-full bg-destructive text-white shadow-md transition-transform active:scale-95"
           >
             <PhoneOff size={20} />

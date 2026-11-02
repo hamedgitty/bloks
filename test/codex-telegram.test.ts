@@ -54,7 +54,7 @@ async function fixture(t: TestContext, options: { crashOn?: string; crashStage?:
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const url = `http://127.0.0.1:${(server.address() as any).port}`;
-  const env = { NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: url, BLOKS_TEST_SPEECH_URL: url,
+  const env = { NODE_OPTIONS: `--import=${preload}`, BLOKS_TEST_TELEGRAM_URL: url, BLOKS_TEST_SPEECH_URL: url, BLOKS_OPENAI_SPEECH_URL: url,
     ...(options.crashOn ? { BLOKS_TEST_CRASH_PREP: options.crashOn } : {}),
     ...(options.crashStage ? { BLOKS_TEST_CRASH_STAGE: options.crashStage } : {}), ...options.extraEnv };
   const s = await codexCommands(t, env);

@@ -442,7 +442,11 @@ over.
   can call it, or call a room. Voices come from ElevenLabs, OpenAI, Fish
   Audio or xAI with a key of yours (xAI's uses your Grok key if you have
   one), from a Chatterbox server you run on your own machine or network,
-  or from the Mac's own voices with no key at all.
+  or from the Mac's own voices with no key at all. What you say on a call
+  or in meeting notes is written down by a Whisper server of your own,
+  ElevenLabs or OpenAI, or the Mac's own recognizer in the Mac app:
+  Settings, Voices, Hearing says which, and calls and meeting notes then
+  work in the desktop app and in any browser. No audio is saved.
 - **Chat and email.** Talk to agents from Telegram or Signal, or carry a
   room into Slack, Discord, or a WhatsApp or Signal group. On Signal an
   agent answers on an account of its own, linked to signal-cli on your
@@ -555,8 +559,8 @@ workspace itself, as the installed app does (Personal is your real
 `~/.bloks`). `pnpm package` makes an unsigned build of your own.
 
 **Requirements:** Node 22+, pnpm, and at least one engine. macOS for
-computer use, meeting notes and the Mac's own voices; the rest runs
-anywhere Node does.
+computer use, the Mac's own voices and its on-device recognizer; the
+rest runs anywhere Node does.
 
 **Ports:** Personal listens on 8799 on this machine. If something else
 has it, the desktop app moves to 18799, 28799 or any free port, and

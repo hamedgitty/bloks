@@ -16431,7 +16431,7 @@ function telegramSenderInbox(runtime: TelegramRuntime, source: TelegramReplySend
       send: async (_chatId, text) => { active(); await telegramDestinationNotice(runtime, source, text); },
       pair: async () => {}, refuse: async () => {}, waiting: () => undefined, answer: async () => {}, press: async () => {},
       download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
-      transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
+      transcriber: () => speech.hearer(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
       saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
       saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
       saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
@@ -16693,7 +16693,7 @@ function makeTelegramRuntime(botId: string, state: AgentTelegram): TelegramRunti
       await telegramSay(runtime, chatId, "This bot is not paired with you.");
     },
     download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
-    transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
+    transcriber: () => speech.hearer(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
     saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
     saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
     saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
@@ -16843,7 +16843,7 @@ function fullAccessInbox(runtime: TelegramRuntime, person: TelegramPerson): tele
     send: async (chatId, text) => { if (sender()) await telegramSay(runtime, chatId, text); },
     pair: async () => {}, refuse: async () => {},
     download: (fileId, maxBytes) => { active(); return telegram.download(runtime.token, fileId, maxBytes); },
-    transcriber: () => speech.transcriptionVendor(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
+    transcriber: () => speech.hearer(cfg) ? (audio) => { active(); return speech.transcribe(cfg, audio, "voice.ogg", "audio/ogg"); } : null,
     saveImage: (bytes) => { active(); return attachments.saveImage(bytes); },
     saveVoice: (bytes) => { active(); return attachments.saveBytes(bytes, "ogg"); },
     saveFile: (bytes, extension) => { active(); return attachments.saveBytes(bytes, extension); },
@@ -17581,7 +17581,7 @@ async function signalInput(botId: string, generation: string, message: signal.Si
         parts.push({ kind: "image", path: attachments.saveImage(bytes) });
       } else if (signal.isVoice(file)) {
         if (heard) throw new Error("only one voice message goes with a message");
-        if (!speech.transcriptionVendor(cfg)) throw new Error("there is no speech key to transcribe it. Add one in Bloks Settings, or type it");
+        if (!speech.hearer(cfg)) throw new Error("there is no speech key to transcribe it. Add one in Bloks Settings, or type it");
         const bytes = await signal.attachment(signalUrl(), state.account, file, message.sourceUuid, attachments.VOICE_MAX_BYTES);
         const said = (await speech.transcribe(cfg, bytes, `voice.${signal.extensionOf(file)}`, file.contentType.split(";")[0]!)).trim().slice(0, MAX_MESSAGE_CHARS);
         if (!said) throw new Error("no words could be made out in it");
@@ -17915,7 +17915,7 @@ function signalAgentStatus(botId: string) {
     command: signal.daemonCommand(signalUrl()),
     connection: signalConn.status,
     link: signalLinks.get(botId) ?? null,
-    voiceVendor: speech.transcriptionVendor(cfg),
+    voiceVendor: speech.hearer(cfg),
     engineReady: (() => {
       const kind = registry.get(store.bot(botId)?.modelSelection.instanceId ?? "")?.driverKind;
       return kind ? sharedSafe(kind) : false;
@@ -25686,6 +25686,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       return;
     }
+    // ── hearing: what you say on a call or in a meeting, as text ──
+    // The page records a stretch of speech and sends it here as it is;
+    // whoever hears for this workspace (server/speech.ts hearer) gets it,
+    // with a key the page never sees. Nothing is kept: the bytes live for
+    // this request, and only the words go back.
+    if (method === "POST" && path === "/api/speech/transcribe") {
+      if (asAgent) return json(res, 403, { error: "that is the person's" });
+      const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+      if (!type.startsWith("audio/")) return json(res, 415, { error: "send the recording as audio" });
+      if (!speech.hearer(cfg)) {
+        req.resume();
+        return json(res, 409, { error: speech.nobodyHears(cfg), code: "no-hearing" });
+      }
+      let bytes: Buffer;
+      try {
+        bytes = await readBytes(req, speech.HEAR_MAX_BYTES);
+      } catch (e) {
+        if ((e as { status?: number }).status === 413) return json(res, 413, { error: "That recording is too long to hear in one go." });
+        throw e;
+      }
+      if (!bytes.length) return json(res, 400, { error: "the recording is empty" });
+      try {
+        const heard = await speech.hear(cfg, bytes, String(req.headers["content-type"]));
+        return json(res, 200, { text: heard.text, by: heard.by });
+      } catch (e) {
+        return json(res, 502, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
+      }
+    }
 
     // ── the Local VM: status, setup, lifecycle ──
     if (method === "GET" && path === "/api/local-vm") {
@@ -32894,7 +32922,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         migrationError: cfg.telegram?.migrationError ?? null,
         pendingMigration: Boolean(cfg.telegram?.pending),
         bots: Object.keys(cfg.telegram?.bots ?? {}).filter((id) => store.bot(id)).map((id) => ({ botId: id, ...telegramStatus(telegramBinding(id)) })),
-        voiceVendor: speech.transcriptionVendor(cfg),
+        voiceVendor: speech.hearer(cfg),
       });
     }
     const telegramPath = path.match(/^\/api\/bots\/([\w-]+)\/telegram$/);
@@ -32907,7 +32935,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const botId = telegramPath?.[1] ?? (typeof body.botId === "string" ? body.botId : cfg.telegram?.migratedBotId);
       if (!botId || !store.bot(botId)) return json(res, 400, { error: "Choose an agent for this Telegram bot." });
-      const status = () => ({ ...telegramStatus(telegramBinding(botId)), botId, voiceVendor: speech.transcriptionVendor(cfg) });
+      const status = () => ({ ...telegramStatus(telegramBinding(botId)), botId, voiceVendor: speech.hearer(cfg) });
       if (method === "GET") return json(res, 200, status());
       if (method !== "POST") return json(res, 405, { error: "method not allowed" });
       if (typeof body.personId === "string") {
@@ -33725,6 +33753,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // the Chatterbox address is checked, not just length-capped: every
       // reply read aloud goes to it (server/speech.ts normalizeChatterboxUrl)
       let chatterboxPatch: { chatterboxUrl: string } | null = null;
+      // and the same for a Whisper server, which hears what is said on a
+      // call; who hears is one of a few words
+      let hearingPatch: { whisperUrl?: string; hearing?: string } | null = null;
       /** Sections that save themselves, so the empty-patch guard below
        * does not mistake a real write for an empty request. */
       let wroteSomething = false;
@@ -33741,6 +33772,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           const checked = speech.normalizeChatterboxUrl(server);
           if ("error" in checked) return json(res, 400, checked);
           chatterboxPatch = { chatterboxUrl: checked.url };
+        }
+        const whisper = (body.speech as Record<string, unknown>).whisperUrl;
+        if (whisper === "" || whisper === null) hearingPatch = { whisperUrl: "" };
+        else if (whisper !== undefined) {
+          const checked = speech.normalizeWhisperUrl(whisper);
+          if ("error" in checked) return json(res, 400, checked);
+          hearingPatch = { whisperUrl: checked.url };
+        }
+        const hearing = (body.speech as Record<string, unknown>).hearing;
+        if (hearing !== undefined) {
+          if (!(speech.HEARING_CHOICES as readonly unknown[]).includes(hearing)) {
+            return json(res, 400, { error: `speech.hearing is one of ${speech.HEARING_CHOICES.join(", ")}` });
+          }
+          hearingPatch = { ...hearingPatch, hearing: hearing as string };
         }
       }
       // A boolean, not a credential, so it rides outside the string table
@@ -33934,6 +33979,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       if (chatterboxPatch) {
         patch.speech = { ...(patch.speech as object | undefined), ...chatterboxPatch };
+      }
+      if (hearingPatch) {
+        patch.speech = { ...(patch.speech as object | undefined), ...hearingPatch };
       }
       if (!Object.keys(patch).length && !wroteSomething) {
         return json(res, 400, { error: "nothing to save" });

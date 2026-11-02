@@ -45,6 +45,7 @@ import { TracePanel } from "./trace/TracePanel";
 import { askForFold, type TraceAsk } from "@/lib/traceView";
 import { MeetingPanel } from "./MeetingPanel";
 import { meetingNotesHere } from "@/lib/thisComputer";
+import { useEars } from "@/lib/hearingWords";
 import { AudioLines } from "@/components/icons";
 import { ForwardDialog, type ReplyDraft } from "./MessageActions";
 import { Button } from "@/components/ui/button";
@@ -166,6 +167,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const titleSlot = useTitlebarSlot();
   const inTitleBar = (tabs: React.ReactNode) => (titleSlot ? createPortal(tabs, titleSlot) : tabs);
   const { state, dispatch } = useStore();
+  const { ears, macApp } = useEars();
   // Only a frame that arrived during this turn is live. The one held from
   // the last turn is already in the transcript, and showing it again as
   // live would be a picture of the past with a click handler on it.
@@ -908,9 +910,9 @@ export function ChatView({ bot }: { bot: Bot }) {
         <div ref={actionsRef} className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* the model is picked where you type, in the composer's footer */}
           <CallButton bot={bot} />
-          {/* meeting notes need the app on a Mac, and a window onto a
-              hosted workspace is not listening through one */}
-          {meetingNotesHere(Boolean(window.bloks?.meetingStart), state.config?.hosted?.on) && (
+          {/* meeting notes need something to hear them (src/lib/hearing.ts),
+              and a hosted workspace refuses them */}
+          {meetingNotesHere(ears.kind, state.config?.hosted?.on, macApp) && (
             <Button
               variant="ghost"
               size="icon"

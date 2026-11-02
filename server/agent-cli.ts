@@ -357,6 +357,8 @@ export const NEVER = [
   "/api/ledger",
   "/api/relay",
   "/api/calls",
+  // turning the person's recorded speech into text, on their key
+  "/api/speech/transcribe",
   "/api/terminal",
   "/api/usage",
   // the person's plan and the way to their billing, which their own

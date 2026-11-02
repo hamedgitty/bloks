@@ -10,6 +10,7 @@ import { headline } from "../src/lib/hostingMove.ts";
 import {
   deviceWord,
   fromThisComputer,
+  macRecognizerHere,
   meetingNotesHere,
   onThisComputer,
   onYourComputer,
@@ -89,18 +90,26 @@ describe("after on, to and from", () => {
   });
 });
 
-describe("meetingNotesHere", () => {
-  test("the desktop app on a Mac offers them", () => {
-    assert.equal(meetingNotesHere(true, false, "MacIntel"), true);
+describe("the Mac's recognizer and meeting notes", () => {
+  test("the Mac's recognizer is the desktop app's on a Mac, though every platform's bridge has the call", () => {
+    assert.equal(macRecognizerHere(true, "MacIntel"), true);
+    assert.equal(macRecognizerHere(true, "Win32"), false);
+    assert.equal(macRecognizerHere(true, "Linux x86_64"), false);
+    assert.equal(macRecognizerHere(false, "MacIntel"), false, "a browser on a Mac has no helper");
   });
 
-  test("the desktop app on Windows or Linux does not, though its bridge has the call", () => {
-    assert.equal(meetingNotesHere(true, false, "Win32"), false);
-    assert.equal(meetingNotesHere(true, false, "Linux x86_64"), false);
+  test("anything that can hear offers them, in any browser or app", () => {
+    assert.equal(meetingNotesHere("server", false, false), true, "a browser with the server's hearer");
+    assert.equal(meetingNotesHere("mac", false, true), true, "the Mac app on its own recognizer");
   });
 
-  test("a browser, or a window onto a hosted workspace, does not, even on a Mac", () => {
-    assert.equal(meetingNotesHere(false, false, "MacIntel"), false);
-    assert.equal(meetingNotesHere(true, true, "MacIntel"), false);
+  test("with nothing to hear they are offered only in the Mac app, where opening them says what is missing", () => {
+    assert.equal(meetingNotesHere("none", false, true), true);
+    assert.equal(meetingNotesHere("none", false, false), false);
+  });
+
+  test("a hosted workspace refuses them, so they are not offered there", () => {
+    assert.equal(meetingNotesHere("server", true, false), false);
+    assert.equal(meetingNotesHere("mac", true, true), false);
   });
 });

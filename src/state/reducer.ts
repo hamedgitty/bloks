@@ -10,6 +10,7 @@ import type { BlokColor, BlokExpression, BlokShape } from "@/lib/mascot";
 import type { LaneContext } from "@/lib/contextCard";
 import type { CodexSpeed, CodexSpeedStatus } from "@/lib/codexSpeed";
 import type { Effort } from "@/lib/effort";
+import type { HearingStatus } from "@/lib/hearing";
 import type { RoomAnswers, RoomRoute } from "@/lib/roomRoute";
 import type { Workplace, WorkplaceStatus } from "@/lib/workplace";
 import { resolveSettingsPage } from "../lib/settingsPages.ts";
@@ -539,6 +540,8 @@ export interface ConfigStatus {
     /** A Chatterbox server of the person's own, and where it is. */
     chatterbox?: boolean;
     chatterboxUrl?: string;
+    /** Who turns speech into text (src/lib/hearing.ts). */
+    hearing?: HearingStatus;
   };
   /** Shared context for every agent, not a secret, so it round-trips;
    * `name` is what the owner is called, empty until they say. */
