@@ -23,6 +23,7 @@ import { SettingRow, SettingsGroup } from "../SettingsLayout";
 import { YourName } from "./YourName";
 import { LANGUAGES, isLanguage, t, type MessageKey } from "@/lib/i18n";
 import { chooseLanguage, systemLanguage, useLanguageChoice } from "@/lib/language";
+import { WebSignOutRow } from "../web/WebSignOut";
 
 const THEME_OPTIONS: Array<{ value: Theme; label: MessageKey; icon: React.ReactNode }> = [
   { value: "light", label: "generalPage.themeLight", icon: <Sun size={14} /> },
@@ -167,6 +168,8 @@ export function GeneralPage() {
     <>
       <SettingsGroup title={t("generalPage.you")}>
         <YourName />
+        {/* in a browser at a server's own address: who it is signed in as */}
+        <WebSignOutRow />
       </SettingsGroup>
       <SettingsGroup title={t("generalPage.appearance")}>
         <SettingRow

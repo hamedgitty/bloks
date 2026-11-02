@@ -91,6 +91,12 @@ before(async () => {
       if (bot) bot.access = value;
     },
     setAudience: () => {},
+    deleteMemberAgent: async (bot) => {
+      bots.splice(bots.findIndex((b) => b.id === bot.id), 1);
+    },
+    webUrl: () => null,
+    signIns: () => ({ lastSeen: null, sessions: 0, label: null }),
+    forgetSignIns: () => {},
   });
   server = createServer(async (req, res) => {
     const url = new URL(req.url!, "http://x");

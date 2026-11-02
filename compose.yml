@@ -35,12 +35,18 @@ services:
       # An update here is a newer image (docker compose pull, then
       # docker compose up -d), so About checks and never installs.
       BLOKS_SERVER_UPDATES: "off"
+      # The web door, when .env turns it on, listens on every interface in
+      # here; the port mapping below keeps it on host loopback.
+      BLOKS_WEB_LISTEN: ${BLOKS_WEB_LISTEN:-0.0.0.0:8790}
     ports:
       # Loopback on the host unless .env says otherwise, for a reverse
       # proxy or tunnel on the same machine. BLOKS_BIND=0.0.0.0 publishes
       # it on every interface; your VPN address (a Tailscale 100.x one)
       # publishes it on that network alone.
       - "${BLOKS_BIND:-127.0.0.1}:${BLOKS_HOST_PORT:-8799}:8799"
+      # The web door, a browser sign-in through your identity provider,
+      # only once .env sets BLOKS_WEB_URL. Keep it behind your proxy.
+      - "${BLOKS_BIND:-127.0.0.1}:${BLOKS_WEB_HOST_PORT:-8790}:8790"
     volumes:
       # The workspace, the engines and their sign-ins, all of it. A host
       # folder works too (BLOKS_DATA=./data), owned by uid 1000.

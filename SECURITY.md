@@ -423,6 +423,12 @@ behind it are built to be narrow.
 - **Their spending is capped by you.** Per member: a monthly limit on
   what your API keys cost, a share of Bloks AI, how many solo agents they
   may make and which engines those use.
+- **Their own agents are deleted, never read.** You and your admins see
+  the agents members made for themselves by name and maker
+  (`/api/workspace/member-agents`), and may delete one. Nothing of what
+  was said to it crosses that route either way: deleting it deletes its
+  conversations unread, and the record names who deleted it and whose
+  it was.
 - **Private means private.** A member's one to one with an agent is
   theirs. You can turn on reading members' private conversations for the
   workspace, and every member is told which way it is set. Past the
@@ -460,6 +466,48 @@ Who sees what is decided in one file, `server/access.ts`, as plain
 functions a test can walk. Workspaces never share a folder, so an agent
 in one cannot read another's memory, and the safety floor keeps agents
 out of every workspace's folder, not only their own's.
+
+## A server opened in a browser, with your identity provider
+
+`bloks-server` can also answer browsers at an address of your own
+(`BLOKS_WEB_URL`), signed in with an OpenID Connect provider you run or
+use (`server/web-door.ts`, `server/oidc.ts`). It is off unless set, and
+it is a listener of its own, so the loopback port keeps every rule
+above.
+
+- **Nothing through it is the computer itself.** A reverse proxy on the
+  same machine connects from loopback with whatever Host it sends, so
+  connections through the web door are marked, and `isLoopbackPeer`
+  refuses them (`server/http-guard.ts`). An agent's credential, the
+  loopback-only routes, pairing and the terminal are out of reach there.
+- **One credential, one place.** A session cookie, HttpOnly,
+  SameSite=Strict, Secure with the `__Host-` prefix on https, is the only
+  thing the door reads; an Authorization header is dropped, so a paired
+  device's token does nothing there and a session does nothing anywhere
+  else. A request that changes anything must carry the door's own
+  Origin. Only the cookie's sha256 is kept (`web-sign-in.json`, 0600).
+- **The sign in is the standard one, checked fully.** The authorization
+  code flow with PKCE (S256), a state that must come back once to the
+  browser that started it, and a nonce. The ID token is believed only
+  when its signature checks out against the provider's published keys
+  (never the client secret, never `none`), and its issuer, audience,
+  expiry, not-before, issued-at and nonce are right. The verifier and
+  the client secret never reach the browser.
+- **Who somebody is, checked on every request.** The owner is whoever
+  `BLOKS_OIDC_OWNER` names, read again each time; a member is an
+  identity linked to a person who is still in the workspace. Removing a
+  member, or changing who the owner is, ends their sessions at once.
+  The allow lists gate every sign in but the owner's, and making members
+  on first sign in requires one, so a provider that knows everybody
+  (Google) cannot make everybody a member.
+- **An invite still needs you.** Signing in to use an invite makes the
+  same request any device makes, bound to that browser's session, and
+  it waits for you and the same four words. Until then the session
+  reaches nothing but its own request.
+- **Whoever controls the provider controls the door.** That is what
+  single sign-on means: an account that can become yours at the
+  provider, or join the allowed groups, can sign in. Use `sub` or a
+  verified address as the person claim, not a name people can change.
 
 ## Agents that work somewhere else
 

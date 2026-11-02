@@ -15,7 +15,9 @@
 //   Somebody holding an invite and nothing else, through Bloks Cloud or on
 //   this network: a sealed conversation about one thing, joining (joinAsk
 //   and the /api/join/ routes). Sealed for this workspace's join key, so
-//   the relay that carried it cannot read the password in it.
+//   the relay that carried it cannot read the password in it. Or from a
+//   browser that signed in at this server's web door (webJoin), where the
+//   connection itself is this server's and nothing needs sealing.
 //
 // The joiner's own side, when this Mac is the one joining somewhere else,
 // is server/join-client.ts.
@@ -155,6 +157,17 @@ export interface MembersDeps {
   /** Sets who shares a team agent's conversation; undefined is everyone. */
   setAccess(botId: string, access: BotRecord["access"]): void;
   setAudience(roomId: string, audience: "everyone" | "some"): void;
+  /** Deletes a member's own agent for good, as the owner or an admin,
+   * and says so in the record (server/ledger.ts). */
+  deleteMemberAgent(bot: BotRecord, by: { actor: string; maker: string }): Promise<void>;
+  /** Where a browser opens this server (BLOKS_WEB_URL), when its web
+   * door is on: invites then carry a link to it. */
+  webUrl(): string | null;
+  /** Signing in from a browser (server/web-sign-in.ts): when the person
+   * last did anything there, how many browsers they are signed in on and
+   * the identity they sign in with; and forgetting it all when they go. */
+  signIns(personId: string): { lastSeen: number | null; sessions: number; label: string | null };
+  forgetSignIns(personId: string): void;
 }
 
 export type Actor = { kind: "owner" } | { kind: "member"; personId: string; role: people.WorkspaceRole };
@@ -281,11 +294,15 @@ export function createMembers(deps: MembersDeps) {
 
   function inviteView(inv: invites.WorkspaceInvite) {
     const lan = inv.relay === "registered" ? undefined : (deps.lanAddress() ?? undefined);
+    const web = deps.webUrl();
     return {
       id: inv.id,
       publicId: inv.publicId,
       code: invites.formatCode(inv.code),
       link: invites.inviteLink(inv.publicId, inv.code, lan),
+      // the same invite opened in a browser, at this server's own address;
+      // the code after the # is never sent to it
+      ...(web ? { webLink: `${web}/join#${inv.code}` } : {}),
       name: inv.name ?? null,
       role: inv.role,
       createdAt: inv.createdAt,
@@ -314,7 +331,8 @@ export function createMembers(deps: MembersDeps) {
 
   function memberView(p: people.Person, seeLimits: boolean) {
     const devices = memberDevices().filter((d) => d.personId === p.id);
-    const seen = devices.map((d) => seenAt(d.id) ?? 0).reduce((a, b) => Math.max(a, b), 0);
+    const web = deps.signIns(p.id);
+    const seen = Math.max(devices.map((d) => seenAt(d.id) ?? 0).reduce((a, b) => Math.max(a, b), 0), web.lastSeen ?? 0);
     return {
       id: p.id,
       name: p.name,
@@ -322,8 +340,11 @@ export function createMembers(deps: MembersDeps) {
       joinedAt: p.joinedAt ?? p.createdAt,
       invitedBy: inviterName(p.invitedBy ?? "owner"),
       device: p.device ?? null,
-      devices: devices.length,
+      devices: devices.length + web.sessions,
       lastActive: seen || null,
+      // the identity they sign in with from a browser, as the provider
+      // calls them, when they have one
+      signIn: web.label,
       soloAgents: soloCount(p.id),
       ...(seeLimits
         ? {
@@ -407,15 +428,19 @@ export function createMembers(deps: MembersDeps) {
     // that carried them some other way) gets one of their own, handed
     // over with the answer to their next poll.
     const keeps = inv.claim.via === "relay" && Boolean(inv.relayTokenHash) && (!inv.claim.relayClient || inv.claim.relayClient === inv.relayTokenHash);
+    // Somebody who signed in from a browser here has no device to pair and
+    // no relay to go through: their session is their way in, and it is
+    // web-door.ts that links it to them once they are in.
+    const web = inv.claim.via === "web";
     let handover: string | undefined;
-    if (!keeps && deps.relayReady()) handover = (await deps.relay.mintClient()) ?? undefined;
+    if (!keeps && !web && deps.relayReady()) handover = (await deps.relay.mintClient()) ?? undefined;
     const relayTokenHash = keeps ? inv.relayTokenHash : handover ? sha256(handover) : undefined;
     let deviceId = "";
     const claim = inv.claim;
     const person = people.admitToWorkspace(
       { name: claim.name, role: inv.role, invitedBy: inv.invitedBy, device: claim.device, ...(relayTokenHash ? { relayTokenHash } : {}) },
       (p) => {
-        deviceId = addMemberDevice(p.id, p.name, claim.tokenHash).id;
+        if (!web) deviceId = addMemberDevice(p.id, p.name, claim.tokenHash).id;
       },
     );
     invites.markApproved(inv.id, { personId: person.id, deviceId, ...(handover ? { handover } : {}) });
@@ -450,6 +475,7 @@ export function createMembers(deps: MembersDeps) {
     });
     if (!gone) return false;
     deps.closeStreams(personId);
+    deps.forgetSignIns(personId);
     if (gone.relayTokenHash) await deps.relay.revokeClient(gone.relayTokenHash).catch(() => false);
     deps.dropAgentsOf(personId);
     limits.forget(personId);
@@ -499,6 +525,9 @@ export function createMembers(deps: MembersDeps) {
       team,
       paused: !team && people.workspaceMembers().length > 0,
       online: online(),
+      // where a browser opens this server, when its web door is on: an
+      // invite then works there whether or not the workspace is online
+      web: deps.webUrl(),
     };
   }
 
@@ -538,6 +567,24 @@ export function createMembers(deps: MembersDeps) {
     return { status: 201, body: { invite: inviteView(inv), online: online() } };
   }
 
+  /** The members' own agents, newest first: name, maker, when made and
+   * how many conversations. Never a word of what was said to them. */
+  function memberAgentRows() {
+    return deps
+      .bots()
+      .filter((b) => !b.archivedAt && b.solo && b.solo.by !== "owner" && people.workspaceRole(b.solo.by))
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        color: b.color,
+        shape: b.shape ?? null,
+        madeBy: { id: b.solo!.by, name: people.person(b.solo!.by)?.name ?? "A member" },
+        createdAt: b.createdAt,
+        conversations: b.tasks.length,
+      }))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   function accessView(actor: Actor) {
     const members = people.workspaceMembers();
     return {
@@ -574,7 +621,7 @@ export function createMembers(deps: MembersDeps) {
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, method: string, path: string, actor: Actor): Promise<boolean> {
     // only this file's routes: others live under /api/workspace/ too (a
     // workspace moving computers, server/workspace-move.ts)
-    if (!/^\/api\/workspace\/(members|waiting|identity|invites|requests|access|agents|rooms|joining)(\/|$)/.test(path)) return false;
+    if (!/^\/api\/workspace\/(members|waiting|identity|invites|requests|access|agents|rooms|joining|member-agents)(\/|$)/.test(path)) return false;
     const owner = actor.kind === "owner";
     const manage = owner || actor.role === "admin";
     let m: RegExpMatchArray | null;
@@ -712,6 +759,26 @@ export function createMembers(deps: MembersDeps) {
       json(res, 200, accessView(actor));
       return true;
     }
+    // The agents members made for themselves: who made which, for the
+    // owner and the admins to see and, when one should go, to delete. What
+    // was said to them is never shown here or anywhere else; deleting the
+    // agent deletes its conversations with it.
+    if (method === "GET" && path === "/api/workspace/member-agents") {
+      json(res, 200, { agents: memberAgentRows() });
+      return true;
+    }
+    if ((m = path.match(/^\/api\/workspace\/member-agents\/([\w-]+)$/)) && method === "DELETE") {
+      const bot = deps.bots().find((b) => b.id === m![1]);
+      const maker = bot?.solo && bot.solo.by !== "owner" ? people.person(bot.solo.by) : null;
+      if (!bot || bot.archivedAt || !maker?.role) {
+        json(res, 404, { error: "no such member's agent" });
+        return true;
+      }
+      const by = owner ? deps.hostName() : (people.person(actor.personId)?.name ?? "An admin");
+      await deps.deleteMemberAgent(bot, { actor: owner ? by : `${by} (admin)`, maker: maker.name });
+      json(res, 200, { ok: true });
+      return true;
+    }
     if ((m = path.match(/^\/api\/workspace\/agents\/([\w-]+)\/access$/)) && method === "PATCH") {
       const bot = deps.bots().find((b) => b.id === m![1]);
       if (!bot || bot.solo) {
@@ -817,7 +884,7 @@ export function createMembers(deps: MembersDeps) {
 
   /** One request about joining, already opened, from the relay or this
    * network. `source` is what a wrong code is counted against. */
-  async function answerJoin(path: string, body: Record<string, unknown>, ctx: { source: string; via: "relay" | "lan"; publicId?: string }): Promise<{ status: number; body: unknown }> {
+  async function answerJoin(path: string, body: Record<string, unknown>, ctx: { source: string; via: "relay" | "lan" | "web"; publicId?: string }): Promise<{ status: number; body: unknown }> {
     await sweep();
     const ws = identity();
     const code = invites.normalizeCode(body.code);
@@ -976,6 +1043,40 @@ export function createMembers(deps: MembersDeps) {
     return false;
   }
 
+  // ── the web door: a browser that signed in here ─────────────────────
+
+  /**
+   * One step of joining from a browser at this server's web door
+   * (server/web-door.ts): the same lookup, claim, status and cancel the
+   * sealed door answers, with the same limits on guessing, counted
+   * against the address that asked.
+   */
+  function webJoin(path: "/api/join/lookup" | "/api/join/claim" | "/api/join/status" | "/api/join/cancel", body: Record<string, unknown>, ip: string) {
+    return answerJoin(path, body, { source: `web:${ip}`, via: "web" });
+  }
+
+  /** Somebody the provider vouches for, made a member on their first sign
+   * in (BLOKS_OIDC_AUTO_CREATE), on the same terms as anybody let in by
+   * an invite: Bloks Team, and room for one more. */
+  async function admitFromSignIn(input: { name: string; role: people.WorkspaceRole }): Promise<{ ok: true; person: people.Person } | { ok: false; code: "team_required" | "full"; error: string }> {
+    const locked = await teamRefusal(true);
+    if (locked) return { ok: false, code: "team_required", error: locked.body.error };
+    if (await full()) return { ok: false, code: "full", error: await fullWords() };
+    const person = people.admitToWorkspace({ name: input.name, role: input.role, invitedBy: "owner", device: "browser" });
+    peopleFrame();
+    deps.broadcast({ kind: "workspace.joined", person: { id: person.id, name: person.name, role: person.role }, workspace: identity().name });
+    return { ok: true, person };
+  }
+
+  /** The admin group said what somebody is, as they signed in. */
+  function syncRole(personId: string, role: people.WorkspaceRole) {
+    const p = people.person(personId);
+    if (!p?.role || p.role === role) return;
+    people.setWorkspaceRole(personId, role);
+    deps.closeStreams(personId);
+    peopleFrame();
+  }
+
   // ── a member's own things ──────────────────────────────────────────
 
   function notesOf(personId: string): ProfileNotes {
@@ -1017,6 +1118,9 @@ export function createMembers(deps: MembersDeps) {
     soloCount,
     removeMember,
     peopleFrame,
+    webJoin,
+    admitFromSignIn,
+    syncRole,
     /** For tests and the joiner: a sealed request's nonce is fresh. */
     newNonce: () => randomUUID(),
   };

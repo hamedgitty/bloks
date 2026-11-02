@@ -5,6 +5,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { WorkspaceKind } from "@/types/bridge";
 import { isProgressText } from "@/lib/codexProgress";
 import { takeReadFrame } from "@/lib/readReceipts";
+import { noteSignedOut } from "@/lib/webDoor";
 import {
   foldRuntime,
   modeFrom,
@@ -49,6 +50,7 @@ export async function detectMode(kind: WorkspaceKind | undefined | null): Promis
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
   const body = await res.json().catch(() => ({}));
+  if (!res.ok) noteSignedOut(res.status, (body as { code?: string }).code);
   if (!res.ok) throw Object.assign(new Error((body as { error?: string }).error ?? `${res.status} ${res.statusText}`), { status: res.status, code: (body as { code?: string }).code });
   return body as T;
 }

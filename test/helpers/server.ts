@@ -140,6 +140,23 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         BLOKS_CLOUD: "",
         BLOKS_MODEL_URL: "",
         BLOKS_MODEL_KEY: "",
+        // the web door and its identity provider (server/web-door.ts): off,
+        // whatever the shell says; a test that wants one brings its own
+        BLOKS_WEB_URL: "",
+        BLOKS_WEB_LISTEN: "",
+        BLOKS_OIDC_ISSUER: "",
+        BLOKS_OIDC_CLIENT_ID: "",
+        BLOKS_OIDC_CLIENT_SECRET: "",
+        BLOKS_OIDC_REDIRECT_URL: "",
+        BLOKS_OIDC_SCOPES: "",
+        BLOKS_OIDC_ALLOWED_GROUPS: "",
+        BLOKS_OIDC_ALLOWED_EMAILS: "",
+        BLOKS_OIDC_PERSON_CLAIM: "",
+        BLOKS_OIDC_GROUPS_CLAIM: "",
+        BLOKS_OIDC_AUTO_CREATE: "",
+        BLOKS_OIDC_ADMIN_GROUP: "",
+        BLOKS_OIDC_OWNER: "",
+        BLOKS_OIDC_NAME: "",
         // tests speak as the dev UI (origin :5199), which a server serving
         // its own page does not trust
         BLOKS_STATIC_DIR: "",

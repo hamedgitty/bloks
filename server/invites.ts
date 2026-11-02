@@ -215,8 +215,9 @@ export interface WorkspaceInvite {
     password: "correct" | "none";
     /** The key the joiner sealed for, for the words. */
     hostKey: string;
-    /** How the request arrived: through Bloks Cloud, or on this network. */
-    via: "relay" | "lan";
+    /** How the request arrived: through Bloks Cloud, on this network, or
+     * from a browser that signed in at this server (server/web-door.ts). */
+    via: "relay" | "lan" | "web";
     /** sha256 of the relay client token the joiner asked through, when it
      * said; whoever came through the invite's own token keeps it. */
     relayClient?: string;
@@ -535,7 +536,7 @@ export type ClaimResult =
 export function claim(
   inv: WorkspaceInvite | null,
   input: ClaimInput,
-  ctx: { hostKey: string; via?: "relay" | "lan"; isMember: (tokenHash: string) => boolean; full: () => boolean },
+  ctx: { hostKey: string; via?: "relay" | "lan" | "web"; isMember: (tokenHash: string) => boolean; full: () => boolean },
 ): ClaimResult {
   if (!inv) return { ok: false, error: "wrong_code" };
   const tokenHash = typeof input.tokenHash === "string" ? input.tokenHash.toLowerCase() : "";

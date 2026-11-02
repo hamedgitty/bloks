@@ -36,6 +36,8 @@ import { YourNameHost } from "@/components/YourNameDialog";
 import { TerminalWindow, terminalWindowAgent } from "@/components/terminal/TerminalWindow";
 import { MemberApp } from "@/components/member/MemberApp";
 import { detectMode, type AppMode } from "@/lib/memberMode";
+import { WebDoor } from "@/components/web/WebDoor";
+import { probeWebDoor, type WebDoorSession } from "@/lib/webDoor";
 import { openWorkspaceDialog } from "@/lib/workspaces";
 import { WakingStrip } from "@/components/WakingStrip";
 import { HostingMoveToasts } from "@/components/hosting/HostingMoveToasts";
@@ -258,9 +260,32 @@ export default function App() {
  */
 function WhichApp() {
   const [mode, setMode] = useState<AppMode | null>(null);
+  // A server's web door, in a browser (src/lib/webDoor.ts): until somebody
+  // is signed in, its page is the sign-in or the join, and nothing of the
+  // app is asked for. Undefined while a browser is still asking; the
+  // desktop app never asks.
+  const [door, setDoor] = useState<WebDoorSession | null | undefined>(() => (window.bloks ? null : undefined));
   useEffect(() => {
+    if (door !== undefined) return;
+    void probeWebDoor().then((found) => {
+      // signed in already, an invite link has nothing left to do here
+      if (found?.signedIn && window.location.pathname === "/join") window.history.replaceState(null, "", "/");
+      setDoor(found);
+    });
+  }, [door]);
+  const outside = Boolean(door && (!door.signedIn || window.location.pathname === "/join"));
+  useEffect(() => {
+    if (door === undefined || outside) return;
     void detectMode(window.bloks?.workspace?.kind).then(setMode);
-  }, []);
+  }, [door, outside]);
+  if (door && outside) {
+    return (
+      <MotionConfig reducedMotion="user">
+        <WebDoor session={door} />
+        <Toaster />
+      </MotionConfig>
+    );
+  }
   if (!mode) return <div className="h-full bg-background" />;
   if (mode.mode !== "owner") {
     return (

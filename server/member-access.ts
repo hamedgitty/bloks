@@ -14,7 +14,8 @@
 // them (server/personal.ts), each route about the person whose device it
 // is and never naming anybody else. This file names the routes and
 // shapes what crosses them; access.ts holds the rules. An admin also reaches the people routes: invites,
-// requests to join, roles, limits, who is in which room and agent. The
+// requests to join, roles, limits, who is in which room and agent, and
+// the agents members made for themselves (to delete, never to read). The
 // join password and the approval switch stay the owner's.
 //
 // The same goes for the live event stream. The server broadcasts one
@@ -176,6 +177,10 @@ const ROUTES: Array<{ method: string; pattern: RegExp; action: (m: RegExpMatchAr
       ["GET", /^\/api\/workspace\/access$/],
       ["PATCH", new RegExp(`^/api/workspace/agents/${ID}/access$`)],
       ["PATCH", new RegExp(`^/api/workspace/rooms/${ID}/access$`)],
+      // the agents members made for themselves, which an admin sees by
+      // name and maker and may delete, never read
+      ["GET", /^\/api\/workspace\/member-agents$/],
+      ["DELETE", new RegExp(`^/api/workspace/member-agents/${ID}$`)],
     ] as const
   ).map(([method, pattern]) => ({ method, pattern, action: (m: RegExpMatchArray) => ({ kind: "admin" as const, method, path: m[0] }) })),
   { method: "GET", pattern: /^\/api\/member\/app-watchers$/, action: () => ({ kind: "appWatchers", method: "GET" }) },

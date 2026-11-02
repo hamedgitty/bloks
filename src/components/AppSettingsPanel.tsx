@@ -280,9 +280,15 @@ export function AppSettingsPanel() {
   // Members only where there can be people: a team, or a workspace joined
   // or hosted. A Just me workspace, Personal always, has nobody to manage.
   const soloWorkspace = Boolean(ws) && !ws!.team && (ws!.kind === "personal" || ws!.kind === "business" || ws!.kind === "custom");
+  // A browser has no list of workspaces, but the one it shows still has
+  // people: Members is there for its owner, the way it is in the app.
+  const browser = !workspaces.available && !window.bloks;
   const pages = useMemo(
-    () => SETTINGS_PAGE_LIST.filter((p) => (!p.workspace || Boolean(ws)) && !(p.id === "workspace:members" && soloWorkspace)),
-    [ws, soloWorkspace],
+    () =>
+      SETTINGS_PAGE_LIST.filter(
+        (p) => (!p.workspace || Boolean(ws) || (browser && p.id === "workspace:members")) && !(p.id === "workspace:members" && soloWorkspace),
+      ),
+    [ws, soloWorkspace, browser],
   );
   const pageId = settingsPage(state.settingsPage) ? state.settingsPage : "general";
   const page = settingsPage(pageId)!;

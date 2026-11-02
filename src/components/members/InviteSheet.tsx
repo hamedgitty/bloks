@@ -160,13 +160,17 @@ export function InviteSheet({
     onOpenChange(false);
   };
 
+  // a server opened in browsers at its own address hands out that address,
+  // where the invite is used by signing in; the code works in the apps too
+  const link = invite ? (invite.webLink ?? invite.link) : "";
+
   const share = async () => {
     if (!invite) return;
-    const shared = await window.bloks?.shareLink?.(invite.link).catch(() => false);
-    if (!shared) copy("link", invite.link);
+    const shared = await window.bloks?.shareLink?.(link).catch(() => false);
+    if (!shared) copy("link", link);
   };
 
-  const qr = useMemo(() => (invite ? qrPath(invite.link) : null), [invite?.link]);
+  const qr = useMemo(() => (link ? qrPath(link) : null), [link]);
   const named = name.trim();
   const [first, second] = invite ? invite.code.split("-") : ["", ""];
 
@@ -254,16 +258,20 @@ export function InviteSheet({
               <span className="text-small text-muted-foreground">{t("inviteSheet.link")}</span>
               <div className="flex items-center gap-2">
                 <span className="flex h-[34px] min-w-0 flex-1 items-center truncate rounded-lg border bg-background px-3 font-mono text-body text-foreground/80">
-                  {invite ? invite.link.replace(/^https:\/\//, "") : ""}
+                  {link.replace(/^https:\/\//, "")}
                 </span>
-                <CopyButton copied={copied === "link"} copies="link" onClick={() => invite && copy("link", invite.link)} />
+                <CopyButton copied={copied === "link"} copies="link" onClick={() => invite && copy("link", link)} />
                 <Button size="sm" onClick={() => void share()} disabled={!invite} className="h-[34px]">
                   <Upload size={14} />
                   {t("inviteSheet.share")}
                 </Button>
               </div>
               <span className="text-small text-muted-foreground">
-                {online && !online.available ? online.why : t("inviteSheet.showsAsAnInviteCard")}
+                {invite?.webLink
+                  ? t("inviteSheet.opensAtWeb", { host: new URL(invite.webLink).host })
+                  : online && !online.available
+                    ? online.why
+                    : t("inviteSheet.showsAsAnInviteCard")}
               </span>
             </div>
           </div>

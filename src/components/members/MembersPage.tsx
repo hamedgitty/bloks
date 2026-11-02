@@ -11,7 +11,9 @@
 // request arriving, a person let in on another device or an invite used
 // all show here without a reload.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, MoreHorizontal, Plus, Search, UserPlus, Users } from "@/components/icons";
+import { Check, Copy, MoreHorizontal, Plus, Search, Trash2, UserPlus, Users } from "@/components/icons";
+import { BlokAvatar } from "@/components/Avatar";
+import type { BlokColor, BlokShape } from "@/lib/mascot";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/components/ui/confirm";
 import {
@@ -38,6 +40,7 @@ import {
   tintOf,
   useWorkspaceFrames,
   type AgentAccessRow,
+  type MemberAgentRow,
   type Invite,
   type Member,
   type MembersData,
@@ -128,6 +131,7 @@ export function MembersPage({
   const [limitsFor, setLimitsFor] = useState<Member | null>(null);
   const [agents, setAgents] = useState<AgentAccessRow[] | null>(null);
   const [accessFor, setAccessFor] = useState<AgentAccessRow | null>(null);
+  const [memberAgents, setMemberAgents] = useState<MemberAgentRow[] | null>(null);
   const [newcomer, setNewcomer] = useState<{ id: string; at: number } | null>(null);
   const [copied, copy] = useCopy();
 
@@ -137,7 +141,10 @@ export function MembersPage({
       .then((next) => {
         setData(next);
         setError(null);
-        if (next.invites) membersApi.access().then((a) => setAgents(a.agents)).catch(() => {});
+        if (next.invites) {
+          membersApi.access().then((a) => setAgents(a.agents)).catch(() => {});
+          membersApi.memberAgents().then((a) => setMemberAgents(a.agents)).catch(() => {});
+        }
       })
       .catch((e: Error) => setError(e.message));
   }, []);
@@ -255,6 +262,23 @@ export function MembersPage({
       destructive: true,
     });
     if (yes) await run(() => membersApi.cancel(inv.id));
+  };
+
+  // A member's own agent, gone for good: the confirmation names it and
+  // whose it is, and says plainly that its conversations go unread.
+  const deleteMemberAgent = async (a: MemberAgentRow) => {
+    const maker = a.madeBy.name;
+    const yes = await confirm({
+      title: t("membersMembersPage.memberAgents.delete.title", { agent: a.name, name: maker }),
+      body: `${t("membersMembersPage.memberAgents.delete.body", { agent: a.name, name: maker })}\n\n${t("membersMembersPage.memberAgents.delete.again")}`,
+      confirmLabel: t("membersMembersPage.memberAgents.delete.confirm"),
+      destructive: true,
+    });
+    if (!yes) return;
+    await run(async () => {
+      await membersApi.deleteMemberAgent(a.id);
+      toast.success(t("membersMembersPage.memberAgents.deleted", { agent: a.name }));
+    });
   };
 
   const clearPassword = async () => {
@@ -468,6 +492,37 @@ export function MembersPage({
         </Section>
       )}
 
+      {/* the agents members made for themselves: by name and maker, to
+          delete when one should go, never to read */}
+      {manage && memberAgents && memberAgents.length > 0 && (
+        <Section title={t("membersMembersPage.memberAgents.title")}>
+          <Card>
+            {memberAgents.map((a) => (
+              <div key={a.id} className="flex items-center gap-3.5 px-[18px] py-3">
+                <BlokAvatar color={a.color as BlokColor} shape={(a.shape ?? undefined) as BlokShape | undefined} size={34} />
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate text-ui font-medium text-foreground">{a.name}</span>
+                  <span className="truncate text-body text-muted-foreground">
+                    {t("membersMembersPage.memberAgents.line", { name: a.madeBy.name, date: shortDate(a.createdAt) })}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => void deleteMemberAgent(a)}
+                  aria-label={t("membersMembersPage.memberAgents.deleteFor", { agent: a.name, name: a.madeBy.name })}
+                >
+                  <Trash2 size={14} />
+                  {t("common.delete")}
+                </Button>
+              </div>
+            ))}
+          </Card>
+          <p className="px-0.5 text-pretty text-small text-muted-foreground">{t("membersMembersPage.memberAgents.note")}</p>
+        </Section>
+      )}
+
       {manage && !locked && (
         <Section
           title={t("membersMembersPage.invitations")}
@@ -483,13 +538,14 @@ export function MembersPage({
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-ui font-medium text-foreground">{inv.name ?? t("membersMembersPage.anyoneWithTheCode")}</span>
                     <span className="text-body text-muted-foreground">
-                      {inv.online
+                      {/* online, or opened at the server's own address: either works from anywhere */}
+                      {inv.online || inv.webLink
                         ? t("membersMembersPage.inviteLine", { role: roleName(inv.role), expires: expiresIn(inv.expiresAt) })
                         : t("membersMembersPage.inviteLineLocal", { role: roleName(inv.role), expires: expiresIn(inv.expiresAt) })}
                     </span>
                   </div>
                   <span className="shrink-0 select-all font-mono text-ui font-semibold tracking-[0.06em] text-foreground tabular-nums max-sm:hidden">{inv.code}</span>
-                  <Button variant="ghost" size="sm" onClick={() => copy(inv.id, inv.link)} aria-label={inv.name ? t("membersMembersPage.copyLinkFor", { name: inv.name }) : t("membersMembersPage.copyLinkForThis")}>
+                  <Button variant="ghost" size="sm" onClick={() => copy(inv.id, inv.webLink ?? inv.link)} aria-label={inv.name ? t("membersMembersPage.copyLinkFor", { name: inv.name }) : t("membersMembersPage.copyLinkForThis")}>
                     {copied === inv.id ? <Check size={14} className="text-success" /> : <Copy size={14} />}
                     <span aria-live="polite">{copied === inv.id ? t("common.copied") : t("common.copy")}</span>
                   </Button>
@@ -513,7 +569,7 @@ export function MembersPage({
               )}
             </div>
           )}
-          {!data.online.available && <p className="px-0.5 text-pretty text-small text-muted-foreground">{data.online.why}</p>}
+          {!data.online.available && !data.web && <p className="px-0.5 text-pretty text-small text-muted-foreground">{data.online.why}</p>}
         </Section>
       )}
 
@@ -570,8 +626,10 @@ function MemberRow({
   const line = [
     isNew ? t("membersMembersPage.joinedJustNow") : t("membersMembersPage.joinedOn", { date: shortDate(m.joinedAt) }),
     activeWords(m.lastActive),
-    // a kind this page does not know yet (a newer workspace's) is a computer
-    m.device ? t(DEVICE_WORD[m.device] ?? DEVICE_WORD.computer) : null,
+    // who they sign in as at the server's own address, which says more
+    // than "Browser" does; else the kind of device they joined from (a
+    // kind this page does not know yet, a newer workspace's, is a computer)
+    m.signIn ?? (m.device ? t(DEVICE_WORD[m.device] ?? DEVICE_WORD.computer) : null),
   ].filter(Boolean);
   const spend = m.spend && m.limits;
   const usage = spend

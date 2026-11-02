@@ -8,7 +8,8 @@
 // the settings) is not drawn at all. The workspace page says, once and
 // plainly, whose those are.
 import { useEffect, useState } from "react";
-import { Bot, Check, Cloud, Loader2, Lock, LogOut, MessagesSquare, Puzzle, Trash2, UserRound, Wifi } from "@/components/icons";
+import { Bot, Check, Cloud, Globe, Loader2, Lock, LogOut, MessagesSquare, Puzzle, Trash2, UserRound, Wifi } from "@/components/icons";
+import { useWebDoor } from "@/lib/webDoor";
 import { confirm } from "@/components/ui/confirm";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -24,6 +25,7 @@ import { act, reachLine, useWorkspaces } from "@/lib/workspaces";
 import { MarkPicker } from "@/components/MarkPicker";
 import { toast } from "@/components/ui/toast";
 import type { WorkspaceInfo } from "@/types/bridge";
+import { WebSignOutRow } from "@/components/web/WebSignOut";
 import { formatDate, formatNumber, t, tr } from "@/lib/i18n";
 
 function Page({ children }: { children: React.ReactNode }) {
@@ -266,6 +268,8 @@ export function WorkspacePage({
   const ws = workspace.workspace;
   const owner = workspace.owner.name;
   const reach = entry ? reachLine(entry) : null;
+  // opened at the server's own address, through its web door
+  const door = useWebDoor()?.signedIn ?? false;
   const all = useWorkspaces();
   const taken = all.available ? all.workspaces.filter((w) => w.id !== entry?.id && w.mark).map((w) => w.mark!) : [];
   const [marking, setMarking] = useState(false);
@@ -292,10 +296,12 @@ export function WorkspacePage({
       <SettingsGroup>
         <SettingRow
           label={t("memberPages.howItIsReached")}
-          description={reach ?? t("memberPages.workspace.throughCloud", { owner })}
-          control={reach ? <Wifi size={16} className="text-muted-foreground" /> : <Cloud size={16} className="text-muted-foreground" />}
+          description={reach ?? (door ? t("webDoor.reachedAt", { host: window.location.host }) : t("memberPages.workspace.throughCloud", { owner }))}
+          control={reach ? <Wifi size={16} className="text-muted-foreground" /> : door ? <Globe size={16} className="text-muted-foreground" /> : <Cloud size={16} className="text-muted-foreground" />}
         />
         <SettingRow label={t("memberPages.yourPrivateConversations")} description={workspace.privacy.line} control={<Lock size={15} className="text-muted-foreground" />} />
+        {/* in a browser at the server's own address: who it is signed in as */}
+        <WebSignOutRow />
         {entry && window.bloks?.workspaceUpdate && (
           <SettingRow label={t("memberPages.yourMarkForIt")} description={t("memberPages.workspace.markOnlyYou", { owner })}>
             <MarkPicker

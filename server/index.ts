@@ -147,6 +147,8 @@ import { houseStyle, HOUSE_STYLE, replyRules } from "./house-style.ts";
 import { captureFrame, clickAt, PAGE_KEYS, pressKey, scrollAt, typeText } from "./browser-view.ts";
 import { boxClick, boxKey, boxScroll, boxType } from "./box-hands.ts";
 import { bearerToken, isLocalRequest, isLoopbackPeer, isSameOrigin } from "./http-guard.ts";
+import { startWebDoor, webCallerFor, webDevice, webDoorFrom } from "./web-door.ts";
+import * as webSignIns from "./web-sign-in.ts";
 import { boundServiceMessages, MAX_SERVICE_WAKE_BODY_BYTES, ordinaryWakeLane, readWakeInput, serviceQueueFull, serviceWakeLocal, wakeRecord, wakeStatus, wakeTextHash, wakeUuid } from "./service-wakes.ts";
 import {
   DesktopTickets,
@@ -754,6 +756,11 @@ const PORT = Number(process.env.BLOKS_PORT || loadConfig().port || 8799);
   }
 }
 const STATIC_DIR = process.env.BLOKS_STATIC_DIR || null;
+/** The web door's settings (server/web-door.ts), read once at start like
+ * the rest of the environment; null when it is off or set up wrong, in
+ * which case the reason is said as the server starts. */
+const WEB_DOOR_SETTINGS = webDoorFrom(process.env);
+const WEB_DOOR = WEB_DOOR_SETTINGS && "settings" in WEB_DOOR_SETTINGS ? WEB_DOOR_SETTINGS.settings : null;
 /** Which of the desktop app's workspaces this server is: it says so when
  * it starts one. Its own relay space is kept under this id. */
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(process.env.BLOKS_WORKSPACE_ID ?? "") ? process.env.BLOKS_WORKSPACE_ID! : "personal";
@@ -13030,6 +13037,25 @@ const workspacePeople = createMembers({
     const bot = store.patchBot(botId, { access: value });
     if (bot) broadcast({ kind: "bot", bot: clientBot(bot) });
   },
+  deleteMemberAgent: async (bot, by) => {
+    // the maker's app asks again what it lists, and finds it gone
+    await forgetAgent(bot, null);
+    record({
+      at: Date.now(),
+      kind: "agent.deleted",
+      actor: by.actor,
+      summary: `Deleted ${bot.name}, ${by.maker}'s own agent, for good`,
+      detail: { agent: bot.name, madeBy: by.maker, conversations: bot.tasks.length, read: false },
+    });
+    broadcast({ kind: "workspace.access", botId: bot.id });
+  },
+  webUrl: () => WEB_DOOR?.url.origin ?? null,
+  signIns: (personId) => ({
+    lastSeen: webSignIns.lastSeen(personId),
+    sessions: webSignIns.sessionCount(personId),
+    label: webSignIns.linkFor(personId)?.label ?? null,
+  }),
+  forgetSignIns: (personId) => void webSignIns.forgetPerson(personId),
   setAudience: (roomId, audience) => {
     const blok = bloks.setAudience(roomId, audience);
     if (blok) broadcast({ kind: "blok", blok });
@@ -23796,7 +23822,7 @@ async function serveBackups(req: IncomingMessage, res: ServerResponse, method: s
 // handling read some of them, so a refusal there is answered here: an
 // unanswered request hangs the phone that asked, and a 401 would tell it
 // it is no longer paired.
-const server = createServer((req, res) => {
+function serveRequest(req: IncomingMessage, res: ServerResponse) {
   // A request made with a turn's own credential writes as that turn, for
   // as long as it runs and no longer (server/quiet-finish.ts, belongs).
   // The same credential handleRequest identifies; anything else is nobody's.
@@ -23806,7 +23832,8 @@ const server = createServer((req, res) => {
     if (res.headersSent) return void res.end();
     json(res, (e as { status?: number })?.status ?? 503, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
   });
-});
+}
+const server = createServer(serveRequest);
 server.on("upgrade", upgradeDesktop);
 
 /** What /api/health says. `hosted` tells a phone, and the platform that
@@ -24213,6 +24240,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const viaInvite = relayInviteFor(req);
   if (viaInvite) return serveInviteRequest(req, res, method, path, viaInvite);
   const viaRelay = relayDeviceFor(req);
+  // A browser signed in at the web door (server/web-door.ts): the owner,
+  // as one of their own devices, or a member, as one of theirs. The door
+  // has already checked the session and the origin; nothing it passes on
+  // is ever local (server/http-guard.ts).
+  const viaWeb = viaRelay ? null : webCallerFor(req);
   // Loopback is not a boundary in a browser, see server/http-guard.ts.
   const local = viaRelay ? false : isLocalRequest(req);
   // A credential that was sent but is not one this server knows (a turn's
@@ -24223,7 +24255,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     res.setHeader("www-authenticate", 'Bearer error="invalid_token"');
     return json(res, 401, { error: "this request's credential is not recognized. It may have expired or been revoked." });
   }
-  if (!local && !viaRelay) {
+  if (!local && !viaRelay && !viaWeb) {
     // Everything below this point is the remote surface, and it only
     // exists once somebody has switched pairing on.
     if (!remoteEnabled() || !isSameOrigin(req)) {
@@ -24251,9 +24283,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // owner's. Decided here, before any owner route can match.
   const caller = viaRelay
     ? (pairedDevices().find((d) => d.id === viaRelay) ?? null)
-    : local
-      ? null
-      : deviceForToken(bearerToken(req));
+    : viaWeb
+      ? webDevice(viaWeb)
+      : local
+        ? null
+        : deviceForToken(bearerToken(req));
   if (caller) noteClient(caller.id, req.headers["x-bloks-client"]);
   // On this machine the guard above takes a valid member credential as the
   // owner at the keyboard. A route that is the owner's alone asks this as
@@ -31012,9 +31046,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // /terminals name one by that id; the older /terminal routes below
     // them mean the agent's first, so a client that only knows about one
     // shell keeps working.
-    const shellHere = local || (DEPLOYMENT.ownerTerminal && Boolean(caller) && !asAgent);
+    // Never a browser through the web door: a shell is for devices the
+    // owner paired, not for whoever the identity provider vouches for.
+    const shellHere = local || (DEPLOYMENT.ownerTerminal && Boolean(caller) && !asAgent && !viaWeb);
     // a paired device is told the real reason, and how its owner opens it
-    const noShell = () => json(res, 403, caller && !asAgent ? { error: terminalRefusal(DEPLOYMENT), code: "terminal" } : { error: "not from here" });
+    const noShell = () =>
+      json(
+        res,
+        403,
+        viaWeb
+          ? { error: "A terminal opens from the devices you paired with this server, not from a browser signed in at its address.", code: "terminal" }
+          : caller && !asAgent
+            ? { error: terminalRefusal(DEPLOYMENT), code: "terminal" }
+            : { error: "not from here" },
+      );
     m = path.match(/^\/api\/bots\/([\w-]+)\/terminals$/);
     if (m && method === "GET") {
       if (!shellHere) return noShell();
@@ -34140,34 +34185,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // In the packaged app this process also serves the built interface,
     // so the window has exactly one origin to talk to and there is no
     // development proxy in the path to fall over.
-    if (method === "GET" && !path.startsWith("/api/") && STATIC_DIR) {
-      // resolve, then require the result to stay inside STATIC_DIR, 
-      // string-stripping ".." is not a containment check
-      const requested = path === "/" ? "/index.html" : decodeURIComponent(path);
-      const root = resolve(STATIC_DIR);
-      const file = resolve(root, `.${requested}`);
-      if (file !== root && !file.startsWith(root + sep)) {
-        return json(res, 403, { error: "forbidden" });
-      }
-      // and then opened as the file it really is, inside the folder, and
-      // read from that open file (server/open-inside.ts)
-      const held = file === root ? null : openInside(root, relative(root, file).split(sep));
-      const data = held && readHeld(held);
-      if (data) {
-        res.writeHead(200, {
-          "content-type": MIME[extname(file)] ?? "application/octet-stream",
-          ...SECURITY_HEADERS,
-        });
-        return res.end(data);
-      }
-      // SPA fallback
-      const page = openInside(root, ["index.html"]);
-      const index = page && readHeld(page);
-      if (index) {
-        res.writeHead(200, { "content-type": "text/html", ...SECURITY_HEADERS });
-        return res.end(index);
-      }
-    }
+    if (method === "GET" && !path.startsWith("/api/") && serveStatic(req, res, path)) return;
 
     // The code is what a client reads: a phone newer than this Mac asking
     // for something it does not have yet tells its person to update here,
@@ -34177,6 +34195,52 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const status = (e as any)?.status ?? 500;
     return json(res, status, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
   }
+}
+
+/**
+ * The built interface, when this server has one: a file inside
+ * STATIC_DIR, or index.html for any other page of the app. False when
+ * there is nothing to serve, so the caller answers. The web door serves
+ * the same files, before anybody has signed in.
+ */
+function serveStatic(_req: IncomingMessage, res: ServerResponse, path: string): boolean {
+  if (!STATIC_DIR) return false;
+  // resolve, then require the result to stay inside STATIC_DIR,
+  // string-stripping ".." is not a containment check
+  let requested: string;
+  try {
+    requested = path === "/" ? "/index.html" : decodeURIComponent(path);
+  } catch {
+    json(res, 400, { error: "bad path" });
+    return true;
+  }
+  const root = resolve(STATIC_DIR);
+  const file = resolve(root, `.${requested}`);
+  if (file !== root && !file.startsWith(root + sep)) {
+    json(res, 403, { error: "forbidden" });
+    return true;
+  }
+  // and then opened as the file it really is, inside the folder, and
+  // read from that open file (server/open-inside.ts)
+  const held = file === root ? null : openInside(root, relative(root, file).split(sep));
+  const data = held && readHeld(held);
+  if (data) {
+    res.writeHead(200, {
+      "content-type": MIME[extname(file)] ?? "application/octet-stream",
+      ...SECURITY_HEADERS,
+    });
+    res.end(data);
+    return true;
+  }
+  // SPA fallback
+  const page = openInside(root, ["index.html"]);
+  const index = page && readHeld(page);
+  if (index) {
+    res.writeHead(200, { "content-type": "text/html", ...SECURITY_HEADERS });
+    res.end(index);
+    return true;
+  }
+  return false;
 }
 
 /** The environment and header names an MCP server has no value for yet. */
@@ -34314,6 +34378,17 @@ server.listen(PORT, BIND, () => {
   }
   if (BIND !== "127.0.0.1") {
     console.log(`[bloks] paired devices may reach this machine on port ${PORT}`);
+  }
+  if (WEB_DOOR_SETTINGS && "error" in WEB_DOOR_SETTINGS) console.error(`[bloks] the web door is off: ${WEB_DOOR_SETTINGS.error}`);
+  if (WEB_DOOR) {
+    startWebDoor(WEB_DOOR, {
+      handle: serveRequest,
+      serveStatic,
+      members: workspacePeople,
+      hostName,
+      closeStreams: closeMemberStreams,
+      log: (line) => (line.includes("failed") || line.includes("refused") || line.includes("could not") || line.includes("stopped") ? console.error(line) : console.log(line)),
+    });
   }
   announceHere();
   // An update under a service manager left this version a trial

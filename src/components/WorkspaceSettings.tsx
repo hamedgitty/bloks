@@ -32,6 +32,7 @@ import type { WorkspaceInfo, WorkspaceNotify } from "@/types/bridge";
 import { SettingRow, SettingsEmpty, SettingsGroup } from "./SettingsLayout";
 import { ConnectionError, HealthLine, type Health } from "./ConnectionKit";
 import { MembersPage } from "./MembersPage";
+import { MembersPage as Members } from "./members/MembersPage";
 import { ensureYourName } from "./YourNameDialog";
 import { WorkspaceMark } from "./WorkspaceMark";
 import { MarkPicker } from "./MarkPicker";
@@ -617,6 +618,10 @@ export function WorkspacePageBody({ page }: { page: string }) {
   const ws = currentWorkspace(s);
   const id = pageOf(page);
   const go = (next: WorkspacePage) => dispatch({ type: "toggleAppSettings", open: true, page: `workspace:${next}` });
+  // in a browser, Members is the one page of these there is: the people of
+  // the workspace this page shows, managed as in the app, with the name and
+  // mark the server says (it has no workspace list to name it from)
+  if (!s.available && !window.bloks && id === "members") return <Members onOpenRoom={() => dispatch({ type: "toggleAppSettings", open: false })} />;
   if (!s.available || !ws) {
     return (
       <SettingsGroup>

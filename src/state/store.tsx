@@ -35,6 +35,7 @@ import { placeRow, type Listed } from "@/lib/sections";
 import { askLaneFocus, dropLaneFocus } from "@/lib/drafts";
 import { followMenuKeys } from "@/lib/conversationKeys";
 import { platformOf } from "@/lib/shortcuts";
+import { noteSignedOut } from "@/lib/webDoor";
 import { maybeAutoSpeak } from "@/components/Voice";
 import {
   configFromFrame,
@@ -120,6 +121,8 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
   // something about it (a name to ask for, src/components/YourNameDialog),
   // and the mark of a hosted workspace that never woke (src/lib/waking.ts)
   if (!res.ok) {
+    // signed out of a server's web door meanwhile: back to its sign-in
+    noteSignedOut(res.status, body.code);
     throw Object.assign(new Error(body.error ?? `${res.status} ${res.statusText}`), {
       status: res.status,
       code: typeof body.code === "string" ? body.code : undefined,

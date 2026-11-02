@@ -32,12 +32,29 @@ function hostnameOf(value: string): string {
   return colon === -1 ? value : value.slice(0, colon);
 }
 
+/** Connections that came in through the web door (server/web-door.ts).
+ * A reverse proxy in front of it usually sits on this same machine, so
+ * its connections arrive from loopback with whatever Host it chose to
+ * send; none of that may make a browser out on the internet the person
+ * at the keyboard. */
+const webDoor = new WeakSet<object>();
+
+export function markWebDoor(socket: object): void {
+  webDoor.add(socket);
+}
+
+export function isWebDoor(req: IncomingMessage): boolean {
+  return Boolean(req.socket && webDoor.has(req.socket));
+}
+
 /** Whether the request actually arrived on the loopback interface. The
  * Host header is a claim the client makes; this is the kernel's account
  * of where the bytes came from, and it cannot be forged from off-box.
  * IPv4-mapped IPv6 ("::ffff:127.0.0.1") is how a dual-stack listener
- * reports a v4 loopback peer, so it counts too. */
+ * reports a v4 loopback peer, so it counts too. Never through the web
+ * door, whatever the peer: there, a session is who somebody is. */
 export function isLoopbackPeer(req: IncomingMessage): boolean {
+  if (isWebDoor(req)) return false;
   const addr = req.socket?.remoteAddress;
   if (!addr) return false;
   const bare = addr.startsWith("::ffff:") ? addr.slice(7) : addr;

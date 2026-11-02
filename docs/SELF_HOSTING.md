@@ -13,6 +13,10 @@ box at home. Your devices reach it one of two ways, or both:
   Bloks Cloud's in the path. `BLOKS_CLOUD=off` makes sure nothing goes
   there or to bloks.dev at all. See [Reached your own way](#reached-your-own-way).
 
+Either way, people can also open it in a browser at an address of your
+own, signed in with your identity provider (see [Signing in from a
+browser](#signing-in-from-a-browser-with-your-own-identity-provider)).
+
 With Docker, [DOCKER.md](DOCKER.md) takes you from nothing to a paired
 server the second way with `docker compose up`.
 
@@ -125,7 +129,7 @@ the agents, which run on this server, never needed it:
 | Needs Bloks Cloud or bloks.dev | Instead, your own way |
 | --- | --- |
 | Reaching the server from anywhere, and a pairing link from anywhere | Your address, through your proxy, tunnel or VPN |
-| A browser at bloks.dev/web | The desktop app at your address |
+| A browser at bloks.dev/web | A browser at your own address through the web door (below), or the desktop app at your address |
 | The iPhone app from anywhere, and what reaches a locked phone: notifications and Live Activities | The iPhone app while it is open, at an http address on your VPN or network |
 | Email to agents, WhatsApp | Telegram, Slack, Discord and Signal, which each connect out on their own |
 | People in your workspace (a Bloks Team plan, which bloks.dev checks), and the Plan page | Reaching your agents yourself, from each of your devices |
@@ -162,6 +166,160 @@ on its own (`OLLAMA_HOST` when it is not on this machine). Claude Code
 reads `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_MODEL`
 from the environment Bloks runs in, for a gateway that speaks
 Anthropic's API in front of your own model.
+
+## Signing in from a browser, with your own identity provider
+
+Bloks Cloud is one way in. The other is the one self-hosted apps
+usually offer: a page at an address of your own (behind the reverse
+proxy you already run) that everybody signs in to with the account they
+already have in Authentik, Keycloak, Authelia, Google or any other
+OpenID Connect provider. Bloks calls it the web door. It is off until
+you set `BLOKS_WEB_URL`, and it needs a provider: there is no password
+of Bloks' own to sign in with.
+
+It is a listener of its own, apart from the loopback port, and nothing
+that comes through it is treated as the computer itself: an agent's
+credential, pairing and the terminal are never reachable there,
+whatever your proxy sends. A signed in browser holds one session
+cookie (HttpOnly, SameSite=Strict, Secure on https), and that cookie is
+all it has.
+
+| Variable | What it does |
+| --- | --- |
+| `BLOKS_WEB_URL` | The address browsers open, like `https://bloks.example.com`. https, nothing after the host. Turns the web door on. |
+| `BLOKS_WEB_LISTEN` | Where the web door listens. Defaults to `127.0.0.1:8790`. In a container, `0.0.0.0:8790`, with only your proxy able to reach that port. |
+| `BLOKS_OIDC_ISSUER` | The provider's issuer URL. Its discovery document (`/.well-known/openid-configuration`) is read from there. |
+| `BLOKS_OIDC_CLIENT_ID` | The client ID you made at the provider. |
+| `BLOKS_OIDC_CLIENT_SECRET` | Its client secret. Keep it in the environment, never in a file the workspace backs up. |
+| `BLOKS_OIDC_REDIRECT_URL` | Defaults to `BLOKS_WEB_URL` plus `/auth/callback`, which is the only value it may have. Register that address at the provider. |
+| `BLOKS_OIDC_OWNER` | Who you are: the value of the person claim (below) for your own account. That identity signs in as the owner. Unset, the owner signs in only from paired devices. |
+| `BLOKS_OIDC_PERSON_CLAIM` | The claim that says who somebody is. Defaults to `sub`, which never changes; `email` works when the provider verifies addresses. One identity is one person in Bloks. |
+| `BLOKS_OIDC_ALLOWED_GROUPS` | Comma separated. Only people in one of these groups may sign in (you excepted). |
+| `BLOKS_OIDC_ALLOWED_EMAILS` | Comma separated addresses, or domains written `@example.com`. Either list lets somebody in. With neither, whoever the provider lets through may sign in, which is the provider's own rule for the application. |
+| `BLOKS_OIDC_GROUPS_CLAIM` | Where the groups are. Defaults to `groups`. |
+| `BLOKS_OIDC_AUTO_CREATE=1` | Somebody allowed who signs in for the first time becomes a member, without an invite. Needs one of the allow lists. |
+| `BLOKS_OIDC_ADMIN_GROUP` | Members in this group are admins, and members who are not in it are members, as of each sign in. Unset, roles are set on the Members page. |
+| `BLOKS_OIDC_SCOPES` | Defaults to `openid profile email`, plus `groups` once a group setting is used. |
+| `BLOKS_OIDC_NAME` | What the button says: "Sign in with Authentik". Defaults to "single sign-on". |
+
+How people get in:
+
+- **You** sign in as the owner when your identity is `BLOKS_OIDC_OWNER`,
+  and get what one of your paired devices gets, apart from the
+  terminal. Settings, General says who you are signed in as, with Sign
+  out; Settings, Members is where you manage people.
+- **Somebody you invite** opens the invite's link (it points at
+  `BLOKS_WEB_URL/join`), sees who invited them, signs in with the
+  provider, and waits while you compare the same four words on the
+  Members page, as with any invite. The join password, when you set
+  one, is asked for first. No app and no command line.
+- **Anybody in the allowed groups**, when `BLOKS_OIDC_AUTO_CREATE=1`,
+  is a member from their first sign in, an admin when they are in
+  `BLOKS_OIDC_ADMIN_GROUP`.
+- **Removing somebody** on the Members page signs their browser out at
+  once; signing in again does not bring them back. Members are part of
+  Bloks Team, as they are everywhere else.
+
+### Authentik, step by step
+
+1. In the admin interface, **Applications, Providers, Create**, choose
+   **OAuth2/OpenID Provider**.
+   - Name: `Bloks`. Authorization flow: the default explicit or implicit
+     consent flow.
+   - Client type: **Confidential**. Note the client ID and secret.
+   - Redirect URIs: `https://bloks.example.com/auth/callback` (strict).
+   - Signing Key: pick a certificate, such as the
+     `authentik Self-signed Certificate`. Bloks only accepts tokens
+     signed with a published key, never with the client secret.
+   - Advanced protocol settings, Scopes: keep `openid`, `email` and
+     `profile`. Authentik's profile scope carries the groups.
+2. **Applications, Create**: name `Bloks`, slug `bloks`, provider
+   `Bloks`. Launch URL `https://bloks.example.com`.
+3. Make a group for the family, say `family`, and one for admins,
+   say `bloks-admins`, and put people in them. You can also bind the
+   application to the `family` group, so Authentik itself turns
+   everybody else away.
+4. Set the environment where Bloks runs and restart it:
+
+   ```sh
+   BLOKS_WEB_URL=https://bloks.example.com
+   BLOKS_WEB_LISTEN=0.0.0.0:8790
+   BLOKS_OIDC_NAME=Authentik
+   BLOKS_OIDC_ISSUER=https://auth.example.com/application/o/bloks/
+   BLOKS_OIDC_CLIENT_ID=...
+   BLOKS_OIDC_CLIENT_SECRET=...
+   BLOKS_OIDC_OWNER=...           # your user's sub, see below
+   BLOKS_OIDC_ALLOWED_GROUPS=family
+   BLOKS_OIDC_ADMIN_GROUP=bloks-admins
+   BLOKS_OIDC_AUTO_CREATE=1
+   ```
+
+   The issuer is the provider's **OpenID Configuration Issuer**, shown on
+   its page in Authentik. For `BLOKS_OIDC_OWNER`, Authentik's `sub` is a
+   hash by default; the simplest is to set the provider's **Subject
+   mode** to "Based on the User's username" or "Based on the User's
+   Email" and use that, or keep the hash and copy it from the server's
+   log after your first sign in.
+5. Point your reverse proxy at port 8790, over https:
+
+   ```caddyfile
+   bloks.example.com {
+       reverse_proxy bloks:8790
+   }
+   ```
+
+   Server-sent events carry the replies as they are written, so a proxy
+   that buffers responses (nginx does, by default) needs
+   `proxy_buffering off;` for this location.
+6. Open `https://bloks.example.com` and sign in. The server's log says
+   why when a sign in is refused (a group, an address, a token that did
+   not check out); the page itself says only what the person can do
+   about it.
+
+### Keycloak
+
+Make a client in your realm: Client authentication on, Standard flow on,
+Valid redirect URIs `https://bloks.example.com/auth/callback`. Groups are
+not in tokens by default: add a **Group Membership** mapper to the
+client's dedicated scope, with token claim name `groups` and **Full group
+path** off (Bloks also accepts `/family` for `family`). Then:
+
+```sh
+BLOKS_OIDC_ISSUER=https://keycloak.example.com/realms/home
+BLOKS_OIDC_NAME=Keycloak
+```
+
+### Google
+
+In Google Cloud, **APIs and Services, Credentials, Create credentials,
+OAuth client ID**, type Web application, with the redirect URI above.
+Google has no groups and knows every Google account, so name who may
+come in by address:
+
+```sh
+BLOKS_OIDC_ISSUER=https://accounts.google.com
+BLOKS_OIDC_NAME=Google
+BLOKS_OIDC_PERSON_CLAIM=email
+BLOKS_OIDC_OWNER=you@gmail.com
+BLOKS_OIDC_ALLOWED_EMAILS=partner@gmail.com,@yourfamily.example
+```
+
+Authelia, Zitadel, Kanidm, Pocket ID and the rest work the same way:
+their issuer, a confidential client with the redirect URI, and, for
+groups, the `groups` scope.
+
+### People and their agents, from the browser
+
+Settings, Members works in the browser as it does in the app: invite
+someone (a link to copy, as a member or an admin), see invitations
+waiting and cancel them, let in somebody who asked, change a role, set
+limits, remove someone. Admins have the same page in their own app,
+apart from the join password and the switches that are yours.
+
+**Members' own agents** lists the agents members made for themselves,
+by name and maker, for you and your admins. Delete one and it goes with
+its conversations: nobody reads them first, and the record says who
+deleted it and whose it was.
 
 ## A systemd service
 

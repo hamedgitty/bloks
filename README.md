@@ -174,6 +174,10 @@ What they get is decided by you:
 - **Limits per person.** What each member may spend on your API keys a
   month, their share of Bloks AI, and how many solo agents they may
   make. A member at their limit is stopped; nobody else notices.
+- **Their own agents, never read.** You and your admins see the agents
+  members made for themselves, by name and maker, and can delete one:
+  it goes with its conversations, unread, and the record says who did
+  it.
 
 Every agent they talk to runs on your computer, with your engines, and
 they never reach your settings, your keys or your own conversations.
@@ -467,7 +471,11 @@ over.
   VPN, on your own models (a self-hosted Qwen on any OpenAI-compatible
   server), with `BLOKS_CLOUD=off` sending nothing to Bloks Cloud or
   bloks.dev; your desktop app pairs at your address and talks to it
-  directly. See [docs/DOCKER.md](docs/DOCKER.md).
+  directly. See [docs/DOCKER.md](docs/DOCKER.md). Open it in a browser at
+  an address of your own, too, signed in with Authentik, Keycloak, Google
+  or any OpenID Connect provider: you as the owner, your family or team
+  from an invite link or straight from a group, and the Members page
+  there to manage them.
   Or let Bloks run one for you: managed hosting is a private machine
   of your own that stays on, and moves your agents over when you sign up
   at [bloks.dev/pricing](https://bloks.dev/pricing). On Windows, the

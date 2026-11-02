@@ -101,6 +101,21 @@ test("tool activity shows its kind, never its arguments", () => {
   assert.equal(toolKind("mcp__composio__GMAIL_SEND"), "Used a connected app");
 });
 
+test("the agents members made for themselves are an admin's to list and delete, nobody else's", () => {
+  const none = () => null;
+  for (const [method, path] of [
+    ["GET", "/api/workspace/member-agents"],
+    ["DELETE", "/api/workspace/member-agents/b_1"],
+  ] as const) {
+    assert.equal(memberCan(method, path, none, noInvites, "admin").ok, true, `${method} ${path} for an admin`);
+    assert.equal(memberCan(method, path, none, noInvites, "member").ok, false, `${method} ${path} for a member`);
+    assert.equal(memberCan(method, path, none, noInvites, null).ok, false, `${method} ${path} for a guest`);
+  }
+  // and nothing that would read one
+  assert.equal(memberCan("GET", "/api/workspace/member-agents/b_1", none, noInvites, "admin").ok, false);
+  assert.equal(memberCan("GET", "/api/workspace/member-agents/b_1/messages", none, noInvites, "admin").ok, false);
+});
+
 test("members never receive command text, whatever the room's activity setting", () => {
   const row = msg({ kind: "activity", tool: { name: "shell", command: "printf '[redacted]'", ok: false, stopped: true } });
   const hidden = memberMessage(row, view())!;
