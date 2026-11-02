@@ -240,6 +240,8 @@ const PAGE_HEADERS = {
     "default-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
+    // voices play from a blob the page made of the fetched audio
+    "media-src 'self' blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "object-src 'none'",

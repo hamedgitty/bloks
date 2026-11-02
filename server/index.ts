@@ -785,6 +785,10 @@ const SECURITY_HEADERS = {
     // Vite inlines a small style block, and the theme sets colors inline
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
+    // a voice is fetched, then played from a blob the page made itself;
+    // without blob: here every preview and every spoken reply is refused
+    // as "no supported source"
+    "media-src 'self' blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
     // the Local VM's desktop viewer, published on loopback only; without

@@ -78,6 +78,8 @@ test("a page from elsewhere is turned away, and the window's own page is pinned 
     const page = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+    // and may play the voices it fetched, which it does from a blob
+    assert.match(page.headers.get("content-security-policy") ?? "", /media-src 'self' blob:/);
     // and its own requests get past the door (the relay here answers
     // nobody, so what comes back is the proxy's own "could not reach")
     const own = await ask({ host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
