@@ -455,11 +455,11 @@ Approval: none needed.`,
   {
     id: "using-bloks",
     name: "Using Bloks",
-    description: "Read before acting on Bloks itself for the person: hiring, a new conversation tab or a handoff, rooms, routines, watchers, sharing files, and what only the person can do",
+    description: "Read before acting on Bloks itself for the person: hiring, a new conversation tab or a handoff, rooms, routines, watchers, their list of things to do, sharing files, and what only the person can do",
     // Every command `bloks help` lists is named here, which
     // test/agent-tab.test.ts holds it to, so a command added to the CLI
     // without a line here fails the build rather than going unmentioned.
-    body: `Use this when the person asks you to do something in Bloks itself: hire or brief an agent, open a new conversation tab, hand work on, set up a room, schedule or watch for something, share a file, or arrange the sidebar. You do it with the bloks command line. Run \`bloks help\` for the exact flags of the version installed; this says which command fits.
+    body: `Use this when the person asks you to do something in Bloks itself: hire or brief an agent, open a new conversation tab, hand work on, set up a room, schedule or watch for something, put something on their list to do, share a file, or arrange the sidebar. You do it with the bloks command line. Run \`bloks help\` for the exact flags of the version installed; this says which command fits.
 
 Not for: the work itself. Do what was asked; reach for these only when Bloks has to change.
 
@@ -482,6 +482,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 - \`post\` puts work on the job board for whoever takes it; \`jobs\` reads it.
 - \`pause\`, \`pauses\` and \`unpause\` hold an engine for your own work, up to a day.
 - \`incident\` reads a failure you lead and retries it once, hands it on, or tells the person.
+- \`todo "<what to do>" --key <name>\` puts something only the person can do on their list, which waits for them in the morning brief and is counted there: a routine's report that finds a disk to replace or a reply they owe. Use the same --key every time you report the same thing, so it stays one line; \`untodo <name>\` clears it once it no longer needs doing, and \`todos\` shows where each stands (open, done, dismissed). Never for what is only information or already recovered, and never to ask a question you can ask in the chat.
 
 ## Files, answers and the person
 - \`quiet\` accepts a quiet finish for the current eligible turn when nothing needs the person. Run it before writing text, then let the turn finish. A refused or uncertain call requires a substantive reply; use the legacy QUIET word only if the command is unavailable.
@@ -560,7 +561,7 @@ An intent is up to twelve phrases; when one comes up in a conversation it posts 
 \`/goal\` in the chat gives a conversation a goal: what done looks like, a check that must exit 0, and up to a hundred turns (twenty unless said). It keeps going until done, stuck or out of turns. You: \`goal\` reads it. Only the person sets, pauses or clears one.
 
 ## The morning brief
-On Overview, written each morning from what is on disk, with no model call: what each agent did, what waits on the person and what it cost. They choose the time, the notification, whether a quiet morning notifies, and the sections. Where: Overview (\`overview\`), Customize the brief. You: \`settings propose\` brief.enabled, brief.time, brief.notify, brief.allClear, brief.section.<name>.
+On Overview, written each morning from what is on disk, with no model call: what each agent did, what waits on the person and what it cost. What waits on them is their open questions and approvals, and their list of things to do, which agents add to with \`todo\` and the person marks done or dismisses there; the morning notification counts all of it. They choose the time, the notification, whether a quiet morning notifies, and the sections. Where: Overview (\`overview\`), Customize the brief. You: \`settings propose\` brief.enabled, brief.time, brief.notify, brief.allClear, brief.section.<name>; \`todo\`, \`todos\` and \`untodo\` for your own lines on their list.
 
 ## Skills and their versions
 Skills are instructions agents pick up, from the library; a SKILL.md sitting in a folder is not one until it is added. A skill can keep supporting files beside its instructions (references, scripts), read only when needed. With suggestions on, Bloks offers a new skill after a turn that worked something out, or a change after a skill was corrected. An agent asked to make a skill sends it whole on a card in the conversation, and Add puts it in the library and gives it to that agent. Every version is kept: who, why, compare, restore. Where: Plugins, Skills (\`plugins:skills\`); Settings, Behaviour, Suggest skills (\`behaviour\`); Settings, Plugins (\`plugins\`). You: \`skills\`, \`skill\`, \`skill revise\` (a proposal), \`skill create\` (a request); \`settings propose skills.learn\`. Only the person: keeping, editing, restoring, installing, adding a skill you asked for.

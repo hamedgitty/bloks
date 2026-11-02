@@ -17,6 +17,9 @@
 // which sections are pinned to the top, in what order, and which are
 // hidden. And it is the one notification of the morning: a routine set
 // to report here says nothing on its own, and the brief says it once.
+// What waits on the person is counted, not read out of reports: a live
+// question or approval, or a todo an agent put on their list because a
+// report found something only they can do (server/todos.ts).
 //
 // Everything here is pure; the server gathers the inputs.
 
@@ -38,9 +41,20 @@ export interface BriefWaiting {
   /** What it is asking, in its own words. */
   title: string;
   threadId: string;
+  /** The card's message, or for a todo, the todo's own id. */
   messageId: string;
   requestId?: string;
-  kind: "approval" | "question";
+  /** A todo (server/todos.ts) is something an agent found the person has
+   * to do themselves, which no card in a conversation asks: a client that
+   * knows only the first two kinds reads it as a question, and opening it
+   * opens the conversation it was said in. */
+  kind: "approval" | "question" | "todo";
+  /** A todo's: its id, why in a line, the routine that said it, and when
+   * it was first said. */
+  todoId?: string;
+  detail?: string;
+  routine?: string;
+  since?: number;
 }
 
 /** What the nightly tidy did to one agent's memory (server/memory-tidy.ts):
@@ -462,6 +476,10 @@ export function gist(text: string, sentences = 2, max = 240): string {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Words said aloud end as a sentence does, so the next line is heard as
+ * the next one: a todo's title is written as a line, with no stop. */
+const sentence = (words: string) => (!words || /[.!?…]$/.test(words) ? words : `${words}.`);
+
 function timeOfDay(now: number): string {
   const hour = new Date(now).getHours();
   return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -593,7 +611,13 @@ export function composeBrief(input: BriefInput, id: string): Brief {
   };
 
   const closingLines = [
-    ...waiting.slice(0, 5).map((w) => `${w.name} ${w.kind === "approval" ? "wants your OK to" : "asks"}: ${gist(w.title, 1, 140)}`),
+    ...waiting
+      .slice(0, 5)
+      .map((w) =>
+        w.kind === "todo"
+          ? `For you, from ${w.name}: ${sentence(gist(w.title, 1, 140))}`
+          : `${w.name} ${w.kind === "approval" ? "wants your OK to" : "asks"}: ${gist(w.title, 1, 140)}`,
+      ),
     ...incidents.slice(0, 5).map((i) => `${i.title} failed: ${gist(i.why, 1, 140)}.${i.needs ? ` It needs you: ${gist(i.needs, 1, 140)}` : ""}`),
     ...failing.slice(0, 5).map((f) => `The ${f.kind} ${f.name} kept failing, so it is paused: ${gist(f.error, 1, 140)}.`),
     ...ready.map((r) => `${plural(r.count, r.label, r.many)} ready for a look.`),

@@ -630,6 +630,42 @@ const COMMANDS = {
       return request("POST", `/api/bots/${me.botId ?? me.id}/notes`, { text });
     },
   },
+  todo: {
+    use: 'todo "<what the person has to do>" --key <name> [--detail "<why, in a line or two>"]',
+    about:
+      "put something the person has to do themselves on their list: one line of what to do, as they would write it (\"Replace the failing disk in the NAS\"), and a key that is your name for the thing. " +
+      "Their list waits for them in the morning brief and is counted there, and only they see it. Say it again with the same --key every time you report the same thing: it stays one line, with your newest words. " +
+      "Only what needs them to act; what is only for their information, or already recovered, stays in your answer. The answer says whether it was added, updated, reopened after they marked it done, or is one they dismissed",
+    run: async (args) => {
+      const flags = parseFlags(args);
+      const title = positional(args).join(" ").trim();
+      if (!title) throw new Error('todo needs what the person has to do, like todo "Renew the TLS certificate" --key tls-cert');
+      const me = await request("GET", "/api/agent/whoami");
+      return request("POST", `/api/bots/${me.botId ?? me.id}/todos`, {
+        title,
+        ...(flags.key && flags.key !== "true" ? { key: flags.key } : {}),
+        ...(flags.detail && flags.detail !== "true" ? { detail: flags.detail } : {}),
+      });
+    },
+  },
+  todos: {
+    use: "todos",
+    about: "what you put on the person's list, by key, and where each stands: open, done (they did it), dismissed (not for them) or cleared (by you)",
+    run: async () => {
+      const me = await request("GET", "/api/agent/whoami");
+      const { todos } = await request("GET", `/api/bots/${me.botId ?? me.id}/todos`);
+      return (todos ?? []).map((t) => ({ ...t, firstAt: localStamp(new Date(t.firstAt)), at: localStamp(new Date(t.at)), ...(t.closedAt ? { closedAt: localStamp(new Date(t.closedAt)) } : {}) }));
+    },
+  },
+  untodo: {
+    use: "untodo <key>",
+    about: "clear something you put on the person's list once it no longer needs doing: it was fixed, or it went away. Said again later, it is a new line",
+    run: async (args) => {
+      if (!args[0]) throw new Error("untodo needs the key you gave it, from `todos`");
+      const me = await request("GET", "/api/agent/whoami");
+      return request("DELETE", `/api/bots/${me.botId ?? me.id}/todos/${encodeURIComponent(args[0].toLowerCase())}`);
+    },
+  },
   "message-person": {
     use: 'message-person "<their name>" "<the message>"',
     about:

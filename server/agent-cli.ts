@@ -255,6 +255,11 @@ export const RULES: Rule[] = [
   { method: "POST", path: "/api/bots/:id/interrupt", why: "stop the current turn of an agent it hired or leads in a room" },
   { method: "POST", path: "/api/bots/:id/archive", why: "archive an agent it hired, once that agent has nothing left to do" },
   { method: "POST", path: "/api/bots/:me/notes", why: "suggest a short note about the person, for them to keep or not" },
+  // The person's list (server/todos.ts): its own lines only, by its own
+  // keys. The person closes a line through /api/todos, which stays shut.
+  { method: "GET", path: "/api/bots/:me/todos", why: "see what it put on the person's list, and whether each is still open, done or dismissed" },
+  { method: "POST", path: "/api/bots/:me/todos", why: "put something the person has to do themselves on their list, one line however often it is reported; it waits for them in the morning brief" },
+  { method: "DELETE", path: "/api/bots/:me/todos/:id", why: "clear something it put on the person's list once it no longer needs doing" },
   // The same secure field the request_secret tool plants, for an engine
   // that has no such tool. Asking is not a permission: the person still
   // types the value, and the agent never sees it in the chat.
@@ -394,6 +399,9 @@ export const NEVER = [
   // and to a skill an agent asked to add: asking is an agent's, the Add
   // is theirs
   "/api/skill-requests",
+  // the person's list as they see it, and closing a line on it: an agent
+  // adds to it and clears its own through /api/bots/:me/todos
+  "/api/todos",
 ];
 
 const PATH_PART = /^[\w.-]+$/;

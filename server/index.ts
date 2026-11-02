@@ -504,7 +504,7 @@ import {
 } from "./connections.ts";
 import { checkGitHubCli, execRunner, ghHint, GH_SETUP_GIT, GH_SIGN_IN, type GitHubCliStatus } from "./cli-plugins.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
-import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, QUIET_COMMAND_ASK, type Routine, RoutineStore, scheduleProblem } from "./routines.ts";
+import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, QUIET_COMMAND_ASK, type Routine, RoutineStore, scheduleProblem, todoAsk } from "./routines.ts";
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
@@ -515,6 +515,7 @@ import { agentReadiness, engineReadiness, readinessWarning, type Readiness } fro
 import { indexMemory, indexMessages, mostOf, recallBlock, recallFrom, recallText, searchableText, termsOf, type IndexedSource, type RecallHit, type RecallMessage, type Speaker } from "./recall.ts";
 import { excerpt, IndexCache, rank, type TermIndex } from "./recall-index.ts";
 import { noteBriefing, ProfileNotes } from "./profile-notes.ts";
+import { sayNote, todoForAgent, TodoStore, type Todo } from "./todos.ts";
 import { accountName, nameRefusal } from "./owner-name.ts";
 import { arrangeSections, BRIEF_SECTIONS, briefDue, briefNotice, briefSettings, composeBrief, gist, parseBriefTime, parseLayout, routineResult, watcherResult, type Brief, type BriefResult, type BriefWaiting } from "./brief.ts";
 import { localDate } from "./usage.ts";
@@ -1066,6 +1067,9 @@ const enginePauses = new EnginePauses(join(DATA_DIR, "engine-pauses.json"));
 // Notes about the person, suggested by agents and kept by them
 // (server/profile-notes.ts), and how many each running turn has offered.
 const profileNotes = new ProfileNotes(join(DATA_DIR, "profile-notes.json"));
+// What agents found the person has to do themselves (server/todos.ts):
+// the owner's list, counted in the brief with what else waits on them.
+const todos = new TodoStore(join(DATA_DIR, "todos.json"));
 const notesThisTurn = new Map<string, number>();
 /** A turn offers a few notes at most: more than that is chatter. */
 const NOTES_PER_TURN = 3;
@@ -4014,7 +4018,8 @@ function saveBriefs() {
 }
 
 /** Everything waiting on a person right now: live questions and
- * approvals, wherever they were asked. */
+ * approvals, wherever they were asked, then what agents put on their
+ * list to do (server/todos.ts), the oldest first. */
 function waitingOnYou(): BriefWaiting[] {
   const out: BriefWaiting[] = [];
   const look = (threadId: string, fallbackBot?: BotRecord) => {
@@ -4038,7 +4043,71 @@ function waitingOnYou(): BriefWaiting[] {
   };
   for (const bot of store.bots) if (!bot.archivedAt) for (const task of bot.tasks) look(task.id, bot);
   for (const room of bloks.bloks) look(room.id);
+  // an archived agent's are paused with it, as its questions are
+  const open = todos.all().filter((t) => t.state === "open").sort((a, b) => a.firstAt - b.firstAt);
+  for (const todo of open) {
+    const bot = store.bot(todo.botId);
+    if (!bot || bot.archivedAt) continue;
+    const routine = todoRoutineName(todo);
+    out.push({
+      botId: bot.id,
+      name: bot.name,
+      title: todo.title,
+      threadId: todo.threadId,
+      messageId: todo.id,
+      kind: "todo",
+      todoId: todo.id,
+      ...(todo.detail ? { detail: todo.detail } : {}),
+      ...(routine ? { routine } : {}),
+      since: todo.firstAt,
+    });
+  }
   return out;
+}
+
+/** The name of the routine whose run said a todo: as it is called now,
+ * or as it was then when it has gone since. */
+function todoRoutineName(todo: Todo): string | undefined {
+  if (!todo.routineId) return undefined;
+  const routine = routines.get(todo.routineId);
+  return routine ? routine.name || gist(routine.prompt, 1, 60) : todo.routineName;
+}
+
+/** A todo as the owner's list shows it, with who said it. */
+function todoView(todo: Todo) {
+  const bot = store.bot(todo.botId);
+  const routine = todoRoutineName(todo);
+  return {
+    id: todo.id,
+    botId: todo.botId,
+    name: bot?.name ?? "An agent",
+    title: todo.title,
+    ...(todo.detail ? { detail: todo.detail } : {}),
+    threadId: todo.threadId,
+    ...(routine ? { routine } : {}),
+    firstAt: todo.firstAt,
+    at: todo.at,
+    times: todo.times,
+    state: todo.state,
+    ...(todo.closedAt ? { closedAt: todo.closedAt } : {}),
+  };
+}
+
+/** The owner's list: what is open, oldest first, then what was closed in
+ * the last week, newest first, so a brief from a few days ago can still
+ * say how each of its lines ended. An agent that is gone is left out,
+ * and an archived one's lines wait with it, as in waitingOnYou. */
+function todoList() {
+  const now = Date.now();
+  const mine = todos.all().filter((t) => {
+    const bot = store.bot(t.botId);
+    return bot && !bot.archivedAt;
+  });
+  const open = mine.filter((t) => t.state === "open").sort((a, b) => a.firstAt - b.firstAt);
+  const closed = mine
+    .filter((t) => t.state !== "open" && now - (t.closedAt ?? t.at) < 7 * 24 * 60 * 60_000)
+    .sort((a, b) => (b.closedAt ?? b.at) - (a.closedAt ?? a.at));
+  return [...open, ...closed].map(todoView);
 }
 
 /**
@@ -7892,7 +7961,14 @@ async function startClaimedTurn(
     (opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(task.id) : undefined) ?? turnPerson ?? "owner") === "owner";
   // offered the quiet word only where nobody waits on the turn (GitHub 461)
   if (opts.from) text = fromAgentPrompt(opts.from, text, !unaskedTurn(task.id) ? false : quietCommand ? "command" : "word");
-  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id), quietCommand);
+  // A routine's run that will carry the agent's own credential (the same
+  // test the credential is minted on, below) is told it can put what it
+  // finds on the person's list, with the command line it will have.
+  const routineCli =
+    opts.routine && !blok && !personSource && !sharing && !guestMail && !turnPerson && (opts.requester ?? "owner") === "owner" && runsAProcess(instance.driverKind)
+      ? placeNow ? CLI_FROM_ENV : CLI_COMMAND
+      : null;
+  if (opts.routine && !command) text = fromRoutinePrompt(opts.routine, text, blok ? null : lastReportFor(task.id), quietCommand, routineCli);
 
   // ── the transcript for API-backed drivers ──
   //
@@ -20082,15 +20158,20 @@ function fromServicePrompt(text: string) {
  * the system prompt, which a resumed session keeps byte for byte. `last`
  * is what the routine reported last time (lastReportNote), said only in
  * the turn as it goes: a replayed transcript has that answer in it
- * already. */
-function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string, last?: string | null, quietCommand = false) {
+ * already. `quietCommand` is a turn that has `bloks quiet`. `cli` is the
+ * command line of a turn that will carry the agent's own credential,
+ * whose run is told it can put what it finds on the person's list
+ * (todoAsk); a replayed transcript is for an engine with no command line,
+ * and never says it. */
+function fromRoutinePrompt(routine: NonNullable<Message["routine"]>, text: string, last?: string | null, quietCommand = false, cli?: string | null) {
   const quoted = routine.name ? JSON.stringify(routine.name).replace(/[\u0085\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`) : "";
   const name = quoted ? ` ${quoted}` : "";
   const started = routine.manual ? "was run by hand." : "started this turn on its schedule.";
   const quiet = routine.quiet ? ` ${quietCommand ? QUIET_COMMAND_ASK : QUIET_ASK}` : "";
   const brief = routine.brief ? ` ${BRIEF_ASK}` : "";
-  return `(Your routine${name} ${started}${quiet}${brief})\n\n${last ? `${last}\n\n` : ""}${text}`;
+  const todo = cli ? ` ${todoAsk(cli)}` : "";
+  return `(Your routine${name} ${started}${quiet}${brief}${todo})\n\n${last ? `${last}\n\n` : ""}${text}`;
 }
 
 /** How a routine's prompt is marked in the transcript: its name, whether
@@ -22319,6 +22400,7 @@ async function forgetAgent(bot: BotRecord, actor: "you" | null) {
   forgetIdentity(bot.id);
   proposals.removeForBot(bot.id);
   profileNotes.forgetSuggestionsBy(bot.id);
+  todos.forgetBot(bot.id);
   turnLog.forgetBot(bot.id);
   for (const w of watchers.filter((x) => x.botId === bot.id)) disarmWatcher(w.id);
   // its app watchers' triggers go too, or Composio keeps sending events
@@ -30117,6 +30199,65 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (asAgent) return json(res, 403, { error: "that is the person's list" });
       return json(res, 200, { waiting: waitingOnYou() });
     }
+
+    // ── the person's list (server/todos.ts) ──
+    // What agents found they have to do themselves. The owner reads it
+    // and closes a line, here or on a paired device; an agent adds to it
+    // and clears its own lines through /api/bots/:me/todos below, never
+    // through these (the agent guard keeps /api/todos shut to it). A
+    // member never reaches either.
+    if (method === "GET" && path === "/api/todos") {
+      if (asAgent) return json(res, 403, { error: "that is the person's list" });
+      return json(res, 200, { todos: todoList() });
+    }
+    m = path.match(/^\/api\/todos\/([\w-]+)\/(done|dismiss)$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "only the person closes a line on their list; clear your own with untodo" });
+      const closed = todos.close(m[1], m[2] === "done" ? "done" : "dismissed");
+      if (!closed || !store.bot(closed.botId)) return json(res, 404, { error: "no such todo" });
+      broadcast({ kind: "todos" });
+      return json(res, 200, { todo: todoView(closed) });
+    }
+    // An agent's own lines: what it put there and where each stands, a new
+    // one or the same one said again, and clearing one that no longer
+    // needs doing. Only from inside its own turn, on the owner's work: the
+    // full credential is only ever minted for the owner's turns, and a
+    // member's own agent tells its member in its answer instead.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/todos$/);
+    if (m && (method === "GET" || method === "POST")) {
+      if (!asAgent || asAgent.botId !== m[1]) return json(res, 403, { error: "an agent keeps its own lines on the person's list, from inside its turn" });
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such agent" });
+      if (method === "GET") return json(res, 200, { todos: todos.of(bot.id).map(todoForAgent) });
+      if (bot.solo && bot.solo.by !== "owner") return json(res, 403, { error: "the list is the owner's; say what your member has to do in your answer" });
+      const body = await readBody(req);
+      const run = openRuns.get(asAgent.taskId);
+      const routine = run ? routines.get(run.routineId) : null;
+      const said = todos.say(
+        { key: body.key, title: body.title, detail: body.detail },
+        {
+          botId: bot.id,
+          threadId: asAgent.taskId,
+          ...(routine ? { routine: { id: routine.id, name: routine.name || gist(routine.prompt, 1, 60) } } : {}),
+          now: Date.now(),
+        },
+      );
+      if (!said.ok) return json(res, 400, { error: said.error });
+      broadcast({ kind: "todos" });
+      return json(res, said.outcome === "added" || said.outcome === "reopened" ? 201 : 200, {
+        todo: todoForAgent(said.todo),
+        outcome: said.outcome,
+        note: sayNote(said.outcome),
+      });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/todos\/([\w.-]+)$/);
+    if (m && method === "DELETE") {
+      if (!asAgent || asAgent.botId !== m[1]) return json(res, 403, { error: "an agent keeps its own lines on the person's list, from inside its turn" });
+      const cleared = todos.clear(m[1], m[2]);
+      if (!cleared) return json(res, 404, { error: `you have nothing on the person's list under ${m[2]}; \`todos\` lists your keys` });
+      broadcast({ kind: "todos" });
+      return json(res, 200, { todo: todoForAgent(cleared) });
+    }
     // How another AI app starts Bloks' MCP server. The command is the
     // runtime this server itself runs on, so nothing else has to be
     // installed: in the packaged app that is Bloks, run as Node.
@@ -30221,6 +30362,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           return { ...x, kind: source ? source.kind : x.key, ...(source ? { name: source.name, ...(source.briefOnly ? { briefOnly: true } : {}) } : {}) };
         }),
         live,
+        // what agents put on the person's list, as it stands now: the
+        // newest brief shows it live, and an older one says how each of
+        // its lines ended
+        todos: todoList(),
         audio: Boolean(await briefVoice(null)),
       });
     }
@@ -32107,6 +32252,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // (server/incidents.ts), joined on beside the lanes
         incidents: incidents.open().map(incidentView),
         failing: failingAutomations(),
+        // how many lines are open on the person's list (server/todos.ts),
+        // for Overview's line and the rail's hint
+        todos: todos.all().filter((todo) => todo.state === "open" && store.bot(todo.botId) && !store.bot(todo.botId)!.archivedAt).length,
         ...assembleActivity({
           paused: wheel.all().map((hold) => ({
             botId: hold.botId,

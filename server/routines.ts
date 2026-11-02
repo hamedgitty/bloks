@@ -366,6 +366,14 @@ export const QUIET_COMMAND_ASK =
 export const BRIEF_ASK =
   "Your answer is shown on this routine's card in the person's morning brief, not as a notification: open with the outcome and anything that needs them, then the detail.";
 
+/** What a run with its agent's own command line adds to the same line: a
+ * report that finds something only the person can do puts it on their
+ * list (server/todos.ts), where the brief counts it, one line however
+ * many runs report it. */
+export function todoAsk(command: string): string {
+  return `If it finds something the person has to do themselves, put it on their list with \`${command} todo "<what to do>" --key <name>\`, the same key every run while it stands, and \`${command} untodo <name>\` once it no longer needs doing; what is only for their information stays in your answer.`;
+}
+
 /** The note a routine's next run carries about what it said last time,
  * or null before it has said anything. One line, cut to LAST_REPORT_MAX
  * with an ellipsis, so it reads as a reminder and not as instructions. */

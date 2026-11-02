@@ -99,7 +99,13 @@ test("a scheduled routine stores its source and sends one origin line, without b
   assert.equal(said.length, 1);
   assert.equal(said[0].via, "routine");
   assert.deepEqual(said[0].routine, { name: "Morning scan", manual: false });
-  assert.equal(f.requests()[0].text, '(Your routine "Morning scan" started this turn on its schedule.)\n\n' + prompt);
+  // one origin line, which on an engine with the agent's own command line
+  // also says how to put what the run finds on the person's list
+  const input = f.requests()[0].text;
+  const origin = input.slice(0, input.indexOf("\n\n"));
+  assert.ok(origin.startsWith('(Your routine "Morning scan" started this turn on its schedule. If it finds something the person has to do themselves,'), origin);
+  assert.match(origin, / todo "<what to do>" --key <name>`.* untodo <name>` once it no longer needs doing; what is only for their information stays in your answer\.\)$/);
+  assert.equal(input.slice(origin.length), "\n\n" + prompt);
   const turn = inFlight(f.home).find((entry: any) => entry.laneId === f.bot.threadId);
   assert.ok(turn);
   assert.equal(turn.byYou, undefined);
@@ -126,9 +132,14 @@ test("hand runs retain the prompt, optional name, and one escaped origin line", 
     assert.equal(said[0].via, "routine");
     assert.deepEqual(said[0].routine, routine.name ? { name: routine.name, manual: true } : { manual: true });
     const input = f.requests()[i].text;
-    const line = input.slice(0, input.indexOf("\n\n"));
-    assert.doesNotMatch(line, /[\u0000-\u001f\u0085\u2028\u2029\u202e]/);
-    assert.equal(input.slice(line.length), "\n\n" + item.prompt);
+    const origin = input.slice(0, input.indexOf("\n\n"));
+    assert.doesNotMatch(origin, /[\u0000-\u001f\u0085\u2028\u2029\u202e]/);
+    assert.equal(input.slice(origin.length), "\n\n" + item.prompt);
+    // the line's own words, without what this engine is told about the
+    // person's list, which follows them in the same parentheses
+    const todo = origin.indexOf(" If it finds something the person has to do themselves,");
+    assert.ok(todo > 0, origin);
+    const line = `${origin.slice(0, todo)})`;
     if (routine.name) {
       const quoted = line.slice('(Your routine '.length, -' was run by hand.)'.length);
       assert.equal(JSON.parse(quoted), routine.name);
