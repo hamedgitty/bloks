@@ -134,18 +134,31 @@ export function normalizeEntry(raw, index = 0) {
     entry.ownMark = isChoosableMark(raw.ownMark) ? { color: raw.ownMark.color, pattern: raw.ownMark.pattern } : null;
   }
   // Your own workspace on a machine run for you, or on a server you run,
-  // reached through Bloks Cloud with a device of yours paired there.
-  // Yours, so named and marked like any of your own; its credentials live
-  // in the keychain like a joined one's.
+  // reached through Bloks Cloud with a device of yours paired there, or,
+  // for a server, at an address of your own (server/self-host.ts), which
+  // `direct` says so the list can. Yours, so named and marked like any of
+  // your own; its credentials live in the keychain like a joined one's.
   if (kind === "hosted" || kind === "remote") {
     const host = raw.host && typeof raw.host === "object" ? raw.host : {};
     entry.host = {
       name: typeof host.name === "string" ? host.name.slice(0, 60) : "",
       relayUrl: typeof host.relayUrl === "string" ? host.relayUrl : "",
       lan: "",
+      ...(kind === "remote" && directOrigin(host.direct) ? { direct: directOrigin(host.direct) } : {}),
     };
   }
   return entry;
+}
+
+/** An http or https origin, as a direct server's address is kept, or null. */
+function directOrigin(value) {
+  if (typeof value !== "string" || value.length > 300) return null;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.origin === value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The registry as read from disk, or a fresh one when there is none or
@@ -323,8 +336,13 @@ export function freeName(registry, wanted, self = null) {
  * `same` is the id of the entry already paired with that server, which
  * the caller finds from the credentials it keeps.
  */
-export function addRemote(registry, { name = "", host = "", relayUrl = "", same = null } = {}, { now = Date.now(), random = Math.random, id = newId() } = {}) {
-  const hostInfo = { name: typeof host === "string" ? host.slice(0, 60) : "", relayUrl: typeof relayUrl === "string" ? relayUrl : "", lan: "" };
+export function addRemote(registry, { name = "", host = "", relayUrl = "", direct = "", same = null } = {}, { now = Date.now(), random = Math.random, id = newId() } = {}) {
+  const hostInfo = {
+    name: typeof host === "string" ? host.slice(0, 60) : "",
+    relayUrl: typeof relayUrl === "string" ? relayUrl : "",
+    lan: "",
+    ...(directOrigin(direct) ? { direct } : {}),
+  };
   const was = same ? registry.workspaces.find((w) => w.id === same && w.kind === "remote") : null;
   if (was) {
     const entry = { ...was, host: hostInfo, ...(cleanName(name) ? { name: freeName(registry, name, was.id) } : {}) };
@@ -816,7 +834,7 @@ export function snapshot(registry, live = {}, now = Date.now()) {
           : {}),
         // your own, on a machine run for you or a server you run
         ...(w.kind === "hosted" ? { remote: true } : {}),
-        ...(w.kind === "remote" ? { remote: true, host: w.host?.name ?? "" } : {}),
+        ...(w.kind === "remote" ? { remote: true, host: w.host?.name ?? "", ...(w.host?.direct ? { direct: w.host.direct } : {}) } : {}),
         // its work moved to the workspace named, and it is kept, paused
         ...(w.moved ? { movedTo: w.moved.to } : {}),
       };

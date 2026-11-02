@@ -139,6 +139,83 @@ export async function claimPairLink(link, name) {
   return { relayUrl: parsed.relayUrl, relayToken: parsed.relayToken, deviceId: reply.body.deviceId, deviceToken, host: reply.body.host || parsed.host || "Bloks" };
 }
 
+// ── pairing at an address of the owner's own ─────────────────────────
+// A server its owner reaches their own way (server/self-host.ts): behind
+// their reverse proxy or tunnel at an https address, or on their VPN or
+// home network at an http one, with Bloks Cloud nowhere in it. Its
+// `bloks-server pair` prints a link carrying that address, the one time
+// token and the six digit code, the same way a Mac's pairing code is
+// written for a phone; this app trades it in there, directly, and talks
+// to the server there with its own token from then on.
+
+/**
+ * The server's address and credential from a direct pairing link, or
+ * null when it is not one. Two spellings: address=host:port, plain http,
+ * the way a Mac's code has always been written; and url=, an https (or
+ * http) origin written whole. Nothing but an origin is taken: a path, a
+ * name and password, or another scheme makes it no link at all.
+ */
+export function parseDirectLink(link) {
+  let url;
+  try {
+    url = new URL(String(link).trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "bloks:" || url.hostname !== "pair") return null;
+  const keys = [...url.searchParams.keys()];
+  // a key twice is how a smuggled value gets past a reader that takes the first
+  if (new Set(keys).size !== keys.length) return null;
+  const token = url.searchParams.get("token") ?? "";
+  const code = url.searchParams.get("code") ?? "";
+  const credential = /^bloks_pair_[A-Za-z0-9_-]{32}$/.test(token) ? token : /^\d{6}$/.test(code) ? code : null;
+  if (!credential) return null;
+  let origin = null;
+  const written = url.searchParams.get("url");
+  const address = url.searchParams.get("address");
+  try {
+    const base = written ? new URL(written) : address ? new URL(`http://${address}`) : null;
+    if (base && (base.protocol === "https:" || base.protocol === "http:") && !base.username && !base.password && (base.pathname === "/" || base.pathname === "") && !base.search && !base.hash) {
+      origin = base.origin;
+    }
+  } catch {
+    origin = null;
+  }
+  if (!origin || (written && address)) return null;
+  const name = (url.searchParams.get("name") ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 60);
+  return { url: origin, credential, host: name };
+}
+
+/**
+ * Spends a direct pairing link on this app: the server makes the device
+ * token and hands it back once, over the connection this app opened to
+ * the address the owner gave. Returns the profile to keep.
+ */
+export async function claimDirectLink(link, name, { fetcher = fetch } = {}) {
+  const parsed = parseDirectLink(link);
+  if (!parsed) throw new Error("That is not a Bloks pairing link. Run bloks-server pair on the other computer for a fresh one.");
+  let res;
+  try {
+    res = await fetcher(`${parsed.url}/api/pair/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credential: parsed.credential, device: name }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new Error(`${parsed.url} could not be reached from this computer. Check the address works here, through your proxy, tunnel or VPN.`);
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || typeof body?.token !== "string" || typeof body?.device?.id !== "string") {
+    throw new Error(
+      res.status === 404 || res.status === 401 || res.status === 403 || res.ok
+        ? "That pairing link was already used or has expired. Run bloks-server pair again."
+        : `${parsed.url} answered HTTP ${res.status}. Is Bloks what answers there?`,
+    );
+  }
+  return { url: parsed.url, deviceId: body.device.id, deviceToken: body.token, host: parsed.host || "Bloks" };
+}
+
 // ── the stand-in server ────────────────────────────────────────────────
 
 const TYPES = {
@@ -781,17 +858,34 @@ export async function startRemoteProxy(profile, { staticDir, port = 0, onState =
  * network, else nowhere this app knows. */
 export function reachOf(profile) {
   if (profile?.relayUrl && profile.relayToken) return "relay";
+  // a server of your own at the address you gave it, paired directly
+  if (typeof profile?.url === "string" && directBase(profile.url)) return "direct";
   if (typeof profile?.lan === "string" && /^[0-9a-zA-Z.:[\]-]{3,80}$/.test(profile.lan)) return "lan";
   return null;
 }
 
+/** A kept direct address, read back as an origin, or null: the keychain
+ * holds what this app wrote, but a profile is checked before a token is
+ * sent anywhere it names. */
+function directBase(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.origin === value ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Serves the UI from `staticDir` and forwards the API to the owner's
- * computer on this network, with the member's own token. Resolves with
- * the port and a stop function.
+ * Serves the UI from `staticDir` and forwards the API, with this device's
+ * own token, to the owner's computer on this network (a member's joined
+ * workspace) or to a server of your own at its address. Resolves with the
+ * port and a stop function.
  */
 export async function startLanProxy(profile, { staticDir, port = 0, client, fetcher = fetch } = {}) {
-  const base = `http://${profile.lan}`;
+  const direct = reachOf(profile) === "direct";
+  const base = direct ? directBase(profile.url) : `http://${profile.lan}`;
+  const away = direct ? `${base} is not reachable from this computer right now` : "the owner's computer is not reachable on this network";
   const auth = { authorization: `Bearer ${profile.deviceToken}`, ...(client ? { "x-bloks-client": client } : {}) };
   const open = new Set();
   const serveStatic = (req, res) => serveStaticFrom(staticDir, req, res);
@@ -850,7 +944,7 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
     } catch (e) {
       const status = e?.status ?? 503;
       res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: status === 413 ? e.message : "the owner's computer is not reachable on this network" }));
+      res.end(JSON.stringify({ error: status === 413 ? e.message : away }));
     }
   });
   await new Promise((resolve, reject) => {

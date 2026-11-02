@@ -184,6 +184,8 @@ export interface Install {
   unit?: string;
   /** A systemd unit of the person's own (systemctl --user). */
   user?: boolean;
+  /** A container from the Bloks image, which compose.yml runs. */
+  image?: boolean;
   /** In a sentence, why it does or does not update itself. */
   why: string;
 }
@@ -273,6 +275,17 @@ export function installOf(f: InstallFacts): Install {
     };
   }
   if (f.container) {
+    // The Bloks image says so (Dockerfile, BLOKS_CONTAINER): its update is
+    // a newer image and the same volume, which compose.yml does in two lines.
+    if (f.env.BLOKS_CONTAINER === "image") {
+      return {
+        kind: "container",
+        canInstall: false,
+        home,
+        image: true,
+        why: "This server runs from the Bloks image, which decides what runs. Pull the new image and recreate the container; the workspace in its volume is kept.",
+      };
+    }
     return {
       kind: "container",
       canInstall: false,
@@ -1367,6 +1380,11 @@ export function manualSteps(install: Install, o: { version: string; downloads?: 
     case "checkout":
       return [`cd ${quoteIfNeeded(home)}`, "git pull", "pnpm install", "bloks-server drain", "then restart it the way you started it"];
     case "container":
+      // in the folder with compose.yml and .env (docs/DOCKER.md); a version
+      // pinned with BLOKS_VERSION there is raised there first
+      if (install.image) {
+        return [`set BLOKS_VERSION=${o.version} in .env, if it names a version`, "docker compose exec bloks bloks-server drain", "docker compose pull", "docker compose up -d"];
+      }
       return [
         ...fetchAndCheck,
         `tar -xzf ${name}`,

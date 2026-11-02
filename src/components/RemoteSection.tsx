@@ -1,6 +1,7 @@
 // Your servers: workspaces on computers you run that never sleep
-// (bloks-server), reached through Bloks Cloud, and whether this computer
-// runs workspaces of its own at all (GitHub 428).
+// (bloks-server), reached through Bloks Cloud or at an address of your
+// own (server/self-host.ts), and whether this computer runs workspaces of
+// its own at all (GitHub 428).
 //
 // Desktop only. In a browser or on a phone there is no "this app" to
 // pair. Each server is a workspace in the switcher like the ones here:
@@ -39,6 +40,13 @@ function health(ws: WorkspaceInfo): { tone: "on" | "wait" | "issue" | "off"; lab
   return { tone: "off", label: t("remoteSection.notOpenYet") };
 }
 
+/** How a server is reached: through Bloks Cloud, or at the address of
+ * its owner's own it was paired at (server/self-host.ts). */
+function where(ws: WorkspaceInfo): string {
+  if (ws.direct) return ws.host ? t("remoteSection.onHostAt", { host: ws.host, address: ws.direct }) : t("remoteSection.atAddress", { address: ws.direct });
+  return ws.host ? t("remoteSection.onHostShort", { host: ws.host }) : t("remoteSection.throughCloud");
+}
+
 function ServerRow({ ws, current }: { ws: WorkspaceInfo; current: boolean }) {
   const [busy, setBusy] = useState(false);
   const said = health(ws);
@@ -61,7 +69,7 @@ function ServerRow({ ws, current }: { ws: WorkspaceInfo; current: boolean }) {
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-ui font-medium text-foreground">{ws.name}</span>
         <span className="truncate text-small text-muted-foreground" title={ws.problem ?? undefined}>
-          {ws.status === "failed" && ws.problem ? ws.problem : ws.host ? t("remoteSection.onHostShort", { host: ws.host }) : t("remoteSection.throughCloud")}
+          {ws.status === "failed" && ws.problem ? ws.problem : where(ws)}
         </span>
       </span>
       <HealthLine tone={said.tone} label={said.label} />

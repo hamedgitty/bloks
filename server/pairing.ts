@@ -26,6 +26,7 @@ import { join } from "node:path";
 
 import { DATA_DIR, loadConfig, saveConfig, type AppConfig } from "./config.ts";
 import { readSaved } from "./atomic-write.ts";
+import { directDoor, listenAddress, publicUrls } from "./self-host.ts";
 
 /** A device that completed pairing. The token itself is shown exactly
  * once, at claim time, and only its digest is kept. */
@@ -166,7 +167,8 @@ function putDevices(list: PairedDevice[], beforeWrite?: () => void): AppConfig {
 export function remoteEnabled(config?: AppConfig): boolean {
   // bloks-server: no screen to flip the switch on, and nothing but the
   // relay can reach it (bindHost below keeps it on loopback), so the
-  // remote surface is on and the relay is its only door
+  // remote surface is on and the relay is its only door, or the door its
+  // owner gave it (server/self-host.ts)
   if (process.env.BLOKS_LOOPBACK_ONLY === "1") return true;
   return (config ?? loadConfig()).remote?.enabled === true;
 }
@@ -188,8 +190,11 @@ export function setRemoteEnabled(on: boolean): AppConfig {
  * reachablePeer's to say. */
 export function bindHost(): string {
   // bloks-server sets this: on a machine with a public address, Bloks
-  // Cloud is the only way in, whatever the pairing switch says
-  if (process.env.BLOKS_LOOPBACK_ONLY === "1") return "127.0.0.1";
+  // Cloud is the only way in, whatever the pairing switch says, unless
+  // whoever runs it said BLOKS_LISTEN (in a container, behind its
+  // published port), where a paired device's token is the way in
+  // (server/self-host.ts)
+  if (process.env.BLOKS_LOOPBACK_ONLY === "1") return listenAddress() ?? "127.0.0.1";
   return remoteEnabled() ? "::" : "127.0.0.1";
 }
 
@@ -419,12 +424,17 @@ export function pairingStatus(config: AppConfig = loadConfig()): PairingStatus {
   const enabled = remoteEnabled(config);
   // bloks-server stays on loopback by design, so no restart would ever
   // bring it onto the network, and no address on it is one a phone could
-  // dial: Bloks Cloud is the only door, and the status says so
-  const cloudOnly = process.env.BLOKS_LOOPBACK_ONLY === "1";
+  // dial: Bloks Cloud is the only door, and the status says so. Unless
+  // its owner gave it a door of their own (server/self-host.ts): then the
+  // addresses a phone dials are the ones they gave, never this machine's
+  // own, which in a container or behind a proxy reach nothing.
+  const headless = process.env.BLOKS_LOOPBACK_ONLY === "1";
+  const direct = headless && directDoor();
+  const cloudOnly = headless && !direct;
   return {
     enabled,
-    listening: boundToNetwork ? "network" : "loopback",
-    restartRequired: !cloudOnly && enabled !== boundToNetwork,
+    listening: boundToNetwork || direct ? "network" : "loopback",
+    restartRequired: !headless && enabled !== boundToNetwork,
     pending: pairingPending(),
     devices: devices(config).map((d) => ({
       id: d.id,
@@ -433,7 +443,7 @@ export function pairingStatus(config: AppConfig = loadConfig()): PairingStatus {
       ...(seen.has(d.id) ? { lastSeen: seen.get(d.id) } : {}),
       ...(clients.has(d.id) ? { client: clients.get(d.id) } : {}),
     })),
-    addresses: enabled && !cloudOnly ? lanAddresses() : [],
+    addresses: !enabled || cloudOnly ? [] : direct ? publicUrls() : lanAddresses(),
   };
 }
 

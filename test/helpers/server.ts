@@ -134,6 +134,12 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         BLOKS_TEST_PLATFORM: "",
         BLOKS_HOSTED_VNC: "",
         BLOKS_PUBLIC_URL: "",
+        // a server of the person's own, reached their own way
+        // (server/self-host.ts): a test that wants one says so
+        BLOKS_LISTEN: "",
+        BLOKS_CLOUD: "",
+        BLOKS_MODEL_URL: "",
+        BLOKS_MODEL_KEY: "",
         // tests speak as the dev UI (origin :5199), which a server serving
         // its own page does not trust
         BLOKS_STATIC_DIR: "",

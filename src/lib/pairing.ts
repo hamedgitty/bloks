@@ -54,6 +54,8 @@ export function pairLink(address: string, port: number, token: string, code: str
   if (!/^\d{6}$/.test(code)) return null;
   if (!/^bloks_pair_[A-Za-z0-9_-]{32}$/.test(token)) return null;
   if (!address || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  // a whole URL is a server's own address, whose link the server writes
+  if (address.includes("://")) return null;
   const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
   // The computer's own name, as the server reads it: the window's address
   // is always this machine's loopback and would have the phone ask to pair

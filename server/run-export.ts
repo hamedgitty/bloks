@@ -286,6 +286,8 @@ export function storedSecrets(cfg: Record<string, any>): string[] {
     cfg.home?.token,
     ...Object.values(isObject(cfg.providers) ? cfg.providers : {}).map((p: any) => p?.key),
     ...(Array.isArray(cfg.custom) ? cfg.custom : []).flatMap((endpoint: any) => (Array.isArray(endpoint?.keys) ? endpoint.keys.map((k: any) => k?.key) : [])),
+    // a model server's key given where Bloks runs, never in the file
+    process.env.BLOKS_MODEL_KEY?.trim(),
     ...Object.values(isObject(cfg.secrets) ? cfg.secrets : {}),
     ...(Array.isArray(cfg.connections) ? cfg.connections : []).map((c: any) => c?.token),
     cfg.credits?.licence,

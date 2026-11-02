@@ -89,6 +89,9 @@ export interface WorkspaceInfo {
   /** Your own workspace elsewhere, reached through Bloks Cloud: hosted on
    * a machine run for you, or on a server you run. */
   remote?: boolean;
+  /** For a server of yours paired at an address of your own instead of
+   * through Bloks Cloud: that address. */
+  direct?: string;
   /** A copy whose work moved to the workspace with this id, kept here,
    * paused, until it is removed (electron/hosting-move.mjs). */
   movedTo?: string;

@@ -677,6 +677,7 @@ import { RUN_WAIT_MAX_MS, Runs, type RunFile, type SeenMessage } from "./runs.ts
 import { briefOf, briefText, drawNames, planTeam, statedLooks, TeamPlanError, type TeamChange, type TeamPlan as TeamApplyPlan, type TeamWorld } from "./team-apply.ts";
 import { EXIT_RESTART, installFacts, installOf, ServerUpdater, SETTLED_MS, startHelper, UpdateError } from "./server-update.ts";
 import { deploymentOf, deploymentView, terminalRefusal } from "./deployment.ts";
+import { CLOUD_OFF, cloudOff, directDoor, directPairLink, listenProblem, publicUrlProblems, publicUrls, reachView } from "./self-host.ts";
 import { covers, EnginePauses, FAMILY_NAMES, familyOf, PAUSE_MAX_MS, PauseRefusal, SELF_PAUSE_MAX_MS, type EnginePause, type EngineRoute, type PauseActor } from "./engine-pauses.ts";
 import {
   AUTO_KEEP,
@@ -1372,6 +1373,8 @@ let catalog: { at: number; entries: RegistryEntry[] } | null = null;
 
 async function loadCatalog(force: boolean): Promise<RegistryEntry[]> {
   if (!force && catalog && Date.now() - catalog.at < CATALOG_TTL_MS) return catalog.entries;
+  // bloks.dev's, so not with Bloks Cloud off; a mirror named here still is
+  if (!process.env.BLOKS_SKILLS_URL && cloudOff()) throw new Error("the skill catalog is on bloks.dev, and Bloks Cloud is turned off on this server");
   const response = await fetch(process.env.BLOKS_SKILLS_URL || REGISTRY_URL, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(15_000),
@@ -1471,6 +1474,7 @@ let gallery: { at: number; teams: GalleryTeam[] } | null = null;
 
 async function loadGallery(force: boolean): Promise<GalleryTeam[]> {
   if (!force && gallery && Date.now() - gallery.at < CATALOG_TTL_MS) return gallery.teams;
+  if (!process.env.BLOKS_TEAMS_URL && cloudOff()) throw new Error("the team gallery is on bloks.dev, and Bloks Cloud is turned off on this server");
   const response = await fetch(process.env.BLOKS_TEAMS_URL || GALLERY_URL, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(15_000),
@@ -12874,7 +12878,7 @@ relayLink.ownerLink = () => (HOSTED ? makePairLink() : null);
  * (`hosted: true`), so an app can name it before pairing, and recognise a
  * second link to the same workspace as pairing it again. */
 function makePairLink(ttlMs?: number): { link: string; webLink: string; expiresAt: number; host: string } | null {
-  if (!cfg.relay?.enabled || !cfg.relay.url || !cfg.relay.clientToken) return null;
+  if (cloudOff() || !cfg.relay?.enabled || !cfg.relay.url || !cfg.relay.clientToken) return null;
   const made = createPairLink(ttlMs);
   const fragment = Buffer.from(
     JSON.stringify({
@@ -12913,10 +12917,11 @@ let licenceHeard = !(process as NodeJS.Process & { parentPort?: unknown }).paren
 const ownerPlan = new OwnerPlan(
   join(DATA_DIR, "owner-plan.json"),
   {
-    online: () => Boolean(cfg.relay?.enabled && cfg.relay.agentToken),
+    online: () => !cloudOff() && Boolean(cfg.relay?.enabled && cfg.relay.agentToken),
     relay: () => relayLink.plan(),
     licence: () => licenceKey() ?? (licenceHeard || Date.now() - startedAt > 20_000 ? null : undefined),
-    team: (licence) => credits.team(licence),
+    // with Bloks Cloud off nobody is asked, and the last answer stands
+    team: (licence) => (cloudOff() ? Promise.resolve(null) : credits.team(licence)),
   },
   (plan, was) => {
     // the owner's screens and the app hear it; a member paused now is
@@ -13511,9 +13516,11 @@ function syncRelay(config?: AppConfig) {
   // Pairing is the master switch. Turning pairing off is the documented
   // way to cut every remote device loose, and it must cut the relay too;
   // otherwise a relay phone keeps reaching the remote surface after the
-  // owner believes they closed the door.
+  // owner believes they closed the door. BLOKS_CLOUD=off where it runs
+  // is above both: no line at all, whatever the config kept from before
+  // (server/self-host.ts).
   const on =
-    remoteEnabled(config) && cfg.relay?.enabled && cfg.relay.url && cfg.relay.agentToken;
+    !cloudOff() && remoteEnabled(config) && cfg.relay?.enabled && cfg.relay.url && cfg.relay.agentToken;
   relayLink.configure(on ? { url: cfg.relay!.url!, agentToken: cfg.relay!.agentToken! } : null);
 }
 syncRelay();
@@ -21744,7 +21751,9 @@ function configStatus() {
     // the same machine asked apart (server/deployment.ts): an app, a
     // server the person runs, or managed hosting, and whether the owner's
     // own devices may open its terminal, for About to say rightly
-    deployment: deploymentView(DEPLOYMENT, computerName()),
+    // and how it is reached: Bloks Cloud on or off where it runs, and the
+    // addresses of its own its owner gave it (server/self-host.ts)
+    deployment: { ...deploymentView(DEPLOYMENT, computerName()), reach: reachView() },
     // what is already here, so a first run can offer to keep it rather
     // than silently dropping somebody into a stranger's-looking workspace
     workspace: (() => {
@@ -25682,12 +25691,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
 
     // ── the relay line ──
+    // With Bloks Cloud turned off where this runs, the line's state is
+    // still read (it says off, and why), and nothing that would ask the
+    // relay anything, or hand a device a way to, is done at all.
+    if (cloudOff() && (path === "/api/relay" || path.startsWith("/api/relay/")) && !(method === "GET" && (path === "/api/relay" || path === "/api/relay/status"))) {
+      if (!local && path !== "/api/relay/join") return json(res, 403, { error: "not from here" });
+      return json(res, path === "/api/relay/join" ? 404 : 409, { error: CLOUD_OFF, code: "cloud-off" });
+    }
     if (method === "GET" && path === "/api/relay") {
       if (!local) return json(res, 403, { error: "not from here" });
       return json(res, 200, {
         ...relayLink.state,
         url: cfg.relay?.url ?? "",
-        enabled: Boolean(cfg.relay?.enabled),
+        enabled: Boolean(cfg.relay?.enabled) && !cloudOff(),
+        ...(cloudOff() ? { cloud: "off", problem: CLOUD_OFF } : {}),
       });
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/relay") {
@@ -25921,6 +25938,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!windowHere && !(anywhere && planOwner)) {
         return json(res, 403, { error: "that is done on the computer this workspace runs on" });
       }
+      // the plan is bloks.dev's to say, and nothing goes there
+      if (cloudOff()) return json(res, 409, { error: CLOUD_OFF, code: "cloud-off" });
       const answered = await planRoute(method, path, url.searchParams, planDeps, planAccount);
       if (answered) {
         if (method === "GET" && path === "/api/plan") {
@@ -26009,11 +26028,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // that infers the last two from the first shows a green light while
       // the phone gets nothing.
       return json(res, 200, {
-        enabled: Boolean(cfg.relay?.enabled),
+        enabled: Boolean(cfg.relay?.enabled) && !cloudOff(),
         connected: relayLink.state.connected,
         delivering: relayLink.state.delivering,
         spaceId: relayLink.state.spaceId,
-        problem: relayLink.state.problem,
+        problem: cloudOff() ? CLOUD_OFF : relayLink.state.problem,
+        ...(cloudOff() ? { cloud: "off" } : {}),
         // Pairing is the master switch for every remote path, the relay
         // included (syncRelay), so a key can be accepted and the line
         // still never dial. Said outright, or the screen waits forever.
@@ -33431,6 +33451,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (method === "POST" && path === "/api/pair/link") {
       if (!pairingHere) return json(res, 403, { error: "not from here" });
       const made = makePairLink();
+      if (!made && cloudOff()) return json(res, 409, { error: CLOUD_OFF, code: "cloud-off" });
       if (!made) return json(res, 409, { error: "Turn on Bloks Cloud first: pairing from anywhere goes through it." });
       return json(res, 200, { link: made.link, webLink: made.webLink, expiresAt: made.expiresAt });
     }
@@ -33438,15 +33459,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!pairingHere) return json(res, 403, { error: "not from here" });
       if (!remoteEnabled()) return json(res, 409, { error: "turn on pairing first" });
       // bloks-server answers nothing on its network, so a code would be
-      // one no phone could ever trade in
-      if (process.env.BLOKS_LOOPBACK_ONLY === "1") {
+      // one no phone could ever trade in, unless its owner gave it a door
+      // of their own (server/self-host.ts)
+      const headless = process.env.BLOKS_LOOPBACK_ONLY === "1";
+      if (headless && !directDoor()) {
         return json(res, 409, { error: `Phones reach ${computerName()} only through Bloks Cloud. Pair with a link instead.`, code: "cloud-only" });
       }
       const started = startPairing();
       broadcast({ kind: "pairing", ...pairingStatus() });
       // this computer's own addresses on its network, never the device
-      // asking: a QR drawn on another computer still sends the phone here
-      return json(res, 200, { ...started, addresses: pairingStatus().addresses, port: PORT, name: computerName() });
+      // asking: a QR drawn on another computer still sends the phone here.
+      // A server with a door of its own says the addresses its owner gave,
+      // each with the link that pairs a device there.
+      const addresses = pairingStatus().addresses;
+      const links = headless
+        ? publicUrls().flatMap((url) => {
+            const link = directPairLink(url, started.token, started.code, computerName());
+            return link ? [{ url, link }] : [];
+          })
+        : undefined;
+      return json(res, 200, { ...started, addresses, port: PORT, name: computerName(), ...(links ? { links } : {}) });
     }
     if (method === "POST" && path === "/api/pair/cancel") {
       if (!pairingHere) return json(res, 403, { error: "not from here" });
@@ -34180,6 +34212,8 @@ function storedSecrets(): Array<string | undefined | null> {
     cfg.home?.token,
     ...Object.values(cfg.providers ?? {}).map((p) => p?.key),
     ...(cfg.custom ?? []).flatMap((endpoint) => endpoint.keys.map((cred) => cred.key)),
+    // a model server's key given where Bloks runs (server/self-host.ts)
+    process.env.BLOKS_MODEL_KEY?.trim(),
     ...Object.values(cfg.secrets ?? {}),
     ...connectionRecords().map((record) => record.token),
     // and every member's own apps key and keys
@@ -34236,6 +34270,14 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 settleSidebar();
 server.listen(PORT, BIND, () => {
   console.log(`bloks server on http://127.0.0.1:${PORT}`);
+  // A server of the person's own, reached their own way: said once, with
+  // whatever in its settings was not used and why (server/self-host.ts).
+  if (process.env.BLOKS_LOOPBACK_ONLY === "1") {
+    for (const problem of [listenProblem(), ...publicUrlProblems()]) if (problem) console.log(`[bloks] ${problem}`);
+    if (BIND !== "127.0.0.1") console.log(`[bloks] listening on ${BIND.includes(":") ? `[${BIND}]` : BIND}:${PORT} for paired devices`);
+    if (directDoor() && publicUrls().length) console.log(`[bloks] your devices pair at ${publicUrls().join(", ")}`);
+    if (cloudOff()) console.log("[bloks] Bloks Cloud is turned off here (BLOKS_CLOUD=off): nothing is sent to it");
+  }
   // the desktop app counts what is waiting from the first moment, not
   // from the first agent that changes
   tellDesktop({ kind: "hello" });

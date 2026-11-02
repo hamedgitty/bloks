@@ -107,10 +107,21 @@ interface Minted {
   code: string;
   port: number;
   name?: string;
+  /** A server reached at addresses of its owner's own (server/self-host.ts)
+   * says the link for each, since only it knows how each is written. */
+  links?: Array<{ url: string; link: string }>;
 }
 
+/** An address that is a whole URL: one its owner gave a server, rather
+ * than one of this computer's own on its network. */
+const isUrl = (address: string) => /^https?:\/\//.test(address);
+
 async function drawCode(minted: Minted, address: string | null): Promise<{ qr: string | null; hostPort: string | null }> {
-  const link = address ? pairLink(address, minted.port, minted.token, minted.code, minted.name) : null;
+  const link = !address
+    ? null
+    : isUrl(address)
+      ? (minted.links?.find((l) => l.url === address)?.link ?? null)
+      : pairLink(address, minted.port, minted.token, minted.code, minted.name);
   const qr = link
     ? await QRCode.toDataURL(link, {
         errorCorrectionLevel: "M",
@@ -119,8 +130,9 @@ async function drawCode(minted: Minted, address: string | null): Promise<{ qr: s
         color: { dark: "#111111", light: "#ffffff" },
       }).catch(() => null)
     : null;
-  // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing.
-  const hostPort = address ? `${address.includes(":") ? `[${address}]` : address}:${minted.port}` : null;
+  // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing;
+  // a URL is already what to type.
+  const hostPort = !address ? null : isUrl(address) ? address : `${address.includes(":") ? `[${address}]` : address}:${minted.port}`;
   return { qr, hostPort };
 }
 
@@ -374,6 +386,7 @@ function PairingControls() {
           code: started.code,
           port: started.port,
           name: typeof started.name === "string" ? started.name : undefined,
+          links: Array.isArray(started.links) ? started.links : undefined,
         };
         const { qr, hostPort } = await drawCode(made, address);
         if (!wanted.current) {

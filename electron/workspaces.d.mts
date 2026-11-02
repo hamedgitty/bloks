@@ -21,7 +21,7 @@ export interface WorkspaceEntry {
   accent: string | null;
   members: number | null;
   createdAt: number;
-  host?: { name: string; relayUrl: string; lan?: string };
+  host?: { name: string; relayUrl: string; lan?: string; direct?: string };
   role?: "member" | "admin";
   /** A joined workspace's mark as you chose it, seen only here. */
   ownMark?: Mark | null;
@@ -76,7 +76,7 @@ export function fallbackWorkspace(registry: Registry, except?: string | null): W
 export function freeName(registry: Registry, wanted: unknown, self?: string | null): string;
 export function addRemote(
   registry: Registry,
-  input?: { name?: string; host?: string; relayUrl?: string; same?: string | null },
+  input?: { name?: string; host?: string; relayUrl?: string; direct?: string; same?: string | null },
   options?: { now?: number; random?: () => number; id?: string },
 ): { registry: Registry; entry: WorkspaceEntry; replaced: boolean };
 export function localOffRefusal(registry: Registry): string | null;
@@ -166,5 +166,6 @@ export function snapshot(
     role?: "member" | "admin";
     lanOnly?: boolean;
     remote?: boolean;
+    direct?: string;
   }>;
 };

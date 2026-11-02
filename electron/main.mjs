@@ -49,7 +49,7 @@ import { menuLanguage, menuWords } from "./menu-words.mjs";
 import { drainWait } from "./drain-wait.mjs";
 import { mayLookAgain, newestBeforeInstall, updateFrame } from "./update-check.mjs";
 import { markInstall, restartIntoUpdate, takeInstallMark, within } from "./update-restart.mjs";
-import { claimPairLink, reachOf, startLanProxy, startRemoteProxy } from "./remote.mjs";
+import { claimDirectLink, claimPairLink, parseDirectLink, reachOf, startLanProxy, startRemoteProxy } from "./remote.mjs";
 import { nativeSettingsObservation } from "./settings-observation.mjs";
 import { sameAppOrigin } from "./navigation.mjs";
 import { installLink, joinLink, linkInArgv, planLink, teamLink } from "./links.mjs";
@@ -1682,8 +1682,9 @@ async function openJoined(run, ws) {
   try {
     const system = { darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] ?? process.platform;
     // the owner's own network when the membership has no way through Bloks
-    // Cloud; the same stand-in on loopback either way
-    const start = reachOf(profile) === "lan" ? startLanProxy : startRemoteProxy;
+    // Cloud, or a server of your own at the address you gave it; the same
+    // stand-in on loopback either way
+    const start = reachOf(profile) === "lan" || reachOf(profile) === "direct" ? startLanProxy : startRemoteProxy;
     // your own hosted workspace may be asleep, and the proxy waits for it
     // to wake rather than telling the window it failed
     const options = { staticDir: serverSource().ui, client: `${system} ${app.getVersion()}`, hosted: ws.kind === "hosted" };
@@ -4030,12 +4031,14 @@ function keepRemoteProfile(id, profile) {
 }
 
 /** The server workspace already paired with the server this pairing is
- * for: the same Bloks Cloud space, which only that server has. */
+ * for: the same Bloks Cloud space, which only that server has, or the
+ * same address of its owner's own. */
 function sameServer(profile) {
   for (const ws of registry.workspaces) {
     if (ws.kind !== "remote") continue;
     const kept = readJoinedProfile(ws.id);
     if (kept?.relayToken && kept.relayToken === profile.relayToken && kept.relayUrl === profile.relayUrl) return ws.id;
+    if (kept?.url && profile.url && kept.url === profile.url) return ws.id;
   }
   return null;
 }
@@ -4044,11 +4047,14 @@ function sameServer(profile) {
  * A pairing link from `bloks-server pair`, spent as a device of yours:
  * a new workspace listed for that server, or the one already listed for
  * it pointed at the new pairing, keeping its name and place. Opened once
- * it is listed. Unnamed, it takes the name its server goes by.
+ * it is listed. Unnamed, it takes the name its server goes by. A link
+ * through Bloks Cloud is claimed there; a link to an address of the
+ * owner's own (server/self-host.ts) is claimed at that address.
  */
 async function pairServer(link, name) {
-  const profile = await claimPairLink(link, `${os.hostname().replace(/\.local$/, "")} (desktop)`);
-  const added = addRemote(registry, { name, relayUrl: profile.relayUrl, same: sameServer(profile) });
+  const device = `${os.hostname().replace(/\.local$/, "")} (desktop)`;
+  const profile = parseDirectLink(link) ? await claimDirectLink(link, device) : await claimPairLink(link, device);
+  const added = addRemote(registry, { name, relayUrl: profile.relayUrl, direct: profile.url, same: sameServer(profile) });
   if (added.replaced) {
     // out of it while its stand-in is swapped for one with the new pairing
     if (shownId === added.entry.id) {

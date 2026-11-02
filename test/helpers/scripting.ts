@@ -24,11 +24,13 @@ import { startHarness, type Harness } from "./server.ts";
 
 export const CLI = fileURLToPath(new URL("../../bin/bloks-server.mjs", import.meta.url));
 
-export async function scriptingWorkspace(t: TestContext, extraEnv: Record<string, string> = {}) {
+/** `extraConfig` goes into config.json beside the stand-in engine, for a
+ * test that needs the workspace set up some way of its own first. */
+export async function scriptingWorkspace(t: TestContext, extraEnv: Record<string, string> = {}, extraConfig: Record<string, unknown> = {}) {
   const home = mkdtempSync(join(tmpdir(), "bloks-scripting-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
   const fake = join(home, "fake-claude.mjs");
-  writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ instances: { claude: { driver: "claudeAgent", config: { cli: fake } } } }));
+  writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ ...extraConfig, instances: { claude: { driver: "claudeAgent", config: { cli: fake } } } }));
   writeFileSync(
     fake,
     `#!${process.execPath}

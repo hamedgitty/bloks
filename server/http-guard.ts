@@ -51,6 +51,14 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   // be handed the entire local-only surface with no pairing token.
   if (!isLoopbackPeer(req)) return false;
 
+  // A request a proxy passed on is not from this machine, whatever peer
+  // address it arrives from. A reverse proxy or tunnel on the same box
+  // (Caddy, NGINX, cloudflared, `tailscale serve`) connects from loopback
+  // for somebody out on the internet, and NGINX's default even rewrites
+  // Host to 127.0.0.1, which would otherwise hand that somebody the whole
+  // local surface with no token. Every one of them says it forwarded.
+  if (forwarded(req)) return false;
+
   // Host must name the loopback interface, blocks DNS rebinding, where a
   // hostile domain resolves to 127.0.0.1 but still carries its own Host.
   const host = req.headers.host;
@@ -79,6 +87,16 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   } catch {
     return false;
   }
+}
+
+/** The headers proxies add to say a request came from somewhere else:
+ * the standard one, the de facto ones, and Cloudflare's and Tailscale's
+ * own, for a proxy set up to send only those. */
+const FORWARDED = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "cf-connecting-ip", "true-client-ip", "tailscale-user-login"];
+
+/** Whether a proxy says it passed this request on. */
+export function forwarded(req: IncomingMessage): boolean {
+  return FORWARDED.some((name) => req.headers[name] !== undefined);
 }
 
 /** The port `pnpm dev` serves the UI on (vite.config.ts), which proxies

@@ -20,6 +20,7 @@ import type { InstanceConfigMap } from "./contracts.ts";
 import { usableSecrets } from "./env-names.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
 import { CREDITS_KIND, CREDITS_SPEC, creditsCompatUrl, creditsEnvToken } from "./credits.ts";
+import { ENV_MODEL_ENDPOINT_ID, cloudOff, envModelEndpoint } from "./self-host.ts";
 
 /** One connected engine: the credential, plus an override for people
  * pointing at a proxy or a self-hosted endpoint. */
@@ -589,6 +590,19 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       environment: { [envVarFor(CUSTOM_SPEC.kind)]: cred.key },
     };
   }
+  // A model server named where Bloks runs (server/self-host.ts), the same
+  // engine as a custom host, from the environment each start rather than
+  // from this file.
+  const fromEnv = envModelEndpoint();
+  const envId = customInstanceId(ENV_MODEL_ENDPOINT_ID);
+  if (fromEnv && !map[envId]) {
+    map[envId] = {
+      driver: CUSTOM_SPEC.kind,
+      displayName: fromEnv.name,
+      config: { url: fromEnv.url, ...(fromEnv.tools ? { tools: true } : {}), ...(fromEnv.vision ? { vision: true } : {}) },
+      environment: { [envVarFor(CUSTOM_SPEC.kind)]: fromEnv.key },
+    };
+  }
   // The Bloks engine, while a Cloud licence is active or this host was
   // started with a credits token. Its key is not injected here: the
   // driver asks for the token on each call, since a refused one is
@@ -638,5 +652,8 @@ export function activeCustomKey(endpoint: CustomEndpoint): CustomKey | undefined
  * relay's space tokens are how this machine knows one was activated), or
  * a credits token this host was started with. */
 export function creditsOffered(cfg: AppConfig): boolean {
+  // a service of bloks.dev's, so never with Bloks Cloud off where this
+  // runs (server/self-host.ts)
+  if (cloudOff()) return false;
   return Boolean(creditsEnvToken()) || Boolean(cfg.relay?.enabled && cfg.relay.agentToken);
 }
