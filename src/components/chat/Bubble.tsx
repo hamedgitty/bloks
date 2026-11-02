@@ -578,7 +578,7 @@ export function Bubble({
               onForward={onForward}
               onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
               onEdit={group.mine && onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
-              onDelete={onDelete && !unresolvedDismissal ? () => onDelete(message.id) : undefined}
+              onDelete={onDelete ? () => onDelete(message.id) : undefined}
               onRewind={group.mine && onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
             />
           ) : null
@@ -664,7 +664,7 @@ export function Bubble({
         onForward={onForward}
         onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
         onEdit={onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
-        onDelete={onDelete && !unresolvedDismissal ? () => onDelete(message.id) : undefined}
+        onDelete={onDelete ? () => onDelete(message.id) : undefined}
         onRewind={onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
       />
     </div>

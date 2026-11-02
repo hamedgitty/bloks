@@ -24898,7 +24898,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!existing) return json(res, 404, { error: "no such message" });
 
       if (method === "DELETE") {
-        if (existing.preparation && ["dispatching", "uncertain"].includes(existing.preparation.state)) {
+        // Once dismissed, the row is only the person's record of what they
+        // said, kept out of every replay, and theirs to clear like any other.
+        if (existing.preparation && ["dispatching", "uncertain"].includes(existing.preparation.state) && !existing.preparation.dismissed) {
           return json(res, 409, { error: "These words may have reached the turn. Their delivery is unresolved, so they cannot be taken back here." });
         }
         // A tombstone, not a hole. Replies that point at this message

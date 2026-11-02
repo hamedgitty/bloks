@@ -1070,6 +1070,8 @@ test("dismissing an uncertain preparation retains it without replay across resta
   await s.called("turn/steer", 1);
   await waitFor(async () => (await s.messages()).some((m) => m.text === "UNCERTAIN_DISMISS" && m.preparation?.state === "uncertain"));
   const row = (await s.messages()).find((m) => m.text === "UNCERTAIN_DISMISS")!;
+  const early = await s.h.fetch(`/api/threads/${s.bot.threadId}/messages/${row.id}`, { method: "DELETE" });
+  assert.equal(early.status, 409, "an unresolved row was taken back before it was dismissed");
   const response = await s.h.fetch(`/api/threads/${s.bot.threadId}/messages/${row.id}/dismiss-preparation`, { method: "POST" });
   assert.equal(response.status, 200);
   const dismissed = (await s.messages()).find((m) => m.id === row.id)!;
@@ -1096,6 +1098,10 @@ test("dismissing an uncertain preparation retains it without replay across resta
   await s.settled();
   const occurrences = s.calls().filter((c) => ["turn/start", "turn/steer"].includes(c.method) && JSON.stringify(c.params.input).includes("UNCERTAIN_DISMISS"));
   assert.equal(occurrences.length, 1);
+  // dismissed, it is the person's to clear like any other message
+  const cleared = await s.h.fetch(`/api/threads/${s.bot.threadId}/messages/${row.id}`, { method: "DELETE" });
+  assert.equal(cleared.status, 200);
+  assert.equal((await s.messages()).find((m) => m.id === row.id)?.deleted, true);
 });
 
 test("a new input does not overtake an unresolved preparation before dismissal", async (t) => {
