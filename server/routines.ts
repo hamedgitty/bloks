@@ -355,6 +355,10 @@ export function isQuietReply(text: string | undefined): boolean {
  * resumed session keeps byte for byte (server/standing-prompt.ts). */
 export const QUIET_ASK =
   "If nothing in it needs the person right now, answer with exactly QUIET and nothing else; a quiet answer is not brought to their attention.";
+/** The same, for a turn with the CLI: it says so with `bloks quiet`, which
+ * the server checks, and keeps the word for when it cannot run it. */
+export const QUIET_COMMAND_ASK =
+  "If nothing in it needs the person right now, run `bloks quiet` before writing any text, then end your turn; a quiet turn is not brought to their attention. Only if the command is unavailable, answer with exactly QUIET and nothing else. A refused or uncertain call requires a substantive reply, never QUIET.";
 
 /** What a routine that reports in the morning brief adds to the same
  * line: its answer is read on a card, not in a notification, so the top

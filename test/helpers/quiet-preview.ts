@@ -2,7 +2,7 @@
 // loopback stream whose deltas and completion have separate gates.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -177,7 +177,13 @@ CodexDriver.create = async function(input) {
   const spec = (change: Record<string, unknown>) => { Object.assign(config, change); s.spec(config); };
   spec({});
   let actions: any[] = [];
-  const add = (action: any) => { actions.push(action); writeFileSync(file, JSON.stringify(actions)); };
+  // The fake reads on a timer. Publish a whole action list so a reader
+  // cannot catch a truncated JSON write and crash into an automatic retry.
+  const add = (action: any) => {
+    actions.push(action);
+    writeFileSync(file + ".next", JSON.stringify(actions));
+    renameSync(file + ".next", file);
+  };
   const observed = () => { try { return readFileSync(join(seam, "observed.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
   async function stream(path = "/api/events") {
     const frames: any[] = [], abort = new AbortController();

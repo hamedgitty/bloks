@@ -6,7 +6,9 @@ import { isQuietReply } from "./routines.ts";
 const PREFIX = 64;
 const anonymous = "";
 type Item = { held: string; flow: boolean };
-type Attempt = { turnId?: string; items: Map<string, Item>; settled: boolean };
+// closed: the turn was finished quietly (`bloks quiet`), so nothing more
+// of its text is previewed unless that is cancelled (reopen).
+type Attempt = { turnId?: string; items: Map<string, Item>; settled: boolean; closed?: boolean };
 // Prefixes of the exact isQuietReply grammar, including its surrounding trim.
 const possibleQuiet = /^\s*(?:q(?:u(?:i(?:e(?:t[.!…]*\s*)?)?)?)?)?$/i;
 
@@ -27,6 +29,7 @@ export class TextPreview {
     const a = this.attempt(event);
     // A missing start or ambiguous attribution may wait for the saved item.
     if (!a) return silent ? null : event;
+    if (a.closed) return null;
     // These are whole messages, not fragments of one shared item. A prior
     // progress message cannot admit a later marker, or prefix a new message.
     if (event.provider === "boxAgent") return silent && isQuietReply(event.delta) ? null : event;
@@ -74,6 +77,27 @@ export class TextPreview {
     a.items.delete(event.itemId ?? anonymous);
     // Anonymous API fragments can gain a native id only at completion.
     a.items.delete(anonymous);
+  }
+
+  /** The runtime turn a lane's preview is following, if any. */
+  turnOf(laneId: string): string | undefined {
+    return this.lanes.get(laneId)?.turnId;
+  }
+
+  /** A quiet finish: drop what is held, and show nothing more of this
+   * attempt. Only for the attempt it names. */
+  close(laneId: string, turnId: string): void {
+    const a = this.lanes.get(laneId);
+    if (a?.turnId !== turnId) return;
+    a.closed = true;
+    a.items.clear();
+  }
+
+  /** The quiet finish was cancelled: later text previews as usual. What
+   * was dropped at the close stays dropped; its items are saved whole. */
+  reopen(laneId: string, turnId: string): void {
+    const a = this.lanes.get(laneId);
+    if (a?.turnId === turnId) a.closed = false;
   }
 
   forget(laneId: string): void {
