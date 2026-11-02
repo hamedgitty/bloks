@@ -6701,7 +6701,7 @@
   "waitingStrip.sender.webhook": "ein Webhook",
   "waitingStrip.status.afterReply": "In der Warteschlange seit {time}, wird nach Abschluss dieser Antwort gesendet",
   "waitingStrip.status.editing": "In der Warteschlange, wartet, bis du speicherst oder abbrichst",
-  "waitingStrip.status.joined": "Zu diesem Durchlauf hinzugefügt",
+  "waitingStrip.status.joined": "Zu diesem Turn hinzugefügt",
   "waitingStrip.status.mixedUnresolved": "Nachrichten warten oder ihre Zustellung ist ungeklärt.",
   "waitingStrip.status.notSent": "Nicht gesendet",
   "waitingStrip.status.pause": "In der Warteschlange seit {time}, wird nach dem Ende der Pause gesendet",
