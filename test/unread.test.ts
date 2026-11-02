@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { unreadCount } from "../src/lib/unread.ts";
-import { openLaneUnread, pingedLane, readOpenLane } from "../src/state/reducer.ts";
+import { openLaneUnread, pingedLane, readOpenLane, rowLane } from "../src/state/reducer.ts";
 
 describe("unreadCount", () => {
   test("counts unread agents and nothing else", () => {
@@ -41,6 +41,16 @@ describe("per-lane unread", () => {
       tasks: [lane("a", false, 5), lane("b", true, 9), { ...lane("c", false, 1), state: "needs-you" }],
     };
     assert.equal(pingedLane(bot), "c");
+  });
+  test("the agent's row is about the conversation a click on it opens", () => {
+    const bot = {
+      threadId: "a",
+      activeTaskId: "a",
+      tasks: [lane("a", false, 5), lane("b", true, 1), lane("c", true, 9), { ...lane("d", false, 0), state: "needs-you" }],
+    };
+    assert.equal(rowLane(bot)?.id, "d", "one stopped on you, in another conversation, wins");
+    assert.equal(rowLane({ ...bot, tasks: bot.tasks.slice(0, 3) })?.id, "c", "then the newest unread");
+    assert.equal(rowLane({ ...bot, tasks: [lane("a", false, 5), lane("b", false, 9)] })?.id, "a", "then the open one");
   });
   test("reading the open lane leaves the others, and the agent follows them", () => {
     const bot = { threadId: "a", activeTaskId: "a", unread: true, tasks: [lane("a", true, 5), lane("b", true, 1)] };

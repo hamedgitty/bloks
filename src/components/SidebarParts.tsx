@@ -10,7 +10,6 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { BellDot } from "@/components/icons";
 import { ClipboardCopy } from "@/components/icons";
-import { Loader2 } from "@/components/icons";
 import { Pencil } from "@/components/icons";
 import { X } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
@@ -20,7 +19,7 @@ import { formatWhen, useStore, type Bot, laneHasMessages } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
-import { ContextRing, RING_FROM, type TaskChipData } from "./TaskStrip";
+import { ContextRing, LaneMark, RING_FROM, type TaskChipData } from "./TaskStrip";
 import { contextTitle, measuredContext } from "@/lib/contextCard";
 import { rovingTo } from "@/lib/conversationKeys";
 import { t } from "@/lib/i18n";
@@ -28,19 +27,6 @@ import { t } from "@/lib/i18n";
 /** The one spring for things that open in place: quick, and no bounce,
  * because a list that overshoots reads as unsure of its own height. */
 export const OPEN = { type: "spring", duration: 0.3, bounce: 0 } as const;
-
-/** A lane's state as a mark: working spins, waiting glows amber, unread
- * is a still dot, idle leaves the slot empty so titles stay aligned. A
- * spinner rather than a pulse, because it reads as "busy" at a glance
- * and a dot that pulses reads as one more notification. */
-export function LaneMark({ state, unread }: { state: string; unread?: boolean }) {
-  if (state === "working") {
-    return <Loader2 size={11} className="shrink-0 animate-spin text-brand motion-reduce:animate-none" aria-label={t("sidebarParts.working")} />;
-  }
-  if (state === "needs-you") return <span className="mx-[2.5px] size-1.5 shrink-0 rounded-full bg-warning" />;
-  if (unread) return <span className="mx-[2.5px] size-1.5 shrink-0 rounded-full bg-brand" />;
-  return <span className="w-[11px] shrink-0" />;
-}
 
 /** How full a conversation is, once that is worth a glance. It lived on
  * the tab strip, which the sidebar replaces while it lists conversations. */
@@ -233,13 +219,13 @@ export function ConversationRows({ bot, open }: { bot: Bot; open: boolean }) {
                 const active = lane.id === activeId;
                 const waiting = lane.state === "needs-you";
                 const rowClass = cn(
-                  "flex h-[30px] w-full items-center gap-[7px] rounded-lg pl-[26px] pr-2.5 text-left text-body transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.98]",
+                  "flex h-[30px] w-full items-center gap-[9px] rounded-lg pl-[27px] pr-2.5 text-left text-body transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.98]",
                   active ? "bg-accent text-foreground" : "hover:bg-accent/60",
                 );
                 if (renaming === lane.id) {
                   return (
                     <div key={lane.id} className={rowClass}>
-                      <LaneMark state={lane.state} unread={lane.unread} />
+                      <LaneMark state={lane.state} unread={lane.unread} slot />
                       <LaneRename
                         title={lane.title}
                         onDone={(next) => {
@@ -263,7 +249,7 @@ export function ConversationRows({ bot, open }: { bot: Bot; open: boolean }) {
                     }}
                     className={rowClass}
                   >
-                    <LaneMark state={lane.state} unread={lane.unread} />
+                    <LaneMark state={lane.state} unread={lane.unread} slot />
                     <span
                       className={cn(
                         "min-w-0 flex-1 truncate",

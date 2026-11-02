@@ -26,7 +26,7 @@ test("174k measures against the actual 400k before-turn line, with the window pr
     compaction: "Summarises at 400k. Model max 1M.",
   });
   assert.equal(ringLabel(lane), "Context 44% full");
-  assert.equal(contextTitle(lane), "Context 44% full");
+  assert.equal(contextTitle(lane), "Context: 44% full (174k of 400k tokens)");
   assert.equal(activityContext(fill), null, "Activity keeps its half-full threshold");
 });
 
@@ -53,7 +53,7 @@ test("past the line the card, chips and Activity keep the real share", () => {
   assert.equal(contextCard(lane).share, "113% full");
   assert.equal(contextCard(lane).tokens, "450k of 400k tokens");
   assert.equal(contextCard(lane).compaction, "Summarises at 400k. Model max 1M.");
-  assert.equal(contextTitle(lane), "Context 113% full, earlier messages summarised");
+  assert.equal(contextTitle(lane), "Context: 113% full (450k of 400k tokens), earlier messages summarised");
   assert.equal(ringLabel(lane), "Context 113% full");
   assert.equal(activityContext(fill), "context 113% full");
   assert.equal(laneFill({ ...reading, used: 1_100_000 }, selection, { ceiling: 0 }).fraction, 1, "off keeps the wire share capped too");
@@ -69,7 +69,7 @@ test("the line boundary agrees with compaction, and an under-done compaction kee
   const pastLane = { ...past, summarised: false };
   assert.equal(contextCard(pastLane).share, "over 100% full", "whole-percent rounding hid the line crossing");
   assert.equal(ringLabel(pastLane), "Context over 100% full");
-  assert.equal(contextTitle(pastLane), "Context over 100% full");
+  assert.equal(contextTitle(pastLane), "Context: over 100% full (400k of 400k tokens)");
   assert.equal(activityContext(past), "context over 100% full");
   assert.equal(past.fraction, 1);
   assert.equal(compactBeforeTurn({ used: past.used, window: reading.window, ...settings }), true);
@@ -91,7 +91,7 @@ test("a table window stays approximate and unknown or stale readings stay unmeas
   assert.equal(contextCard(exactLane).share, "44% full");
   assert.equal(contextCard(exactLane).compaction, "Summarises at 400k. Model max about 1M.");
   assert.equal(ringLabel(exactLane), "Context 44% full");
-  assert.equal(contextTitle(exactLane), "Context 44% full");
+  assert.equal(contextTitle(exactLane), "Context: 44% full (174k of 400k tokens)");
   assert.equal(activityContext({ ...exact, used: 250_000, fraction: 0.625 }), "context 63% full");
   const sonnet = { instanceId: "claude", model: "sonnet" };
   const alias = laneFill({ ...reading, ...sonnet, window: null }, sonnet, { ceiling: 400_000 });

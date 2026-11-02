@@ -3,9 +3,10 @@
 // The design premise, and where this deliberately goes past the obvious
 // dropdown-of-threads: tasks are VISIBLE, parallel, and interruptible.
 // A slim strip lives under the chat header, one chip per task. The chip
-// wears the task's live state, a pulsing dot while it works, an amber
-// glow when it is waiting on you, quiet grey when idle, so an agent
-// juggling three jobs reads at a glance, without opening anything.
+// wears the task's live state, a blue dot that pulses while it works, an
+// amber dot when it is waiting on you, a green dot when it finished and
+// nobody has opened it yet, so an agent juggling three jobs reads at a
+// glance, without opening anything.
 //
 // The interaction rule that makes parallelism feel right: the composer
 // always talks to the active chip, and starting a new task never asks
@@ -38,6 +39,8 @@ export interface TaskChipData {
   usage?: { input: number; output: number; turns: number };
   /** How full this lane's conversation is. See server/context.ts. */
   context?: LaneContext;
+  /** Something landed here that nobody has opened yet. */
+  unread?: boolean;
 }
 
 /** 842 tokens reads as itself; larger sums read as 12.3k or 1.2M. Zero
@@ -144,20 +147,23 @@ export function ContextRing({
 /** Below this a ring says nothing anybody needs. */
 export const RING_FROM = 0.25;
 
-function StateDot({ state }: { state: TaskState }) {
+/** A conversation's state as a mark, the same on a tab and in the
+ * sidebar: working is a blue dot that pulses (still under reduced
+ * motion), waiting on you is amber, finished and not opened yet is green,
+ * idle or read shows nothing. `slot` keeps an empty place for idle, so
+ * titles in a list stay on one edge. */
+export function LaneMark({ state, unread, slot }: { state: string; unread?: boolean; slot?: boolean }) {
   if (state === "working") {
     return (
-      <span className="relative flex size-2 shrink-0">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand opacity-60" />
-        <span className="relative inline-flex size-2 rounded-full bg-brand" />
+      <span role="img" aria-label={t("sidebarParts.working")} className="relative flex size-2 shrink-0">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-working opacity-60 motion-reduce:hidden" />
+        <span className="relative inline-flex size-2 rounded-full bg-working" />
       </span>
     );
   }
-  if (state === "needs-you") {
-    return <span className="size-2 shrink-0 rounded-full bg-warning shadow-[0_0_6px_var(--warning)]" />;
-  }
-  // idle has nothing to say; an empty slot would just be crooked padding
-  return null;
+  if (state === "needs-you") return <span className="size-2 shrink-0 rounded-full bg-warning" />;
+  if (unread) return <span className="size-2 shrink-0 rounded-full bg-success" />;
+  return slot ? <span className="size-2 shrink-0" /> : null;
 }
 
 export function TaskStrip({
@@ -250,7 +256,7 @@ export function TaskStrip({
                 : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
             )}
           >
-            <StateDot state={task.state} />
+            <LaneMark state={task.state} unread={task.unread} />
             <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{task.title}</span>
             {task.context && ((measuredContext(task.context) && task.context.fraction >= RING_FROM) || task.context.summarised) && (
               <span className="shrink-0 text-muted-foreground" title={contextTitle(task.context)}>

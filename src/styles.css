@@ -76,6 +76,11 @@
   --destructive-foreground: #ffffff;
   --success: #1f7048;
   --warning: #8f5a09;
+  /* A conversation that is working. Fixed, unlike --brand, which follows
+     the workspace accent: a green or amber accent would then read as
+     finished (--success) or waiting on you (--warning). The value is the
+     default accent's blue, so nothing changes on a default workspace. */
+  --working: #004aad;
 
   --border: rgba(18, 18, 21, 0.09);
   --input: rgba(18, 18, 21, 0.12);
@@ -186,6 +191,7 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-working: var(--working);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

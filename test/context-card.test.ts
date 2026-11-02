@@ -30,7 +30,7 @@ test("a window that is the table's guess is said to be about that", () => {
   const guessed = { ...codex, window: "table" as const, limit: 272_000, fraction: 141_000 / 272_000 };
   assert.deepEqual(contextCard(guessed), { share: "About 52% full", tokens: "141k of about 272k tokens", summarised: null, compaction: null });
   assert.equal(ringLabel(guessed), "Context about 52% full");
-  assert.equal(contextTitle(guessed), "Context about 52% full");
+  assert.equal(contextTitle(guessed), "Context: about 52% full (141k of about 272k tokens)");
 });
 
 test("a line says so when Bloks summarised the earlier part", () => {
@@ -58,7 +58,8 @@ test("chips, rows and Activity read the same numbers, with their own thresholds"
   assert.equal(measuredContext({ ...codex, measured: false }), false);
   // an older server's fill stands on the chips, as it always did
   assert.equal(measuredContext({ used: 50_000, limit: 200_000, fraction: 0.25 }), true);
-  assert.equal(contextTitle({ ...codex, summarised: true }), "Context 55% full, earlier messages summarised");
+  assert.equal(contextTitle(codex), "Context: 55% full (141k of 258k tokens)");
+  assert.equal(contextTitle({ ...codex, summarised: true }), "Context: 55% full (141k of 258k tokens), earlier messages summarised");
   assert.equal(contextTitle({ used: 0, limit: 0, fraction: 0, measured: false, summarised: true }), "Earlier messages summarised");
   assert.equal(activityContext(codex), "context 55% full");
   assert.equal(activityContext({ ...codex, window: "table" }), "context about 55% full");
