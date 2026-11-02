@@ -268,14 +268,18 @@ export function clipText(text: string, max: number): string {
  * exchange is always kept, clipped, however tight it is: a story that is
  * only a summary has no thread to pull on. `left` is how many messages
  * between the summary and what was kept are not included.
+ *
+ * `unwritten` holds room for a summary that is not written yet, at the
+ * longest it can be, ahead of turns that have none: see handoffKeep.
  */
-export function boundHandoff(turns: Turn[], budget: number): { turns: Turn[]; left: number } {
+export function boundHandoff(turns: Turn[], budget: number, unwritten = 0): { turns: Turn[]; left: number } {
   const chars = Math.max(1, budget) * 4;
   const each = Math.max(400, Math.floor(chars / 4));
-  const summary = turns[0]?.text.startsWith(SUMMARY_MARK) ? turns[0] : null;
+  const summary = !unwritten && turns[0]?.text.startsWith(SUMMARY_MARK) ? turns[0] : null;
   const rest = summary ? turns.slice(1) : turns;
   const head: Turn[] = summary ? [{ role: summary.role, text: clipText(summary.text, each) }] : [];
-  let used = head.reduce((n, t) => n + t.text.length + 16, 0);
+  // a summary is told whole up to `each` and clipped shorter past it
+  let used = unwritten ? Math.min(unwritten, each) + 16 : head.reduce((n, t) => n + t.text.length + 16, 0);
   const kept: Turn[] = [];
   for (let i = rest.length - 1; i >= 0; i--) {
     const turn = { role: rest[i].role, text: clipText(rest[i].text, each) };
@@ -285,6 +289,20 @@ export function boundHandoff(turns: Turn[], budget: number): { turns: Turn[]; le
     used += cost;
   }
   return { turns: [...head, ...kept], left: rest.length - kept.length };
+}
+
+/**
+ * How many of the newest messages a fold for a new session's story keeps
+ * whole: what the story tells after the summary the fold is about to
+ * write, however long that turns out. `told` is the messages after the
+ * current summary as the story tells them, framed with who started each
+ * and what it replies to, without the turn's own words, which go to the
+ * engine apart from the story. A fold that measured them bare, with no
+ * room for the summary, kept more than the story then told, and the
+ * oldest of those were in neither.
+ */
+export function handoffKeep(told: Turn[], budget: number): number {
+  return told.length - boundHandoff(told, budget, summaryTurn("").text.length + SUMMARY_MAX_CHARS).left;
 }
 
 /**
@@ -377,30 +395,81 @@ const KEEP = [
   "Also keep: decisions made, facts established, anything asked for that is not finished, names, numbers, file paths, and how the person wants to be worked with.",
 ];
 
-/** How much of the conversation a summary request carries. */
+/** How much of the conversation one summary request carries. */
 const SUMMARY_INPUT_CHARS = 40_000;
 
-/** The part being folded, as the summary request reads it. It used to be
- * cut at its first 40,000 characters, so in a long stretch whatever the
- * person said after that never reached the summary at all, and a
- * requirement they gave late in it was gone once it was folded
- * (GitHub 277). Their own words are what a summary must not lose, so the
- * agent's long replies are shortened first, and only then, if it is
- * still too long, is the middle left out rather than the end. */
-function foldedText(fold: Turn[]): string {
-  const line = (turn: Turn, cap = Infinity) => {
-    const text = turn.role === "assistant" && turn.text.length > cap ? `${turn.text.slice(0, cap)} [...]` : turn.text;
-    return `${turn.role === "user" ? "Them" : "You"}: ${text}`;
-  };
-  let text = fold.map((turn) => line(turn)).join("\n\n");
-  if (text.length > SUMMARY_INPUT_CHARS) text = fold.map((turn) => line(turn, 600)).join("\n\n");
-  if (text.length <= SUMMARY_INPUT_CHARS) return text;
-  const head = Math.floor(SUMMARY_INPUT_CHARS / 4);
-  return `${text.slice(0, head)}\n\n[...]\n\n${text.slice(text.length - (SUMMARY_INPUT_CHARS - head))}`;
+/** A message as a summary request reads it, or one part of a message too
+ * long for one request, which says which part it is. */
+export interface Said extends Turn {
+  part?: { n: number; of: number };
 }
 
-/** What the model is asked, when it is asked to summarise. */
-export function summaryPrompt(existing: string | null, fold: Turn[]): string {
+function line(said: Said): string {
+  const who = said.role === "user" ? "Them" : "You";
+  return `${said.part ? `${who} (part ${said.part.n} of ${said.part.of})` : who}: ${said.text}`;
+}
+
+/** The part being folded, as a summary request reads it: every message
+ * whole, in order. */
+function foldedText(fold: Said[]): string {
+  return fold.map(line).join("\n\n");
+}
+
+/** A message too long for one request, in parts that each fit in one, in
+ * order, each saying whose it is and which part. Never cut between the
+ * two halves of one character. */
+function partsOf(turn: Turn): Said[] {
+  if (line(turn).length <= SUMMARY_INPUT_CHARS) return [turn];
+  // room for the longest label: a message has no more parts than characters
+  const size = SUMMARY_INPUT_CHARS - line({ role: turn.role, text: "", part: { n: turn.text.length, of: turn.text.length } }).length;
+  const texts: string[] = [];
+  for (let at = 0; at < turn.text.length; ) {
+    let end = Math.min(turn.text.length, at + size);
+    const last = turn.text.charCodeAt(end - 1);
+    if (end < turn.text.length && last >= 0xd800 && last <= 0xdbff) end--;
+    texts.push(turn.text.slice(at, end));
+    at = end;
+  }
+  return texts.map((text, i) => ({ role: turn.role, text, part: { n: i + 1, of: texts.length } }));
+}
+
+/**
+ * The requests a fold is summarised in, in order. Each one carries the
+ * summary so far and the next part of the conversation.
+ *
+ * It used to be one request of at most 40,000 characters of the part
+ * being folded. Past that the agent's replies were cut to 600 characters
+ * and then the middle was left out, rather than the end (GitHub 277). In
+ * a long stretch that was most of it: a decision made in the middle never
+ * reached the summary while the question before it did, so the summary
+ * said it was still open, and the next fold started after it. A part that
+ * fits is still one request, word for word. A longer one is read whole,
+ * the agent's replies included, in as many requests as it takes, each with
+ * at most 40,000 characters of the conversation, so no request is longer
+ * than one was: the instructions, a summary of at most SUMMARY_MAX_CHARS
+ * and the conversation.
+ */
+export function summaryPasses(fold: Turn[]): Said[][] {
+  if (foldedText(fold).length <= SUMMARY_INPUT_CHARS) return fold.length ? [fold] : [];
+  const passes: Said[][] = [];
+  let pass: Said[] = [];
+  let used = 0;
+  for (const said of fold.flatMap(partsOf)) {
+    const cost = line(said).length;
+    if (pass.length && used + 2 + cost > SUMMARY_INPUT_CHARS) {
+      passes.push(pass);
+      pass = [];
+    }
+    used = pass.length ? used + 2 + cost : cost;
+    pass.push(said);
+  }
+  passes.push(pass);
+  return passes;
+}
+
+/** What the model is asked, when it is asked to summarise: one pass of
+ * the part being folded (summaryPasses), after the summary so far. */
+export function summaryPrompt(existing: string | null, fold: Said[]): string {
   const conversation = foldedText(fold);
   return [
     existing
