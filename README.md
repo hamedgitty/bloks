@@ -364,8 +364,8 @@ over.
 
 ### Work that runs without you
 
-- **Routines and check-ins** on a calendar you drag, that answer quietly
-  when nothing needs you.
+- **Routines and check-ins** on a calendar you drag, each one opened to
+  edit in place, that answer quietly when nothing needs you.
 - **Watchers** on a folder, a web page, a feed or a place: "when an
   invoice lands here, file it", "when I land, send me the hotel address".
 - **App watchers**: an agent starts when something happens in a
