@@ -165,6 +165,8 @@ import {
 } from "./hosted.ts";
 import {
   bindHost,
+  IPV4_BIND,
+  reachablePeer,
   cancelPairing,
   claimPairing,
   addMemberDevice,
@@ -34190,8 +34192,14 @@ function storedSecrets(): Array<string | undefined | null> {
 
 // Read once, here, and never again while the process lives: see the
 // header of server/pairing.ts for why this is not a live toggle.
-const BIND = bindHost();
+let BIND = bindHost();
 noteBound(BIND);
+// On IPv6 too, only from the networks this port reached before: a peer
+// from a global IPv6 address is let go before a byte is read
+// (reachablePeer in server/pairing.ts).
+server.on("connection", (socket) => {
+  if (BIND === "::" && !reachablePeer(socket.remoteAddress)) socket.destroy();
+});
 /** Tells the local network which port this Bloks is on, while a phone may
  * reach it here, so a phone with a stale port finds it (server/announce.ts).
  * Not before listening is on the network: a switch turned on since the
@@ -34208,6 +34216,13 @@ const announceHere = () => {
 // code stays in the line: the desktop app and the tests read it to know
 // to try another port.
 server.on("error", (error: NodeJS.ErrnoException) => {
+  // a machine with IPv6 turned off cannot listen on "::"; IPv4 alone, as
+  // before there was IPv6 to listen on
+  if (BIND === "::" && (error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL" || error.code === "EINVAL")) {
+    BIND = IPV4_BIND;
+    server.listen(PORT, BIND);
+    return;
+  }
   if (error.code === "EADDRINUSE") {
     console.error(
       `[bloks] port ${PORT} is already in use by another program (EADDRINUSE). ` +

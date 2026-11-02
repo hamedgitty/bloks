@@ -41,7 +41,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
 import { deviceLabels } from "@/lib/deviceLabels";
 import { usePageVisible } from "@/lib/pageVisible";
-import { cloudOnly, pairingAway, pairingTrouble } from "@/lib/pairing";
+import { cloudOnly, isOverlayAddress, pairingAway, pairingTrouble, pairLink } from "@/lib/pairing";
 import { ThisComputer, thisComputer } from "@/lib/thisComputer";
 import { ConnectionError, ConnectionHeader, ConnectionNote, HealthLine, PairedMoment, type Health } from "./ConnectionKit";
 import { t } from "@/lib/i18n";
@@ -90,24 +90,38 @@ interface PairCode {
   expiresAt: number;
   /** Where the phone should dial, for somebody typing the code by hand. */
   address: string | null;
+  /** Every address of this computer a phone could dial, and the one the
+   * QR carries: a Tailscale address and a wifi one are both offered, and
+   * the person picks which network the phone will come over. */
+  addresses: string[];
+  chosen: string | null;
   /** When it arrived here, so a status read that left before it did is
    * not taken as news about it. */
   mintedAt: number;
 }
 
-/** The deep link a phone camera understands. Built defensively: any
- * field that fails its shape check kills the link rather than shipping
- * something malformed to a camera. */
-function pairLink(address: string, port: number, token: string, code: string, computer?: string): string | null {
-  if (!/^\d{6}$/.test(code)) return null;
-  if (!/^bloks_pair_[A-Za-z0-9_-]{32}$/.test(token)) return null;
-  if (!address || !Number.isInteger(port) || port < 1 || port > 65535) return null;
-  const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
-  // The computer's own name, as the server reads it: the window's address
-  // is always this machine's loopback and would have the phone ask to pair
-  // with "127.0.0.1". Left out, the phone says "your computer".
-  const name = computer?.trim() ? `&name=${encodeURIComponent(computer.trim().slice(0, 60))}` : "";
-  return `bloks://pair?address=${encodeURIComponent(`${host}:${port}`)}&token=${token}&code=${code}${name}`;
+/** What the server minted, kept so the QR can be drawn again for another
+ * of this computer's addresses without spending a new code. */
+interface Minted {
+  token: string;
+  code: string;
+  port: number;
+  name?: string;
+}
+
+async function drawCode(minted: Minted, address: string | null): Promise<{ qr: string | null; hostPort: string | null }> {
+  const link = address ? pairLink(address, minted.port, minted.token, minted.code, minted.name) : null;
+  const qr = link
+    ? await QRCode.toDataURL(link, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 288,
+        color: { dark: "#111111", light: "#ffffff" },
+      }).catch(() => null)
+    : null;
+  // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing.
+  const hostPort = address ? `${address.includes(":") ? `[${address}]` : address}:${minted.port}` : null;
+  return { qr, hostPort };
 }
 
 /** A browser rather than a phone, by the name it paired under. */
@@ -344,34 +358,32 @@ function PairingControls() {
       });
   }, [hold]);
 
+  const minted = useRef<Minted | null>(null);
+  // the address picked last, kept for the next code as long as it is
+  // still one of this computer's
+  const picked = useRef<string | null>(null);
   const mint = useCallback(() => {
     if (minting.current) return;
     minting.current = true;
     api("/api/pair/start", { method: "POST" })
       .then(async (started) => {
-        const address =
-          (started.addresses as string[] | undefined)?.find((a: string) => a !== "127.0.0.1") ??
-          started.addresses?.[0];
-        const link = address
-          ? pairLink(address, started.port, started.token, started.code, typeof started.name === "string" ? started.name : undefined)
-          : null;
-        const qr = link
-          ? await QRCode.toDataURL(link, {
-              errorCorrectionLevel: "M",
-              margin: 1,
-              width: 288,
-              color: { dark: "#111111", light: "#ffffff" },
-            }).catch(() => null)
-          : null;
+        const addresses = ((started.addresses as string[] | undefined) ?? []).filter((a: string) => a !== "127.0.0.1");
+        const address = (picked.current && addresses.includes(picked.current) ? picked.current : addresses[0]) ?? started.addresses?.[0] ?? null;
+        const made: Minted = {
+          token: started.token,
+          code: started.code,
+          port: started.port,
+          name: typeof started.name === "string" ? started.name : undefined,
+        };
+        const { qr, hostPort } = await drawCode(made, address);
         if (!wanted.current) {
           // the panel closed while this was on its way: the door closes
           // with it rather than staying open for nobody
           void api("/api/pair/cancel", { method: "POST" }).catch(() => {});
           return;
         }
-        // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing.
-        const hostPort = address ? `${address.includes(":") ? `[${address}]` : address}:${started.port}` : null;
-        hold({ code: started.code, qr, expiresAt: started.expiresAt, address: hostPort, mintedAt: Date.now() });
+        minted.current = made;
+        hold({ code: started.code, qr, expiresAt: started.expiresAt, address: hostPort, addresses, chosen: address, mintedAt: Date.now() });
         setStopped(null);
       })
       .catch((e: Error) => {
@@ -590,6 +602,16 @@ function PairingControls() {
     <>
       <PairingCode
         code={code}
+        onPick={(address) => {
+          const made = minted.current;
+          const shown = held.current;
+          if (!made || !shown || shown.code !== made.code) return;
+          picked.current = address;
+          void drawCode(made, address).then(({ qr, hostPort }) => {
+            if (held.current?.code !== made.code) return;
+            hold({ ...held.current, qr, address: hostPort, chosen: address });
+          });
+        }}
         msLeft={msLeft}
         stopped={stopped}
         lead={
@@ -824,6 +846,7 @@ function PairingLink({
  * how long the person has. */
 function PairingCode({
   code,
+  onPick,
   msLeft,
   stopped,
   lead,
@@ -832,6 +855,7 @@ function PairingCode({
   onClose,
 }: {
   code: PairCode | null;
+  onPick: (address: string) => void;
   msLeft: number;
   stopped: "closed" | "failed" | null;
   lead: string;
@@ -904,9 +928,34 @@ function PairingCode({
             {/* The QR carries the address; a code typed by hand does
                 not, and the phone asks for it. Without this line the
                 by-hand route had no way to find where to dial. */}
-            {code?.address && (
+            {code?.address && code.addresses.length < 2 && (
               <div className="mt-1.5 text-small text-muted-foreground">
                 {t("common.address")} <span className="ml-1 font-mono text-foreground">{code.address}</span>
+              </div>
+            )}
+            {/* More than one network reaches this computer (wifi and
+                Tailscale, say): the person picks which one the phone
+                comes over, and the code is drawn again for it. */}
+            {code && code.addresses.length > 1 && (
+              <div className="mt-1.5">
+                <div className="text-small text-muted-foreground">{t("devicesSection.phoneComesOver")}</div>
+                <div role="radiogroup" aria-label={t("devicesSection.phoneComesOver")} className="mt-1 flex flex-wrap gap-1">
+                  {code.addresses.map((a) => (
+                    <button
+                      key={a}
+                      role="radio"
+                      aria-checked={code.chosen === a}
+                      onClick={() => onPick(a)}
+                      className={cn(
+                        "rounded-md px-2 py-0.5 font-mono text-small transition-colors duration-150",
+                        code.chosen === a ? "bg-background text-foreground ring-1 ring-border" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {a.includes(":") ? `[${a}]` : a}
+                      {isOverlayAddress(a) && <span className="ml-1 font-sans text-caption text-muted-foreground">{t("devicesSection.tailscale")}</span>}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">

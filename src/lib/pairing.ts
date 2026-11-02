@@ -46,3 +46,26 @@ export function pairingAway(status: PairingWhere | null): string | null {
 export function cloudOnly(status: PairingWhere | null): boolean {
   return Boolean(status?.enabled && !status.restartRequired && status.listening === "loopback");
 }
+
+/** The deep link a phone camera understands. Built defensively: any
+ * field that fails its shape check kills the link rather than shipping
+ * something malformed to a camera. */
+export function pairLink(address: string, port: number, token: string, code: string, computer?: string): string | null {
+  if (!/^\d{6}$/.test(code)) return null;
+  if (!/^bloks_pair_[A-Za-z0-9_-]{32}$/.test(token)) return null;
+  if (!address || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
+  // The computer's own name, as the server reads it: the window's address
+  // is always this machine's loopback and would have the phone ask to pair
+  // with "127.0.0.1". Left out, the phone says "your computer".
+  const name = computer?.trim() ? `&name=${encodeURIComponent(computer.trim().slice(0, 60))}` : "";
+  return `bloks://pair?address=${encodeURIComponent(`${host}:${port}`)}&token=${token}&code=${code}${name}`;
+}
+
+/** Tailscale's addresses (100.64.0.0/10, and its fd7a:115c:a1e0::/48),
+ * named beside the address so the choice reads as a choice of network. */
+export function isOverlayAddress(address: string): boolean {
+  const v4 = /^100\.(\d{1,3})\./.exec(address);
+  if (v4) return Number(v4[1]) >= 64 && Number(v4[1]) <= 127;
+  return address.toLowerCase().startsWith("fd7a:115c:a1e0:");
+}

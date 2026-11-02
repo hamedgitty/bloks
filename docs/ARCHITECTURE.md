@@ -404,7 +404,17 @@ minutes; the window asks for the next just before one runs out while the
 panel is open and visible, and `POST /api/pair/cancel` closes it the
 moment the panel closes. `POST /api/pair/claim` takes either credential
 and counts every try, and five checked tries close the code. The QR
-carries the server's own addresses, wherever the card is drawn.
+carries the server's own addresses, wherever the card is drawn: the home
+network's first, then IPv6 unique local addresses (Tailscale's first),
+then a Tailscale IPv4 address, and the card lets the person pick which
+one the code carries when there is more than one. On the network the
+server listens on IPv4 and IPv6 both (`::`), so a phone can come over a
+Tailscale IPv6 address, which iOS talks plain HTTP to as it does to the
+home network; it refuses Tailscale's IPv4 range, and the phone says to
+use the IPv6 address instead. Of IPv6 peers only loopback, unique local
+and link-local ones may connect (`reachablePeer`); a global IPv6 peer is
+dropped before a byte is read, so listening on IPv6 reaches no network
+the IPv4 bind did not. A machine without IPv6 listens on IPv4 alone.
 bloks-server never listens on the network, so there `GET /api/pair` says
 so (loopback, no restart pending, no addresses), `start` refuses, and the
 card shows the Bloks Cloud link (`POST /api/pair/link`) as a QR instead.

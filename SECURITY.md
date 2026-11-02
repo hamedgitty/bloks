@@ -242,7 +242,10 @@ instead (see People in your workspaces).
 
 - **A code exists only when you ask for one.** Phone access is off until
   somebody turns it on at the computer, and the workspace listens on the
-  network only after Bloks restarts with it on. A six digit code and its
+  network only after Bloks restarts with it on. It listens on IPv4 and
+  IPv6, and takes IPv6 connections only from local addresses (unique
+  local, such as Tailscale's, and link-local): a global IPv6 address,
+  often the open internet with nothing in front of it, is refused. A six digit code and its
   QR are made when somebody presses Pair a phone, and the routes that
   make or cancel one answer only on this computer and on your own paired
   devices, which are the only way in to a workspace on a server with no

@@ -180,12 +180,37 @@ export function setRemoteEnabled(on: boolean): AppConfig {
   return saved;
 }
 
-/** Which interface to bind. Read once, at startup, by design. */
+/** Which interface to bind. Read once, at startup, by design. On the
+ * network it is IPv4 and IPv6 both ("::" takes both), so a phone can come
+ * over a Tailscale IPv6 address (GitHub 449): iOS talks plain HTTP to an
+ * IPv6 unique local address, as it does to the home network, and refuses
+ * Tailscale's IPv4 one. Which IPv6 peers may connect at all is
+ * reachablePeer's to say. */
 export function bindHost(): string {
   // bloks-server sets this: on a machine with a public address, Bloks
   // Cloud is the only way in, whatever the pairing switch says
   if (process.env.BLOKS_LOOPBACK_ONLY === "1") return "127.0.0.1";
-  return remoteEnabled() ? "0.0.0.0" : "127.0.0.1";
+  return remoteEnabled() ? "::" : "127.0.0.1";
+}
+
+/** The bind for a machine with no IPv6 at all, where "::" cannot be had. */
+export const IPV4_BIND = "0.0.0.0";
+
+/**
+ * Whether a peer may open a connection to the network bind. Every IPv4
+ * peer, as before IPv6 was listened on, and of IPv6 only what is local:
+ * loopback, unique local (fc00::/7, Tailscale's among them) and
+ * link-local. A global IPv6 address is the open internet on many
+ * networks, with no NAT in front of it, so listening on IPv6 must not
+ * widen who can reach this port beyond the networks it reached before.
+ */
+export function reachablePeer(address: string | undefined): boolean {
+  if (!address) return false;
+  const bare = address.toLowerCase().split("%")[0];
+  if (bare.startsWith("::ffff:") || !bare.includes(":")) return true;
+  if (bare === "::1") return true;
+  if (bare.startsWith("fc") || bare.startsWith("fd")) return true;
+  return /^fe[89ab]/.test(bare);
 }
 
 /** Records what the server actually bound, so status can be honest about
@@ -336,18 +361,35 @@ export function revokeAll(): AppConfig {
   return saved;
 }
 
-/** Addresses on this machine a phone could actually reach: IPv4, not
- * loopback, not link-local. */
-export function lanAddresses(): string[] {
+/** Addresses on this machine a phone could actually reach: not loopback,
+ * not link-local, and of IPv6 only unique local addresses (reachablePeer).
+ * The home network's first, since that is the usual way in; then an IPv6
+ * unique local one, Tailscale's first, which iOS talks plain HTTP to from
+ * anywhere on the tailnet; then a Tailscale IPv4 address, which iOS does
+ * not, but other clients do; then anything else. The QR offers each, and
+ * draws the first unless the person picks another (GitHub 449). */
+export function lanAddresses(found: ReturnType<typeof networkInterfaces> = networkInterfaces()): string[] {
   const out: string[] = [];
-  for (const entries of Object.values(networkInterfaces())) {
+  for (const entries of Object.values(found)) {
     for (const entry of entries ?? []) {
-      if (entry.family !== "IPv4" || entry.internal) continue;
-      if (entry.address.startsWith("169.254.")) continue;
-      out.push(entry.address);
+      if (entry.internal) continue;
+      if (entry.family === "IPv4") {
+        if (entry.address.startsWith("169.254.")) continue;
+        out.push(entry.address);
+      } else if (entry.family === "IPv6" && /^f[cd]/i.test(entry.address)) {
+        out.push(entry.address.toLowerCase());
+      }
     }
   }
-  return out;
+  const rank = (address: string) => {
+    if (address.includes(":")) return address.startsWith("fd7a:115c:a1e0:") ? 1 : 2;
+    const [a, b] = address.split(".").map(Number);
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return 0;
+    if (a === 100 && b >= 64 && b <= 127) return 3;
+    return 4;
+  };
+  // a stable sort: interfaces of one kind keep the order the system gave
+  return out.map((address, i) => ({ address, i })).sort((x, y) => rank(x.address) - rank(y.address) || x.i - y.i).map((x) => x.address);
 }
 
 /**

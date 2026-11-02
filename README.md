@@ -429,6 +429,8 @@ over.
   Mac's own screen while an agent drives it, once Bloks has Screen
   Recording. While you are using Bloks on a computer, your phone stays
   quiet: no notifications and no new Live Activities until you step away.
+  On Tailscale, pair over the computer's Tailscale IPv6 address: the
+  pairing card offers each of the computer's networks.
 - **Any browser.** With Bloks Cloud, the same app opens at
   [bloks.dev/web](https://bloks.dev/web), every request sealed in the
   browser for your computer alone.
