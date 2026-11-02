@@ -1337,13 +1337,22 @@ dismisses it in the strip. A file for a turn that runs elsewhere, or a
 picture past the turn's eight, waits for the next turn with everything
 said after it.
 
-Command/Ctrl+Enter in the app stops before submitting the follow-up
-(`src/lib/sendMessage.ts`). When a conversation is named, both requests
-name it. It waits for `/interrupt` to answer, then sends the message with
-`steer: false`. Stop acknowledges the request, not necessarily the engine's
-exit, so the message waits in the normal queue until that turn settles
-instead of joining the dying turn. Either request's failure uses the normal
-draft recovery; a failed Stop submits nothing. Plain Enter still steers.
+Command/Ctrl+Enter in the app is one request (`src/lib/sendMessage.ts`):
+`stopFirst: true` on `POST /api/bots/:id/messages`, naming the
+conversation when one is named (GitHub 452). The server writes the words
+down ahead of everything already waiting, behind only earlier such words,
+as a turn of their own (`alone` on the queue item, read by
+`queuedSegment`), and only then stops the turn. However soon that turn
+ends, the next one is these words alone, and what waited before goes
+after it, in its order, once each. They never join the turn being
+stopped, nor one still getting ready, and a message whose delivery could
+not be confirmed does not hold them back, though it still holds what
+follows it. The answer says `stopped: true`. An older server ignores the
+field, and `steer: false` keeps the words out of the dying turn there;
+the client then stops the turn itself, as it used to. A failed request
+uses the normal draft recovery; a failed fallback Stop does not, since
+the words are in. The `alone` mark is kept in memory, so after a restart
+the waiting words go in transcript order. Plain Enter still steers.
 
 An empty composer receives failed text and attachments back immediately.
 If newer words or chips occupy it, `src/lib/drafts.ts` retains the failed
