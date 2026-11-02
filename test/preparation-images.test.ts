@@ -24,7 +24,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const reply = (result) => out({ jsonrpc: "2.0", id: m.id, result });
   if (m.method === "initialize") return reply({ protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
   if (m.method === "session/new" || m.method === "session/load") {
-    if (!fs.existsSync(root + "/session-gate")) {
+    // The catalog probe opens a throwaway session in the temp folder.
+    // Only the turn's own session, in the agent's folder, is held.
+    if (m.params.cwd !== root) {
+      fs.writeFileSync(root + "/probe-asked", "1");
+    } else if (!fs.existsSync(root + "/session-gate")) {
       fs.writeFileSync(root + "/session-held", "1");
       while (!fs.existsSync(root + "/session-gate")) await pause(20);
     }
@@ -58,6 +62,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   }
   const tags = (xs: string[]) => xs.map((path) => `<attached-image path="${path}" />`).join("\n");
   const say = (text: string) => h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+  // A held probe once stood in for the held turn. On a slow machine a
+  // later message then reached the free lane first and became the turn.
+  assert.ok(await waitFor(() => existsSync(join(root, "probe-asked")), 30_000));
+  assert.equal(existsSync(join(root, "session-held")), false);
   const first = say(`FIRST\n${tags(paths.slice(0, restart ? 8 : 7))}`);
   assert.ok(await waitFor(() => existsSync(join(root, "session-held")), 30_000));
   if (!restart) assert.equal((await say(`FITS_ONE\n${tags(paths.slice(7, 8))}`)).status, 202);
