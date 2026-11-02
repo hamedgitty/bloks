@@ -5,6 +5,10 @@
 // wants you, then each agent's night in a few plain sentences. What wants
 // you comes first because it is the only part that needs you to do
 // anything; the rest is there to be read, in any order, or not at all.
+// It holds the questions and approvals still open, and your list: what
+// an agent found you have to do yourself (server/todos.ts), kept until
+// you mark it done or dismiss it, or the agent says it no longer needs
+// doing.
 //
 // Above that come the cards (BriefCards.tsx): what the routines and
 // watchers the person set up last reported, which is what most mornings
@@ -58,7 +62,25 @@ interface BriefWaiting {
   threadId: string;
   messageId: string;
   requestId?: string;
-  kind: "approval" | "question";
+  /** A todo is something an agent found the person has to do themselves
+   * (server/todos.ts), closed here with Done or Dismiss. */
+  kind: "approval" | "question" | "todo";
+  todoId?: string;
+  detail?: string;
+  routine?: string;
+  since?: number;
+}
+/** A line on the person's list as it stands now. */
+interface TodoNow {
+  id: string;
+  botId: string;
+  name: string;
+  title: string;
+  detail?: string;
+  threadId: string;
+  routine?: string;
+  firstAt: number;
+  state: "open" | "done" | "dismissed" | "cleared";
 }
 export interface Brief {
   id: string;
@@ -92,6 +114,8 @@ interface BriefList {
   sections?: ArrangedSection[];
   /** The cards as they stand now, for the newest brief. */
   live?: BriefResult[];
+  /** The person's list as it stands now; absent from an older server. */
+  todos?: TodoNow[];
   audio: boolean;
 }
 
@@ -105,7 +129,8 @@ export function useBriefs() {
       .catch(() => setData({ briefs: [], settings: { enabled: true, time: "08:00" }, audio: false }));
   }, []);
   // a routine or a watcher reporting, or being changed, moves its card
-  useEffect(reload, [reload, state.ticks.brief, state.ticks.routines, state.ticks.watchers]);
+  // and a line on the person's list being added or closed moves that
+  useEffect(reload, [reload, state.ticks.brief, state.ticks.routines, state.ticks.watchers, state.ticks.todos]);
   return { data, reload };
 }
 
@@ -189,14 +214,32 @@ const HANDLED_KEY = "bloks-brief-handled";
 /** What became of a waiting card. Kept as a word of code, not of English,
  * so a tick reads in whatever language the reader has now; the English
  * labels an older version kept read the same once lowercased. */
-type Handled = "allowed" | "denied" | "answered" | "closed" | "opened";
+type Handled = "allowed" | "denied" | "answered" | "closed" | "opened" | "done" | "dismissed" | "cleared";
 const HANDLED_WORDS: Record<Handled, MessageKey> = {
   allowed: "briefPanel.handled.allowed",
   denied: "briefPanel.handled.denied",
   answered: "briefPanel.handled.answered",
   closed: "briefPanel.handled.closed",
   opened: "briefPanel.handled.opened",
+  done: "briefPanel.handled.done",
+  dismissed: "briefPanel.handled.dismissed",
+  cleared: "briefPanel.handled.cleared",
 };
+
+/** A line on the list as the waiting rows show it, the same shape the
+ * brief keeps, so a line the brief listed and one added since read alike. */
+const todoRow = (todo: TodoNow): BriefWaiting => ({
+  botId: todo.botId,
+  name: todo.name,
+  title: todo.title,
+  threadId: todo.threadId,
+  messageId: todo.id,
+  kind: "todo",
+  todoId: todo.id,
+  ...(todo.detail ? { detail: todo.detail } : {}),
+  ...(todo.routine ? { routine: todo.routine } : {}),
+  since: todo.firstAt,
+});
 const handledWords = (done: string) => {
   const code = done.toLowerCase();
   return code in HANDLED_WORDS ? t(HANDLED_WORDS[code as Handled]) : done;
@@ -415,6 +458,16 @@ export function BriefPanel() {
       .finally(() => setBusy(null));
   };
 
+  // a line on the person's list, closed: they did it, or it is not for them
+  const closeTodo = (w: BriefWaiting, how: "done" | "dismiss") => {
+    if (!w.todoId) return;
+    setBusy(w.messageId);
+    api(`/api/todos/${w.todoId}/${how}`, { method: "POST" })
+      .then(() => markDone(w.messageId, how === "done" ? "done" : "dismissed"))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setBusy(null));
+  };
+
   // the settings answer at once and the server catches up behind them
   const [want, setWant] = useState<{ enabled?: boolean; time?: string }>({});
   useEffect(() => setWant({}), [data?.settings.enabled, data?.settings.time]);
@@ -482,13 +535,40 @@ export function BriefPanel() {
   const dim = (part: number) => playing !== null && playing !== part;
   // what this device remembers, plus any card the app has loaded and
   // already seen answered
+  // A line on the person's list says where it stands from the server,
+  // which knows whether it was closed here, on a phone, or cleared by its
+  // agent; one no longer listed has been over for a while.
+  const todosNow = data?.todos ? new Map(data.todos.map((todo) => [todo.id, todo])) : null;
   const doneFor = (w: BriefWaiting): string | undefined => {
+    if (w.kind === "todo" && todosNow) {
+      const now = todosNow.get(w.todoId ?? w.messageId);
+      if (!now) return "cleared";
+      if (now.state !== "open") return now.state;
+    }
     const kept = done.get(w.messageId);
     if (kept) return kept;
+    if (w.kind === "todo") return undefined;
     const card = state.bots.find((b) => b.id === w.botId)?.messages.find((m) => m.id === w.messageId)?.card;
     return answeredLabel(card, w.kind) ?? undefined;
   };
-  const waitingLeft = brief ? brief.waiting.filter((w) => !doneFor(w)).length : 0;
+  // What waits: the cards the brief listed, then the person's list. On
+  // the newest brief the list is as it stands now, so a line an agent
+  // added since the morning is here too, and one it said again reads in
+  // its newest words; an older brief keeps the lines it had.
+  const listed = brief?.waiting ?? [];
+  const waitingRows: BriefWaiting[] = brief
+    ? [
+        ...listed.filter((w) => w.kind !== "todo"),
+        ...listed.filter((w) => w.kind === "todo").map((w) => {
+          const now = newest ? todosNow?.get(w.todoId ?? w.messageId) : undefined;
+          return now?.state === "open" ? todoRow(now) : w;
+        }),
+        ...(newest && todosNow
+          ? [...todosNow.values()].filter((todo) => todo.state === "open" && !listed.some((w) => (w.todoId ?? w.messageId) === todo.id)).map(todoRow)
+          : []),
+      ]
+    : [];
+  const waitingLeft = waitingRows.filter((w) => !doneFor(w)).length;
   const reader = playing === null || !brief ? "" : playing === 0 ? t("briefPanel.overview") : brief.parts[playing]?.name ?? "";
 
   return (
@@ -651,7 +731,7 @@ export function BriefPanel() {
                     </div>
                   );
                 }
-                if (section.key === "waiting" && brief.waiting.length > 0) {
+                if (section.key === "waiting" && waitingRows.length > 0) {
                   return (
                     <div key="waiting" className={cn("mt-8 transition-opacity duration-200", closing >= 0 && dim(closing) && "opacity-45")}>
                       <SubHead className="flex items-center gap-1.5">
@@ -665,7 +745,7 @@ export function BriefPanel() {
                         )}
                       </SubHead>
                       <ul className="-mx-3 flex flex-col">
-                        {brief.waiting.map((w) => (
+                        {waitingRows.map((w) => (
                           <WaitingRow
                             key={w.messageId}
                             item={w}
@@ -673,8 +753,11 @@ export function BriefPanel() {
                             done={doneFor(w)}
                             busy={busy === w.messageId}
                             onAnswer={(behavior) => answer(w, behavior)}
+                            onClose={(how) => closeTodo(w, how)}
                             onOpen={() => {
-                              if (!w.requestId) markDone(w.messageId, "opened");
+                              // a line on the list stays until it is closed: reading
+                              // the report it came from is not doing it
+                              if (!w.requestId && w.kind !== "todo") markDone(w.messageId, "opened");
                               open(w.botId, w.threadId);
                             }}
                           />
@@ -821,10 +904,18 @@ export function BriefPanel() {
   );
 }
 
+/** Who put a line on the list, and since when when that was not today:
+ * "For you, from Nova · Home lab health · since Mon, Oct 26". */
+function todoMeta(item: BriefWaiting): string {
+  const since = item.since && startOfDay(item.since) < startOfDay(Date.now()) ? t("briefPanel.todo.since", { day: dayLabel(item.since) }) : "";
+  return [t("briefPanel.todo.from", { name: item.name }), item.routine ?? "", since].filter(Boolean).join(" · ");
+}
+
 /**
  * One thing waiting on you. Answered or opened, it folds down to a single
  * ticked line: still there, so you can see what you did, but out of the
- * way of what is left.
+ * way of what is left. A line on your list folds only once it is closed,
+ * by you here or elsewhere, or by the agent that said it.
  */
 function WaitingRow({
   item,
@@ -832,6 +923,7 @@ function WaitingRow({
   done,
   busy,
   onAnswer,
+  onClose,
   onOpen,
 }: {
   item: BriefWaiting;
@@ -839,8 +931,10 @@ function WaitingRow({
   done?: string;
   busy: boolean;
   onAnswer: (behavior: "allow" | "deny") => void;
+  onClose: (how: "done" | "dismiss") => void;
   onOpen: () => void;
 }) {
+  const todo = item.kind === "todo";
   return (
     <li className="relative px-3 [&:last-child>div]:border-b-0">
       <AnimatePresence mode="popLayout" initial={false}>
@@ -867,13 +961,26 @@ function WaitingRow({
               <span className="mt-0.5 shrink-0">{agent && <AgentAvatar bot={agent} size={22} />}</span>
               <span className="min-w-0">
                 <span className="block text-ui text-foreground">{item.title}</span>
+                {todo && item.detail && <span className="mt-0.5 line-clamp-2 block text-body text-foreground/75">{item.detail}</span>}
                 <span className="block text-small text-muted-foreground">
-                  {t(item.kind === "approval" ? "briefPanel.wantsYourOk" : "briefPanel.hasAQuestion", { name: item.name })}
+                  {todo
+                    ? todoMeta(item)
+                    : t(item.kind === "approval" ? "briefPanel.wantsYourOk" : "briefPanel.hasAQuestion", { name: item.name })}
                 </span>
               </span>
             </button>
             <div className="flex shrink-0 gap-1.5 pl-8 sm:pl-0">
-              {item.kind === "approval" && item.requestId ? (
+              {todo ? (
+                <>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => onClose("dismiss")} aria-label={t("briefPanel.todo.dismissLabel", { title: item.title })}>
+                    {t("common.dismiss")}
+                  </Button>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={() => onClose("done")} aria-label={t("briefPanel.todo.doneLabel", { title: item.title })}>
+                    {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={13} />}
+                    {t("common.done")}
+                  </Button>
+                </>
+              ) : item.kind === "approval" && item.requestId ? (
                 <>
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAnswer("deny")}>
                     {t("briefPanel.deny")}

@@ -47,6 +47,8 @@ function OverviewPage() {
   const today = formatDate(new Date(), { weekday: "long", month: "long", day: "numeric" });
   const now: string[] = [];
   if (activity.waiting > 0) now.push(t("railPages.waiting", { count: activity.waiting }));
+  // what agents found the person has to do themselves, listed in the brief
+  if (activity.todos > 0) now.push(t("railPages.onYourList", { count: activity.todos }));
   if (activity.failed > 0) now.push(t("railPages.failed", { count: activity.failed }));
   if (activity.running > 0) now.push(t("railPages.running", { count: activity.running }));
   return (

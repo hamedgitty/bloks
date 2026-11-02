@@ -14,9 +14,12 @@ export interface ActivityCount {
   /** Incidents that need the person, and automations stopped for
    * failing (server/incidents.ts): things to look at, as waiting is. */
   failed: number;
+  /** Lines open on the person's list (server/todos.ts): things an agent
+   * found they have to do themselves. */
+  todos: number;
 }
 
-let count: ActivityCount = { running: 0, waiting: 0, suggested: 0, failed: 0 };
+let count: ActivityCount = { running: 0, waiting: 0, suggested: 0, failed: 0, todos: 0 };
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
 /** How often the counts are asked for while something shows them. */
@@ -39,12 +42,14 @@ function load() {
         waiting: a?.waiting?.length ?? 0,
         suggested: s?.proposals?.length ?? 0,
         failed: failedCount(a?.incidents ?? [], a?.failing ?? []),
+        todos: typeof a?.todos === "number" ? a.todos : 0,
       };
       if (
         next.running === count.running &&
         next.waiting === count.waiting &&
         next.suggested === count.suggested &&
-        next.failed === count.failed
+        next.failed === count.failed &&
+        next.todos === count.todos
       ) return;
       count = next;
       for (const listener of listeners) listener();

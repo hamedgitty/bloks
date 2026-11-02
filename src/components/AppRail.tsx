@@ -122,6 +122,8 @@ export function AppRail() {
                 ? t("appRail.overviewWaiting", { count: activity.waiting })
                 : activity.failed > 0
                   ? t("appRail.overviewFailed", { count: activity.failed })
+                  : activity.todos > 0
+                  ? t("appRail.overviewOnYourList", { count: activity.todos })
                   : briefNew
                   ? t("appRail.overviewANewMorningBrief")
                   : rehearsalsReady > 0
