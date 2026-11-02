@@ -180,7 +180,9 @@ Put a **monthly spending limit** on any engine that runs on a key of
 yours. At the line, new turns on it pause, or go to the agent's backup
 engine, until you raise it or the month turns. Before then, the message
 box says when a limit, a Claude or ChatGPT plan window, or Bloks AI is
-getting close, and on what day it resets.
+getting close, and when it resets. A plan's notice names its window
+("5-hour limit", "Weekly limit, Opus") and counts down the hours and
+minutes once the reset is under a day away.
 
 <p align="center">
   <img alt="Limits: Claude's five hour and weekly windows, Bloks AI's month and day, and a monthly spending limit on a Gemini key, most of it used" src="docs/screenshots/usage-limits.png" width="540">
