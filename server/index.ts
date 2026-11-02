@@ -4916,7 +4916,9 @@ bus.subscribe((event: RuntimeEvent) => {
   let preview: RuntimeEvent | null = event;
   if (event.type === "content.delta") {
     const inRoom = (activeRoom.get(event.threadId) ?? event.threadId) !== event.threadId;
-    const silent = !inRoom && (checkInTurns.has(event.threadId) || unaskedTurn(event.threadId));
+    // a turn with another agent's words in it may end on the bare word
+    // whoever waits on it (agentWordsInTurn), so it never flashes there
+    const silent = !inRoom && (checkInTurns.has(event.threadId) || unaskedTurn(event.threadId) || agentWordsInTurn.has(event.threadId));
     preview = textPreview.delta(event, silent);
   } else if (event.type === "item.completed" && event.itemType === "assistant_text") textPreview.complete(event);
   else if (event.type === "turn.completed" || event.type === "session.exited") textPreview.end(event);
@@ -4990,7 +4992,13 @@ bus.subscribe((event: RuntimeEvent) => {
         // and the turn ends as one that said nothing (GitHub 363). A
         // check-in's QUIET is its own, below.
         const unasked = !inRoom && !checkInTurns.has(event.threadId) && unaskedTurn(event.threadId);
-        const silent = unasked && isQuietReply(text);
+        // One with another agent's words in it that somebody is waiting on
+        // after all (the person's own words joined it, say) may still end
+        // on the bare word: it was asked about it, or learned it. That is
+        // no answer to them either, so it is kept out too, and the turn's
+        // end says it had no reply for them (GitHub 461).
+        const slipped = !inRoom && !checkInTurns.has(event.threadId) && !unasked && agentWordsInTurn.has(event.threadId);
+        const silent = (unasked || slipped) && isQuietReply(text);
         if ((answering || inRoom || unasked) && text && !silent && !isProgressText(event.codexText)) spokeInTurn.add(event.threadId);
         if (silent) quietEnds.set(event.threadId, text);
         else if (text) quietEnds.delete(event.threadId);
@@ -5935,6 +5943,14 @@ bus.subscribe((event: RuntimeEvent) => {
       // So does one nobody asked for that ended on the bare quiet word
       // with nothing else said, unless the person has joined it since.
       const quietEnd = quietWord !== undefined && event.ok !== false && !spokeInTurn.has(event.threadId) && !turnsForYou.has(event.threadId);
+      // One the person's words are in that ended on the bare word with no
+      // reply saved says so, rather than leaving them to wonder whether
+      // anybody read what they wrote (GitHub 461).
+      if (quietWord !== undefined && turnsForYou.has(event.threadId) && !inRoom && event.ok !== false && event.stopReason !== "interrupted" &&
+        !handedOver && !pickingUp && !refolding && !endingReply?.last) {
+        pushMessage({ role: "bot", kind: "notice", text: `${bot.name} finished this turn without a reply to you.` });
+      }
+      agentWordsInTurn.delete(event.threadId);
       spokeInTurn.delete(event.threadId);
       if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
       if (quietAgentTurn || quietRun || quietEnd) {
@@ -7102,6 +7118,10 @@ async function startClaimedTurn(
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
     answering?: { peerId: string; peerName: string };
+    /** Another agent's words are among the waiting ones this turn takes
+     * (drainSteer), so it may have been told about the quiet word
+     * (agentWordsInTurn). */
+    agentWords?: boolean;
     /** The person started this turn, so what it says back is a reply to
      * them and moves the conversation up the sidebar. Unset for anything
      * else: another agent, a routine, a watcher, a job, a webhook. */
@@ -7496,6 +7516,8 @@ async function startClaimedTurn(
   else checkInTurns.delete(task.id);
   // a quiet word from a turn that never ended is not this one's
   quietEnds.delete(task.id);
+  if (opts.from || opts.answering || opts.agentWords) agentWordsInTurn.add(task.id);
+  else agentWordsInTurn.delete(task.id);
   if (opts.incidentNotes?.length) deskTurns.set(task.id, opts.incidentNotes);
   // what it was asked, rooms included, for an incident's one retry
   lastAsked.set(task.id, {
@@ -7626,15 +7648,17 @@ async function startClaimedTurn(
     if (blok || (guestMail && !signalGuest)) return { turns: [], dropped: 0 };
     // a message marked not sent was never said, and one still queued has
     // not been yet (it joins at the end when it goes), so no engine hears either
-    const settled = store
-      .messagesFor(roomId)
+    const history = store.messagesFor(roomId);
+    // each word framed as the turn that took it heard it
+    const burstOfMessage = burstsIn(history);
+    const settled = history
       .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent)
       // A Telegram person is told their own exchange and nothing else:
       // what they said and what was sent to them. The owner's words, the
       // agent's answers to the owner and the lane's summary of both stay
       // the owner's. The owner's next turn still hears the person's.
       .filter((m) => !personSource || personsOwn(m, personSource))
-      .map((m) => toldTurn(task, m));
+      .map((m) => toldTurn(task, m, burstOfMessage(m)));
     return assembleTranscript(settled, personSource ? null : task.context ?? null, transcriptBudget);
   };
 
@@ -8278,10 +8302,11 @@ async function startClaimedTurn(
       let missed: { turns: Turn[]; by: string } | null = null;
       if (back && back.instanceId === instanceId) {
         if (!ownTry) catchups.delete(task.id);
-        const said = store
-          .messagesFor(roomId)
+        const history = store.messagesFor(roomId);
+        const burstOfMessage = burstsIn(history);
+        const said = history
           .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent && m.at >= back.since && m.at < turnSince)
-          .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: storedPrompt(m) }));
+          .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: storedPrompt(m, burstOfMessage(m)) }));
         const bounded = boundHandoff(said, handoffTokens);
         const resumes = typeof task.resumeCursors[instanceId] === "string" && !nativeReplay && !guestMail;
         if (resumes && bounded.left === 0) missed = { turns: bounded.turns, by: back.by };
@@ -11668,8 +11693,17 @@ const spokeInTurn = new Set<string>();
 /** Lanes whose running turn, one nobody asked for (unaskedTurn), last
  * said the bare quiet word, which was never written: QUIET in any case,
  * as isQuietReply reads it. The word itself, for what reads the turn's
- * last words when it ends. Any later word in the turn takes its place. */
+ * last words when it ends. Any later word in the turn takes its place.
+ * Also one with another agent's words in it that somebody is waiting
+ * on after all (agentWordsInTurn), whose bare quiet word is no answer. */
 const quietEnds = new Map<string, string>();
+/** Lanes whose running turn has another agent's words in it: it started
+ * on them, took them with the person's own waiting words, or had them
+ * join it. Such a turn may have been told it can answer QUIET (an older
+ * turn of a resumed session may have taught it too), so a bare quiet
+ * word from it is kept out of the chat even when somebody is waiting on
+ * the turn, which then ends as one that said nothing to them (GitHub 461). */
+const agentWordsInTurn = new Set<string>();
 
 /** Whether nobody is waiting on what a lane's running turn says: another
  * agent, a job, a watcher, a webhook or a workflow started it, and no
@@ -13505,10 +13539,10 @@ function summarisedText(m: Message): string {
 /** A message as an engine is told it, in a transcript or a new session's
  * story: who started it, and in a team conversation, where several people
  * write, whose words they are. */
-function toldTurn(task: TaskRecord, m: Message): Turn {
+function toldTurn(task: TaskRecord, m: Message, burst?: Burst): Turn {
   return {
     role: m.role === "user" ? "user" : "assistant",
-    text: task.team && m.role === "user" ? `[${speakerName(m.author)}] ${storedPrompt(m)}` : storedPrompt(m),
+    text: task.team && m.role === "user" ? `[${speakerName(m.author)}] ${storedPrompt(m, burst)}` : storedPrompt(m, burst),
   };
 }
 
@@ -19085,7 +19119,10 @@ async function steerOne(
   if (!adapter?.steerTurn) return null;
   if (options.telegramBinding && !telegramConnectionCurrent(options.telegramBinding)) return null;
   const { from } = options;
-  const words = withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text) : text, options.replyTo);
+  // Another agent's words joining a turn somebody is waiting on (the
+  // person started or joined it) do not offer the quiet word: the turn
+  // still owes them its answer (GitHub 461).
+  const words = withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text, unaskedTurn(lane.id)) : text, options.replyTo);
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const sourceTurnId = !from && options.personal !== false ? codexOrigins.get(lane.id)?.turnId : undefined;
@@ -19126,6 +19163,7 @@ async function steerOne(
     ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
   });
   if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
+  if (from) agentWordsInTurn.add(lane.id);
   // what the turn says from here on is an answer to the person too, and
   // with the person in it, a chain of agents' messages starts over
   if (!from && !options.telegramPerson && !options.telegramDelegate) {
@@ -19222,9 +19260,46 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
  * from, how to answer, and that a turn with nothing for the person may
  * end on the bare quiet word, which then says nothing (unaskedTurn,
  * GitHub 363). The transcript keeps the words alone, with the sender as
- * data, so the person's chat can say who it was. */
-function fromAgentPrompt(from: { botId: string; name: string }, text: string) {
-  return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`. If nothing in it needs the person, answer with exactly QUIET and nothing else; the turn then ends without a message.)\n\n${text}`;
+ * data, so the person's chat can say who it was. `quiet` is false in a
+ * turn somebody is waiting on, the person's own words in it above all:
+ * that turn owes them an answer, so the word is not offered (GitHub 461). */
+function fromAgentPrompt(from: { botId: string; name: string }, text: string, quiet = true) {
+  const ending = quiet ? " If nothing in it needs the person, answer with exactly QUIET and nothing else; the turn then ends without a message." : "";
+  return `(A message from ${from.name}, another agent. To answer them, use \`bloks say ${from.botId} <text>\`.${ending})\n\n${text}`;
+}
+
+/** What one burst of waiting words carried (drainSteer): the person's own
+ * words, and anybody else's. With the person's words in it the turn is
+ * theirs, so another agent's words in it do not offer the quiet word;
+ * with anybody else's in it too, the person's words say whose they are,
+ * or they read as the end of the message before them (GitHub 461). */
+type Burst = { person: boolean; others: boolean };
+
+/** Whether a message is the person's own words as they wrote them here:
+ * not another agent's, a routine's, a watcher's or a webhook's, and not
+ * a Telegram person's, a delegate's or a Telegram group's, which say who
+ * they are from already (storedPrompt). */
+function personsWords(m: Message | undefined): boolean {
+  return Boolean(m && m.role === "user" && !m.agent && !m.via && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup && !m.telegramSent);
+}
+
+/** What a list of waiting words carries, as a Burst. An item with no
+ * message is a note from Bloks itself: somebody else's. */
+function burstOf(said: ReadonlyArray<Message | undefined>): Burst {
+  return { person: said.some(personsWords), others: said.some((m) => !personsWords(m)) };
+}
+
+/** Each burst in a transcript by the moment it went (deliverQueued), so a
+ * replay frames its words the way the turn that took them heard them. A
+ * word that joined a running turn went on its own (midTurn). */
+function burstsIn(messages: readonly Message[]): (m: Message) => Burst | undefined {
+  const went = new Map<number, Message[]>();
+  for (const m of messages) {
+    if (m.role !== "user" || m.midTurn || m.deliveredAt === undefined) continue;
+    went.set(m.deliveredAt, [...(went.get(m.deliveredAt) ?? []), m]);
+  }
+  const bursts = new Map([...went].map(([at, said]) => [at, burstOf(said)]));
+  return (m) => (m.role === "user" && !m.midTurn && m.deliveredAt !== undefined ? bursts.get(m.deliveredAt) : undefined);
 }
 
 /** Name the source without claiming whether the person is here. A quiet
@@ -19279,19 +19354,23 @@ function personsOwn(message: Message, sender: TelegramSender): boolean {
     (message.telegramSent?.personId === sender.personId && (message.telegramSent.audience ?? "private") === telegramAudience(sender));
 }
 
-/** Stored words stay unchanged; engines hear who started the message. */
-function storedPrompt(message: Message): string {
+/** Stored words stay unchanged; engines hear who started the message.
+ * `burst` is what the waiting words it went with carried (Burst). */
+function storedPrompt(message: Message, burst?: Burst): string {
   if (message.telegramSent) return `(Explicit Telegram reply to ${JSON.stringify(message.telegramSent.name)}, ${message.telegramSent.state}.)\n\n${message.text ?? ""}`;
   if (message.telegramGroup) return `(Message from the verified owner ${JSON.stringify(telegramSenderLabel(message.telegramGroup))} on Telegram. A group reply must be explicit; private words stay private.)\n\n${message.text ?? ""}`;
   if (message.telegramPerson) return `(Message from ${JSON.stringify(telegramSenderLabel(message.telegramPerson))} (Telegram). This person is not the owner; only the owner can approve actions.)\n\n${message.text ?? ""}`;
   const text = message.text ?? "";
   const command = Boolean(message.commandInstance && commandFor(text, message.commandInstance));
   const words = message.agent?.dir === "in"
-    ? fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text)
+    ? fromAgentPrompt({ botId: message.agent.peerId, name: message.agent.peerName }, text, !burst?.person)
     : message.via === "routine" && message.routine && !command
       ? fromRoutinePrompt(message.routine, text)
       : message.telegramDelegate && !command ? delegateWords(message.telegramDelegate, text) : text;
-  return command ? words : withReply(words, message.replyTo);
+  if (command) return words;
+  // among anybody else's words, the person's own say whose they are
+  if (burst?.others && personsWords(message)) return `(From the person. It waited for this turn.)\n\n${withReply(words, message.replyTo)}`;
+  return withReply(words, message.replyTo);
 }
 
 // ── words that meet a running turn (server/delivery.ts) ──
@@ -19855,10 +19934,19 @@ function drainSteer(threadId: string) {
   if (rest.length) steerQueues.set(threadId, { ...entry, items: rest });
   else steerQueues.delete(threadId);
   // the words as they stand now, not as they stood when they were queued
-  const alive = segment.items.flatMap((item) => {
-    const words = steerWords(threadId, item);
-    return words === null ? [] : [{ item, words }];
+  const live = segment.items.flatMap((item) => {
+    if (steerWords(threadId, item) === null) return [];
+    const message = item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined;
+    return [{ item, message }];
   });
+  // With the person's own words among anybody else's, theirs go last, in
+  // the order they were written: the turn is theirs, and its answer reads
+  // right under them in the chat, as the agent heard them (GitHub 461).
+  const burst = burstOf(live.map(({ message }) => message));
+  const ordered = burst.person && burst.others
+    ? [...live.filter(({ message }) => !personsWords(message)), ...live.filter(({ message }) => personsWords(message))]
+    : live;
+  const alive = ordered.map(({ item, message }) => ({ item, words: message ? storedPrompt(message, burst) : item.text! }));
   if (alive.length === 0) {
     // Everything that waited was taken back, so no turn starts, and no
     // settle comes along after it to do what a settle does once the
@@ -19877,8 +19965,9 @@ function drainSteer(threadId: string) {
   const peer = notes[0];
   const answering =
     peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId) ? { peerId: peer.peerId, peerName: peer.peerName } : undefined;
-  // The person's own words wait here with nothing on them; another
-  // agent's carry who sent them, a watcher's or a webhook's say so. A
+  // The person's own words wait here with nothing on them, unless they
+  // went with anybody else's (Burst); another agent's carry who sent
+  // them, a watcher's or a webhook's say so. A
   // burst of Bloks' own notes (a key saved, say) carries on the turn
   // it resumes, so it answers whoever that one did.
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
@@ -19896,8 +19985,9 @@ function drainSteer(threadId: string) {
   // that takes them settles them, and is quiet when it is only them.
   const incidentNotes = said.flatMap((m) => (m?.via === "incident" && m.incident ? [m.incident.id] : []));
   const incidentQuiet = incidentNotes.length > 0 && incidentNotes.length === said.length;
+  const agentWords = said.some((m) => m?.agent?.dir === "in");
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, telegramMessages, telegramBinding, telegramPerson, telegramGroup, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, ...(agentWords ? { agentWords } : {}), telegramMessages, telegramBinding, telegramPerson, telegramGroup, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
     for (const id of incidentNotes) deskTurnEnded(id, false);
     if (telegramPerson || telegramGroup) tellTelegramPersonHeld((telegramPerson ?? telegramGroup)!, (e as Error).message);
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);

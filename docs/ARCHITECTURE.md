@@ -1403,6 +1403,23 @@ things in, and everything that reads it (a room's history, a replayed
 transcript, an export) agrees. A room's own queue behind its current
 round, and a pickup after a restart, deliver the same way.
 
+A burst that carries the person's own words alongside anybody else's
+(another agent, a webhook, a watcher, a note from Bloks) is theirs
+(`Burst`, `burstOf`). Their words go last, in the order they were
+written, both in the transcript and in the turn, so the answer sits
+right under them; each says whose it is, "(From the person. It waited
+for this turn.)", so it cannot read as the tail of the agent message
+before it; and another agent's words in it do not offer the bare quiet
+word. Another agent's words that join a running turn somebody is
+waiting on (`bloks say --now`) do not offer it either. A turn with
+another agent's words in it may still end on a bare QUIET, asked about
+it earlier or not (`agentWordsInTurn`); when somebody is waiting on that
+turn the word is kept out of the chat and the live preview all the
+same, and when the person's words are in it and it saved no reply, it
+ends with a notice that it finished without a reply to them (GitHub 461).
+A turn the person started on their own, with nobody else's words in it,
+shows QUIET like any reply.
+
 ## Agents writing to agents
 
 `bloks say` to an idle agent starts a turn there, a paid one, and a

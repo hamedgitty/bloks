@@ -303,7 +303,9 @@ file or a `bloks://install?url=` link through the same review, and use
 - **Messages while it works.** Say something mid-turn and Bloks reads it:
   a stop stops, a correction goes in now, a new request waits its turn.
   What you add while it is still getting ready joins the request it is
-  starting. One press changes its mind.
+  starting. One press changes its mind. When other agents' messages waited
+  too, yours go in last and marked as yours, so the answer sits right
+  under them.
 - **Questions that do not hold the turn.** A Codex agent can ask you
   something and carry on. When you settle it some other way, the agent
   takes its own question back (`bloks questions`, `bloks unask`) and the
