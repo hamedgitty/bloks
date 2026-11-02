@@ -63,6 +63,18 @@ test("an agy error reaches the harness before the failed turn ends", async () =>
   assert.equal(completed?.ok, false);
 });
 
+test("an agy failure with no words of its own still says how it ended", async () => {
+  const events = await answer([init, { event: "result", result: { status: "TIMEOUT" } }]);
+  const error = events.find(event => event.type === "runtime.error");
+  assert.equal(error?.type === "runtime.error" && error.message, "Antigravity ended with status TIMEOUT.");
+  assert.equal(events.find(event => event.type === "turn.completed")?.ok, false);
+});
+
+test("a successful agy turn raises no error", async () => {
+  const events = await answer([init, { event: "result", result: { status: "SUCCESS", response: "hello" } }]);
+  assert.equal(events.some(event => event.type === "runtime.error"), false);
+});
+
 test("a resumed agy turn counts its requests once, not the conversation's lifetime usage", async () => {
   const events = await answer([init, step(20, 30, 100, 5), step(20, 30, 100, 5), step(22, 40, 200, 7),
     { event: "result", result: { status: "SUCCESS", response: "hello",

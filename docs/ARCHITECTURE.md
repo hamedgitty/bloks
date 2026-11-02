@@ -1012,8 +1012,9 @@ window, which Claude Code gives per message (`promptSize`) and in its
 result (`modelUsage[model].contextWindow`), Codex in
 `thread/tokenUsage/updated` (`last.inputTokens` against
 `modelContextWindow`), an ACP agent in `usage_update` (`used`, `size`),
-and an OpenAI-compatible provider in each response's `prompt_tokens`, one
-reading per request of a tool loop. The lane keeps the latest as
+an OpenAI-compatible provider in each response's `prompt_tokens`, one
+reading per request of a tool loop, and Antigravity in each
+`agent_response` step's usage, whose window comes from the table. The lane keeps the latest as
 `reading`, with the engine and model that made it (`store.noteReading`),
 and `laneFill` uses it only while the agent is on that engine and model,
 with the table in `server/context.ts` as the fallback window, which the
