@@ -1174,6 +1174,16 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             prepared?.settle("accepted");
             turn.preparation?.unavailable();
           },
+          // A completions endpoint keeps nothing between calls: a request
+          // that never answered left no trace of these words anywhere, and
+          // the next turn is told the conversation from the transcript. So
+          // they go to that turn, rather than waiting on a dismissal.
+          unanswered() {
+            if (confirmed) return;
+            confirmed = true;
+            prepared?.settle("refused");
+            turn.preparation?.unavailable();
+          },
         };
 
         emit({ ...base(threadId, turnId), type: "turn.started" });
@@ -1198,7 +1208,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           try {
             if (toolLoop) {
               await runWithTools(threadId, turnId, messages, model, turn, abort.signal, spent, boundary);
-              if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
+              boundary.unanswered();
               active.delete(threadId);
               emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: priceOf(spent), ...unpriced() });
               return;
@@ -1211,7 +1221,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               onDelta: (delta) =>
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
             });
-            if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
+            boundary.unanswered();
             appendNative(threadId, { dir: "in", source: `${spec.kind}.chat.completions`, msg: { text, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
@@ -1225,7 +1235,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             active.delete(threadId);
             emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: priceOf(spent), ...unpriced() });
           } catch (e) {
-            if (!confirmed) { prepared?.settle("uncertain"); turn.preparation?.unavailable(); }
+            boundary.unanswered();
             const entry = active.get(threadId);
             for (const settle of entry?.asks.values() ?? []) settle("The turn ended before you answered.", "turn-ended");
             active.delete(threadId);

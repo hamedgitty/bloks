@@ -109,6 +109,33 @@ test("an API-backed turn includes uncommitted additions and confirms only after 
   assert.equal(f.bodies.length, 1);
 });
 
+test("an API-backed turn that is refused sends its additions on to the next turn", async t => {
+  const f = await fixture(t, () => ({ status: 503 }));
+  const driver = openAiCompatDriver({ ...spec, tools: true });
+  const instance = await driver.create({ instanceId: "fixture", displayName: "Fixture", enabled: true,
+    config: { url: f.url, apiKeyEnv: "FIXTURE_KEY" }, environment: { FIXTURE_KEY: "local-fixture" } });
+  t.after(() => instance.dispose());
+  const outcomes: string[] = [], events: RuntimeEvent[] = [];
+  let unavailable = 0;
+  instance.adapter.onEvent(event => events.push(event));
+  await instance.adapter.sendTurn({
+    threadId: "fixture-lane", text: "FIRST", model: "grok-4",
+    preparation: {
+      freeze: () => ({
+        hasInputs: true, skillNames: [],
+        commit: () => ({ text: "READY_A", skillNames: [], images: [], settle: status => outcomes.push(status) }),
+      }),
+      ready: () => assert.fail("this adapter has no mid-turn steering"),
+      unavailable: () => { unavailable++; },
+    },
+  });
+  assert.ok(await waitFor(() => events.find(e => e.type === "turn.completed")));
+  assert.match(JSON.stringify(f.bodies[0].messages), /FIRST.*READY_A/);
+  // nothing keeps a refused request, so nothing about it is left unknown
+  assert.deepEqual(outcomes, ["refused"]);
+  assert.equal(unavailable, 1);
+});
+
 test("a message explicitly for later waits behind an unsupported turn already committed", async t => {
   const f = await fixture(t, (body, round) => round === 0 ? null : body.stream
     ? 'data: {"choices":[{"delta":{"content":"Done"}}]}\n\ndata: [DONE]\n\n'
