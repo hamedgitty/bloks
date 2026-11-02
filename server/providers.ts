@@ -389,7 +389,7 @@ export const CLI_PROVIDERS = [
     name: "Command Code",
     command: "command-code",
     auth: "cli" as const,
-    keyHint: "Install it with the button above, or run npm i -g --prefix ~/.local command-code",
+    keyHint: installHint("commandcode", "Install it with the button above, or run npm i -g --prefix ~/.local command-code"),
     signInHint: "Run command-code login in a terminal to connect your account",
     docsUrl: "https://commandcode.ai/docs/acp",
   },
@@ -398,10 +398,7 @@ export const CLI_PROVIDERS = [
     name: "Devin",
     command: "devin",
     auth: "cli" as const,
-    keyHint:
-      process.platform === "win32"
-        ? "Install it in PowerShell with irm https://static.devin.ai/cli/setup.ps1 | iex"
-        : "Install it with the button above, or run curl -fsSL https://cli.devin.ai/install.sh | bash",
+    keyHint: installHint("devin", "Install it with the button above, or run curl -fsSL https://cli.devin.ai/install.sh | bash"),
     signInHint: "Run devin auth login in a terminal to connect your Devin account",
     docsUrl: "https://docs.devin.ai/cli/reference/commands#devin-acp",
   },
