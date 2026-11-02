@@ -439,7 +439,9 @@ over.
   start. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
   Or let Bloks run one for you: managed hosting is a private machine
   of your own that stays on, and moves your agents over when you sign up
-  at [bloks.dev/pricing](https://bloks.dev/pricing).
+  at [bloks.dev/pricing](https://bloks.dev/pricing). On Windows, the
+  desktop app can keep running in the system tray when you close its
+  window: Settings, General, Window.
 - **Scripts, CI and a terminal.** `bloks-server run Ada "Review the open
   pull requests"` hands an agent a job, waits until it and every teammate
   it handed work to are done, and prints the answer, or one JSON document
