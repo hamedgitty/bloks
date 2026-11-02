@@ -6719,7 +6719,7 @@
   "watchersTab.asItChangesFoldersAre": "Sobald es sich ändert. Ordner werden innerhalb von Sekunden überwacht.",
   "watchersTab.canRunCommands": "{name} kann Befehle ohne Nachfrage ausführen.",
   "watchersTab.checkNow": "Jetzt prüfen",
-  "watchersTab.checkRunsOnItsOwn": "Eine Prüfung ist ein Befehl, der {often} ohne Nachfrage von selbst läuft. Exit 0 heißt: auf die Ausgabe reagieren. Exit 1 heißt: nichts zu tun.",
+  "watchersTab.checkRunsOnItsOwn": "Eine Prüfung ist ein Befehl, der {often} ohne Nachfrage von selbst läuft. Der erste Lauf ist der Ausgangspunkt. Danach heißt Exit 0 mit neuer Ausgabe: darauf reagieren. Exit 1 heißt: nichts zu tun.",
   "watchersTab.checked": "Geprüft",
   "watchersTab.checkedAgo": "Geprüft {when}",
   "watchersTab.choose": "Auswählen",

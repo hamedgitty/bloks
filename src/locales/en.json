@@ -6719,7 +6719,7 @@
   "watchersTab.asItChangesFoldersAre": "As it changes. Folders are watched within seconds.",
   "watchersTab.canRunCommands": "{name} can run commands without asking.",
   "watchersTab.checkNow": "Check now",
-  "watchersTab.checkRunsOnItsOwn": "A check is a command, and it runs on its own {often} without asking. Exit 0 means act on its output, exit 1 means nothing to do.",
+  "watchersTab.checkRunsOnItsOwn": "A check is a command, and it runs on its own {often} without asking. Its first run is the baseline. After that, exit 0 with new output means act on it, and exit 1 means nothing to do.",
   "watchersTab.checked": "Checked",
   "watchersTab.checkedAgo": "Checked {when}",
   "watchersTab.choose": "Choose",

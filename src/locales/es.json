@@ -6719,7 +6719,7 @@
   "watchersTab.asItChangesFoldersAre": "Según cambie. Las carpetas se vigilan en segundos.",
   "watchersTab.canRunCommands": "{name} puede ejecutar comandos sin preguntar.",
   "watchersTab.checkNow": "Comprobar ahora",
-  "watchersTab.checkRunsOnItsOwn": "Una comprobación es un comando y se ejecuta sola {often} sin preguntar. Salida 0 significa actuar según su resultado; salida 1 significa que no hay nada que hacer.",
+  "watchersTab.checkRunsOnItsOwn": "Una comprobación es un comando y se ejecuta sola {often} sin preguntar. La primera ejecución es la referencia. Después, salida 0 con un resultado nuevo significa actuar según él; salida 1 significa que no hay nada que hacer.",
   "watchersTab.checked": "Comprobado",
   "watchersTab.checkedAgo": "Comprobado {when}",
   "watchersTab.choose": "Elegir",

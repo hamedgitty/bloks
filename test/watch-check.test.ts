@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   CHECK_MAX_BYTES,
@@ -18,6 +20,8 @@ import {
   checkAllowed,
   checkOutcome,
   cleanWatcher,
+  CONSTANT_CHECK_NOTE,
+  constantCheck,
   runCheck,
   watcherTurn,
   type CheckResult,
@@ -99,6 +103,47 @@ describe("what a check's result means", () => {
     assert.match(turn, /python3 supplier\.py/);
     assert.match(turn, /Acme replied/);
     assert.match(turn, /Read it and decide\./);
+  });
+});
+
+describe("a check that can never act (GitHub 424)", () => {
+  test("an always-true check filed as a timer never wakes the agent", () => {
+    let seen: string | undefined;
+    for (let i = 0; i < 6; i++) {
+      const o = checkOutcome(ran(0), seen);
+      assert.equal(o.what, null, `run ${i + 1} of a constant check acted`);
+      seen = o.seen;
+    }
+  });
+
+  test("the obvious no-ops are told apart from commands that can change", () => {
+    for (const command of ["true", " true ", "true;", ":", "false", "exit", "exit 0", "exit 1", "/bin/true", "/usr/bin/false"]) {
+      assert.equal(constantCheck(command), true, `${command} was not seen as constant`);
+    }
+    for (const command of ["true && curl -s https://example.invalid/", "test -f /tmp/flag", "exit 2", "echo true", "truecheck", "python3 check.py || true", "date"]) {
+      assert.equal(constantCheck(command), false, `${command} was taken for a no-op`);
+    }
+    assert.match(CONSTANT_CHECK_NOTE, /never act/);
+    assert.match(CONSTANT_CHECK_NOTE, /routine --every/);
+  });
+
+  test("the agent help says the first run is a baseline, only a new finding acts, and points interval wakes at a check-in", () => {
+    const home = mkdtempSync(join(tmpdir(), "bloks-check-help-"));
+    try {
+      const cli = fileURLToPath(new URL("../bin/bloks.mjs", import.meta.url));
+      const result = spawnSync(process.execPath, [cli, "help"], { env: { HOME: home, USERPROFILE: home, PATH: "/nonexistent" }, encoding: "utf8", timeout: 5_000 });
+      assert.equal(result.status, 0, result.stderr);
+      const commands = JSON.parse(result.stdout).commands;
+      const watch = commands.find((c: any) => c.name === "watch").about;
+      assert.match(watch, /first run is a baseline and never acts/);
+      assert.match(watch, /acts only on a new finding/);
+      assert.match(watch, /the same output again is not news/);
+      assert.match(watch, /not a timer: to be woken every so often, file a check-in with routine --every/);
+      assert.doesNotMatch(watch, /exit 0 means act/, "the old reading of exit 0 as act every run is back");
+      assert.match(commands.find((c: any) => c.name === "routine").about, /check-in is how you are woken every so often/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -254,4 +299,16 @@ process.stdin.on("data", (c) => (input += c));
   assert.match(gated.note, /Waiting for approval/);
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(existsSync(markerAuto), false, "approval by mode outlived the mode");
+
+  // ── a check that can never act is filed, and says so (GitHub 424)
+  const [timer] = await asAgent(careful.id, [["POST", "/api/watchers", { kind: "check", target: "true", instruction: "Wake me every ten minutes." }]]);
+  assert.equal(timer.status, 201, JSON.stringify(timer.body));
+  assert.ok(timer.body.note.includes(CONSTANT_CHECK_NOTE), "an always-true check was filed without a word");
+  assert.match(timer.body.note, /does not run until/, "the approval note was lost beside it");
+  const real = await h.json("/api/watchers", { method: "POST", body: JSON.stringify({ botId: watcherBot.id, kind: "check", target: `test -f "${flag}"`, instruction: "Act." }) });
+  assert.equal(real.note, undefined, "a check that can change was told it never acts");
+  const edited = await h.json(`/api/watchers/${real.watcher.id}`, { method: "PATCH", body: JSON.stringify({ target: "exit 0" }) });
+  assert.equal(edited.note, CONSTANT_CHECK_NOTE);
+  const renamed = await h.json(`/api/watchers/${real.watcher.id}`, { method: "PATCH", body: JSON.stringify({ name: "Kept as it is" }) });
+  assert.equal(renamed.note, undefined, "an edit that left the command alone repeated the note");
 });

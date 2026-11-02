@@ -6458,7 +6458,7 @@
   "watchersTab.asItChangesFoldersAre": "随其变化而触发。文件夹会在数秒内被监视。",
   "watchersTab.canRunCommands": "{name}可以不经询问直接运行命令。",
   "watchersTab.checkNow": "立即检查",
-  "watchersTab.checkRunsOnItsOwn": "检查是一条命令，会{often}自动运行，无需询问。退出码为 0 表示根据其输出采取行动，退出码为 1 表示无需处理。",
+  "watchersTab.checkRunsOnItsOwn": "检查是一条命令，会{often}自动运行，无需询问。第一次运行作为基准。之后，退出码为 0 且输出是新的，表示据此采取行动；退出码为 1 表示无需处理。",
   "watchersTab.checked": "已检查",
   "watchersTab.checkedAgo": "已于{when}检查",
   "watchersTab.choose": "选择",

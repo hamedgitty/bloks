@@ -6719,7 +6719,7 @@
   "watchersTab.asItChangesFoldersAre": "Conforme muda. As pastas são monitoradas em segundos.",
   "watchersTab.canRunCommands": "{name} pode rodar comandos sem perguntar.",
   "watchersTab.checkNow": "Verificar agora",
-  "watchersTab.checkRunsOnItsOwn": "Uma verificação é um comando, e ele roda sozinho {often} sem perguntar. Saída 0 significa agir sobre o resultado. Saída 1 significa que não há nada a fazer.",
+  "watchersTab.checkRunsOnItsOwn": "Uma verificação é um comando, e ele roda sozinho {often} sem perguntar. A primeira execução é a referência. Depois disso, saída 0 com um resultado novo significa agir sobre ele. Saída 1 significa que não há nada a fazer.",
   "watchersTab.checked": "Verificado",
   "watchersTab.checkedAgo": "Verificado {when}",
   "watchersTab.choose": "Escolher",

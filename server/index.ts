@@ -525,6 +525,8 @@ import {
   checkAllowed,
   checkOutcome,
   cleanWatcher,
+  constantCheck,
+  CONSTANT_CHECK_NOTE,
   countLook,
   describeFolderChanges,
   folderChanges,
@@ -27855,15 +27857,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
       const waiting = w.kind === "check" && !w.approvedBy;
-      const placeNote = w.kind === "place" ? placeWatchNote(w) : null;
-      return json(res, 201, {
-        watcher: watcherView(w),
-        ...(waiting
-          ? { note: `Filed, but its command does not run until ${hostName()} approves it in Watchers. Tell them it is waiting and what it runs.` }
-          : placeNote
-            ? { note: placeNote }
-            : {}),
-      });
+      const note = [
+        w.kind === "check" && constantCheck(w.target) ? CONSTANT_CHECK_NOTE : null,
+        waiting ? `Filed, but its command does not run until ${hostName()} approves it in Watchers. Tell them it is waiting and what it runs.` : null,
+        w.kind === "place" ? placeWatchNote(w) : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return json(res, 201, { watcher: watcherView(w), ...(note ? { note } : {}) });
     }
     m = path.match(/^\/api\/watchers\/([\w-]+)$/);
     if (m && (method === "PATCH" || method === "DELETE")) {
@@ -27979,7 +27980,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // approving a check takes its baseline straight away
       if ((moved || (canRun && !couldRun)) && w.enabled) void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
-      return json(res, 200, { watcher: watcherView(w) });
+      return json(res, 200, { watcher: watcherView(w), ...(moved && w.kind === "check" && constantCheck(w.target) ? { note: CONSTANT_CHECK_NOTE } : {}) });
     }
     m = path.match(/^\/api\/watchers\/([\w-]+)\/check$/);
     if (m && method === "POST") {

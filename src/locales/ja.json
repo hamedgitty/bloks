@@ -6458,7 +6458,7 @@
   "watchersTab.asItChangesFoldersAre": "変化したときに動きます。フォルダは数秒以内に監視されます。",
   "watchersTab.canRunCommands": "{name}は確認なしでコマンドを実行できます。",
   "watchersTab.checkNow": "今すぐチェック",
-  "watchersTab.checkRunsOnItsOwn": "チェックはコマンドで、確認なしに{often}自動で実行されます。終了コード0なら出力に基づいて動作し、終了コード1なら何もしません。",
+  "watchersTab.checkRunsOnItsOwn": "チェックはコマンドで、確認なしに{often}自動で実行されます。最初の実行は基準になります。その後は、終了コード0で出力が新しければそれに基づいて動作し、終了コード1なら何もしません。",
   "watchersTab.checked": "チェック済み",
   "watchersTab.checkedAgo": "{when}にチェック",
   "watchersTab.choose": "選択",

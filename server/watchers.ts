@@ -357,6 +357,24 @@ export function checkOutcome(
   return { seen, what: shown || "The check passed and printed nothing.", error: null };
 }
 
+/**
+ * Whether a check's command prints nothing and ends the same way on every
+ * run, so it can never act: a check acts on a new finding, and its first
+ * run is only the baseline. An agent that wanted a wake every so often
+ * filed `true` as a check and was never woken (GitHub 424). Only the
+ * obvious no-ops, and said rather than refused: anything cleverer is the
+ * command's own business, and a person may keep one switched off.
+ * `--check` given no command reaches here as "true" from the CLI.
+ */
+export function constantCheck(command: string): boolean {
+  const bare = command.trim().replace(/\s*;$/, "");
+  return /^(?:(?:\/usr)?\/bin\/)?(?:true|false)$|^:$|^exit(?:\s+[01])?$/.test(bare);
+}
+
+/** What filing or changing a check to one of those is told. */
+export const CONSTANT_CHECK_NOTE =
+  "This check prints nothing and ends the same way on every run, so it will never act: a check acts only when it finds something new, and its first run is the baseline. To be woken every so often, file a check-in with routine --every instead.";
+
 /** Whether a check's command may run now, for an agent with these approvals. */
 export function checkAllowed(w: Pick<Watcher, "kind" | "approvedBy">, approvals: string | undefined): boolean {
   if (w.kind !== "check") return true;

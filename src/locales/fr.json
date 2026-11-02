@@ -6719,7 +6719,7 @@
   "watchersTab.asItChangesFoldersAre": "Au fil des changements. Les dossiers sont surveillés en quelques secondes.",
   "watchersTab.canRunCommands": "{name} peut exécuter des commandes sans demander.",
   "watchersTab.checkNow": "Vérifier maintenant",
-  "watchersTab.checkRunsOnItsOwn": "Une vérification est une commande, et elle s'exécute seule {often} sans demander. Sortie 0 : agir selon sa sortie. Sortie 1 : rien à faire.",
+  "watchersTab.checkRunsOnItsOwn": "Une vérification est une commande, et elle s'exécute seule {often} sans demander. La première exécution sert de référence. Ensuite, sortie 0 avec une sortie nouvelle : agir en conséquence. Sortie 1 : rien à faire.",
   "watchersTab.checked": "Vérifié",
   "watchersTab.checkedAgo": "Vérifié {when}",
   "watchersTab.choose": "Choisir",

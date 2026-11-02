@@ -2302,7 +2302,13 @@ times, compared), a page (its readable text, hashed, with the new lines
 as the change, optionally only when it mentions something) or a feed
 (RSS or Atom entries not seen before). Folders are watched with
 `fs.watch` and settle for twenty seconds; everything is also looked at on
-its `every`. A first look is a baseline. A change becomes a turn in the
+its `every`. A check (`kind: "check"`) runs a command on its `every`:
+exit 0 is a finding, passed on with what it printed, and exit 1 is
+nothing (`checkOutcome`). A first look is a baseline, and a check counts
+only a new finding, so one that always exits 0 the same way never acts;
+filing or changing a check to an obvious no-op (`true`, `:`, `exit 0`)
+answers with a note saying so and pointing at a check-in routine
+(`constantCheck`), since a watcher is not a timer. A change becomes a turn in the
 agent's first conversation or the one the watcher names (see Lanes), or a
 rehearsal (`openRehearsals`), with the message marked `via: "watcher"`.
 A look is skipped while the agent is busy, so its own edits are not news

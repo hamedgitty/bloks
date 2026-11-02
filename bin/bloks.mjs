@@ -348,7 +348,9 @@ const COMMANDS = {
     use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place> --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--once] [--until <date and time>] [--thread <conversation>] [--rehearse]',
     about:
       "act when a folder, a web page or a feed changes, when a cheap check you wrote finds something, or when the person arrives at or leaves a place: " +
-      "--check runs a command every --every minutes without waking you; exit 0 means act (what it prints is passed on), exit 1 means nothing to do. " +
+      "--check runs a command every --every minutes without waking you. Its first run is a baseline and never acts; after that it acts only on a new finding, " +
+      "an exit 0 whose output differs from the last run's or that follows an exit 1 (what it prints is passed on). Exit 1 means nothing to do, and the same output again is not news, " +
+      "so a command that always exits 0 the same way (such as true) never acts. A watcher is not a timer: to be woken every so often, file a check-in with routine --every. " +
       "Unless you may run commands without asking, the person approves the command before it runs. " +
       '--arrive and --leave take a place as their iPhone names it ("Toronto", "Shinjuku, Tokyo") or as latitude,longitude with --radius in metres (500 unless said); ' +
       "it acts when their phone next says where they are, needs location sharing on there, and a place by coordinates needs Exact position on. " +
@@ -838,6 +840,7 @@ const COMMANDS = {
     about:
       "file a routine for yourself: at a --time on --days (0 is Sunday, 6 is Saturday), once on --date to come back to something later, " +
       "or a check-in --every 15m to 24h, optionally --between two times. Leave out --days and it runs every day. " +
+      "A check-in is how you are woken every so often; a watcher acts only when what it watches changes. " +
       "A check-in's turn may answer QUIET when nothing needs the person, and then they are not told; --quiet lets a --time routine do the same. " +
       "The prompt can be up to 4,000 characters. " +
       "--in-brief sends what it reports to the person's morning brief, as a card there, instead of a notification of its own; use it for something they asked you to track every day. " +
