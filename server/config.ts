@@ -536,6 +536,7 @@ const BUILT_IN_CLI_INSTANCES: InstanceConfigMap = {
   codex: { driver: "codex" },
   gemini_cli: { driver: "geminiCli" },
   opencode: { driver: "opencode" },
+  commandcode: { driver: "commandcode" },
   grok_cli: { driver: "grokCli" },
   cursor: { driver: "cursor" },
   cline: { driver: "cline" },
@@ -556,7 +557,10 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // probes.
   for (const [id, entry] of Object.entries(BUILT_IN_CLI_INSTANCES)) {
     if (Object.values(map).some((e) => e.driver === entry.driver)) continue;
-    map[id] = { ...entry };
+    // A person's instance may already have the new engine's default id.
+    let freeId = id;
+    for (let suffix = 2; Object.hasOwn(map, freeId); suffix++) freeId = `${id}_${suffix}`;
+    map[freeId] = { ...entry };
   }
   // A connected provider that is not already spelled out in `instances`
   // gets the obvious one: instance id = driver kind.

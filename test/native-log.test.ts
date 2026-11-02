@@ -8,13 +8,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { slimFrame, slimNativeLogs } from "../server/drivers/native.ts";
+import { appendNative, slimFrame, slimNativeLogs } from "../server/drivers/native.ts";
 
 const turns = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `turn-${i}`, items: [{ type: "userMessage", text: "x".repeat(200) }] }));
 const resumed = (n: number) => ({ id: 7, result: { thread: { id: "thr_1", preview: "hello", turns: turns(n) }, model: "gpt-6" } });
 const usage = { method: "thread/tokenUsage/updated", params: { threadId: "thr_1", tokenUsage: { total: { inputTokens: 1200, cachedInputTokens: 900 } } } };
 const line = (msg: unknown) => JSON.stringify({ at: "2026-10-05T12:00:00.000Z", dir: "in", source: "codex.app-server", msg });
+
+test("native secret redaction preserves JSON for short and escaped MCP credentials", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-native-secret-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const msg = { id: 123, env: { SHORT: "123", QUOTED: 'quoted"secret' }, ['quoted"secret']: [{ "123": "value" }] };
+  appendNative("lane", { dir: "out", source: "commandcode.acp", msg }, dir, ["123", 'quoted"secret']);
+  const saved = JSON.parse(readFileSync(join(dir, "lane.ndjson"), "utf8"));
+  assert.equal(saved.msg.id, 123);
+  assert.deepEqual(saved.msg.env, { SHORT: "[redacted]", QUOTED: "[redacted]" });
+  assert.deepEqual(saved.msg["[redacted]"], [{ "[redacted]": "value" }]);
+  assert.ok(msg['quoted"secret'], "redaction must not change the driver's frame");
+});
 
 test("a thread handed back whole is kept as a count, and nothing else changes", () => {
   const frame = resumed(3);

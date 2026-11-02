@@ -366,6 +366,7 @@ const NEVER_SHIPPED = new Set([
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "XAI_API_KEY",
+  "COMMAND_CODE_API_KEY",
   "BLOKS_COMPOSIO_KEY",
   "BLOKS_COMPOSIO_URL",
   "BLOKS_BOX_TOKEN",
@@ -802,6 +803,7 @@ const SIGN_IN_COMMANDS: Record<string, string> = {
   geminiCli: "gemini",
   grokCli: "grok login",
   opencode: "opencode auth login",
+  commandcode: "command-code login",
   pi: "pi",
   antigravity: "agy",
 };

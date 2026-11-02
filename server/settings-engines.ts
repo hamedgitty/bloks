@@ -24,7 +24,7 @@ export function inspectEngineSettings(input:unknown,ctx:InspectionContext,loaded
     const mode=get(raw,'permissionMode');
     addConfig('cli',configured(typeof get(raw,'cli')==='string'?get(raw,'cli'):'driver default'),true);
     addConfig('permissionMode',mode===undefined?{status:'value',value:'acceptEdits'}:typeof mode==='string' && ['acceptEdits','auto','bypassPermissions'].includes(mode)?{status:'value',value:mode}:{status:'unsupported',reason:'invalid_value'});
-  }else if(driver==='codex' || driver==='antigravity' || typeof driver==='string' && ['geminiCli','opencode','grokCli','pi','cursor','cline'].includes(driver)){
+  }else if(driver==='codex' || driver==='antigravity' || typeof driver==='string' && ['geminiCli','opencode','commandcode','grokCli','pi','cursor','cline'].includes(driver)){
     const cli=get(raw,'cli');addConfig('cli',configured(typeof cli==='string' && (driver==='codex'||cli)?cli:'driver default'),true);
     addConfig('fullAuto',{status:'value',value:get(raw,'fullAuto')===true});
   }else if(driver==='boxAgent'){

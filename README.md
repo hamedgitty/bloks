@@ -517,6 +517,7 @@ installed somewhere else, or a build of your own, can be pointed at with
 | Gemini CLI | `npm i -g --prefix ~/.local @google/gemini-cli`, then a Google sign-in or a Gemini key | yes |
 | Pi | `npm i -g --prefix ~/.local --ignore-scripts @earendil-works/pi-coding-agent pi-acp`, then `pi` | yes |
 | OpenCode | `npm i -g --prefix ~/.local opencode-ai`, then `opencode auth login` | yes |
+| Command Code | `npm i -g --prefix ~/.local command-code`, then `command-code login` | yes |
 | Grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash`, then `grok login` | yes |
 | Cursor | `curl https://cursor.com/install -fsS \| bash`, then `cursor-agent login` (the Cursor CLI, not the editor) | yes |
 | Cline | `npm i -g --prefix ~/.local cline` (3.0.68 or newer), then `cline auth` | yes |

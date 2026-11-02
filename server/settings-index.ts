@@ -154,7 +154,7 @@ export const SETTINGS_PAGE_INDEX = [] = [
     label: "settingsPages.engines.label",
     description: "settingsPages.engines.description",
     keywords:
-      "engines models providers claude codex gemini grok cursor cline openai api key cli sign in bloks ai endpoints pause speed path",
+      "engines models providers claude codex gemini grok cursor cline commandcode command code openai api key cli sign in bloks ai endpoints pause speed path",
     keywordsKey: "settingsPages.engines.keywords",
     rows: [
       "settingsPages.engines.row.yourEngines",

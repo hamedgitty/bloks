@@ -35,6 +35,7 @@ export const ENGINE_PACKAGES: Record<string, EnginePackage> = {
   codex: { pkg: "@openai/codex", cli: "codex", update: inPlace("codex", "@openai/codex@latest") },
   geminiCli: { pkg: "@google/gemini-cli", cli: "gemini", update: inPlace("gemini", "@google/gemini-cli@latest") },
   opencode: { pkg: "opencode-ai", cli: "opencode", update: inPlace("opencode", "opencode-ai@latest") },
+  commandcode: { pkg: "command-code", cli: "command-code", update: inPlace("command-code", "command-code@latest") },
   // Cursor is not here: it is not on npm, and it updates itself
   cline: { pkg: "cline", cli: "cline", update: inPlace("cline", "cline@latest") },
   pi: {
