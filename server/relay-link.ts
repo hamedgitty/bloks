@@ -439,6 +439,11 @@ export class RelayLink {
     // member's lock screen never says more than their app would.
     const sealed: Record<string, string> = {};
     const wantsPreview = typeof wake === "object" && wake.preview === true;
+    // Where the frame stands on the workspace's stream goes to a member's
+    // device too, on the copy member-access.ts rebuilt for them: their app
+    // orders it against an agent list by it, and a phone back on the local
+    // network resumes from it, as on the direct stream.
+    const seq = (frame as { _seq?: unknown } | null)?._seq;
     for (const d of devices) {
       if (ownersOnly && d.personId) continue;
       // a member's own conversation goes to that member's devices alone,
@@ -446,8 +451,9 @@ export class RelayLink {
       if (onlyPerson && d.personId !== onlyPerson) continue;
       // a stream one device is following is that device's alone
       if (onlyDevice && d.id !== onlyDevice) continue;
-      const shown = d.personId ? this.memberFrame(frame, d.personId) : frame;
-      if (shown === null || shown === undefined) continue;
+      const rebuilt = d.personId ? this.memberFrame(frame, d.personId) : frame;
+      if (rebuilt === null || rebuilt === undefined) continue;
+      const shown = d.personId && typeof seq === "number" ? { ...(rebuilt as object), _seq: seq } : rebuilt;
       frames.push(seal(deviceKey(d.hash, "mac-to-phone"), d.id, shown));
       if (wantsPreview) {
         const preview = this.previewOf(shown);

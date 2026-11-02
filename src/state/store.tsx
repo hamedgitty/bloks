@@ -1104,7 +1104,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // picker needs to hear that something became usable
         // a run refused for an empty balance, or more added since
         case "credits": {
-          const { kind: _kind, _seq, ...credits } = frame;
+          const { kind: _kind, _seq, _serverSeq, ...credits } = frame;
           rawDispatch({ type: "credits", credits: credits as unknown as CreditsSummary });
           break;
         }

@@ -282,6 +282,13 @@ test("member history, live messages, patches, replay and sealed relay omit comma
   const relayed = () => pushed.map((f) => open(key, peek(f)!) as any).filter(Boolean);
   await until(() => relayed().some((f) => f.kind === "message.patch" && f.message?.id === target) ? true : null);
   for (const frame of relayed().filter((f) => f.message?.id === target)) hidden(frame.message, "sealed relay");
+  // the copy rebuilt for a member's device says where it stands on the
+  // stream, as their direct stream does: their app orders it against an
+  // agent list by it, and a phone resumes from it
+  const directCopy = frames(live).find((f) => f.kind === "message" && f.message?.id === target);
+  const relayedCopy = relayed().find((f) => f.kind === "message" && f.message?.id === target);
+  assert.equal(typeof directCopy._seq, "number");
+  assert.equal(relayedCopy._seq, directCopy._seq, "the member's relayed copy lost its place on the stream");
   assert.ok(ownerRows[0].tool.command, "owner lost command detail");
   const setting = await h.fetch("/api/bloks/" + blok.id + "/share", { method: "PATCH", body: JSON.stringify({ activityDetail: true }) });
   assert.equal(setting.status, 200);
