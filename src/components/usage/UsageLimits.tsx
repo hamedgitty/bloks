@@ -22,7 +22,7 @@ import { cn } from "@/lib/cn";
 import { planName, planRows, type PlanRow, type PlanUsage } from "@/lib/contextCard";
 import { percentText, renewsLine, topUpWords, type BloksAiStatus } from "@/lib/credits";
 import { resetLine } from "@/lib/usageNotice";
-import { estimatedMoney, money, onPlan, perMillionText, pricesNote, topsUpLine, type SpendLimitRow } from "@/lib/usagePage";
+import { estimatedMoney, money, perMillionText, planEngines, pricesNote, topsUpLine, type SpendLimitRow } from "@/lib/usagePage";
 import { formatNumber, t } from "@/lib/i18n";
 
 /** A share as a bar. Warning colour near the end, where it matters. */
@@ -142,9 +142,17 @@ export function usePlanUsage(tick = 0): Record<string, PlanUsage> | null {
   return plans;
 }
 
-function PlanCards({ plans, badgeFor }: { plans: Record<string, PlanUsage> | null; badgeFor: (instanceId: string) => string | null }) {
+function PlanCards({
+  plans,
+  answered,
+  badgeFor,
+}: {
+  plans: Record<string, PlanUsage> | null;
+  answered: readonly string[] | null;
+  badgeFor: (instanceId: string) => string | null;
+}) {
   const { state } = useStore();
-  const engines = state.instances.filter((i) => onPlan(i.driverKind));
+  const engines = planEngines(state.instances, plans, answered);
   if (!engines.length) return null;
   const now = Date.now();
   return (
@@ -529,7 +537,17 @@ function SpendCards({ badgeFor }: { badgeFor: (instanceId: string) => string | n
  * so, since that is the limit a person following a notice came to see.
  * `plans` is the page's reading of them (usePlanUsage).
  */
-export function UsageLimits({ focusBot, plans }: { focusBot: string | null; plans: Record<string, PlanUsage> | null }) {
+export function UsageLimits({
+  focusBot,
+  plans,
+  answered,
+}: {
+  focusBot: string | null;
+  plans: Record<string, PlanUsage> | null;
+  /** The engines that answered a turn in the span in view, null before
+   * the report is in: a plan is shown for those and for the installed. */
+  answered: readonly string[] | null;
+}) {
   const { state } = useStore();
   const bot = focusBot ? state.bots.find((b) => b.id === focusBot) : undefined;
   const runsOn = bot?.modelSelection.instanceId ?? null;
@@ -537,7 +555,7 @@ export function UsageLimits({ focusBot, plans }: { focusBot: string | null; plan
   const badgeFor = (instanceId: string) => (bot && !onCredits && runsOn === instanceId ? t("usageLimits.agentsEngine", { name: bot.name }) : null);
   return (
     <div className="flex flex-col gap-8">
-      <PlanCards plans={plans} badgeFor={badgeFor} />
+      <PlanCards plans={plans} answered={answered} badgeFor={badgeFor} />
       <BloksAiCard badge={bot && onCredits ? t("usageLimits.agentsEngine", { name: bot.name }) : null} />
       <SpendCards badgeFor={badgeFor} />
     </div>

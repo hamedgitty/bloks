@@ -27,6 +27,7 @@ import {
   perMillionText,
   pricesNote,
   niceTicks,
+  planEngines,
   planTitle,
   planUses,
   planWithoutPrice,
@@ -173,6 +174,26 @@ test("only an engine on a plan that priced none of its turns gets its plan shown
   assert.equal(planWithoutPrice("codex"), true);
   assert.equal(planWithoutPrice("claudeAgent"), false, "Claude Code prices its turns on a plan too");
   assert.deepEqual(planUses({ byEngine: [row("codex")] }, kindOf, {}, NOW), [], "an engine with no turns in view has nothing to say");
+});
+
+test("Limits shows a plan for an engine installed here, read from, or that answered in view", () => {
+  const engine = (instanceId: string, driverKind: string, state: "available" | "unavailable") => ({ instanceId, driverKind, snapshot: { state } });
+  const instances = [
+    engine("claude", "claudeAgent", "unavailable"),
+    engine("codex", "codex", "unavailable"),
+    engine("opencode", "acp", "available"),
+  ];
+  // neither CLI is here and neither has answered: no plan card at all
+  assert.deepEqual(planEngines(instances, {}, ["opencode"]), []);
+  assert.deepEqual(planEngines(instances, null, null), [], "nor while the page is still reading");
+  // installed, it has its card, saying nothing was heard yet
+  assert.deepEqual(planEngines([engine("codex", "codex", "available")], {}, []).map((e) => e.instanceId), ["codex"]);
+  // gone since, its turns in view or its plan read keep the card
+  assert.deepEqual(planEngines(instances, {}, ["codex"]).map((e) => e.instanceId), ["codex"]);
+  const reading: PlanUsage = { windows: [{ id: "five_hour", minutes: 300, used: 0.2, resetsAt: NOW + 3_600_000 }], plan: "Max", at: NOW };
+  assert.deepEqual(planEngines(instances, { claude: reading }, []).map((e) => e.instanceId), ["claude"]);
+  // an engine on no plan never gets one, installed or not
+  assert.deepEqual(planEngines(instances, { opencode: reading }, ["opencode"]), []);
 });
 
 test("a current reading shows each window's share used and when it resets", () => {

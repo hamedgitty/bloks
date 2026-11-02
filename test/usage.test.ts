@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { localDate, summarize, UsageStore, type UsageBucket } from "../server/usage.ts";
+import { localDate, summarize, turnRan, UsageStore, type UsageBucket } from "../server/usage.ts";
 
 // Each store gets its own file: the default path is the real workspace's
 // spending record, and reading it would leak real usage into these sums.
@@ -138,4 +138,44 @@ test("a second turn starts its own high-water mark", () => {
   const summary = summarize(store.since(1), 1);
   assert.equal(summary.total.input, 5_900, "5000 then 900, not 5000 then 5000");
   assert.equal(summary.total.turns, 2);
+});
+
+test("a turn its engine never ran is not usage", () => {
+  // what an agent left on Codex, on a computer without it, used to leave:
+  // a Codex turn of nothing (GitHub 459)
+  const store = freshStore();
+  store.recordTurn("bot1", "codex", null, undefined, false, false, undefined, false);
+  assert.deepEqual(store.since(1), [], "no bucket at all, so no row and no engine in the menu");
+  // the engine said it used something after all: that is counted
+  store.noteTokens("bot1", "codex", 900, 30);
+  store.recordTurn("bot1", "codex", null, undefined, false, false, undefined, false);
+  assert.deepEqual(summarize(store.since(1), 1).total, { turns: 1, input: 900, output: 30, cost: 0 });
+  // and a turn that ran and failed still counts, as before
+  store.noteTokens("bot1", "codex", 100, 10);
+  store.recordTurn("bot1", "codex", null, undefined, false);
+  assert.equal(summarize(store.since(1), 1).total.turns, 2);
+});
+
+test("which settled turns never ran", () => {
+  assert.equal(turnRan({ ok: true }), true);
+  assert.equal(turnRan({ ok: true, stopReason: "spawn_error" }), true, "an answer is an answer");
+  assert.equal(turnRan({ ok: false, stopReason: "error" }), true);
+  assert.equal(turnRan({ ok: false, stopReason: "interrupted" }), true);
+  assert.equal(turnRan({ ok: false, stopReason: "exit_before_result" }), true, "it started, and may have spent");
+  assert.equal(turnRan({ ok: false, stopReason: null }), true);
+  for (const why of ["spawn_error", "no_bridge", "not_submitted"]) assert.equal(turnRan({ ok: false, stopReason: why }), false, why);
+  assert.equal(turnRan({ ok: false, stopReason: "not_submitted", preInputRefusal: { kind: "codex-speed" } }), false);
+});
+
+test("a day that holds only turns with nothing to show is left out", () => {
+  // the row an uninstalled engine's refused turn left before it was not counted
+  const refused = bucket({ provider: "codex", turns: 1, input: 0, output: 0 });
+  const s = summarize([bucket(), refused], 7, march(17));
+  assert.deepEqual(s.byProvider.map((p) => p.provider), ["claude"]);
+  assert.equal(s.total.turns, 1);
+  // a turn that answered without saying what it used is still usage
+  const unmeasured = bucket({ provider: "pi", input: 0, output: 0, unmeasured: 1 });
+  assert.deepEqual(summarize([unmeasured], 7, march(17)).byProvider.map((p) => p.provider), ["pi"]);
+  const priced = bucket({ provider: "api", input: 0, output: 0, cost: 0.01, costKnown: true });
+  assert.equal(summarize([priced], 7, march(17)).total.turns, 1);
 });

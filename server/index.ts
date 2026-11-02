@@ -693,7 +693,7 @@ import { countsDiffer, emptyEnoughForMove, heldKeyPaths, keysLeftBehind, readCou
 import { MoveUploads, PART_BYTES, UploadError, cleanDigest, readPartAt, sha256OfFile } from "./move-upload.ts";
 import { cleanMovedMark, clearMovedMark, readMovedMark, writeMovedMark, type MovedMark } from "./moved-mark.ts";
 import { nextDueAt } from "./next-due.ts";
-import { rangeDays, summarize, usageReport, UsageStore, USAGE_RANGES, type UsageRange } from "./usage.ts";
+import { rangeDays, summarize, turnRan, usageReport, UsageStore, USAGE_RANGES, type UsageRange } from "./usage.ts";
 import { monthBounds, monthKey, monthSpend, providerCreditNotice, readLimit, spendNotices, spendRefusal, spendStatus, MAX_LIMIT_USD, type SpendStatus } from "./spend-limits.ts";
 import { PriceBook, PRICES_URL, readOwnPrice, type OwnPrice } from "./model-prices.ts";
 import { TeamLibrary } from "./team-library.ts";
@@ -5555,7 +5555,7 @@ bus.subscribe((event: RuntimeEvent) => {
         return asked && whoIs(asked) ? asked : undefined;
       })();
       const priced = turnPrice(event);
-      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated, bookedTo);
+      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated, bookedTo, turnRan(event));
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
       if (bookedTo && !onBloksAi(event.providerInstanceId, event.provider)) {
@@ -13260,7 +13260,7 @@ function onIdleCompaction(event: RuntimeEvent) {
     case "turn.completed": {
       if (!ahead) broadcast({ kind: "runtime", event });
       const priced = turnPrice(event);
-      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated);
+      usage.recordTurn(bot.id, usageProvider(event), priced.cost, undefined, event.ok !== false, priced.estimated, undefined, turnRan(event));
       const spent = turnTokens.get(event.threadId);
       turnTokens.delete(event.threadId);
       if (spent) store.addTaskUsage(event.threadId, spent.input, spent.output, running.after ?? undefined);

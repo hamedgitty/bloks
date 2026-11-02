@@ -291,6 +291,26 @@ export function onPlan(driverKind: string | null | undefined): boolean {
   return PLAN_KINDS.includes(driverKind ?? "");
 }
 
+/**
+ * The engines the Limits section shows a plan for, in the order given:
+ * those on a plan that are installed here, that have a reading of their
+ * plan, or that answered a turn in the span in view (`answered`, the
+ * report's engines; null before it is in). Claude Code and Codex are
+ * always set up, so listing every one on a plan showed both, saying
+ * nothing was heard, on a computer that has neither (GitHub 459). One
+ * that answered and has since gone keeps its card while its turns are in
+ * view.
+ */
+export function planEngines<T extends { instanceId: string; driverKind: string; snapshot: { state: string } }>(
+  instances: readonly T[],
+  plans: Record<string, PlanUsage> | null | undefined,
+  answered: readonly string[] | null | undefined,
+): T[] {
+  return instances.filter(
+    (i) => onPlan(i.driverKind) && (i.snapshot.state === "available" || Boolean(plans?.[i.instanceId]) || Boolean(answered?.includes(i.instanceId))),
+  );
+}
+
 /** Of those, the ones that never give a price. Claude Code gives a turn's
  * cost even on a plan, so a Claude turn with none failed before it said
  * anything, and saying its plan reports no dollar figure would be wrong. */

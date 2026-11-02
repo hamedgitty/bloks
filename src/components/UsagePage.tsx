@@ -768,7 +768,7 @@ export function UsagePage() {
               </h2>
               <p className="mt-0.5 text-pretty text-body text-muted-foreground">{t("usagePage.whatEachPlanAllowanceAnd")}</p>
             </div>
-            <UsageLimits focusBot={view.bot} plans={plans} />
+            <UsageLimits focusBot={view.bot} plans={plans} answered={report?.engines ?? null} />
           </motion.section>
         </div>
       </div>

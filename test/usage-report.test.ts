@@ -141,3 +141,23 @@ test("each row counts its Bloks AI turns, so an agent only ever on it can say so
   assert.deepEqual([byAgent.ada.turns, byAgent.ada.bloksAiTurns, byAgent.ada.priced], [3, 3, false]);
   assert.deepEqual([byAgent.bo.turns, byAgent.bo.bloksAiTurns], [3, 1], "partly on Bloks AI is not only on it");
 });
+
+test("an engine with only turns it never ran is not in the report, its menus or its plans", () => {
+  // as the issue's workspace had it: OpenCode answers, and one turn on a
+  // Codex that is not installed was refused at once (GitHub 459)
+  const report = usageReport(
+    [
+      bucket({ provider: "opencode", input: 2_000, output: 300, turns: 4 }),
+      bucket({ botId: "imported", provider: "codex", input: 0, output: 0, turns: 1 }),
+    ],
+    "30d",
+    {},
+    TODAY,
+  );
+  assert.deepEqual(report.engines, ["opencode"]);
+  assert.deepEqual(report.agents, ["ada"]);
+  assert.deepEqual(report.byEngine.map((e) => e.id), ["opencode"]);
+  assert.equal(report.total.turns, 4);
+  assert.equal(report.unpricedTurns, 4);
+  assert.equal(report.daily.at(-1)?.byEngine.codex, undefined);
+});

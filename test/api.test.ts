@@ -565,6 +565,14 @@ describe("agents", () => {
     assert.ok(/not installed/i.test(failed.text), failed.text);
     assert.ok(/install\.sh|npm i -g/.test(failed.text), "it should say how to fix it");
     assert.ok(!/ENOENT|spawn /.test(failed.text), `errno leaked: ${failed.text}`);
+
+    // and a turn the engine never ran is not usage: the engine is not in
+    // the report, its Engine menu or its by-engine rows (GitHub 459)
+    const engine = bots[0].modelSelection.instanceId;
+    const report = await h.json("/api/usage/report?range=7d");
+    assert.equal(report.engines.includes(engine), false, JSON.stringify(report.engines));
+    assert.equal(report.byEngine.some((row: any) => row.id === engine), false);
+    assert.equal(report.agents.includes(bots[0].id), false);
   });
 
   test("routes for an agent that does not exist say so", async () => {

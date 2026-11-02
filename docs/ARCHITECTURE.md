@@ -3826,6 +3826,15 @@ Claude or ChatGPT plan has left comes from the engine itself, as its last
 turn said (`server/plan-usage.ts`), and Bloks AI's from its service, as
 shares.
 
+A turn its engine never ran is not usage (`turnRan`): the program is not
+there or could not start, or Bloks refused the turn before the words
+went. It is not counted unless the engine said it used something after
+all, and a day's bucket that holds only turns that failed with nothing
+to show (`carriesUsage`) is left out of the report and its menus. Limits
+shows a Claude Code or Codex plan only for an engine installed here, one
+with a plan reading, or one that answered a turn in the span in view, so
+a computer without either CLI shows neither.
+
 A cost is an engine's own price when it reports one (OpenRouter does, as
 `usage.cost`). Most API engines report tokens and no price, so a turn that
 comes back unpriced carries its model and tokens, cached input included,
