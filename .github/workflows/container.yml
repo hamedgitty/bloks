@@ -37,7 +37,8 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
-
+        with:
+          persist-credentials: false
       # A prerelease, a draft, or anything that is not a plain version
       # gets no image and never moves latest.
       - name: Which version
@@ -66,16 +67,16 @@ jobs:
             echo "latest=$latest"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         id: meta
         with:
           images: ghcr.io/${{ github.repository_owner }}/bloks-server
@@ -90,7 +91,7 @@ jobs:
             org.opencontainers.image.licenses=FSL-1.1-MIT
 
       # The server is plain JavaScript, so one tarball makes both images.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -104,7 +105,7 @@ jobs:
       # tagged the same so BLOKS_VERSION pins both. Its recipe is pinned by
       # digest and checksum (docker/desktop), so the release's tag is
       # what it is built from.
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         id: desktop
         with:
           images: ghcr.io/${{ github.repository_owner }}/bloks-desktop
@@ -118,7 +119,7 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.licenses=FSL-1.1-MIT
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: docker/desktop
           platforms: linux/amd64,linux/arm64
