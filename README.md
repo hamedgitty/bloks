@@ -383,6 +383,11 @@ over.
   going until it is done, stuck or out of turns.
 - **A morning brief** on Overview: what every agent did, what waits on
   you and what it cost, written from what is on disk, not by a model.
+  What waits on you includes your list: when a routine's report finds
+  something only you can do, its agent puts it there once, however many
+  mornings it reports it, and it stays until you mark it done or dismiss
+  it, or the agent says it no longer needs doing. The one morning
+  notification counts it.
 - **A terminal per agent**, up to eight shells each, docked on any side of
   the chat, side by side with it, filling the window or in a window of
   its own.

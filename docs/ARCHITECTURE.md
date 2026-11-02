@@ -2433,6 +2433,42 @@ routine with `briefOnly` sends no `reply.settled` for its runs while
 the brief is on (`briefOnlyTurn`), unless the person joined the turn;
 its turn is told its answer opens a card (`BRIEF_ASK`).
 
+### The person's list
+
+A report that finds something only the person can do (a disk to
+replace, a reply they owe) is counted, not read out of the report:
+the agent puts it on the person's list (`server/todos.ts`, GitHub 378
+and 430), kept in `todos.json`. A line is a title of what to do (140
+characters), an optional detail (500), the conversation it was said in
+(the turn's lane), and the routine whose run said it when one did
+(`openRuns`). Each agent keys its own lines: `POST /api/bots/:me/todos`
+with a key it already used refreshes that line (newest words, `times`
+counted) instead of adding one, so a daily report of the same disk is
+one line however many mornings say it. The person closes a line with
+`POST /api/todos/:id/done` or `/dismiss`; the agent clears its own with
+`DELETE /api/bots/:me/todos/:key` once it no longer needs doing, which
+is how a recovered failure leaves the count. A dismissed line stays
+dismissed when it is reported again, until its agent clears it; a line
+marked done and reported again is a new line, since it did not hold.
+An agent has at most 20 open lines; a closed line goes thirty days
+after it was last said, and an agent forgotten for good takes its lines
+with it, while an archived one's wait with it.
+
+`waitingOnYou` lists the open lines after the live cards, as
+`BriefWaiting` with kind `todo` (`messageId` is the todo's id and
+`threadId` its conversation, so a client that knows only questions and
+approvals opens the conversation), so the brief's headline, its
+`quiet`, its notification and `/api/waiting` count them with the rest:
+two reports and two lines read "2 reports in, 2 things waiting on you."
+`GET /api/briefs` adds `todos`, the list as it stands (open, then
+closed in the last week), which the newest brief shows live and an
+older one reads to say how each of its lines ended. A routine's run
+with the agent's own credential is told about the list in its origin
+line (`todoAsk`); the agent's command line has `todo`, `todos` and
+`untodo`. `/api/todos` is on the agent guard's never list, and the
+routes under `/api/bots/:me/todos` refuse anything but that agent's own
+turn credential.
+
 ## Routines and check-ins
 
 `server/routines.ts` keeps routines in `routines.json` and a thirty

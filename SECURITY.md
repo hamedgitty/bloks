@@ -143,6 +143,22 @@ agent itself or one it may already message, and is refused wherever that
 message would be. An empty conversation, and which one you have open,
 stay yours.
 
+**An agent adds to your list, and only you close it.** A routine's report
+that finds something you have to do yourself goes on your list
+(`server/todos.ts`) through `bloks todo`, which is only on the agent's
+own full credential: never a member's or a member's own agent's, never
+a turn a Telegram person or an unlisted mail started, never a shared
+room's. An agent reads, refreshes and clears only lines it put there,
+by its own keys (`/api/bots/:me/todos`); the list as you see it and
+marking a line done or dismissed are yours (`/api/todos` is on the
+agents' never list, and a member's credential never reaches it). A line
+is plain text, a title and a detail with lengths capped, shown with the
+agent's name and a link to the conversation it came from; it runs
+nothing and opens nothing but that conversation. What an agent read can
+still steer what it writes there, as it can steer its answer, so treat
+a line as the agent's words. The morning notification says only how
+many things wait, never what they are.
+
 **An agent can point at a setting, and propose a few, never change one.**
 `bloks where` reads the app's own Settings index and `bloks open` puts a
 button in the conversation that opens a page; neither changes anything.
