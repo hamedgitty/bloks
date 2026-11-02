@@ -98,7 +98,7 @@ for (const triple of PLATFORMS) {
 // so a replaced download fails the build instead of shipping. A new SDK
 // version fails here too, until its checksum is added.
 const BINARY_SHA256 = {
-  "0.34.0": "940dc008e0f7c5d217d14c0f247d1ebab91b1bac965f4a649d19e8c789bdfd81",
+  "0.37.0": "7d491f67f54be5f3b380ffd85c64b242eaefd05dad6df78012cde227c95aee2a",
 };
 const BINARY_OUT = "stage/cua-driver";
 rmSync(BINARY_OUT, { force: true });
