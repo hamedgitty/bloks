@@ -150,3 +150,40 @@ for (const quick of [true, false]) {
     }
   });
 }
+
+// Stop and send now while the turn it stops is still getting ready: what
+// was joining that turn waits behind the draft, and words said while the
+// draft's own turn gets ready wait behind those, each going in once.
+test("stop and send now during a turn's preparation starts the draft alone, then what was joining, in order", async t => {
+  const s = await codexCommands(t);
+  s.spec({ hold: true, holdThread: true, used: 0 });
+  await s.say("FIRST: the original task");
+  await waitFor(() => s.count("thread/start") === 1);
+  const joining = await s.say("JOIN: an addition to it");
+  assert.equal(joining.delivery?.route, "pending", "the addition did not wait to join the turn getting ready");
+  const api = (path: string, init?: RequestInit) => s.post(path, JSON.parse(String(init?.body ?? "{}")));
+  const sent = await sendMessage(api, { botId: s.bot.id, taskId: s.bot.threadId, text: "B: the revised plan", stopFirst: true });
+  assert.equal(sent.stopped, true);
+  await waitFor(() => s.count("thread/start") === 2, "the draft's own turn did not start getting ready");
+  const later = await s.say("LATER: said while the draft gets ready");
+  assert.notEqual(later.delivery?.route, "pending", "later words joined the draft's turn ahead of the earlier addition");
+  s.threadGate();
+  const inputs = () => s.calls().filter(c => ["turn/start", "turn/steer"].includes(c.method)).map(c => c.params.input
+    .filter((i: { type: string }) => i.type === "text").map((i: { text: string }) => i.text).join(""));
+  await waitFor(() => s.count("turn/start") >= 1);
+  assert.match(inputs()[0], /B: the revised plan/);
+  assert.doesNotMatch(inputs()[0], /FIRST: |JOIN: |LATER: /, "the draft did not go alone");
+  s.gate();
+  await waitFor(() => s.count("turn/start") >= 2);
+  await s.settled();
+  assert.equal(s.count("turn/start"), 2, "the stopped turn or a later word ran a turn of its own");
+  assert.match(inputs()[1], /JOIN: an addition to it[\s\S]*LATER: said while the draft gets ready/);
+  for (const word of ["JOIN: ", "B: ", "LATER: "]) {
+    assert.equal(inputs().filter(input => input.includes(word)).length, 1, `${word} went in more or less than once`);
+  }
+  assert.equal(inputs().filter(input => input.includes("FIRST: ")).length, 0, "the stopped turn's words still went in");
+  const said = (await s.messages()).filter(m => m.role === "user" && /^(JOIN|B|LATER): /.test(m.text ?? ""));
+  assert.deepEqual(said.map(m => [m.text, m.queued]), [
+    ["B: the revised plan", false], ["JOIN: an addition to it", false], ["LATER: said while the draft gets ready", false],
+  ]);
+});

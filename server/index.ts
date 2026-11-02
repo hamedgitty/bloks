@@ -18337,6 +18337,15 @@ function prepareFollowup(
   if (options.telegramPerson && !telegramSenderCurrent(telegramBinding(bot.id), options.telegramPerson)) return null;
   if (options.telegramDelegate && !telegramDelegateCurrent(telegramBinding(bot.id), options.telegramDelegate)) return null;
   if (options.telegramGroup && !telegramOwnerGroupCurrent(telegramBinding(bot.id), options.telegramGroup)) return null;
+  // Words still waiting from before this turn (left behind by stop and
+  // send now, say) go first, as they would ahead of a steer (steerOne).
+  // Joining now would put these ahead of them.
+  const earlierWaiting = (steerQueues.get(lane.id)?.items ?? []).some((item) => {
+    const m = item.messageId ? store.messagesFor(lane.id).find((row) => row.id === item.messageId) : undefined;
+    return m && m.queued && m.preparation?.attempt !== attempt.id && !m.deleted && !m.agent && !m.via &&
+      (m.delivery?.route !== "queued" || m.preparation?.state === "next") && sameTelegramDelegate(m.telegramDelegate, options.telegramDelegate);
+  });
+  if (earlierWaiting) return null;
   if (attempt.messages.length >= MAX_WEBHOOK_QUEUE_ITEMS) {
     // Do not let excess words silently become a later turn that could
     // overtake an unresolved addition. The existing transcript keeps
