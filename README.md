@@ -359,7 +359,8 @@ often each was used and then corrected. Agents can ask for a change too
   agent in or message one.
 - **Workflows** with a trigger, some steps and a person who says yes, kept
   on disk so quitting the app never loses a run. **Webhooks** turn any
-  outside event into a task.
+  outside event into a task, and a scheduler on your own computer can
+  wake one exact conversation, labelled as a local service, not as you.
 - **Goals.** Type `/goal`, say what done looks like, and an agent keeps
   going until it is done, stuck or out of turns.
 - **A morning brief** on Overview: what every agent did, what waits on

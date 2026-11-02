@@ -54,6 +54,16 @@ checked: the `Origin` must be absent or loopback, and the `Host` must
 name the loopback interface, which defeats DNS rebinding. See
 `server/http-guard.ts`.
 
+**A local service's wake is labelled, not trusted as you.** A program on
+this computer can wake one agent in one exact private conversation
+(`POST /api/bots/:id/wakes`, `server/service-wakes.ts`). Only a direct
+loopback request with a loopback Host and no Origin or Authorization
+header is accepted, never a browser page, a phone, the relay or an
+agent's credential: no more than any local program could already do
+through the owner's API. Its words are kept as a local service's, which
+nobody can edit, and the agent is told they are that service's request,
+never your own words or your approval.
+
 **Secrets sit in a plaintext file.** Each workspace's `config.json`
 (`~/.bloks/config.json` for Personal) holds any API keys you paste,
 written `0600` inside a `0700` directory. That keeps

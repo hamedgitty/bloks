@@ -1420,6 +1420,35 @@ ends with a notice that it finished without a reply to them (GitHub 461).
 A turn the person started on their own, with nobody else's words in it,
 shows QUIET like any reply.
 
+## Wakes from local services
+
+A scheduler or another program on this computer can start work in one
+exact conversation without posing as the person
+(`server/service-wakes.ts`). `POST /api/bots/:id/wakes` takes exactly
+`{taskId, wakeId, text}`, the two ids UUIDs and the text at most 64 KB,
+and admits it only to that agent's ordinary private conversation: not a
+shared room's lane, a team conversation, a member's, a guest's mail, a
+Signal person's, an imported one or a rehearsal, and never anywhere else
+when that one has gone. It answers only a direct request on loopback
+with a loopback Host, no Origin and no Authorization header, never one
+through the relay: the same trust the owner's local API already has,
+and nothing more. It is not tied to one program, so the wake is labelled
+for what it is. It is written durably as a queued message with
+`via: "service"` and `serviceWake` (the wake id and a hash of its
+words), waits behind a running turn like a webhook's event, at most 20
+and 100 KB a conversation, and every wake is a turn of its own
+(`queuedSegment`). The engine hears it framed as a local service's
+request, never the person's words or approval (`fromServicePrompt`);
+the app labels it "From a local service" and offers no edit. The turn is
+one nobody waits on, so a bare QUIET or `bloks quiet` ends it silently,
+and a real answer is said and notified like a reply. Sending the same
+wake again returns its record, the same id with other words is a 409,
+and `GET /api/bots/:id/wakes/:wakeId?taskId=` reads whether it is
+`queued`, `dispatched` (written before work can begin, not a claim that
+it finished), `unsent` or `unconfirmed` (no record: never a reason to
+send it blindly again). Ordinary messages, edits and imports can never
+carry service provenance.
+
 ## Agents writing to agents
 
 `bloks say` to an idle agent starts a turn there, a paid one, and a

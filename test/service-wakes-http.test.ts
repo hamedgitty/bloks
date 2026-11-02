@@ -114,3 +114,20 @@ test("message deletion after dispatch retains possible execution; clear and task
   assert.equal(rows(r.h.home, r.bot.threadId).some((m) => m.serviceWake), false, "no wake may fall back to General");
   assert.equal(r.calls.length, 2);
 });
+
+test("an engine hears a wake as a local service's words, never as the person's", async (t) => {
+  const r = await chatHarness();
+  t.after(() => r.stop());
+  const admitted = await r.h.fetchRemote(`/api/bots/${r.bot.id}/wakes`, {
+    host: "localhost", method: "POST", body: JSON.stringify({ taskId: r.bot.threadId, wakeId, text: "CHECK THE SYNTHETIC RECEIPTS" }),
+  });
+  assert.equal(admitted.status, 202);
+  await waitFor(() => r.calls.length === 1);
+  const told = r.calls[0].body.messages.at(-1).content;
+  assert.equal(typeof told, "string");
+  assert.match(told, /^\(A wake from a local service on this computer, not from the person\. [^\n]*\)\n\nCHECK THE SYNTHETIC RECEIPTS$/);
+  // the transcript keeps the words alone
+  assert.ok(rows(r.h.home, r.bot.threadId).some((m) => m.text === "CHECK THE SYNTHETIC RECEIPTS" && m.via === "service"));
+  r.calls[0].finish();
+  await waitFor(async () => (await r.h.json("/api/bots")).bots.find((b: any) => b.id === r.bot.id).tasks.every((lane: any) => lane.state === "idle"));
+});
