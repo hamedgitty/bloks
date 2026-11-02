@@ -3472,9 +3472,9 @@ An agent's `effort` is `off`, `low`, `medium`, `high`, `xhigh` or `max`
 (Off, Low, Medium, High, Extra high and Max on screen), or unset for the engine's
 own. Each driver lists the levels it passes on as
 `capabilities.efforts`, and `GET /api/instances` reports them per engine
-as `efforts`: Claude Code all five, as `--effort <level>` on every turn
+as `efforts`: Claude Code `low` to `max`, as `--effort <level>` on every turn
 (from 2.1.252, the oldest CLI checked; an older one is sent none);
-Codex all five as `turn/start.effort`, narrowed per model by the
+Codex `low` to `max` as `turn/start.effort`, narrowed per model by the
 `supportedReasoningEfforts` in its own `model/list` (reported as each
 model option's `efforts`); Grok CLI `low`, `medium` and `high`, as
 `--reasoning-effort`. Command Code reads each model's native `effort`
