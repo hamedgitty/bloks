@@ -642,9 +642,13 @@ the tries left, `already_member`, `full`, `rate_limited`. An approved
 claim answers with the person's id and role, the relay to use (or none,
 and the owner's network address instead), and a welcome naming the
 agents. The device token never leaves the joiner's computer; the host
-keeps its sha256, as with pairing. On a Mac, `server/join-client.ts` is
-the joiner's half, behind `/api/joining/...` for the window, and the app
-keeps the result as a joined workspace.
+keeps its sha256, as with pairing. On a desktop, `server/join-client.ts`
+is the joiner's half, behind `/api/joining/...` for the window, and the app
+keeps the result as a joined workspace. It says what it runs on as the
+kind of device (`mac`, `pc` or `computer`, from `server/this-machine.ts`),
+so the owner's request card and Members page name it. A desktop older
+than 3.2 says `mac` whatever it runs on; a kind the page does not know
+reads as a computer.
 
 `GET /api/workspace/members` gives the Members page everything at once:
 the workspace, who is asking, each member's role, devices, solo agents,
@@ -2691,6 +2695,12 @@ stretch of speech is a segment. The renderer posts segments to
 turn in its Meetings lane with `notesPrompt`, and `actionItems` reads
 "- Owner: task" lines back out of the reply for one-press handoff.
 
+The helper is macOS only, while the preload offers `meetingStart` on
+every platform, so the window asks `meetingNotesHere` in
+`src/lib/thisComputer.ts`: the desktop app, on a Mac, not onto a hosted
+workspace. Anywhere else the chat header has no meeting button and the
+panel says meeting notes need the Bloks app on a Mac.
+
 ## The Bloks browser
 
 A browser in the desktop window, beside the chat, that agents drive and
@@ -2745,7 +2755,7 @@ the person watches and takes over. Three parts, each in its own place:
   driving agent's face, the address bar, back, forward, reload, the line
   saying who has the browser with Take over and Give back, and the
   downloads shelf. Anywhere without the app, the agent's conversation
-  shows "Browsing on the Mac" from the server's `browser.app` frames, with
+  shows "Browsing in the desktop app" from the server's `browser.app` frames, with
   the picture from `/api/browser/frame` every two seconds while visible.
 
 ## Terminals

@@ -250,8 +250,8 @@ not on your list asks on a card the first time an agent goes there;
 blocked sites are never opened; a password, a card number or a file to
 upload always asks you, whatever the mode. What a page says reaches an
 agent framed as untrusted data, never as instructions. On your phone the
-conversation says the agent is browsing on the Mac, with a small live
-picture of the page.
+conversation says the agent is browsing in the desktop app, with a small
+live picture of the page.
 
 ### Ready teams and skills
 
