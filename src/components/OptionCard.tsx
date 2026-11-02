@@ -1005,20 +1005,24 @@ function SettledQuestion({
       }
     >
       <p className="text-pretty text-body font-medium text-foreground [overflow-wrap:anywhere]">{question}</p>
-      {hint && <p className="text-small text-muted-foreground">{hint}</p>}
-      {forWhom && <p className="text-small text-muted-foreground">{t("optionCard.askedFor", { who: forWhom })}</p>}
+      {/* Every line here wraps anywhere: an agent's words can hold a path,
+          a hash or a link with nothing to break at, and one that did not
+          wrap ran out past the conversation column (GitHub 415). */}
+      {hint && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{hint}</p>}
+      {forWhom && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{t("optionCard.askedFor", { who: forWhom })}</p>}
       {card.options.length > 0 && (
         <ul className="flex flex-col gap-0.5">
           {card.options.map((opt) => (
             <li
               key={opt}
               className={cn(
-                "flex items-center gap-2 text-small",
+                "flex items-start gap-2 text-small",
                 opt === said ? "font-medium text-foreground" : "text-muted-foreground",
               )}
             >
-              <span className={cn("size-1.5 shrink-0 rounded-full", opt === said ? "bg-brand-ink" : "bg-foreground/15")} />
-              {opt}
+              {/* on the first line's middle, however many lines follow */}
+              <span className={cn("mt-[6px] size-1.5 shrink-0 rounded-full", opt === said ? "bg-brand-ink" : "bg-foreground/15")} />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{opt}</span>
             </li>
           ))}
         </ul>
@@ -1026,7 +1030,7 @@ function SettledQuestion({
       {said && !card.options.includes(said) && (
         <p className="whitespace-pre-wrap text-small text-foreground [overflow-wrap:anywhere]">“{said}”</p>
       )}
-      {why && <p className="text-small text-muted-foreground">{why}</p>}
+      {why && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{why}</p>}
     </SettledLine>
   );
 }
