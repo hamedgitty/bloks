@@ -9,7 +9,10 @@ import type { Harness } from "./server.ts";
 export const waitFor = async <T,>(check: () => Promise<T | null | undefined> | T | null | undefined, ms = 15_000): Promise<T | null> => {
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    const value = await check();
+    let value: T | null | undefined;
+    // Fixtures append JSON lines that a poll can catch half written; that is
+    // "not yet", not a failure. Anything else, or a torn line at the deadline, throws.
+    try { value = await check(); } catch (error) { if (!(error instanceof SyntaxError) || Date.now() >= until) throw error; }
     if (value) return value;
     await new Promise((r) => setTimeout(r, 100));
   }

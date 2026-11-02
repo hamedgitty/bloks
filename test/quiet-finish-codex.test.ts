@@ -11,8 +11,11 @@ import { waitFor } from "./helpers/turns.ts";
 
 type Native = Awaited<ReturnType<typeof nativePreviewFixture>>;
 
-/** This turn's own credential, as its shell has it. */
-const token = (f: Native) => readFileSync(join(f.root, "credentials.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).token as string).at(-1)!;
+/** This turn's own credential, as its shell has it. Only whole lines count; a later one may be mid-write. */
+const token = (f: Native) => {
+  const text = readFileSync(join(f.root, "credentials.jsonl"), "utf8");
+  return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line).token as string).at(-1)!;
+};
 const quiet = async (f: Native) => {
   const res = await fetch(`${f.h.url}/api/bots/${f.bot.id}/tasks/${f.bot.threadId}/quiet`, { method: "POST", headers: { authorization: `Bearer ${token(f)}` } });
   return { status: res.status, body: await res.json() as any };

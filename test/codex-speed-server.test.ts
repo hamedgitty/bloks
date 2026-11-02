@@ -257,7 +257,7 @@ test("an agent reads its speed and may slow only itself; Fast and the workspace 
   // the stand-in notes the turn before it writes what it was handed, so
   // on a busy machine the file can lag the call by a beat
   const credentials = join(s.root, "credentials.jsonl");
-  await waitFor(() => existsSync(credentials) && readFileSync(credentials, "utf8").trim(), "the credential was never captured");
+  await waitFor(() => existsSync(credentials) && readFileSync(credentials, "utf8").includes("\n"), "the credential was never captured");
   const { token } = JSON.parse(readFileSync(credentials, "utf8").trim().split("\n")[0]);
   const asAgent = (path: string, method = "GET", body?: unknown) =>
     s.h.fetch(path, {

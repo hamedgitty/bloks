@@ -802,8 +802,9 @@ test("preparation additions wait for an existing agent steer and keep their orde
   await s.say("SENDER_HOLD");
   await s.called("turn/start", 1);
   const credentials = join(s.root, "credentials.jsonl");
-  await waitFor(() => existsSync(credentials));
-  const token = JSON.parse(readFileSync(credentials, "utf8").trim().split("\n")[0]).token;
+  // The fixture appends the line in one write, but a read can still land mid-write; wait for its newline.
+  await waitFor(() => existsSync(credentials) && readFileSync(credentials, "utf8").includes("\n"));
+  const token = JSON.parse(readFileSync(credentials, "utf8").split("\n")[0]).token;
   const hired = await s.h.json("/api/bots", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ name: "Fixture target" }) });
   const target = hired.bot;
   assert.ok(target?.id);
