@@ -13447,7 +13447,10 @@ async function foldContext(botId: string, threadId: string, force = false, hando
   if (!holds()) return false;
   let summary = task.context?.summary ?? null;
   let written: string | null = null;
-  for (const pass of summaryPasses(fold)) {
+  // the window of the model that reads it, which lets a very long fold
+  // be read in fewer, longer requests rather than dozens
+  const reader = instance.textModel ? knownLimitFor(instance.textModel) : null;
+  for (const pass of summaryPasses(fold, reader)) {
     const said = (await instance.generateText(summaryPrompt(summary, pass))).trim();
     if (!said || !holds()) return false;
     summary = written = keptSummaryOf(threadId, said);

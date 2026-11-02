@@ -1072,6 +1072,16 @@ leaves messages out and the agent's engine can summarise, the older part
 is folded into the summary first; otherwise the message says how many
 were left out. The thread itself keeps every message.
 
+A fold reads every message it covers, in order (`summaryPasses`). Up to
+40,000 characters is one summary request; a longer stretch is read in
+several, each carrying the summary so far, and a message too long for
+one is read in labelled parts. Past eight such requests they grow
+instead of multiplying, up to half the window of the model that writes
+the summary (counted a character to a token), so a long fold costs about
+the length of what it reads once, not dozens of waits. Nothing is saved
+until the last request is done, and nothing at all if one fails or the
+conversation changes under it.
+
 The same cache is why a resumed Claude Code session keeps its system
 prompt byte for byte (`server/standing-prompt.ts`). The agent's
 MEMORY.md and the notes about the person stay as they were when the

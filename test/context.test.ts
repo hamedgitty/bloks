@@ -19,6 +19,7 @@ import {
   pressure,
   shouldCompact,
   SUMMARY_MAX_CHARS,
+  SUMMARY_MAX_PASSES,
   summaryPasses,
   summaryPrompt,
   summaryTurn,
@@ -309,6 +310,44 @@ describe("a long stretch, read whole", () => {
     const split = summaryPasses([say("user", lookalike)]).flat();
     assert.equal(split.length, 2);
     assert.deepEqual(whole(split), [say("user", lookalike)]);
+  });
+
+  test("a fold of three million characters is read in eight requests where the reader's window allows", () => {
+    // as much as a lane on a million-token window carries before it folds
+    const fold = Array.from({ length: 640 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(5_000)}`));
+    const size = (pass: Said[]) => conversationOf(summaryPrompt(null, pass)).length;
+    // a reader with a million-token window: eight requests, read whole
+    const wide = summaryPasses(fold, 1_000_000);
+    assert.ok(wide.length <= SUMMARY_MAX_PASSES, `${wide.length} requests`);
+    assert.deepEqual(whole(wide.flat()), fold);
+    for (const pass of wide) assert.ok(size(pass) <= 500_000, `a request grew to ${size(pass)}`);
+    // one with 200,000: no request past half of it, so as many as that takes
+    const narrow = summaryPasses(fold, 200_000);
+    assert.ok(narrow.length > SUMMARY_MAX_PASSES && narrow.length <= 40, `${narrow.length} requests`);
+    assert.deepEqual(whole(narrow.flat()), fold);
+    for (const pass of narrow) assert.ok(size(pass) <= 100_000, `a request grew to ${size(pass)}`);
+    // no window known, or one too small to grow into: 40,000 each, as before
+    for (const window of [undefined, null, 32_000]) {
+      const passes = summaryPasses(fold, window);
+      assert.ok(passes.length > 80, `${passes.length} requests`);
+      for (const pass of passes) assert.ok(size(pass) <= 40_000);
+    }
+  });
+
+  test("a fold eight requests can read is read the same whatever the reader's window", () => {
+    const fold = Array.from({ length: 56 }, (_, i) => say(i % 2 ? "assistant" : "user", `message ${i} ${"x".repeat(5_000)}`));
+    assert.equal(summaryPasses(fold).length, SUMMARY_MAX_PASSES);
+    assert.deepEqual(summaryPasses(fold, 1_000_000), summaryPasses(fold));
+    // one message more is nine at 40,000, so the requests grow to keep it eight
+    const more = [...fold, say("user", `message 56 ${"x".repeat(5_000)}`)];
+    assert.equal(summaryPasses(more).length, SUMMARY_MAX_PASSES + 1);
+    assert.ok(summaryPasses(more, 1_000_000).length <= SUMMARY_MAX_PASSES);
+    assert.deepEqual(whole(summaryPasses(more, 1_000_000).flat()), more);
+    // and a message that needs parts is cut at the larger size too, still whole
+    const pasted = "\u{1F600}".repeat(400_000);
+    const parts = summaryPasses([say("user", "before"), say("assistant", pasted)], 1_000_000).flat().filter((s) => s.part);
+    assert.ok(parts.length > 1 && parts.length <= SUMMARY_MAX_PASSES + 1);
+    assert.equal(parts.map((s) => s.text).join(""), pasted);
   });
 });
 

@@ -418,10 +418,10 @@ function foldedText(fold: Said[]): string {
 /** A message too long for one request, in parts that each fit in one, in
  * order, each saying whose it is and which part. Never cut between the
  * two halves of one character. */
-function partsOf(turn: Turn): Said[] {
-  if (line(turn).length <= SUMMARY_INPUT_CHARS) return [turn];
+function partsOf(turn: Turn, room: number): Said[] {
+  if (line(turn).length <= room) return [turn];
   // room for the longest label: a message has no more parts than characters
-  const size = SUMMARY_INPUT_CHARS - line({ role: turn.role, text: "", part: { n: turn.text.length, of: turn.text.length } }).length;
+  const size = room - line({ role: turn.role, text: "", part: { n: turn.text.length, of: turn.text.length } }).length;
   const texts: string[] = [];
   for (let at = 0; at < turn.text.length; ) {
     let end = Math.min(turn.text.length, at + size);
@@ -432,6 +432,38 @@ function partsOf(turn: Turn): Said[] {
   }
   return texts.map((text, i) => ({ role: turn.role, text, part: { n: i + 1, of: texts.length } }));
 }
+
+/** A fold in requests of at most `room` characters of the conversation
+ * each, labels and the lines between messages included. */
+function packed(fold: Turn[], room: number): Said[][] {
+  const passes: Said[][] = [];
+  let pass: Said[] = [];
+  let used = 0;
+  for (const said of fold.flatMap((turn) => partsOf(turn, room))) {
+    const cost = line(said).length;
+    if (pass.length && used + 2 + cost > room) {
+      passes.push(pass);
+      pass = [];
+    }
+    used = pass.length ? used + 2 + cost : cost;
+    pass.push(said);
+  }
+  passes.push(pass);
+  return passes;
+}
+
+/** The most requests a fold is read in, while the model reading it can
+ * take longer ones. Each request is a wait and a spend of its own, and a
+ * story for a new session waits on all of them: a lane on a model with a
+ * million-token window can carry three million characters, eighty
+ * requests at 40,000, minutes of a turn standing still. */
+export const SUMMARY_MAX_PASSES = 8;
+
+/** The most of its window one request's conversation is given, counted
+ * a character to a token: four to one is the rule for English, but words
+ * in other scripts can take a token for every character or two. What is
+ * left holds the instructions, the summary so far and the reply. */
+const SUMMARY_WINDOW_SHARE = 1 / 2;
 
 /**
  * The requests a fold is summarised in, in order. Each one carries the
@@ -448,22 +480,25 @@ function partsOf(turn: Turn): Said[] {
  * at most 40,000 characters of the conversation, so no request is longer
  * than one was: the instructions, a summary of at most SUMMARY_MAX_CHARS
  * and the conversation.
+ *
+ * Past SUMMARY_MAX_PASSES requests of that size, the requests grow
+ * instead of multiplying, up to a share of `window`, the window of the
+ * model that reads them (SUMMARY_WINDOW_SHARE), so the whole is still read
+ * once and the spend stays about the length of what is folded. Without a
+ * window known for that model they never grow, and a fold too long for
+ * eight takes as many as it needs.
  */
-export function summaryPasses(fold: Turn[]): Said[][] {
+export function summaryPasses(fold: Turn[], window?: number | null): Said[][] {
   if (foldedText(fold).length <= SUMMARY_INPUT_CHARS) return fold.length ? [fold] : [];
-  const passes: Said[][] = [];
-  let pass: Said[] = [];
-  let used = 0;
-  for (const said of fold.flatMap(partsOf)) {
-    const cost = line(said).length;
-    if (pass.length && used + 2 + cost > SUMMARY_INPUT_CHARS) {
-      passes.push(pass);
-      pass = [];
-    }
-    used = pass.length ? used + 2 + cost : cost;
-    pass.push(said);
+  const ceiling = Math.max(SUMMARY_INPUT_CHARS, Math.floor((window ?? 0) * SUMMARY_WINDOW_SHARE));
+  let room = Math.min(ceiling, Math.max(SUMMARY_INPUT_CHARS, Math.ceil(foldedText(fold).length / SUMMARY_MAX_PASSES)));
+  let passes = packed(fold, room);
+  // whole messages leave a request short of full, so the even share can
+  // still take one too many: grow a step at a time until it is eight
+  while (passes.length > SUMMARY_MAX_PASSES && room < ceiling) {
+    room = Math.min(ceiling, Math.ceil(room * 1.25));
+    passes = packed(fold, room);
   }
-  passes.push(pass);
   return passes;
 }
 
