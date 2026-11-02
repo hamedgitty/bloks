@@ -3,7 +3,8 @@
 // Reachable from the sidebar, so it covers every agent and room in one
 // place; the per-agent Routines block in the computer panel opens this
 // same dialog pinned to its own target. Two views inside one dialog:
-// the list of everything scheduled, and a create form.
+// the list of everything scheduled, and the form that files a new
+// routine or changes one already there.
 //
 // The form is a sentence, not a form: "Nova will run Morning digest every
 // weekday at 9:00". Each part you could change is a word you can tap, and
@@ -21,6 +22,7 @@ import { CalendarClock } from "@/components/icons";
 import { ChevronDown } from "@/components/icons";
 import { FileText } from "@/components/icons";
 import { Loader2 } from "@/components/icons";
+import { Pencil } from "@/components/icons";
 import { Play } from "@/components/icons";
 import { Plus } from "@/components/icons";
 import { Repeat } from "@/components/icons";
@@ -51,7 +53,7 @@ import {
   type DraftSchedule,
 } from "@/lib/checkIns";
 import { formatDate, formatList, t, tr, type MessageKey } from "@/lib/i18n";
-import { describeSchedule, weekdayName } from "@/lib/routineDetails";
+import { describeSchedule, routinePatch, weekdayName, type RoutineDraft } from "@/lib/routineDetails";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -91,28 +93,11 @@ function whenNext(at: number | null | undefined): string {
 
 type Target = { id: string; kind: "agent" | "room"; name: string; bot?: Bot };
 
-/** What the form files: the body of POST /api/routines. */
-type Draft = {
-  targetId: string;
-  targetKind: "agent" | "room";
-  name?: string;
-  prompt: string;
-  time?: string;
-  days: number[];
-  repeat?: "once";
-  date?: string;
-  durationMin?: number;
-  runsOn?: "cloud" | "local" | "off";
-  thread?: string;
-  every?: number;
-  activeHours?: { from: string; to: string };
-  quiet?: boolean;
-};
-
 export function RoutinesDialog({
   initialTarget,
   startCreating,
   prefill,
+  edit,
   onClose,
 }: {
   /** Pin the dialog to one agent or room; without it, all targets show. */
@@ -121,17 +106,32 @@ export function RoutinesDialog({
   startCreating?: boolean;
   /** Seed the form, e.g. from a calendar slot the user clicked. */
   prefill?: { time?: string; days?: number[]; date?: string };
+  /** Open straight into the form, filled with this routine, to change it. */
+  edit?: Routine;
   onClose: () => void;
 }) {
   const { state } = useStore();
   const [routines, setRoutines] = useState<Routine[] | null>(null);
-  const [creating, setCreating] = useState(Boolean(startCreating));
+  const [creating, setCreating] = useState(Boolean(startCreating || edit));
+  // the routine the form changes; none is a new one
+  const [editing, setEditing] = useState<Routine | null>(edit ?? null);
   const [error, setError] = useState<string | null>(null);
 
   const targets: Target[] = [
     ...state.bots.filter((b) => !b.hidden).map((b) => ({ id: b.id, kind: "agent" as const, name: b.name, bot: b })),
     ...state.bloks.map((r) => ({ id: r.id, kind: "room" as const, name: r.name })),
   ];
+  // A routine keeps its target through an edit, so the form names it even
+  // when the list of targets does not offer it.
+  if (editing && !targets.some((option) => option.id === editing.targetId)) {
+    const bot = state.bots.find((b) => b.id === editing.targetId);
+    targets.push({
+      id: editing.targetId,
+      kind: editing.targetKind,
+      name: bot?.name ?? state.bloks.find((r) => r.id === editing.targetId)?.name ?? t("routinesDialog.unknownTarget"),
+      bot,
+    });
+  }
   const targetOf = (routine: Routine) => targets.find((option) => option.id === routine.targetId);
 
   const load = useCallback(() => {
@@ -165,11 +165,17 @@ export function RoutinesDialog({
 
   const startNew = () => {
     setError(null);
+    setEditing(null);
+    setCreating(true);
+  };
+  const startEdit = (routine: Routine) => {
+    setError(null);
+    setEditing(routine);
     setCreating(true);
   };
   const leaveNew = () => {
     setError(null);
-    if (startCreating) onClose();
+    if (startCreating || edit) onClose();
     else setCreating(false);
   };
 
@@ -181,7 +187,7 @@ export function RoutinesDialog({
           fit: a centred sheet that grew would jump each time a part of
           the sentence opened a taller editor. */}
       <DialogContent
-        key={creating ? "new" : "list"}
+        key={creating ? (editing ? `edit-${editing.id}` : "new") : "list"}
         className={cn(
           "flex w-[calc(100vw-24px)] flex-col gap-0 overflow-hidden p-0",
           creating ? "h-[min(760px,92dvh)] max-w-[920px]" : "max-h-[85vh] max-w-[540px]",
@@ -190,12 +196,17 @@ export function RoutinesDialog({
         {creating ? (
           <CreateForm
             targets={targets}
-            pinnedTargetId={initialTarget?.id}
+            pinnedTargetId={editing?.targetId ?? initialTarget?.id}
             prefill={prefill}
+            editing={editing ?? undefined}
             error={error}
             onBack={leaveNew}
-            onSave={(draft) =>
-              write(api("/api/routines", { method: "POST", body: JSON.stringify(draft) })).then((ok) => {
+            onSave={(draft, before) =>
+              write(
+                before && editing
+                  ? api(`/api/routines/${editing.id}`, { method: "PATCH", body: JSON.stringify(routinePatch(before, draft)) })
+                  : api("/api/routines", { method: "POST", body: JSON.stringify(draft) }),
+              ).then((ok) => {
                 if (ok) leaveNew();
                 return ok;
               })
@@ -287,6 +298,10 @@ export function RoutinesDialog({
                           >
                             <Play size={11} />
                             {t("common.runNow")}
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => startEdit(routine)}>
+                            <Pencil size={11} />
+                            {t("common.edit")}
                           </Button>
                           <Button
                             variant="ghost"
@@ -389,12 +404,17 @@ function runLabel(at: Date, now: Date): string {
   return t("routinesDialog.run.on", { day: when.day, time: when.time });
 }
 
-/** "First run tomorrow at 9:00.", under the form. */
-function firstRunNote(at: Date, now: Date): string {
-  const when = runWhen(at, now);
-  if (when.ahead === "today") return t("routinesDialog.firstRun.today", { time: when.time });
-  if (when.ahead === "tomorrow") return t("routinesDialog.firstRun.tomorrow", { time: when.time });
-  return t("routinesDialog.firstRun.on", { day: when.day, time: when.time });
+/** "First run tomorrow at 9:00.", under the form; "Next run" for a
+ * routine being changed, which may have run already. */
+function firstRunNote(at: Date, now: Date, editing: boolean): string {
+  const { ahead, day, time } = runWhen(at, now);
+  if (ahead === "today") {
+    return editing ? t("routinesDialog.edit.nextRun.today", { time }) : t("routinesDialog.firstRun.today", { time });
+  }
+  if (ahead === "tomorrow") {
+    return editing ? t("routinesDialog.edit.nextRun.tomorrow", { time }) : t("routinesDialog.firstRun.tomorrow", { time });
+  }
+  return editing ? t("routinesDialog.edit.nextRun.on", { day, time }) : t("routinesDialog.firstRun.on", { day, time });
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +527,7 @@ function CreateForm({
   targets,
   pinnedTargetId,
   prefill,
+  editing,
   error,
   onBack,
   onSave,
@@ -514,32 +535,38 @@ function CreateForm({
   targets: Target[];
   pinnedTargetId?: string;
   prefill?: { time?: string; days?: number[]; date?: string };
+  /** The routine this changes, its values filled in; none files a new one. */
+  editing?: Routine;
   error: string | null;
   onBack: () => void;
-  /** Resolves true when it was filed. */
-  onSave: (draft: Draft) => Promise<boolean>;
+  /** Resolves true when it was filed. `before` is the form as it opened
+   * on a routine being changed, so only what changed is sent. */
+  onSave: (draft: RoutineDraft, before?: RoutineDraft) => Promise<boolean>;
 }) {
   const [targetId, setTargetId] = useState(pinnedTargetId ?? targets[0]?.id ?? "");
-  const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [prompt, setPrompt] = useState(editing?.prompt ?? "");
   // at a time of day, once, or a check-in every so often (server/routines.ts)
-  const [mode, setMode] = useState<Mode>("weekly");
-  const [time, setTime] = useState(prefill?.time ?? "09:00");
-  const [days, setDays] = useState<number[]>(prefill?.days ?? []);
-  const [date, setDate] = useState(prefill?.date ?? dateKey(new Date()));
-  const [every, setEvery] = useState(30);
-  const [keepsHours, setKeepsHours] = useState(true);
-  const [from, setFrom] = useState<string>(HOURS_PRESETS.work.from);
-  const [to, setTo] = useState<string>(HOURS_PRESETS.work.to);
-  const [quiet, setQuiet] = useState(false);
-  const [durationMin, setDurationMin] = useState(30);
-  const [runsOn, setRunsOn] = useState<"" | "cloud" | "local" | "off">("");
+  const [mode, setMode] = useState<Mode>(editing?.every ? "every" : editing?.repeat === "once" ? "once" : "weekly");
+  const [time, setTime] = useState(editing?.time ?? prefill?.time ?? "09:00");
+  const [days, setDays] = useState<number[]>(editing?.days ?? prefill?.days ?? []);
+  const [date, setDate] = useState(editing?.date ?? prefill?.date ?? dateKey(new Date()));
+  const [every, setEvery] = useState(editing?.every ?? 30);
+  // a check-in with no hours runs all day; anything else offers work hours
+  const [keepsHours, setKeepsHours] = useState(!editing?.every || Boolean(editing.activeHours));
+  const [from, setFrom] = useState<string>(editing?.activeHours?.from ?? HOURS_PRESETS.work.from);
+  const [to, setTo] = useState<string>(editing?.activeHours?.to ?? HOURS_PRESETS.work.to);
+  // a check-in is quiet for being one, not by choice (server/routines.ts)
+  const [quiet, setQuiet] = useState(Boolean(editing?.quiet && !editing.every));
+  const [durationMin, setDurationMin] = useState(editing?.durationMin ?? 30);
+  const [runsOn, setRunsOn] = useState<"" | "cloud" | "local" | "off">(editing?.runsOn ?? "");
   // off a Mac a routine cannot work this computer's screen either
   const { state } = useStore();
   const ownScreen = offersThisComputer(state.config?.hosted?.computers);
-  const [thread, setThread] = useState("");
+  const [thread, setThread] = useState(editing?.thread ?? "");
   const [part, setPart] = useState<Part>("when");
-  const [more, setMore] = useState(false);
+  // open on a routine that has them, so they are seen
+  const [more, setMore] = useState(Boolean(editing?.runsOn || editing?.thread));
   const [saving, setSaving] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
@@ -570,28 +597,35 @@ function CreateForm({
       : shownMode === "once" && upcoming.length === 0
         ? t("routinesDialog.problem.passed")
         : null;
-  const ready = Boolean(prompt.trim() && target && !problem);
+
+  const draft: RoutineDraft | null = target
+    ? {
+        targetId: target.id,
+        targetKind: target.kind,
+        ...(name.trim() ? { name: name.trim() } : {}),
+        prompt: prompt.trim(),
+        days: shownMode === "once" ? [] : days,
+        ...(checkIn
+          ? { every, ...(hours ? { activeHours: hours } : {}) }
+          : {
+              time,
+              ...(shownMode === "once" ? { repeat: "once" as const, date } : {}),
+              durationMin,
+              ...(forAgent && quiet ? { quiet: true } : {}),
+            }),
+        ...(forAgent && runsOn ? { runsOn } : {}),
+        ...(forAgent && thread.trim() ? { thread: thread.trim() } : {}),
+      }
+    : null;
+  // the routine as the form first showed it: what an edit is measured against
+  const [before] = useState(() => (editing ? (draft ?? undefined) : undefined));
+  const changed = !before || !draft || Object.keys(routinePatch(before, draft)).length > 0;
+  const ready = Boolean(prompt.trim() && target && !problem && changed);
 
   const save = async () => {
-    if (!ready || !target || saving) return;
+    if (!ready || !draft || saving) return;
     setSaving(true);
-    const ok = await onSave({
-      targetId: target.id,
-      targetKind: target.kind,
-      ...(name.trim() ? { name: name.trim() } : {}),
-      prompt: prompt.trim(),
-      days: shownMode === "once" ? [] : days,
-      ...(checkIn
-        ? { every, ...(hours ? { activeHours: hours } : {}) }
-        : {
-            time,
-            ...(shownMode === "once" ? { repeat: "once" as const, date } : {}),
-            durationMin,
-            ...(forAgent && quiet ? { quiet: true } : {}),
-          }),
-      ...(forAgent && runsOn ? { runsOn } : {}),
-      ...(forAgent && thread.trim() ? { thread: thread.trim() } : {}),
-    });
+    const ok = await onSave(draft, before);
     // on success the form is already gone; on failure it stays as it was
     if (!ok) setSaving(false);
   };
@@ -633,7 +667,7 @@ function CreateForm({
         : !prompt.trim()
           ? t("routinesDialog.footer.sayWhat")
           : firstRun
-            ? firstRunNote(firstRun, now)
+            ? firstRunNote(firstRun, now, Boolean(editing))
             : "";
   const footerWarns = Boolean(error || (problem && target));
 
@@ -649,48 +683,56 @@ function CreateForm({
       }}
     >
       <header className="shrink-0 border-b pb-4 pl-4 pr-14 pt-5 sm:pl-6">
-        <DialogTitle className="text-heading">{t("routinesDialog.newRoutine")}</DialogTitle>
-        <DialogDescription className="mt-0.5">{t("routinesDialog.somethingAnAgentDoesFor")}</DialogDescription>
+        <DialogTitle className="text-heading">
+          {editing ? t("routinesDialog.edit.title") : t("routinesDialog.newRoutine")}
+        </DialogTitle>
+        <DialogDescription className="mt-0.5">
+          {editing ? t("routinesDialog.edit.description") : t("routinesDialog.somethingAnAgentDoesFor")}
+        </DialogDescription>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_300px] md:overflow-hidden">
         <div className="min-w-0 px-4 pb-6 pt-5 sm:px-6 md:overflow-y-auto">
-          {/* starting points: a whole routine in one press */}
-          <div className="mb-2 text-body font-medium text-muted-foreground">{t("routinesDialog.startFrom")}</div>
-          <div className="flex flex-wrap gap-2 sm:grid sm:grid-cols-3">
-            {STARTERS.filter((s) => forAgent || !s.agentOnly).map((s, i) => {
-              const Icon = s.icon;
-              const on = starterOn(s);
-              return (
-                <motion.button
-                  key={s.id}
-                  type="button"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.03, duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
-                  onClick={() => pickStarter(s)}
-                  aria-pressed={on}
-                  className={cn(
-                    "flex min-w-0 items-center gap-2.5 rounded-xl border px-3 py-2.5 max-sm:py-1.5 text-left outline-none transition-[border-color,background-color,scale] duration-150 ease-out active:scale-[0.985]",
-                    on ? "border-brand bg-brand-soft" : "bg-card hover:border-foreground/20 hover:bg-accent/40",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "flex size-7 shrink-0 items-center max-sm:hidden justify-center rounded-lg transition-colors duration-150",
-                      on ? "bg-brand-ink text-brand-foreground" : "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    <Icon size={14} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-body font-medium text-foreground">{t(s.title)}</span>
-                    <span className="block text-small text-muted-foreground max-sm:hidden">{starterLine(s)}</span>
-                  </span>
-                </motion.button>
-              );
-            })}
-          </div>
+          {/* starting points: a whole routine in one press, for a new one */}
+          {!editing && (
+            <>
+              <div className="mb-2 text-body font-medium text-muted-foreground">{t("routinesDialog.startFrom")}</div>
+              <div className="flex flex-wrap gap-2 sm:grid sm:grid-cols-3">
+                {STARTERS.filter((s) => forAgent || !s.agentOnly).map((s, i) => {
+                  const Icon = s.icon;
+                  const on = starterOn(s);
+                  return (
+                    <motion.button
+                      key={s.id}
+                      type="button"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.03, duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
+                      onClick={() => pickStarter(s)}
+                      aria-pressed={on}
+                      className={cn(
+                        "flex min-w-0 items-center gap-2.5 rounded-xl border px-3 py-2.5 max-sm:py-1.5 text-left outline-none transition-[border-color,background-color,scale] duration-150 ease-out active:scale-[0.985]",
+                        on ? "border-brand bg-brand-soft" : "bg-card hover:border-foreground/20 hover:bg-accent/40",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex size-7 shrink-0 items-center max-sm:hidden justify-center rounded-lg transition-colors duration-150",
+                          on ? "bg-brand-ink text-brand-foreground" : "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        <Icon size={14} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-body font-medium text-foreground">{t(s.title)}</span>
+                        <span className="block text-small text-muted-foreground max-sm:hidden">{starterLine(s)}</span>
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </div>
+            </>
+          )}
 
           {/* what it does, in the person's words */}
           <div className="mt-5 rounded-2xl border bg-card p-1.5 shadow-[0_1px_3px_var(--shadow-color)] transition-[border-color,box-shadow] duration-150 focus-within:border-ring/50 focus-within:shadow-[0_4px_18px_-6px_var(--shadow-color)]">
@@ -1012,7 +1054,8 @@ function CreateForm({
                           options={[
                             { value: "", label: t("routinesDialog.runsOn.usual"), title: t("routinesDialog.runsOn.usualTitle", { name: target.name }) },
                             { value: "cloud", label: t("routinesDialog.runsOn.cloud") },
-                            ...(ownScreen ? [{ value: "local" as const, label: ThisComputer() }] : []),
+                            // kept on offer for a routine that already has it
+                            ...(ownScreen || runsOn === "local" ? [{ value: "local" as const, label: ThisComputer() }] : []),
                             { value: "off", label: t("routinesDialog.runsOn.none"), title: t("routinesDialog.runsOn.noneTitle") },
                           ]}
                         />
@@ -1083,6 +1126,13 @@ function CreateForm({
               {prompt.trim() || t("routinesDialog.writeItOnTheLeft")}
             </div>
           </div>
+          {/* what an edit leaves as it was and the form does not show */}
+          {editing && (!editing.enabled || editing.briefOnly) && (
+            <div className="mt-3 flex flex-col gap-1 text-small text-muted-foreground">
+              {!editing.enabled && <span>{t("routinesDialog.edit.paused")}</span>}
+              {editing.briefOnly && <span>{t("routinesDialog.edit.briefOnly")}</span>}
+            </div>
+          )}
 
           <div className="mt-auto pt-6 text-caption leading-relaxed text-muted-foreground/80">
             {t("routinesDialog.runWhileOpen", { computer: thisComputer() })}
@@ -1100,11 +1150,17 @@ function CreateForm({
           {footerNote}
         </span>
         <Button variant="ghost" size="lg" onClick={onBack} className="max-sm:mr-auto">
-          {t("common.back")}
+          {editing ? t("common.cancel") : t("common.back")}
         </Button>
         <Button size="lg" disabled={!ready || saving} onClick={() => void save()}>
           {saving ? <Loader2 size={15} className="animate-spin" /> : <CalendarClock size={15} />}
-          {saving ? t("routinesDialog.scheduling") : t("routinesDialog.scheduleIt")}
+          {editing
+            ? saving
+              ? t("routinesDialog.edit.saving")
+              : t("routinesDialog.edit.save")
+            : saving
+              ? t("routinesDialog.scheduling")
+              : t("routinesDialog.scheduleIt")}
         </Button>
       </div>
     </div>

@@ -11,9 +11,10 @@
 // The schedule is a time plus days of the week, or every so often within
 // hours, not cron, for the same reason as on the phone: it has to be
 // readable without being decoded.
-// Creation happens in the shared RoutinesDialog, pinned to this agent.
+// Creation and changes happen in the shared RoutinesDialog, pinned to this agent.
 import { useCallback, useEffect, useState } from "react";
 import { CalendarClock } from "@/components/icons";
+import { Pencil } from "@/components/icons";
 import { Play } from "@/components/icons";
 import { Plus } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
@@ -50,6 +51,8 @@ export interface Routine {
   date?: string;
   durationMin?: number;
   runsOn?: "cloud" | "local" | "off";
+  /** The conversation it runs in, by title or id; absent is General. */
+  thread?: string;
   /** A check-in: every this many minutes, instead of at a time of day. */
   every?: number;
   /** The hours a check-in keeps to; absent is the whole day. */
@@ -116,6 +119,7 @@ export function RoutinesSection({
 }) {
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Routine | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -203,6 +207,10 @@ export function RoutinesSection({
                 <Play size={11} />
                 {t("common.runNow")}
               </Button>
+              <Button variant="ghost" size="sm" onClick={() => setEditing(routine)}>
+                <Pencil size={11} />
+                {t("common.edit")}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -226,12 +234,14 @@ export function RoutinesSection({
         <Plus size={13} />
         {t("routinesSection.newRoutine")}
       </Button>
-      {adding && (
+      {(adding || editing) && (
         <RoutinesDialog
           initialTarget={{ id: targetId, kind: targetKind }}
-          startCreating
+          startCreating={adding}
+          edit={editing ?? undefined}
           onClose={() => {
             setAdding(false);
+            setEditing(null);
             load();
           }}
         />

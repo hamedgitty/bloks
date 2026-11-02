@@ -125,3 +125,55 @@ export function describeSchedule(routine: ScheduleShape): string {
   if (routine.days.length === 1) return t("routineDetails.schedule.oneDay", { day: weekdayName(routine.days[0]), time });
   return t("routineDetails.schedule.days", { days: shortDays(routine.days), time });
 }
+
+/** What the routine form files: the body of POST /api/routines. */
+export type RoutineDraft = {
+  targetId: string;
+  targetKind: "agent" | "room";
+  name?: string;
+  prompt: string;
+  time?: string;
+  days: number[];
+  repeat?: "once";
+  date?: string;
+  durationMin?: number;
+  runsOn?: "cloud" | "local" | "off";
+  thread?: string;
+  every?: number;
+  activeHours?: { from: string; to: string };
+  quiet?: boolean;
+};
+
+/** The fields PATCH /api/routines/:id changes, and what each sends to
+ * clear itself: the server keeps a field that is left out or null. */
+const CLEARED = {
+  name: "",
+  prompt: undefined,
+  time: undefined,
+  days: undefined,
+  repeat: "weekly",
+  // the server drops a date, a duration and a time of its own when the
+  // schedule they belong to goes
+  date: undefined,
+  durationMin: undefined,
+  runsOn: null,
+  thread: null,
+  every: null,
+  activeHours: null,
+  quiet: false,
+} as const satisfies Record<Exclude<keyof RoutineDraft, "targetId" | "targetKind">, unknown>;
+
+/** The body of an edit: only the fields the person changed between the
+ * form as it opened and as it is saved, so the rest keep their value.
+ * Empty when nothing changed. The target is not one of them. */
+export function routinePatch(before: RoutineDraft, after: RoutineDraft): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of Object.keys(CLEARED) as Array<keyof typeof CLEARED>) {
+    // days are a set: the same days picked in another order are no change
+    const [was, now] = [before[key], after[key]].map((v) => JSON.stringify(Array.isArray(v) ? [...v].sort() : v));
+    if (was === now) continue;
+    const value = after[key] ?? CLEARED[key];
+    if (value !== undefined) patch[key] = value;
+  }
+  return patch;
+}
