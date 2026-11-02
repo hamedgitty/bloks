@@ -15,3 +15,10 @@ export function trayOn(platform, prefs) {
 export function closeHides(platform, prefs, quitting) {
   return trayOn(platform, prefs) && !quitting;
 }
+
+/** The tray icon's side in pixels: the notification area draws small
+ * icons at 16 by 16 at 100%, and scales them with the display. */
+export function traySize(scaleFactor) {
+  const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  return Math.round(16 * scale);
+}

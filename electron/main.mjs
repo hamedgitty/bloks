@@ -70,7 +70,7 @@ import {
 import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } from "./server-line.mjs";
 import { terminalQuery } from "./terminal-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
-import { closeHides, trayOn } from "./tray.mjs";
+import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { AppBrowser, allowedForAgent, downloadName, partitionFor, refusedNavigation } from "./app-browser.mjs";
 import os from "node:os";
 
@@ -2361,6 +2361,15 @@ function notchOn() {
 // With "Close to the tray" on (electron/tray.mjs): a click on the icon
 // brings the window back, and its menu quits Bloks for real.
 let tray = null;
+/** The icon drawn at the notification area's own size, from the big app
+ * icon. Handed the 1024px picture, Windows shrinks it itself, and at 16
+ * or 20 pixels that comes out ragged; resized here it is filtered, and
+ * sharp at whatever scale the primary display runs at. */
+const trayImage = () => {
+  const size = traySize(screen.getPrimaryDisplay().scaleFactor);
+  return nativeImage.createFromPath(APP_ICON).resize({ width: size, height: size, quality: "best" });
+};
+let trayFollowsScale = false;
 function syncTray() {
   if (!trayOn(process.platform, registry?.prefs)) {
     tray?.destroy();
@@ -2368,13 +2377,28 @@ function syncTray() {
     return;
   }
   if (!tray) {
-    tray = new Tray(APP_ICON);
+    // One that cannot be made leaves the close button closing: a window
+    // hidden with no icon to bring it back would be a Bloks nobody can
+    // reach but by launching it again.
+    try {
+      tray = new Tray(trayImage());
+    } catch (error) {
+      appLog(`tray: could not make the icon: ${error?.message ?? error}`);
+      return;
+    }
     tray.setToolTip(app.name);
     tray.on("click", () => {
       const win = mainWindow();
       if (win) raise(win);
       else createWindow();
     });
+    // moved to a display with another scale, or the scale changed
+    if (!trayFollowsScale) {
+      trayFollowsScale = true;
+      screen.on("display-metrics-changed", (_event, _display, changed) => {
+        if (tray && changed.includes("scaleFactor")) tray.setImage(trayImage());
+      });
+    }
   }
   // built again on a language change, for the word
   tray.setContextMenu(Menu.buildFromTemplate([{ label: mainWords()("menu.quit", { name: app.name }), click: () => app.quit() }]));
@@ -2578,7 +2602,7 @@ function createWindow() {
   // is quitting. Windows ending the session sends no before-quit, so
   // that says Bloks is quitting here, or the window would hold it up.
   win.on("close", (event) => {
-    if (!closeHides(process.platform, registry?.prefs, quitting)) return;
+    if (!tray || !closeHides(process.platform, registry?.prefs, quitting)) return;
     event.preventDefault();
     win.hide();
   });
