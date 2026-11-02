@@ -7,9 +7,10 @@
 // said apart: this app's version beside its own updater, and the
 // server's, on the computer it runs on, beside its own. The owner checks
 // GitHub for a newer server, reads what changed, and installs it from
-// here when the server can update itself, or reads the steps to do it by
-// hand when it cannot. The server inside the app is the app's to update,
-// so it gets no row of its own.
+// here when the server can update itself (systemd starting the new
+// version, where systemd runs it), or reads the steps to do it by hand
+// when it cannot. The server inside the app is the app's to update, so
+// it gets no row of its own.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
@@ -32,7 +33,19 @@ export interface ServerUpdateStatus {
     error?: string;
   } | null;
   job: { phase: Phase; version: string; from: string; percent?: number; running?: number; deadline?: number; error?: string } | null;
-  last: { from: string; to: string; at: number; pending?: boolean; ok: boolean; rolledBack?: boolean; running?: string; error?: string; log: string } | null;
+  last: {
+    from: string;
+    to: string;
+    at: number;
+    pending?: boolean;
+    ok: boolean;
+    rolledBack?: boolean;
+    running?: string;
+    error?: string;
+    log: string;
+    /** The service manager that started the new version (systemd), when one did. */
+    manager?: string;
+  } | null;
   steps: string[];
 }
 
@@ -243,7 +256,9 @@ export function ServerUpdateRow({ state }: { state: ReturnType<typeof useServerU
     : job && (active || job.phase === "failed" || job.phase === "cancelled")
       ? jobLine(job)
       : recent && recent.to === status.version && recent.ok
-        ? t("serverUpdate.line.updated", { from: recent.from, to: recent.to, log: recent.log })
+        ? recent.manager
+          ? t("serverUpdate.line.updatedBy", { from: recent.from, to: recent.to, manager: recent.manager, log: recent.log })
+          : t("serverUpdate.line.updated", { from: recent.from, to: recent.to, log: recent.log })
         : recent && !recent.ok
           ? recent.rolledBack
             ? recent.error

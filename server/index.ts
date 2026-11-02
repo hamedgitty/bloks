@@ -669,7 +669,7 @@ import { RepeatWatch } from "./repeats.ts";
 import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
 import { RUN_WAIT_MAX_MS, Runs, type RunFile, type SeenMessage } from "./runs.ts";
 import { briefOf, briefText, drawNames, planTeam, statedLooks, TeamPlanError, type TeamChange, type TeamPlan as TeamApplyPlan, type TeamWorld } from "./team-apply.ts";
-import { installFacts, installOf, ServerUpdater, startHelper, UpdateError } from "./server-update.ts";
+import { EXIT_RESTART, installFacts, installOf, ServerUpdater, SETTLED_MS, startHelper, UpdateError } from "./server-update.ts";
 import { deploymentOf, deploymentView, terminalRefusal } from "./deployment.ts";
 import { covers, EnginePauses, FAMILY_NAMES, familyOf, PAUSE_MAX_MS, PauseRefusal, SELF_PAUSE_MAX_MS, type EnginePause, type EngineRoute, type PauseActor } from "./engine-pauses.ts";
 import {
@@ -22448,6 +22448,13 @@ const serverUpdates = new ServerUpdater({
       // a moment for the page to read that it is restarting
       setTimeout(shutDown, 1_500);
     },
+    restart() {
+      console.log(`[bloks] updating to ${serverUpdates.job?.version ?? "the new version"}: stopping for ${serverUpdates.install.manager ?? "the service manager"} to start it`);
+      // not a success, so the service manager starts it again, now into
+      // the version just switched to
+      exitStatus = EXIT_RESTART;
+      setTimeout(shutDown, 1_500);
+    },
   },
 });
 
@@ -33499,6 +33506,14 @@ server.listen(PORT, BIND, () => {
     console.log(`[bloks] paired devices may reach this machine on port ${PORT}`);
   }
   announceHere();
+  // An update under a service manager left this version a trial
+  // (server/server-update.ts): once it has stayed up a moment as itself,
+  // it ends the trial, and the launcher no longer switches back.
+  setTimeout(() => {
+    const ended = serverUpdates.confirmStart();
+    if (ended?.ok) console.log(`[bloks] updated from ${ended.from} to ${ended.to}`);
+    else if (ended) console.error(`[bloks] ${ended.error}`);
+  }, SETTLED_MS).unref?.();
 });
 
 // A provider process can die in ways that surface as an unhandled
@@ -33527,6 +33542,9 @@ for (const stream of [process.stdout, process.stderr]) stream.on("error", () => 
 const SHUTDOWN_DEADLINE_MS = 5_000;
 
 let shuttingDown = false;
+/** What the process ends with: 0, or EXIT_RESTART for a service manager
+ * to start it again into the version an update switched to. */
+let exitStatus = 0;
 /** Stops the way a quit does. Also how a restore ends this process, so
  * the next start can put the restored folder in place. */
 const shutDown = () => {
@@ -33534,7 +33552,7 @@ const shutDown = () => {
   if (shuttingDown) return;
   shuttingDown = true;
   // first, so nothing below (a throw included) can leave it running
-  setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
+  setTimeout(() => process.exit(exitStatus), SHUTDOWN_DEADLINE_MS).unref();
   // What is running stays on the list as it is: the engines shut down
   // below end their turns, and that is this stop, not them finishing.
   cutOff.close();
@@ -33545,7 +33563,7 @@ const shutDown = () => {
   mcp.closeAll();
   // engines elsewhere end with their connections here; the gate and the
   // helpers it ran for them go with this process
-  void Promise.allSettled([registry.disposeAll(), closeBrowsers(), workplaces.dispose().then(() => placeGate.dispose())]).finally(() => process.exit(0));
+  void Promise.allSettled([registry.disposeAll(), closeBrowsers(), workplaces.dispose().then(() => placeGate.dispose())]).finally(() => process.exit(exitStatus));
 };
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutDown);
 // A test that starts a server and is then killed (the test runner's file

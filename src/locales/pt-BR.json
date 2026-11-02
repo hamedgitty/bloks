@@ -5204,6 +5204,7 @@
   "serverUpdate.line.rolledBackWhy": "{to} não iniciou, então {from} voltou a rodar. {error}",
   "serverUpdate.line.slow": "O servidor não respondeu desde que começou a reiniciar em {version}. Se ele voltou para a versão anterior, esta página vai informar assim que responder.",
   "serverUpdate.line.updated": "Atualizado de {from} para {to}. A saída agora vai para {log}.",
+  "serverUpdate.line.updatedBy": "Atualizado de {from} para {to}, iniciado pelo {manager}. Leia a saída com {log}.",
   "serverUpdate.older": "Este servidor é mais antigo que o Bloks {version}, então não pode ser verificado nem atualizado daqui, e atualizar este app não o atualiza. Atualize-o manualmente uma vez, no computador em que ele roda; depois, novas versões podem ser instaladas por esta página.",
   "serverUpdate.releasePage": "Página da versão",
   "serverUpdate.restarting": "Reiniciando",

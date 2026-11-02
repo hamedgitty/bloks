@@ -5204,6 +5204,7 @@
   "serverUpdate.line.rolledBackWhy": "{to} n'a pas démarré, donc {from} tourne de nouveau. {error}",
   "serverUpdate.line.slow": "Le serveur n'a pas répondu depuis qu'il a commencé à redémarrer en {version}. S'il est revenu à la version précédente, cette page le dira dès qu'il répondra.",
   "serverUpdate.line.updated": "Mis à jour de {from} à {to}. Sa sortie est désormais envoyée vers {log}.",
+  "serverUpdate.line.updatedBy": "Mis à jour de {from} à {to}, démarré par {manager}. Lis sa sortie avec {log}.",
   "serverUpdate.older": "Ce serveur est plus ancien que Bloks {version}, il ne peut donc pas être vérifié ni mis à jour d'ici, et mettre à jour cette application ne le met pas à jour. Mets-le à jour à la main une fois, sur l'ordinateur où il tourne ; ensuite, les nouvelles versions pourront être installées depuis cette page.",
   "serverUpdate.releasePage": "Page de la version",
   "serverUpdate.restarting": "Redémarrage",

@@ -4995,6 +4995,7 @@
   "serverUpdate.line.rolledBackWhy": "{to} は起動しなかったため、{from} が再び実行中です。{error}",
   "serverUpdate.line.slow": "サーバーは {version} での再起動を開始してから応答していません。以前のバージョンに戻った場合は、応答があり次第このページにその旨が表示されます。",
   "serverUpdate.line.updated": "{from} から {to} に更新しました。出力は {log} に送られるようになりました。",
+  "serverUpdate.line.updatedBy": "{from} から {to} に更新し、{manager} が起動しました。出力は {log} で確認できます。",
   "serverUpdate.older": "このサーバーは Bloks {version} より古いため、ここからは確認も更新もできません。このアプリを更新してもサーバーは更新されません。サーバーが動作しているコンピュータで一度手動で更新してください。以後は、このページから新しいバージョンをインストールできます。",
   "serverUpdate.releasePage": "リリースページ",
   "serverUpdate.restarting": "再起動中",

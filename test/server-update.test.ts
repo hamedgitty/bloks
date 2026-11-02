@@ -525,6 +525,7 @@ function hooks(over: Partial<UpdaterHooks> = {}) {
       calls.push("handOver");
       handed = { planFile, plan, env };
     },
+    restart: () => void calls.push("restart"),
     ...over,
   };
   return { h, calls, handed: () => handed };

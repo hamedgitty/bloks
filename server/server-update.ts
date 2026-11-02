@@ -10,12 +10,14 @@
 // The parts, in the order an update takes them:
 //
 //   How it was installed decides whether it may update itself at all
-//   (installOf). Only a tarball install started by bloks-server, in a
-//   folder the account it runs as can write, with nothing else that
-//   starts or replaces it. Under systemd, launchd, pm2 or supervisord, in
-//   a container, on a hosted machine, from a source checkout or inside
-//   the desktop app, updating itself would fight whatever owns it, so the
-//   owner is told the steps instead.
+//   (installOf). A tarball install started by bloks-server, in a folder
+//   the account it runs as can write, with nothing else that starts or
+//   replaces it. Or one systemd runs and starts again, whose versions/
+//   folder that account can write though the rest stays root's (GitHub
+//   396): there the update leaves the restart to systemd. Under launchd,
+//   pm2 or supervisord, in a container, on a hosted machine, from a
+//   source checkout or inside the desktop app, updating itself would
+//   fight whatever owns it, so the owner is told the steps instead.
 //
 //   The release is GitHub's latest stable one, only its server tarball,
 //   and only once that matches the sha256 the release publishes beside it
@@ -31,6 +33,16 @@
 //   starts it, and waits for it to answer as that version. If it does
 //   not, the helper stops it, switches back, and starts the old one
 //   again. Either way it writes down what happened, for the app to say.
+//
+//   Under systemd a helper would be killed with the server's cgroup, and
+//   a server it started would be nobody's to restart. So the server
+//   switches versions/current itself, leaves a trial beside it saying
+//   what it switched from, and stops with EXIT_RESTART. systemd starts
+//   the install folder's bin/bloks-server.mjs again, which hands over to
+//   the new version with two minutes to answer; the new server, once it
+//   has been up a moment as that version, ends the trial (confirmTrial).
+//   A start that finds the trial already tried, or two minutes that pass
+//   without it ending, switch back and let systemd start the old one.
 //
 // The data folder is not touched by any of it.
 import { createHash, randomBytes } from "node:crypto";
@@ -79,6 +91,27 @@ const MAX_TARBALL_BYTES = 512 * 1024 * 1024;
 /** How long a new version has to answer before it counts as not
  * starting. A first start can migrate a large workspace. */
 export const HEALTHY_WITHIN_MS = 120_000;
+
+/** Beside versions/current under a service manager: the switch just made,
+ * and what to switch back to if the new version does not come up. Read
+ * by bin/bloks-server.mjs as it starts, which is why its shape never
+ * changes: the launcher reading it is the one unpacked by hand. */
+export const TRIAL_FILE = ".trial.json";
+
+/** The code a server stops with to be started again by its service
+ * manager into the version just switched to (EX_TEMPFAIL): not success,
+ * so Restart=on-failure starts it too. */
+export const EXIT_RESTART = 75;
+
+/** The first release whose launcher keeps a trial, and so the oldest an
+ * install folder may be for a service manager's restart to go back on
+ * its own. */
+export const TRIAL_SINCE = "3.2.0";
+
+/** How long a new version stays up as itself before it ends its own
+ * trial: long enough that one falling over just after it answered is not
+ * taken for one that started. */
+export const SETTLED_MS = 5_000;
 
 /** Said to the owner as it is. */
 export class UpdateError extends Error {
@@ -137,8 +170,12 @@ export type InstallKind =
 
 export interface Install {
   kind: InstallKind;
-  /** Whether it updates itself from the app. Only "self" does. */
+  /** Whether it updates itself from the app: "self", and a "service" that
+   * systemd starts again. */
   canInstall: boolean;
+  /** Who starts the new version: the helper, or the service manager
+   * after this server stops with EXIT_RESTART. */
+  via?: "helper" | "manager";
   /** The folder the release was unpacked into; updates go beside it. */
   home?: string;
   /** What starts it, when something does: "systemd", "launchd", ... */
@@ -167,6 +204,9 @@ export interface InstallFacts {
   exists(path: string): boolean;
   writable(path: string): boolean;
   packageOf(dir: string): Record<string, unknown> | null;
+  /** What systemd does once the unit's process stops (its Restart=
+   * setting), or null when it can't be asked. */
+  restartPolicy?(unit: string, user: boolean): string | null;
 }
 
 /** What starts this process and would start it again: a service
@@ -249,6 +289,7 @@ export function installOf(f: InstallFacts): Install {
     };
   }
   const managed = serviceManager(f);
+  if (managed?.manager === "systemd") return systemdInstall(f, home, managed);
   if (managed) {
     return {
       kind: "service",
@@ -272,6 +313,55 @@ export function installOf(f: InstallFacts): Install {
     canInstall: true,
     home,
     why: `Installed at ${home}. A new version is unpacked beside this one and switched to once it is checked, and if it doesn't start, this one comes back.`,
+  };
+}
+
+/** What systemd's Restart= may be for an update to leave it the
+ * restart: it starts the unit again after a stop that is not a success. */
+const RESTARTS = ["always", "on-failure"];
+
+/**
+ * An install systemd runs (GitHub 396). It updates itself from the app
+ * when three things hold, and is told which is missing otherwise: the
+ * account it runs as can write versions/ (the rest of the install may be
+ * root's), the unit starts it again once it stops, and the launcher in
+ * the install folder is one that keeps a trial, so a version that does
+ * not come up is switched back without anybody at the machine.
+ */
+function systemdInstall(f: InstallFacts, home: string, managed: { manager: string; unit?: string; user?: boolean }): Install {
+  const base = { kind: "service" as const, home, ...managed };
+  const unit = managed.unit ?? "its unit";
+  const versions = join(home, VERSIONS);
+  const launcher = f.packageOf(home)?.version;
+  if (typeof launcher !== "string" || isNewer(TRIAL_SINCE, launcher)) {
+    return {
+      ...base,
+      canInstall: false,
+      why: `systemd runs this server, and the release unpacked at ${home} is older than ${TRIAL_SINCE}, the first that can go back on its own if a new version doesn't start under systemd. Update it by hand once; after that it updates from here.`,
+    };
+  }
+  const policy = managed.unit ? (f.restartPolicy?.(managed.unit, Boolean(managed.user)) ?? null) : null;
+  if (!policy || !RESTARTS.includes(policy)) {
+    return {
+      ...base,
+      canInstall: false,
+      why: policy
+        ? `systemd runs this server but won't start it again once it stops (Restart=${policy} in ${unit}). Set Restart=always there and it updates from here; until then, update it by hand.`
+        : `systemd runs this server, and Bloks couldn't ask it whether ${unit} starts it again once it stops. Set Restart=always there and it updates from here; until then, update it by hand.`,
+    };
+  }
+  if (f.exists(versions) ? !f.writable(versions) : !f.writable(home)) {
+    return {
+      ...base,
+      canInstall: false,
+      why: `systemd runs this server, and the account it runs as can't write to ${versions}. Make that folder once, owned by that account, and it updates from here (see docs/SELF_HOSTING.md); until then, update it by hand.`,
+    };
+  }
+  return {
+    ...base,
+    canInstall: true,
+    via: "manager",
+    why: `systemd runs this server from ${home}. A new version is unpacked into ${versions} and checked, then systemd starts it, and if it doesn't answer within two minutes this one comes back.`,
   };
 }
 
@@ -315,6 +405,19 @@ export function installFacts(o: { desktop: boolean; hosted: boolean; codeRoot: s
       try {
         const parsed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
         return isRecord(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+    restartPolicy(unit, user) {
+      // read only: any account may ask systemd how a unit is set up
+      try {
+        const said = execFileSync("systemctl", [...(user ? ["--user"] : []), "show", unit, "--property=Restart", "--value"], {
+          encoding: "utf8",
+          timeout: 3_000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        return /^[a-z-]+$/.test(said) ? said : null;
       } catch {
         return null;
       }
@@ -654,8 +757,12 @@ export interface UpdateRecord {
   /** The version running when the helper finished, if any is. */
   running?: string;
   error?: string;
-  /** Where the server's output goes now it has no terminal. */
+  /** Where the server's output goes now it has no terminal, or how to read
+   * it from the service manager that started it. */
   log: string;
+  /** The service manager that started the new version, when one did. */
+  manager?: string;
+  unit?: string;
 }
 
 export function readRecord(dataDir: string): UpdateRecord | null {
@@ -848,6 +955,130 @@ export async function finishUpdate(plan: UpdatePlan, deps: FinishDeps = processD
   return done({ ...base, at: Date.now(), ok: true, running: plan.to.version });
 }
 
+// ── under a service manager ────────────────────────────────────────────
+
+/** A switch left for a service manager to start, as TRIAL_FILE holds it. */
+export interface Trial {
+  to: string;
+  from: { version: string; pointer: string | null };
+  at: number;
+  /** Starts of the new version so far, counted by the launcher. */
+  tries: number;
+  /** How long the new version has to end the trial once started. */
+  withinMs: number;
+  manager: string;
+  unit?: string;
+  user?: boolean;
+}
+
+export function readTrial(home: string): Trial | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, VERSIONS, TRIAL_FILE), "utf8"));
+    return isRecord(parsed) && typeof parsed.to === "string" && isRecord(parsed.from) ? (parsed as unknown as Trial) : null;
+  } catch {
+    return null;
+  }
+}
+
+function endTrial(home: string): void {
+  rmSync(join(home, VERSIONS, TRIAL_FILE), { force: true });
+}
+
+/** How to read a service's output, said to the owner after an update. */
+export function serviceLog(manager: string, unit?: string, user?: boolean): string {
+  if (manager === "systemd") return `journalctl ${user ? "--user " : ""}-u ${unit ?? "bloks"}`;
+  return `${manager}'s log`;
+}
+
+/**
+ * Switches versions/current to `to` for the service manager to start,
+ * the trial first, so a start at any moment after the switch finds what
+ * to go back to. The record says it is under way until the new version
+ * ends the trial, or the launcher ends it by switching back.
+ */
+export function switchForManager(
+  home: string,
+  dataDir: string,
+  o: { from: { version: string; pointer: string | null }; to: string; manager: string; unit?: string; user?: boolean; withinMs?: number },
+): void {
+  const trial: Trial = {
+    to: o.to,
+    from: o.from,
+    at: Date.now(),
+    tries: 0,
+    withinMs: o.withinMs ?? HEALTHY_WITHIN_MS,
+    manager: o.manager,
+    ...(o.unit ? { unit: o.unit } : {}),
+    ...(o.user ? { user: true } : {}),
+  };
+  const base = { from: o.from.version, to: o.to, log: serviceLog(o.manager, o.unit, o.user), manager: o.manager, ...(o.unit ? { unit: o.unit } : {}) };
+  mkdirSync(join(home, VERSIONS), { recursive: true });
+  writeFileAtomic(join(home, VERSIONS, TRIAL_FILE), `${JSON.stringify(trial, null, 2)}\n`, 0o600);
+  writeRecord(dataDir, { ...base, at: Date.now(), pending: true, ok: false });
+  try {
+    pointTo(home, o.to);
+  } catch (e) {
+    endTrial(home);
+    writeRecord(dataDir, { ...base, at: Date.now(), ok: false, running: o.from.version, error: `Couldn't switch to ${o.to}: ${(e as Error).message}.` });
+    throw new UpdateError(`Couldn't switch to ${o.to}: ${(e as Error).message}. Nothing changed.`);
+  }
+}
+
+/**
+ * The new version's side of a trial, once it has been up a moment as
+ * `running`: the version switched to ends it and writes down that it
+ * runs, keeping the version before to go back to. Any other version
+ * running means the launcher would not hand over (a folder it would not
+ * trust, an older launcher), so the switch is taken back and said. A
+ * trial whose switch was since undone by hand is dropped. Null when there
+ * was nothing to end.
+ */
+export function confirmTrial(home: string, dataDir: string, running: string): UpdateRecord | null {
+  const trial = readTrial(home);
+  if (!trial) return null;
+  if (pointerOf(home) !== trial.to) {
+    endTrial(home);
+    return null;
+  }
+  const base = {
+    from: trial.from.version,
+    to: trial.to,
+    at: Date.now(),
+    log: serviceLog(trial.manager, trial.unit, trial.user),
+    manager: trial.manager,
+    ...(trial.unit ? { unit: trial.unit } : {}),
+  };
+  if (running === trial.to) {
+    endTrial(home);
+    try {
+      prune(home, [trial.to, trial.from.pointer]);
+    } catch {
+      /* an old version left on disk costs space, nothing more */
+    }
+    const record: UpdateRecord = { ...base, ok: true, running };
+    writeRecord(dataDir, record);
+    return record;
+  }
+  let back = true;
+  try {
+    pointTo(home, trial.from.pointer);
+  } catch {
+    back = false;
+  }
+  endTrial(home);
+  const record: UpdateRecord = {
+    ...base,
+    ok: false,
+    rolledBack: back,
+    running,
+    error: back
+      ? `Bloks ${trial.to} was switched to, but ${running} started instead, so it was switched back.`
+      : `Bloks ${trial.to} was switched to, but ${running} started instead, and switching back failed.`,
+  };
+  writeRecord(dataDir, record);
+  return record;
+}
+
 /** The helper's entry file, for the server to start it with. */
 export function finishEntry(): string {
   const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
@@ -899,6 +1130,9 @@ export interface UpdaterHooks {
   /** Start the helper on the plan, with the environment the next server
    * should have, and stop this server. */
   handOver(planFile: string, plan: UpdatePlan, env: Record<string, string>): void;
+  /** Stop this server with EXIT_RESTART, for its service manager to start
+   * the version just switched to. */
+  restart(): void;
 }
 
 export interface UpdaterOptions {
@@ -968,6 +1202,19 @@ export class ServerUpdater {
     return readRecord(this.o.dataDir);
   }
 
+  /** Ends a trial left for this version by an update under a service
+   * manager, once this server has been up a moment (confirmTrial). */
+  confirmStart(): UpdateRecord | null {
+    const home = this.o.install.home;
+    if (!home) return null;
+    try {
+      return confirmTrial(home, this.o.dataDir, this.o.version);
+    } catch {
+      // the launcher's two minutes still stand behind it
+      return null;
+    }
+  }
+
   /** Starts installing `version`, which has to be the latest release and
    * newer than this; the rest goes on in the background. */
   start(version: unknown, drainMs: number): Job {
@@ -1033,6 +1280,18 @@ export class ServerUpdater {
         await new Promise((r) => setTimeout(r, 500));
       }
       job.phase = "restarting";
+      const install = this.o.install;
+      if (install.via === "manager" && install.manager) {
+        switchForManager(home, this.o.dataDir, {
+          from: { version: this.o.version, pointer: pointerOf(home) },
+          to: job.version,
+          manager: install.manager,
+          ...(install.unit ? { unit: install.unit } : {}),
+          ...(install.user ? { user: true } : {}),
+        });
+        this.o.hooks.restart();
+        return;
+      }
       const plan = this.planFor(home, job.version);
       const planFile = join(this.o.dataDir, PLAN_FILE);
       writeFileAtomic(planFile, `${JSON.stringify(plan, null, 2)}\n`, 0o600);
@@ -1083,6 +1342,7 @@ export class ServerUpdater {
         canInstall: install.canInstall,
         why: install.why,
         ...(install.manager ? { manager: install.manager } : {}),
+        ...(install.via ? { via: install.via } : {}),
       },
       check: this.check,
       job: this.job,

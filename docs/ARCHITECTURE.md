@@ -1173,11 +1173,16 @@ A `bloks-server` on a computer of its own is updated by its owner from
 Settings, About, on any of their own devices, or with
 `bloks-server update` (`server/server-update.ts`). The page says the
 app's version and the server's apart, since neither update touches the
-other. Only an install that `bloks-server` started from the release's
+other. An install that `bloks-server` started from the release's
 folder, which the account it runs as can write, and which nothing else
-starts (systemd, launchd, pm2, supervisord, a container, a hosted
-machine, a source checkout, the app itself) updates itself; every other
-one is shown the steps to do it by hand. The server takes GitHub's
+starts updates itself through a helper, as below. So does one systemd
+runs, when its `versions/` folder is writable by that account (the rest
+may be root's), its unit's `Restart=` (read with `systemctl show`) is
+`always` or `on-failure`, and the release folder's own launcher is
+3.2.0 or newer. Every other one (launchd, pm2, supervisord, a
+container, a hosted machine, a source checkout, the app itself) is
+shown the steps to do it by hand, and a systemd one is told which of the
+three it lacks. The server takes GitHub's
 latest stable release, downloads its tarball only once the checksum
 published beside it is there, keeps it only if it matches that and
 GitHub's own digest of the file, and unpacks it under `versions/` in
@@ -1192,6 +1197,23 @@ minutes, the helper stops it, points the link back and starts the old
 one. Either way it writes `server-update.json` in the data folder,
 which the page reads, and the started server's output goes to
 `server.log` beside it. The data folder itself is never touched.
+
+Under systemd a helper would die with the unit's cgroup, and a server it
+started would be nobody's to restart, so there is none. After the drain
+the server writes `versions/.trial.json` (where it switched from, how
+long the new version has), marks `server-update.json` pending, points
+`versions/current` at the new version and exits 75. systemd starts
+`bin/bloks-server.mjs` in the release folder again, which counts the
+try in the trial, arms a two minute timer and hands over. The new
+server, once it has been listening five seconds as the version the
+trial names, removes the trial, prunes `versions/` and writes the record
+ok (`confirmTrial`); if a different version started, it switches back
+and says so. A start that finds the trial already tried (the last one
+fell over), or a timer that fires with the trial still there (it never
+came up), points the link back, writes the record and, for the timer,
+exits 75 for systemd to start the old version. The launcher hands over
+to `versions/` only when that folder belongs to its account or root and
+not every account may write it (root's alone when it runs as root).
 
 Nothing that arrives meanwhile is turned away. `startTurn` is where every
 turn starts, so it is where a drain holds them: words for one of an

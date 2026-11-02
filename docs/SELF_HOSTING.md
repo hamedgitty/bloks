@@ -79,6 +79,8 @@ curl -LO https://github.com/hamedgitty/bloks/releases/download/vX.Y.Z/bloks-serv
 curl -LO https://github.com/hamedgitty/bloks/releases/download/vX.Y.Z/bloks-server-X.Y.Z.tar.gz.sha256
 sha256sum -c bloks-server-X.Y.Z.tar.gz.sha256
 tar -xzf bloks-server-X.Y.Z.tar.gz --strip-components=1 -C /opt/bloks-server
+# the one folder the bloks account may write, for updates from the app
+install -d -o bloks -g bloks -m 0755 /opt/bloks-server/versions
 ```
 
 `/etc/systemd/system/bloks.service`:
@@ -116,6 +118,48 @@ Open the printed link on the device to pair. Engines (Claude Code,
 Codex and the rest) are installed and signed in as the `bloks` account,
 which the terminal from your own devices is the easiest way to do.
 
+## Updates from the app
+
+On the server above, Settings, About on any of your own devices (or
+`bloks-server update` on the server) checks GitHub for a newer release,
+shows its notes, and installs it when you press Install. No root, no
+sudo and no shell on the server are needed for it:
+
+1. The release's server tarball is downloaded into `versions/`, kept
+   only if it matches the checksum the release publishes (and GitHub's
+   own record of the file), and unpacked beside the version that runs.
+2. Running replies finish first (the same drain as `bloks-server
+   drain`); you can call the update off until then.
+3. `versions/current` is pointed at the new version, a note of what it
+   came from is left beside it, and Bloks stops with exit code 75.
+4. systemd starts it again (`Restart=always`). The launcher in
+   `/opt/bloks-server` hands over to the new version, which has two
+   minutes to come up and stay up as itself.
+5. The app reconnects and says the version now running. If the new
+   version falls over while starting, or does not come up in time, the
+   next start switches back and systemd runs the version before; the app
+   says what happened, and `journalctl -u bloks` has the reason.
+
+Your workspace, keys, settings and paired devices are in the data
+folder, which an update never touches, and the environment in the unit
+file (`BLOKS_OWNER_TERMINAL` included) is the same after it.
+
+About says what is missing when the server can't update itself here:
+
+- **The release in `/opt/bloks-server` is older than 3.2.0.** Update it
+  by hand once (the steps About shows); from then on it updates from the
+  app. The launcher there is the one that goes back if a new version
+  does not start, so it has to know how.
+- **The `bloks` account can't write `versions/`.** Run the `install -d`
+  line above. With `ProtectSystem=strict`, add
+  `ReadWritePaths=/opt/bloks-server/versions` and your data folder.
+- **The unit doesn't restart it.** Set `Restart=always`.
+
+`BLOKS_SERVER_UPDATES=off` keeps the checks and turns installing off.
+Bloks only ever runs code from `versions/` when that folder belongs to
+the account Bloks runs as or to root, and not every account may write
+it (run as root, it has to be root's alone).
+
 ## Coming from `BLOKS_HOSTED=1`
 
 Before 3.2, `BLOKS_HOSTED=1` was the only way to open a server's
@@ -133,7 +177,8 @@ On a server of your own, replace it:
 
 and restart. Your workspace, keys, settings and paired devices stay as
 they are; the terminal from your own devices keeps working; Settings
-says Self-hosted; and updates and location come back. An agent whose
+says Self-hosted; and updates and location come back. For updates from
+the app under systemd, see the section above. An agent whose
 computer was "This machine" has no screen until you pick another, and
 its shell, files and browser work as before.
 

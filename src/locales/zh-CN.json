@@ -4995,6 +4995,7 @@
   "serverUpdate.line.rolledBackWhy": "{to} 未能启动，因此 {from} 已重新运行。{error}",
   "serverUpdate.line.slow": "自开始重启至 {version} 以来，服务器尚未响应。如果已回退到之前的版本，它响应后此页面会予以说明。",
   "serverUpdate.line.updated": "已从 {from} 更新到 {to}。其输出现在写入 {log}。",
+  "serverUpdate.line.updatedBy": "已从 {from} 更新到 {to}，由 {manager} 启动。用 {log} 查看其输出。",
   "serverUpdate.older": "此服务器早于 Bloks {version}，因此无法在此处检查或更新，更新此应用也不会更新它。请在其运行的电脑上手动更新一次；此后即可通过此页面安装新版本。",
   "serverUpdate.releasePage": "发布页面",
   "serverUpdate.restarting": "正在重启",
