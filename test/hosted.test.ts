@@ -69,6 +69,8 @@ test("an agent with no computer is told so, and how the person gives it one", ()
 
   assert.match(noComputerLine("off", { hosted: false, platform: "win32" }), /switched off in your settings/);
   assert.match(noComputerLine("withheld", { hosted: false, platform: "darwin" }), /your owner did not start it/);
+  // a screen kept from the turn on purpose is not to be reached some other way
+  assert.match(noComputerLine("withheld", { hosted: false, platform: "darwin" }), /Do not bypass that through another tool\./);
   assert.doesNotMatch(noComputerLine("withheld", { hosted: false }), /under Computer/, "someone else's turn is not told to change the owner's settings");
   assert.equal(noComputerLine("none", { hosted: true }), "", "a hosted machine is the computer");
   assert.match(noComputerLine("off", { hosted: true }), /switched off/);
