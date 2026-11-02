@@ -328,6 +328,18 @@ export class LiveActivities {
   away() {
     const lanes = [...this.held];
     this.held.clear();
+    // One that could not be ended for want of its token is still on the
+    // phone: with the person gone again it is theirs to keep, not one to
+    // end the moment its token comes, and the turn needs no second one.
+    let kept = false;
+    for (const record of this.records.values()) {
+      for (const a of record.activities) {
+        if (!a.quieted) continue;
+        delete a.quieted;
+        kept = true;
+      }
+    }
+    if (kept) this.save();
     for (const laneId of lanes) if (this.deps.running(laneId)) void this.startNow(laneId);
   }
 

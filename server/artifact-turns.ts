@@ -75,6 +75,8 @@ export class ArtifactTurns {
    * without being finished here (a crash, a path that forgot) would
    * otherwise overlap every turn its agent takes from then on. */
   private readonly alive: (taskId: string) => boolean;
+  /** For finished turns kept apart from their conversation's next one. */
+  private retired = 0;
 
   constructor(opts: { now?: () => number; alive?: (taskId: string) => boolean } = {}) {
     this.now = opts.now ?? Date.now;
@@ -84,7 +86,19 @@ export class ArtifactTurns {
   /** A turn beginning: the folder as it is now, and every other turn of
    * the agent already running overlaps this one. */
   begin(taskId: string, botId: string) {
-    this.drop(taskId);
+    // A finished turn that a running one still overlaps keeps its say on
+    // what it wrote, under a name of its own: the next turn in its
+    // conversation is another turn, and without this the running one
+    // would find nobody else had a claim, and card a file it never made.
+    const old = this.turns.get(taskId);
+    if (old && !old.running && [...this.turns.values()].some((other) => other.running && other.alongside.has(taskId))) {
+      const kept = `${taskId}#${++this.retired}`;
+      this.turns.delete(taskId);
+      this.turns.set(kept, old);
+      for (const other of this.turns.values()) if (other.alongside.delete(taskId)) other.alongside.add(kept);
+    } else {
+      this.drop(taskId);
+    }
     const turn: Turn = {
       botId,
       before: artifacts.snapshot(botId),

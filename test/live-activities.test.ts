@@ -152,3 +152,21 @@ test("tokens survive a restart, the sweep ends what the restart left behind, and
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an activity quieted before its token came is kept when the person leaves again, not ended or doubled", async () => {
+  const f = fixture();
+  f.live.register("phone-a", { start: token(1) });
+  f.busy.add("a1-lane");
+  f.live.started("a1-lane");
+  await tick();
+  assert.deepEqual(f.pushes.map((p) => p.event), ["start"]);
+  // at the computer before the phone reported the activity's token
+  f.live.present();
+  // and away again, the turn still going
+  f.live.away();
+  await tick();
+  assert.deepEqual(f.pushes.map((p) => p.event), ["start"], "the phone has it already: no second start");
+  f.live.register("phone-a", { activities: [{ token: token(2), agentId: "a1", laneId: "a1-lane" }] });
+  await tick();
+  assert.equal(f.pushes.filter((p) => p.event === "end").length, 0, "the activity the person left with stays up");
+});

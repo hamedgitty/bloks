@@ -160,6 +160,27 @@ test("a turn that came and went in the middle of a long one still counts", () =>
   assert.deepEqual(names(turns.finish("long")), ["long.html"]);
 });
 
+test("a quick turn's file stays its own when its conversation goes on before the long one ends (GitHub 460)", () => {
+  const turns = new ArtifactTurns({ now: () => clock });
+  const bot = agent();
+  turns.begin("L2", bot);
+  turns.call("L2", { itemId: "l1", mayWrite: true });
+  tick();
+  turns.begin("L1", bot);
+  turns.call("L1", { itemId: "q1", paths: [join(artifacts.artifactsDir(bot), "quick.html")] });
+  write(bot, "quick.html");
+  turns.callEnded("L1", "q1");
+  tick();
+  assert.deepEqual(names(turns.finish("L1")), ["quick.html"]);
+  tick();
+  // the person says something else in L1 while L2 still runs
+  turns.begin("L1", bot);
+  tick();
+  turns.callEnded("L2", "l1");
+  assert.deepEqual(names(turns.finish("L2")), [], "a shell command running when it was written is less than its naming");
+  assert.deepEqual(names(turns.finish("L1")), []);
+});
+
 test("a file shared on purpose is carded where it was shared and nowhere else", () => {
   const turns = new ArtifactTurns({ now: () => clock });
   const bot = agent();
