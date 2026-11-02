@@ -102,6 +102,7 @@ contextBridge.exposeInMainWorld("bloks", {
   prefsAccent: (accent) => ipcRenderer.invoke("prefs:accent", accent),
   prefsSameAccent: (on, showing) => ipcRenderer.invoke("prefs:same-accent", on, showing),
   prefsNotch: (on) => ipcRenderer.invoke("prefs:notch", on),
+  prefsTray: (on) => ipcRenderer.invoke("prefs:tray", on),
   // the island in the notch (electron/notch.mjs)
   notchHover: (over) => ipcRenderer.invoke("notch:hover", over),
   notchOpen: (target) => ipcRenderer.invoke("notch:open", target),
