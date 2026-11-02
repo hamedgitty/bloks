@@ -145,6 +145,7 @@ import { houseStyle, HOUSE_STYLE, replyRules } from "./house-style.ts";
 import { captureFrame, clickAt, PAGE_KEYS, pressKey, scrollAt, typeText } from "./browser-view.ts";
 import { boxClick, boxKey, boxScroll, boxType } from "./box-hands.ts";
 import { bearerToken, isLocalRequest, isLoopbackPeer, isSameOrigin } from "./http-guard.ts";
+import { boundServiceMessages, MAX_SERVICE_WAKE_BODY_BYTES, ordinaryWakeLane, readWakeInput, serviceQueueFull, serviceWakeLocal, wakeRecord, wakeStatus, wakeTextHash, wakeUuid } from "./service-wakes.ts";
 import {
   DesktopTickets,
   HOP_HEADERS,
@@ -1874,6 +1875,7 @@ const incidents = new IncidentStore();
  * turn's incident can no longer be retried, only handed on or told. */
 interface DeskAsk {
   text: string;
+  serviceMessages?: string[];
   byYou: boolean;
   from?: { botId: string; name: string };
   routine?: Message["routine"];
@@ -1922,6 +1924,7 @@ const heldErrors = new Map<string, string[]>();
 // is asked again once and handed over once and never more.
 interface Asked {
   text: string;
+  serviceMessages?: string[];
   /** When what it answers begins in the conversation (turnSince). */
   since: number;
   byYou: boolean;
@@ -3788,6 +3791,7 @@ function askAgain(bot: BotRecord, laneId: string, recovery: Recovery, delay: num
       ...(stage === "retry" ? { retry: true } : { fallback: true }),
       recovery: stage,
       byYou: asked.byYou,
+      ...(asked.serviceMessages ? { serviceMessages: asked.serviceMessages } : {}),
       ...(asked.from ? { from: asked.from } : {}),
       ...(asked.routine ? { routine: asked.routine } : {}),
       ...(asked.replyTo ? { replyTo: asked.replyTo } : {}),
@@ -5660,12 +5664,13 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         // minute, and a turn of the owner's in the lane meanwhile must not
         // lend its trust to someone else's words asked again
         const requester = laneRequester.get(event.threadId) ?? askedLast.get(event.threadId);
+        const serviceMessages = turnAsked.get(event.threadId)?.serviceMessages;
         void (async () => {
           const folded = await foldContext(bot.id, event.threadId, true).catch(() => false);
           if (folded && said?.text) {
             // A phone request's wait ends with the retry's turn, or here
             // when the retry cannot start.
-            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId), routine: said.via === "routine" ? said.routine : undefined, ...(requester ? { requester } : {}) }).catch(
+            await startTurn(bot.id, said.text, { taskId: event.threadId, presetMessage: true, retry: true, byYou: turnsForYou.has(event.threadId), ...(serviceMessages ? { serviceMessages } : {}), routine: said.via === "routine" ? said.routine : undefined, ...(requester ? { requester } : {}) }).catch(
               (e) => endTelegramWaits(event.threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`),
             );
           } else {
@@ -5761,6 +5766,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
               laneId: event.threadId,
               byYou: turnsForYou.has(event.threadId),
               tool: cutOff.get(event.threadId)?.tool,
+              serviceMessages: cutOff.get(event.threadId)?.serviceMessages,
             },
             "sleep",
             // after the failed turn has settled, so the lane is free again
@@ -6381,7 +6387,7 @@ function noteWake() {
  * agent has to read it before acting on a plan made without it.
  */
 function carryOn(
-  turn: Pick<TurnInFlight, "botId" | "laneId" | "roomId" | "requester" | "byYou" | "tool">,
+  turn: Pick<TurnInFlight, "botId" | "laneId" | "roomId" | "requester" | "byYou" | "tool" | "serviceMessages">,
   by: CutOffBy,
   delay = 0,
 ) {
@@ -6401,6 +6407,17 @@ function carryOn(
     else steerQueues.delete(turn.laneId);
   }
   const start = () => {
+    if (turn.serviceMessages && !serviceTurnCurrent(turn.botId, turn.laneId, turn.serviceMessages)) {
+      // Its exact input/history went away while the pickup waited. The
+      // unrelated words it had reserved still get their own queue turn.
+      if (waiting) {
+        const since = steerQueues.get(turn.laneId)?.items ?? [];
+        steerQueues.set(turn.laneId, { botId: turn.botId, items: [...waiting.items, ...since] });
+      }
+      queueStarts.delete(turn.laneId);
+      drainSteer(turn.laneId);
+      return;
+    }
     // A waiting word may have been edited into a command during the
     // sleep delay. Re-read before pickup; it still needs its own turn.
     if (waiting) {
@@ -6435,6 +6452,7 @@ function carryOn(
       telegramMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
       personalMessages: alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []),
       ...carryOnTarget(turn),
+      ...(turn.serviceMessages ? { serviceMessages: turn.serviceMessages } : {}),
       byYou: Boolean(turn.byYou) || yours,
       // the turn's own place, or further along if an agent's message is
       // in it; the person's words in it start the chain over
@@ -6951,7 +6969,9 @@ function queuedSegment<T extends { messageId?: string; text?: string; requester?
     return telegramAudience(item.telegramPerson ?? message?.telegramPerson ?? item.telegramGroup ?? message?.telegramGroup);
   };
   const wantedAudience = continuation ? laneAudience.get(laneId) ?? "private" : alive[0] ? audience(alive[0]) : "private";
-  const split = alive.findIndex((item) => trust(item) !== wanted || audience(item) !== wantedAudience);
+  const service = (item: T) => said(item)?.via === "service" ? said(item)!.id : undefined;
+  const wantedService = continuation ? undefined : alive[0] ? service(alive[0]) : undefined;
+  const split = alive.findIndex((item) => trust(item) !== wanted || audience(item) !== wantedAudience || service(item) !== wantedService);
   const prefix = split < 0 ? alive : alive.slice(0, split);
   // a command, or words sent with stop and send now, is a turn of its own
   const first = prefix.findIndex((item) => item.alone || queuedCommand(laneId, item));
@@ -7090,8 +7110,20 @@ function turnOrigin(
   const said = ids?.length
     ? messages.filter((m) => ids.includes(m.id))
     : [...messages].reverse().filter((m) => m.role === "user" && !m.deleted && !m.queued && !dismissedPreparation(m)).slice(0, 1);
-  const origins = said.map((m) => originOf(m.via));
+  const origins = said.map((m) => m.via === "service" && m.serviceWake ? "background" as const : originOf(m.via));
   return origins.length && origins.every(Boolean) ? origins[0] : null;
+}
+
+/** The private lane and admitted inputs must still be the very same
+ * destination. Never read a missing lane's transcript into a new lane. */
+function serviceTurnCurrent(botId: string, taskId: string | undefined, ids: readonly string[]): boolean {
+  const bot = store.bot(botId);
+  const task = bot?.tasks.find((lane) => lane.id === taskId);
+  return Boolean(task && ordinaryWakeLane(bot, task, isSharedLane(task.id) || Boolean(rehearsals.forTask(task.id))) &&
+    boundServiceMessages(store.messagesFor(task.id), botId, task.id, ids));
+}
+function assertServiceTurn(botId: string, taskId: string | undefined, ids: readonly string[]) {
+  if (!serviceTurnCurrent(botId, taskId, ids)) throw Object.assign(new Error("The exact service wake destination or its admitted input is no longer available."), { status: 409 });
 }
 
 /** Starts a turn (startClaimedTurn). A start that gives up before
@@ -7137,6 +7169,9 @@ async function startClaimedTurn(
     /** The user message is already in the transcript (a drained queue);
      * do not append it again. */
     presetMessage?: boolean;
+    /** Server-only admitted service inputs, retained only by this work
+     * item and its explicit retries/continuations. Never a client option. */
+    serviceMessages?: string[];
     /** Telegram requests held by a drain, consumed by this turn only. */
     telegramMessages?: string[];
     /** The dispatched segment's message ids, used only to find personal
@@ -7216,6 +7251,10 @@ async function startClaimedTurn(
 ): Promise<void> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
+  if (opts.serviceMessages) {
+    if (!opts.presetMessage || (opts.roomId && opts.roomId !== opts.taskId) || opts.from || opts.routine || opts.rehearsal || (opts.requester && opts.requester !== "owner")) throw Object.assign(new Error("service wakes require their admitted private owner input"), { status: 409 });
+    assertServiceTurn(botId, opts.taskId, opts.serviceMessages);
+  }
   if (opts.telegramBinding && !telegramConnectionCurrent(opts.telegramBinding)) throw new Error("This agent's Telegram connection changed before the message could start.");
   const personRequester = opts.requester ?? (opts.fallback || opts.retry || opts.carriedOn ? askedLast.get(opts.taskId ?? bot.threadId) : undefined);
   const personSource = opts.telegramPerson ?? (personRequester?.startsWith("telegram:") ? senderForRequester(personRequester, opts.taskId ?? bot.threadId) : undefined);
@@ -7287,6 +7326,7 @@ async function startClaimedTurn(
   const sharing: RoomSharing | null = sharedRoom?.sharing ?? null;
   const task = sharing
     ? sharedLaneFor(bot, sharedRoom!)
+    : opts.serviceMessages ? bot.tasks.find((t) => t.id === opts.taskId)
     : (bot.tasks.find((t) => t.id === (opts.taskId ?? activeLaneOf(bot))) ?? bot.tasks[0]);
   if (!task) throw Object.assign(new Error("no task lane on this agent"), { status: 500 });
   if (task.busy || claimedLanes.has(task.id)) {
@@ -7521,6 +7561,18 @@ async function startClaimedTurn(
       { status: 429, paused: true },
     );
   }
+  if (opts.serviceMessages) {
+    assertServiceTurn(botId, task.id, opts.serviceMessages);
+    for (const id of opts.serviceMessages) {
+      const message = store.messagesFor(task.id).find((m) => m.id === id)!;
+      if (message.serviceWake!.dispatchedAt === undefined) {
+        const patched = store.patchMessage(task.id, id, { serviceWake: { ...message.serviceWake!, dispatchedAt: Date.now() } }, { durable: true });
+        if (patched) broadcast({ kind: "message.patch", threadId: task.id, message: patched });
+      }
+    }
+    deliverQueued(task.id, opts.serviceMessages.filter((id) => store.messagesFor(task.id).find((m) => m.id === id)?.queued));
+  }
+
   // The owner's own tools this turn may ask to use in a shared room:
   // what the owner switched on for the room, on Team, on an engine that
   // stops to ask. Every call still raises an approval (see the driver).
@@ -7564,6 +7616,7 @@ async function startClaimedTurn(
   // what it was asked, rooms included, for an incident's one retry
   lastAsked.set(task.id, {
     text,
+    ...(opts.serviceMessages ? { serviceMessages: [...opts.serviceMessages] } : {}),
     byYou: opts.byYou === true,
     ...(opts.from ? { from: opts.from } : opts.answering ? { answering: opts.answering } : {}),
     ...(opts.routine ? { routine: opts.routine } : {}),
@@ -7654,6 +7707,7 @@ async function startClaimedTurn(
   else if (!blok && !command) {
     turnAsked.set(task.id, {
       text: said,
+      ...(opts.serviceMessages ? { serviceMessages: [...opts.serviceMessages] } : {}),
       since: turnSince,
       byYou: opts.byYou === true,
       ...(opts.from ? { from: opts.from } : opts.answering ? { answering: opts.answering } : {}),
@@ -7921,6 +7975,10 @@ async function startClaimedTurn(
     checkInTurns.delete(task.id);
     deskTurns.delete(task.id);
   };
+  if (opts.serviceMessages && !serviceTurnCurrent(botId, task.id, opts.serviceMessages)) {
+    unmark();
+    assertServiceTurn(botId, task.id, opts.serviceMessages);
+  }
   const stillHeld = wheel.heldBy(bot.id);
   if ((personSource && !telegramSenderCurrent(telegramBinding(botId), personSource)) || (groupSource && !telegramOwnerGroupCurrent(telegramBinding(botId), groupSource))) {
     unmark();
@@ -7992,8 +8050,11 @@ async function startClaimedTurn(
   // one asked from Telegram, which answers there, and a room's. A turn
   // that goes on with another (a retry, the backup, a pickup) is still
   // the same wait, whoever its options now name.
-  const askedForAnswer = Boolean(opts.byYou && owners && !opts.from && !opts.routine && !delegateSource && !opts.fromTelegram && !blok);
-  if (!(opts.fallback || opts.retry || opts.carriedOn) || !answerAsked.has(task.id)) answerAsked.set(task.id, askedForAnswer);
+  const askedForAnswer = Boolean((opts.byYou || opts.serviceMessages?.length) && owners && !opts.from && !opts.routine && !delegateSource && !opts.fromTelegram && !blok);
+  // A service incident can resume after unrelated work used this lane.
+  // Its admitted inputs restore its own eligibility, including human joins,
+  // rather than inheriting that other turn's flag.
+  if (opts.serviceMessages?.length || !(opts.fallback || opts.retry || opts.carriedOn) || !answerAsked.has(task.id)) answerAsked.set(task.id, askedForAnswer);
   // a goal judged before this turn began is not judging this one
   laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
   // the busy flag holds the lane from here
@@ -8010,6 +8071,7 @@ async function startClaimedTurn(
     ...(roomId !== task.id ? { roomId } : {}),
     requester,
     ...(opts.byYou ? { byYou: true } : {}),
+    ...(opts.serviceMessages ? { serviceMessages: [...opts.serviceMessages] } : {}),
     instanceId: selection.instanceId,
     session: sessionRef(task.resumeCursors[selection.instanceId]),
     startedAt: Date.now(),
@@ -8788,6 +8850,7 @@ async function startClaimedTurn(
       // gone, and nothing would hear the turn end on it.
       await reloading;
       let engine = turnEngine(instanceId);
+      if (opts.serviceMessages) assertServiceTurn(botId, task.id, opts.serviceMessages);
       // not for a turn already stopped: it ends at the check below
       if (compactHere && !stoppedGettingReady.has(task.id)) {
         const go = await compactThenSend(bot, task.id, roomId, engine, sending);
@@ -8911,6 +8974,7 @@ async function startClaimedTurn(
           broadcast({ kind: "message", threadId: roomId, message: notice });
         }
       }
+      if (opts.serviceMessages) assertServiceTurn(botId, task.id, opts.serviceMessages);
       const textOrigin: { origin: CodexText["origin"]; turnId?: string } = { origin: opts.byYou ? "person" : !opts.recovery && !opts.routine && (opts.from || opts.answering || opts.roomAgentStarted) ? "agent" : opts.recovery ? "unknown" : "other" };
       if (engine.driverKind === "codex") codexOrigins.set(task.id, textOrigin);
       if (claim.preparation) {
@@ -14440,6 +14504,7 @@ async function retryIncident(incident: Incident, by: "lead" | "person"): Promise
     presetMessage: true,
     retry: true,
     byYou: asked.byYou,
+    ...(asked.serviceMessages ? { serviceMessages: asked.serviceMessages } : {}),
     ...(asked.from ? { from: asked.from } : {}),
     ...(asked.answering ? { answering: asked.answering } : {}),
     ...(asked.routine ? { routine: asked.routine } : {}),
@@ -18605,7 +18670,8 @@ function queueOnLane(
     /** Not the person: a webhook, a watcher, a standing intent, Bloks
      * keeping a goal going, or the incident desk handing a lead what
      * failed. */
-    via?: "webhook" | "watcher" | "goal" | "intent" | "incident";
+    via?: "webhook" | "watcher" | "goal" | "intent" | "incident" | "service";
+    serviceWake?: Message["serviceWake"];
     /** The incident a desk note is about (server/incidents.ts). */
     incident?: Message["incident"];
     routine?: Message["routine"];
@@ -18651,6 +18717,7 @@ function queueOnLane(
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
     ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
     ...(options.via ? { via: options.via } : {}),
+    ...(options.serviceWake ? { serviceWake: options.serviceWake } : {}),
     ...(options.incident ? { incident: options.incident } : {}),
     ...(options.routine ? { via: "routine" as const, routine: options.routine } : {}),
     ...(options.telegramReply ? { telegramReply: options.telegramReply } : {}),
@@ -18663,7 +18730,7 @@ function queueOnLane(
     ...(!options.from && !options.via && store.bot(botId) ? { commandInstance } : {}),
     ...(options.delivery ? { delivery: options.delivery } : {}),
     ...(options.preparation ? { preparation: options.preparation } : {}),
-  });
+  }, options.serviceWake ? { durable: true } : {});
   options.admission?.accepted("queued");
   options.onQueued?.(laneId, message);
   broadcast({ kind: "message", threadId: laneId, message });
@@ -19377,7 +19444,7 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
   for (const bot of store.bots) {
     for (const lane of bot.tasks) {
       const flagged = store.messagesFor(lane.id).filter((m) => m.queued && m.role === "user" && !m.deleted && m.text);
-      const fresh = (m: Message) => typeof m.queuedAt === "number" && now - m.queuedAt <= MAX_QUEUED_RECOVERY_MS && m.queuedAt <= now;
+      const fresh = (m: Message) => m.serviceWake?.dispatchedAt === undefined && typeof m.queuedAt === "number" && now - m.queuedAt <= MAX_QUEUED_RECOVERY_MS && m.queuedAt <= now;
       const uncertainAttempts = new Set<string>();
       for (const m of flagged) {
         if (!m.preparation) continue;
@@ -19404,7 +19471,9 @@ function recoverQueued(now = Date.now(), joining = new Set<string>()) {
       });
       for (const m of eligible.filter((m) => !fresh(m))) {
         const current = store.messagesFor(lane.id).find((row) => row.id === m.id);
-        const patched = store.patchMessage(lane.id, m.id, { queued: false, unsent: true,
+        // A service wake's dispatch marker can precede the queue move when
+        // a process dies: drop the waiting flag, never call it unsent.
+        const patched = store.patchMessage(lane.id, m.id, { queued: false, ...(current?.serviceWake?.dispatchedAt === undefined ? { unsent: true } : {}),
           ...(current?.preparation ? { preparation: { ...current.preparation, state: "not-sent" as const }, delivery: { route: "not-sent" as const, why: "you" as const, line: "Not sent" } } : {}),
         });
         if (patched) broadcast({ kind: "message.patch", threadId: lane.id, message: patched });
@@ -20142,7 +20211,11 @@ function drainSteer(threadId: string) {
     return;
   }
   // into the conversation before the turn that answers them
-  deliverQueued(threadId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : [])));
+  const serviceMessages = alive.flatMap(({ item }) => {
+    const message = item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined;
+    return message?.via === "service" ? [message.id] : [];
+  });
+  if (!serviceMessages.length) deliverQueued(threadId, alive.flatMap(({ item }) => (item.messageId ? [item.messageId] : [])));
   // one turn answers the whole burst
   const joined = alive.map((said) => said.words).join("\n");
   // a burst that is all one agent's messages is that exchange's to answer
@@ -20172,7 +20245,12 @@ function drainSteer(threadId: string) {
   const incidentQuiet = incidentNotes.length > 0 && incidentNotes.length === said.length;
   const agentWords = said.some((m) => m?.agent?.dir === "in");
   queueStarts.add(threadId);
-  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, ...(agentWords ? { agentWords } : {}), telegramMessages, telegramBinding, telegramPerson, telegramGroup, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
+  void startTurn(entry.botId, joined, { taskId: threadId, presetMessage: true, answering, byYou, ...(agentWords ? { agentWords } : {}), ...(serviceMessages.length ? { serviceMessages } : {}), telegramMessages, telegramBinding, telegramPerson, telegramGroup, ...(telegramDelegate ? { telegramDelegate } : {}), requester, personalMessages: telegramMessages, commandInstance: queuedCommand(threadId, alive[0].item), chain, chainTask, ...(incidentNotes.length ? { incidentNotes, incidentQuiet } : {}) }).catch((e) => {
+    if (serviceMessages.length && !store.bot(entry.botId)?.tasks.some((task) => task.id === threadId)) return;
+    for (const id of serviceMessages) {
+      const message = store.messagesFor(threadId).find((m) => m.id === id);
+      if (message?.serviceWake && message.serviceWake.dispatchedAt === undefined) store.patchMessage(threadId, id, { queued: false, unsent: true }, { durable: true });
+    }
     for (const id of incidentNotes) deskTurnEnded(id, false);
     if (telegramPerson || telegramGroup) tellTelegramPersonHeld((telegramPerson ?? telegramGroup)!, (e as Error).message);
     telegramReturns.finish(threadId, `Could not answer: ${redactSecrets(e instanceof Error ? e.message : String(e))}`, telegramMessages);
@@ -21831,21 +21909,30 @@ function html(res: ServerResponse, status: number, body: string) {
   res.end(body);
 }
 
-function readBody(req: IncomingMessage): Promise<any> {
+function readBody(req: IncomingMessage, maxBytes?: number): Promise<any> {
   return new Promise((resolve, reject) => {
     let data = "";
+    const chunks: Buffer[] = [];
+    let bytes = 0;
     req.on("data", (c) => {
-      data += c;
-      if (data.length > MAX_BODY_BYTES) {
-        // Rejecting alone leaves the sender streaming into a buffer nobody
-        // is going to read. Hang up.
+      if (maxBytes === undefined) data += c;
+      else {
+        const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        bytes += chunk.length;
+        chunks.push(chunk);
+      }
+      // Ordinary routes keep their existing character limit. The strict
+      // service route has an explicit UTF-8 byte bound and decodes only
+      // once, including when a multibyte character spans chunks.
+      if (maxBytes === undefined ? data.length > MAX_BODY_BYTES : bytes > maxBytes) {
         req.destroy();
         reject(Object.assign(new Error("body too large"), { status: 413 }));
       }
     });
     req.on("end", () => {
       try {
-        resolve(data ? JSON.parse(data) : {});
+        const text = maxBytes === undefined ? data : Buffer.concat(chunks).toString("utf8");
+        resolve(text ? JSON.parse(text) : {});
       } catch {
         reject(new Error("invalid JSON body"));
       }
@@ -22921,6 +23008,57 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   if (path.startsWith("/connect/")) {
     const here = isLocalRequest(req) && !relayDeviceFor(req) && !relayInviteFor(req);
     return proxyConnection(req, res, path, url.search, here, connectionProxy);
+  }
+  const serviceRoute = path.match(/^\/api\/bots\/([\w-]+)\/wakes(?:\/([\w-]+))?$/);
+  if (serviceRoute) {
+    const refuse = (status: number, error: string) => json(res, status, { ok: false, accepted: false, error });
+    if (!serviceWakeLocal(req, Boolean(relayDeviceFor(req) || relayInviteFor(req)))) return refuse(403, "service wakes require a direct trusted-host request without Origin or Authorization");
+    const botId = serviceRoute[1];
+    if (!wakeUuid(botId)) return refuse(400, "botId must be a UUID");
+    const lookup = (taskId: string, wakeId: string) => {
+      const bot = store.bot(botId);
+      return bot?.tasks.some((task) => task.id === taskId) ? wakeRecord(store.messagesFor(taskId), botId, taskId, wakeId) : undefined;
+    };
+    const result = (taskId: string, wakeId: string, message?: Message) => ({ ok: true, botId, taskId, wakeId, ...(message ? { messageId: message.id } : {}), status: wakeStatus(message) });
+    res.setHeader("cache-control", "no-store");
+    if (method === "GET" && serviceRoute[2]) {
+      const taskId = url.searchParams.get("taskId");
+      if (!wakeUuid(taskId) || !wakeUuid(serviceRoute[2]) || url.searchParams.getAll("taskId").length !== 1 || [...url.searchParams.keys()].some((key) => key !== "taskId")) return refuse(400, "taskId and wakeId must be UUIDs");
+      try { return json(res, 200, result(taskId, serviceRoute[2], lookup(taskId, serviceRoute[2]))); }
+      catch { return json(res, 500, { ok: false, error: "wake admission evidence could not be read" }); }
+    }
+    if (method !== "POST" || serviceRoute[2]) return refuse(405, "use POST to admit a wake or GET its exact identity");
+    let input;
+    try { input = readWakeInput(await readBody(req, MAX_SERVICE_WAKE_BODY_BYTES)); }
+    catch (error) { return refuse((error as { status?: number }).status ?? 400, "invalid or oversized wake body"); }
+    if (!input) return refuse(400, "wake requires only taskId and wakeId UUIDs and nonempty bounded text");
+    // From this re-fetch through the durable queue append there is no
+    // await: concurrent equal wakes share one row, and a stale body-read
+    // preflight cannot select General or another receiver.
+    const { taskId, wakeId, text } = input;
+    try {
+      const existing = lookup(taskId, wakeId);
+      if (existing) {
+        if (existing.serviceWake!.textHash !== wakeTextHash(text)) return refuse(409, "wakeId already has different text");
+        return json(res, 200, result(taskId, wakeId, existing));
+      }
+      const bot = store.bot(botId);
+      const task = bot?.tasks.find((lane) => lane.id === taskId);
+      if (!task || !ordinaryWakeLane(bot, task, isSharedLane(taskId) || Boolean(rehearsals.forTask(taskId)))) return refuse(409, "the exact ordinary private owner destination is unavailable");
+      const refusal = webhookRefusal(botId);
+      if (refusal) return refuse(refusal.status, refusal.error);
+      if (serviceQueueFull(store.messagesFor(taskId), text)) return refuse(503, "service wake queue is full; retry before admission");
+      const message = queueOnLane(botId, taskId, text, { via: "service", serviceWake: { botId, taskId, wakeId, textHash: wakeTextHash(text) }, personal: false });
+      json(res, 202, result(taskId, wakeId, message));
+      // Work begins only after the durable admission and response. The
+      // normal drain revalidates the immutable destination again.
+      setImmediate(() => drainSteer(taskId));
+      return;
+    } catch (error) {
+      // A persistence/broadcast failure can follow admission. It never
+      // tells a caller that retrying is safe.
+      return json(res, 500, { ok: false, error: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200) });
+    }
   }
   // Reply bearers are checked before open webhook routes too. A spent
   // reply credential never falls through to the loopback owner.
@@ -25461,6 +25599,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // Editing is for your own words. An agent's message is a record of
         // what it said, and rewriting that would make the transcript lie.
         if (row.role !== "user") return { status: 403, error: "only your own messages can be edited" };
+        if (row.via === "service") return { status: 403, error: "service wake input is immutable" };
         if (row.deleted) return { status: 409, error: "that message was taken back" };
         if (row.preparation && ["dispatching", "uncertain", "joined"].includes(row.preparation.state)) {
           return { status: 409, error: "These words were already submitted or their delivery is unknown. Send a new message to change them." };
@@ -25510,7 +25649,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const message = store.messagesFor(m[1]).find((msg) => msg.id === m![2]);
       const waiting = steerQueues.get(m[1])?.items.some((item) => item.messageId === m![2]);
-      if (!message || message.role !== "user" || message.deleted || !message.queued || !waiting ||
+      if (!message || message.via === "service" || message.role !== "user" || message.deleted || !message.queued || !waiting ||
           (message.preparation && !["pending", "next"].includes(message.preparation.state))) {
         return json(res, 200, { holding: false });
       }

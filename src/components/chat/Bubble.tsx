@@ -73,6 +73,8 @@ function viaLabel(message: Message): string {
       return message.intent?.name ? t("bubble.fromIntentNamed", { name: message.intent.name }) : t("bubble.fromIntent");
     case "webhook":
       return t("bubble.fromAWebhook");
+    case "service":
+      return t("bubble.fromLocalService");
     case "goal":
       return goalLabel(message.text ?? "");
     case "incident":
@@ -271,6 +273,7 @@ export function Bubble({
 }) {
   const user = message.role === "user";
   const unresolvedDismissal = Boolean(message.preparation?.dismissed && message.preparation.state !== "joined");
+  const sourceAuthor = message.via === "service" ? t("waitingStrip.sender.service") : author;
   // Editing happens where the message already is. Sending it back to
   // the composer would lose your place and pretend it is a new message.
   const [editing, setEditing] = useState<string | null>(null);
@@ -290,7 +293,7 @@ export function Bubble({
   const [redoError, setRedoError] = useState<string | null>(null);
   const asked = useRef<Promise<RedoPreview | null> | null>(null);
   const startEditing = () => {
-    if (editing !== null || unresolvedDismissal) return;
+    if (message.via === "service" || editing !== null || unresolvedDismissal) return;
     setEditing(message.text ?? "");
   };
   useEffect(() => {
@@ -363,7 +366,7 @@ export function Bubble({
         first={group.first}
         last={group.last}
         face={group.face}
-        name={author}
+        name={sourceAuthor}
         at={message.at}
         rich={richText(message.text ?? "")}
         readId={group.readId}
@@ -391,7 +394,7 @@ export function Bubble({
             at={message.at}
             open={tap.open}
             message={message}
-            author={author}
+            author={sourceAuthor}
             onReply={onReply}
             onForward={onForward}
             onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
@@ -443,7 +446,7 @@ export function Bubble({
           className="mt-0.5 -mb-1.5"
           open={tap.open}
           message={message}
-          author={author}
+          author={sourceAuthor}
           onReply={onReply}
           onForward={onForward}
           onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
@@ -515,14 +518,14 @@ export function Bubble({
   const words = <UserText text={message.via === "goal" ? goalNoteForPerson(message.text ?? "").body : (message.text ?? "")} highlight={highlight} />;
 
   if (group) {
-    const fromSomewhere = message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident";
+    const fromSomewhere = message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "service" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident";
     return (
       <GroupMessage
         mine={group.mine}
         first={group.first}
         last={group.last}
         face={group.face}
-        name={author}
+        name={sourceAuthor}
         at={message.at}
         // an editor gets the room the words may grow into
         rich={editing !== null}
@@ -573,11 +576,11 @@ export function Bubble({
               at={message.at}
               open={tap.open}
               message={message}
-              author={author}
+              author={sourceAuthor}
               onReply={onReply}
               onForward={onForward}
               onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-              onEdit={group.mine && onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
+              onEdit={group.mine && onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" && message.via !== "service" ? startEditing : undefined}
               onDelete={onDelete ? () => onDelete(message.id) : undefined}
               onRewind={group.mine && onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
             />
@@ -601,7 +604,7 @@ export function Bubble({
       {/* A column, so reactions hang under the bubble they belong to
           rather than beside it where they would push the text around. */}
       <div className={cn("flex max-w-[82%] flex-col items-end sm:max-w-[68%]", editing !== null && "w-full")}>
-        {(message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident") && (
+        {(message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "service" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident") && (
           <div className="mb-1 px-1 text-caption text-muted-foreground">
             {viaLabel(message)}
           </div>
@@ -661,11 +664,11 @@ export function Bubble({
         className={cn("mt-0.5 -mb-1.5", editing !== null && "invisible")}
         open={tap.open}
         message={message}
-        author={author}
+        author={sourceAuthor}
         onReply={onReply}
         onForward={onForward}
         onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
-        onEdit={onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" ? startEditing : undefined}
+        onEdit={onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" && message.via !== "service" ? startEditing : undefined}
         onDelete={onDelete ? () => onDelete(message.id) : undefined}
         onRewind={onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
       />

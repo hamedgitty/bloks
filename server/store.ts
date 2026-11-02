@@ -171,7 +171,9 @@ export interface Message {
   afterAgent?: { peerId: string; peerName: string };
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
-  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident";
+  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service";
+  /** Created only by strict trusted-host wake ingress. Never from client input. */
+  serviceWake?: import("./service-wakes.ts").ServiceWake;
   /** Posted by a standing intent (server/intents.ts): a note in its own
    * words, or the line saying it brought an agent in. Never matched by
    * an intent, its own or another's. */
@@ -944,12 +946,13 @@ export class Store {
   appendMessage(
     threadId: string,
     message: Omit<Message, "id" | "at"> & { at?: number },
-    { soon = false }: { soon?: boolean } = {},
+    { soon = false, durable = false }: { soon?: boolean; durable?: boolean } = {},
   ): Message {
     const full: Message = { id: newId(), at: Date.now(), ...message };
     const list = this.messagesFor(threadId);
     list.push(full);
-    this.save(threadId, list, soon);
+    try { this.save(threadId, list, soon, durable); }
+    catch (error) { list.pop(); throw error; }
     const key = this.preparationSourceKey(full);
     if (key) this.preparationSources.get(threadId)?.add(key);
     this.onAppend?.(threadId, full);
@@ -998,9 +1001,9 @@ export class Store {
     // two apart, so it kept the card on every deletion.
     const before = list[idx];
     const card = "card" in patch ? patch.card : before.card;
-    list[idx] = { ...list[idx], ...patch, card };
+    list[idx] = { ...before, ...patch, card };
     try { this.save(threadId, list, soon, durable); }
-    catch (error) { if (durable) list[idx] = before; throw error; }
+    catch (error) { list[idx] = before; throw error; }
     this.onRewrite?.(threadId, [list[idx]]);
     return list[idx];
   }
@@ -1270,7 +1273,15 @@ export class Store {
       createdAt: Date.now(),
       imported: input.imported,
     };
-    const list: Message[] = input.messages.map((message) => ({ ...message, id: newId() }));
+    const list: Message[] = input.messages.map(({ serviceWake, ...message }) => ({
+      ...message,
+      // An import is historical text, never a local-service admission or
+      // authority to recover one. A copied waiting row must not become
+      // an ordinary personal queue item after its provenance is removed.
+      ...(serviceWake || message.via === "service" ? { queued: undefined, queuedAt: undefined, waitsFor: undefined, waitsUntil: undefined } : {}),
+      ...(message.via === "service" ? { via: undefined } : {}),
+      id: newId(),
+    }));
     this.messages.set(task.id, list);
     this.preparationSources.delete(task.id);
     this.save(task.id, list);
