@@ -6213,6 +6213,13 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       // What the incident desk reads of this end, taken before recoverTurn
       // clears it.
       const endedErrors = [...(turnErrors.get(event.threadId) ?? [])];
+      if (
+        event.ok === false &&
+        !laneTelegramPerson.has(event.threadId) &&
+        /no conversation found with session id/i.test([...endedErrors, event.stopReason ?? ""].join("\n"))
+      ) {
+        store.dropSession(event.threadId, ranOn.instanceId);
+      }
       const endedAsked = turnAsked.get(event.threadId) ?? lastAsked.get(event.threadId);
       const handedOver = recoverTurn(
         bot,
@@ -9051,6 +9058,7 @@ async function startClaimedTurn(
       // Every other engine is told the whole persona each turn as before.
       let standingNext: StandingRecord | null = null;
       let persona = personaWith(standingNow);
+      let roomHandoffText: string | undefined;
       // A person's session is fresh and kept nowhere; the record of what
       // the owner's session was told stays as it was.
       if (instance.driverKind === "claudeAgent" && !personSource) {
@@ -9060,6 +9068,7 @@ async function startClaimedTurn(
         });
         standingNext = command ? null : kept.next;
         persona = personaWith(kept.system);
+        const baseTurnText = turnText;
         const ahead: string[] = [];
         if (!command && kept.preamble) ahead.push(kept.preamble);
         if (!command && blok) {
@@ -9071,6 +9080,14 @@ async function startClaimedTurn(
                 ? `(In this room since your last turn here:\n${room.text})`
                 : `(Recent conversation in this room:\n${room.text})`,
             );
+          }
+          if (seen) {
+            const fullRoom = roomTranscript(roomId, bot.id);
+            const fullAhead = [
+              ...(kept.preamble ? [kept.preamble] : []),
+              ...(fullRoom.text ? [`(Recent conversation in this room:\n${fullRoom.text})`] : []),
+            ];
+            roomHandoffText = fullAhead.length ? `${fullAhead.join("\n\n")}\n\n${baseTurnText}` : baseTurnText;
           }
           if (room.lastId) standingNext = { ...kept.next, roomSeen: { ...kept.next.roomSeen, [blok.id]: room.lastId } };
         }
@@ -9186,12 +9203,10 @@ async function startClaimedTurn(
         // (SendTurnInput.forkFrom), so the person's own file is not written.
         ...(task.imported?.resumes ? { forkFrom: task.imported.sessionId } : {}),
         // If the session behind the cursor turns out to be gone, the new
-        // one is told the bounded story rather than nothing. Claude Code
-        // does not open a new session on its own, so it is not given one,
-        // except for a session from before Bloks, which a CLI that cannot
-        // copy it does not resume at all.
-        ...(typeof resumeCursor === "string" && !nativeReplay && (instance.driverKind !== "claudeAgent" || resumeCursor === task.imported?.sessionId)
+        // one is told the bounded story rather than nothing.
+        ...(typeof resumeCursor === "string" && !nativeReplay
           ? (() => {
+              if (roomHandoffText) return { handoff: roomHandoffText };
               const told = boundHandoff(transcript, handoffTokens);
               return {
                 handoff: carriedOver
@@ -9316,7 +9331,8 @@ async function startClaimedTurn(
         }
         // the session compacted is the one the words go into
         const now = store.taskByThread(task.id)?.task.resumeCursors[instanceId];
-        if (typeof now === "string") sending.resumeCursor = now;
+        sending.resumeCursor = typeof now === "string" ? now : undefined;
+        if (!sending.resumeCursor && sending.handoff) sending.text = sending.handoff;
         // and the engine as it is now: one rebuilt during the compaction
         // ended it, and the old one is gone
         await reloading;
@@ -14096,6 +14112,11 @@ function onIdleCompaction(event: RuntimeEvent) {
           .get(event.providerInstanceId ?? "")
           ?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "deny" })
           .catch(() => {});
+      }
+      break;
+    case "runtime.error":
+      if (event.providerInstanceId && /no conversation found with session id/i.test(event.message)) {
+        store.dropSession(event.threadId, event.providerInstanceId);
       }
       break;
     case "turn.completed": {
