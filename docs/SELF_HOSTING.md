@@ -73,7 +73,7 @@ and does not lose anything it needs because of it:
 | Terminal from your devices | with `BLOKS_OWNER_TERMINAL=1` | always | A shell is the most a device can be given, so on your own server you decide. |
 | Updates | from the app, or `bloks-server update` | with the machine's image | The provider replaces the whole machine. |
 | Location and place watchers | offered | not offered | Where you are goes only to a computer of your own, never to a machine run for you. |
-| Agent computers | Cloud box, Local VM (needs Docker or Podman on the server), Off | This machine, Off | A hosted machine is the agents' computer already, with its own browser and virtual desktop. |
+| Agent computers | Cloud box, Local VM (Docker or Podman on the server; with Docker Compose, the desktop service in [DOCKER.md](DOCKER.md)), Off | This machine, Off | A hosted machine is the agents' computer already, with its own browser and virtual desktop. |
 | Virtual desktop in the Computer panel | not offered | when the image serves one | It needs the hosting image's desktop and viewer. |
 | Bloks browser in the app | not offered | not offered | It is a browser inside the desktop app, so only a workspace running in the app has one. An agent's own browser (Settings, Browser) works on any server. |
 | Pairing link from bloks.dev | `bloks-server pair` on the server | asked of Bloks Cloud | Nobody can run `bloks-server pair` on a hosted machine. |

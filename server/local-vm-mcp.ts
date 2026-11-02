@@ -5,15 +5,20 @@
 // container and pipes bytes through untouched. No parsing, no tools, no
 // state; the isolation is the container boundary, and the only checks
 // here make sure the exec goes where the harness said it should.
+//
+// A desktop beside Bloks (runtime "service", server/local-vm.ts) cannot be
+// exec'd into; its own small service runs the same command and this
+// pipes the same bytes to it over the private network instead.
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 
 const [runtime, container, socket] = process.argv.slice(2);
 
-if (!["docker", "podman", "container"].includes(runtime ?? "")) {
+if (!["docker", "podman", "container", "service"].includes(runtime ?? "")) {
   process.stderr.write("unknown container runtime\n");
   process.exit(2);
 }
-if (!/^[a-zA-Z0-9_.-]+$/.test(container ?? "")) {
+if (!(runtime === "service" ? /^[a-z0-9.-]+:\d{1,5}$/i : /^[a-zA-Z0-9_.-]+$/).test(container ?? "")) {
   process.stderr.write("bad container name\n");
   process.exit(2);
 }
@@ -22,27 +27,45 @@ if (!socket?.startsWith("/run/user/1000/")) {
   process.exit(2);
 }
 
-const child = spawn(
-  runtime,
-  [
-    "exec", "-i", "-u", "cua",
-    "-e", "HOME=/home/cua",
-    "-e", "DISPLAY=:1",
-    "-e", "CUA_DRIVER_INSTALL_CHANNEL=python_package",
-    "-e", "CUA_DRIVER_RS_TELEMETRY_ENABLED=0",
-    container,
-    "/usr/local/libexec/bloks/cua-driver", "mcp", "--socket", socket,
-  ],
-  { stdio: ["pipe", "pipe", "pipe"] },
-);
+if (runtime === "service") {
+  const at = container!.lastIndexOf(":");
+  const line = connect(Number(container!.slice(at + 1)), container!.slice(0, at));
+  line.on("connect", () => {
+    line.write(`${JSON.stringify({ op: "mcp" })}\n`);
+    process.stdin.pipe(line);
+    line.pipe(process.stdout);
+  });
+  line.on("error", (e) => {
+    process.stderr.write(`could not reach the desktop service: ${e.message}\n`);
+    process.exit(2);
+  });
+  line.on("close", () => process.exit(0));
+  process.stdin.on("end", () => line.end());
+  process.on("SIGTERM", () => line.destroy());
+} else {
 
-child.on("error", (e) => {
-  process.stderr.write(`could not exec the container runtime: ${e.message}\n`);
-  process.exit(2);
-});
-child.stdin.on("error", () => {});
-process.stdin.pipe(child.stdin);
-child.stdout.pipe(process.stdout);
-child.stderr.pipe(process.stderr);
-child.on("exit", (code) => process.exit(code ?? 1));
-process.on("SIGTERM", () => child.kill("SIGTERM"));
+  const child = spawn(
+    runtime,
+    [
+      "exec", "-i", "-u", "cua",
+      "-e", "HOME=/home/cua",
+      "-e", "DISPLAY=:1",
+      "-e", "CUA_DRIVER_INSTALL_CHANNEL=python_package",
+      "-e", "CUA_DRIVER_RS_TELEMETRY_ENABLED=0",
+      container,
+      "/usr/local/libexec/bloks/cua-driver", "mcp", "--socket", socket,
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+
+  child.on("error", (e) => {
+    process.stderr.write(`could not exec the container runtime: ${e.message}\n`);
+    process.exit(2);
+  });
+  child.stdin.on("error", () => {});
+  process.stdin.pipe(child.stdin);
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  child.on("exit", (code) => process.exit(code ?? 1));
+  process.on("SIGTERM", () => child.kill("SIGTERM"));
+}

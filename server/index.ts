@@ -156,6 +156,7 @@ import {
   computerChoices,
   computerRefusal,
   desktopRequest,
+  VM_DESKTOP_PATH,
   publicDoor,
   hostedComputer,
   hostedRefusal,
@@ -491,6 +492,8 @@ import {
   vmScreenshot,
   vmStatus,
   vmStop,
+  vmViewerPassword,
+  vmViewerTarget,
   VIEWER_ORIGIN,
 } from "./local-vm.ts";
 import { resolveOnPath, widenPath } from "./path.ts";
@@ -845,6 +848,9 @@ if (HOSTED && process.env.BLOKS_HOSTED_VNC && !VNC) {
   console.error("[bloks] BLOKS_HOSTED_VNC must be a port, or an http address on this machine's loopback; the desktop is not shown");
 }
 const desktopTickets = new DesktopTickets();
+/** The Local VM's viewer, passed through the same way, under its own
+ * tickets so one never opens the other. */
+const vmDesktopTickets = new DesktopTickets();
 /** The balance as last read, kept a little while: Settings, the composer
  * and a phone all ask, and the answer only moves when something runs. */
 let creditsBalance: { value: AiBalance | null; problem: string | null; at: number } | null = null;
@@ -23882,16 +23888,27 @@ function desktopHeaders(raw: IncomingMessage["headers"], target: { host: string;
   return out;
 }
 
-function proxyDesktop(req: IncomingMessage, res: ServerResponse, path: string, search: string) {
+/** Which desktop a path asks for, once its ticket is good: a hosted
+ * machine's own, or the Local VM's, wherever it runs. */
+function desktopAsked(path: string): { target: { host: string; port: number; prefix: string }; rest: string } | null {
+  const vm = desktopRequest(path, VM_DESKTOP_PATH);
+  if (vm) return vmDesktopTickets.use(vm.ticket) ? { target: vmViewerTarget(), rest: vm.rest } : null;
   const asked = desktopRequest(path);
-  if (!HOSTED || !VNC || !asked || !desktopTickets.use(asked.ticket)) return json(res, 404, { error: "not found" });
+  if (!HOSTED || !VNC || !asked || !desktopTickets.use(asked.ticket)) return null;
+  return { target: VNC, rest: asked.rest };
+}
+
+function proxyDesktop(req: IncomingMessage, res: ServerResponse, path: string, search: string) {
+  const asked = desktopAsked(path);
+  if (!asked) return json(res, 404, { error: "not found" });
+  const { target } = asked;
   const upstream = httpRequest(
     {
-      host: VNC.host,
-      port: VNC.port,
+      host: target.host,
+      port: target.port,
       method: req.method,
-      path: `${VNC.prefix}${asked.rest}${search}`,
-      headers: desktopHeaders(req.headers, VNC),
+      path: `${target.prefix}${asked.rest}${search}`,
+      headers: desktopHeaders(req.headers, target),
     },
     (answer) => {
       const headers: Record<string, string | string[]> = {};
@@ -23920,22 +23937,23 @@ function proxyDesktop(req: IncomingMessage, res: ServerResponse, path: string, s
  * was before there was anything here to upgrade to. */
 function upgradeDesktop(req: IncomingMessage, socket: Duplex, head: Buffer) {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
-  const asked = desktopRequest(url.pathname);
-  if (!HOSTED || !VNC || !asked || !desktopTickets.use(asked.ticket)) {
+  const asked = desktopAsked(url.pathname);
+  if (!asked) {
     socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
     return;
   }
-  const upstream = netConnect(VNC.port, VNC.host);
+  const { target } = asked;
+  const upstream = netConnect(target.port, target.host);
   const close = () => {
     socket.destroy();
     upstream.destroy();
   };
   upstream.once("connect", () => {
-    const headers = desktopHeaders(req.headers, VNC);
+    const headers = desktopHeaders(req.headers, target);
     // the socket's own two, which desktopHeaders leaves out as this hop's
     headers.connection = "Upgrade";
     headers.upgrade = String(req.headers.upgrade ?? "websocket");
-    const lines = [`${req.method ?? "GET"} ${VNC.prefix}${asked.rest}${url.search} HTTP/1.1`];
+    const lines = [`${req.method ?? "GET"} ${target.prefix}${asked.rest}${url.search} HTTP/1.1`];
     for (const [name, value] of Object.entries(headers)) {
       for (const one of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${one}`);
     }
@@ -23958,7 +23976,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // including refusals from the general credential checks below.
   if (path === "/api/plan" || path.startsWith("/api/plan/")) res.setHeader("cache-control", "no-store");
   // The virtual desktop's viewer on a hosted workspace, by its ticket.
-  if (path.startsWith("/hosted/desktop/")) return proxyDesktop(req, res, path, url.search);
+  if (path.startsWith("/hosted/desktop/") || path.startsWith(VM_DESKTOP_PATH)) return proxyDesktop(req, res, path, url.search);
   // A connection's address (server/connections.ts): the handle in it is
   // the whole credential for the turn it was minted for, so it is decided
   // here and never falls through to anything below, whatever else the
@@ -25722,6 +25740,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const rt = status.runtime ?? "docker";
       return json(res, 200, {
         ...status,
+        // the viewer on this machine's loopback opens only on this machine;
+        // anywhere else asks /api/local-vm/viewer for a way through
+        viewerUrl: local ? status.viewerUrl : null,
         inUseBy: holder ? (store.bot(holder.botId)?.name ?? null) : null,
         // shown collapsed in setup, for people who like to see the wires
         commands: {
@@ -25732,6 +25753,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           run: `${rt} ${vmRunArgs(rt, "<generated>").join(" ")}`,
         },
       });
+    }
+    // The Local VM's desktop through this server, under a ticket: for a
+    // window that is not on this machine, and always for a desktop beside
+    // Bloks, whose viewer faces nothing but this server. The person's,
+    // never an agent's, as with a hosted machine's desktop.
+    if (method === "POST" && path === "/api/local-vm/viewer") {
+      if (asAgent) return json(res, 403, { error: "that is the person's" });
+      try {
+        const password = await vmViewerPassword();
+        const url = viewerUrl(vmDesktopTickets.mint(), VM_DESKTOP_PATH);
+        // the password rides in the fragment, which never leaves the browser
+        return json(res, 200, { url: password ? `${url}#password=${encodeURIComponent(password)}` : url });
+      } catch (e) {
+        return json(res, 502, { error: redactSecrets(e instanceof Error ? e.message : String(e)) });
+      }
     }
     m = path.match(/^\/api\/local-vm\/(prepare|create|stop|remove|screenshot)$/);
     if (m && method === "POST") {

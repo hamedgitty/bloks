@@ -266,6 +266,34 @@ devices.
 A key in `.env` connects its provider: `OPENROUTER_API_KEY`,
 `GEMINI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `MISTRAL_API_KEY`.
 
+## 7. A desktop for your agents
+
+An agent that needs a computer of its own (a browser it signs in to,
+apps it clicks through) gets the Local VM: a Linux desktop kept apart
+from everything else. On a Mac Bloks makes it with Docker; here it runs
+beside Bloks as the `desktop` service, so Bloks is never handed the
+host's Docker socket and nothing an agent runs can reach the host
+through it. Uncomment one line in `.env`:
+
+```sh
+COMPOSE_PROFILES=desktop
+```
+
+then `docker compose up -d`. The first start downloads the desktop, which
+takes a few minutes.
+Settings, Computers, Local VM says Ready once it is up (and how to turn
+it on until then), and an agent set to Local VM, or left on Automatic,
+works it from its next turn. Its screen opens from that agent's
+Computer panel in the desktop app, through Bloks: nothing of the
+desktop is published, and its viewer's password is made fresh each
+time it starts. Its files and browser sign ins live in the
+`bloks-desktop` volume, so they stay when it is recreated. It has the
+same limits as on a Mac: 4 GB of memory, 2 CPUs, and one agent at a
+time.
+
+To turn it off, comment the line out again and run
+`docker compose up -d --remove-orphans`.
+
 ## When bloks.dev is down, or gone
 
 Nothing here notices. With `BLOKS_CLOUD=off` the server never contacts
@@ -296,7 +324,7 @@ Cloud link after, for a device somewhere your address does not reach.
 | What | How |
 | --- | --- |
 | Status | `docker compose exec bloks bloks-server status` |
-| Logs | `docker compose logs -f bloks` |
+| Logs | `docker compose logs -f bloks` (and `desktop`) |
 | Update | `docker compose exec bloks bloks-server drain`, then `docker compose pull && docker compose up -d` |
 | Stay on a version | `BLOKS_VERSION=3.2.1` in `.env` |
 | Back up | `docker compose exec bloks bloks-server backup --encrypt`, then copy it out of the volume: `docker compose cp bloks:/home/bloks/.bloks-backups ./backups` |

@@ -147,6 +147,19 @@ function LocalVmCard({ bot }: { bot: Bot }) {
     inUseBy: string | null;
   } | null>(null);
   const [frame, setFrame] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  // the viewer on this machine opens straight; anywhere else, or beside
+  // Bloks on a server, it opens through Bloks under a ticket minted now
+  const openDesktop = () => {
+    if (status?.viewerUrl) return setDesktop(status.viewerUrl);
+    setOpening(true);
+    setOpenError(null);
+    api("/api/local-vm/viewer", { method: "POST", body: "{}" })
+      .then((r) => setDesktop(r.url))
+      .catch((e: Error) => setOpenError(e.message))
+      .finally(() => setOpening(false));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -213,15 +226,14 @@ function LocalVmCard({ bot }: { bot: Bot }) {
           </div>
         )}
       </div>
-      {status?.ready && status.viewerUrl ? (
-        <Button
-          variant="secondary"
-          className="mt-3 w-full"
-          onClick={() => setDesktop(status.viewerUrl)}
-        >
-          <ExternalLink size={14} />
-          {t("computerPanel.openDesktop")}
-        </Button>
+      {status?.ready ? (
+        <>
+          <Button variant="secondary" className="mt-3 w-full" disabled={opening} onClick={openDesktop}>
+            {opening ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+            {t("computerPanel.openDesktop")}
+          </Button>
+          {openError && <div className="mt-2 text-small text-destructive">{openError}</div>}
+        </>
       ) : status !== null && !status.ready ? (
         <div className="mt-3 rounded-2xl border bg-card p-4">
           <div className="text-body leading-relaxed text-muted-foreground">

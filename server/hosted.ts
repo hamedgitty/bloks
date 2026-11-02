@@ -205,6 +205,8 @@ export function vncTarget(raw: string | undefined): VncTarget | null {
 
 /** The path the viewer is reached under, on this server. */
 export const DESKTOP_PATH = "/hosted/desktop/";
+/** And the Local VM's, under tickets of its own (server/local-vm.ts). */
+export const VM_DESKTOP_PATH = "/local-vm/desktop/";
 
 /** How long a ticket opens new requests after it was last used. An open
  * desktop keeps its connection however long it is watched. */
@@ -247,9 +249,9 @@ export class DesktopTickets {
 
 /** A request path under DESKTOP_PATH, split into its ticket and the rest,
  * or null. The rest never climbs out of the viewer's folder. */
-export function desktopRequest(path: string): { ticket: string; rest: string } | null {
-  if (!path.startsWith(DESKTOP_PATH)) return null;
-  const tail = path.slice(DESKTOP_PATH.length);
+export function desktopRequest(path: string, prefix = DESKTOP_PATH): { ticket: string; rest: string } | null {
+  if (!path.startsWith(prefix)) return null;
+  const tail = path.slice(prefix.length);
   const slash = tail.indexOf("/");
   const ticket = slash === -1 ? tail : tail.slice(0, slash);
   if (!/^[0-9a-f]{48}$/.test(ticket)) return null;
@@ -292,8 +294,8 @@ export function publicDoor(raw: string | undefined): string | null {
 /** The page that opens the viewer through a ticket: noVNC's own page,
  * told to connect at once, scale to the frame, and find its socket under
  * the same ticket. */
-export function viewerUrl(ticket: string): string {
-  const base = `${DESKTOP_PATH}${ticket}/`;
+export function viewerUrl(ticket: string, prefix = DESKTOP_PATH): string {
+  const base = `${prefix}${ticket}/`;
   const socket = `${base.slice(1)}websockify`;
   return `${base}vnc.html?autoconnect=true&resize=scale&reconnect=true&path=${encodeURIComponent(socket)}`;
 }

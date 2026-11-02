@@ -6,7 +6,8 @@
 #
 # Every setting is in .env, and nothing here needs changing. docs/DOCKER.md
 # takes you from nothing to a paired desktop and phone, with snippets for
-# Caddy, NGINX, Cloudflare Tunnel and Tailscale.
+# Caddy, NGINX, Cloudflare Tunnel and Tailscale. COMPOSE_PROFILES=desktop
+# in .env adds a Linux desktop for agents to work (the desktop service).
 
 name: bloks
 
@@ -38,6 +39,9 @@ services:
       # The web door, when .env turns it on, listens on every interface in
       # here; the port mapping below keeps it on host loopback.
       BLOKS_WEB_LISTEN: ${BLOKS_WEB_LISTEN:-0.0.0.0:8790}
+      # Where the desktop service below answers, when it is turned on.
+      # Settings, Computers says how to turn it on when it is not.
+      BLOKS_DESKTOP: ${BLOKS_DESKTOP:-desktop}
     ports:
       # Loopback on the host unless .env says otherwise, for a reverse
       # proxy or tunnel on the same machine. BLOKS_BIND=0.0.0.0 publishes
@@ -58,5 +62,31 @@ services:
     # long enough for the server to save what it holds as it stops
     stop_grace_period: 30s
 
+  # An agent's own Linux desktop (Settings, Computers, Local VM), run
+  # beside Bloks rather than by it: Bloks is never handed the host's Docker
+  # socket, so nothing an agent runs can reach the host through it. Off
+  # unless .env says COMPOSE_PROFILES=desktop. Nothing of it is published;
+  # Bloks reaches it on this project's own network, and its screen opens
+  # through Bloks. The same limits the Local VM has on a Mac.
+  desktop:
+    profiles: ["desktop"]
+    image: ghcr.io/hamedgitty/bloks-desktop:${BLOKS_VERSION:-latest}
+    build:
+      context: docker/desktop
+    restart: unless-stopped
+    hostname: desktop
+    shm_size: 512m
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    cap_drop: [ALL]
+    # the two the desktop's supervisor needs to hand each part its account
+    cap_add: [SETUID, SETGID]
+    volumes:
+      # its files and browser sign-ins, kept when the desktop is recreated
+      - bloks-desktop:/home/cua/workspace
+
 volumes:
   bloks-home:
+  bloks-desktop:

@@ -41,6 +41,8 @@ interface VmStatus {
   ready: boolean;
   problem: string | null;
   viewerUrl: string | null;
+  /** Runs beside Bloks as a compose service, which starts and removes it. */
+  service: boolean;
   workspace: string;
   imageRef: string;
   baseRef: string;
@@ -218,6 +220,10 @@ export function LocalVmSection() {
     ? null
     : s.ready
       ? { tone: "on", label: s.inUseBy ? t("localVmSection.health.inUse") : t("localVmSection.health.ready") }
+      : s.service
+        ? s.daemonUp
+          ? { tone: "wait", label: t("localVmSection.health.starting") }
+          : { tone: "off", label: t("localVmSection.health.notSetUp") }
       : staleOrStopped && s.imageReady
         ? { tone: "wait", label: s.container === "stopped" ? t("localVmSection.health.stopped") : t("localVmSection.health.outOfDate") }
         : s.container !== "missing" && s.imageReady
@@ -227,7 +233,7 @@ export function LocalVmSection() {
   return (
     <SettingsGroup
       title={t("localVmSection.localVm")}
-      description={t("localVmSection.description", { computer: thisComputer() })}
+      description={s?.service ? t("localVmSection.service.description") : t("localVmSection.description", { computer: thisComputer() })}
       action={
         <>
           {health && <HealthLine tone={health.tone} label={health.label} />}
@@ -256,24 +262,44 @@ export function LocalVmSection() {
                   </a>
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="hover:bg-destructive/10 hover:text-destructive"
-                disabled={acting !== null}
-                onClick={() =>
-                  void act("remove", {
-                    title: t("localVmSection.removeTitle"),
-                    body: t("localVmSection.removeBody"),
-                    confirmLabel: t("common.remove"),
-                    destructive: true,
-                  })
-                }
-              >
-                {t("common.remove")}
-              </Button>
+              {!s.service && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="hover:bg-destructive/10 hover:text-destructive"
+                  disabled={acting !== null}
+                  onClick={() =>
+                    void act("remove", {
+                      title: t("localVmSection.removeTitle"),
+                      body: t("localVmSection.removeBody"),
+                      confirmLabel: t("common.remove"),
+                      destructive: true,
+                    })
+                  }
+                >
+                  {t("common.remove")}
+                </Button>
+              )}
             </div>
           </div>
+        ) : s.service ? (
+          // beside Bloks, compose starts it: say how, or that it is coming up
+          s.daemonUp ? (
+            <div className="flex items-center gap-1.5 text-body text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" />
+              {s.problem ?? t("localVmSection.waitingForTheDesktop")}
+            </div>
+          ) : (
+            <div aria-current="step">
+              <div className="text-ui font-medium text-foreground">{t("localVmSection.service.turnOn")}</div>
+              <Hint>
+                {tr("localVmSection.service.howTo", {
+                  line: <code className="whitespace-nowrap rounded bg-muted px-1 font-mono text-small text-foreground">COMPOSE_PROFILES=desktop</code>,
+                  command: <code className="whitespace-nowrap rounded bg-muted px-1 font-mono text-small text-foreground">docker compose up -d</code>,
+                })}
+              </Hint>
+            </div>
+          )
         ) : (
           <>
             {behind && (
@@ -300,8 +326,9 @@ export function LocalVmSection() {
           </summary>
           <div className="px-5 pb-4 pl-[37px] text-small leading-relaxed text-muted-foreground">
             <p className="text-pretty">
-              {t("localVmSection.detailsLine", { computer: thisComputer() })}
+              {s.service ? t("localVmSection.service.detailsLine") : t("localVmSection.detailsLine", { computer: thisComputer() })}
             </p>
+            {s.service && <p className="mt-1.5 break-all">{t("localVmSection.service.at", { address: s.imageRef })}</p>}
             <p className="mt-1.5 break-all">
               {tr("localVmSection.workspaceAt", { path: <span className="font-mono text-caption text-foreground/80">{s.workspace}</span> })}
             </p>

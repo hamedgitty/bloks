@@ -1,7 +1,7 @@
 name: Container image
 
-# The server image compose.yml runs, published to
-# ghcr.io/hamedgitty/bloks-server when a release is published. Not at the
+# The images compose.yml runs, published to ghcr.io/hamedgitty/bloks-server
+# and bloks-desktop when a release is published. Not at the
 # tag: the release is a draft until a human publishes it (release.yml),
 # and the image is built from that release's own bloks-server tarball,
 # checked against its sha256, which is only downloadable once it is out.
@@ -34,7 +34,7 @@ jobs:
   image:
     name: Build and push
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
 
@@ -99,3 +99,29 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # The desktop service beside it (compose.yml's desktop profile),
+      # tagged the same so BLOKS_VERSION pins both. Its recipe is pinned by
+      # digest and checksum (docker/desktop), so the release's tag is
+      # what it is built from.
+      - uses: docker/metadata-action@v5
+        id: desktop
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bloks-desktop
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.minor }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.latest }}
+          labels: |
+            org.opencontainers.image.title=bloks-desktop
+            org.opencontainers.image.description=A Linux desktop for Bloks agents, run beside bloks-server
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=FSL-1.1-MIT
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/desktop
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.desktop.outputs.tags }}
+          labels: ${{ steps.desktop.outputs.labels }}
