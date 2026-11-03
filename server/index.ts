@@ -20913,8 +20913,13 @@ function moveIntoTurn(laneId: string, messageId: string, how: { joinedTurnId?: s
  * the turn is stopped and they go together in the next one, as Stop
  * always did. What another agent, a webhook or a routine queued keeps
  * its place: those are requests of their own.
+ *
+ * `only` is one waiting message the person picked (a phone's long press
+ * on it): that one goes, and the rest of what waits stays where it is,
+ * in its order. Where the turn has to stop instead, everything waiting
+ * goes in the next one together, as it would after any stop.
  */
-async function sendWaitingNow(bot: BotRecord, lane: TaskRecord): Promise<"steered" | "stopped" | "nothing"> {
+async function sendWaitingNow(bot: BotRecord, lane: TaskRecord, only?: string): Promise<"steered" | "stopped" | "nothing"> {
   const said = (id?: string) => (id ? store.messagesFor(lane.id).find((m) => m.id === id) : undefined);
   const yours = (steerQueues.get(lane.id)?.items ?? []).filter((item) => {
     const m = said(item.messageId);
@@ -20924,7 +20929,8 @@ async function sendWaitingNow(bot: BotRecord, lane: TaskRecord): Promise<"steere
       (!m.preparation || m.preparation.state === "next") &&
       (!m.telegramBinding || telegramConnectionCurrent(m.telegramBinding)) &&
       (!m.preparation?.source || preparationSourceCurrent(bot.id, m)) &&
-      !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup && m.text;
+      !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup && m.text &&
+      (only === undefined || m.id === only);
   });
   if (!lane.busy || !yours.length) return "nothing";
   // Send now is an explicit request to stop if the waiting words cannot
@@ -28680,7 +28686,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
       const lane = bot.tasks.find((t) => t.id === (typeof body.taskId === "string" && body.taskId ? body.taskId : activeLaneOf(bot)));
       if (!lane) return json(res, 404, { error: "no such task" });
-      const outcome = await sendWaitingNow(bot, lane);
+      // one message the person picked, or everything of theirs waiting
+      const only = typeof body.messageId === "string" && body.messageId ? body.messageId : undefined;
+      const outcome = await sendWaitingNow(bot, lane, only);
       return json(res, 200, { ok: outcome !== "nothing", outcome });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/interrupt$/);

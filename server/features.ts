@@ -176,6 +176,10 @@ export const FEATURES: readonly string[] = [
   // in a turn of their own, before the turn is stopped; the answer says
   // `stopped: true` when they wait for that turn to end (GitHub 452)
   "stop-send-first",
+  // POST /api/bots/:id/queued/now { messageId }: Send now for one waiting
+  // message of the person's, leaving the rest waiting in their order;
+  // without it the route sends everything of theirs that waits
+  "send-one-now",
   // POST /api/presence {window, active, seq}: a window of the owner's says
   // whether the person is using Bloks on it right now, and while one does
   // their phones are not woken and no Live Activity starts on them

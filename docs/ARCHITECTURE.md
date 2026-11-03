@@ -1559,7 +1559,9 @@ Send now or Wait instead beside it. `POST /api/bots/:id/queued/now` is
 the flip afterwards: the person's waiting words go into the running
 turn as themselves, in order (`sendWaitingNow`, moved rather than
 copied), or the turn stops for them when the engine cannot take words
-midway. Words that wait on purpose do not hold back a correction sent
+midway. With a `messageId` it is that one message alone (a phone's
+long press on it), and what else waits keeps its place and its order.
+Words that wait on purpose do not hold back a correction sent
 after them; words that wait only because they could not go in still
 do.
 

@@ -167,6 +167,45 @@ test("a stop stops the turn, and one tap sends the other way", async (t) => {
   assert.ok(await waitFor(async () => !(await busy(h, bot))));
 });
 
+test("Send now for one waiting message leaves the rest waiting, in their order", async (t) => {
+  const { home, h, bot } = await boot(t);
+  await working(h, bot);
+  const first = await send(h, bot, "also draft a summary");
+  const second = await send(h, bot, "then email it to the team");
+  const third = await send(h, bot, "and book the room for Friday");
+  assert.deepEqual([first.queued, second.queued, third.queued], [true, true, true]);
+  const id = (text: string) => async () => (await messages(h, bot)).find((m) => m.text === text)?.id;
+
+  // the one picked goes into the turn as itself, the others stay put
+  const picked = await id("then email it to the team")();
+  const now = await h.json(`/api/bots/${bot.id}/queued/now`, { method: "POST", body: JSON.stringify({ messageId: picked }) });
+  assert.equal(now.outcome, "steered");
+  assert.ok(await waitFor(() => heard(home, 1).includes("then email it to the team")), "the picked message did not reach the turn");
+  assert.ok(!heard(home, 1).includes("also draft a summary"), "an older message went with it");
+  assert.ok(!heard(home, 1).includes("and book the room"), "a newer message went with it");
+  const list = await messages(h, bot);
+  const sent = list.filter((m) => m.text === "then email it to the team");
+  assert.equal(sent.length, 1, "it went in as a second copy rather than as itself");
+  assert.equal(sent[0].midTurn, true);
+  assert.equal(sent[0].delivery.line, "Sent now, as you asked");
+  assert.equal(list.find((m) => m.text === "also draft a summary").queued, true);
+  assert.equal(list.find((m) => m.text === "and book the room for Friday").queued, true);
+
+  // asked again, it has gone already: nothing is sent twice
+  const again = await h.json(`/api/bots/${bot.id}/queued/now`, { method: "POST", body: JSON.stringify({ messageId: picked }) });
+  assert.equal(again.outcome, "nothing");
+  assert.equal((await messages(h, bot)).filter((m) => m.text === "then email it to the team").length, 1);
+
+  // the turn ends, and the rest start the next one in the order they were said
+  finish(home, 1);
+  assert.ok(await waitFor(() => heard(home, 2).includes("and book the room for Friday")), "what still waited never got its turn");
+  const next = heard(home, 2);
+  assert.ok(next.indexOf("also draft a summary") < next.indexOf("and book the room for Friday"), "the waiting messages lost their order");
+  assert.ok(!next.includes("then email it to the team"), "the message sent now was sent again");
+  finish(home, 2);
+  assert.ok(await waitFor(async () => !(await busy(h, bot))));
+});
+
 test("Queue and Interrupt, for one agent or for the workspace", async (t) => {
   const { home, h, bot } = await boot(t, { delivery: { mode: "interrupt" } });
   assert.equal((await h.json("/api/config")).delivery.mode, "interrupt");
