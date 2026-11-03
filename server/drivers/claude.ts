@@ -415,7 +415,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // workplace. Until its capability is known, leave preparation inputs
       // for the next turn; ordinary steering keeps its existing behavior.
       const attributedPreparation = attributed && !turn.place;
-      const inputs = attributed ? new ClaudeInputs() : null;
+      let inputs = attributed ? new ClaudeInputs() : null;
       let sealed = false;
       let closingBroker = false;
       let completionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -499,13 +499,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (attributed) argv.push("--include-partial-messages");
       // Resuming continues the CLI's own session; otherwise name the new
       // one ourselves so the id exists before its first event arrives.
-      if (resume) {
-        argv.push("--resume", resume);
-        if (forking) argv.push("--fork-session");
-        // Continue the same history, but use this turn's current persona
-        // rather than the system prompt the session started with.
-        if (snapshotOffSupported) argv.push("--system-prompt-snapshot", "off");
-      } else argv.push("--session-id", newId());
+      let activeResume = resume;
+      let freshSessionId = resume ? null : newId();
+      const resumeFlags = resume
+        ? [
+            "--resume",
+            resume,
+            ...(forking ? ["--fork-session"] : []),
+            // Continue the same history, but use this turn's current persona
+            // rather than the system prompt the session started with.
+            ...(snapshotOffSupported ? ["--system-prompt-snapshot", "off"] : []),
+          ]
+        : ["--session-id", freshSessionId!];
+      const sessionFlagIndex = argv.length;
+      argv.push(...resumeFlags);
       if (turn.model) argv.push("--model", turn.model);
       // every turn is a new process, so the effort is said on every one;
       // left out, the CLI thinks at its own default, whatever was chosen
@@ -734,23 +741,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       const env = turnEnvironment(process.env, turn);
 
-      const child = turn.place
-        ? turn.place.spawn(config.cli, argv, { env })
-        : spawn(config.cli, argv, {
-            cwd: turn.cwd ?? homedir(),
-            env,
-            stdio: ["pipe", "pipe", "pipe"],
-            // its own process group, so killing -pid takes the MCP servers too
-            detached: OWN_GROUP,
-            windowsHide: true,
-          });
-      engines.add(child);
+      const spawnClaude = (runArgv: string[]) => {
+        const proc = turn.place
+          ? turn.place.spawn(config.cli, runArgv, { env })
+          : spawn(config.cli, runArgv, {
+              cwd: turn.cwd ?? homedir(),
+              env,
+              stdio: ["pipe", "pipe", "pipe"],
+              // its own process group, so killing -pid takes the MCP servers too
+              detached: OWN_GROUP,
+              windowsHide: true,
+            });
+        engines.add(proc);
+        return proc;
+      };
+      let child = spawnClaude(argv);
 
       let finished = false;
       let finishing = false;
       let exited = false;
+      let missingSession = false;
+      let retriedMissingSession = false;
       // the session this process reports for, from its init frame
-      let sessionId: string | null = resume;
+      let sessionId: string | null = resume ?? freshSessionId;
       // the model the session says it runs, which names its window
       let sessionModel: string | null = null;
       // A result that did nothing (see `case "result"`), held until the
@@ -787,7 +800,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (running.get(threadId)?.turnId === turnId) running.delete(threadId);
         if (processOwners.get(threadId) === owner) processOwners.delete(threadId);
       };
-      const owner = new TurnProcess(child, { onConfirmed: release });
+      let owner = new TurnProcess(child, { onConfirmed: release });
+      let prevOwnerEnd: Promise<boolean> | null = null;
+      let readyAnnounced = false;
+      const announceReady = () => {
+        if (readyAnnounced || sealed || stopping) return;
+        if (attributedPreparation && !committedPrepared?.text) {
+          readyAnnounced = true;
+          turn.preparation?.ready(turnId);
+        }
+      };
       processOwners.set(threadId, owner);
       const finish = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
         if (finishing) return;
@@ -804,8 +826,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         closingBroker = true;
         try { broker.close(); } finally { closingBroker = false; }
         closeInput();
-        void owner.end().then((confirmed) => {
-          if (!confirmed) {
+        void Promise.all([owner.end(), prevOwnerEnd ?? Promise.resolve(true)]).then(([confirmed, prevConfirmed]) => {
+          const allConfirmed = confirmed && prevConfirmed;
+          if (!allConfirmed) {
             emit({ ...envelope(threadId, turnId), type: "runtime.error",
               message: "Claude Code did not finish stopping its process and helpers. This session cannot start another turn until they have ended." });
           }
@@ -815,7 +838,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           finished = true;
           release();
           emit({ ...envelope(threadId, turnId), type: "turn.completed",
-            ok: confirmed && ok, stopReason: confirmed ? stopReason : "interrupted", cost });
+            ok: allConfirmed && ok, stopReason: allConfirmed ? stopReason : "interrupted", cost });
         });
       };
 
@@ -844,8 +867,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (window) emit({ ...envelope(threadId, turnId), type: "context.reading", used: null, window });
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
+        if (retriedMissingSession && sessionModel === null && typeof session === "string" && session) {
+          emit({
+            ...envelope(threadId, turnId),
+            type: "session.started",
+            sessionId: session,
+            model: turn.model ?? null,
+          });
+        }
         if (stopping) {
-          finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null);
+          finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(activeResume)) : null);
           return;
         }
         // A limit can also arrive as a successful result whose text is
@@ -874,7 +905,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         finish(
           !providerError && !outNotice && !declined,
           why?.slice(0, 400) ?? outcome.stop_reason ?? outcome.terminal_reason ?? null,
-          total !== null && session ? sessionCosts.turn(session, total, Boolean(resume)) : null,
+          total !== null && session ? sessionCosts.turn(session, total, Boolean(activeResume)) : null,
         );
       };
 
@@ -1004,7 +1035,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // CLI that does not say which input a result answers is read. What
         // is left is background work, when the turn waits for it.
         if (inputs.ready) {
-          afterBackground(() => settle(lastWork ?? inputs.selectedResult));
+          afterBackground(() => settle(lastWork ?? inputs!.selectedResult));
           return;
         }
         const wait = inputs.nextWaitMs;
@@ -1053,6 +1084,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           : frame.type === "system" && frame.subtype === "status" && frame.status === "requesting" && Array.isArray(frame.user_message_uuids)
             ? frame.user_message_uuids.filter((id: unknown): id is string => typeof id === "string")
             : [];
+        if (acceptedIds.length) announceReady();
         for (const id of acceptedIds) {
           const wait = confirmations.get(id);
           if (wait) { confirmations.delete(id); wait.accepted(); }
@@ -1064,6 +1096,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
         if (inputs && frame.type === "system" && frame.subtype === "status" && frame.status === "requesting") {
           if (inputs.requesting(frame)) checkCompletion();
+          return;
+        }
+        if (
+          activeResume &&
+          !retriedMissingSession &&
+          frame.type === "result" &&
+          Array.isArray(frame.errors) &&
+          frame.errors.some((e: unknown) => typeof e === "string" && /no conversation found with session id/i.test(e))
+        ) {
+          missingSession = true;
+          closeInput();
           return;
         }
         if (inputs && frame.type === "result") {
@@ -1116,6 +1159,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               reportCommands();
               if (typeof frame.session_id === "string") sessionId = frame.session_id;
               if (typeof frame.model === "string") sessionModel = frame.model;
+              announceReady();
               emit({
                 ...envelope(threadId, turnId),
                 type: "session.started",
@@ -1308,44 +1352,111 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
       };
 
-      // read in linear time, however long a line (see lineSplitter)
-      child.stdout.on(
-        "data",
-        lineSplitter((line) => {
-          if (line.trim()) consume(line);
-        }),
-      );
-
       // Keep only the tail: if this process dies early, the last thing it
       // said is the part that explains why.
       let stderr = "";
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-        if (stderr.length > 8192) stderr = stderr.slice(-8192);
-      });
-
-      child.on("error", (error) => {
-        if (sealed) return;
-        sealed = true;
-        emit({
-          ...envelope(threadId, turnId),
-          type: "runtime.error",
-          message: describeSpawnError(error, {
-            name: "Claude Code",
-            command: config.cli,
-            install: installCommand("claudeAgent"),
-            signIn: "run `claude` once to sign in",
-          }),
-        });
-        finish(false, "spawn_error");
-      });
+      let preparedFetched = false;
+      let committedPrepared: ReturnType<import("../contracts.ts").FrozenPreparation["commit"]> | undefined;
+      let preparedCancel: (() => void) | null = null;
 
       /** A stopped turn ends quietly: the person asked for it, or the
        * stall has already said why. */
       const endStopped = () => finish(false, stalled ? "tool_stalled" : "interrupted");
 
+      const attachChild = (proc: import("node:child_process").ChildProcessWithoutNullStreams) => {
+        // read in linear time, however long a line (see lineSplitter)
+        proc.stdout.on(
+          "data",
+          lineSplitter((line) => {
+            if (proc === child && line.trim()) consume(line);
+          }),
+        );
+        proc.stderr.on("data", (chunk) => {
+          if (proc !== child) return;
+          stderr += chunk;
+          if (stderr.length > 8192) stderr = stderr.slice(-8192);
+        });
+        proc.on("error", (error) => {
+          if (proc !== child || sealed) return;
+          sealed = true;
+          emit({
+            ...envelope(threadId, turnId),
+            type: "runtime.error",
+            message: describeSpawnError(error, {
+              name: "Claude Code",
+              command: config.cli,
+              install: installCommand("claudeAgent"),
+              signIn: "run `claude` once to sign in",
+            }),
+          });
+          finish(false, "spawn_error");
+        });
+        proc.on("close", (code) => {
+          if (proc !== child) return;
+          exited = true;
+          ended(code);
+        });
+        // The output can outlive the process: something it started that
+        // escaped the group still holds the pipe, and "close" waits for
+        // that. The process is what the turn was, so give the pipe a moment
+        // and then stop waiting on it.
+        proc.on("exit", (code) => {
+          const late = setTimeout(() => {
+            if (proc !== child || sealed) return;
+            abandoned = true;
+            ended(code);
+          }, STOP_GRACE_MS);
+          late.unref?.();
+        });
+        // A write to a process that has just gone is not worth a crash; the
+        // exit says what happened.
+        proc.stdin.on("error", () => {});
+      };
+
       const ended = (code: number | null) => {
         if (sealed) return;
+        if (/no conversation found with session id/i.test(stderr)) missingSession = true;
+        if (
+          activeResume &&
+          missingSession &&
+          !retriedMissingSession &&
+          !stopping &&
+          !steered &&
+          sessionModel === null &&
+          !held &&
+          !inputs?.selectedResult &&
+          turn.text !== "/compact"
+        ) {
+          retriedMissingSession = true;
+          activeResume = null;
+          missingSession = false;
+          const nextSessionId = newId();
+          freshSessionId = nextSessionId;
+          sessionId = nextSessionId;
+          exited = false;
+          abandoned = false;
+          inputOpen = true;
+          stderr = "";
+          if (completionTimer) clearTimeout(completionTimer);
+          completionTimer = null;
+          preparedCancel?.();
+          for (const waiting of confirmations.values()) waiting.ended();
+          confirmations.clear();
+          startupReplies.clear();
+          inputs = attributed ? new ClaudeInputs() : null;
+          const prevOwner = owner;
+          prevOwnerEnd = prevOwner.end();
+          const freshArgv = [...argv.slice(0, sessionFlagIndex), "--session-id", nextSessionId, ...argv.slice(sessionFlagIndex + resumeFlags.length)];
+          child = spawnClaude(freshArgv);
+          attachChild(child);
+          owner = new TurnProcess(child, { onConfirmed: release });
+          processOwners.set(threadId, owner);
+          const initReq = { type: "control_request", request_id: initializeId, request: { subtype: "initialize" } };
+          child.stdin.write(JSON.stringify(initReq) + "\n");
+          appendNative(threadId, { dir: "out", source: "claude.sdk.message", msg: initReq });
+          if (!sendInitial(turn.handoff ?? turn.text)) inputFailed();
+          return;
+        }
         if (inputs && !inputs.exited()) {
           sealed = true;
           emit({ ...envelope(threadId, turnId), type: "runtime.error", message: describeEarlyExit(code, stderr, { name: "Claude Code", signIn: "run `claude` once in a terminal" }) });
@@ -1372,23 +1483,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         finish(false, "exit_before_result");
       };
 
-      child.on("close", (code) => {
-        exited = true;
-        ended(code);
-      });
-
-      // The output can outlive the process: something it started that
-      // escaped the group still holds the pipe, and "close" waits for
-      // that. The process is what the turn was, so give the pipe a moment
-      // and then stop waiting on it.
-      child.on("exit", (code) => {
-        const late = setTimeout(() => {
-          if (sealed) return;
-          abandoned = true;
-          ended(code);
-        }, STOP_GRACE_MS);
-        late.unref?.();
-      });
+      attachChild(child);
 
       const abort = () => {
         if (sealed || stopping) return;
@@ -1419,9 +1514,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         watch.unref?.();
       }
 
-      // A write to a process that has just gone is not worth a crash; the
-      // exit says what happened.
-      child.stdin.on("error", () => {});
       function closeInput() {
         if (!inputOpen) return;
         inputOpen = false;
@@ -1520,7 +1612,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Disposal's instance-wide helper may have forgotten this leader
         // after its exit. Its resistant owned helpers still need escalation.
         if (!owner.confirmed) signalGroup(child, "SIGKILL");
-        return owner.end();
+        return Promise.all([owner.end(), prevOwnerEnd ?? Promise.resolve(true)]).then(([a, b]) => a && b);
       } });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
 
@@ -1533,8 +1625,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Older or unknown CLIs cannot identify accepted inputs. Keep their
         // existing running-turn steering, and leave preparation additions
         // for the normal next-turn queue instead of guessing delivery.
-        if (!attributedPreparation) turn.preparation?.unavailable();
-        const prepared = attributedPreparation ? turn.preparation?.freeze().commit() : undefined;
+        if (!preparedFetched) {
+          preparedFetched = true;
+          if (!attributedPreparation) turn.preparation?.unavailable();
+          committedPrepared = attributedPreparation ? turn.preparation?.freeze().commit() : undefined;
+        }
+        const prepared = committedPrepared;
         let inputId: string | null = null;
         try {
           const sent = say(prepared?.text ? `${baseWords}\n\n${prepared.text}` : baseWords, undefined, (id) => {
@@ -1546,13 +1642,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               prepared.settle("uncertain");
             }, 30_000);
             timer.unref?.();
+            preparedCancel = () => {
+              clearTimeout(timer);
+              ended = true;
+              preparedCancel = null;
+              confirmations.delete(id);
+            };
             confirmations.set(id, {
-              accepted: () => { clearTimeout(timer); prepared.settle("accepted"); if (!ended) turn.preparation?.ready(turnId); },
-              ended: () => { clearTimeout(timer); if (!ended) prepared.settle("uncertain"); },
+              accepted: () => { clearTimeout(timer); preparedCancel = null; prepared.settle("accepted"); if (!ended) turn.preparation?.ready(turnId); },
+              ended: () => { clearTimeout(timer); preparedCancel = null; if (!ended) prepared.settle("uncertain"); },
             });
           });
           if (!sent) { prepared?.settle("refused"); turn.preparation?.unavailable(); return false; }
-          if (attributedPreparation && !prepared?.text) turn.preparation?.ready(turnId);
+          if (attributedPreparation && !prepared?.text && !activeResume) announceReady();
           else if (prepared?.text && !inputId) prepared.settle("uncertain");
           return true;
         } catch (error) {

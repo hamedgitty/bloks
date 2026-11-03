@@ -22,6 +22,7 @@ interface Call {
   suppliedPersona: string;
   mode: number;
   history: string[];
+  prompt?: string;
   error?: string;
 }
 
@@ -62,12 +63,20 @@ process.stdin.on("data", (chunk) => (input += chunk));
   const history = previous?.history ?? [];
   const calls = read(${JSON.stringify(callsFile)}, []);
   const call = { argv: args, sessionId, persona, suppliedPersona,
-    mode: statSync(personaFile).mode & 0o777, history: [...history] };
+    mode: statSync(personaFile).mode & 0o777, history: [...history], prompt: JSON.parse(input.trim()).message.content };
   if (args.includes("--system-prompt-snapshot") && !version.supportsFlag) {
     call.error = "unknown option --system-prompt-snapshot";
     calls.push(call);
     writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
     console.error(call.error);
+    process.exit(1);
+  }
+  if (args.includes("--resume") && !previous) {
+    call.error = "No conversation found with session ID: " + sessionId;
+    calls.push(call);
+    writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
+    console.error(call.error);
+    console.log(JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, duration_api_ms: 0, session_id: sessionId, errors: [call.error] }));
     process.exit(1);
   }
   history.push(JSON.parse(input.trim()).message.content);
@@ -114,7 +123,8 @@ process.stdin.on("data", (chunk) => (input += chunk));
     }
     assert.fail(`the fake CLI did not finish turn ${n}: ${h.logs().slice(-800)}`);
   };
-  return { h, bot, patch, turn, calls, setVersion };
+  const forgetSessions = () => writeFileSync(sessionsFile, "{}");
+  return { h, bot, patch, turn, calls, setVersion, forgetSessions };
 }
 
 test("a resumed Claude turn uses current About and skills with the same session and history", async (t) => {
@@ -189,4 +199,36 @@ test("the normal health probe refreshes support after a CLI upgrade or downgrade
   assert.ok(!downgraded.argv.includes("--system-prompt-snapshot"));
   assert.equal(downgraded.sessionId, first.sessionId);
   assert.deepEqual(downgraded.history, ["Before the upgrade.", "After the upgrade."]);
+});
+
+test("a missing resumed Claude session opens a new session with the conversation handoff", async (t) => {
+  const h = await setup(t, { version: "2.1.300 (Claude Code)", supportsFlag: true });
+  const first = await h.turn("FIRST_SESSION_FACT");
+  h.forgetSessions();
+  const accepted = await h.h.fetch(`/api/bots/${h.bot.id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ text: "SECOND_TURN_QUESTION" }),
+  });
+  assert.equal(accepted.status, 202);
+  for (let i = 0; i < 200; i++) {
+    const seen = h.calls();
+    const { bots } = await h.h.json("/api/bots");
+    const current = bots.find((b: any) => b.id === h.bot.id);
+    if (seen.length >= 3 && !current?.busy) {
+      assert.equal(seen.length, 3);
+      assert.match(seen[1].error ?? "", /No conversation found with session ID/);
+      assert.ok(seen[2].argv.includes("--session-id"));
+      assert.ok(!seen[2].argv.includes("--resume"));
+      assert.notEqual(seen[2].sessionId, first.sessionId);
+      assert.match(seen[2].prompt ?? "", /FIRST_SESSION_FACT/);
+      assert.match(seen[2].prompt ?? "", /SECOND_TURN_QUESTION/);
+      const notices = current.messages.filter((m: any) => m.kind === "notice");
+      assert.equal(notices.length, 0);
+      const third = await h.turn("THIRD_TURN_RESUMES_NEW_SESSION");
+      assert.equal(third.argv[third.argv.indexOf("--resume") + 1], seen[2].sessionId);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail("the missing-session fallback did not complete");
 });
