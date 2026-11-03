@@ -423,7 +423,7 @@ export class Workplaces {
     env: Record<string, string>;
     tokens: string[];
     texts: string[];
-  }): Promise<{ run: PlaceRun; texts: string[]; outbox: string }> {
+  }): Promise<{ run: PlaceRun; env: Record<string, string>; texts: string[]; outbox: string }> {
     const { place, home } = input;
     const { id: runId, sentinel } = newRun();
     const run = runDir(home, runId);
@@ -504,7 +504,7 @@ export class Workplaces {
       // starts hidden like every other console program here
       spawn: (command, args, options) => self.spawnThere(active, command, args, shippedEnv(env, options?.env, process.env), gate.tunnel, sentinel),
     };
-    return { run: placeRun, texts, outbox };
+    return { run: placeRun, env, texts, outbox };
   }
 
   private spawnThere(active: ActiveRun, command: string, args: string[], env: Record<string, string>, tunnel: Tunnel | undefined, sentinel: string): ChildProcessWithoutNullStreams {
