@@ -115,7 +115,7 @@ export function launchArgs(profileDir: string, display: boolean = hasDisplay()):
 }
 
 /** The browser-wide socket a debugging port answers for, or null. */
-async function browserSocket(port: number): Promise<string | null> {
+export async function browserSocket(port: number): Promise<string | null> {
   try {
     const response = await fetch(`${endpoint(port)}/json/version`, { signal: AbortSignal.timeout(1500) });
     if (!response.ok) return null;
@@ -164,21 +164,21 @@ const starting = new Map<string, Promise<number>>();
  * for all of them: a second agent, or a shared room that must never be
  * signed in as the owner, drove the first agent's signed-in browser.
  */
-export function launch(profileDir: string, binary = chromePath()): Promise<number> {
+export function launch(profileDir: string, binary = chromePath(), { headless = false }: { headless?: boolean } = {}): Promise<number> {
   const already = starting.get(profileDir);
   if (already) return already;
-  const start = startBrowser(profileDir, binary).finally(() => starting.delete(profileDir));
+  const start = startBrowser(profileDir, binary, headless ? false : hasDisplay()).finally(() => starting.delete(profileDir));
   starting.set(profileDir, start);
   return start;
 }
 
-async function startBrowser(profileDir: string, binary: string | null): Promise<number> {
+async function startBrowser(profileDir: string, binary: string | null, display: boolean): Promise<number> {
   const running = await profilePort(profileDir);
   if (running) return running;
   if (!binary) throw new Error("no Chrome, Chromium, Brave or Edge found on this machine");
   // left by a browser that is gone, it could only mislead the wait below
   rmSync(join(profileDir, "DevToolsActivePort"), { force: true });
-  const child = spawn(binary, launchArgs(profileDir), { detached: true, stdio: "ignore" });
+  const child = spawn(binary, launchArgs(profileDir, display), { detached: true, stdio: "ignore" });
   child.unref();
   for (let attempt = 0; attempt < 40; attempt++) {
     const port = await profilePort(profileDir);
@@ -210,11 +210,19 @@ export async function closeBrowser(profileDir: string): Promise<boolean> {
   }
 }
 
-/** One page, and the calls we make to it. */
+/** What a browser says of its own accord: the method, its params, and
+ * the page session it is about when the socket is the browser's own. */
+export type CdpEvent = (method: string, params: any, sessionId?: string) => void;
+
+/** One page, and the calls we make to it. Or the whole browser, whose
+ * socket carries every page it is attached to, each call and event named
+ * by its page's session (Target.attachToTarget with flatten). */
 export class Session {
   private socket: WebSocket | null = null;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private readonly listeners = new Set<CdpEvent>();
+  private readonly closers = new Set<() => void>();
 
   private readonly url: string;
 
@@ -257,7 +265,9 @@ export class Session {
       socket.addEventListener("close", () => {
         for (const waiter of this.pending.values()) waiter.reject(new Error("the page closed"));
         this.pending.clear();
+        const was = this.socket;
         this.socket = null;
+        if (was) for (const closed of this.closers) closed();
       });
     });
   }
@@ -270,7 +280,17 @@ export class Session {
       return;
     }
     // Events are not answers to anything; only replies carry an id.
-    if (typeof message.id !== "number") return;
+    if (typeof message.id !== "number") {
+      if (typeof message.method !== "string") return;
+      for (const listener of this.listeners) {
+        try {
+          listener(message.method, message.params ?? {}, typeof message.sessionId === "string" ? message.sessionId : undefined);
+        } catch {
+          /* one listener's mistake is not the socket's */
+        }
+      }
+      return;
+    }
     const waiter = this.pending.get(message.id);
     if (!waiter) return;
     this.pending.delete(message.id);
@@ -280,7 +300,7 @@ export class Session {
 
   /** One protocol call. Every one is bounded: a page that never answers
    * should fail the tool, not hang the turn. */
-  send(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<any> {
+  send(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000, sessionId?: string): Promise<any> {
     const socket = this.socket;
     if (!socket) return Promise.reject(new Error("not attached to a page"));
     const id = this.nextId++;
@@ -299,8 +319,21 @@ export class Session {
           reject(error);
         },
       });
-      socket.send(JSON.stringify({ id, method, params }));
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
+  }
+
+  /** Hears every event; the function it answers stops hearing. */
+  onEvent(listener: CdpEvent): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Hears the socket going, once it was open: the browser quit or
+   * crashed, or the page closed. */
+  onClose(closed: () => void): () => void {
+    this.closers.add(closed);
+    return () => this.closers.delete(closed);
   }
 
   /** Run an expression in the page and hand back its value. */

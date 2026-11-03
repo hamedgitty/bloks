@@ -1,14 +1,26 @@
 // The Bloks browser, as the page sees it.
 //
-// In the desktop app the browser is the app's own (electron/app-browser.mjs):
-// this page draws its panel, tells the app where the panel is, and hears
-// from the app what each tab shows and who drives it. Anywhere else (a
-// phone, bloks.dev/web, another computer) there is no browser here at
-// all, only the Mac's, and the workspace's server says what it is doing
-// (GET /api/browser and its "browser.app" frames).
+// It is in one of three places, and this page is told which (`home`):
 //
-// One small store for both, so a component asks one question: what is
-// the browser doing, and can I drive it from here.
+//   "own": the desktop app, on a workspace this computer runs. The
+//   browser is the app's (electron/app-browser.mjs): this page draws its
+//   panel, tells the app where the panel is, and hears from the app what
+//   each tab shows and who drives it.
+//
+//   "server": a workspace whose server has no app behind it
+//   (bloks-server, the Docker image), from wherever the person is: the
+//   app, the web door, a phone. The server keeps the browser
+//   (server/server-browser.ts); this page shows it as pictures and sends
+//   the person's clicks and keys back.
+//
+//   "elsewhere": a workspace the desktop app runs on another computer,
+//   seen from anywhere but that app. Only news of the browser there.
+//
+// Either way the workspace's server says what the browser is doing
+// (GET /api/browser and its "browser.app" frames), and the app says it
+// first-hand to its own page. One small store for all three, so a
+// component asks one question: what is the browser doing, and can I
+// drive it from here.
 import { useEffect, useSyncExternalStore } from "react";
 import { formatNumber, t } from "./i18n.ts";
 
@@ -47,7 +59,25 @@ export interface AppBrowserState {
   downloads: BrowserDownload[];
 }
 
-/** What the panel asks the app to do (electron/main.mjs browser:do). */
+/** Where the browser this page shows lives; null until it is known. */
+export type BrowserHome = "own" | "server" | "elsewhere";
+
+/** Why a server has no browser of its own: no Chrome, turned off, or
+ * BLOKS_BROWSER naming a file that is not there (server/server-browser.ts). */
+export type BrowserMissing = "none" | "off" | "path";
+
+/** One picture of the server's browser, in the page's own pixels. */
+export interface ScreenFrame {
+  seq: number;
+  jpeg: string;
+  width: number;
+  height: number;
+  tab: string;
+  at: number;
+}
+
+/** What the panel asks the app to do (electron/main.mjs browser:do), or
+ * the server, for a browser of its own (POST /api/browser/do). */
 export type BrowserDo =
   | "navigate" | "newTab" | "closeTab" | "selectTab" | "back" | "forward" | "reload" | "stop"
   | "takeOver" | "giveBack" | "openExternal" | "openDownload" | "revealDownload" | "openDownloads"
@@ -146,10 +176,29 @@ export const BROWSER_SIDE_BY_SIDE = BROWSER_SIZE.min + BROWSER_SIZE.chat;
 // ── the store ──────────────────────────────────────────────────────────
 
 let current: AppBrowserState | null = null;
+let where: { home: BrowserHome | null; missing: BrowserMissing | null } = { home: null, missing: null };
 const listeners = new Set<() => void>();
 const tell = () => {
   for (const listener of listeners) listener();
 };
+
+const MISSING = new Set<BrowserMissing>(["none", "off", "path"]);
+
+/** What the workspace's server said of its browser (GET /api/browser):
+ * where it is, why not when it cannot run, and what it is doing. The
+ * app's own page goes by the app instead, once it knows it has one. */
+export function noteServerBrowser(said: unknown) {
+  if (where.home === "own") return;
+  const body = said && typeof said === "object" ? (said as { where?: unknown; missing?: unknown; state?: unknown }) : {};
+  const missing = MISSING.has(body.missing as BrowserMissing) ? (body.missing as BrowserMissing) : null;
+  where = { home: body.where === "server" ? "server" : "elsewhere", missing };
+  noteBrowserState(body.state ?? null);
+}
+
+/** Where the browser is, as last known, for code outside React. */
+export function browserHome(): BrowserHome | null {
+  return where.home;
+}
 
 /** What the app or the server last said. */
 export function noteBrowserState(state: unknown) {
@@ -158,24 +207,51 @@ export function noteBrowserState(state: unknown) {
 }
 
 let started = false;
-/** Hears the app, in the desktop app, once for the whole page; the
- * server's frames reach noteBrowserState through the store's stream. */
+/** Finds out where the browser is, once for the whole page. The desktop
+ * app has a browser of its own for every workspace it runs here, and
+ * none for one on another computer, whose server is asked instead; its
+ * frames then reach noteBrowserState through the store's stream. */
 function start(load: () => Promise<unknown>) {
   if (started) return;
   started = true;
+  const ask = () => void load().then(noteServerBrowser).catch(() => {});
   const bridge = typeof window !== "undefined" ? window.bloks : undefined;
-  if (bridge?.onBrowserState) {
-    bridge.onBrowserState((state) => noteBrowserState(state));
-    void bridge.browserState?.().then((state) => noteBrowserState(state)).catch(() => {});
-  } else {
-    void load().catch(() => {});
-  }
+  if (!bridge?.browserState || !bridge.onBrowserState) return ask();
+  const onState = bridge.onBrowserState;
+  void bridge
+    .browserState()
+    .then((state) => {
+      if (!state) return ask();
+      where = { home: "own", missing: null };
+      onState((next) => noteBrowserState(next));
+      noteBrowserState(state);
+    })
+    .catch(ask);
 }
 
-/** Whether this page has the browser itself (the desktop app) rather
- * than only news of the Mac's. */
-export function hasOwnBrowser(): boolean {
-  return typeof window !== "undefined" && Boolean(window.bloks?.browserBounds);
+/** Asks the server again: a Chrome installed since, say, shows when the
+ * panel next opens. Nothing to ask where the browser is the app's. */
+export function refreshBrowser(load: () => Promise<unknown>) {
+  if (where.home === "own" || !started) return;
+  void load().then(noteServerBrowser).catch(() => {});
+}
+
+/** Whether this page has the desktop app's own browser for the workspace
+ * it shows, said by the app itself: never for one on another computer. */
+export async function browserIsHere(): Promise<boolean> {
+  const bridge = typeof window !== "undefined" ? window.bloks : undefined;
+  if (!bridge?.browserState) return false;
+  return (await bridge.browserState().catch(() => null)) !== null;
+}
+
+/** An agent started browsing while nobody looked. The desktop app opens
+ * its own panel (useBrowserReveal); a server's browser opens it here,
+ * where the chat and the panel fit side by side, never over the chat on
+ * a phone. */
+export function revealBrowser() {
+  if (where.home !== "server" || where.missing) return;
+  if (typeof window === "undefined" || window.innerWidth < BROWSER_SIDE_BY_SIDE + 240) return;
+  setBrowserPanel({ open: true });
 }
 
 export function useAppBrowser(load: () => Promise<unknown>): AppBrowserState | null {
@@ -186,6 +262,18 @@ export function useAppBrowser(load: () => Promise<unknown>): AppBrowserState | n
       return () => listeners.delete(listener);
     },
     () => current,
+  );
+}
+
+/** Where the browser is, and why there is none when there is none. */
+export function useBrowserHome(load: () => Promise<unknown>): { home: BrowserHome | null; missing: BrowserMissing | null } {
+  useEffect(() => start(load), [load]);
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    () => where,
   );
 }
 

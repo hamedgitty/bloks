@@ -285,22 +285,29 @@ or bring to you, instead of letting it fail quietly or in a storm.
 
 ### A browser you can watch
 
-The desktop app has a browser of its own, docked beside the chat, with
-tabs, an address bar and a downloads shelf. Agents drive it with
+Bloks has a browser of its own, docked beside the chat, with tabs, an
+address bar and a downloads shelf. In the desktop app it is the app's;
+on a server of your own it runs on the server, headless, and the panel
+shows it live wherever you are, in the app, the browser or your phone,
+with your clicks and keys going back to it. Agents drive it with
 `bloks browser` (and other AI apps through the MCP server): open a page,
 read it, list what is on it, click, type, choose, scroll, wait and take a
 picture. You watch it happen, each tab showing which agent drives it,
 and **Take over** whenever you like; the agent's next step waits until
-you **Give back**. Each workspace browses in a session of its own, so
-its sign-ins stay its own and never the app's.
+you **Give back**. Sign in yourself and hand an agent the page you are
+on; tabs, pages and sign-ins stay put through every handoff. Each
+workspace browses in a session of its own, so its sign-ins stay its own
+and never the app's.
 
 It is careful in the same way the rest of Bloks is. In Ask first, a site
 not on your list asks on a card the first time an agent goes there;
 blocked sites are never opened; a password, a card number or a file to
 upload always asks you, whatever the mode. What a page says reaches an
-agent framed as untrusted data, never as instructions. On your phone the
-conversation says the agent is browsing in the desktop app, with a small
-live picture of the page.
+agent framed as untrusted data, never as instructions. When the desktop
+app runs the workspace, your phone's conversation says the agent is
+browsing there, with a small live picture of the page. On a server, the
+browser needs Chrome or Chromium installed there
+([SELF_HOSTING.md](docs/SELF_HOSTING.md#the-bloks-browser-on-your-server)).
 
 ### Ready teams and skills
 

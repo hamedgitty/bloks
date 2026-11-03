@@ -18,8 +18,8 @@ import { MessageComponent } from "./Gallery";
 import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
-import { BrowserDock, BrowsingOnMac, useBrowserReveal, useBrowserState } from "./browser/BrowserPanel";
-import { hasOwnBrowser, setBrowserPanel, useBrowserPanel } from "@/lib/appBrowser";
+import { BrowserDock, BrowsingOnMac, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
+import { setBrowserPanel, useBrowserPanel } from "@/lib/appBrowser";
 import { Globe } from "@/components/icons";
 import { stepTab, terminalChord } from "@/lib/terminalTabs";
 import { closeRefusal, conversationChord, keysOwner, keysWhere, type ConversationChord } from "@/lib/conversationKeys";
@@ -657,11 +657,12 @@ export function ChatView({ bot }: { bot: Bot }) {
     "terminal.arrangement": { status: "observed", value: terminal.layout.arrangement },
   });
   // The Bloks browser (browser/BrowserPanel.tsx): its panel in the desktop
-  // app, opened by the app too when an agent starts browsing, and news of
-  // the Mac's anywhere else.
+  // app and wherever a server keeps a browser of its own, opened too when
+  // an agent starts browsing, and news of the Mac's anywhere else.
   useBrowserReveal();
   const browserPanel = useBrowserPanel();
   const browserState = useBrowserState();
+  const browserWhere = useBrowserWhere();
   const someoneBrowsing = browserState?.control.by === "agent";
   const botNames = useMemo(() => Object.fromEntries(state.bots.map((b) => [b.id, b.name])), [state.bots]);
 
@@ -934,7 +935,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           >
             <SquareTerminal size={17} />
           </Button>
-          {hasOwnBrowser() && (
+          {(browserWhere.home === "own" || browserWhere.home === "server") && (
             <Button
               variant="ghost"
               size="icon"

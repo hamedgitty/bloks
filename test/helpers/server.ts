@@ -159,6 +159,10 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         BLOKS_OIDC_ADMIN_GROUP: "",
         BLOKS_OIDC_OWNER: "",
         BLOKS_OIDC_NAME: "",
+        // the browser a server keeps for itself (server/server-browser.ts):
+        // never this machine's real Chrome; a test that wants one hands in
+        // a fake (helpers/fake-cdp-browser.mjs)
+        BLOKS_BROWSER: "off",
         // tests speak as the dev UI (origin :5199), which a server serving
         // its own page does not trust
         BLOKS_STATIC_DIR: "",

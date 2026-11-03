@@ -10,7 +10,7 @@ import { CLOUD_KEY, licenceFrom, licenceToUse } from "./licence.ts";
 import "./pending-restore.ts";
 import { codexTextFor, itemProgress, isProgressText, type CodexText } from "./codex-text.ts";
 import { SaidOnce, desktopNotice, noticeKey, unreadCount as desktopUnreadCount } from "./desktop-notice.ts";
-import { closeSync, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect } from "node:net";
@@ -121,8 +121,9 @@ import { instanceName, mayAnnounce, stopAnnouncing, syncAnnouncement, workspaceT
 import { PLAN_LIMITS, ROOM_SHARING_WORDS, membersActive, pausedWords, roomSharingAllowed, workspaceMemberLimit } from "./plan-limits.ts";
 import { OwnerPlan } from "./owner-plan.ts";
 import { PlanAccount, planRoute, type Account, type PlanRouteDeps } from "./plan-account.ts";
-import { DesktopLine } from "./desktop-line.ts";
+import { DesktopLine, type LineAnswer } from "./desktop-line.ts";
 import { BrowserGate, browserRoute, readBrowserSettings, type BrowserSettings, type Caller as BrowserCaller, type RouteDeps as BrowserRouteDeps } from "./app-browser.ts";
+import { missingForAgent, ServerBrowser } from "./server-browser.ts";
 import { MintLimiter, mintPairing, othersRoute, pairCheck } from "./other-workspaces.ts";
 import { choosableMark, defaultForKind, markRoute, markView, type MarkRouteDeps } from "./workspace-mark.ts";
 import { Reads, type ReadMark } from "./reads.ts";
@@ -13432,10 +13433,11 @@ const joinClient = new JoinClient(() => relayBase(), fetch, cloudOff);
  * questions for this one (server/desktop-line.ts). No app, no line. */
 const desktopLine = new DesktopLine((process as NodeJS.Process & { parentPort?: { postMessage(message: unknown): void } }).parentPort);
 
-// ── the browser inside the Bloks window (server/app-browser.ts) ──
-// The browser is the desktop app's; this server keeps the workspace's
-// rules for it, asks the person on cards, and tells the person's other
-// clients what it is doing.
+// ── the Bloks browser (server/app-browser.ts) ──
+// The browser is the desktop app's when the app runs this workspace, and
+// this server's own when nothing does (server/server-browser.ts); either
+// way this server keeps the workspace's rules for it, asks the person on
+// cards, and tells the person's other clients what it is doing.
 
 /** Which sites agents may use there, and whether a new one asks first:
  * the workspace's own, beside its config. */
@@ -13459,6 +13461,39 @@ function saveAppBrowserSettings(next: BrowserSettings) {
  * (electron/main.mjs names the same folder); this only says where. */
 const APP_BROWSER_DOWNLOADS = join(DATA_DIR, "browser-downloads");
 const appBrowserGate = new BrowserGate();
+
+/**
+ * This server's own browser, where no app runs it to keep one:
+ * bloks-server, the Docker image, a machine the app or a phone pairs
+ * with. A headless Chrome in a profile of the workspace's own, started
+ * the first time it is wanted. A hosted workspace's machine is the
+ * agents' computer already, with a browser on its own desktop, and keeps
+ * to that.
+ */
+const serverBrowser = desktopLine.available || HOSTED
+  ? null
+  : new ServerBrowser({
+      profileDir: join(DATA_DIR, "browser-session"),
+      downloadsDir: APP_BROWSER_DOWNLOADS,
+      ownPorts: () => [PORT],
+      onChange: (state) => noteAppBrowser(state),
+      // an agent started browsing while nobody looked: the person's
+      // panels open where there is room for them (src/lib/appBrowser.ts)
+      onReveal: (by) => broadcast({ kind: "browser.reveal", by }),
+    });
+
+/** One command for the browser, wherever it is: the app's, over the line,
+ * or this server's own. Null when there is neither. */
+function askBrowser(payload: Record<string, unknown>, timeoutMs: number): Promise<LineAnswer> | null {
+  if (!serverBrowser) return desktopLine.ask("browser", payload, timeoutMs);
+  const said = payload as { command?: { action?: unknown }; driver?: { botId?: unknown; name?: unknown } };
+  if (!said.command || typeof said.command.action !== "string") return Promise.resolve({ error: "That is not a browser command.", status: 400 });
+  return serverBrowser.command(said.command as Parameters<ServerBrowser["command"]>[0], {
+    botId: String(said.driver?.botId ?? ""),
+    name: String(said.driver?.name ?? "An agent"),
+  }) as Promise<LineAnswer>;
+}
+
 /** What the app last said about the browser: its tabs by address and
  * title, who drives, and the downloads. Never what is on a page. */
 let appBrowserState: { control?: { by?: string; botId?: string } } | null = null;
@@ -13474,6 +13509,10 @@ function noteAppBrowser(state: unknown) {
  * at most every second and a half, however many look. */
 async function appBrowserThumbnail(): Promise<{ jpeg: string; at: number } | null> {
   if (appBrowserFrame && Date.now() - appBrowserFrame.at < 1500) return appBrowserFrame;
+  if (serverBrowser) {
+    appBrowserFrame = await serverBrowser.thumbnail();
+    return appBrowserFrame;
+  }
   const asked = desktopLine.ask("browser.thumbnail", {}, 5_000);
   const answer = asked ? await asked : null;
   if (typeof answer?.jpeg !== "string" || !answer.jpeg) return null;
@@ -13521,7 +13560,7 @@ function postAppBrowserCard(caller: Extract<BrowserCaller, { kind: "agent" }>, c
 function appBrowserTurnEnded(taskId: string, botId: string) {
   appBrowserGate.endTurn(taskId);
   if (appBrowserState?.control?.by === "agent" && appBrowserState.control.botId === botId) {
-    void desktopLine.ask("browser", { command: { action: "done" }, driver: { botId, name: "" } }, 5_000)?.catch(() => {});
+    void askBrowser({ command: { action: "done" }, driver: { botId, name: "" } }, 5_000)?.catch(() => {});
   }
 }
 
@@ -24993,13 +25032,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, answer.ok === false ? (answer as unknown as { status: number }).status : 200, answer);
     }
 
-    // ── the browser inside the Bloks window (server/app-browser.ts) ──
+    // ── the Bloks browser (server/app-browser.ts) ──
     // An agent's commands, the person's view of it from any of their
     // devices, its settings, and another app on this computer driving it.
+    // Where this server keeps the browser itself, the person's panel too:
+    // its pictures, their clicks and keys, and what they do in it.
     if (path === "/api/agent/browser" || path === "/api/browser" || path.startsWith("/api/browser/")) {
       const browserDeps: BrowserRouteDeps = {
-        available: () => desktopLine.available && !HOSTED,
-        ask: (payload, timeoutMs) => desktopLine.ask("browser", payload, timeoutMs),
+        available: () => (serverBrowser ? serverBrowser.missing() === null : desktopLine.available && !HOSTED),
+        ask: askBrowser,
         settings: () => appBrowserSettings,
         allowSite: (host) => {
           if (!appBrowserSettings.allow.includes(host)) saveAppBrowserSettings({ ...appBrowserSettings, allow: [...appBrowserSettings.allow, host] });
@@ -25014,12 +25055,39 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
             }
           : null,
         local: local && !viaRelay,
-        lastState: () => appBrowserState,
+        lastState: () => serverBrowser?.state() ?? appBrowserState,
         saveSettings: saveAppBrowserSettings,
         downloadsDir: () => APP_BROWSER_DOWNLOADS,
         thumbnail: appBrowserThumbnail,
+        where: () => (serverBrowser ? "server" : "app"),
+        ...(serverBrowser
+          ? { own: serverBrowser, missing: () => serverBrowser.missing(), unavailable: () => missingForAgent(serverBrowser.missing() ?? "none") }
+          : {}),
+        relay: Boolean(viaRelay),
+        query: url.searchParams,
       };
       const answered = await browserRoute(method, path, () => readBody(req), browserDeps);
+      if (answered?.file) {
+        // a download the person saves where they are: never shown in the
+        // app's own origin, whatever the site said it was
+        const { path: file, name } = answered.file;
+        let size = 0;
+        try {
+          size = statSync(file).size;
+        } catch {
+          return json(res, 404, { error: "no such download here" });
+        }
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": size,
+          "content-disposition": artifacts.attachmentHeader(name),
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "sandbox",
+          "cache-control": "no-store",
+        });
+        pipeline(createReadStream(file), res, () => {});
+        return;
+      }
       if (answered) return json(res, answered.status, answered.body);
     }
 
@@ -35117,7 +35185,7 @@ const shutDown = () => {
   mcp.closeAll();
   // engines elsewhere end with their connections here; the gate and the
   // helpers it ran for them go with this process
-  void Promise.allSettled([registry.disposeAll(), closeBrowsers(), workplaces.dispose().then(() => placeGate.dispose())]).finally(() => process.exit(exitStatus));
+  void Promise.allSettled([registry.disposeAll(), closeBrowsers(), serverBrowser?.shutDown(), workplaces.dispose().then(() => placeGate.dispose())]).finally(() => process.exit(exitStatus));
 };
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutDown);
 // A test that starts a server and is then killed (the test runner's file

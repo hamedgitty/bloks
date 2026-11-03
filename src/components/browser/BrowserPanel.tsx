@@ -1,17 +1,24 @@
-// The Bloks browser beside the chat, and the Mac's browser seen from
-// anywhere else.
+// The Bloks browser beside the chat, wherever it lives.
 //
-// In the desktop app the page itself is not drawn here. Each tab is a
-// view the app lays over the window (electron/app-browser.mjs), so this
-// panel draws everything around it, the tabs, the address bar, who has
-// the wheel, the downloads, and keeps one empty box where the page goes,
-// telling the app where that box is whenever it moves. A native view sits
-// above the page, so while a dialog or a menu is open the box is said to
-// be off screen, and the tab hides until it closes.
+// In the desktop app, on a workspace this computer runs, the page itself
+// is not drawn here. Each tab is a view the app lays over the window
+// (electron/app-browser.mjs), so this panel draws everything around it,
+// the tabs, the address bar, who has the wheel, the downloads, and keeps
+// one empty box where the page goes, telling the app where that box is
+// whenever it moves. A native view sits above the page, so while a
+// dialog or a menu is open the box is said to be off screen, and the tab
+// hides until it closes.
 //
-// Elsewhere (a phone, the web app) there is no browser, only news of the
-// Mac's: a strip in the agent's conversation, with a small live picture
-// when the Mac can send one.
+// On a workspace whose server keeps the browser itself (bloks-server, the
+// Docker image), the same panel draws the page too, as the pictures the
+// server sends (server/server-browser.ts), in the app, at the web door
+// and on a phone alike. The person's clicks, scrolls and keys on the
+// picture go back to the page; the box tells the server its size, which
+// the page lays out at.
+//
+// Elsewhere (a phone, the web app, on a workspace the desktop app runs)
+// there is no browser, only news of the Mac's: a strip in the agent's
+// conversation, with a small live picture when the Mac can send one.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -24,6 +31,7 @@ import {
   FolderOpen,
   Globe,
   Hand,
+  Keyboard,
   Loader2,
   Lock,
   Plus,
@@ -37,45 +45,66 @@ import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import { platformOf } from "@/lib/shortcuts";
 import {
   BROWSER_SIDE_BY_SIDE,
+  browserHome,
   browsingFor,
   clampBrowserWidth,
   controlLine,
   downloadSize,
-  hasOwnBrowser,
   hostLabel,
   isSecure,
-  noteBrowserState,
+  refreshBrowser,
   setBrowserPanel,
   shownAddress,
   tabLabel,
   useAppBrowser,
+  useBrowserHome,
   useBrowserPanel,
   type AppBrowserState,
+  type BrowserControl,
   type BrowserDo,
+  type BrowserMissing,
   type BrowserTab,
+  type ScreenFrame,
 } from "@/lib/appBrowser";
 import { t } from "@/lib/i18n";
+import { screenInput, type InputSender } from "./screenInput";
 
-/** The server's word on the Mac's browser, for a page that is not on it;
- * its "browser.app" frames keep it fresh after this. */
-const loadFromServer = () => api("/api/browser").then((said: { state?: unknown }) => noteBrowserState(said?.state ?? null));
+/** The server's word on the browser, for a page that does not have the
+ * app's own; its "browser.app" frames keep it fresh after this. */
+const loadFromServer = () => api("/api/browser");
 
 /** The browser's state, wherever this page is. */
 export function useBrowserState(): AppBrowserState | null {
   return useAppBrowser(loadFromServer);
 }
 
+/** Where the browser is: the app's own, the server's, or elsewhere. */
+export function useBrowserWhere() {
+  return useBrowserHome(loadFromServer);
+}
+
+const said = (answer: { ok?: boolean; error?: string; url?: string } | null) => {
+  if (answer?.error) toast.error(answer.error);
+  return answer;
+};
+
+const failed = (error: unknown) => {
+  toast.error(error instanceof Error ? error.message : String(error));
+  return null;
+};
+
+/** What the person does in the panel: asked of the app for its own
+ * browser, of the server for one it keeps. */
 const act = (action: BrowserDo, arg?: string) =>
-  (window.bloks?.browserDo?.(action, arg) ?? Promise.resolve(null)).then(
-    (answer) => {
-      if (answer?.error) toast.error(answer.error);
-      return answer;
-    },
-    (error: unknown) => {
-      toast.error(error instanceof Error ? error.message : String(error));
-      return null;
-    },
-  );
+  browserHome() === "server"
+    ? api("/api/browser/do", { method: "POST", body: JSON.stringify({ action, ...(arg === undefined ? {} : { arg }) }) }).then(said, failed)
+    : (window.bloks?.browserDo?.(action, arg) ?? Promise.resolve(null)).then(said, failed);
+
+/** A page of the server's browser in the person's own browser: only an
+ * address crosses, never a sign-in. */
+const openOutside = (url: string | undefined) => {
+  if (url && /^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
+};
 
 /** The app asking for the panel because an agent started browsing: the
  * person watches it happen rather than finding out after. */
@@ -90,9 +119,10 @@ export function useBrowserReveal() {
  * native view would otherwise cover. */
 const OVER_THE_PAGE = '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]';
 
-function useSomethingOver(panel: HTMLElement | null): boolean {
+function useSomethingOver(panel: HTMLElement | null, watching: boolean): boolean {
   const [over, setOver] = useState(false);
   useEffect(() => {
+    if (!watching) return setOver(false);
     let frame = 0;
     const check = () => {
       frame = 0;
@@ -110,16 +140,18 @@ function useSomethingOver(panel: HTMLElement | null): boolean {
       watch.disconnect();
       cancelAnimationFrame(frame);
     };
-  }, [panel]);
+  }, [panel, watching]);
   return over;
 }
 
 /**
  * The panel, docked on the chat's right, or over the chat when the window
- * is too narrow for both. Drawn only in the desktop app.
+ * is too narrow for both. Drawn where this page can show the browser:
+ * the desktop app's own, or the one the server keeps.
  */
 export function BrowserDock({ botNames }: { botNames?: Record<string, string> }) {
   const { open, width } = useBrowserPanel();
+  const { home } = useBrowserWhere();
   const [room, setRoom] = useState(0);
   const [dragging, setDragging] = useState<number | null>(null);
   const [holder, setHolder] = useState<HTMLDivElement | null>(null);
@@ -135,7 +167,12 @@ export function BrowserDock({ botNames }: { botNames?: Record<string, string> })
     return () => watch.disconnect();
   }, [holder]);
 
-  if (!open || !hasOwnBrowser()) return null;
+  // a server's browser may have come to be since the page loaded
+  useEffect(() => {
+    if (open) refreshBrowser(loadFromServer);
+  }, [open]);
+
+  if (!open || (home !== "own" && home !== "server")) return null;
   const narrow = room > 0 && room < BROWSER_SIDE_BY_SIDE;
   const shown = narrow ? room : clampBrowserWidth(dragging ?? width, room || window.innerWidth);
   return (
@@ -156,7 +193,7 @@ export function BrowserDock({ botNames }: { botNames?: Record<string, string> })
         className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border-l bg-card", narrow && "absolute inset-0 z-30 border-l-0")}
         style={narrow ? undefined : { width: shown }}
       >
-        <BrowserPanel resizing={dragging !== null} botNames={botNames} />
+        <BrowserPanel resizing={dragging !== null} botNames={botNames} onServer={home === "server"} />
       </div>
     </>
   );
@@ -203,25 +240,30 @@ function Edge({ width, room, onDrag, onDone }: { width: number; room: number; on
   );
 }
 
-function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Record<string, string> }) {
+function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; botNames?: Record<string, string>; onServer: boolean }) {
   const state = useBrowserState();
+  const { missing } = useBrowserWhere();
   const { state: store } = useStore();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const page = useRef<HTMLDivElement>(null);
-  const over = useSomethingOver(root);
+  const over = useSomethingOver(root, !onServer);
   const [shelf, setShelf] = useState(false);
   const active = state?.tabs.find((t) => t.id === state.activeTabId) ?? null;
   const line = controlLine(state?.control);
+  const absent = onServer && missing !== null;
 
   // Where the page goes, said to the app whenever it moves, and "nowhere"
   // while something is drawn over it, while the edge is dragged (the view
-  // would lag the drag a frame behind) and once the panel is gone.
+  // would lag the drag a frame behind) and once the panel is gone. A
+  // server's browser draws its page here instead, and needs none of it.
   const report = useCallback(() => {
+    if (onServer) return;
     const box = page.current?.getBoundingClientRect();
     const hidden = !box || over || resizing || document.visibilityState === "hidden";
     void window.bloks?.browserBounds?.(hidden ? null : { x: box.left, y: box.top, width: box.width, height: box.height });
-  }, [over, resizing]);
+  }, [over, resizing, onServer]);
   useLayoutEffect(() => {
+    if (onServer) return;
     let frame = 0;
     const soon = () => {
       cancelAnimationFrame(frame);
@@ -238,8 +280,8 @@ function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Re
       window.removeEventListener("resize", soon);
       document.removeEventListener("visibilitychange", soon);
     };
-  }, [report, state?.activeTabId, shelf, line?.text]);
-  useEffect(() => () => void window.bloks?.browserBounds?.(null), []);
+  }, [report, state?.activeTabId, shelf, line?.text, onServer]);
+  useEffect(() => () => void (onServer ? undefined : window.bloks?.browserBounds?.(null)), [onServer]);
 
   // a download starting opens the shelf, so it is seen arriving
   const newest = state?.downloads[0]?.id;
@@ -257,7 +299,7 @@ function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Re
     <div ref={setRoot} role="region" aria-label={t("browserPanel.bloksBrowser")} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-card">
       <div className="flex h-[38px] shrink-0 items-center gap-1 px-1.5">
         <Tabs tabs={tabs} activeId={state?.activeTabId ?? null} faces={store.bots} nameOf={nameOf} />
-        <HeaderButton label={t("browserPanel.newTab")} onClick={() => void act("newTab")}>
+        <HeaderButton label={t("browserPanel.newTab")} disabled={absent} onClick={() => void act("newTab")}>
           <Plus size={16} />
         </HeaderButton>
         <div className="min-w-2 flex-1 self-stretch" />
@@ -276,8 +318,12 @@ function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Re
         <HeaderButton label={active?.loading ? t("browserPanel.stopLoading") : t("browserPanel.reload")} disabled={!active} onClick={() => void act(active?.loading ? "stop" : "reload")}>
           {active?.loading ? <X size={15} /> : <RotateCw size={15} />}
         </HeaderButton>
-        <AddressBar key={active?.id ?? "none"} tab={active} />
-        <HeaderButton label={t("browserPanel.openThisPageInYour")} disabled={!hostLabel(active?.url)} onClick={() => void act("openExternal")}>
+        <AddressBar key={active?.id ?? "none"} tab={active} disabled={absent} />
+        <HeaderButton
+          label={t("browserPanel.openThisPageInYour")}
+          disabled={!hostLabel(active?.url)}
+          onClick={() => (onServer ? openOutside(active?.url) : void act("openExternal"))}
+        >
           <ExternalLink size={15} />
         </HeaderButton>
         <HeaderButton label={t("browserPanel.downloads")} pressed={shelf} onClick={() => setShelf((s) => !s)} className="relative">
@@ -311,10 +357,13 @@ function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Re
         </div>
       )}
 
-      {/* where the app puts the page; what shows here is only ever seen
-          when there is no page, or something is drawn over it */}
-      <div ref={page} className="relative min-h-0 flex-1 border-t bg-background">
-        {!active ? (
+      {/* where the page goes: the app's view over it, or the server's
+          pictures in it; what shows here otherwise is only ever seen when
+          there is no page, or something is drawn over it */}
+      <div ref={page} className="relative min-h-0 flex-1 overflow-hidden border-t bg-background">
+        {absent ? (
+          <NoBrowserHere missing={missing!} />
+        ) : !active ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center">
             <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
               <Globe size={18} />
@@ -324,16 +373,299 @@ function BrowserPanel({ resizing, botNames }: { resizing: boolean; botNames?: Re
               {t("browserPanel.typeAnAddressAboveOr")}
             </p>
           </div>
+        ) : onServer ? (
+          <Screen tab={active} control={state?.control} />
         ) : over ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-small text-muted-foreground">
             {t("browserPanel.thePageIsHiddenWhile")}
           </div>
         ) : null}
+        {/* a server's browser is sized to this box even before a page is
+            open, so the first one lays out at the panel's width */}
+        {onServer && !absent && <SizeReporter />}
       </div>
 
-      {shelf && <Shelf downloads={state?.downloads ?? []} onClose={() => setShelf(false)} />}
+      {shelf && <Shelf downloads={state?.downloads ?? []} onServer={onServer} onClose={() => setShelf(false)} />}
     </div>
   );
+}
+
+/** Why a server has no browser to show, and what would give it one. */
+function NoBrowserHere({ missing }: { missing: BrowserMissing }) {
+  return (
+    <div role="status" className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center">
+      <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+        <Globe size={18} />
+      </div>
+      <p className="text-ui font-medium text-foreground">{missing === "off" ? t("browserPanel.turnedOffOnServer") : t("browserPanel.noChromeOnServer")}</p>
+      <p className="max-w-[44ch] text-pretty text-body text-muted-foreground">
+        {missing === "off" ? t("browserPanel.turnedOffBody") : missing === "path" ? t("browserPanel.wrongChromeBody") : t("browserPanel.noChromeBody")}
+      </p>
+    </div>
+  );
+}
+
+// ── the server's browser, as pictures ──────────────────────────────────
+
+/** The box's size, said to the server whenever it settles, which every
+ * tab there lays out at. Measured on a layer of its own that fills the
+ * box, which is there by the time this looks, as the box's own ref is
+ * not yet. */
+function SizeReporter() {
+  const layer = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const box = layer.current;
+    if (!box) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let last = "";
+    const say = () => {
+      const rect = box.getBoundingClientRect();
+      const width = Math.floor(rect.width);
+      const height = Math.floor(rect.height);
+      const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const key = `${width}x${height}@${scale}`;
+      if (width < 200 || height < 150 || key === last) return;
+      last = key;
+      void api("/api/browser/viewport", { method: "POST", body: JSON.stringify({ width, height, scale }) }).catch(() => {
+        last = "";
+      });
+    };
+    const soon = () => {
+      clearTimeout(timer);
+      timer = setTimeout(say, 200);
+    };
+    say();
+    const watch = new ResizeObserver(soon);
+    watch.observe(box);
+    return () => {
+      clearTimeout(timer);
+      watch.disconnect();
+    };
+  }, []);
+  return <div ref={layer} aria-hidden className="pointer-events-none absolute inset-0" />;
+}
+
+/**
+ * The shown tab, as the server's latest picture of it, and the person's
+ * hands on it. Pictures are asked for one after another while the panel
+ * is seen, each answered as soon as the page changes, so a slow line gets
+ * fewer of them rather than a queue. A click takes the keyboard too, by a
+ * field nobody sees, so typing, pasting and composing all reach the page.
+ * On a touch screen a tap is a click, a swipe scrolls, and the keyboard
+ * comes up only when asked for, not with every tap on a link.
+ */
+function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | undefined }) {
+  const [frame, setFrame] = useState<ScreenFrame | null>(null);
+  const [typing, setTyping] = useState(false);
+  const surface = useRef<HTMLDivElement>(null);
+  const keys = useRef<HTMLTextAreaElement>(null);
+  const drives = useRef(false);
+  drives.current = control?.by === "agent";
+  const touch = useRef<{ id: number; x: number; y: number; lastX: number; lastY: number; moved: boolean } | null>(null);
+  const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+
+  useEffect(() => {
+    let stopped = false;
+    let after = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const next = async () => {
+      if (stopped) return;
+      if (document.visibilityState !== "visible") {
+        timer = setTimeout(next, 600);
+        return;
+      }
+      try {
+        const got = (await api(`/api/browser/screen?after=${after}`)) as Partial<ScreenFrame>;
+        if (stopped) return;
+        if (typeof got.jpeg === "string" && typeof got.seq === "number") {
+          after = got.seq;
+          setFrame(got as ScreenFrame);
+        }
+        void next();
+      } catch {
+        if (!stopped) timer = setTimeout(next, 2000);
+      }
+    };
+    void next();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  // one queue for everything the person does, sent a batch at a time
+  const send = useRef<InputSender | null>(null);
+  useEffect(() => {
+    const sender = screenInput((events) => api("/api/browser/input", { method: "POST", body: JSON.stringify({ events }) }));
+    send.current = sender;
+    return () => sender.stop();
+  }, []);
+
+  // the wheel, which React only hears passively
+  useEffect(() => {
+    const el = surface.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (drives.current) return;
+      const lines = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? el.clientHeight : 1;
+      send.current?.wheel({ ...pointOn(el, e), dx: e.deltaX * lines, dy: e.deltaY * lines, mods: modsOf(e) });
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, []);
+
+  const click = (at: { x: number; y: number }, mods: number) => {
+    for (const type of ["down", "up"] as const) send.current?.mouse({ type, ...at, button: "left", buttons: type === "down" ? 1 : 0, clicks: 1, mods });
+  };
+
+  const shown = frame && frame.tab === tab.id ? frame : null;
+  return (
+    <div
+      ref={surface}
+      role="application"
+      aria-roledescription={t("browserPanel.pageRole")}
+      aria-label={tabLabel(tab)}
+      className={cn("absolute inset-0 touch-none select-none overflow-hidden", typing && "shadow-[inset_0_0_0_2px_var(--ring)]")}
+      onPointerDown={(e) => {
+        if (e.pointerType === "mouse" && e.button > 2) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const at = pointOn(e.currentTarget, e);
+        if (e.pointerType === "touch") {
+          touch.current = { id: e.pointerId, ...at, lastX: at.x, lastY: at.y, moved: false };
+          return;
+        }
+        keys.current?.focus({ preventScroll: true });
+        send.current?.mouse({ type: "down", ...at, button: buttonOf(e.button), buttons: e.buttons, clicks: Math.min(3, Math.max(1, e.detail || 1)), mods: modsOf(e) });
+      }}
+      onPointerMove={(e) => {
+        const at = pointOn(e.currentTarget, e);
+        const held = touch.current;
+        if (e.pointerType === "touch") {
+          if (!held || held.id !== e.pointerId) return;
+          if (Math.hypot(at.x - held.x, at.y - held.y) > 8) held.moved = true;
+          // a swipe moves the page the way a finger drags it
+          if (held.moved && !drives.current) send.current?.wheel({ ...at, dx: held.lastX - at.x, dy: held.lastY - at.y, mods: 0 });
+          held.lastX = at.x;
+          held.lastY = at.y;
+          return;
+        }
+        // a pointer resting on the page while an agent drives is somebody
+        // watching, and is not sent
+        if (drives.current && !e.buttons) return;
+        send.current?.mouse({ type: "move", ...at, button: e.buttons ? "left" : "none", buttons: e.buttons, clicks: 0, mods: modsOf(e) });
+      }}
+      onPointerUp={(e) => {
+        if (e.pointerType === "touch") {
+          const held = touch.current;
+          touch.current = null;
+          if (held && held.id === e.pointerId && !held.moved) click({ x: held.x, y: held.y }, 0);
+          return;
+        }
+        send.current?.mouse({ type: "up", ...pointOn(e.currentTarget, e), button: buttonOf(e.button), buttons: e.buttons, clicks: Math.min(3, Math.max(1, e.detail || 1)), mods: modsOf(e) });
+      }}
+      onPointerCancel={() => {
+        touch.current = null;
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {shown ? (
+        <img
+          src={`data:image/jpeg;base64,${shown.jpeg}`}
+          alt=""
+          draggable={false}
+          className="pointer-events-none absolute left-0 top-0 max-w-none"
+          style={{ width: shown.width, height: shown.height }}
+        />
+      ) : (
+        <div className="flex h-full items-center justify-center text-muted-foreground">
+          <Loader2 size={18} className="animate-spin" aria-label={t("browserPanel.loadingThePage")} />
+        </div>
+      )}
+      <textarea
+        ref={keys}
+        aria-label={t("browserPanel.typeIntoThePage")}
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        className="absolute bottom-0 left-0 size-px resize-none overflow-hidden border-0 bg-transparent p-0 text-transparent opacity-0"
+        onFocus={() => setTyping(true)}
+        onBlur={() => setTyping(false)}
+        onKeyDown={(e) => {
+          const key = keyFrom(e);
+          if (!key) return;
+          e.preventDefault();
+          send.current?.key({ ...key, type: "down" });
+        }}
+        onKeyUp={(e) => {
+          const key = keyFrom(e);
+          if (key) send.current?.key({ ...key, type: "up" });
+        }}
+        onPaste={(e) => {
+          e.preventDefault();
+          const text = e.clipboardData.getData("text/plain");
+          if (text) send.current?.text(text);
+        }}
+        onInput={(e) => {
+          // a phone's keyboard, or a word composed in another script:
+          // what it settled on, as text
+          const field = e.currentTarget;
+          if ((e.nativeEvent as InputEvent).isComposing) return;
+          if (field.value) send.current?.text(field.value);
+          field.value = "";
+        }}
+        onCompositionEnd={(e) => {
+          const field = e.currentTarget;
+          if (field.value) send.current?.text(field.value);
+          field.value = "";
+        }}
+      />
+      {coarse && (
+        <div className="absolute bottom-2 right-2" onPointerDown={(e) => e.stopPropagation()}>
+          <HeaderButton
+            label={t("browserPanel.typeIntoThePage")}
+            pressed={typing}
+            onClick={() => (typing ? keys.current?.blur() : keys.current?.focus({ preventScroll: true }))}
+            className="size-9 border bg-card shadow-[0_1px_3px_var(--shadow-color)]"
+          >
+            <Keyboard size={17} />
+          </HeaderButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Where on the page, in its own pixels: the picture is drawn at them. */
+function pointOn(el: HTMLElement, e: { clientX: number; clientY: number }) {
+  const box = el.getBoundingClientRect();
+  return { x: Math.max(0, Math.round(e.clientX - box.left)), y: Math.max(0, Math.round(e.clientY - box.top)) };
+}
+
+const buttonOf = (button: number) => (button === 1 ? "middle" : button === 2 ? "right" : "left") as "left" | "middle" | "right";
+
+/** The protocol's modifier bits: Alt 1, Control 2, Meta 4, Shift 8. */
+const modsOf = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
+  (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+
+/** Shortcuts that edit what is on the page, sent there; every other one
+ * with Command stays the app's (a new window, the palette, quitting). */
+const PAGE_SHORTCUTS = new Set(["a", "c", "x", "z", "y"]);
+
+/** A key to send the page, or null for one the field or the app keeps:
+ * a paste (which arrives as text), a key mid-composition, the app's own
+ * Command shortcuts. */
+function keyFrom(e: KeyboardEvent<HTMLTextAreaElement>) {
+  const native = e.nativeEvent;
+  if (native.isComposing || e.key === "Process" || e.key === "Unidentified" || e.keyCode === 229) return null;
+  const lower = e.key.toLowerCase();
+  if ((e.metaKey || e.ctrlKey) && lower === "v") return null;
+  if (e.metaKey && !PAGE_SHORTCUTS.has(lower)) return null;
+  const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+  const text = printable ? e.key : e.key === "Enter" ? "\r" : undefined;
+  return { key: e.key, code: e.code, keyCode: e.keyCode, ...(text ? { text } : {}), mods: modsOf(e), repeat: e.repeat };
 }
 
 function Tabs({
@@ -411,7 +743,7 @@ function Tabs({
 }
 
 /** The address bar: the page's address until you type, then yours. */
-function AddressBar({ tab }: { tab: BrowserTab | null }) {
+function AddressBar({ tab, disabled }: { tab: BrowserTab | null; disabled?: boolean }) {
   const [typed, setTyped] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
   const shown = typed ?? shownAddress(tab?.url);
@@ -442,6 +774,7 @@ function AddressBar({ tab }: { tab: BrowserTab | null }) {
       <input
         ref={field}
         value={shown}
+        disabled={disabled}
         onChange={(e) => setTyped(e.target.value)}
         onFocus={(e) => e.currentTarget.select()}
         onKeyDown={(e) => {
@@ -456,20 +789,22 @@ function AddressBar({ tab }: { tab: BrowserTab | null }) {
         autoCorrect="off"
         placeholder={t("browserPanel.searchOrTypeAnAddress")}
         aria-label={t("common.address")}
-        className="min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground"
+        className="min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
       />
     </form>
   );
 }
 
-function Shelf({ downloads, onClose }: { downloads: AppBrowserState["downloads"]; onClose: () => void }) {
+function Shelf({ downloads, onServer, onClose }: { downloads: AppBrowserState["downloads"]; onServer: boolean; onClose: () => void }) {
   return (
     <section aria-label={t("browserPanel.downloads")} className="max-h-[40%] shrink-0 overflow-y-auto border-t bg-card px-2 pb-2 pt-1.5">
       <div className="flex items-center gap-1 px-1 pb-1.5">
         <h2 className="flex-1 text-small font-medium text-muted-foreground">{t("browserPanel.downloads")}</h2>
-        <Button size="sm" variant="ghost" className="h-6 px-2 text-small" onClick={() => void act("openDownloads")}>
-          <FolderOpen size={13} /> {t("browserPanel.folder")}
-        </Button>
+        {!onServer && (
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-small" onClick={() => void act("openDownloads")}>
+            <FolderOpen size={13} /> {t("browserPanel.folder")}
+          </Button>
+        )}
         {downloads.some((d) => d.state !== "progressing") && (
           <Button size="sm" variant="ghost" className="h-6 px-2 text-small" onClick={() => void act("clearDownloads")}>
             {t("common.clear")}
@@ -480,7 +815,9 @@ function Shelf({ downloads, onClose }: { downloads: AppBrowserState["downloads"]
         </HeaderButton>
       </div>
       {downloads.length === 0 ? (
-        <p className="px-1 pb-1 text-small text-muted-foreground">{t("browserPanel.filesYouOrAnAgent")}</p>
+        <p className="px-1 pb-1 text-small text-muted-foreground">
+          {onServer ? t("browserPanel.filesLandOnServer") : t("browserPanel.filesYouOrAnAgent")}
+        </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {downloads.map((d) => (
@@ -497,16 +834,23 @@ function Shelf({ downloads, onClose }: { downloads: AppBrowserState["downloads"]
                   {d.by ? ` · ${t("browserPanel.downloadedBy", { name: d.by })}` : ""}
                 </p>
               </div>
-              {d.state === "completed" && (
-                <div className="flex shrink-0 items-center gap-0.5">
-                  <Button size="sm" variant="ghost" className="h-6 px-2 text-small" onClick={() => void act("openDownload", d.id)}>
-                    {t("common.open")}
+              {d.state === "completed" &&
+                (onServer ? (
+                  <Button asChild size="sm" variant="ghost" className="h-6 shrink-0 px-2 text-small">
+                    <a href={`/api/browser/downloads/${encodeURIComponent(d.id)}`} download={d.name}>
+                      {t("browserPanel.save")}
+                    </a>
                   </Button>
-                  <HeaderButton label={platformOf() === "mac" ? t("browserPanel.showInFinder") : t("browserPanel.showInFolder")} onClick={() => void act("revealDownload", d.id)} className="size-6">
-                    <FolderOpen size={13} />
-                  </HeaderButton>
-                </div>
-              )}
+                ) : (
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-small" onClick={() => void act("openDownload", d.id)}>
+                      {t("common.open")}
+                    </Button>
+                    <HeaderButton label={platformOf() === "mac" ? t("browserPanel.showInFinder") : t("browserPanel.showInFolder")} onClick={() => void act("revealDownload", d.id)} className="size-6">
+                      <FolderOpen size={13} />
+                    </HeaderButton>
+                  </div>
+                ))}
             </li>
           ))}
         </ul>
@@ -515,17 +859,21 @@ function Shelf({ downloads, onClose }: { downloads: AppBrowserState["downloads"]
   );
 }
 
-// ── anywhere but the Mac ───────────────────────────────────────────────
+// ── anywhere the panel is not ──────────────────────────────────────────
 
 /**
- * In an agent's conversation on a phone or the web app: the agent is
- * browsing on the Mac, or waiting there for the person to give the
- * browser back. A small picture of the page while it is looked at, when
- * the Mac can send one; just the words when it cannot.
+ * In an agent's conversation, while it browses where this page has no
+ * panel open: on the Mac, seen from a phone or the web app, or on the
+ * server, with the panel closed. A small picture of the page while it is
+ * looked at, when one can be had; just the words when it cannot. For a
+ * server's browser, a way to watch it.
  */
 export function BrowsingOnMac({ botId, name }: { botId: string; name: string }) {
   const state = useBrowserState();
-  const doing = hasOwnBrowser() ? null : browsingFor(state, botId);
+  const { home } = useBrowserWhere();
+  const { open } = useBrowserPanel();
+  const onServer = home === "server";
+  const doing = home === "own" || (onServer && open) ? null : browsingFor(state, botId);
   const [frame, setFrame] = useState<string | null>(null);
   const active = state?.tabs.find((t) => t.id === state.activeTabId);
 
@@ -556,7 +904,7 @@ export function BrowsingOnMac({ botId, name }: { botId: string; name: string }) 
   return (
     <div className="mx-auto w-full max-w-[var(--transcript-width,760px)] px-4 pb-2 md:px-6">
       <div role="status" className="flex animate-rise-in items-center gap-3 rounded-2xl border bg-card p-2.5 shadow-[0_1px_3px_var(--shadow-color)]">
-        <Thumb jpeg={frame} />
+        <Thumb jpeg={frame} onServer={onServer} />
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 text-ui font-medium text-foreground">
             {doing === "driving" && (
@@ -565,22 +913,29 @@ export function BrowsingOnMac({ botId, name }: { botId: string; name: string }) 
                 <span className="relative inline-flex size-2 rounded-full bg-brand" />
               </span>
             )}
-            {t("browserPanel.browsingOnTheMac")}
+            {onServer ? t("browserPanel.browsing") : t("browserPanel.browsingOnTheMac")}
           </p>
           <p className="truncate text-small text-muted-foreground">
             {doing === "driving"
               ? where
                 ? t("browserPanel.agentIsOn", { name, page: where })
                 : t("browserPanel.agentUsesBrowser", { name })
-              : t("browserPanel.youTookOverOnMac", { name })}
+              : onServer
+                ? t("browserPanel.youTookOver", { name })
+                : t("browserPanel.youTookOverOnMac", { name })}
           </p>
         </div>
+        {onServer && (
+          <Button size="sm" variant="secondary" className="shrink-0" onClick={() => setBrowserPanel({ open: true })}>
+            {t("browserPanel.watch")}
+          </Button>
+        )}
       </div>
     </div>
   );
 }
 
-function Thumb({ jpeg }: { jpeg: string | null }): ReactNode {
+function Thumb({ jpeg, onServer }: { jpeg: string | null; onServer: boolean }): ReactNode {
   if (!jpeg) {
     return (
       <span className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
@@ -588,5 +943,11 @@ function Thumb({ jpeg }: { jpeg: string | null }): ReactNode {
       </span>
     );
   }
-  return <img src={`data:image/jpeg;base64,${jpeg}`} alt={t("browserPanel.thePageOnTheMac")} className="h-12 w-20 shrink-0 rounded-lg border object-cover object-top" />;
+  return (
+    <img
+      src={`data:image/jpeg;base64,${jpeg}`}
+      alt={onServer ? t("browserPanel.thePageInTheBrowser") : t("browserPanel.thePageOnTheMac")}
+      className="h-12 w-20 shrink-0 rounded-lg border object-cover object-top"
+    />
+  );
 }

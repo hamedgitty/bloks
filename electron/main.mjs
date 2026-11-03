@@ -2641,7 +2641,8 @@ handle("app:log", (_event, text) => {
 
 // ── the Bloks browser ─────────────────────────────────────────────────
 // A browser in the window, beside the chat, that agents drive and the
-// person watches and takes over (electron/app-browser.mjs has the rules;
+// person watches and takes over (server/browser-core.mjs has the rules,
+// shared with the browser a server with no app behind it keeps itself;
 // server/app-browser.ts has the workspace's side of them).
 //
 // Each workspace browses in a session of its own, on disk, so its
@@ -2685,6 +2686,8 @@ function browserFor(id) {
   const had = browsers.get(id);
   if (had) return had;
   const ws = id ? entryOf(id) : null;
+  // a workspace on another computer browses there: its server keeps the
+  // browser, and the panel shows it as pictures (server/server-browser.ts)
   if (!ws || isRemoteKind(ws.kind) || !ws.dataDir) return null;
   const ses = session.fromPartition(partitionFor(id));
   const held = { id, ses, views: new Map(), bounds: null, win: null, stateTimer: null, browser: null };

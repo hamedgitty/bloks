@@ -60,6 +60,7 @@ not need to be trusted with one.
 | `BLOKS_LISTEN=0.0.0.0` | Listen on every interface rather than loopback (`::` for IPv6 as well). For a container, where the published port decides who reaches it; the image sets it. On a bare machine, a reverse proxy or `tailscale serve` reaches loopback without it. |
 | `BLOKS_CLOUD=off` | Nothing goes to Bloks Cloud or bloks.dev: see [what that turns off](#what-needs-bloks-cloud). A licence already here is kept and not used. |
 | `BLOKS_MODEL_URL` | An OpenAI-compatible model server's `/v1` root (vLLM, llama.cpp, LM Studio, LiteLLM, a self-hosted Qwen), listed as an engine. With `BLOKS_MODEL_KEY` (if it takes one), `BLOKS_MODEL_NAME` (what the app calls it), `BLOKS_MODEL_TOOLS=1` (its model calls tools) and `BLOKS_MODEL_VISION=1` (it sees pictures). Read each start, never written to `config.json`. |
+| `BLOKS_BROWSER` | The Chrome the [Bloks browser](#the-bloks-browser-on-your-server) runs on, by its full path, when it is not where Chrome, Chromium, Brave or Edge usually install. `off` turns the Bloks browser off on this server. |
 | `BLOKS_HOSTED=1` | **Only for managed hosting.** Says a provider runs this machine for you. Do not set it on a server of your own (see below). |
 
 ## What stays with managed hosting, and why
@@ -75,7 +76,7 @@ and does not lose anything it needs because of it:
 | Location and place watchers | offered | not offered | Where you are goes only to a computer of your own, never to a machine run for you. |
 | Agent computers | Cloud box, Local VM (Docker or Podman on the server; with Docker Compose, the desktop service in [DOCKER.md](DOCKER.md)), Off | This machine, Off | A hosted machine is the agents' computer already, with its own browser and virtual desktop. |
 | Virtual desktop in the Computer panel | not offered | when the image serves one | It needs the hosting image's desktop and viewer. |
-| Bloks browser in the app | not offered | not offered | It is a browser inside the desktop app, so only a workspace running in the app has one. An agent's own browser (Settings, Its own browser) works on any server with Chrome, Chromium, Brave or Edge installed, headless where there is no display, on an engine that takes it (the agent's settings say when its engine does not). |
+| Bloks browser beside the chat | on the server, with Chrome installed ([below](#the-bloks-browser-on-your-server)) | not offered | A server of your own keeps the browser itself and shows it in every device's panel. A hosted machine is the agents' computer already, with a browser on its own desktop. An agent's own browser (Settings, Its own browser) is separate, and works on any server with Chrome, Chromium, Brave or Edge installed, headless where there is no display, on an engine that takes it (the agent's settings say when its engine does not). |
 | Pairing link from bloks.dev | `bloks-server pair` on the server, or Settings, Phone and devices from a device or browser of yours | asked of Bloks Cloud | Nobody can run `bloks-server pair` on a hosted machine. |
 | Waking for routines | not needed | Bloks Cloud wakes the machine | Only a hosted machine is put to sleep. |
 | Moving the workspace | backups, on the server | to and from your Mac, from the app | A move is the way into and out of managed hosting. |
@@ -367,6 +368,53 @@ Docker, a second compose project with its own volume and
 unit with its own `BLOKS_DATA_DIR` and `BLOKS_PORT`. Pair each to the
 desktop app and they sit side by side in its workspace switcher, each
 reached at its own address.
+
+## The Bloks browser on your server
+
+The browser beside the chat, the one you and your agents share, runs on
+the server when no desktop app runs the workspace: a headless Chrome in
+a profile of the workspace's own, in `browser-session` in its data
+folder. Nothing on the server needs a display or a desktop. Open the
+globe in the chat's header, in the desktop app paired with the server,
+at the web door or on your phone, and type an address: the page shows in
+the panel, laid out at the panel's size, and your clicks, scrolling and
+typing (paste too) reach it. Sign in to a site there and your agents can
+carry on from the page you are on; watch them navigate, click and type
+in the same panel, click the page or press **Take over** to take it
+back, and **Give back** when you are done. Tabs, the pages in them and
+every sign-in stay on the server, so they are all still there from your
+phone, or tomorrow, and agents keep browsing when your Mac is closed.
+Each workspace, each server, has a browser of its own.
+
+It needs Chrome, Chromium, Brave or Edge on the server. On Debian or
+Ubuntu, `sudo apt install chromium` (or Google's own `.deb`) is enough;
+Bloks finds it where those install, or wherever `BLOKS_BROWSER` says.
+Without one, the panel says so and agents are told plainly, and nothing
+else changes. Chrome starts the first time the browser is wanted and
+closes again after ten minutes with no tabs open; it uses a few hundred
+megabytes of memory while it runs.
+
+Only you, the owner, see it or use it: it is signed in as you. A
+member's device, an agent's credential, a guest and a website never
+reach its pictures or its controls. Agents use it under the same rules
+as in the desktop app (Settings, Browser): Ask first or Auto, the sites
+they may and never may use, and a card before they type a password or a
+card number or choose a file to upload. Pictures are sent only while a
+panel is open and in view, as the page changes, ten a second at most;
+through Bloks Cloud fewer, at one pixel to a page pixel, and each one
+sealed for your device like everything else. What you type travels the
+same way, never in an address and never in a log. Settings, Browser
+signs the workspace out of every site by closing the browser and
+emptying its profile. Downloads go to `browser-downloads` in the data
+folder; **Save** in the panel's downloads brings one to the device you
+are using.
+
+In the Docker image, Chrome is not included: add it in an image of your
+own built on this one (`FROM ghcr.io/hamedgitty/bloks-server`, then
+`USER root`, `RUN apt-get update && apt-get install -y --no-install-recommends chromium`,
+`USER bloks`). Bloks keeps Chrome's sandbox on, so a container whose
+security profile does not let Chrome make one says "Chrome on this
+server would not start" when you open a page, with the reason.
 
 ## Voices, calls and meeting notes
 

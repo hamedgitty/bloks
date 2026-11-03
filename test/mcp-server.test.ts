@@ -133,10 +133,10 @@ describe("bloks-mcp", () => {
     assert.match((await tool("search", { query: "release notes" })).text, /Writer/);
   });
 
-  test("the Bloks browser, with no desktop app behind this workspace, says where it is", async () => {
+  test("the Bloks browser, on a server whose own browser is off, says so", async () => {
     const opened = await tool("browser_open", { url: "https://example.com" });
     assert.equal(opened.isError, true);
-    assert.match(opened.text, /part of the Bloks desktop app/);
+    assert.match(opened.text, /turned off on this server/);
   });
 
   test("an unknown agent is a readable error, and the rest answer plainly", async () => {

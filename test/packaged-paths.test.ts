@@ -183,3 +183,32 @@ test("the line a network-off container runs ships beside the server, in the app 
   );
   assert.equal(resolve("/bloks-server/dist-server", at), "/bloks-server/bin/bloks-line.mjs");
 });
+
+test("the Bloks browser's shared rules ship with the app, and beside the compiled server", () => {
+  // electron/app-browser.mjs reaches out of electron/ for the rules it
+  // shares with a server's own browser (server/browser-core.mjs). The app
+  // ships what `files` names inside its bundle, so every relative import
+  // an Electron file makes has to land on something named there.
+  const lines = read("electron-builder.yml").split("\n");
+  const start = lines.indexOf("files:");
+  const end = lines.findIndex((line, i) => i > start && /^\S/.test(line));
+  const named = lines
+    .slice(start + 1, end)
+    .map((line) => line.match(/^\s*-\s*"?([^"!#]+?)"?\s*$/)?.[1])
+    .filter((entry): entry is string => Boolean(entry));
+  const ships = (path: string) => named.some((entry) => entry === path || (entry.endsWith("/**") && path.startsWith(entry.slice(0, -2))));
+  for (const name of readdirSync(join(root, "electron")).filter((file) => /\.(mjs|cjs)$/.test(file))) {
+    for (const [, spec] of read(`electron/${name}`).matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+)"/g)) {
+      const target = join("electron", spec).replace(/\\/g, "/");
+      // inside electron/ everything ships, some of it made by the build
+      if (target.startsWith("electron/")) continue;
+      assert.ok(ships(target), `electron/${name} imports ${target}, which the app's bundle does not carry: add it to files in electron-builder.yml`);
+      assert.ok(existsSync(join(root, target)), `electron/${name} imports ${target}, which is not in the repository`);
+    }
+  }
+  // tsc never emits a plain .mjs, so the build copies each one beside the
+  // compiled server, where its imports look for it
+  assert.match(read("server/server-browser.ts"), /from "\.\/browser-core\.mjs"/);
+  assert.match(read("scripts/mark-server-esm.mjs"), /copyFileSync\(join\(root, "server", name\), join\(root, "dist-server", name\)\)/);
+  assert.match(JSON.parse(read("package.json")).scripts["build:server"], /mark-server-esm\.mjs/);
+});

@@ -3,8 +3,10 @@
 //
 // The rules are the workspace's own and live on its server
 // (server/app-browser.ts), so this page reads and changes them from any
-// of the person's devices; the browser itself, its downloads and its
-// sign-ins are the desktop app's, and those rows show only there.
+// of the person's devices. The browser itself, its downloads and its
+// sign-ins are the desktop app's when the app runs the workspace, and
+// those rows show only there; a server that keeps the browser itself
+// shows them on every device the person uses.
 import { useEffect, useState } from "react";
 import { api } from "@/state/store";
 import { Button } from "@/components/ui/button";
@@ -13,7 +15,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { X } from "@/components/icons";
-import { hasOwnBrowser } from "@/lib/appBrowser";
+import { browserIsHere } from "@/lib/appBrowser";
 import { SavedMark, SettingRow, SettingsGroup, SettingsSkeleton } from "../SettingsLayout";
 import { t } from "@/lib/i18n";
 
@@ -26,14 +28,18 @@ interface Settings {
 export function BrowserPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [folder, setFolder] = useState("");
+  // whose browser the last rows are about: the app's here, the server's,
+  // or neither for this page
+  const [home, setHome] = useState<"own" | "server" | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api("/api/browser/settings")
-      .then((said: { settings: Settings; downloads: string }) => {
+      .then(async (said: { settings: Settings; downloads: string; where?: string }) => {
         setSettings(said.settings);
         setFolder(said.downloads);
+        setHome(said.where === "server" ? "server" : (await browserIsHere()) ? "own" : null);
       })
       .catch((e: Error) => setError(e.message));
   }, []);
@@ -117,15 +123,20 @@ export function BrowserPage() {
         </p>
       )}
 
-      {hasOwnBrowser() && (
-        <SettingsGroup title={t("browserPage.thisWorkspacesBrowser")} footnote={t("browserPage.itsSignInsAreThis")}>
+      {home && (
+        <SettingsGroup
+          title={t("browserPage.thisWorkspacesBrowser")}
+          footnote={home === "server" ? t("browserPage.itRunsOnTheServer") : t("browserPage.itsSignInsAreThis")}
+        >
           <SettingRow
             label={t("browserPage.downloads")}
             description={<span className="break-all">{folder}</span>}
             control={
-              <Button size="sm" variant="secondary" onClick={() => void window.bloks?.browserDo?.("openDownloads")}>
-                {t("common.open")}
-              </Button>
+              home === "own" ? (
+                <Button size="sm" variant="secondary" onClick={() => void window.bloks?.browserDo?.("openDownloads")}>
+                  {t("common.open")}
+                </Button>
+              ) : undefined
             }
           />
           <SettingRow
@@ -143,7 +154,10 @@ export function BrowserPage() {
                     destructive: true,
                   }).then(async (yes) => {
                     if (!yes) return;
-                    const said = await window.bloks?.browserDo?.("forgetSites");
+                    const said =
+                      home === "server"
+                        ? await api("/api/browser/do", { method: "POST", body: JSON.stringify({ action: "forgetSites" }) }).catch((e: Error) => ({ error: e.message }))
+                        : await window.bloks?.browserDo?.("forgetSites");
                     if (said?.error) toast.error(said.error);
                     else toast.success(t("browserPage.signedOut"));
                   })

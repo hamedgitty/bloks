@@ -19,6 +19,9 @@ files:
   - "!electron/resources/perm-helper"
   - "!electron/resources/auth-helper"
   - "!**/node_modules/**"
+  # the Bloks browser's rules, shared with the server, which keeps them
+  # (electron/app-browser.mjs imports them from there)
+  - server/browser-core.mjs
   - package.json
 
 asar: true

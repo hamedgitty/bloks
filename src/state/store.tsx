@@ -58,7 +58,7 @@ import {
 import { toast } from "@/components/ui/toast";
 import { openJoinDialog, workspaceFrame } from "@/lib/members";
 import { loadPlan } from "@/lib/planClient";
-import { hasOwnBrowser, noteBrowserState } from "@/lib/appBrowser";
+import { browserHome, noteBrowserState, revealBrowser } from "@/lib/appBrowser";
 import { formatDate, t } from "../lib/i18n.ts";
 
 export * from "./reducer";
@@ -1059,9 +1059,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "computerState", botId: frame.botId, state: String(frame.state ?? "") });
           break;
         case "browser.app":
-          // the Mac's browser, for a page that is not on the Mac; the
-          // desktop app hears its own browser first-hand (src/lib/appBrowser.ts)
-          if (!hasOwnBrowser()) noteBrowserState(frame.state);
+          // the browser as the server sees it, for a page that does not
+          // have it; the desktop app hears its own first-hand
+          // (src/lib/appBrowser.ts)
+          if (browserHome() !== "own") noteBrowserState(frame.state);
+          break;
+        case "browser.reveal":
+          // an agent started browsing in the server's own browser
+          revealBrowser();
           break;
         case "blok":
           rawDispatch({ type: "blokPatched", blok: frame.blok });

@@ -240,6 +240,7 @@ function world(settings: BrowserSettings = { mode: "ask", allow: [], deny: ["ban
     saveSettings: (next) => (saved = next),
     downloadsDir: () => "/data/browser-downloads",
     thumbnail: async () => ({ jpeg: "abc", at: 1 }),
+    where: () => "app",
     stat: () => ({ isFile: () => true, size: 10 }),
   };
   const run = (body: unknown, over: Partial<RouteDeps> = {}) => browserRoute("POST", "/api/agent/browser", async () => body, { ...deps, ...over });
@@ -398,7 +399,7 @@ describe("the routes", () => {
     assert.deepEqual(said, { status: 503, body: { error: UNAVAILABLE, available: false } });
     assert.match(UNAVAILABLE, /part of the Bloks desktop app/);
     assert.deepEqual((await browserRoute("GET", "/api/agent/browser", async () => ({}), w.deps))?.body, { available: false, note: UNAVAILABLE });
-    assert.deepEqual((await browserRoute("GET", "/api/browser", async () => ({}), { ...w.deps, agent: null }))?.body, { available: false, state: null });
+    assert.deepEqual((await browserRoute("GET", "/api/browser", async () => ({}), { ...w.deps, agent: null }))?.body, { available: false, where: "app", state: null });
     assert.equal(w.cards.length, 0);
   });
 });

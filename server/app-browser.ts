@@ -1,10 +1,12 @@
-// The browser inside the Bloks window, from the server's side.
+// The Bloks browser, from the server's side.
 //
-// The browser itself is the desktop app's: a panel beside the chat, a
-// tab per page, a session of the workspace's own (electron/app-browser.mjs
-// and main.mjs). Agents reach it through here, over the line the app
-// gives its servers (server/desktop-line.ts), and this is where the
-// rules are:
+// The browser itself is the desktop app's when the app runs this
+// workspace: a panel beside the chat, a tab per page, a session of the
+// workspace's own (electron/app-browser.mjs and main.mjs), reached over
+// the line the app gives its servers (server/desktop-line.ts). A server
+// with no app behind it keeps one of its own instead, a headless Chrome
+// the person sees from any of their devices (server/server-browser.ts).
+// Agents reach either through here, and this is where the rules are:
 //
 //   Which agent. Only a turn the owner started, in the owner's own
 //   conversations: the browser is signed in as the owner, and a member,
@@ -31,6 +33,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { LineAnswer } from "./desktop-line.ts";
+import { readInput, readViewport, type BrowserMissing, type PersonInput, type ScreenFrame, type Viewport } from "./server-browser.ts";
 
 export type BrowserMode = "ask" | "auto";
 
@@ -495,6 +498,9 @@ export class BrowserGate {
 
 export interface RunDeps {
   available(): boolean;
+  /** What an agent is told when there is no browser: the app's word by
+   * default, or why this server has none of its own. */
+  unavailable?(): string;
   /** The app, asked: desktopLine.ask("browser", payload, timeoutMs). */
   ask(payload: Record<string, unknown>, timeoutMs: number): Promise<LineAnswer> | null;
   settings(): BrowserSettings;
@@ -515,6 +521,8 @@ export interface RunDeps {
 export interface RunResult {
   status: number;
   body: Record<string, unknown>;
+  /** A file to send instead of the body: a finished download. */
+  file?: { path: string; name: string };
 }
 
 /** The reply for an agent's yes being still to come. */
@@ -533,7 +541,8 @@ function upstreamFailure(answer: LineAnswer): RunResult {
  * the site, the field, the wheel, and the frame around what comes back.
  */
 export async function runBrowserCommand(deps: RunDeps, caller: Caller, command: BrowserCommand): Promise<RunResult> {
-  if (!deps.available()) return { status: 503, body: { error: UNAVAILABLE, available: false } };
+  const unavailable = deps.unavailable?.() ?? UNAVAILABLE;
+  if (!deps.available()) return { status: 503, body: { error: unavailable, available: false } };
   const settings = deps.settings();
   const answerMs = deps.answerMs ?? 110_000;
   const holdMs = deps.holdMs ?? 90_000;
@@ -573,7 +582,7 @@ export async function runBrowserCommand(deps: RunDeps, caller: Caller, command: 
   for (let attempt = 0; attempt < 3; attempt++) {
     const policy = navigationPolicy(deps.settings(), deps.gate.granted(caller));
     const asked = deps.ask({ command: { ...command, policy, ...(approved ? { approved: true } : {}) }, driver }, ASK_MS);
-    if (!asked) return { status: 503, body: { error: UNAVAILABLE, available: false } };
+    if (!asked) return { status: 503, body: { error: unavailable, available: false } };
     let answer = await asked;
     // The person has the browser. Wait for it back, a while, then try
     // again; still theirs, and the agent hears why nothing happened.
@@ -649,6 +658,23 @@ function shaped(command: BrowserCommand, answer: LineAnswer): Record<string, unk
 
 // ── the routes ─────────────────────────────────────────────────────────
 
+/** This server's own browser, for the person's clients: what the panel
+ * does, the pictures it shows and the input it sends back
+ * (server/server-browser.ts). */
+export interface OwnBrowser {
+  person(action: string, arg?: unknown): Promise<{ ok?: boolean; error?: string; url?: string }>;
+  input(events: PersonInput[]): Promise<{ ok: boolean; tookOver: boolean; error?: string }>;
+  resize(viewport: Viewport): Promise<void>;
+  screen(after: number, options: { waitMs: number; gapMs: number }): Promise<{ frame: ScreenFrame | null; seq: number }>;
+  download(id: string): { path: string; name: string } | null;
+}
+
+/** What the panel may ask of this server's own browser: the app's
+ * browser:do, less what only makes sense on the computer at hand. */
+const PERSON_ACTIONS = new Set([
+  "navigate", "newTab", "closeTab", "selectTab", "back", "forward", "reload", "stop", "takeOver", "giveBack", "clearDownloads", "forgetSites",
+]);
+
 export interface RouteDeps extends RunDeps {
   /** Who an agent credential is, and why it may not drive the browser
    * when it may not; null for a request without one. */
@@ -662,6 +688,17 @@ export interface RouteDeps extends RunDeps {
   downloadsDir(): string;
   /** A small picture of the tab on screen, for a phone. */
   thumbnail(): Promise<{ jpeg: string; at: number } | null>;
+  /** Whose browser it is: the desktop app's, or this server's own. */
+  where(): "app" | "server";
+  /** Why this server's own browser cannot run, when it cannot. */
+  missing?(): BrowserMissing | null;
+  /** This server's own browser; absent where the app has the browser. */
+  own?: OwnBrowser;
+  /** The request came through Bloks Cloud, where every picture crosses
+   * twice: fewer of them, and at one pixel to a page pixel. */
+  relay?: boolean;
+  /** The request's query: the last picture the panel has. */
+  query?: URLSearchParams;
 }
 
 /**
@@ -675,7 +712,7 @@ export async function browserRoute(method: string, path: string, readBody: () =>
     if (!deps.agent) return { status: 401, body: { error: "no agent credential on this request" } };
     if (deps.agent.refused) return { status: 403, body: { error: deps.agent.refused } };
     if (method === "GET") {
-      if (!deps.available()) return { status: 200, body: { available: false, note: UNAVAILABLE } };
+      if (!deps.available()) return { status: 200, body: { available: false, note: deps.unavailable?.() ?? UNAVAILABLE } };
       const settings = deps.settings();
       const state = deps.lastState() as { control?: unknown; tabs?: unknown[]; downloads?: Array<{ name: string; path: string; state: string }> } | null;
       return {
@@ -699,7 +736,11 @@ export async function browserRoute(method: string, path: string, readBody: () =>
   if (path !== "/api/browser" && !path.startsWith("/api/browser/")) return null;
   if (deps.agent) return { status: 403, body: { error: "that is the person's; an agent uses /api/agent/browser" } };
   if (method === "GET" && path === "/api/browser") {
-    return { status: 200, body: { available: deps.available(), state: deps.available() ? deps.lastState() : null } };
+    const missing = deps.missing?.() ?? null;
+    return {
+      status: 200,
+      body: { available: deps.available(), where: deps.where(), ...(missing ? { missing } : {}), state: deps.available() ? deps.lastState() : null },
+    };
   }
   if (method === "GET" && path === "/api/browser/frame") {
     if (!deps.available()) return { status: 200, body: { live: false } };
@@ -707,12 +748,13 @@ export async function browserRoute(method: string, path: string, readBody: () =>
     return { status: 200, body: frame ? { live: true, mime: "image/jpeg", jpeg: frame.jpeg, at: frame.at } : { live: false } };
   }
   if (path === "/api/browser/settings") {
-    if (method === "GET") return { status: 200, body: { settings: deps.settings(), downloads: deps.downloadsDir(), available: deps.available() } };
+    const about = () => ({ downloads: deps.downloadsDir(), available: deps.available(), where: deps.where() });
+    if (method === "GET") return { status: 200, body: { settings: deps.settings(), ...about() } };
     if (method !== "PUT" && method !== "PATCH") return { status: 405, body: { error: "GET or PUT" } };
     const next = patchBrowserSettings(deps.settings(), await readBody());
     if ("error" in next) return { status: 400, body: { error: next.error } };
     deps.saveSettings(next.settings);
-    return { status: 200, body: { settings: next.settings, downloads: deps.downloadsDir(), available: deps.available() } };
+    return { status: 200, body: { settings: next.settings, ...about() } };
   }
   if (path === "/api/browser/command") {
     // another app on this computer, over MCP; never a phone or the network
@@ -722,5 +764,59 @@ export async function browserRoute(method: string, path: string, readBody: () =>
     if ("error" in valid) return { status: 400, body: { error: valid.error } };
     return runBrowserCommand(deps, { kind: "app", name: "Another app" }, valid.command);
   }
+  if (OWN_ROUTES.has(path) || path.startsWith("/api/browser/downloads/")) {
+    const own = deps.own;
+    if (!own) return { status: 409, body: { error: "This workspace's browser is in the Bloks desktop app on the computer that runs it.", where: deps.where() } };
+    const missing = deps.missing?.() ?? null;
+    if (missing) return { status: 503, body: { error: deps.unavailable?.() ?? UNAVAILABLE, missing } };
+    return ownRoute(method, path, readBody, own, deps);
+  }
   return { status: 404, body: { error: "no such browser route" } };
+}
+
+const OWN_ROUTES = new Set(["/api/browser/do", "/api/browser/viewport", "/api/browser/input", "/api/browser/screen"]);
+
+/** The person's routes to this server's own browser, from any of their
+ * own devices: the owner's alone, as every /api/browser route is. */
+async function ownRoute(method: string, path: string, readBody: () => Promise<unknown>, own: OwnBrowser, deps: RouteDeps): Promise<RunResult> {
+  if (path === "/api/browser/screen") {
+    if (method !== "GET") return { status: 405, body: { error: "GET" } };
+    const after = Math.max(0, Math.floor(Number(deps.query?.get("after") ?? 0)) || 0);
+    // Through Bloks Cloud an answer has to come inside the twenty seconds
+    // it holds a request, and pictures are spaced so they never queue
+    // behind each other on the way; nearer, they come as fast as the
+    // page changes, ten a second at most.
+    const said = await own.screen(after, deps.relay ? { waitMs: 8_000, gapMs: 250 } : { waitMs: 20_000, gapMs: 0 });
+    return { status: 200, body: said.frame ? { ...said.frame } : { seq: said.seq } };
+  }
+  if (path.startsWith("/api/browser/downloads/")) {
+    if (method !== "GET") return { status: 405, body: { error: "GET" } };
+    const found = own.download(decodeURIComponent(path.slice("/api/browser/downloads/".length)));
+    return found ? { status: 200, body: {}, file: found } : { status: 404, body: { error: "no such download here" } };
+  }
+  if (method !== "POST") return { status: 405, body: { error: "POST" } };
+  const body = (await readBody()) as Record<string, unknown> | null;
+  if (path === "/api/browser/viewport") {
+    const viewport = readViewport(body, { relay: deps.relay });
+    if (!viewport) return { status: 400, body: { error: "width and height are the panel's size in pixels" } };
+    await own.resize(viewport);
+    return { status: 200, body: { ok: true } };
+  }
+  if (path === "/api/browser/input") {
+    const read = readInput(body);
+    if ("error" in read) return { status: 400, body: { error: read.error } };
+    const done = await own.input(read.events);
+    return { status: done.ok ? 200 : 409, body: { ...done } };
+  }
+  const action = String(body?.action ?? "");
+  if (!PERSON_ACTIONS.has(action)) return { status: 400, body: { error: "the browser does not do that" } };
+  const arg = body?.arg === undefined || body.arg === null ? undefined : String(body.arg).slice(0, 2048);
+  try {
+    const answer = await own.person(action, arg);
+    return { status: answer.error ? 422 : 200, body: { ...answer } };
+  } catch (error) {
+    // Chrome missing or would not start: the person's panel says which
+    const missing = (error as { missing?: unknown } | null)?.missing;
+    return { status: 503, body: { error: error instanceof Error ? error.message : String(error), ...(missing ? { missing } : {}) } };
+  }
 }

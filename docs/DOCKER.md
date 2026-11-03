@@ -308,6 +308,12 @@ time.
 To turn it off, comment the line out again and run
 `docker compose up -d --remove-orphans`.
 
+The Bloks browser beside the chat is a different thing: the browser you
+and your agents share, which runs inside the Bloks container itself and
+needs Chrome or Chromium there. The image does not include one; see
+[the Bloks browser on your server](SELF_HOSTING.md#the-bloks-browser-on-your-server)
+for the few lines that add it.
+
 ## When bloks.dev is down, or gone
 
 Nothing here notices. With `BLOKS_CLOUD=off` the server never contacts

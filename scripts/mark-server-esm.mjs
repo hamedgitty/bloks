@@ -9,9 +9,17 @@
 // common; on Windows the app is installed under the home folder) the
 // server and every helper it spawns failed to load with "Failed to load
 // the ES module". This file makes the answer the same on every machine.
-import { writeFileSync } from "node:fs";
+//
+// It also copies in the server's few plain .mjs modules, which tsc reads
+// for their .d.mts and never emits: the Bloks browser's rules
+// (server/browser-core.mjs), which the desktop app loads as they are and
+// the compiled server imports from beside itself.
+import { copyFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 writeFileSync(join(root, "dist-server", "package.json"), `${JSON.stringify({ type: "module" }, null, 2)}\n`);
+for (const name of readdirSync(join(root, "server"))) {
+  if (name.endsWith(".mjs")) copyFileSync(join(root, "server", name), join(root, "dist-server", name));
+}

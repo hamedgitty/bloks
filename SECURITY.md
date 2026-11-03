@@ -353,9 +353,12 @@ instead (see People in your workspaces).
 
 ## The Bloks browser
 
-The desktop app has a browser beside the chat that agents drive and you
-watch (`electron/app-browser.mjs`, `server/app-browser.ts`). It is
-signed in as you wherever you sign in, which makes it worth guarding.
+Bloks has a browser beside the chat that agents drive and you watch
+(`server/browser-core.mjs`, `server/app-browser.ts`). In the desktop app
+it is the app's own (`electron/app-browser.mjs`); on a server with no app
+behind it, the server keeps it, a headless Chrome
+(`server/server-browser.ts`). It is signed in as you wherever you sign
+in, which makes it worth guarding.
 
 - **Its own session, nothing of the app's.** Each workspace browses in a
   persistent session partition of its own (`persist:bloks-browser-<id>`):
@@ -381,9 +384,24 @@ signed in as you wherever you sign in, which makes it worth guarding.
   route another app uses (`/api/browser`) are never reachable with an
   agent's credential. Another AI app reaches it through the MCP server,
   from this computer only, and gets less than an agent: nothing it does
-  can ask you, so whatever would ask is refused for it. Without the
-  desktop app (`bloks-server`, a hosted workspace) the browser is simply
-  unavailable.
+  can ask you, so whatever would ask is refused for it. A hosted
+  workspace has no Bloks browser.
+- **On a server of your own.** With no desktop app behind it
+  (`bloks-server`, the Docker image), the server runs the browser
+  itself: a headless Chrome in a profile of the workspace's own
+  (`browser-session` in its data folder), behind the same rules, the
+  same commands and the same guard on every navigation, redirect and
+  popup (Chrome's Fetch domain; every page starts paused until its guard
+  is on). You see it as pictures and use it with input events
+  (`/api/browser/screen`, `/api/browser/input`, `/api/browser/do`), which
+  are the owner's alone, from any of your paired devices or a web door
+  session: never a member's device, a guest, an agent's credential or
+  another origin. Pictures go only while a panel looks, and input is
+  sent in request bodies, sealed end to end through Bloks Cloud, never in
+  an address or a log. The profile holds your sign-ins the way the data
+  folder holds the workspace's other secrets: anything that can read
+  that folder as the account Bloks runs as can read them, so keep agents'
+  own work (the Local VM, a container place) apart from it.
 - **Which sites.** Each workspace has a list of sites agents may use and
   a list they never use, and a mode. In Ask first, the default, a site
   not on the allowed list asks you on a card the first time an agent

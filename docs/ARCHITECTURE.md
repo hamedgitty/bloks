@@ -3211,8 +3211,12 @@ panel says meeting notes need the Bloks app on a Mac.
 
 ## The Bloks browser
 
-A browser in the desktop window, beside the chat, that agents drive and
-the person watches and takes over. Three parts, each in its own place:
+A browser beside the chat that agents drive and the person watches and
+takes over: the desktop app's own when it runs the workspace, the
+server's when nothing does. The rules and the agent's commands are one
+file, `server/browser-core.mjs`, plain JavaScript that the app loads from
+its bundle and the server's build copies beside the compiled server.
+Four parts, each in its own place:
 
 - **The app** (`electron/app-browser.mjs`, wired in `electron/main.mjs`).
   Each workspace has one `AppBrowser`: its tabs, who drives each (the
@@ -3256,15 +3260,50 @@ the person watches and takes over. Three parts, each in its own place:
   the person's other devices' view; `POST /api/browser/command` is the MCP
   server's way in, local only, with no cards. A turn's site grants end
   with the turn, and so does an agent's hold on the browser.
+- **A server's own** (`server/server-browser.ts`). Where there is no
+  desktop line (and the server is not hosted), `ServerBrowser` keeps an
+  `AppBrowser` whose tabs are pages of a headless Chrome (`launch` with
+  `headless`, profile `<data>/browser-session`, binary from
+  `BLOKS_BROWSER` or `chromePath`), all on one browser socket with
+  flattened page sessions (`Target.setAutoAttach`, `waitForDebuggerOnStart`).
+  Each page gets `Fetch.enable` for documents and loopback requests, the
+  panel's size (`Emulation.setDeviceMetricsOverride`) and Chrome's own
+  user agent without "Headless", and only then runs. `Fetch.requestPaused`
+  applies `refusedNavigation` and, for an agent's tab, `allowedForAgent`,
+  failing a main-frame document with `Aborted` so the page stays where it
+  was. A popup is adopted as a tab driven by whoever drove its opener.
+  Downloads use `Browser.setDownloadBehavior` and are renamed with
+  `downloadName` when they finish. The agent's commands reach it through
+  the same `runBrowserCommand` as the app's (`askBrowser` in index.ts).
+  The person's side: `POST /api/browser/viewport` (the panel's size),
+  `GET /api/browser/screen?after=N` (a long poll for the next
+  `Page.startScreencast` picture of the shown tab, eight seconds and
+  spaced through Bloks Cloud, twenty otherwise; asking keeps the pictures
+  running for fifteen seconds), `POST /api/browser/input` (mouse, wheel,
+  key and text events, bounded by `readInput`; a press or a key while an
+  agent drives takes over, a move or a wheel is dropped), `POST
+  /api/browser/do` (the app's `browser:do` list, less the computer's own
+  actions) and `GET /api/browser/downloads/:id`. `GET /api/browser` says
+  `where` the browser is, and `missing` when Chrome is not there or
+  `BLOKS_BROWSER=off`. Chrome closes after ten minutes with no tabs and
+  with the server.
 - **The page** (`src/components/browser/BrowserPanel.tsx`,
   `src/lib/appBrowser.ts`, `src/components/settings/BrowserPage.tsx`).
   The dock on the chat's right, resizable and over the chat when the
   window is too narrow, opened from the header's globe; tabs with the
   driving agent's face, the address bar, back, forward, reload, the line
   saying who has the browser with Take over and Give back, and the
-  downloads shelf. Anywhere without the app, the agent's conversation
-  shows "Browsing in the desktop app" from the server's `browser.app` frames, with
-  the picture from `/api/browser/frame` every two seconds while visible.
+  downloads shelf. The page learns where the browser is
+  (`useBrowserHome`): "own" when the app answers `browser:state` for this
+  workspace, else the server's `where`. For a server's browser the same
+  panel draws the page itself (`Screen`: the pictures, the pointer, a
+  hidden field for keys, paste and composition, a tap and a swipe on a
+  touch screen, `screenInput.ts` batching it all), and the server's
+  `browser.reveal` frame opens it where it fits beside the chat. Where
+  the app runs the workspace on another computer, the agent's
+  conversation shows "Browsing in the desktop app" from the server's
+  `browser.app` frames, with the picture from `/api/browser/frame` every
+  two seconds while visible.
 
 ## Terminals
 
