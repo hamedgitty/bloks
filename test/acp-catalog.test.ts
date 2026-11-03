@@ -1,13 +1,14 @@
 // before anything loads server/config.ts, so nothing lands in ~/.bloks
 import "./helpers/own-data.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 
+import { leftOutBecause } from "../server/backup.ts";
 import { instanceConfigs } from "../server/config.ts";
-import { ACP_SPECS, acpDriver } from "../server/drivers/acp.ts";
+import { ACP_SPECS, acpDriver, isolatedOpencodeEnv, isolatedOpencodePaths } from "../server/drivers/acp.ts";
 import { BUILT_IN_DRIVERS } from "../server/drivers/builtIn.ts";
 import { onPath, widenPath } from "../server/path.ts";
 import { CLI_PROVIDERS } from "../server/providers.ts";
@@ -329,5 +330,52 @@ test("OpenCode with no provider connected is not reported as signed out", async 
         process.env.HOME = prev.HOME;
         process.env.USERPROFILE = prev.USERPROFILE;
         process.env.PATH = prev.PATH;
+    }
+});
+
+test("isolated OpenCode uses workspace-private config, data, state and cache roots and seeds auth", async () => {
+    const home = mkdtempSync(join(tmpdir(), "bloks-opencode-iso-"));
+    const dataDir = join(home, ".bloks");
+    const sharedAuthDir = join(home, ".local", "share", "opencode");
+    mkdirSync(sharedAuthDir, { recursive: true });
+    writeFileSync(join(sharedAuthDir, "auth.json"), JSON.stringify({ anthropic: { type: "api", key: "test-key" } }), { mode: 0o600 });
+
+    const env = isolatedOpencodeEnv({ BLOKS_DATA_DIR: dataDir }, home);
+    const paths = isolatedOpencodePaths({ BLOKS_DATA_DIR: dataDir }, home);
+    assert.equal(env.OPENCODE_CONFIG_DIR, paths.configDir);
+    assert.equal(env.XDG_CONFIG_HOME, paths.configDir);
+    assert.equal(env.XDG_DATA_HOME, paths.dataDir);
+    assert.equal(env.XDG_STATE_HOME, paths.stateDir);
+    assert.equal(env.XDG_CACHE_HOME, paths.cacheDir);
+    assert.deepEqual(JSON.parse(readFileSync(join(paths.configDir, "service.json"), "utf8")), { disabled: true });
+    assert.deepEqual(JSON.parse(readFileSync(join(paths.opencodeDataDir, "auth.json"), "utf8")), {
+        anthropic: { type: "api", key: "test-key" },
+    });
+    assert.equal(leftOutBecause("opencode", true, false), "engine sign-ins, which stay on this computer");
+
+    const mapDefault = instanceConfigs({});
+    assert.equal((mapDefault.opencode?.config as { isolated?: boolean } | undefined)?.isolated, undefined);
+    const mapIso = instanceConfigs({ opencode: { isolated: true } });
+    assert.equal((mapIso.opencode?.config as { isolated?: boolean } | undefined)?.isolated, true);
+
+    const h = await startHarness();
+    try {
+        const initial = await h.json("/api/config");
+        assert.deepEqual(initial.opencode, { isolated: false });
+        const updated = await h.json("/api/config", {
+            method: "PATCH",
+            body: JSON.stringify({ opencode: { isolated: true } }),
+        });
+        assert.deepEqual(updated.opencode, { isolated: true });
+        const invalid = await h.fetch("/api/config", {
+            method: "PATCH",
+            body: JSON.stringify({ opencode: { isolated: "yes" } }),
+        });
+        assert.equal(invalid.status, 400);
+        const signIn = await h.json("/api/engines/opencode/signin", { method: "POST" });
+        assert.match(signIn.command ?? "", /OPENCODE_CONFIG_DIR=.*XDG_DATA_HOME=.*opencode auth login/);
+    } finally {
+        await h.stop();
+        rmSync(home, { recursive: true, force: true });
     }
 });

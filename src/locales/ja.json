@@ -2116,6 +2116,8 @@
   "enginesPanel.monthlySpendingLimit": "月間の支出上限",
   "enginesPanel.noSignInDetected": "サインインが検出されません。{hint}",
   "enginesPanel.notFound": "見つかりません",
+  "enginesPanel.opencodeIsolated": "設定、データ、セッションを分離する",
+  "enginesPanel.opencodeIsolatedNote": "OpenCode の設定、プラグイン、状態、キャッシュ、セッションデータベースを ~/.config/opencode や ~/.local/share/opencode と共有せず、このワークスペース内に保持します。",
   "enginesPanel.pasteYourKey": "キーを貼り付け",
   "enginesPanel.signIn": "サインイン",
   "enginesPanel.switchedOff": "オフです。オンにするまでターンを開始しません。",

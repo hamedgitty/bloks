@@ -43,6 +43,7 @@ import { legacyToolTitle } from "./tool-command.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { installCommand } from "./engine-commands.ts";
+import { isolatedOpencodeSignInCommand } from "./drivers/acp.ts";
 import { ENGINE_SETUP, checkEnginePath, engineSetupView, installEngine, openInTerminal, openSignIn, runSetupScript } from "./engine-setup.ts";
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
@@ -22133,6 +22134,7 @@ function agentNamed(asked: unknown): BotRecord | null {
 function configStatus() {
   return {
     codex: { speed: resolveCodexSpeed(cfg).default },
+    opencode: { isolated: cfg.opencode?.isolated === true },
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     speech: speech.speechConfigured(cfg),
@@ -29333,7 +29335,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (m && method === "POST") {
       if (!local || asAgent) return json(res, 403, { error: "not from here" });
       if (!ENGINE_SETUP[m[1]]) return json(res, 404, { error: "no such engine" });
-      if (m[2] === "signin") return json(res, 200, openSignIn(m[1]));
+      if (m[2] === "signin") {
+        if (m[1] === "opencode" && cfg.opencode?.isolated) {
+          const cli = cfg.enginePaths?.opencode || "opencode";
+          const command = isolatedOpencodeSignInCommand(cli);
+          return json(res, 200, { opened: openInTerminal("signin-opencode", command), command });
+        }
+        return json(res, 200, openSignIn(m[1]));
+      }
       const result = await installEngine(m[1]);
       record({ at: Date.now(), kind: "engine.installed", actor: "you", summary: `${m[1]}: ${result.ok ? "installed" : "failed"}` });
       return json(res, 200, result);
@@ -34361,6 +34370,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (body.codex !== undefined && (!isRecord(body.codex) || !isCodexSpeed(body.codex.speed) || Object.keys(body.codex).some((key) => key !== "speed"))) {
         return json(res, 400, { error: "codex.speed must be standard or fast" });
       }
+      if (
+        body.opencode !== undefined &&
+        (!isRecord(body.opencode) ||
+          typeof body.opencode.isolated !== "boolean" ||
+          Object.keys(body.opencode).some((key) => key !== "isolated"))
+      ) {
+        return json(res, 400, { error: "opencode.isolated must be true or false" });
+      }
       if (body.delivery !== undefined && (
         !isRecord(body.delivery) ||
         (body.delivery.mode === undefined && body.delivery.askModel === undefined) ||
@@ -34437,6 +34454,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       let wroteSomething = false;
       if (isRecord(body.codex)) {
         patch.codex = { speed: body.codex.speed };
+      }
+      let opencodeChanged = false;
+      if (isRecord(body.opencode)) {
+        const nextIsolated = body.opencode.isolated === true;
+        opencodeChanged = Boolean(cfg.opencode?.isolated) !== nextIsolated;
+        patch.opencode = { isolated: nextIsolated };
       }
       let compactionLineChanged = false;
       if (body.speech && typeof body.speech === "object" && !Array.isArray(body.speech)) {
@@ -34686,7 +34709,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // rebuilds, and these two reach the environment of all of them.
       // The rest (profile, speech, Composio, and the sections saved above)
       // are read fresh when they are used.
-      if (patch.xai || patch.box) await reloadProviders();
+      if (patch.xai || patch.box || opencodeChanged) await reloadProviders();
+      if (opencodeChanged) {
+        record({
+          at: Date.now(),
+          kind: "settings.changed",
+          actor: "you",
+          summary: `OpenCode: ${cfg.opencode?.isolated ? "isolated config, data and sessions" : "shared computer config and sessions"}`,
+        });
+        const instances = await registry.describe();
+        broadcast({ kind: "instances", instances });
+        broadcast({ kind: "providers", ...(await providerCatalog()) });
+      }
       // a new project key is a new line to Composio's events, and none is none
       if (patch.composio) syncAppDelivery();
       const status = configStatus();

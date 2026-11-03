@@ -2205,6 +2205,8 @@
   "enginesPanel.monthlySpendingLimit": "Plafond de dépenses mensuel",
   "enginesPanel.noSignInDetected": "Aucune connexion détectée. {hint}",
   "enginesPanel.notFound": "Introuvable",
+  "enginesPanel.opencodeIsolated": "Isoler la configuration, les données et les sessions",
+  "enginesPanel.opencodeIsolatedNote": "Conserver la configuration, les plugins, l'état, le cache et la base de sessions d'OpenCode dans cet espace de travail plutôt que de partager ~/.config/opencode et ~/.local/share/opencode.",
   "enginesPanel.pasteYourKey": "Colle ta clé",
   "enginesPanel.signIn": "Se connecter",
   "enginesPanel.switchedOff": "Désactivé. Ne démarre aucun tour tant que tu ne l'actives pas.",

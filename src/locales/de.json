@@ -2205,6 +2205,8 @@
   "enginesPanel.monthlySpendingLimit": "Monatliches Ausgabelimit",
   "enginesPanel.noSignInDetected": "Keine Anmeldung erkannt. {hint}",
   "enginesPanel.notFound": "Nicht gefunden",
+  "enginesPanel.opencodeIsolated": "Konfiguration, Daten und Sitzungen isolieren",
+  "enginesPanel.opencodeIsolatedNote": "Konfiguration, Plugins, Status, Cache und Sitzungsdatenbank von OpenCode in diesem Workspace aufbewahren, statt ~/.config/opencode und ~/.local/share/opencode zu teilen.",
   "enginesPanel.pasteYourKey": "Füge deinen Schlüssel ein",
   "enginesPanel.signIn": "Anmelden",
   "enginesPanel.switchedOff": "Aus. Startet keinen Durchgang, bis du es einschaltest.",
