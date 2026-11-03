@@ -245,6 +245,16 @@ export function cacheTtlOf(usage: any): "5m" | "1h" | undefined {
 }
 
 /**
+ * Claude Code saying the session it was asked to resume is not there: its
+ * own file under ~/.claude/projects was cleaned up or moved (GitHub 477).
+ * Nothing else means that the session is gone, so nothing else starts a
+ * new one or drops the session Bloks has kept for the conversation.
+ */
+export function isMissingSession(text: unknown): boolean {
+  return typeof text === "string" && /no conversation found with session id/i.test(text);
+}
+
+/**
  * Claude Code's own words when a subscription runs out, as the whole of a
  * message: "Claude AI usage limit reached|1759000000", "You've hit your
  * limit · resets 3pm (Europe/Berlin)", "5-hour limit reached ∙ resets 3pm",
@@ -867,14 +877,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (window) emit({ ...envelope(threadId, turnId), type: "context.reading", used: null, window });
         const total = typeof frame.total_cost_usd === "number" && Number.isFinite(frame.total_cost_usd) ? frame.total_cost_usd : null;
         const session = typeof frame.session_id === "string" ? frame.session_id : sessionId;
-        if (retriedMissingSession && sessionModel === null && typeof session === "string" && session) {
-          emit({
-            ...envelope(threadId, turnId),
-            type: "session.started",
-            sessionId: session,
-            model: turn.model ?? null,
-          });
-        }
         if (stopping) {
           finish(false, stalled ? "tool_stalled" : "interrupted", total !== null && session ? sessionCosts.turn(session, total, Boolean(activeResume)) : null);
           return;
@@ -1098,12 +1100,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           if (inputs.requesting(frame)) checkCompletion();
           return;
         }
+        // A session that is not there ends before it starts: no init, and
+        // a result that names the missing id. Held back rather than taken
+        // as the turn's end, so the turn can go on in a new session once
+        // this process is gone (see `ended`).
         if (
           activeResume &&
           !retriedMissingSession &&
+          sessionModel === null &&
           frame.type === "result" &&
           Array.isArray(frame.errors) &&
-          frame.errors.some((e: unknown) => typeof e === "string" && /no conversation found with session id/i.test(e))
+          frame.errors.some(isMissingSession)
         ) {
           missingSession = true;
           closeInput();
@@ -1415,7 +1422,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       const ended = (code: number | null) => {
         if (sealed) return;
-        if (/no conversation found with session id/i.test(stderr)) missingSession = true;
+        if (isMissingSession(stderr)) missingSession = true;
+        // The session behind the cursor is gone, and Claude Code does not
+        // open a new one by itself, so every turn after would fail the
+        // same way (GitHub 477). Once per turn, and only when nothing of
+        // it reached a session: no init, no result, no words steered in,
+        // nobody stopping it. Then the words never ran, and going on in a
+        // new session told the conversation (turn.handoff) sends them
+        // once, as Codex and ACP do when a resume fails. A /compact has
+        // nothing to compact in a new session, and fails instead.
         if (
           activeResume &&
           missingSession &&

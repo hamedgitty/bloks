@@ -135,6 +135,7 @@ import { planNotices, sortNotices } from "./plan-usage.ts";
 import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+import { isMissingSession } from "./drivers/claude.ts";
 import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.ts";
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -6241,12 +6242,18 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       // What the incident desk reads of this end, taken before recoverTurn
       // clears it.
       const endedErrors = [...(turnErrors.get(event.threadId) ?? [])];
+      // A Claude Code session that is gone and could not be gone on from
+      // inside the turn (words were steered into it, or it was stopping):
+      // never resumed again, so whatever answers next starts a new session
+      // told the conversation, rather than failing on it forever
+      // (GitHub 477). Only on Claude Code's own words for it.
       if (
         event.ok === false &&
+        event.provider === "claudeAgent" &&
         !laneTelegramPerson.has(event.threadId) &&
-        /no conversation found with session id/i.test([...endedErrors, event.stopReason ?? ""].join("\n"))
+        [...endedErrors, event.stopReason].some(isMissingSession)
       ) {
-        store.dropSession(event.threadId, ranOn.instanceId);
+        store.dropSession(event.threadId, event.providerInstanceId ?? ranOn.instanceId);
       }
       const endedAsked = turnAsked.get(event.threadId) ?? lastAsked.get(event.threadId);
       const handedOver = recoverTurn(
@@ -9141,6 +9148,9 @@ async function startClaimedTurn(
                 : `(Recent conversation in this room:\n${room.text})`,
             );
           }
+          // A session that turns out to be gone never heard what came
+          // before `seen`, so a new one is told the room as a first turn
+          // here is, held to the same last thirty messages (GitHub 477).
           if (seen) {
             const fullRoom = roomTranscript(roomId, bot.id);
             const fullAhead = [
@@ -9268,7 +9278,9 @@ async function startClaimedTurn(
         // (SendTurnInput.forkFrom), so the person's own file is not written.
         ...(task.imported?.resumes ? { forkFrom: task.imported.sessionId } : {}),
         // If the session behind the cursor turns out to be gone, the new
-        // one is told the bounded story rather than nothing.
+        // one is told the bounded story rather than nothing. Claude Code
+        // does not open one by itself; its driver does, once, when the CLI
+        // says the session is not there (server/drivers/claude.ts).
         ...(typeof resumeCursor === "string" && !nativeReplay
           ? (() => {
               if (roomHandoffText) return { handoff: roomHandoffText };
@@ -9398,7 +9410,9 @@ async function startClaimedTurn(
           });
           return;
         }
-        // the session compacted is the one the words go into
+        // the session compacted is the one the words go into; one the
+        // compaction found gone was dropped, and the words open a new
+        // session told the conversation instead
         const now = store.taskByThread(task.id)?.task.resumeCursors[instanceId];
         sending.resumeCursor = typeof now === "string" ? now : undefined;
         if (!sending.resumeCursor && sending.handoff) sending.text = sending.handoff;
@@ -14425,7 +14439,10 @@ function onIdleCompaction(event: RuntimeEvent) {
       }
       break;
     case "runtime.error":
-      if (event.providerInstanceId && /no conversation found with session id/i.test(event.message)) {
+      // a /compact into a Claude Code session that is gone: the turn it
+      // was making room for, or the next one, starts a new session told
+      // the conversation instead (GitHub 477)
+      if (event.providerInstanceId && event.provider === "claudeAgent" && isMissingSession(event.message)) {
         store.dropSession(event.threadId, event.providerInstanceId);
       }
       break;

@@ -1290,6 +1290,18 @@ leaves messages out and the agent's engine can summarise, the older part
 is folded into the summary first; otherwise the message says how many
 were left out. The thread itself keeps every message.
 
+A cursor that no longer resumes is how Claude Code's own session cleanup
+looks from here: `--resume` exits before the session starts, saying "No
+conversation found with session ID" (GitHub 477). The Claude driver then
+goes on once, inside the same turn, in a new session (`--session-id`)
+sent the turn's `handoff`, as Codex and ACP do when a resume fails; in a
+room that is the room as a first turn there hears it. Only before
+anything of the turn reached a session: no init, no result, no words
+steered in, nobody stopping it, and never for a `/compact`. Otherwise the
+turn fails as it did, and on those words alone the cursor is dropped
+(`dropSession`), so the next turn starts a new session told the
+conversation rather than failing on the same id forever.
+
 A fold reads every message it covers, in order (`summaryPasses`). Up to
 40,000 characters is one summary request; a longer stretch is read in
 several, each carrying the summary so far, and a message too long for

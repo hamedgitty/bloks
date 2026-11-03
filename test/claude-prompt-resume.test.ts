@@ -26,7 +26,7 @@ interface Call {
   error?: string;
 }
 
-async function setup(t: TestContext, version: CliVersion) {
+async function setup(t: TestContext, version: CliVersion, env: Record<string, string> = {}) {
   const home = mkdtempSync(join(tmpdir(), "bloks-claude-prompt-"));
   let stop: (() => Promise<void>) | undefined;
   t.after(async () => {
@@ -37,10 +37,13 @@ async function setup(t: TestContext, version: CliVersion) {
   const versionFile = join(home, "version.json");
   const callsFile = join(home, "calls.json");
   const sessionsFile = join(home, "sessions.json");
+  // the next resume fails with these words, once, as an engine having a
+  // moment does; after its session started, when `afterInit` says so
+  const failFile = join(home, "fail-next-resume.json");
   const setVersion = (next: CliVersion) => writeFileSync(versionFile, JSON.stringify(next));
   setVersion(version);
   writeFileSync(cli, `#!${process.execPath}
-import { existsSync, readFileSync, statSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const version = JSON.parse(readFileSync(${JSON.stringify(versionFile)}, "utf8"));
 if (args[0] === "--version") {
@@ -71,6 +74,16 @@ process.stdin.on("data", (chunk) => (input += chunk));
     console.error(call.error);
     process.exit(1);
   }
+  if (args.includes("--resume") && existsSync(${JSON.stringify(failFile)})) {
+    const fail = JSON.parse(readFileSync(${JSON.stringify(failFile)}, "utf8"));
+    call.error = fail.words;
+    unlinkSync(${JSON.stringify(failFile)});
+    calls.push(call);
+    writeFileSync(${JSON.stringify(callsFile)} + ".tmp", JSON.stringify(calls)); renameSync(${JSON.stringify(callsFile)} + ".tmp", ${JSON.stringify(callsFile)});
+    if (fail.afterInit) console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet-5" }));
+    console.error(call.error);
+    process.exit(1);
+  }
   if (args.includes("--resume") && !previous) {
     call.error = "No conversation found with session ID: " + sessionId;
     calls.push(call);
@@ -96,7 +109,7 @@ process.stdin.on("data", (chunk) => (input += chunk));
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({
     instances: { claude: { driver: "claudeAgent", config: { cli, permissionMode: "bypassPermissions" } } },
   }));
-  const h = await startHarness({ HOME: home });
+  const h = await startHarness({ HOME: home, ...env });
   stop = () => h.stop();
   const { bot } = await h.json("/api/bots", {
     method: "POST", body: JSON.stringify({ name: "Prompt reader", description: "OLD_ABOUT", skills: ["OLD_SKILL"] }),
@@ -124,7 +137,21 @@ process.stdin.on("data", (chunk) => (input += chunk));
     assert.fail(`the fake CLI did not finish turn ${n}: ${h.logs().slice(-800)}`);
   };
   const forgetSessions = () => writeFileSync(sessionsFile, "{}");
-  return { h, bot, patch, turn, calls, setVersion, forgetSessions };
+  const failNextResume = (words: string, afterInit = false) => writeFileSync(failFile, JSON.stringify({ words, afterInit }));
+  /** Until the CLI has been run `n` times in all and the agent is idle. */
+  const settle = async (n: number) => {
+    for (let i = 0; i < 200; i++) {
+      const seen = calls();
+      const { bots } = await h.json("/api/bots?messages=0");
+      if (seen.length >= n && !bots.find((b: any) => b.id === bot.id)?.busy) {
+        assert.equal(seen.length, n, "the CLI was run more times than this");
+        return seen;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail(`the fake CLI was not run ${n} times: ${h.logs().slice(-800)}`);
+  };
+  return { h, bot, patch, turn, calls, setVersion, forgetSessions, failNextResume, settle };
 }
 
 test("a resumed Claude turn uses current About and skills with the same session and history", async (t) => {
@@ -210,25 +237,100 @@ test("a missing resumed Claude session opens a new session with the conversation
     body: JSON.stringify({ text: "SECOND_TURN_QUESTION" }),
   });
   assert.equal(accepted.status, 202);
-  for (let i = 0; i < 200; i++) {
-    const seen = h.calls();
-    const { bots } = await h.h.json("/api/bots");
-    const current = bots.find((b: any) => b.id === h.bot.id);
-    if (seen.length >= 3 && !current?.busy) {
-      assert.equal(seen.length, 3);
-      assert.match(seen[1].error ?? "", /No conversation found with session ID/);
-      assert.ok(seen[2].argv.includes("--session-id"));
-      assert.ok(!seen[2].argv.includes("--resume"));
-      assert.notEqual(seen[2].sessionId, first.sessionId);
-      assert.match(seen[2].prompt ?? "", /FIRST_SESSION_FACT/);
-      assert.match(seen[2].prompt ?? "", /SECOND_TURN_QUESTION/);
-      const notices = current.messages.filter((m: any) => m.kind === "notice");
-      assert.equal(notices.length, 0);
-      const third = await h.turn("THIRD_TURN_RESUMES_NEW_SESSION");
-      assert.equal(third.argv[third.argv.indexOf("--resume") + 1], seen[2].sessionId);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.fail("the missing-session fallback did not complete");
+  const seen = await h.settle(3);
+  assert.match(seen[1].error ?? "", /No conversation found with session ID/);
+  assert.equal(seen[1].argv[seen[1].argv.indexOf("--resume") + 1], first.sessionId);
+  // once, in a new session, never resuming the one that is gone
+  assert.ok(seen[2].argv.includes("--session-id"));
+  assert.ok(!seen[2].argv.includes("--resume"));
+  assert.ok(!seen[2].argv.includes("--system-prompt-snapshot"));
+  assert.notEqual(seen[2].sessionId, first.sessionId);
+  assert.equal(seen[2].error, undefined);
+  assert.deepEqual(seen[2].history, []);
+  // told the conversation so far, and the new words exactly once
+  const told = seen[2].prompt ?? "";
+  assert.match(told, /^You are picking up this conversation in a new session/);
+  assert.match(told, /FIRST_SESSION_FACT/);
+  assert.equal(told.split("SECOND_TURN_QUESTION").length - 1, 1, "the new words go in once");
+  const { bots } = await h.h.json("/api/bots");
+  const current = bots.find((b: any) => b.id === h.bot.id);
+  assert.equal(current.messages.filter((m: any) => m.kind === "notice").length, 0);
+  assert.equal(current.messages.filter((m: any) => m.text === "SECOND_TURN_QUESTION").length, 1);
+  // and the next turn carries on the new session, as any turn does
+  const third = await h.turn("THIRD_TURN_RESUMES_NEW_SESSION");
+  assert.equal(third.argv[third.argv.indexOf("--resume") + 1], seen[2].sessionId);
+  assert.deepEqual(third.history, [told]);
+  assert.doesNotMatch(third.prompt ?? "", /FIRST_SESSION_FACT/);
+});
+
+test("a resumed turn that fails for another reason keeps its session and opens no other", async (t) => {
+  const h = await setup(t, { version: "2.1.300 (Claude Code)", supportsFlag: true });
+  const first = await h.turn("KEEP_THIS_SESSION");
+  h.failNextResume("The connection was reset while reading the session");
+  const accepted = await h.h.fetch(`/api/bots/${h.bot.id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ text: "AFTER_THE_HICCUP" }),
+  });
+  assert.equal(accepted.status, 202);
+  // the turn ends on the failure, with no second run in a new session
+  const seen = await h.settle(2);
+  assert.equal(seen[1].error, "The connection was reset while reading the session");
+  assert.equal(seen[1].argv[seen[1].argv.indexOf("--resume") + 1], first.sessionId);
+  const { bots } = await h.h.json("/api/bots");
+  assert.ok(bots.find((b: any) => b.id === h.bot.id).messages.some((m: any) => m.kind === "notice" && /connection was reset/.test(m.text)));
+  // and the session Bloks keeps for the conversation is the one resumed next
+  const next = await h.turn("NEXT_TURN");
+  assert.equal(next.argv[next.argv.indexOf("--resume") + 1], first.sessionId);
+  assert.ok(!next.argv.includes("--session-id"));
+  assert.deepEqual(next.history, ["KEEP_THIS_SESSION"]);
+});
+
+test("a missing session the turn could not go on from is dropped, and the next turn starts anew", async (t) => {
+  const h = await setup(t, { version: "2.1.300 (Claude Code)", supportsFlag: true });
+  const first = await h.turn("REMEMBER_THE_FIRST");
+  // said after the session had started: the words may have reached it,
+  // so this turn is not run again in another session
+  h.failNextResume(`No conversation found with session ID: ${first.sessionId}`, true);
+  const accepted = await h.h.fetch(`/api/bots/${h.bot.id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ text: "LOST_IN_THE_GONE_SESSION" }),
+  });
+  assert.equal(accepted.status, 202);
+  const seen = await h.settle(2);
+  assert.match(seen[1].error ?? "", /No conversation found/);
+  // but the session is never resumed again: the next turn is a new one,
+  // told the conversation so far
+  const next = await h.turn("AFTER_THE_DROP");
+  assert.ok(next.argv.includes("--session-id"));
+  assert.ok(!next.argv.includes("--resume"));
+  assert.notEqual(next.sessionId, first.sessionId);
+  assert.match(next.prompt ?? "", /REMEMBER_THE_FIRST/);
+  assert.match(next.prompt ?? "", /AFTER_THE_DROP/);
+});
+
+test("a room speaker whose session is gone goes on in a new one told the room", async (t) => {
+  const h = await setup(t, { version: "2.1.300 (Claude Code)", supportsFlag: true });
+  await h.patch({ name: "Keeper" });
+  const post = (path: string, body: unknown) => h.h.json(path, { method: "POST", body: JSON.stringify(body) });
+  const { bot: other } = await post("/api/bots", { name: "Bystander" });
+  const { blok } = await post("/api/bloks", { name: "Resume room", memberIds: [h.bot.id, other.id] });
+  await post(`/api/bloks/${blok.id}/messages`, { text: "@Keeper FIRST_ROOM_LINE" });
+  const [opened] = await h.settle(1);
+  assert.ok(opened.argv.includes("--session-id"));
+  h.forgetSessions();
+  await post(`/api/bloks/${blok.id}/messages`, { text: "@Keeper SECOND_ROOM_LINE" });
+  const seen = await h.settle(3);
+  assert.match(seen[1].error ?? "", /No conversation found with session ID/);
+  // the session that was gone was told only what came since; the new one
+  // hears the room as a first turn there does
+  assert.match(seen[1].prompt ?? "", /^\(In this room since your last turn here:/);
+  assert.doesNotMatch(seen[1].prompt ?? "", /FIRST_ROOM_LINE/);
+  assert.ok(seen[2].argv.includes("--session-id"));
+  assert.notEqual(seen[2].sessionId, opened.sessionId);
+  assert.match(seen[2].prompt ?? "", /^\(Recent conversation in this room:\n.*User: @Keeper FIRST_ROOM_LINE\nKeeper \(you\): Answered 1\nUser: @Keeper SECOND_ROOM_LINE\)\n\n@Keeper SECOND_ROOM_LINE$/s);
+  // and its next turn there is told what came since, in the new session
+  await post(`/api/bloks/${blok.id}/messages`, { text: "@Keeper THIRD_ROOM_LINE" });
+  const after = await h.settle(4);
+  assert.equal(after[3].argv[after[3].argv.indexOf("--resume") + 1], seen[2].sessionId);
+  assert.match(after[3].prompt ?? "", /^\(In this room since your last turn here:\nKeeper \(you\): Answered 3\nUser: @Keeper THIRD_ROOM_LINE\)/);
 });
