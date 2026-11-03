@@ -49,6 +49,8 @@ import { CodexSpeedUnavailable, type CodexSpeedRefusal, FAST_TIER, fastRefusal, 
 import { createAskBroker, type AskBroker } from "../harness/ask-broker.ts";
 import { checkCodexReplyEndpoint, makeCodexReplyFolder } from "../person-turn.ts";
 import { isConnectionEnvName } from "../connections.ts";
+import { screenServers } from "./screen-servers.ts";
+import { ALL_SCREENS } from "../screens.ts";
 
 const DRIVER_KIND = "codex";
 
@@ -450,14 +452,15 @@ export function serverConfig(servers: readonly AttachedServer[] | undefined, opt
   return { config, secrets: [...secrets], leftOut };
 }
 
-/** A thread request as the native copy keeps it: the agent's servers by
- * name and shape, every value in them taken out. An address, a command
- * line and a header are each somewhere a server's key can live, and a
- * value short enough to be left in by MIN_HIDDEN can still be one. */
+/** A thread request as the native copy keeps it: the agent's servers and
+ * its browser and computer by name and shape, every value in them taken
+ * out. An address, a command line and a header are each somewhere a
+ * server's key can live, and a value short enough to be left in by
+ * MIN_HIDDEN can still be one. */
 export function withoutServerValues(msg: any): any {
   const config = msg?.params?.config;
   if (!config || typeof config !== "object") return msg;
-  const keys = Object.keys(config).filter((key) => key.startsWith(SERVER_KEY));
+  const keys = Object.keys(config).filter((key) => key.startsWith(SERVER_KEY) || SCREEN_TABLES.has(key));
   if (!keys.length) return msg;
   const shape = (value: unknown): unknown =>
     Array.isArray(value)
@@ -466,6 +469,84 @@ export function withoutServerValues(msg: any): any {
         ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, shape(inner)]))
         : "[redacted]";
   return { ...msg, params: { ...msg.params, config: { ...config, ...Object.fromEntries(keys.map((key) => [key, shape(config[key])])) } } };
+}
+
+// ── the agent's browser and computer ───────────────────────────────────
+//
+// The same servers Claude Code and the ACP agents are handed for Its own
+// browser and the agent's computer, the cloud box, the Local VM or this
+// Mac (screen-servers.ts), in the thread config beside the agent's own:
+// over stdin on start, resume and fork, so a turn with either switched
+// off is a thread without it. Under ACP's names, which keeps them clear
+// of a `browser` or `computer` in the person's own Codex settings, which
+// Codex would merge them into.
+//
+// The owner's own turns only, pre-allowed there as Claude Code has them
+// and as this driver has the agent's own servers. The harness hands them
+// to nobody else's turn on Codex (it is not trusted with the owner's
+// tools in a shared room); this is the second line if one ever is.
+// Working elsewhere they stay on this computer, reached over HTTP through
+// the gate, so nothing of this Mac's is run there and the box's key
+// never leaves.
+
+/** Where each sits in the thread config. */
+const SCREEN_KEYS = { browser: "mcp_servers.bloks_browser", computer: "mcp_servers.bloks_computer" } as const;
+const SCREEN_TABLES = new Set<string>(Object.values(SCREEN_KEYS));
+
+/** Codex gives a server ten seconds to start and a call a minute, and
+ * then calls it failed. The Local VM's bridge starts through the
+ * container runtime, and one look at the cloud box is a capture and a
+ * download that can each take a minute, so both get longer. */
+const SCREEN_LIMITS = { startup_timeout_sec: 30, tool_timeout_sec: 300 };
+
+export interface ScreenConfig {
+  /** Thread config entries, one per screen mounted. */
+  config: Record<string, unknown>;
+  /** The box's key and the gate's, kept out of everything written down. */
+  secrets: string[];
+  /** A screen the workplace could not carry this turn. */
+  unreached: Array<"browser" | "computer">;
+}
+
+/** The thread config that hands a turn its browser and its computer. */
+export function screenConfig(
+  turn: Pick<SendTurnInput, "integrations" | "place" | "forOthers" | "untrusted" | "shared" | "person">,
+): ScreenConfig {
+  const out: ScreenConfig = { config: {}, secrets: [], unreached: [] };
+  if (turn.forOthers || turn.untrusted || turn.shared || turn.person) return out;
+  const servers = screenServers(turn.integrations);
+  for (const what of ["computer", "browser"] as const) {
+    const server = servers[what];
+    if (!server) continue;
+    let table: Record<string, unknown>;
+    if (turn.place) {
+      const reached = turn.place.mcp(`bloks_${what}`, { transport: "stdio", ...server });
+      if (!reached) {
+        out.unreached.push(what);
+        continue;
+      }
+      table = { url: reached.url, http_headers: reached.headers };
+      for (const value of Object.values(reached.headers)) out.secrets.push(value, value.replace(/^Bearer /, ""));
+    } else {
+      table = { command: server.command, args: [...server.args], env: { ...server.env } };
+    }
+    out.config[SCREEN_KEYS[what]] = { ...table, default_tools_approval_mode: "approve", ...SCREEN_LIMITS };
+  }
+  if (turn.integrations?.computer?.token && out.config[SCREEN_KEYS.computer]) out.secrets.push(turn.integrations.computer.token);
+  return out;
+}
+
+/** Said once in a conversation whose Codex would not take the servers
+ * when its browser or computer were among them. */
+export const SCREENS_REFUSED_NOTICE =
+  "This Codex would not take the MCP servers Bloks gave this agent, so it carried on without them, and without its browser or computer. Updating Codex should fix it.";
+
+/** What the agent is told when a screen its system words promised is not
+ * there after all, and why, as an ACP agent is: the words were written
+ * before anyone could know. */
+export function screensMissingNote(missing: readonly string[], why: string): string {
+  const what = missing.join(" or ");
+  return `\n\nA correction to the above: ${why}, so you have no ${what} tools this turn. Your commands and files are not affected. If a task needs ${missing.length > 1 ? "them" : "it"}, say so plainly.`;
 }
 
 /** Asks the installed CLI what it can run. No thread is started and
@@ -1492,6 +1573,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // all that a policy without that list needs. The same read names
           // the person's own MCP servers, which the agent's keep clear of.
           let shell = shellConfig(turn.env);
+          // set when a browser or computer the system words promise is not
+          // there after all, and said to the agent with them
+          let screenNote = "";
           // Working elsewhere, each of the agent's servers is reached
           // through the gate, so its command runs here and its key is added
           // here; Codex there is handed only the address.
@@ -1526,7 +1610,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             apart = off.config;
           }
           hiddenTokens.push(...own.secrets);
-          let servers: Record<string, unknown> | null = Object.keys(own.config).length || Object.keys(bridgesThere).length ? { ...bridgesThere, ...own.config } : null;
+          // the agent's browser and computer, as this turn's settings have them
+          const screens = screenConfig(turn);
+          hiddenTokens.push(...screens.secrets);
+          if (screens.unreached.length) {
+            const yours = screens.unreached.map((what) => `your ${what}`).join(" or ");
+            screenNote = screensMissingNote(screens.unreached, `working on ${turn.place!.label}, Codex could not reach ${yours} from there`);
+          }
+          const mountedScreens = (Object.keys(SCREEN_KEYS) as Array<keyof typeof SCREEN_KEYS>).filter((what) => SCREEN_KEYS[what] in screens.config);
+          let servers: Record<string, unknown> | null =
+            Object.keys(own.config).length || Object.keys(bridgesThere).length || Object.keys(screens.config).length
+              ? { ...bridgesThere, ...screens.config, ...own.config }
+              : null;
           // A server Codex cannot be handed is said, not dropped without a
           // word: once in the conversation, and again when what is left
           // out changes, not on every turn.
@@ -1560,7 +1655,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 }
                 if (serversDropped && !toldServersRefused.has(threadId)) {
                   toldServersRefused.add(threadId);
-                  emit({ ...envelope(threadId, turnId), type: "runtime.error", message: SERVERS_REFUSED_NOTICE });
+                  emit({ ...envelope(threadId, turnId), type: "runtime.error", message: mountedScreens.length ? SCREENS_REFUSED_NOTICE : SERVERS_REFUSED_NOTICE });
+                }
+                // the person hears it once; the agent, every turn it is so
+                if (serversDropped && mountedScreens.length) {
+                  screenNote += screensMissingNote(mountedScreens, "this Codex would not take the servers Bloks gives it, your " + mountedScreens.join(" and ") + " among them");
                 }
                 return answer;
               } catch (error) {
@@ -1782,10 +1881,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const words = prepared?.text ? `${baseWords}\n\n${prepared.text}` : baseWords;
           const skills = chooseSkills([...(turn.skillNames ?? []), ...(prepared?.skillNames ?? [])], listed);
           for (const skill of skills) skillNamesSent.add(skill.name);
+          const system = turn.system ? turn.system + screenNote : screenNote.trimStart();
           const turnParams: Record<string, unknown> = {
             threadId: codexThread,
             input: [
-              { type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words },
+              { type: "text", text: system ? `${system}\n\n${words}` : words },
               ...skills.map(({ name, path }) => ({ type: "skill", name, path })),
             ],
           };
@@ -1888,7 +1988,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "unsupported", compactsFirst: true, efforts: CODEX_EFFORTS },
+        capabilities: { sessionModelSwitch: "unsupported", compactsFirst: true, efforts: CODEX_EFFORTS, screens: ALL_SCREENS },
         sendTurn,
 
         steerTurn: async (threadId, text, options) => (await running.get(threadId)?.steer(text, options)) ?? false,

@@ -86,17 +86,27 @@ they do not run tools.
 **The browser and the computer.** Each driver says which of the agent's
 own browser and its computers (the cloud box, the Local VM, this Mac's
 screen) it hands its engine (`capabilities.screens`, `server/screens.ts`).
-Claude Code takes them all, and so does every ACP agent that takes MCP
-servers in `session/new`: both are sent the same stdio servers
+Claude Code takes them all, and so do Codex and every ACP agent that
+takes MCP servers in `session/new`: all are sent the same stdio servers
 (`server/drivers/screen-servers.ts`), named `browser` and `computer` for
-Claude Code and `bloks_browser` and `bloks_computer` for ACP. Working
-elsewhere, they stay on this computer and are reached over HTTP through
-the gate, which ACP offers only to an agent whose `initialize` says it
-takes HTTP servers; one that does not is told in its prompt that it has
-neither. Pi and Cline accept MCP servers and drop them (`mcp: false` in
-their specs), so they take none. The API models reach the cloud box
-through the harness's tool loop and nothing else; Codex and Antigravity
-take none yet. Before a turn the harness gets ready only what the engine
+Claude Code and `bloks_browser` and `bloks_computer` for Codex and ACP.
+Codex has them in the thread config of every `thread/start`,
+`thread/resume` and `thread/fork` (`screenConfig`), over stdin, so a
+turn with either switched off is a thread without it; they are mounted
+only on the owner's own turns, pre-allowed there
+(`default_tools_approval_mode = "approve"`) as Claude Code's
+`--allowedTools` has them, with a longer start and call limit than
+Codex's own, and the cloud box's key in the server's `env` table, never
+in argv or the app-server's environment, and taken out of the native
+copy (`withoutServerValues`). Working elsewhere, they stay on this
+computer and are reached over HTTP through the gate: by every Codex, and
+by an ACP agent only when its `initialize` says it takes HTTP servers.
+An agent that cannot reach one is told in its prompt that it has
+neither, and so is a Codex agent whose Codex refuses the servers. Pi and
+Cline accept MCP servers and drop them (`mcp: false` in their specs), so
+they take none. The API models reach the cloud box through the harness's
+tool loop and nothing else; Antigravity takes none yet. Before a turn
+the harness gets ready only what the engine
 takes: the Local VM is not claimed and the cloud box is not woken for an
 engine that cannot use them, and the agent is told plainly what its
 engine cannot be handed (`engineNoComputerLine`, `engineNoBrowserLine`)

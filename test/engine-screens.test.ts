@@ -45,8 +45,10 @@ async function screensOf(kind: string, config: Record<string, unknown> = {}): Pr
 }
 
 describe("what each engine is handed", () => {
-  test("Claude Code and the ACP agents that mount MCP servers take the browser and every computer", async () => {
+  test("Claude Code, Codex and the ACP agents that mount MCP servers take the browser and every computer", async () => {
     assert.deepEqual(await screensOf("claudeAgent", { cli: "/nonexistent/claude" }), ALL_SCREENS);
+    // GitHub 482: in the thread config, as test/codex-screens.test.ts shows
+    assert.deepEqual(await screensOf("codex", { cli: "/nonexistent/codex" }), ALL_SCREENS);
     for (const kind of ["opencode", "devin", "geminiCli", "cursor", "grokCli", "commandcode"]) {
       assert.deepEqual(await screensOf(kind, { cli: "/nonexistent/acp-stand-in" }), ALL_SCREENS, kind);
     }
@@ -63,7 +65,7 @@ describe("what each engine is handed", () => {
 
   test("the cloud engine works the box it runs on, and engines that say nothing take nothing", async () => {
     assert.deepEqual(await screensOf("boxAgent"), CLOUD_ONLY);
-    assert.equal(await screensOf("codex", { cli: "/nonexistent/codex" }), undefined);
+    assert.equal(await screensOf("antigravity", { cli: "/nonexistent/agy" }), undefined);
   });
 });
 
@@ -121,7 +123,7 @@ describe("a computer the engine cannot take", () => {
     assert.match(vm, /commands and files are not affected/);
     assert.match(vm, /under Engine/);
     assert.match(engineNoComputerLine("Pi", "any"), /left on Automatic/);
-    assert.match(engineNoBrowserLine("Codex"), /Codex, the engine you run on, cannot be handed it, so you have no browser tools from Bloks/);
+    assert.match(engineNoBrowserLine("Cline"), /Cline, the engine you run on, cannot be handed it, so you have no browser tools from Bloks/);
     for (const line of [vm, engineNoComputerLine("Pi", "any"), engineNoBrowserLine("Pi")]) assert.doesNotMatch(line, /[\u2013\u2014]/);
   });
 });

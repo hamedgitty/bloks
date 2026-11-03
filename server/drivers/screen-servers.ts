@@ -1,10 +1,10 @@
 // The browser and the computer, as the MCP servers an engine is handed.
 //
-// One shape for every driver that mounts them (Claude Code, the ACP
-// agents), so an agent's browser and computer are the same tools
+// One shape for every driver that mounts them (Claude Code, Codex, the
+// ACP agents), so an agent's browser and computer are the same tools
 // whichever engine it runs on. Each driver only writes them down in its
-// engine's own words: an MCP config file for Claude Code, session/new's
-// mcpServers for ACP.
+// engine's own words: an MCP config file for Claude Code, the thread
+// config for Codex, session/new's mcpServers for ACP.
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

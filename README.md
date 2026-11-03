@@ -640,14 +640,16 @@ tools** for it in Settings. Turn it on only when the model behind it
 supports tool calls; if the host refuses them, the turn stops and says so.
 
 An agent's own browser and its computer (Cloud box, Local VM, or this
-Mac's screen) reach it as tools on Claude Code and on the ACP agents that
-take tool servers: Devin, OpenCode, Gemini CLI, Cursor, Grok CLI and
-Command Code. The API models reach a cloud box through Bloks, and nothing
-else. Codex, Pi, Cline and Antigravity get neither yet. On those, the
-agent's settings say so beside **Its own browser** and **Computer**, the
-agent is told it has no browser or screen rather than promised one, and
-its turns never hold the Local VM from agents that could use it. On a
-Linux server with no display, the agent's browser runs headless.
+Mac's screen) reach it as tools on Claude Code, on Codex, and on the ACP
+agents that take tool servers: Devin, OpenCode, Gemini CLI, Cursor, Grok
+CLI and Command Code. An agent working in a container or over SSH still
+has both: they run on this computer and it reaches them through Bloks.
+The API models reach a cloud box through Bloks, and nothing else. Pi,
+Cline and Antigravity get neither yet. On those, the agent's settings
+say so beside **Its own browser** and **Computer**, the agent is told it
+has no browser or screen rather than promised one, and its turns never
+hold the Local VM from agents that could use it. On a Linux server with
+no display, the agent's browser runs headless.
 
 Give an agent a **backup engine** and a turn that hits a usage limit, a
 rate limit or an outage is picked up by the backup, with the conversation

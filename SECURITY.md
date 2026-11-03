@@ -142,16 +142,21 @@ stands.
 
 **An agent's browser and computer go only where its settings and its
 engine both allow.** Its own browser, with any sign-ins you borrowed into
-it, and its computer reach an agent as tools on Claude Code and on the
-ACP agents that take MCP servers (Devin, OpenCode, Gemini CLI, Cursor,
-Grok CLI, Command Code), only on a turn you asked for or set up, never on
-an email from anyone or a shared room member's turn unless you opened
-them to that room. Claude Code calls them without asking on your own turns, as it
-always has; an ACP agent asks as its own permission rules say, and its
-questions reach you as cards. The cloud box's key travels to the
-computer server in its environment, never in a command line, and is
-taken out of the copy of each turn's frames Bloks keeps. An engine that
-cannot be handed them is given neither and told so.
+it, and its computer reach an agent as tools on Claude Code, on Codex
+and on the ACP agents that take MCP servers (Devin, OpenCode, Gemini CLI,
+Cursor, Grok CLI, Command Code), only on a turn you asked for or set up,
+never on an email from anyone or a shared room member's turn unless you
+opened them to that room. Codex never has them on a turn that is not
+yours, whatever the room allows. Claude Code and Codex call them without
+asking on your own turns, as Claude Code always has; an ACP agent asks as
+its own permission rules say, and its questions reach you as cards. The
+cloud box's key travels to the computer server in its environment (for
+Codex, in the thread's config over its standard input), never in a
+command line, and is taken out of the copy of each turn's frames Bloks
+keeps. An agent working in a container or over SSH reaches them through
+the workplace gate with its turn's token; they run on this computer and
+nothing of it is run there. An engine that cannot be handed them is
+given neither and told so.
 
 **Scripts are the owner, and ask like the owner.** `bloks-server run`,
 `team apply` and `chat` ([docs/SCRIPTING.md](docs/SCRIPTING.md)) speak
