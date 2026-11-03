@@ -431,7 +431,8 @@ export function waitingSender(m: Message): string | null {
  * messages under it. Send now sits on the line, not on each message: it
  * is about all of your waiting words together, which go into the running
  * turn in the order they were said when its engine can take them, or
- * stop it and go together in the next one when it cannot. A message
+ * stop it and go together in the next one when it cannot. A room's stops
+ * nobody: they go in before the next member speaks instead. A message
  * being edited keeps the line open, even when more pressing things would
  * fold it away.
  */

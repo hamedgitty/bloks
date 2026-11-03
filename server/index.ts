@@ -192,7 +192,7 @@ import {
   memberDevices,
   computerName,
 } from "./pairing.ts";
-import { checkup, filePermissions, tightenPermissions, type SecurityFacts } from "./security.ts";
+import { checkup, filePermissions, names as nameList, tightenPermissions, type SecurityFacts } from "./security.ts";
 import {
   clamp,
   clampList,
@@ -7067,6 +7067,20 @@ function roomBriefing(blok: BlokRecord, speaker: BotRecord, members: BotRecord[]
 /** The room's recent history, labelled so an agent can tell who said what.
  * With `after`, only what came after that message; the cap is the same. */
 function roomTranscript(blokId: string, speakerId: string, after?: string): { text: string; lastId?: string } {
+  const said = store
+    .messagesFor(blokId)
+    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent);
+  // a message no longer on the record (deleted, rewound) shows the lot
+  const seen = after ? said.findIndex((m) => m.id === after) : -1;
+  return {
+    text: (seen >= 0 ? said.slice(seen + 1) : said).slice(-30).map(roomLine(blokId, speakerId)).join("\n"),
+    lastId: said.at(-1)?.id,
+  };
+}
+
+/** One message as a room line, labelled the way roomTranscript labels
+ * the room's history for `speakerId`. */
+function roomLine(blokId: string, speakerId: string): (m: Message) => string {
   const shared = Boolean(bloks.get(blokId)?.sharing);
   const named = (m: Message) => {
     if (m.role === "user") {
@@ -7081,22 +7095,10 @@ function roomTranscript(blokId: string, speakerId: string, after?: string): { te
     const from = m.from ? store.bot(m.from) : null;
     return from ? (from.id === speakerId ? `${from.name} (you)` : from.name) : "Agent";
   };
-  const said = store
-    .messagesFor(blokId)
-    .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent);
-  // a message no longer on the record (deleted, rewound) shows the lot
-  const seen = after ? said.findIndex((m) => m.id === after) : -1;
-  return {
-    text: (seen >= 0 ? said.slice(seen + 1) : said)
-      .slice(-30)
-      .map((m) =>
-        m.replyTo
-          ? `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
-          : `${named(m)}: ${m.text}`,
-      )
-      .join("\n"),
-    lastId: said.at(-1)?.id,
-  };
+  return (m) =>
+    m.replyTo
+      ? `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
+      : `${named(m)}: ${m.text}`;
 }
 
 // ── turn dispatch ──────────────────────────────────────────────────────
@@ -12122,6 +12124,177 @@ function inviteLink(input: { inviteId: string; secret: string; relayToken: strin
 /** One dispatch loop per room at a time; latecomers chain behind it. */
 const roomPosting = new Map<string, Promise<unknown>>();
 
+// ── Send now in a room ──
+// What the person said while a round runs waits for the whole round,
+// every member and every handoff. Send now puts it in the room sooner,
+// stopping nobody: into the speaking member's turn when its engine takes
+// words mid-turn, otherwise as that turn ends, before the next member
+// speaks. Everyone who speaks after it hears it; its own turn in the
+// queue then wakes only those it was for who have not. Each message goes
+// into the room's history once, in the order it was said.
+
+/** Messages Send now asked to go in at the next place the room can take
+ * them, by room. */
+const roomNow = new Map<string, Set<string>>();
+/** Messages that went in ahead of their own turn, by room, with the
+ * members who have heard them since. */
+const roomHeardEarly = new Map<string, Map<string, Set<string>>>();
+/** A Send now still asking engines to take words, by room. The room's
+ * next speaker and the words' own turn wait for it, so they know whether
+ * the words went in and who heard them. */
+const roomNowAsking = new Map<string, Promise<unknown>>();
+/** Long enough for any engine to take or refuse words; a room is not
+ * held past it by one that never says. */
+const ROOM_NOW_WAIT_MS = 15_000;
+
+function roomNowSettled(roomId: string): Promise<void> {
+  const asking = roomNowAsking.get(roomId);
+  if (!asking) return Promise.resolve();
+  return Promise.race([
+    asking.then(() => {}, () => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, ROOM_NOW_WAIT_MS).unref?.()),
+  ]);
+}
+
+/** Puts room messages still waiting into the history now, once each, in
+ * the order they were said, as heard by `heardBy` already. */
+function deliverEarly(roomId: string, ids: readonly string[], heardBy: readonly string[]) {
+  const pending = roomNow.get(roomId);
+  for (const id of ids) pending?.delete(id);
+  if (pending && !pending.size) roomNow.delete(roomId);
+  const fresh = store.messagesFor(roomId).filter((m) => ids.includes(m.id) && m.queued && !m.deleted);
+  if (!fresh.length) return;
+  const line = { route: "steered" as const, why: "you" as const, line: deliveryLine("steered", "you", bloks.get(roomId)?.name ?? "") };
+  for (const m of fresh) store.patchMessage(roomId, m.id, { delivery: line });
+  deliverQueued(roomId, fresh.map((m) => m.id));
+  const heard = roomHeardEarly.get(roomId) ?? new Map<string, Set<string>>();
+  for (const m of fresh) heard.set(m.id, new Set(heardBy));
+  roomHeardEarly.set(roomId, heard);
+}
+
+/** The room's boundary between two speakers: what Send now left for it
+ * goes in, after any engine still being asked has answered. */
+async function roomBoundary(roomId: string) {
+  await roomNowSettled(roomId);
+  const pending = roomNow.get(roomId);
+  if (pending?.size) deliverEarly(roomId, [...pending], []);
+}
+
+/** What went into the room early that `botId` has not heard yet, as one
+ * framed note for its turn, with the ids to mark heard once that turn
+ * has them. */
+function roomNewsFor(roomId: string, botId: string): { ids: string[]; text: string } | null {
+  const heard = roomHeardEarly.get(roomId);
+  if (!heard?.size) return null;
+  const ids = [...heard].filter(([, who]) => !who.has(botId)).map(([id]) => id);
+  const said = store.messagesFor(roomId).filter((m) => ids.includes(m.id) && !m.deleted && m.text);
+  if (!said.length) return null;
+  return { ids: said.map((m) => m.id), text: roomNews(roomId, said, botId) };
+}
+
+function markHeard(roomId: string, ids: readonly string[], botId: string) {
+  const heard = roomHeardEarly.get(roomId);
+  for (const id of ids) heard?.get(id)?.add(botId);
+}
+
+/** The person's room words for a member's turn, labelled as the room's
+ * history labels them, and said to be new. */
+function roomNews(roomId: string, said: readonly Message[], speakerId: string): string {
+  return `(Said in the room just now:\n${said.map(roomLine(roomId, speakerId)).join("\n")})`;
+}
+
+/**
+ * Send now for the person's own waiting words in a room. Never stops
+ * anyone. "steered" when a speaking member's turn took them, "sent" when
+ * nobody was mid-turn so they went in there and then, "next" when they
+ * wait for the speaking member to finish, and "nothing" when none of the
+ * person's words wait behind a round. A shared room's other people's
+ * words keep their own place: Send now is the person's for their words.
+ */
+async function sendRoomWaitingNow(blok: BlokRecord): Promise<"steered" | "sent" | "next" | "nothing"> {
+  // one at a time per room, so a second tap cannot hand the same words in twice
+  const previous = roomNowAsking.get(blok.id);
+  const run = (previous ?? Promise.resolve()).catch(() => {}).then(() => roomWaitingNow(blok.id));
+  roomNowAsking.set(blok.id, run);
+  void run.finally(() => {
+    if (roomNowAsking.get(blok.id) === run) roomNowAsking.delete(blok.id);
+  }).catch(() => {});
+  return run;
+}
+
+async function roomWaitingNow(roomId: string): Promise<"steered" | "sent" | "next" | "nothing"> {
+  const room = bloks.get(roomId);
+  // words wait only behind a round this server is running; anything else
+  // flagged waiting has no turn of its own to be brought forward from
+  if (!room || !roomPosting.has(roomId)) return "nothing";
+  const waiting = store
+    .messagesFor(roomId)
+    .filter((m) => m.role === "user" && m.queued && !m.deleted && !m.unsent && !m.author && !m.via && m.text);
+  if (!waiting.length) return "nothing";
+  const ids = waiting.map((m) => m.id);
+  const speaking = room.memberIds
+    .map((id) => store.bot(id))
+    .filter((bot): bot is BotRecord => Boolean(bot && !bot.archivedAt))
+    .flatMap((bot) => bot.tasks.filter((t) => activeRoom.get(t.id) === roomId && t.busy).map((lane) => ({ bot, lane })));
+  const took: string[] = [];
+  for (const { bot, lane } of speaking) {
+    if (await steerRoomTurn(bot, lane, roomId, waiting)) took.push(bot.id);
+  }
+  if (took.length || !speaking.length) {
+    deliverEarly(roomId, ids, took);
+    return took.length ? "steered" : "sent";
+  }
+  // Nobody speaking could take them: they go in as that turn ends. Said
+  // on each, so the strip tells the truth about where they are.
+  const pending = roomNow.get(roomId) ?? new Set<string>();
+  for (const id of ids) pending.add(id);
+  roomNow.set(roomId, pending);
+  const names = nameList(speaking.map(({ bot }) => bot.name));
+  const line = { route: "queued" as const, why: "you" as const, line: `Goes in when ${names} ${speaking.length === 1 ? "finishes" : "finish"}` };
+  for (const m of waiting) {
+    const patched = store.patchMessage(roomId, m.id, { delivery: line });
+    if (patched) broadcast({ kind: "message.patch", threadId: roomId, message: patched });
+  }
+  return "next";
+}
+
+/**
+ * Hands the person's waiting room words to a member's turn running in
+ * that room, the way steerOne hands words to a chat's: false when they
+ * must wait instead. Only a turn the owner asked for, since whoever asked
+ * sets its approvals and its spend, and only one still taking words.
+ */
+async function steerRoomTurn(bot: BotRecord, lane: TaskRecord, roomId: string, said: readonly Message[]): Promise<boolean> {
+  if (!lane.busy || drain.on || beingEdited.has(lane.id) || wheel.heldBy(bot.id) || bot.archivedAt) return false;
+  if (claimedLanes.has(lane.id) || idleCompacting.has(lane.id) || commandTurns.has(lane.id)) return false;
+  if (activeRoom.get(lane.id) !== roomId || (laneRequester.get(lane.id) ?? "owner") !== "owner") return false;
+  const adapter = laneInstance(bot, lane.id)?.adapter;
+  if (!adapter?.steerTurn) return false;
+  // a turn its agent finished quietly takes no more words (steerOne)
+  const seq = laneTurns.get(lane.id) ?? 0;
+  const finished = quietGates.get(lane.id);
+  if (finished?.seq === seq && finished.state === "accepted") return false;
+  steerHolds.hold(lane.id, seq);
+  try {
+    // A steer that threw may have reached the engine. The words then go
+    // in at the room's next boundary too: heard twice, never lost.
+    const taken = await adapter.steerTurn(lane.id, roomNews(roomId, said, bot.id)).catch(() => {
+      steerHolds.taint(lane.id, seq);
+      return false;
+    });
+    if (!taken) return false;
+    // what the turn says from here on answers the person too, and with
+    // the person in it, a chain of agents' messages starts over
+    turnsForYou.add(lane.id);
+    agentChain.delete(lane.id);
+    chainTasks.delete(lane.id);
+    turnHops.delete(lane.id);
+    return true;
+  } finally {
+    steerHolds.release(lane.id, seq);
+  }
+}
+
 /** Who is posting into a room: an agent (botId), a member of a shared
  * room (personId), or, with neither, the owner. */
 interface RoomAuthor {
@@ -12159,9 +12332,16 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
   });
   broadcast({ kind: "message", threadId: blok.id, message });
   const run = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
+    // a Send now still asking an engine decides whether these words
+    // already went in, and who heard them
+    await roomNowSettled(blok.id);
+    roomNow.get(blok.id)?.delete(message.id);
     const current = store.messagesFor(blok.id).find((m) => m.id === message.id);
     const room = bloks.get(blok.id);
-    if (!room || !current || current.deleted) return message;
+    if (!room || !current || current.deleted) {
+      roomHeardEarly.get(blok.id)?.delete(message.id);
+      return message;
+    }
     // into the room's history after what the room said while it waited
     if (current.queued) deliverQueued(blok.id, [message.id]);
     const delivered = store.messagesFor(blok.id).find((m) => m.id === message.id) ?? current;
@@ -12234,7 +12414,12 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
     if (answers === "auto" && lead) reach = await routeRoomMessage(blok, message, text, author, awake);
   }
   const asked = reach.filter((id) => id !== author.botId);
-  const targets = asked.filter((id) => !store.bot(id)?.archivedAt);
+  // Sent now, it went in ahead of this, its own turn: whoever has heard
+  // it since (the turn it joined, those who spoke after it) has had it.
+  const heardEarly = roomHeardEarly.get(blok.id)?.get(message.id);
+  roomHeardEarly.get(blok.id)?.delete(message.id);
+  if (!roomHeardEarly.get(blok.id)?.size) roomHeardEarly.delete(blok.id);
+  const targets = asked.filter((id) => !store.bot(id)?.archivedAt && !heardEarly?.has(id));
   // Somebody was named and cannot answer. Say so once, in the room,
   // rather than letting the room go quiet and read as broken.
   const retired = asked
@@ -12750,11 +12935,21 @@ async function speakInTurn(
     .sort(([a], [b]) => rank(a) - rank(b));
 
   for (const [member, text, hops] of ordered) {
+    // Between two speakers is where the person's words sent now go in
+    // when no turn could take them. Whoever speaks next is told them as
+    // new, not left to find them in the history, and has then heard them.
+    await roomBoundary(roomId);
+    const news = roomNewsFor(roomId, member.id);
+    const said = news ? `${text}\n\n${news.text}` : text;
+    let heard = true;
     // one agent failing must not silence the rest of the room; one that
     // got busy while it waited its turn to speak hears it later
-    await startTurn(member.id, text, { roomId, hops, requester, byYou, roomAgentStarted: agentStarted }).catch((e) =>
-      waitsForTurn(e) ? queueRoomTag(member.id, roomId, text, requester, hops) : sayTurnedAway(roomId, e),
-    );
+    await startTurn(member.id, said, { roomId, hops, requester, byYou: byYou || Boolean(news), roomAgentStarted: agentStarted }).catch((e) => {
+      if (waitsForTurn(e)) return queueRoomTag(member.id, roomId, said, requester, hops);
+      heard = false;
+      sayTurnedAway(roomId, e);
+    });
+    if (news && heard) markHeard(roomId, news.ids, member.id);
     await waitForRoomTurn(member.id, roomId);
   }
 }
@@ -29404,6 +29599,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       withYou({ room: blok }, message.at);
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });
       return json(res, message.queued ? 202 : 201, { message });
+    }
+    // The person's words waiting behind a round go in sooner, stopping
+    // nobody (sendRoomWaitingNow). The owner's alone: a member is served
+    // by their own surface and never reaches this, and an agent's words
+    // are never the person's.
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/queued\/now$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "this is for the person's own words" });
+      const blok = bloks.get(m[1]);
+      if (!blok) return json(res, 404, { error: "no such room" });
+      const outcome = await sendRoomWaitingNow(blok);
+      return json(res, 200, { ok: outcome !== "nothing", outcome });
     }
 
 

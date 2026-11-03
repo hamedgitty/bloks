@@ -259,6 +259,12 @@ Naming someone with @ always wins, and the same choice is said in a room
 carried into Slack, Discord or WhatsApp. It uses an engine your agents
 already run on unless you pick one in Settings, Behaviour.
 
+What you say while a room is mid-round waits for the round. **Send now**
+puts it in sooner without stopping anyone: into the speaking member's
+turn when its engine takes words mid-turn, otherwise as that turn ends,
+before the next member speaks. Whoever has not heard it yet answers it
+after. Stop, Esc or Cmd+Enter stop the room instead.
+
 A lead that needs more people can propose a team: who it wants, what each
 owns, which skills to give them. You approve or you don't. Agents can
 message each other, hire, open rooms, start a new conversation for a

@@ -466,13 +466,24 @@ export function RoomComposer({
     return true;
   };
 
+  // Your words wait only while a round runs, so they can be sent now
+  // even between two speakers, when nobody is mid-turn.
+  const yoursWaiting = waiting.some((m) => m.queued && !m.deleted && senderOf(m) === null);
   const queuedNotice = useQueuedNotice({
     messages: waiting,
     threadId: blok.id,
     recoveryKey: draftKey,
     senderOf,
-    working: busy,
-    onSendNow: stopAll,
+    working: busy || yoursWaiting,
+    // Into the room sooner, stopping nobody: into the speaking member's
+    // turn when its engine takes words mid-turn, otherwise as that turn
+    // ends, before the next member speaks (the server's sendRoomWaitingNow).
+    // Stop, Esc and Cmd+Enter are the ways to stop the room.
+    onSendNow: () => {
+      void api(`/api/bloks/${blok.id}/queued/now`, { method: "POST" }).catch((e: Error) =>
+        dispatch({ type: "error", message: e.message }),
+      );
+    },
     onSendAgain: sendAgain,
     editAsk,
   });

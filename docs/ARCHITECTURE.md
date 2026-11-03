@@ -1539,6 +1539,21 @@ midway. Words that wait on purpose do not hold back a correction sent
 after them; words that wait only because they could not go in still
 do.
 
+A room's flip, `POST /api/bloks/:id/queued/now` (owner only), stops
+nobody (`sendRoomWaitingNow`). The person's waiting room words go into
+the turn of each member speaking there whose engine can take them
+(`steerRoomTurn`, only a turn the owner asked for, framed as room
+lines), and into the room's history at once. When no speaking turn can
+take them they wait for the room's next boundary, the moment between
+two speakers (`roomBoundary` in `speakInTurn`), and say so on the
+waiting row ("Goes in when Ada finishes"). Every member who speaks after
+they went in is told them as new and counted as having heard them
+(`roomHeardEarly`); the words' own turn in the room's queue then wakes
+only those it was for who have not. Each message enters the history
+once, in the order it was said, and a second tap, the next speaker and
+the words' own turn all wait for a Send now still asking an engine. A
+shared room's members' words keep their own place in the queue.
+
 When words go in now, they go into that turn when its engine can take
 them (`steerLane` in `server/index.ts`). Claude Code keeps the stdin
 it was given the prompt on open and reads another stream-json message
