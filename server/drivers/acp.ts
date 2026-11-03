@@ -21,12 +21,10 @@
 // A turn spawns a process and kills it on settle, the same as the codex
 // driver. Continuity comes from session/load with the stored id.
 import { spawn, execFile } from "node:child_process";
-import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { dataDirFrom } from "../config.ts";
 
 import type {
   DriverCreateInput,
@@ -53,6 +51,7 @@ import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
 import { screenServers } from "./screen-servers.ts";
 import { ALL_SCREENS, NO_SCREENS } from "../screens.ts";
+import { isolatedOpencodeEnv, isolatedOpencodePaths, seedOpencodeSignIns } from "../opencode-setup.ts";
 
 export interface AcpSpec {
   kind: string;
@@ -142,156 +141,11 @@ export interface AcpConfig {
   /** Skip every approval prompt. Off by default: the whole point of ACP
    * here is that the user gets asked. */
   fullAuto: boolean;
-  /** Run OpenCode with a private config root and private XDG data,
-   * state and cache roots under the workspace's data folder so its
-   * plugins, instructions and session database stay apart from the
-   * computer's shared OpenCode setup. Off by default. */
+  /** OpenCode only: the workspace's own setup rather than the person's
+   * (server/opencode-setup.ts), on turns on this computer. Off by default. */
   isolated?: boolean;
 }
 
-/** Where an isolated OpenCode instance keeps its config, data, state,
- * cache and session database inside the workspace's data folder. */
-export function isolatedOpencodePaths(
-  baseEnv: Record<string, string | undefined> = process.env,
-  home: string = homedir(),
-): { root: string; configDir: string; dataDir: string; stateDir: string; cacheDir: string; opencodeDataDir: string } {
-  const root = join(dataDirFrom(baseEnv as NodeJS.ProcessEnv, home), "opencode");
-  const configDir = join(root, "config");
-  const dataDir = join(root, "data");
-  const stateDir = join(root, "state");
-  const cacheDir = join(root, "cache");
-  return {
-    root,
-    configDir,
-    dataDir,
-    stateDir,
-    cacheDir,
-    opencodeDataDir: join(dataDir, "opencode"),
-  };
-}
-
-/** Prepare the isolated OpenCode directories, disable the shared managed
- * background service port in the isolated config root, seed legacy
- * auth.json if present, and return the environment overrides. */
-export function isolatedOpencodeEnv(
-  baseEnv: Record<string, string | undefined> = process.env,
-  home: string = homedir(),
-): Record<string, string> {
-  const { configDir, dataDir, stateDir, cacheDir, opencodeDataDir } = isolatedOpencodePaths(baseEnv, home);
-  for (const dir of [configDir, opencodeDataDir, join(stateDir, "opencode"), join(cacheDir, "opencode")]) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-  for (const name of ["service.json", "service-local.json"]) {
-    const serviceFile = join(configDir, name);
-    if (!existsSync(serviceFile)) {
-      try {
-        writeFileSync(serviceFile, JSON.stringify({ disabled: true }, null, 2), { mode: 0o600 });
-      } catch {
-        /* best effort */
-      }
-    }
-  }
-  const sharedDataRoot = baseEnv.XDG_DATA_HOME?.trim() || join(home, ".local", "share");
-  const sharedAuth = join(sharedDataRoot, "opencode", "auth.json");
-  const isolatedAuth = join(opencodeDataDir, "auth.json");
-  if (!existsSync(isolatedAuth) && existsSync(sharedAuth)) {
-    try {
-      copyFileSync(sharedAuth, isolatedAuth);
-      chmodSync(isolatedAuth, 0o600);
-    } catch {
-      /* best effort */
-    }
-  }
-  return {
-    OPENCODE_CONFIG_DIR: configDir,
-    XDG_CONFIG_HOME: configDir,
-    XDG_DATA_HOME: dataDir,
-    XDG_STATE_HOME: stateDir,
-    XDG_CACHE_HOME: cacheDir,
-  };
-}
-
-/** Terminal command that signs in to an isolated OpenCode workspace store. */
-export function isolatedOpencodeSignInCommand(
-  cli = "opencode",
-  baseEnv: Record<string, string | undefined> = process.env,
-  home: string = homedir(),
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const env = isolatedOpencodeEnv(baseEnv, home);
-  const quote = (value: string) => (platform === "win32" ? `"${value.replace(/"/g, '`"')}"` : `'${value.replace(/'/g, `'\\''`)}'`);
-  const bin = /[\s'"]/.test(cli) ? quote(cli) : cli;
-  const pairs = Object.entries(env);
-  return platform === "win32"
-    ? `${pairs.map(([k, v]) => `$env:${k}=${quote(v)}`).join("; ")}; ${bin} auth login`
-    : `${pairs.map(([k, v]) => `${k}=${quote(v)}`).join(" ")} ${bin} auth login`;
-}
-
-async function seedIsolatedOpencodeCredentials(
-  cli: string,
-  baseEnv: Record<string, string | undefined>,
-  home: string = homedir(),
-): Promise<void> {
-  const isoEnv = { ...baseEnv, ...isolatedOpencodeEnv(baseEnv, home) };
-  const { root, opencodeDataDir } = isolatedOpencodePaths(baseEnv, home);
-  const marker = join(root, ".seeded");
-  const authSeeded = join(root, ".auth-seeded");
-  if (existsSync(marker) || existsSync(join(opencodeDataDir, "opencode.db"))) return;
-  const sharedDataRoot = baseEnv.XDG_DATA_HOME?.trim() || join(home, ".local", "share");
-  if (!existsSync(join(sharedDataRoot, "opencode", "opencode.db"))) return;
-  try {
-    writeFileSync(marker, "1", { mode: 0o600 });
-    const exportLaunch = launchSpec(cli, ["auth", "export"]);
-    const exported = await new Promise<string | null>((resolve) => {
-      execFile(
-        exportLaunch.command,
-        exportLaunch.args,
-        { timeout: 5_000, windowsHide: true, windowsVerbatimArguments: exportLaunch.windowsVerbatimArguments, env: baseEnv },
-        (err, stdout) => resolve(err || !stdout.trim() ? null : stdout),
-      );
-    });
-    if (!exported) return;
-    let hasEntries = false;
-    try {
-      const parsed = JSON.parse(exported);
-      hasEntries = Array.isArray(parsed) ? parsed.length > 0 : Boolean(parsed && typeof parsed === "object" && Object.keys(parsed).length > 0);
-    } catch {
-      return;
-    }
-    if (!hasEntries) return;
-    const importLaunch = launchSpec(cli, ["auth", "import"]);
-    const imported = await new Promise<boolean>((resolve) => {
-      const child = spawn(importLaunch.command, importLaunch.args, {
-        env: isoEnv,
-        stdio: ["pipe", "ignore", "ignore"],
-        windowsHide: true,
-        windowsVerbatimArguments: importLaunch.windowsVerbatimArguments,
-      });
-      const timer = setTimeout(() => {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          /* already gone */
-        }
-        resolve(false);
-      }, 5_000);
-      timer.unref?.();
-      child.on("error", () => {
-        clearTimeout(timer);
-        resolve(false);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve(code === 0);
-      });
-      child.stdin.on("error", () => {});
-      child.stdin.end(exported);
-    });
-    if (imported) writeFileSync(authSeeded, "1", { mode: 0o600 });
-  } catch {
-    /* best effort */
-  }
-}
 
 const PROTOCOL_VERSION = 1;
 
@@ -754,23 +608,31 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
       /** `extra` is the turn's own environment, where there is a turn:
        * the credential that lets an agent act on the workspace as itself. */
-      const childEnv = (extra: Record<string, string> = {}, forPlace = false) => {
+      // OpenCode on the workspace's own setup rather than the person's
+      // (server/opencode-setup.ts). Never for a turn in a workplace: the
+      // folders are this computer's, and the OpenCode there has its own.
+      const ownSetup = spec.kind === "opencode" && config.isolated === true;
+      /** `extra` is the turn's own environment, where there is a turn:
+       * the credential that lets an agent act on the workspace as itself. */
+      const childEnv = (extra: Record<string, string> = {}, elsewhere = false) => {
         const env: Record<string, string | undefined> = { ...process.env, ...extra };
         for (const key of spec.keyEnv ?? []) {
           const value = input.environment[key];
           if (value) env[key] = value;
         }
         for (const key of spec.scrubEnv ?? []) delete env[key];
-        if (spec.kind === "opencode" && config.isolated && !forPlace) {
-          Object.assign(env, isolatedOpencodeEnv(env));
-        }
+        if (ownSetup && !elsewhere) Object.assign(env, isolatedOpencodeEnv());
         return env;
       };
-
-      const seedReady =
-        spec.kind === "opencode" && config.isolated
-          ? seedIsolatedOpencodeCredentials(config.cli, { ...process.env })
-          : Promise.resolve();
+      // The providers of the person's own OpenCode, brought over the first
+      // time, before anything here asks it for models or a reply. Started
+      // once PATH is widened, so an app opened from Finder finds the CLI.
+      let seeding: Promise<unknown> | null = null;
+      const seeded = () => {
+        if (!ownSetup) return Promise.resolve();
+        widenPath();
+        return (seeding ??= seedOpencodeSignIns(config.cli, undefined, { ...process.env }));
+      };
 
       // Engines that build their catalog from their own configuration
       // are probed once with a throwaway session, so the picker starts
@@ -784,7 +646,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         : undefined;
       if (spec.probeModels) {
         widenPath();
-        void seedReady
+        void seeded()
           .then(() => probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined))
           .then((catalog) => {
             if (catalog) {
@@ -799,7 +661,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const { threadId } = turn;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
-        if (!turn.place) await seedReady;
+        if (!turn.place) await seeded();
 
         const argv = [
           ...spec.args,
@@ -1610,11 +1472,10 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
         const old = tooOld(spec, version);
         if (old) return { state: "unavailable", reason: old, version: `${spec.name} ${version}` };
-        await seedReady;
         const hasKey = (spec.keyEnv ?? []).some((k) => input.environment[k] || process.env[k]);
-        const isoPaths = spec.kind === "opencode" && config.isolated ? isolatedOpencodePaths() : null;
-        const signedIn = isoPaths
-          ? existsSync(join(isoPaths.opencodeDataDir, "auth.json")) || existsSync(join(isoPaths.root, ".auth-seeded"))
+        // the workspace's own OpenCode keeps its sign-in in its own folder
+        const signedIn = ownSetup
+          ? existsSync(join(isolatedOpencodePaths().opencodeDataDir, "auth.json"))
           : (spec.authFiles ?? []).some((f) => existsSync(join(homedir(), f)));
         // An agent that answers without a sign-in is not "signed out" for
         // want of one: saying so put up a warning nobody could clear while

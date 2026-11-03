@@ -658,6 +658,22 @@ has no browser or screen rather than promised one, and its turns never
 hold the Local VM from agents that could use it. On a Linux server with
 no display, the agent's browser runs headless.
 
+OpenCode reads your own setup by default: the plugins, MCP servers and
+instructions in `~/.config/opencode`, and the providers and sessions in
+`~/.local/share/opencode`, shared with OpenCode in your terminal. To keep
+them apart, turn on **Own setup for this workspace** under OpenCode in
+Settings, Engines and keys. OpenCode turns in that workspace then use
+folders of its own, in the workspace's `opencode/` folder: settings,
+plugins and sessions start empty, and the providers you already
+connected are copied in once, when you first switch it on (OpenCode's own
+`auth export` and `auth import`, or a copy of its `auth.json`, private to
+you). Anything you connect in your own OpenCode later stays there; use
+**Connect a provider** under the switch to sign in to the workspace's.
+Commands the agent runs see the same folders, so a tool that keeps its
+settings under `~/.config` (`gh`, for one) is not signed in during those
+turns. It applies to turns on this computer; an agent working in a
+container or over SSH uses the OpenCode set up there.
+
 Give an agent a **backup engine** and a turn that hits a usage limit, a
 rate limit or an outage is picked up by the backup, with the conversation
 so far.
@@ -752,6 +768,7 @@ Inside each workspace's folder:
 | `people.json`, `joining.json` | The people in the workspace, and its invites |
 | `usage.json` | What each agent and engine used, by day, and on which account |
 | `engine-accounts.json`, `engine-accounts/` | The names of an engine's added accounts and which one is in use, and each one's own config folder with the sign-in the engine wrote there (left out of backups) |
+| `opencode/` | OpenCode's own settings, sign-ins and sessions for this workspace, when it has its own setup; `0700` (left out of backups) |
 | `reads.json` | How far each person has read each conversation |
 | `skills/` | Installed skills, one markdown file each |
 | `skill-history/` | Every version of each of your skills, with who changed it and why |

@@ -92,7 +92,7 @@ function useSetup(): SetupInfo | null | undefined {
 
 /** Whether this window is on the computer Bloks runs on, where it can
  * install, update and choose which CLI runs. Null until it is known. */
-function useOnThisComputer(): boolean | null {
+export function useOnThisComputer(): boolean | null {
   const info = useSetup();
   return info === undefined ? null : Boolean(info);
 }

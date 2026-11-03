@@ -43,7 +43,7 @@ import { legacyToolTitle } from "./tool-command.ts";
 import * as box from "./box.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { installCommand } from "./engine-commands.ts";
-import { isolatedOpencodeSignInCommand } from "./drivers/acp.ts";
+import { isolatedOpencodeEnv, isolatedOpencodeSignInCommand } from "./opencode-setup.ts";
 import { ENGINE_SETUP, checkEnginePath, engineSetupView, installEngine, openInTerminal, openSignIn, runSetupScript } from "./engine-setup.ts";
 import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
@@ -29336,9 +29336,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!local || asAgent) return json(res, 403, { error: "not from here" });
       if (!ENGINE_SETUP[m[1]]) return json(res, 404, { error: "no such engine" });
       if (m[2] === "signin") {
+        // with its own setup on, OpenCode signs in there, not in the
+        // person's own (server/opencode-setup.ts)
         if (m[1] === "opencode" && cfg.opencode?.isolated) {
-          const cli = cfg.enginePaths?.opencode || "opencode";
-          const command = isolatedOpencodeSignInCommand(cli);
+          isolatedOpencodeEnv();
+          const command = isolatedOpencodeSignInCommand(cfg.enginePaths?.opencode || "opencode");
           return json(res, 200, { opened: openInTerminal("signin-opencode", command), command });
         }
         return json(res, 200, openSignIn(m[1]));
@@ -34706,16 +34708,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       Object.assign(cfg, saveConfig(patch));
       // Only a section instanceConfigs builds engines from is worth the
       // reload, because a reload cuts off the turns of every engine it
-      // rebuilds, and these two reach the environment of all of them.
-      // The rest (profile, speech, Composio, and the sections saved above)
-      // are read fresh when they are used.
+      // rebuilds: these two reach the environment of all of them, and
+      // OpenCode's own setup the OpenCode engines. A conversation cut off
+      // there goes on in a new session, told the story, since its session
+      // is in the setup it was made in. The rest (profile, speech,
+      // Composio, and the sections saved above) are read fresh when they
+      // are used.
       if (patch.xai || patch.box || opencodeChanged) await reloadProviders();
       if (opencodeChanged) {
         record({
           at: Date.now(),
           kind: "settings.changed",
           actor: "you",
-          summary: `OpenCode: ${cfg.opencode?.isolated ? "isolated config, data and sessions" : "shared computer config and sessions"}`,
+          summary: `OpenCode: ${cfg.opencode?.isolated ? "uses this workspace's own setup" : "uses your own setup on this computer"}`,
         });
         const instances = await registry.describe();
         broadcast({ kind: "instances", instances });

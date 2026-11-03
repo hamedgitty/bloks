@@ -63,7 +63,8 @@ export interface AppConfig {
   /** OpenCode workspace settings. When `isolated` is true, OpenCode runs
    * with its own config, data, state, cache and session database inside
    * this workspace's data folder rather than the computer's shared
-   * ~/.config/opencode and ~/.local/share/opencode. Off by default. */
+   * ~/.config/opencode and ~/.local/share/opencode, on turns on this
+   * computer (server/opencode-setup.ts). Off by default. */
   opencode?: { isolated?: boolean };
   /** The port to listen on when BLOKS_PORT does not say. Chosen by hand,
    * for a machine where the usual one is taken; the desktop app reads it
@@ -634,6 +635,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     if (typeof path === "string" && path && !(typeof own?.cli === "string" && own.cli)) {
       entry.config = { ...own, cli: path };
     }
+    // the workspace's OpenCode setup (server/opencode-setup.ts) goes to
+    // every OpenCode engine but one whose own config says otherwise
     if (entry.driver === "opencode" && cfg.opencode?.isolated === true && !(typeof own?.isolated === "boolean")) {
       entry.config = { ...(entry.config as Record<string, unknown> | undefined), isolated: true };
     }

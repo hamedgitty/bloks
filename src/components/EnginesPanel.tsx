@@ -21,6 +21,7 @@ import { CodexSpeedControl } from "./CodexSpeed";
 import { EngineReport } from "./EngineReport";
 import { EnginePauses } from "./EnginePauses";
 import { EngineAccounts } from "./EngineAccounts";
+import { OpenCodeSetupControl } from "./OpenCodeSetup";
 import { EngineOutdatedActions, EnginePathControl, EngineSetupActions, EngineUpdateNote } from "./EngineSetup";
 import { TeamSignInNotice } from "./TeamSignInNotice";
 import { t, type MessageKey } from "@/lib/i18n";
@@ -269,54 +270,9 @@ function EngineRow({ provider }: { provider: ProviderRow }) {
           />
         </div>
       )}
-      {provider.kind === "opencode" && state.config?.opencode !== undefined && (
-        <OpenCodeIsolationControl onChanged={refresh} />
-      )}
+      {/* once it is installed: the workspace's own setup, or the person's */}
+      {provider.kind === "opencode" && provider.connected && <OpenCodeSetupControl onChanged={refresh} />}
       {error && <div className="mt-1.5 pl-10 text-small text-destructive">{error}</div>}
-    </div>
-  );
-}
-
-function OpenCodeIsolationControl({ onChanged }: { onChanged: () => void }) {
-  const { state, dispatch } = useStore();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const isolated = state.config?.opencode?.isolated === true;
-
-  const toggle = async (next: boolean) => {
-    setSaving(true);
-    setError(null);
-    try {
-      const result = await api("/api/config", {
-        method: "PATCH",
-        body: JSON.stringify({ opencode: { isolated: next } }),
-      });
-      dispatch({ type: "configStatus", config: result });
-      onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="mt-2.5 pl-10">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-small font-medium text-foreground">{t("enginesPanel.opencodeIsolated")}</div>
-          <div className="mt-0.5 text-small leading-relaxed text-muted-foreground">
-            {t("enginesPanel.opencodeIsolatedNote")}
-          </div>
-        </div>
-        <Switch
-          checked={isolated}
-          disabled={saving}
-          aria-label={t("enginesPanel.opencodeIsolated")}
-          onCheckedChange={(on) => void toggle(on)}
-        />
-      </div>
-      {error && <div className="mt-1.5 text-small text-destructive">{error}</div>}
     </div>
   );
 }

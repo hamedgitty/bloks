@@ -523,7 +523,13 @@ behind it are built to be narrow.
   your mail. Other engines that run a program (Gemini CLI, Cursor,
   OpenCode and the rest) still load an MCP server set up in their own
   settings on your computer; keep anything signed in as you out of
-  those, or limit which engines members may use.
+  those, or limit which engines members may use. OpenCode can instead
+  be given a setup of the workspace's own (**Own setup for this
+  workspace** under it in Settings, Engines and keys), which leaves your
+  own OpenCode settings, plugins and servers out of every turn there,
+  yours included; the providers it starts with are the ones you had
+  connected, copied once into the workspace's folder, which stays private
+  to you and out of backups.
 - **A room's Auto reads the room as data.** In a room set to Auto, a
   message that names nobody is shown to a small model, with the members'
   names, roles and briefs and the last few lines, so it can pick who

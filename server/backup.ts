@@ -409,7 +409,9 @@ export function leftOutBecause(rel: string, isDir: boolean, undo: boolean): stri
     if (isDir && name === "native") return "raw engine logs";
     if (isDir && name === "browser") return "browser profiles";
     // an engine's added accounts keep their sign-ins here, written by the
-    // engine itself; they stay on this computer, like the engine's own
+    // engine itself, and so does OpenCode's own setup for the workspace
+    // (server/opencode-setup.ts); they stay on this computer, like the
+    // engine's own
     if (isDir && (name === "engine-accounts" || name === "opencode")) return "engine sign-ins, which stay on this computer";
     if (isDir && (name === "cache" || name === "tmp")) return "cache";
     if (isDir && name === "checkpoints" && !undo) return "Undo history, not asked for";
