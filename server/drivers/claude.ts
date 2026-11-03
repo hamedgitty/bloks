@@ -752,7 +752,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const env = turnEnvironment(process.env, turn);
 
       const spawnClaude = (runArgv: string[]) => {
-        const proc = turn.place
+        const child = turn.place
           ? turn.place.spawn(config.cli, runArgv, { env })
           : spawn(config.cli, runArgv, {
               cwd: turn.cwd ?? homedir(),
@@ -762,8 +762,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               detached: OWN_GROUP,
               windowsHide: true,
             });
-        engines.add(proc);
-        return proc;
+        engines.add(child);
+        return child;
       };
       let child = spawnClaude(argv);
 
