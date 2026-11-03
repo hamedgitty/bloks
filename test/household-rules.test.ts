@@ -76,6 +76,24 @@ test("a member's own apps and keys: their private conversation or their solo age
   assert.equal(access.personalAccountsFor(chef, general, "owner", none), null, "the owner's own, which are not personal ones");
 });
 
+test("the owner's own accounts and self: his own turns on his own agents, and never a member's turn or a member's agent", () => {
+  assert.equal(access.agentOwner(chef), "owner");
+  assert.equal(access.agentOwner({ id: "mine", solo: { by: "owner" } }), "owner", "the owner's own solo agent");
+  assert.equal(access.agentOwner(samsOwn), "sam");
+  assert.ok(access.runsAsOwner(chef, "owner"), "the owner's own turn");
+  assert.ok(access.runsAsOwner({ id: "mine", solo: { by: "owner" } }, "owner"));
+  // a member asking, anywhere, the admins included
+  assert.ok(!access.runsAsOwner(chef, "sam"), "a member's turn on a team agent");
+  assert.ok(!access.runsAsOwner(narrow, "ana"));
+  // a member's own agent, whoever speaks to it: in a room the owner can
+  assert.ok(!access.runsAsOwner(samsOwn, "owner"), "the owner speaking to Sam's agent in a room");
+  assert.ok(!access.runsAsOwner(samsOwn, "sam"), "Sam's own turn on his agent uses his, never the owner's");
+  assert.ok(!access.runsAsOwner(samsOwn, "ana"));
+  // and a stranger's mail or a Telegram person, as before
+  assert.ok(!access.runsAsOwner(chef, "mail:anyone"));
+  assert.ok(!access.runsAsOwner(chef, "telegram:1"));
+});
+
 test("a person's own things are member routes for a member or an admin, never a guest's, and name nobody else", () => {
   const room = () => null;
   const no = () => false;

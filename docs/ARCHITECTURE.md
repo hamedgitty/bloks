@@ -252,7 +252,8 @@ its `journal` and `journal/:id/undo`). It is the standing prompt's third
 moving part (`server/standing-prompt.ts`), so a resumed Claude Code
 session keeps its cached copy and hears a change in its message, and it
 has the notes' gate: never in a shared room, a stranger's mail or a
-Telegram person's turn. Agents read it (`bloks memory --shared`, and the
+Telegram person's turn, and never in a workspace member's turn or any
+turn of a member's own agent, since the owner wrote it for their own. Agents read it (`bloks memory --shared`, and the
 prompt) and never write it; the write route refuses an agent's
 credential and the agent guard does not list it.
 
@@ -662,6 +663,22 @@ and the server asks it before anything leaves:
 - A member's own apps and keys (`server/personal.ts`, below) are used by
   a turn they asked for in their private conversation or their solo
   agent (`personalAccountsFor`), and by nothing else.
+- The owner's own apps, keys, credential, profile and shared memory go
+  only to a turn the owner asked for on an agent of the owner's
+  (`runsAsOwner`). A member's solo agent works for its maker whoever
+  speaks to it (`agentOwner`), so a room turn the owner sets going on it
+  is still not the owner's. Every other turn is sent with
+  `SendTurnInput.forOthers`, and the driver keeps out what the engine
+  brings of its own accord on the owner's computer: on Claude Code the
+  claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`), every MCP
+  server Bloks did not name (`--strict-mcp-config`), CLAUDE.md files
+  (the working folder's own two are read back in) and auto memory; on
+  Codex each MCP server in the owner's own settings
+  (`mcp_servers.<name>.enabled = false`) and `features.apps`, with the
+  turn refused (`OWNERS_OFF_REFUSED`) when Codex cannot say what its
+  settings hold or will not take the switch. A member's turn outside
+  their own conversation is told it has nobody's apps there, and its
+  `request_connection` and `request_secret` plant no card.
 - Approvals in a team conversation or a room are answered by the person
   whose message started the work, the owner or an admin; in a private
   conversation or a solo agent, by its person.

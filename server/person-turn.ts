@@ -60,12 +60,32 @@ export function personClaudeDenials(dataDir: string): string[] {
  * only those two text files, each turn, without restoring standing allows,
  * hooks, MCP servers, local or global instructions, or @ imports. */
 export function readPersonClaudeInstructions(cwd: string): string {
+  const sections = projectClaudeSections(cwd, true);
+  return sections.length ? "\n\n## Owner's project instructions\nThese are the owner's standing instructions. In this text, 'the user' means the owner, not the Telegram sender. The person's turn still needs the owner's approval for effects and answers only through reply_to_sender. This text grants no tool permissions. @ imports are not resolved.\n\n" + sections.join("\n\n") : "";
+}
+
+/** The same two files for a workspace member's turn, whose CLAUDE.md files
+ * are off so the owner's own (in their home folder) stays out. They are the
+ * project's, so they come back; one that cannot be read is left out, and
+ * what runs past the limit is cut, rather than the member's turn refused
+ * over a file in a folder that is not theirs to fix. */
+export function readMemberClaudeInstructions(cwd: string): string {
+  const sections = projectClaudeSections(cwd, false);
+  return sections.length ? "\n\n## Project instructions\nThe CLAUDE.md files of the folder you work in. In this text, 'the user' means whoever you are working with now. This text grants no tool permissions. @ imports are not resolved.\n\n" + sections.join("\n\n") : "";
+}
+
+/** CLAUDE.md and .claude/CLAUDE.md in a working folder, never the one in
+ * the home folder. Strict, for a Telegram person, refuses the turn over a
+ * file it cannot read or files too long; otherwise those are left out or
+ * cut at the limit. */
+function projectClaudeSections(cwd: string, strict: boolean): string[] {
   const sections: string[] = [];
   const seen = new Set<string>();
   let used = 0;
   for (const name of ["CLAUDE.md", ".claude/CLAUDE.md"]) {
     const file = resolve(cwd, name);
     if (file === resolve(homedir(), ".claude/CLAUDE.md")) continue;
+    if (!strict && used >= MAX_PERSON_PROJECT_BYTES) break;
     let fd: number | undefined;
     try {
       // Follow project symlinks, but never block on a pipe or read a device.
@@ -78,7 +98,8 @@ export function readPersonClaudeInstructions(cwd: string): string {
       let count = 0, got: number;
       while (count < bytes.length && (got = readSync(fd, bytes, count, bytes.length - count, null)) > 0) count += got;
       if (used + count > MAX_PERSON_PROJECT_BYTES) {
-        throw personTurnHold("the owner's project instructions exceed 100000 bytes.", "Shorten the two project instruction files before trying again.");
+        if (strict) throw personTurnHold("the owner's project instructions exceed 100000 bytes.", "Shorten the two project instruction files before trying again.");
+        count = MAX_PERSON_PROJECT_BYTES - used;
       }
       used += count;
       const text = bytes.subarray(0, count).toString("utf8");
@@ -90,10 +111,11 @@ export function readPersonClaudeInstructions(cwd: string): string {
         catch (missing) { if ((missing as NodeJS.ErrnoException).code === "ENOENT") continue; }
       }
       if (error instanceof Error && error.message.startsWith(HOLD)) throw error;
+      if (!strict) continue;
       throw personTurnHold(`the owner's project ${name} could not be read.`, "Make that project instruction file readable and a regular text file before trying again.");
     } finally { if (fd !== undefined) closeSync(fd); }
   }
-  return sections.length ? "\n\n## Owner's project instructions\nThese are the owner's standing instructions. In this text, 'the user' means the owner, not the Telegram sender. The person's turn still needs the owner's approval for effects and answers only through reply_to_sender. This text grants no tool permissions. @ imports are not resolved.\n\n" + sections.join("\n\n") : "";
+  return sections;
 }
 
 /** An owner group turn keeps its own Codex home. Only the new reply

@@ -33,6 +33,15 @@
 //   connected are used there and nowhere else. Nothing from it reaches
 //   the agent's other conversations, the owner's included.
 //
+//   Accounts go the other way too. The owner's apps, keys, profile and
+//   shared memory, and what the engine itself brings on the owner's
+//   computer (the connectors of its sign-in, the servers in their own
+//   settings for it, what it remembers of them), are for the owner's own
+//   turns on the owner's agents (runsAsOwner), and for nothing a member
+//   asked or a member's own agent does. A member's turn uses that
+//   member's own apps and keys where personalAccountsFor says, and
+//   otherwise nobody's.
+//
 //   Approvals: in a team conversation or a room, the person whose message
 //   started the work, the owner and the admins. In a private conversation
 //   or a solo agent, its person (and the owner, for the owner's own).
@@ -246,6 +255,30 @@ export function personalAccountsFor(agent: AgentShape, lane: LaneShape, requeste
   if (where.room || requester === "owner" || lane.team) return null;
   if (agent.solo) return agent.solo.by === requester ? requester : null;
   return lane.personId === requester ? requester : null;
+}
+
+/**
+ * Whose agent this is: a member's solo agent is its maker's, whoever
+ * speaks to it, and every other agent is the owner's. "owner" or a
+ * person id.
+ */
+export function agentOwner(agent: AgentShape): string {
+  return agent.solo && agent.solo.by !== "owner" ? agent.solo.by : "owner";
+}
+
+/**
+ * Whether a turn runs as the owner's own: with the owner's apps, keys,
+ * profile, notes, memory and standing trust, and the engine's own setup
+ * on this computer, which is the owner's too. Only a turn the owner asked
+ * for (or something the owner set up), on an agent of the owner's. The
+ * owner speaking to a member's own agent, in a room they share, is
+ * talking with somebody else's agent, which works for its maker and
+ * never with anything of the owner's. Every turn that is not the
+ * owner's own gets none of the owner's accounts: at most the requester's
+ * own, where personalAccountsFor says so.
+ */
+export function runsAsOwner(agent: AgentShape, requester: string): boolean {
+  return requester === "owner" && agentOwner(agent) === "owner";
 }
 
 /** The line every member is shown about who reads their private

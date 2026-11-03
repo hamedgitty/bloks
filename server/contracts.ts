@@ -330,6 +330,18 @@ export interface SendTurnInput {
    * instance is set, and one that pre-allows tools or edits of its own
    * accord (Claude Code) does not. Never with `fullAccess`. */
   untrusted?: boolean;
+  /** The turn is not the owner's own: a workspace member asked for it, or
+   * the agent is a member's own. The owner's accounts and the owner's
+   * self stay out of it, including what the engine brings of its own
+   * accord on this computer: the connectors its sign-in comes with
+   * (claude.ai's Gmail, Calendar and the rest, ChatGPT's apps), the MCP
+   * servers in the owner's own settings for it, and the standing
+   * instructions and memory it keeps about the owner. Each driver keeps
+   * out what its engine can be told to (Claude Code all of it, Codex its
+   * servers and apps, refusing the turn when it will not take that); what
+   * an engine cannot be told is said in SECURITY.md. What the harness
+   * hands the turn in `integrations` is the requester's own and stays. */
+  forOthers?: boolean;
   /** A let-in Telegram person. Fresh native session, owner-only approvals
    * and a turn-bound reply tool, even on a full-access agent. */
   person?: import("./person-turn.ts").PersonTurn;

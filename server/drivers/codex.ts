@@ -308,6 +308,41 @@ const SERVERS_REFUSED = /mcp_servers/i;
 export const SERVERS_REFUSED_NOTICE =
   "This Codex would not take the MCP servers attached to this agent, so it carried on without them. Updating Codex should fix it.";
 
+// ── the owner's own, on somebody else's turn ───────────────────────────
+//
+// Codex runs as the owner, who set it up on this computer: the MCP
+// servers in their own Codex settings and the apps their ChatGPT sign-in
+// brings are signed in as them. A turn a workspace member asked for, or
+// one of a member's own agents, is not the owner's, so the thread it
+// runs in has every one of those servers switched off by name, and the
+// apps feature with them. Bloks' own mounts and the servers handed to this
+// turn stay.
+
+/** Bloks' own mounts, which are never the person's. */
+const BLOKS_MOUNTS = ["bloks_connectors", "bloks_reply"];
+/** A server name a dotted config key can carry, which is every name Codex
+ * itself accepts. */
+const SERVER_NAME = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Why a turn for somebody else does not run on this Codex. */
+export const OWNERS_OFF_REFUSED =
+  "This Codex would not let Bloks switch off the MCP servers and apps in the owner's own Codex settings, which are signed in as the owner, so it answers only the owner. Updating Codex should fix it.";
+
+/** The thread config that switches the owner's own servers and apps off,
+ * and any server name it could not reach, which keeps the turn from
+ * running at all. `keep` is the names Bloks mounts for this turn. */
+export function ownersOff(theirs: readonly string[], keep: Iterable<string>): { config: Record<string, unknown>; unreachable: string[] } {
+  const kept = new Set([...BLOKS_MOUNTS, ...keep]);
+  const config: Record<string, unknown> = { "features.apps": false };
+  const unreachable: string[] = [];
+  for (const name of theirs) {
+    if (kept.has(name)) continue;
+    if (SERVER_NAME.test(name)) config[`mcp_servers.${name}.enabled`] = false;
+    else unreachable.push(name);
+  }
+  return { config, unreachable };
+}
+
 /** Said for the servers Codex cannot be handed as they are, with why. */
 export function leftOutNotice(left: readonly string[]): string {
   const one = left.length === 1;
@@ -1466,17 +1501,30 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             return reached ? [{ name: server.name, transport: "http" as const, url: reached.url, headers: reached.headers }] : [];
           });
           let theirs: string[] = [];
-          if (shell || attached.length) {
+          // whether this Codex said what its settings hold, which a turn
+          // for somebody else cannot go without (ownersOff below)
+          let readTheirs = false;
+          if (shell || attached.length || turn.forOthers) {
             try {
               const read: any = await within(rpc.request("config/read", { cwd: turn.cwd ?? homedir() }), "reading its settings", "Codex", PROBE_TIMEOUT_MS);
               if (shell) shell = shellConfig(turn.env, read?.config?.shell_environment_policy?.include_only);
               const listed = read?.config?.mcp_servers;
               if (listed && typeof listed === "object") theirs = Object.keys(listed);
+              readTheirs = true;
             } catch {
               /* the set entries alone, and the names as they come */
             }
           }
           const own = serverConfig(attached, { approve: !turn.untrusted && !turn.shared, taken: theirs });
+          // Somebody other than the owner: the servers in the owner's own
+          // Codex settings, and ChatGPT's apps, are signed in as them. Off
+          // for this thread, or the turn does not run.
+          let apart: Record<string, unknown> | null = null;
+          if (turn.forOthers) {
+            const off = readTheirs ? ownersOff(theirs, [...Object.keys(own.config), ...Object.keys(bridgesThere)].map((key) => key.slice("mcp_servers.".length))) : null;
+            if (!off || off.unreachable.length) throw new Error(OWNERS_OFF_REFUSED);
+            apart = off.config;
+          }
           hiddenTokens.push(...own.secrets);
           let servers: Record<string, unknown> | null = Object.keys(own.config).length || Object.keys(bridgesThere).length ? { ...bridgesThere, ...own.config } : null;
           // A server Codex cannot be handed is said, not dropped without a
@@ -1491,7 +1539,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // Codex's goals off (GOALS_OFF), dropped only by a Codex that
           // takes no thread config at all
           let goals: Record<string, unknown> | null = GOALS_OFF;
-          const threadConfig = () => (shell || servers || goals ? { ...goals, ...shell, ...servers } : null);
+          const threadConfig = () => (shell || servers || goals || apart ? { ...goals, ...shell, ...servers, ...apart } : null);
 
           // A Codex that will not take that config still gets its thread,
           // without the part it refused, and the conversation is told once
@@ -1518,6 +1566,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               } catch (error) {
                 const said = String((error as Error)?.message ?? "");
                 const all = CONFIG_REFUSED.test(said);
+                // what keeps the owner's own servers and apps out is never
+                // the part left behind: without it the turn does not run
+                if (apart && (all || SERVERS_REFUSED.test(said) || /features|apps/i.test(said))) throw new Error(OWNERS_OFF_REFUSED);
                 const shellOut = Boolean(shell) && (all || SHELL_REFUSED.test(said));
                 const serversOut = Boolean(servers) && (all || SERVERS_REFUSED.test(said));
                 const goalsOut = Boolean(goals) && all;

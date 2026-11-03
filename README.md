@@ -160,7 +160,12 @@ What they get is decided by you:
   their own keys, under Your connections in their app. Their private
   conversations and solo agents use them, so "pull my email" means the
   inbox of whoever asked; a room, a team conversation, you and everyone
-  else never do. Your own apps and keys stay yours the same way.
+  else never do. Your own apps and keys stay yours the same way, and so
+  does the rest of you: your profile, your shared memory, and what the
+  engines on your computer are signed in to as you (the Gmail and
+  Calendar of your claude.ai sign-in, the tool servers in your own Claude
+  Code and Codex settings) never reach a member's turn or a member's own
+  agent, so their agents never take your accounts for theirs.
 - **A welcome of their own.** Someone who joins is shown, once, who they
   are signed in as, what is shared and what is theirs, and where to tell
   agents about themselves, connect their apps or make their own agent.

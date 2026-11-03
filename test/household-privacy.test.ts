@@ -300,6 +300,14 @@ test("on an API engine: each person's own apps, memory and words reach their own
   assert.ok(asked.messages.some((m: any) => m.kind === "notice" && /Your connections/.test(m.text)), "Sam was not told where to add it");
   assert.ok(!asked.messages.some((m: any) => m.kind === "secret"), "a card the owner could answer was planted");
   assert.deepEqual(await h.json("/api/secrets"), secretsBefore, "the owner's keys changed");
+  // and in the team conversation it is nobody's to add: no card there
+  // either, which the owner would have answered into his own keys
+  engine.requests.length = 0;
+  const inTeam = await memberSays(as, sam, chef.id, "team", "KEY needed here", h);
+  const teamLane = (await h.json(`/api/bots/${chef.id}/messages?thread=${inTeam.threadId}&limit=500`)).messages as any[];
+  assert.ok(!teamLane.some((m) => m.kind === "secret" || m.kind === "connector"), "a card the owner could answer was planted in the team conversation");
+  assert.match(engine.requests.flatMap(toolResults).join("\n"), /each person's own/, "the agent was not told why");
+  assert.deepEqual(await h.json("/api/secrets"), secretsBefore);
 
   // ── nobody else reaches a member's own routes ──
   const guest = (path: string, method = "GET") => as(guestToken, path, { method });
@@ -449,4 +457,144 @@ process.stdin.on("data", async function take(c) {
   // gone from the workspace, gone from this computer
   assert.equal((await h.fetch(`/api/workspace/members/${sam.personId}`, { method: "DELETE" })).status, 200);
   assert.ok(!existsSync(join(dir, "people", sam.personId)), "Sam's keys and desk outlived him");
+});
+
+test("on Claude Code: nothing of the owner's own engine setup, profile or memory reaches a member's turn or a member's own agent", { timeout: 240_000 }, async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "bloks-household-own-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const runs = join(scratch, "runs.jsonl");
+  const cli = join(scratch, "fake-claude.mjs");
+  writeFileSync(runs, "");
+  // A Claude Code that writes down what would have come from the owner's
+  // own setup: the connectors his Claude account brings (claude.ai's
+  // Gmail and the rest), the MCP servers in his own settings, his
+  // CLAUDE.md and Claude's memory of him, and what it was told.
+  writeFileSync(
+    cli,
+    `#!${process.execPath}
+import { appendFileSync, readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
+if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+const out = (f) => console.log(JSON.stringify(f));
+const after = (flag) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : null; };
+let servers = {};
+try { servers = JSON.parse(readFileSync(after("--mcp-config"), "utf8")).mcpServers ?? {}; } catch {}
+let system = "";
+try { system = readFileSync(after("--append-system-prompt-file"), "utf8"); } catch {}
+let input = "";
+process.stdin.on("data", function take(c) {
+  input += c;
+  const frame = input.split("\\n").slice(0, -1).filter(Boolean).map(JSON.parse).find((f) => f.type === "user");
+  if (!frame) return;
+  process.stdin.off("data", take);
+  const said = typeof frame.message.content === "string" ? frame.message.content : JSON.stringify(frame.message.content);
+  appendFileSync(${JSON.stringify(runs)}, JSON.stringify({
+    said: said.slice(-200),
+    claudeAi: process.env.ENABLE_CLAUDEAI_MCP_SERVERS ?? null,
+    claudeMds: process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS ?? null,
+    autoMemory: process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? null,
+    strict: args.includes("--strict-mcp-config"),
+    composio: servers.composio?.headers?.["x-consumer-api-key"] ?? null,
+    token: Boolean(process.env.BLOKS_TOKEN),
+    ownerOnly: process.env.OWNER_ONLY ?? null,
+    system,
+  }) + "\\n");
+  // told to, it hands the room to Sam's agent, as an agent of the owner's
+  // can in a room they share
+  const reply = said.includes("PASS-TO-HELPER") && !said.includes("HELPER-IN-ROOM") ? "@Helper HELPER-IN-ROOM over to you" : "Done";
+  out({ type: "system", subtype: "init", session_id: "s-" + Date.now(), model: "claude-sonnet-5" });
+  out({ type: "assistant", message: { content: [{ type: "text", text: reply }] } });
+  out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 1, session_id: "s", result: reply, total_cost_usd: 0 });
+});
+`,
+    { mode: 0o755 },
+  );
+  const { dir, h: first, sam, as, restart } = await household(t, "bloks-household-own-home-", {
+    instances: { claude: { driver: "claudeAgent", config: { cli } } },
+    profile: { name: "Hamed", about: "Hamed grows quinces and banks with the Medlar bank." },
+  });
+  let h = first;
+  // what the owner keeps for his own agents, written before anybody joined
+  mkdirSync(join(dir, "shared"), { recursive: true });
+  writeFileSync(join(dir, "shared", "MEMORY.md"), "# Shared\n\n- The family safe code is 4417.\n");
+  const { bot: chef } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Chef" }) });
+  await h.fetch(`/api/bots/${chef.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+  assert.equal((await as(sam, "/api/member/connections/apps", { method: "PUT", body: { key: SAM_KEY } })).status, 200);
+  // Sam makes an agent of his own
+  const made = await as(sam, "/api/member/agents", { method: "POST", body: { name: "Helper", engine: { instanceId: "claude", model: "claude-sonnet-5" } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const helper = made.body.agent.id as string;
+
+  const runOf = async (said: string) => {
+    const found = await waitFor(() =>
+      readFileSync(runs, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).reverse().find((run) => run.said.includes(said)),
+    30_000);
+    assert.ok(found, `no run for ${said}\n${h.logs().slice(-3000)}`);
+    return found;
+  };
+  const apart = (run: any, where: string) => {
+    assert.equal(run.claudeAi, "false", `${where}: the owner's claude.ai connectors (his Gmail among them) were on`);
+    assert.equal(run.strict, true, `${where}: the MCP servers in the owner's own Claude settings were loaded`);
+    assert.equal(run.claudeMds, "1", `${where}: the owner's CLAUDE.md was read`);
+    assert.equal(run.autoMemory, "1", `${where}: Claude's memory of the owner was read`);
+    assert.doesNotMatch(run.system, /quinces|Medlar/, `${where}: the owner's profile was in the prompt`);
+    assert.doesNotMatch(run.system, /4417/, `${where}: the owner's shared memory was in the prompt`);
+  };
+
+  await memberSays(as, sam, helper, "private", "SAMS-OWN-AGENT", h);
+  const own = await runOf("SAMS-OWN-AGENT");
+  apart(own, "Sam's own agent");
+  assert.equal(own.composio, SAM_KEY, "Sam's own agent did not use his own apps");
+  assert.match(own.system, /Sam's own agent/);
+  assert.match(own.system, /are Sam's own/);
+
+  await memberSays(as, sam, chef.id, "private", "SAMS-PRIVATE", h);
+  const mine = await runOf("SAMS-PRIVATE");
+  apart(mine, "Sam's private conversation");
+  assert.equal(mine.composio, SAM_KEY);
+
+  await memberSays(as, sam, chef.id, "team", "SAMS-TEAM", h);
+  const team = await runOf("SAMS-TEAM");
+  apart(team, "the team conversation");
+  assert.equal(team.composio, null, "somebody's apps reached the team conversation");
+  assert.doesNotMatch(team.system, /request_connection/, "a member's team turn was told to connect apps under the owner's account");
+  assert.match(team.system, /no connected apps/i, "the agent was not told it has nobody's apps here");
+
+  // the owner's own turn is as it always was
+  await ownerSays(h, chef.id, "OWNERS-OWN");
+  const owner = await runOf("OWNERS-OWN");
+  assert.equal(owner.claudeAi, null, "the owner's own connectors were switched off for him");
+  assert.equal(owner.strict, false, "the owner's own MCP servers were switched off for him");
+  assert.equal(owner.claudeMds, null);
+  assert.equal(owner.autoMemory, null);
+  assert.equal(owner.composio, OWNER_KEY);
+  assert.equal(owner.ownerOnly, "the owners own value");
+  assert.match(owner.system, /quinces/);
+  assert.match(owner.system, /4417/);
+
+  // ── a room where Sam's agent and the owner's meet ──
+  // Sam put his agent in the owner's room (written straight to the rooms
+  // file, as a test shares a room). The owner asks Chef, and Chef hands
+  // the room to Helper: a turn the owner set going, on Sam's agent, which
+  // still works for Sam and never with anything of the owner's.
+  const { bot: baker } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Baker" }) });
+  await h.fetch(`/api/bots/${baker.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+  const room = (await h.json("/api/bloks", { method: "POST", body: JSON.stringify({ name: "Kitchen", memberIds: [chef.id, baker.id] }) })).blok.id as string;
+  h = await restart(() => {
+    const file = join(dir, "bloks.json");
+    const rooms = JSON.parse(readFileSync(file, "utf8"));
+    const list = Array.isArray(rooms) ? rooms : rooms.bloks;
+    list.find((r: any) => r.id === room).memberIds.push(helper);
+    writeFileSync(file, JSON.stringify(rooms));
+  });
+  await h.fetch(`/api/bloks/${room}/messages`, { method: "POST", body: JSON.stringify({ text: "@Chef PASS-TO-HELPER" }) });
+  const handed = await runOf("HELPER-IN-ROOM");
+  apart(handed, "Sam's agent in a room, set going by the owner");
+  assert.equal(handed.composio, null, "Sam's agent in a room used somebody's apps");
+  assert.equal(handed.token, false, "Sam's agent got the owner's credential");
+  assert.equal(handed.ownerOnly, null, "the owner's keys reached Sam's agent");
+  assert.match(handed.system, /Helper/);
+  assert.match(handed.system, /Sam's own agent/);
+  assert.doesNotMatch(handed.system, /About the person you work for/);
 });

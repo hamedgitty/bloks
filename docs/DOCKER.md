@@ -261,6 +261,15 @@ To sign in to an engine with an account instead, open a shell there:
 `BLOKS_OWNER_TERMINAL=1` and use the terminal from your own paired
 devices.
 
+An engine signed in this way is signed in as you, and so are the apps
+its account brings (the Gmail and Calendar of a claude.ai account, the
+apps of a ChatGPT one). Those are for your own turns only: when somebody
+you let into the workspace talks to an agent, or one of their own agents
+answers, Bloks switches them off on Claude Code and Codex, and their
+agents use the apps they connected under Your connections. Keep MCP
+servers signed in as you out of the settings of any other engine members
+may use.
+
 ### Hosted providers
 
 A key in `.env` connects its provider: `OPENROUTER_API_KEY`,

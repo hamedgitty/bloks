@@ -34,7 +34,7 @@ import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { bridgeSocketPath, createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
-import { checkPersonClaudeInit, checkPersonClaudeStatus, personClaudeDenials, personTurnHold, readPersonClaudeInstructions } from "../person-turn.ts";
+import { checkPersonClaudeInit, checkPersonClaudeStatus, personClaudeDenials, personTurnHold, readMemberClaudeInstructions, readPersonClaudeInstructions } from "../person-turn.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
  * choices list, or AskUserQuestion's nested option objects. */
@@ -273,7 +273,7 @@ export function isLimitNotice(text: unknown): text is string {
  */
 export function turnEnvironment(
   base: NodeJS.ProcessEnv,
-  turn: Pick<SendTurnInput, "env" | "shared" | "person" | "account" | "deniedDirs">,
+  turn: Pick<SendTurnInput, "env" | "shared" | "person" | "account" | "deniedDirs" | "forOthers">,
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...base,
@@ -282,7 +282,10 @@ export function turnEnvironment(
     // workspace as itself rather than only describe what should happen
     ...(turn.env ?? {}),
   };
-  if (turn.shared || turn.person) {
+  // Somebody other than the owner: the CLI's sign-in is the owner's, and
+  // what it reads of them on its own (their CLAUDE.md, what Claude remembers
+  // of them) would have the agent take that somebody for the owner.
+  if (turn.shared || turn.person || turn.forOthers) {
     env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = "1";
     env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   }
@@ -290,7 +293,10 @@ export function turnEnvironment(
   // at their own desk. Claude Code's own memory is kept per folder, and a
   // folder the owner chose for the agent is one everybody's turns share.
   if (turn.deniedDirs?.length) env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
-  if (turn.person) env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  // The connectors a claude.ai sign-in brings with it (Gmail, Calendar,
+  // Drive) are the account holder's, signed in as them: never for a turn
+  // somebody else asked for, whatever the agent is told.
+  if (turn.person || turn.forOthers) env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   // A subscription login gets billed as pay-as-you-go if a key leaks
   // through, and the two CLAUDECODE markers would make the child think
   // it is a nested session of whatever spawned this server.
@@ -536,6 +542,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // which --restricted would otherwise still load
         argv.push("--strict-mcp-config");
       }
+      // Somebody other than the owner, outside a shared room: the MCP
+      // servers in the owner's own Claude settings are signed in as them,
+      // so only the ones this turn names (the requester's own apps, the
+      // bridge) are loaded.
+      if (turn.forOthers && !turn.shared && !turn.person) argv.push("--strict-mcp-config");
 
       // The persona and the MCP config travel as files, never as
       // arguments. argv is readable by every process on the machine
@@ -543,7 +554,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // about themselves in settings, and the MCP config carries the
       // Composio key and any header or token a server needs. A private
       // file, in a folder of this turn's own, read only by the CLI, is not.
-      const system = (turn.system ?? "") + (turn.person && !turn.place ? readPersonClaudeInstructions(turn.cwd ?? homedir()) : "");
+      // With CLAUDE.md files off, the working folder's own two are read
+      // back in by hand: they are the project's, not the owner's.
+      const system = (turn.system ?? "") + (turn.place ? "" : turn.person ? readPersonClaudeInstructions(turn.cwd ?? homedir()) : turn.forOthers && !turn.shared ? readMemberClaudeInstructions(turn.cwd ?? homedir()) : "");
       let privateDir: string | null = null;
       const privateFile = (name: string, content: string) => {
         // there, written ahead of the CLI by the place, in a folder of

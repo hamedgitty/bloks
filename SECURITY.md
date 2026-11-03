@@ -474,6 +474,22 @@ behind it are built to be narrow.
   name in the words. Removing a member removes them. In that turn a
   request for a key or an app asks the member, never you, so nothing
   lands in your keys or signs in under your account.
+- **Your accounts and your self are yours.** A member's turn, and every
+  turn of a member's own agent (even one you set going in a room you
+  share), gets none of your apps, keys, profile or shared memory, and
+  none of what the engine itself brings on your computer: on Claude Code
+  the connectors of your claude.ai sign-in (Gmail, Calendar, Drive) are
+  off, only the MCP servers Bloks names are loaded, and your CLAUDE.md
+  and Claude's memory of you are not read; on Codex the MCP servers in
+  your own Codex settings and the apps of your ChatGPT sign-in are
+  switched off for that thread, and a Codex that will not take that does
+  not answer anyone but you. The agent is told whose apps it has: the
+  member's own in their private conversation or solo agent, and nobody's
+  in a team conversation or a room, so it never says it is signed in to
+  your mail. Other engines that run a program (Gemini CLI, Cursor,
+  OpenCode and the rest) still load an MCP server set up in their own
+  settings on your computer; keep anything signed in as you out of
+  those, or limit which engines members may use.
 - **A room's Auto reads the room as data.** In a room set to Auto, a
   message that names nobody is shown to a small model, with the members'
   names, roles and briefs and the last few lines, so it can pick who
@@ -751,10 +767,14 @@ from source. See [docs/RELEASING.md](docs/RELEASING.md).
   beyond what the provider CLI enforces, unless you set it to work in a
   container (see Agents that work somewhere else). That includes agents
   a member of your workspace talks to: give a team agent only the folder
-  and the tools you would let those people near. A member's private turn
-  on an engine with a shell can, with their own yes, run a command that
-  reads what your account can, other members' files on this computer
-  included, which the file rules do not stop. Where members should be
+  and the tools you would let those people near. A member's turn on an
+  engine with a shell (in their private conversation, a team
+  conversation or their own agent) can, with their own yes, run a
+  command that reads what your account can, the keys saved in your
+  workspace's `config.json` and other members' files on this computer
+  included, which the file rules do not stop. Bloks keeps your accounts
+  out of what it hands their turns; it cannot keep a shell running as
+  you from your files. Where members should be
   kept apart from each other as well as from you, give their agents an
   API engine or Bloks AI, whose only tools are Bloks' own, or a
   container. And whoever runs the computer can read everything kept on

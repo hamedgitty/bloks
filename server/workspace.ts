@@ -258,14 +258,13 @@ export function sharedMemoryStats(): MemoryStats {
 }
 
 /** The shared memory as an agent is told it, or null while it is empty.
- * On a member's turn it is said to be the owner's, named, since "the
- * person you work for" is the member there. */
-export function sharedMemoryPrompt(owner?: string): string | null {
+ * Only the owner's own turns are told it: it is what they keep for their
+ * agents, and nothing of theirs reaches a member's turn. */
+export function sharedMemoryPrompt(): string | null {
   const whole = readMemoryIn(sharedMemoryDir());
   if (whole === null) return null;
   const { text, truncated } = cutToBudget(whole);
-  const by = owner ? `${owner}, who owns this workspace, for every agent and everyone in it` : "the person you work for for every agent in this workspace";
-  return `Shared memory, kept by ${by}. You can read it but not change it; if something in it looks wrong, say so:\n${text}${truncated ? "\n[shared memory truncated]" : ""}`;
+  return `Shared memory, kept by the person you work for for every agent in this workspace. You can read it but not change it; if something in it looks wrong, say so:\n${text}${truncated ? "\n[shared memory truncated]" : ""}`;
 }
 
 /** Whether a memory path is a link. An agent can make one with its own
