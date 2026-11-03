@@ -35,7 +35,7 @@ import { Trash2 } from "@/components/icons";
 import { TriangleAlert } from "@/components/icons";
 import { User } from "@/components/icons";
 import { X } from "@/components/icons";
-import { api, useStore, type Bot, type Skill } from "@/state/store";
+import { api, useStore, type Bot, type InstanceInfo, type Skill } from "@/state/store";
 import { useMcpServers, type McpServerRow } from "./McpServers";
 import { TeamSignInNotice } from "./TeamSignInNotice";
 import { AgentAccessCard } from "./members/AgentAccessCard";
@@ -67,7 +67,7 @@ import { cn } from "@/lib/cn";
 import { stamp } from "@/lib/when";
 import { thisComputer } from "@/lib/thisComputer";
 import { sameEngineBackup } from "@/lib/backupChoice";
-import { computerMeaning, computerOptions, firstPickedComputer, offersThisComputer, savedOwnScreenNote } from "@/lib/hosted";
+import { barredScreen, barredScreenNote, computerMeaning, computerOptions, firstPickedComputer, offersThisComputer, savedOwnScreenNote } from "@/lib/hosted";
 import { useEscape } from "@/lib/useEscape";
 import { EngineSuggestionCard, useEngineReport } from "./EngineReport";
 import { APPROVAL_MODES, ApprovalsChooser, confirmWidening, RULES_AND_MODES, type ApprovalMode } from "./ApprovalsChooser";
@@ -487,8 +487,8 @@ export function AgentSettingsPage({ bot }: { bot: Bot }) {
               <Section id="tools" title={t("settingsPanel.tools")}>
                 <Group>
                   <ConnectedAppsRow bot={bot} patch={patch} />
-                  <BrowserRow bot={bot} patch={patch} />
-                  <ComputerRow bot={bot} patch={patch} onBox={instance?.driverKind === "boxAgent"} />
+                  <BrowserRow bot={bot} patch={patch} instance={instance} />
+                  <ComputerRow bot={bot} patch={patch} onBox={instance?.driverKind === "boxAgent"} instance={instance} />
                 </Group>
                 <McpAttachCard bot={bot} />
                 <SkillsCard bot={bot} />
@@ -1099,8 +1099,11 @@ function ConnectedAppsRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void 
  * agent that should compare prices does not also need the desktop, and
  * handing over the narrower tool is the whole point of having two.
  */
-function BrowserRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void }) {
+function BrowserRow({ bot, patch, instance }: { bot: Bot; patch: (p: Patch) => void; instance?: InstanceInfo }) {
   const on = bot.browser === true;
+  // an engine that cannot be handed the browser gets no tools from it,
+  // which the server also tells the agent (server/screens.ts)
+  const barred = on && instance?.screens?.browser === false;
   const [sources, setSources] = useState<string[]>([]);
   const [sites, setSites] = useState("");
   const [importing, setImporting] = useState(false);
@@ -1146,6 +1149,7 @@ function BrowserRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void }) {
       }
       control={<Switch checked={on} onCheckedChange={(next) => patch({ browser: next })} aria-label={t("settingsPanel.itsOwnBrowser")} />}
     >
+      {barred && <Note>{t("settingsPanel.engineNoBrowser", { engine: instance!.displayName })}</Note>}
       {/* Sign-ins are borrowed per site rather than wholesale: an agent
           that checks a delivery has no business holding the bank. */}
       {on && sources.length > 0 && (
@@ -1186,7 +1190,7 @@ function BrowserRow({ bot, patch }: { bot: Bot; patch: (p: Patch) => void }) {
  * four options in one row is where segmented controls stop being
  * readable. A screen, not a place it runs: its engine, commands and
  * files stay on this computer whichever is picked (GitHub 388). */
-function ComputerRow({ bot, patch, onBox }: { bot: Bot; patch: (p: Patch) => void; onBox: boolean }) {
+function ComputerRow({ bot, patch, onBox, instance }: { bot: Bot; patch: (p: Patch) => void; onBox: boolean; instance?: InstanceInfo }) {
   const { state, dispatch } = useStore();
   // A hosted workspace offers only this machine and off (server/hosted.ts),
   // and the server says which; the Computer panel reads the same list.
@@ -1202,6 +1206,11 @@ function ComputerRow({ bot, patch, onBox }: { bot: Bot; patch: (p: Patch) => voi
   const where = thisComputer();
   // an agent that works elsewhere has its commands and files there
   const elsewhere = bot.workplaceStatus ? placePhrase(bot.workplaceStatus) : null;
+  // the screen this setting asks for, when the engine cannot be handed it
+  // (the same answer the server gives its turns, server/screens.ts)
+  const barred = savedOwnScreen
+    ? null
+    : barredScreen(bot.computer, instance?.screens, { hosted, boxConfigured: Boolean(state.config?.box?.configured), ownScreen });
   return (
     <SettingRow
       label={t("settingsPanel.computer")}
@@ -1268,6 +1277,7 @@ function ComputerRow({ bot, patch, onBox }: { bot: Bot; patch: (p: Patch) => voi
         </div>
       )}
       {savedOwnScreen && <Note>{savedOwnScreenNote(where)}</Note>}
+      {barred && instance && <Note>{barredScreenNote(instance.displayName, barred)}</Note>}
     </SettingRow>
   );
 }

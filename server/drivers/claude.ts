@@ -23,8 +23,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve as resolvePath } from "node:path";
 
 import { DATA_DIR } from "../config.ts";
 import { lineSplitter } from "../ndjson.ts";
@@ -81,6 +80,8 @@ import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses, signalGroup } from "./engine-processes.ts";
 import { TurnProcess } from "./turn-process.ts";
 import { ClaudeInputs } from "./claude-inputs.ts";
+import { helperEntry, RUN_AS_NODE, screenServers } from "./screen-servers.ts";
+import { ALL_SCREENS } from "../screens.ts";
 
 /** Each session's last reported total, so a turn is charged its own share. */
 const sessionCosts = new SessionCosts();
@@ -159,23 +160,10 @@ function decodeConfig(raw: unknown): ClaudeConfig {
 
 // ── the helper processes we hand the CLI ───────────────────────────────
 
-/** Our MCP entry points ship as TypeScript in development and as compiled
- * JavaScript inside the packaged app. Resolve whichever is actually there
- * rather than guessing from an env flag. */
-function helperEntry(name: string): string {
-  const asTypeScript = join(dirname(fileURLToPath(import.meta.url)), "..", `${name}.ts`);
-  return existsSync(asTypeScript) ? asTypeScript : asTypeScript.replace(/\.ts$/, ".js");
-}
-
-const COMPUTER_HELPER = helperEntry("computer-proxy");
+// helperEntry and RUN_AS_NODE live with the browser and computer servers
+// (screen-servers.ts), which the ACP agents are handed too
 const SANDBOX_HELPER = helperEntry("sandbox-proxy");
-const BROWSER_HELPER = helperEntry("browser-proxy");
 const PERMISSION_HELPER = helperEntry("permission-proxy");
-
-/** In the packaged app `process.execPath` is Electron, not node. This makes
- * it behave as plain node for anything we spawn with it, and does nothing
- * in development where it already is node. */
-const RUN_AS_NODE = { ELECTRON_RUN_AS_NODE: "1" };
 
 /** Socket path for a turn's permission bridge. Short and thread-derived:
  * unix socket paths have a length limit that full ids would risk. A home
@@ -607,19 +595,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       // Cloud box and local Mac are the same tool surface from the agent's
       // side, so both are published under one name: it has a computer.
-      if (turn.integrations?.computer) {
-        mcpServers.computer = {
-          command: process.execPath,
-          args: [COMPUTER_HELPER],
-          env: {
-            ...RUN_AS_NODE,
-            BLOKS_BOX_ID: turn.integrations.computer.boxId,
-            BLOKS_BOX_TOKEN: turn.integrations.computer.token,
-          },
-        };
-        allowed.push("mcp__computer");
-      } else if (turn.integrations?.localComputer) {
-        mcpServers.computer = { ...turn.integrations.localComputer };
+      const screens = screenServers(turn.integrations);
+      if (screens.computer) {
+        mcpServers.computer = screens.computer;
         allowed.push("mcp__computer");
       }
 
@@ -638,15 +616,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         allowed.push("mcp__sandbox");
       }
 
-      if (turn.integrations?.browser) {
-        mcpServers.browser = {
-          command: process.execPath,
-          args: [BROWSER_HELPER],
-          env: {
-            ...RUN_AS_NODE,
-            BLOKS_BROWSER_PROFILE: turn.integrations.browser.profileDir,
-          },
-        };
+      if (screens.browser) {
+        mcpServers.browser = screens.browser;
         allowed.push("mcp__browser");
       }
 
@@ -1678,7 +1649,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session", efforts: CLAUDE_EFFORTS },
+        capabilities: { sessionModelSwitch: "in-session", efforts: CLAUDE_EFFORTS, screens: ALL_SCREENS },
         sendTurn,
 
         steerTurn: async (threadId, text, options) => running.get(threadId)?.steer(text, options?.onDispatch) ?? false,

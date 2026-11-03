@@ -166,6 +166,7 @@ import {
   viewerUrl,
   vncTarget,
 } from "./hosted.ts";
+import { barredComputer, engineNoBrowserLine, engineNoComputerLine, engineScreens } from "./screens.ts";
 import {
   bindHost,
   IPV4_BIND,
@@ -8568,6 +8569,18 @@ async function startClaimedTurn(
       // On a hosted workspace the machine is the agents' computer: a box
       // or a VM chosen on a Mac becomes this machine (server/hosted.ts)
       const wants = HOSTED ? hostedComputer(asked) : asked;
+      // What this engine can be handed at all (server/screens.ts). A
+      // screen it cannot take is not got ready for it: the Local VM is
+      // not claimed from agents that could use it, the cloud box is not
+      // woken, and the agent is told it has neither rather than promised
+      // tools it does not have (GitHub 472).
+      const reach = engineScreens(instance.adapter.capabilities);
+      const barred = barredComputer(wants, reach, {
+        hosted: HOSTED,
+        withheld: computerWithheld,
+        boxConfigured: box.boxConfigured(cfg),
+        ownScreen: ownScreenWorks(),
+      });
       // "sandbox" is the stored name for the Local VM: a Cua desktop in a
       // container on this machine, shared by all agents one at a time
       let vmTurn = false;
@@ -8578,7 +8591,7 @@ async function startClaimedTurn(
       // only ever needed their shell, on a VM that was never set up
       // (GitHub 388). The agent and the person are both told.
       let vmMissing: string | null = null;
-      if (wants === "sandbox") {
+      if (wants === "sandbox" && reach.computers.includes("vm")) {
         if (!claimVm(task.id, bot.id)) {
           const holder = currentVmLease();
           const other = holder ? store.bot(holder.botId)?.name : null;
@@ -8605,7 +8618,7 @@ async function startClaimedTurn(
           broadcast({ kind: "message", threadId: roomId, message: notice });
         }
       }
-      if (!HOSTED && wants !== "off" && wants !== "local" && wants !== "sandbox" && box.boxConfigured(cfg)) {
+      if (!HOSTED && wants !== "off" && wants !== "local" && wants !== "sandbox" && reach.computers.includes("cloud") && box.boxConfigured(cfg)) {
         let b = await box.findBox(cfg, bot.id).catch(() => null);
         // The app shows "setting up" from the first word until the next
         // one, so a box being made or woken always ends with one, ready or
@@ -8644,7 +8657,7 @@ async function startClaimedTurn(
       // Never on a hosted workspace: that daemon works the person's own Mac.
       // Off a Mac there is no such daemon, and "local" saved there means
       // no screen; the turn itself runs here as ever (GitHub 388).
-      if (!HOSTED && ownScreenWorks() && !integrations.computer && wants !== "off" && wants !== "cloud" && wants !== "sandbox") {
+      if (!HOSTED && ownScreenWorks() && reach.computers.includes("mac") && !integrations.computer && wants !== "off" && wants !== "cloud" && wants !== "sandbox") {
         const cua = readCuaConnection();
         if (cua) integrations.localComputer = cua;
       }
@@ -8654,7 +8667,11 @@ async function startClaimedTurn(
       // does not also need the whole desktop, and the narrower tool is
       // the one to hand it. Off unless asked for, because a browser
       // starts a real process.
-      if ((!othersTurn || roomTools?.browser) && bot.browser === true) {
+      // An engine that cannot take it is not handed one, and its agent is
+      // told so (browserBarred, in the system words below).
+      const browserAllowed = (!othersTurn || roomTools?.browser) && bot.browser === true;
+      const browserBarred = browserAllowed && !reach.browser;
+      if (browserAllowed && reach.browser) {
         // a shared room's browser is its own, never signed in as the owner
         const profileDir = join(DATA_DIR, "browser", sharing ? `room-${sharedRoom!.id}` : bot.id);
         browserProfiles.set(bot.id, profileDir);
@@ -9214,12 +9231,16 @@ async function startClaimedTurn(
                   ? " You have your own Linux sandbox: a persistent shell and filesystem at /work, isolated from this person's machine. Use sandbox_exec for anything a shell can do. There is no display, so nothing can be clicked or screenshotted; work in files and commands."
                   : integrations.computer
                     ? ""
-                    : // Told nothing, an agent asked about a computer
-                      // could only say there is none (GitHub 377).
-                      noComputerLine(computerWithheld ? "withheld" : vmMissing ? "vm" : wants === "off" ? "off" : "none", {
-                        hosted: HOSTED,
-                        ...(vmMissing ? { vm: vmMissing } : {}),
-                      })) +
+                    : barred
+                      ? // asked for, but not an engine that can take it
+                        engineNoComputerLine(instance.displayName ?? instance.driverKind, barred)
+                      : // Told nothing, an agent asked about a computer
+                        // could only say there is none (GitHub 377).
+                        noComputerLine(computerWithheld ? "withheld" : vmMissing ? "vm" : wants === "off" ? "off" : "none", {
+                          hosted: HOSTED,
+                          ...(vmMissing ? { vm: vmMissing } : {}),
+                        })) +
+          (browserBarred ? engineNoBrowserLine(instance.displayName ?? instance.driverKind) : "") +
           (credential && !personSource && !credential.messenger ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
           (linked?.hint ? `\n\n${linked.hint}` : "") +
           (personSource ? `\n\nThis turn answers ${JSON.stringify(telegramSenderLabel(personSource))} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +

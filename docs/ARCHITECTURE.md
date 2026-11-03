@@ -83,6 +83,29 @@ every lab now answers `/chat/completions`, so providers are data in
 harness hands them the folded history each turn. They stream text but
 they do not run tools.
 
+**The browser and the computer.** Each driver says which of the agent's
+own browser and its computers (the cloud box, the Local VM, this Mac's
+screen) it hands its engine (`capabilities.screens`, `server/screens.ts`).
+Claude Code takes them all, and so does every ACP agent that takes MCP
+servers in `session/new`: both are sent the same stdio servers
+(`server/drivers/screen-servers.ts`), named `browser` and `computer` for
+Claude Code and `bloks_browser` and `bloks_computer` for ACP. Working
+elsewhere, they stay on this computer and are reached over HTTP through
+the gate, which ACP offers only to an agent whose `initialize` says it
+takes HTTP servers; one that does not is told in its prompt that it has
+neither. Pi and Cline accept MCP servers and drop them (`mcp: false` in
+their specs), so they take none. The API models reach the cloud box
+through the harness's tool loop and nothing else; Codex and Antigravity
+take none yet. Before a turn the harness gets ready only what the engine
+takes: the Local VM is not claimed and the cloud box is not woken for an
+engine that cannot use them, and the agent is told plainly what its
+engine cannot be handed (`engineNoComputerLine`, `engineNoBrowserLine`)
+instead of the desktop the setting would have given it. `GET
+/api/instances` carries the same answer, and the agent's settings say so
+beside Its own browser and Computer. The browser proxy starts Chrome in
+the agent's own profile (`server/cdp.ts`), headless on Linux when there
+is no `DISPLAY` or `WAYLAND_DISPLAY`.
+
 The registry (`server/harness/registry.ts`) turns a config map into live
 instances. An unknown driver or a bad config becomes an unavailable
 shadow entry rather than a startup failure, so a config written by a

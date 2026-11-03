@@ -763,6 +763,10 @@ export interface InstanceInfo {
   /** The effort levels the engine takes, least first; empty for one with
    * no dial. Absent from a server from before they were per engine. */
   efforts?: Effort[];
+  /** The agent's own browser and the computers the engine can be handed
+   * (server/screens.ts). Absent from a server from before engines said,
+   * where nothing is claimed either way. */
+  screens?: { browser: boolean; computers: Array<"cloud" | "vm" | "mac"> };
   models: {
     default: string;
     /** codexFast: whether Codex offers Fast for the model, where it said.

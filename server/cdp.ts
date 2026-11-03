@@ -71,8 +71,47 @@ export function chromePath(): string | null {
             "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
             "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
           ]
-        : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+        : [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+            "/usr/bin/brave-browser",
+            "/usr/bin/microsoft-edge",
+          ];
   return candidates.find((path) => existsSync(path)) ?? null;
+}
+
+/**
+ * Whether a browser started here has a screen to open its window on. A
+ * Mac and Windows always do. Anywhere else that is an X or Wayland
+ * display, and a server under systemd or in a container has neither:
+ * there Chrome without a window is the only Chrome that starts, so the
+ * agent's browser runs headless (GitHub 472). It answers the debugging
+ * protocol the same way, screenshots included, so the agent's tools and
+ * the person's view of its browser work either way.
+ */
+export function hasDisplay(platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (platform === "darwin" || platform === "win32") return true;
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
+
+/** The switches a browser for `profileDir` is started with. */
+export function launchArgs(profileDir: string, display: boolean = hasDisplay()): string[] {
+  return [
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    // The agent's window should not restore the last session or nag
+    // about being the default; it is a tool, not somebody's browser.
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
+    // with no window, a page still lays out at an ordinary laptop's size
+    ...(display ? [] : ["--headless=new", "--window-size=1280,800"]),
+    "about:blank",
+  ];
 }
 
 /** The browser-wide socket a debugging port answers for, or null. */
@@ -139,21 +178,7 @@ async function startBrowser(profileDir: string, binary: string | null): Promise<
   if (!binary) throw new Error("no Chrome, Chromium, Brave or Edge found on this machine");
   // left by a browser that is gone, it could only mislead the wait below
   rmSync(join(profileDir, "DevToolsActivePort"), { force: true });
-  const child = spawn(
-    binary,
-    [
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      // The agent's window should not restore the last session or nag
-      // about being the default; it is a tool, not somebody's browser.
-      "--disable-session-crashed-bubble",
-      "--hide-crash-restore-bubble",
-      "about:blank",
-    ],
-    { detached: true, stdio: "ignore" },
-  );
+  const child = spawn(binary, launchArgs(profileDir), { detached: true, stdio: "ignore" });
   child.unref();
   for (let attempt = 0; attempt < 40; attempt++) {
     const port = await profilePort(profileDir);

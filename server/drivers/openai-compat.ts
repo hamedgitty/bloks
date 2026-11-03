@@ -33,6 +33,7 @@ import { BOAT_API } from "../boat.ts";
 import { callSignature } from "../repeats.ts";
 import { PERSON_REPLY_TOOL } from "../person-turn.ts";
 import type { TurnImage } from "../attachments.ts";
+import { CLOUD_ONLY, NO_SCREENS } from "../screens.ts";
 
 export interface CompatConfig {
   url: string;
@@ -1298,7 +1299,12 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         snapshot,
         adapter: {
           provider: spec.kind,
-          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true, replyToSender: toolLoop, toolLoop, ...(sees ? { images: true } : {}) },
+          // The cloud box is the one screen the tool loop reaches, as a
+          // shell and open_url through the box's own API. The browser and
+          // the Local VM or this Mac are MCP servers over stdio, which an
+          // API model has no client for, so its turns are handed neither
+          // (server/screens.ts); without the tool loop, not even the box.
+          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true, replyToSender: toolLoop, toolLoop, ...(sees ? { images: true } : {}), screens: toolLoop ? CLOUD_ONLY : NO_SCREENS },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
           respondToRequest: async (threadId, requestId, decision) => {

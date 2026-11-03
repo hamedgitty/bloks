@@ -19,6 +19,7 @@ import type {
   ProviderInstance,
   ProviderSnapshot,
 } from "../contracts.ts";
+import { engineScreens, NO_SCREENS } from "../screens.ts";
 
 /** A configured instance that could not be brought up, kept so it can be
  * displayed and so its config survives the round trip. */
@@ -50,6 +51,9 @@ interface InstanceReport {
   /** The effort levels the engine takes, least first; empty for one
    * with no dial. A model listed with its own narrows them. */
   efforts: readonly import("../effort.ts").Effort[];
+  /** The agent's own browser and the computers the engine can be handed
+   * (server/screens.ts), so an agent's settings can say which it cannot. */
+  screens: import("../screens.ts").EngineScreens;
 }
 
 export class ProviderRegistry {
@@ -189,6 +193,7 @@ async function report(entry: RegistryEntry): Promise<InstanceReport> {
       snapshot: { state: "unavailable", reason: entry.shadow.reason },
       models: { default: "", options: [] },
       efforts: [],
+      screens: NO_SCREENS,
     };
   }
 
@@ -209,5 +214,6 @@ async function report(entry: RegistryEntry): Promise<InstanceReport> {
     snapshot,
     models: instance.models,
     efforts: instance.adapter.capabilities.efforts ?? [],
+    screens: engineScreens(instance.adapter.capabilities),
   };
 }

@@ -49,6 +49,8 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses } from "./engine-processes.ts";
+import { screenServers } from "./screen-servers.ts";
+import { ALL_SCREENS, NO_SCREENS } from "../screens.ts";
 
 export interface AcpSpec {
   kind: string;
@@ -106,6 +108,13 @@ export interface AcpSpec {
    * older one is reported as unavailable with the reason, not left to
    * fail its first message in some stranger way. */
   minVersion?: string;
+  /** False for an agent that takes no MCP servers from the client, though
+   * ACP asks every agent to: pi-acp keeps them in its session without
+   * wiring them through to pi (its README says so), and Cline's ACP
+   * agent stores them and never reads them back. Such an agent is handed
+   * no browser and no computer (server/screens.ts), so none is claimed
+   * for it and its agent is told so rather than promised tools. */
+  mcp?: false;
   /** Used until session/new reports what the agent actually serves. */
   models: ModelCatalog;
   /** When --version would start a session instead of printing a
@@ -693,6 +702,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const startedAt = Date.now();
         const asks = new Map<string, (behavior: string, message?: string, source?: string) => void>();
         let session: any = null;
+        // added to the system words when the browser or computer this turn
+        // was given cannot reach the agent where it works
+        let screenNote = "";
 
         const stop = () => {
           if (process.platform === "win32") {
@@ -1111,7 +1123,33 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               hiddenTokens.push(...env.map(([, value]) => value));
               return { name: server.name, command: server.command, args: server.args ?? [], env: env.map(([name, value]) => ({ name, value })) };
             });
-            const mcpServers = [...connectors, ...attached];
+            // The agent's browser and computer: the servers Claude Code is
+            // handed (screen-servers.ts), as stdio, which ACP asks every
+            // agent to take. Working elsewhere they stay here like the
+            // connectors, reached over HTTP through the gate, which only an
+            // agent that says it takes HTTP servers can do. One that cannot
+            // is told below that it has neither, since the system words
+            // were written before anyone could know.
+            const unreached: string[] = [];
+            const screens = Object.entries(spec.mcp === false ? {} : screenServers(turn.integrations)).flatMap(([what, server]): Record<string, unknown>[] => {
+              const name = `bloks_${what}`;
+              if (turn.place) {
+                const reached = hello?.agentCapabilities?.mcpCapabilities?.http === true ? turn.place.mcp(name, { transport: "stdio", ...server }) : null;
+                if (!reached) {
+                  unreached.push(what);
+                  return [];
+                }
+                hideHeaders(reached.headers);
+                return [{ type: "http", name, url: reached.url, headers: Object.entries(reached.headers).map(([header, value]) => ({ name: header, value })) }];
+              }
+              return [{ name, command: server.command, args: server.args, env: Object.entries(server.env).map(([key, value]) => ({ name: key, value })) }];
+            });
+            if (turn.integrations?.computer?.token) hiddenTokens.push(turn.integrations.computer.token);
+            if (unreached.length) {
+              const what = unreached.map((name) => `your ${name}`).join(" or ");
+              screenNote = `\n\nA correction to the above: ${spec.name}, working on ${turn.place!.label}, cannot reach ${what} from there this turn (it takes MCP servers there only over HTTP, and does not say it can), so you have no ${unreached.join(" or ")} tools. Your commands and files are not affected. If a task needs ${unreached.length > 1 ? "them" : "it"}, say so plainly.`;
+            }
+            const mcpServers = [...connectors, ...attached, ...screens];
             session = null;
             if (cursor) {
               try {
@@ -1278,7 +1316,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             try {
               const pending = rpc.request("session/prompt", {
                 sessionId,
-                prompt: [{ type: "text", text: turn.system ? `${turn.system}\n\n${words}` : words }, ...pictures],
+                prompt: [{ type: "text", text: turn.system ? `${turn.system}${screenNote}\n\n${words}` : words }, ...pictures],
               });
               turn.preparation?.withoutSteering?.();
               result = await pending;
@@ -1414,7 +1452,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           provider: spec.kind,
           // images: handed the turn's pictures, which go on only to an
           // agent whose initialize says it takes them (pictureBlocks)
-          capabilities: { sessionModelSwitch: "in-session", compactsFirst: true, images: true, ...(spec.efforts ? { efforts: spec.efforts } : {}) },
+          capabilities: { sessionModelSwitch: "in-session", compactsFirst: true, images: true, ...(spec.efforts ? { efforts: spec.efforts } : {}), screens: spec.mcp === false ? NO_SCREENS : ALL_SCREENS },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),
           respondToRequest: async (threadId, requestId, decision) => {
@@ -1595,6 +1633,7 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     name: "Cline",
     command: "cline",
     args: ["--acp"],
+    mcp: false,
     // Nothing is approved without asking in ACP mode unless this says so;
     // only the person's Full auto in Bloks does.
     turnArgs: ({ fullAuto }) => (fullAuto ? ["--auto-approve", "true"] : []),
@@ -1644,6 +1683,7 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     // so the install check is "is this name on PATH" after widenPath
     command: "pi-acp",
     args: [],
+    mcp: false,
     probePath: true,
     // pi serves whatever providers its own settings connect, so the
     // catalog is pi's, not ours to guess

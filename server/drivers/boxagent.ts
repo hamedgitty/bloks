@@ -32,6 +32,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { BOAT_API } from "../boat.ts";
 import { codexSpeedRoute, CodexSpeedUnavailable, REMOTE_FAST_REASON } from "../codex-speed.ts";
+import { CLOUD_ONLY } from "../screens.ts";
 
 const DRIVER_KIND = "boxAgent";
 
@@ -327,7 +328,8 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
 
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        // it runs on the cloud box, the one computer it works
+        capabilities: { sessionModelSwitch: "in-session", screens: CLOUD_ONLY },
         sendTurn,
 
         interruptTurn: async (threadId) => running.get(threadId)?.cancel(),

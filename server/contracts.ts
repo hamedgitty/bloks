@@ -468,6 +468,12 @@ export interface ProviderAdapter {
      * least first. Absent is an engine with no dial, whose turns are sent
      * no effort (server/effort.ts). */
     efforts?: readonly import("./effort.ts").Effort[];
+    /** The agent's own browser and the computers this driver hands its
+     * engine as tools, when a turn's integrations carry them
+     * (server/screens.ts). Absent takes none: the harness then claims no
+     * Local VM and wakes no cloud box for its turns, and tells its agent
+     * plainly that it has neither. */
+    screens?: import("./screens.ts").EngineScreens;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   /**
