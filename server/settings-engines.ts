@@ -27,6 +27,7 @@ export function inspectEngineSettings(input:unknown,ctx:InspectionContext,loaded
   }else if(driver==='codex' || driver==='antigravity' || typeof driver==='string' && ['geminiCli','opencode','commandcode','devin','grokCli','pi','cursor','cline'].includes(driver)){
     const cli=get(raw,'cli');addConfig('cli',configured(typeof cli==='string' && (driver==='codex'||cli)?cli:'driver default'),true);
     addConfig('fullAuto',{status:'value',value:get(raw,'fullAuto')===true});
+    if(driver==='opencode')addConfig('isolated',{status:'value',value:get(raw,'isolated')===true});
   }else if(driver==='boxAgent'){
     const poll=get(raw,'pollMs');addConfig('pollMs',scalar(typeof poll==='number'?poll:2500,ctx.redact));
   }else if([...PROVIDER_SPECS,CUSTOM_SPEC,CREDITS_SPEC].some((spec)=>spec.kind===driver)){

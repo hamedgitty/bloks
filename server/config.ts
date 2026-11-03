@@ -60,6 +60,11 @@ export interface CustomEndpoint {
 
 export interface AppConfig {
   codex?: { speed?: import("./codex-speed.ts").CodexSpeed };
+  /** OpenCode workspace settings. When `isolated` is true, OpenCode runs
+   * with its own config, data, state, cache and session database inside
+   * this workspace's data folder rather than the computer's shared
+   * ~/.config/opencode and ~/.local/share/opencode. Off by default. */
+  opencode?: { isolated?: boolean };
   /** The port to listen on when BLOKS_PORT does not say. Chosen by hand,
    * for a machine where the usual one is taken; the desktop app reads it
    * too, since an app opened from Finder never sees BLOKS_PORT. */
@@ -418,6 +423,7 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
   // compaction was added without it.
   for (const key of [
     "codex",
+    "opencode",
     "xai",
     "composio",
     "box",
@@ -627,6 +633,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     const own = entry.config as Record<string, unknown> | undefined;
     if (typeof path === "string" && path && !(typeof own?.cli === "string" && own.cli)) {
       entry.config = { ...own, cli: path };
+    }
+    if (entry.driver === "opencode" && cfg.opencode?.isolated === true && !(typeof own?.isolated === "boolean")) {
+      entry.config = { ...(entry.config as Record<string, unknown> | undefined), isolated: true };
     }
     entry.environment = {
       ...usableSecrets(cfg.secrets),

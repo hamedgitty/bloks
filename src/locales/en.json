@@ -2190,6 +2190,8 @@
   "enginesPanel.monthlySpendingLimit": "Monthly spending limit",
   "enginesPanel.noSignInDetected": "No sign-in detected. {hint}",
   "enginesPanel.notFound": "Not found",
+  "enginesPanel.opencodeIsolated": "Isolate config, data and sessions",
+  "enginesPanel.opencodeIsolatedNote": "Keep OpenCode's config, plugins, state, cache and session database inside this workspace rather than sharing ~/.config/opencode and ~/.local/share/opencode.",
   "enginesPanel.pasteYourKey": "Paste your key",
   "enginesPanel.signIn": "Sign in",
   "enginesPanel.switchedOff": "Off. Starts no turns until you switch it on.",

@@ -47,6 +47,8 @@ test('known driver scalar defaults and explicit empty configurations match the p
   assert.deepEqual(field(inspectEngineSettings({driver:'boxAgent',config:{pollMs:0}},ctx,true),'config.pollMs').effective,value(0));
   assert.deepEqual(field(inspectEngineSettings({driver:'codex',config:{cli:'',fullAuto:'true'}},ctx,true),'config.cli').effective,{status:'configured',configured:false});
   assert.deepEqual(field(inspectEngineSettings({driver:'codex',config:{fullAuto:'true'}},ctx,true),'config.fullAuto').effective,value(false));
+  assert.deepEqual(field(inspectEngineSettings({driver:'opencode'},ctx,true),'config.isolated').effective,value(false));
+  assert.deepEqual(field(inspectEngineSettings({driver:'opencode',config:{isolated:true}},ctx,true),'config.isolated').effective,value(true));
 });
 
 test('invalid permission config and unsupported drivers remain factual unknowns without raw exception strings',()=>{

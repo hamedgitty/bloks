@@ -521,6 +521,8 @@ export interface Bot {
 export interface ConfigStatus {
   /** The workspace Codex speed; absent from a server older than it. */
   codex?: { speed: CodexSpeed };
+  /** Whether OpenCode keeps its own isolated config, data, state, cache and sessions in this workspace. */
+  opencode?: { isolated: boolean };
   xai?: { configured: boolean   /** Whether this workspace has been through the welcome. */
   setupDone?: boolean;
 };

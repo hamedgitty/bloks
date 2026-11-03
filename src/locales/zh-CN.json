@@ -2101,6 +2101,8 @@
   "enginesPanel.monthlySpendingLimit": "每月消费上限",
   "enginesPanel.noSignInDetected": "未检测到登录。{hint}",
   "enginesPanel.notFound": "未找到",
+  "enginesPanel.opencodeIsolated": "隔离配置、数据和会话",
+  "enginesPanel.opencodeIsolatedNote": "将 OpenCode 的配置、插件、状态、缓存和会话数据库保存在此工作区内，而不是共享 ~/.config/opencode 和 ~/.local/share/opencode。",
   "enginesPanel.pasteYourKey": "粘贴你的密钥",
   "enginesPanel.signIn": "登录",
   "enginesPanel.switchedOff": "已关闭。在你打开之前不会开始任何一轮。",
