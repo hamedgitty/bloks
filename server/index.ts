@@ -12551,26 +12551,54 @@ async function dispatchRound(
   // each of the rest.
   const queue = new Map<string, RoundTag>();
   dispatching.set(roomId, queue);
+  const stop = { stopped: false };
+  roomRounds.set(roomId, stop);
   try {
-    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou, agentStarted);
+    await speakInTurn(roomId, work.map(([id, text]) => [id, text, hops] as const), requester, byYou, agentStarted, stop);
     // whoever was named while the room was busy speaks now, and anyone
     // they name in turn goes round again until the chain runs out
-    for (let round = 0; round < MAX_AGENT_HOPS && queue.size; round++) {
+    for (let round = 0; round < MAX_AGENT_HOPS && queue.size && !stop.stopped; round++) {
       const waiting = [...queue].map(([id, tag]) => [id, tag.text, tag.hops] as const);
       queue.clear();
-      await speakInTurn(roomId, waiting, requester, undefined, true);
+      await speakInTurn(roomId, waiting, requester, undefined, true, stop);
     }
     // Someone can still be named when the rounds run out: an agent that
     // said so into the room from a turn of its own elsewhere, late in the
     // last one, was inside its own count. Held as a mention past the
     // bound is, and said, where it used to be dropped without a word.
-    for (const from of new Set([...queue.values()].map((tag) => tag.from))) {
-      const names = [...queue].filter(([, tag]) => tag.from === from).flatMap(([id]) => store.bot(id)?.name ?? []);
-      if (names.length) sayMentionHeld(roomId, hopsNotice(store.bot(from)?.name ?? "An agent", names));
+    // A round the person stopped hands nothing on.
+    if (!stop.stopped) {
+      for (const from of new Set([...queue.values()].map((tag) => tag.from))) {
+        const names = [...queue].filter(([, tag]) => tag.from === from).flatMap(([id]) => store.bot(id)?.name ?? []);
+        if (names.length) sayMentionHeld(roomId, hopsNotice(store.bot(from)?.name ?? "An agent", names));
+      }
     }
   } finally {
     dispatching.delete(roomId);
+    if (roomRounds.get(roomId) === stop) roomRounds.delete(roomId);
   }
+}
+
+/** Each room's running round, which the person's Stop ends (stopRoom). */
+const roomRounds = new Map<string, { stopped: boolean }>();
+
+/**
+ * Stop for a room: every member speaking there stops, and so does the
+ * round, so the next member does not start in their place and nobody
+ * named meanwhile is handed it. What waited behind the round then goes,
+ * as it would when the round ended on its own. Members at work elsewhere
+ * are not touched. Says how many turns it stopped.
+ */
+async function stopRoom(roomId: string): Promise<number> {
+  const round = roomRounds.get(roomId);
+  if (round) round.stopped = true;
+  dispatching.get(roomId)?.clear();
+  const speaking = (bloks.get(roomId)?.memberIds ?? [])
+    .map((id) => store.bot(id))
+    .filter((bot): bot is BotRecord => Boolean(bot))
+    .flatMap((bot) => bot.tasks.filter((t) => activeRoom.get(t.id) === roomId && (t.busy || claimedLanes.has(t.id))).map((lane) => ({ bot, lane })));
+  await Promise.all(speaking.map(({ bot, lane }) => stopForYou(bot, lane.id).catch(() => {})));
+  return speaking.length;
 }
 
 /** Lanes whose running turn was started by another agent's message, so
@@ -12915,6 +12943,7 @@ async function speakInTurn(
   requester?: string,
   byYou?: boolean,
   agentStarted = false,
+  round?: { stopped: boolean },
 ) {
   // In a shared room an agent speaks in the room's own lane, so what it is
   // doing elsewhere is no reason to skip it or to wait on it.
@@ -12935,6 +12964,8 @@ async function speakInTurn(
     .sort(([a], [b]) => rank(a) - rank(b));
 
   for (const [member, text, hops] of ordered) {
+    // the person stopped the room: nobody else starts in this round
+    if (round?.stopped) break;
     // Between two speakers is where the person's words sent now go in
     // when no turn could take them. Whoever speaks next is told them as
     // new, not left to find them in the history, and has then heard them.
@@ -29611,6 +29642,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!blok) return json(res, 404, { error: "no such room" });
       const outcome = await sendRoomWaitingNow(blok);
       return json(res, 200, { ok: outcome !== "nothing", outcome });
+    }
+    // Stop for a room (stopRoom), the owner's like the room's Stop button.
+    // An agent stops another only by its own rules (POST /api/bots/:id/interrupt).
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/stop$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "an agent stops another agent, not a room" });
+      if (!bloks.get(m[1])) return json(res, 404, { error: "no such room" });
+      return json(res, 200, { ok: true, stopped: await stopRoom(m[1]) });
     }
 
 

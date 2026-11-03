@@ -411,17 +411,14 @@ export function RoomComposer({
   // ── stopping ──
   // A room's turn is each member's own, in the conversation it keeps for
   // this room, so Stop stops every member at work here and nobody
-  // elsewhere. What waited behind the round then goes, as it would when
-  // the round ended on its own.
+  // elsewhere, and the round with them: the next member does not start
+  // in their place. What waited behind the round then goes, as it would
+  // when the round ended on its own.
   const busy = working.length > 0;
   const stopAll = () => {
-    for (const m of working) {
-      const lane = m.tasks?.find((t) => t.room === blok.id)?.id;
-      void api(`/api/bots/${m.id}/interrupt`, {
-        method: "POST",
-        body: JSON.stringify(lane ? { taskId: lane } : {}),
-      }).catch((e: Error) => dispatch({ type: "error", message: e.message }));
-    }
+    void api(`/api/bloks/${blok.id}/stop`, { method: "POST" }).catch((e: Error) =>
+      dispatch({ type: "error", message: e.message }),
+    );
   };
 
   const send = (stopFirst = false) => {

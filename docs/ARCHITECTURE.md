@@ -1552,7 +1552,11 @@ they went in is told them as new and counted as having heard them
 only those it was for who have not. Each message enters the history
 once, in the order it was said, and a second tap, the next speaker and
 the words' own turn all wait for a Send now still asking an engine. A
-shared room's members' words keep their own place in the queue.
+shared room's members' words keep their own place in the queue. The
+room's Stop is `POST /api/bloks/:id/stop` (`stopRoom`, owner only): it
+stops every member speaking there and ends the round, so the next
+member does not start in their place and nobody named meanwhile is
+handed it; what waited behind the round goes next.
 
 When words go in now, they go into that turn when its engine can take
 them (`steerLane` in `server/index.ts`). Claude Code keeps the stdin
