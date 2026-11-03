@@ -24788,7 +24788,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   // is ever local (server/http-guard.ts).
   const viaWeb = viaRelay ? null : webCallerFor(req);
   // Loopback is not a boundary in a browser, see server/http-guard.ts.
-  const local = viaRelay ? false : ownerHere(req);
+  // An agent's own turn credential was checked above, on this machine and
+  // against what an agent may do. It is not the owner and never carries
+  // the owner's key (server/local-key.ts), so it is not asked for one, or
+  // on bloks-server every agent would be sent to pair like a stranger.
+  const local = viaRelay ? false : asAgent ? isLocalRequest(req) : ownerHere(req);
   // A credential that was sent but is not one this server knows (a turn's
   // token after the turn, a typo, an empty header) is refused rather than
   // read as no credential: whoever sent it meant to be someone in
