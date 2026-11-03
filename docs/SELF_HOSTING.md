@@ -107,7 +107,10 @@ What keeps strangers out does not move:
   loopback `Host` and no foreign `Origin`, and carrying the key the
   server made when it started, is the person at the server. The key is
   in `local.key` in the data folder, readable only by the account Bloks
-  runs as; `bloks-server` and the MCP bridge send it themselves. So a
+  runs as; `bloks-server` and the MCP bridge send it themselves, and a
+  script of yours on the server sends it as the `x-bloks-local` header,
+  read fresh after each restart. An agent's own credential needs no key:
+  it only works from this machine and only for what an agent may do. So a
   tunnel or proxy that delivers a stranger to loopback, whatever it
   sends, delivers no owner. A browser on the server itself is a device
   like any other: pair it, or sign in at the web door. Everything else
