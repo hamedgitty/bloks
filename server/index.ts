@@ -9350,6 +9350,10 @@ async function startClaimedTurn(
           });
           sending.place = begun.run;
           sending.cwd = begun.run.cwd;
+          // Drivers also use this to configure the engine's tools. Keeping
+          // the host values here would undo the workplace's path and URL
+          // rewrites in Codex's shell_environment_policy.
+          sending.env = begun.env;
           delete sending.extraDirs;
           sending.text = begun.texts[0];
           if (sending.handoff) sending.handoff = begun.texts[1];
