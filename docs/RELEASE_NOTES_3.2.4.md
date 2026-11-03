@@ -1,0 +1,20 @@
+**Team workspaces where everyone's agents are their own, and paired phones that keep up.**
+
+## What changed
+
+- **Agent settings for everyone in a Team.** Admins can open and change every agent's settings, and members the agents they made, from the agent's menu or from Settings, in the browser or the app. What stays with the owner and admins (letting an agent act without asking, giving it a computer) shows switched off, with the reason. Before, an agent a member or admin made had no settings anyone could open.
+- **Members' agents never take your accounts.** A turn somebody else in your workspace asks for, or any turn of an agent they made, no longer gets your claude.ai connectors (Gmail, Calendar, Drive), the tool servers or apps in your own Claude Code or Codex settings, your CLAUDE.md, your profile or your shared memory. Their agents use only the apps they connect under Your connections.
+- **Pair from the browser.** Settings, Phone and devices in a browser now gives the link `bloks-server pair` prints, for the desktop app's Your servers, beside the iPhone's QR code. No terminal on the server after the first device. Settings, Workspace explains that one server is one workspace, and how to run a second.
+- **Browser and computer on more engines.** Agents on Devin, OpenCode, Gemini CLI, Cursor, Grok CLI and Command Code now get their own browser and their computer (cloud box, Local VM or this Mac) as tools. Where an engine cannot take them, the agent's settings say so, the agent is told plainly, and the Local VM stays free. On a Linux server with no display, the agent's browser runs headless. (#472)
+- **Paired phones load over slow links.** A phone or computer paired on the network now gets each conversation's newest messages first, gzipped, and pages back as you scroll, so a Tailscale relay or a weak cellular link no longer times out with "Could not reach Bloks". Thanks @jrhorne (#474, #473)
+- **Claude Code conversations survive session cleanup.** When Claude Code has cleaned up a conversation's saved session, the agent carries on in a new session told the conversation so far, instead of failing every message with "No conversation found". Thanks @jrhorne (#478, #477)
+- **Send now in rooms, and stopping ACP turns.** In a room, Send now no longer stops anyone: your waiting words go into the speaking member's turn when its engine can take them, otherwise before the next member speaks, once and in order. Stop in a room now ends its round. Stopping an OpenCode or other ACP turn says it was stopped, instead of "The turn did not finish (cancelled)" or an internal error. Thanks @jrhorne (#476, #475)
+- **Send one waiting message now.** Send now can take one waiting message and leave the rest in their place, for the iPhone app's long press on a waiting message. (#469)
+
+## For people who build Bloks
+
+- `server/access.ts`: `mayChangeSettings` and `settingHeld` decide who may change an agent's settings. New routes `GET`/`PATCH /api/member/agents/:id/settings` and `/api/workspace/agents/:id/settings`; an agent token is refused.
+- `SendTurnInput.forOthers` marks every turn that is not the owner's own. Claude Code then runs with the claude.ai connectors off, `--strict-mcp-config`, and user CLAUDE.md and auto memory off; Codex threads switch off the owner's own MCP servers and apps, and refuse to run if Codex cannot confirm it. `access.runsAsOwner` makes a member's agent work for its maker in rooms too.
+- Each driver declares `capabilities.screens` (`server/screens.ts`), reported by `GET /api/instances`. The browser and computer stdio servers live in `server/drivers/screen-servers.ts`, shared by Claude Code and ACP.
+- `server/compress.ts`: gzip for paired devices only, never on loopback and never for `/api/events`, off the event loop past 64 KB, with `Vary: Accept-Encoding`. The event ring is capped at 8 MB as well as 4096 entries.
+- `POST /api/bots/:id/queued/now` takes an optional `messageId` (feature `send-one-now`). New `POST /api/bloks/:id/queued/now` and `POST /api/bloks/:id/stop`, owner only.
