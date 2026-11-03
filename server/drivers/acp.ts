@@ -749,15 +749,31 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         let exited = false;
         const gone = new Promise<void>((resolve) => child.once("close", () => resolve()));
         void gone.then(() => (exited = true));
+        //
+        // Before the words have gone (the session still opening) the agent
+        // has been told nothing and has nothing to put down, so the turn
+        // ends there and then. A compaction is a prompt of its own, and is
+        // cancelled like one.
         const interrupt = async () => {
           state.stopping = true;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn was stopped", "turn-ended");
           if (exited) return;
-          if (sessionId) rpc.notify("session/cancel", { sessionId });
+          const cancelling = sessionId ?? (state.compacting && session?.sessionId ? String(session.sessionId) : null);
+          if (cancelling) rpc.notify("session/cancel", { sessionId: cancelling });
+          if (!state.live && !state.compacting) {
+            settle(false, "interrupted");
+            return;
+          }
           setTimeout(stop, 2_000).unref?.();
           await Promise.race([gone, new Promise<void>((resolve) => setTimeout(resolve, 3_000).unref?.())]);
+          // one that outlived the kill still ends here, rather than leave
+          // the conversation working on a turn nobody can stop again
+          if (!state.settled) settle(false, "interrupted");
         };
 
+        // A turn somebody stopped ends as stopped, whatever the agent made
+        // of the cancel: ACP answers one with stopReason "cancelled", which
+        // read as the turn failing ("The turn did not finish").
         const settle = (ok: boolean, stopReason: string | null) => {
           if (state.settled) return;
           state.settled = true;
@@ -767,7 +783,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           if (state.text.trim()) {
             emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: state.text });
           }
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+          emit({
+            ...base(threadId, turnId),
+            type: "turn.completed",
+            ok: state.stopping ? false : ok,
+            stopReason: state.stopping ? "interrupted" : stopReason,
+            cost: null,
+          });
           stop();
         };
 
@@ -997,6 +1019,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         });
         child.on("close", (code) => {
           if (state.settled || state.deciding) return;
+          // the kill after a stop is the stop, not the agent giving up
+          if (state.stopping) return settle(false, "interrupted");
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
@@ -1025,7 +1049,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             });
             state.commandsHeard = null;
           }
-          if (!state.commands?.has("compact") || state.settled) return false;
+          if (!state.commands?.has("compact") || state.settled || state.stopping) return false;
           state.compacting = true;
           let running = true;
           try {
@@ -1166,11 +1190,16 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 leftBehind.add(cursor);
               }
             }
+            // Stopped while the conversation was reopening: a load the stop
+            // cut short is not a forgotten session, and the process is on
+            // its way out, so it is asked for nothing more (no session/new).
+            if (state.stopping) return settle(false, "interrupted");
             // The session has grown past the lane's line. An agent with a
             // /compact of its own (pi) compacts it before the words go; one
             // without, or one whose compaction fails, gets a new session
             // told the bounded story instead of the old one at full size.
             if (session && turn.compactFirst && !(await compactSession(String(session.sessionId)))) {
+              if (state.stopping) return settle(false, "interrupted");
               leftBehind.add(String(session.sessionId));
               session = null;
             }
@@ -1336,6 +1365,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 output: usage.outputTokens ?? 0,
               });
             }
+            // stopped: what the reply came back as says nothing more, and
+            // a short or empty one is the stop, not the model failing
+            if (state.stopping) return settle(false, "interrupted");
             const reason = String(result?.stopReason ?? "end_turn");
             const ended = reason === "end_turn" || reason === "max_tokens";
             // A turn can end "well" having failed: pi-acp answers end_turn
@@ -1378,6 +1410,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             settle(ended, reason === "end_turn" ? null : reason);
           } catch (e) {
             if (state.settled) return;
+            // whatever a request to a process being stopped came back with,
+            // the turn was stopped; it did not fail
+            if (state.stopping) return settle(false, "interrupted");
             // what went wrong is often in the error's data, not its message
             const data = (e as any)?.data;
             const detail = [data?.details, data?.message].find((d): d is string => typeof d === "string" && d.trim().length > 0);
