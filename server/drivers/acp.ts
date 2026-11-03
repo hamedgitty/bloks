@@ -1289,7 +1289,9 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               try {
                 await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
               } catch (e) {
-                // failing safe: the turn still runs, with approvals as they were
+                // failing safe: the turn still runs, with approvals as they
+                // were. A stop that cut the request short is not a refusal.
+                if (state.stopping) return settle(false, "interrupted");
                 emit({
                   ...base(threadId, turnId),
                   type: "runtime.error",
