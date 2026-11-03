@@ -133,3 +133,38 @@ test("messages on someone's behalf: the owner or an admin, from the team or a ro
   assert.ok(!access.mayMessageOnBehalf(atlas, { asker: owner, where: "team" }, member("p8"), world({ rooms: [] })), "nor to someone who cannot reach it");
   assert.ok(!access.mayMessageOnBehalf(samsOwn, { asker: owner, where: "team" }, member("p4"), w), "nor through a solo agent");
 });
+
+test("settings: the owner any agent, an admin every agent but the owner's own, a member the agents they made", () => {
+  const admin = member("p6", "admin");
+  for (const agent of [chief, scout, atlas, assistant, samsOwn]) assert.ok(access.mayChangeSettings(agent, owner), agent.id);
+  // an admin: the team agents and what members made, never the owner's own
+  for (const agent of [chief, scout, atlas, samsOwn]) assert.ok(access.mayChangeSettings(agent, admin), agent.id);
+  assert.ok(!access.mayChangeSettings(assistant, admin));
+  // a member: their own solo agent, and nothing else, however they reach it
+  assert.ok(access.mayChangeSettings(samsOwn, member("p4")));
+  for (const agent of [chief, scout, atlas, assistant]) assert.ok(!access.mayChangeSettings(agent, member("p4")), agent.id);
+  assert.ok(!access.mayChangeSettings(samsOwn, member("p5")), "nor another member's");
+  // an admin's own solo agent is theirs as a maker too
+  assert.ok(access.mayChangeSettings({ id: "minas", solo: { by: "p6" } }, admin));
+});
+
+test("settings: a member widens their own agent only so far; the owner and admins as far as they like", () => {
+  const admin = member("p6", "admin");
+  for (const level of access.APPROVAL_LEVELS) {
+    assert.equal(access.settingHeld(owner, "approvals", level), null);
+    assert.equal(access.settingHeld(admin, "approvals", level), null);
+  }
+  assert.equal(access.settingHeld(member("p4"), "approvals", "ask"), null);
+  assert.equal(access.settingHeld(member("p4"), "approvals", "edits"), null);
+  assert.equal(access.settingHeld(member("p4"), "approvals", "auto"), "approvals");
+  assert.equal(access.settingHeld(member("p4"), "approvals", "full"), "approvals");
+  // a computer: taken away or left automatic, never given
+  assert.equal(access.settingHeld(member("p4"), "computer", "off"), null);
+  assert.equal(access.settingHeld(member("p4"), "computer", null), null);
+  for (const where of ["local", "sandbox", "cloud"]) {
+    assert.equal(access.settingHeld(member("p4"), "computer", where), "computer", where);
+    assert.equal(access.settingHeld(admin, "computer", where), null, where);
+  }
+  // the rest is theirs
+  for (const field of ["name", "title", "description", "browser", "modelSelection", "effort"]) assert.equal(access.settingHeld(member("p4"), field, true), null, field);
+});

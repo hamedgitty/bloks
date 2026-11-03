@@ -116,6 +116,27 @@ test("the agents members made for themselves are an admin's to list and delete, 
   assert.equal(memberCan("GET", "/api/workspace/member-agents/b_1/messages", none, noInvites, "admin").ok, false);
 });
 
+test("an agent's settings are on the member surface for people in the workspace, never for a guest", () => {
+  const none = () => null;
+  for (const method of ["GET", "PATCH"] as const) {
+    const path = "/api/member/agents/b_1/settings";
+    for (const role of ["admin", "member"] as const) {
+      const verdict = memberCan(method, path, none, noInvites, role);
+      assert.equal(verdict.ok, true, `${method} for ${role}`);
+      if (verdict.ok) assert.deepEqual(verdict.action, { kind: "agentSettings", botId: "b_1", method });
+    }
+    assert.equal(memberCan(method, path, none, noInvites, null).ok, false, `${method} for a guest`);
+  }
+  // only those two, and never the owner's route for the same thing
+  assert.equal(memberCan("DELETE", "/api/member/agents/b_1/settings", none, noInvites, "admin").ok, false);
+  assert.equal(memberCan("PATCH", "/api/workspace/agents/b_1/settings", none, noInvites, "admin").ok, false);
+  assert.equal(memberCan("PATCH", "/api/bots/b_1", none, noInvites, "admin").ok, false);
+  // members hear that an agent changed, by its id, and ask again
+  const frame = { kind: "workspace.agent", agentId: "b_1" };
+  assert.deepEqual(memberFrame(frame, () => null, "member"), frame);
+  assert.equal(memberFrame(frame, () => null, "guest"), null);
+});
+
 test("members never receive command text, whatever the room's activity setting", () => {
   const row = msg({ kind: "activity", tool: { name: "shell", command: "printf '[redacted]'", ok: false, stopped: true } });
   const hidden = memberMessage(row, view())!;

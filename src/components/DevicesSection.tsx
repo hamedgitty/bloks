@@ -87,6 +87,9 @@ interface PairStatus {
 interface PairCode {
   code: string;
   qr: string | null;
+  /** What the QR carries, which the desktop app takes pasted (Settings,
+   * Phone and devices, Your servers), the link `bloks-server pair` prints. */
+  link?: string | null;
   expiresAt: number;
   /** Where the phone should dial, for somebody typing the code by hand. */
   address: string | null;
@@ -116,7 +119,7 @@ interface Minted {
  * than one of this computer's own on its network. */
 const isUrl = (address: string) => /^https?:\/\//.test(address);
 
-async function drawCode(minted: Minted, address: string | null): Promise<{ qr: string | null; hostPort: string | null }> {
+async function drawCode(minted: Minted, address: string | null): Promise<{ qr: string | null; hostPort: string | null; link: string | null }> {
   const link = !address
     ? null
     : isUrl(address)
@@ -133,7 +136,7 @@ async function drawCode(minted: Minted, address: string | null): Promise<{ qr: s
   // A bracketed IPv6 literal stays readable as host:port; IPv4 needs nothing;
   // a URL is already what to type.
   const hostPort = !address ? null : isUrl(address) ? address : `${address.includes(":") ? `[${address}]` : address}:${minted.port}`;
-  return { qr, hostPort };
+  return { qr, hostPort, link };
 }
 
 /** A browser rather than a phone, by the name it paired under. */
@@ -147,9 +150,18 @@ const ARRIVAL_MS = 2800;
 const RENEW_EARLY_MS = 1500;
 
 export function DevicesSection() {
-  // Running at bloks.dev/web: this UI is itself a paired device, and the
-  // pairing controls belong to the computer, not to it.
-  if (window.bloksWeb) return <ThisBrowser />;
+  // Running at bloks.dev/web: this UI is itself a paired device, said
+  // first, and one of the owner's own, which may pair another (a server
+  // with no screen has no other place to do it), as the desktop app
+  // reaching a server does.
+  if (window.bloksWeb) {
+    return (
+      <>
+        <ThisBrowser />
+        <PairingControls />
+      </>
+    );
+  }
   return <PairingControls />;
 }
 
@@ -388,7 +400,7 @@ function PairingControls() {
           name: typeof started.name === "string" ? started.name : undefined,
           links: Array.isArray(started.links) ? started.links : undefined,
         };
-        const { qr, hostPort } = await drawCode(made, address);
+        const { qr, hostPort, link } = await drawCode(made, address);
         if (!wanted.current) {
           // the panel closed while this was on its way: the door closes
           // with it rather than staying open for nobody
@@ -396,7 +408,7 @@ function PairingControls() {
           return;
         }
         minted.current = made;
-        hold({ code: started.code, qr, expiresAt: started.expiresAt, address: hostPort, addresses, chosen: address, mintedAt: Date.now() });
+        hold({ code: started.code, qr, link, expiresAt: started.expiresAt, address: hostPort, addresses, chosen: address, mintedAt: Date.now() });
         setStopped(null);
       })
       .catch((e: Error) => {
@@ -620,9 +632,9 @@ function PairingControls() {
           const shown = held.current;
           if (!made || !shown || shown.code !== made.code) return;
           picked.current = address;
-          void drawCode(made, address).then(({ qr, hostPort }) => {
+          void drawCode(made, address).then(({ qr, hostPort, link }) => {
             if (held.current?.code !== made.code) return;
-            hold({ ...held.current, qr, address: hostPort, chosen: address });
+            hold({ ...held.current, qr, link, address: hostPort, chosen: address });
           });
         }}
         msLeft={msLeft}
@@ -877,6 +889,7 @@ function PairingCode({
   onClose: () => void;
 }) {
   const secondsLeft = Math.max(0, Math.ceil(msLeft / 1000));
+  const [copiedLink, setCopiedLink] = useState<string | null>(null);
   return (
     <div className="relative mt-4 flex flex-wrap items-center gap-x-6 gap-y-4 rounded-xl border bg-muted/30 p-4">
       <Button
@@ -970,6 +983,17 @@ function PairingCode({
                   ))}
                 </div>
               </div>
+            )}
+            {/* the same pairing, for the desktop app on another computer:
+                the link `bloks-server pair` prints, pasted in its Your
+                servers, so no terminal on the server is needed */}
+            {code?.link && (
+              <PairLinkRow
+                label={t("devicesSection.forTheDesktopApp")}
+                link={code.link}
+                copied={copiedLink === code.link}
+                onCopy={() => void navigator.clipboard.writeText(code.link!).then(() => setCopiedLink(code.link!))}
+              />
             )}
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-small tabular-nums text-muted-foreground">

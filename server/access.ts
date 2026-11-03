@@ -51,6 +51,13 @@
 //   into that person's private conversation with it, marked as sent on
 //   their behalf. Only to people who can reach the agent, and never at a
 //   member's request: members do not message each other through agents.
+//
+//   Settings: the owner and the admins change every agent's settings,
+//   team agents and the agents members made alike (never the owner's own
+//   solo agents, which nobody else sees). A member changes the agents
+//   they made, short of what reaches past them: letting it act without
+//   asking, or giving it a computer, stays the owner's and the admins'.
+//   Opening an agent's settings is not reading its conversations.
 import type { WorkspaceRole } from "./people.ts";
 
 /** Somebody asking: the owner, or a member of the workspace. */
@@ -311,4 +318,44 @@ export function readsShown(
     return viewer === ctx.laneOwner || (viewer === "owner" && ctx.privateReadable);
   }
   return reader === viewer;
+}
+
+// ── an agent's settings ────────────────────────────────────────────────
+
+/** How an agent asks before it acts, least reach first. */
+export const APPROVAL_LEVELS = ["ask", "edits", "auto", "full"] as const;
+export type ApprovalLevel = (typeof APPROVAL_LEVELS)[number];
+
+/** The most a member may let one of their own agents do unasked: change
+ * files in its own folder. Beyond that it acts on the owner's computer
+ * with nobody asked, which is the owner's and the admins' to allow. */
+export const MEMBER_APPROVALS: ApprovalLevel = "edits";
+
+/** Whether somebody may open an agent's settings, and change them. The
+ * owner, any agent; an admin, every agent but the owner's own solo ones;
+ * a member, the agents they made. */
+export function mayChangeSettings(agent: AgentShape, who: Who): boolean {
+  if (who.kind === "owner") return true;
+  if (isAdmin(who)) return agent.solo?.by !== "owner";
+  return agent.solo?.by === who.personId;
+}
+
+/** What a member's own agent keeps out of their hands: letting it act
+ * past MEMBER_APPROVALS unasked, and giving it a computer. */
+export type SettingHeld = "approvals" | "computer";
+
+/**
+ * Why somebody who may change an agent's settings cannot set this one to
+ * this value, or null when they can. Narrowing is always allowed: asking
+ * more often, or a computer taken away (off) or left to the workspace
+ * (null, automatic), never widens what the agent reaches.
+ */
+export function settingHeld(who: Who, field: string, value: unknown): SettingHeld | null {
+  if (who.kind === "owner" || isAdmin(who)) return null;
+  if (field === "approvals") {
+    const level = APPROVAL_LEVELS.indexOf(value as ApprovalLevel);
+    return level > APPROVAL_LEVELS.indexOf(MEMBER_APPROVALS) ? "approvals" : null;
+  }
+  if (field === "computer") return value === null || value === "off" ? null : "computer";
+  return null;
 }

@@ -41,6 +41,7 @@ import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
 import { AboutYouPage, MembersAdminPage, NewSoloAgentDialog, UsagePage, WelcomePanel, WorkspacePage } from "./MemberPages";
 import { ConnectionsPage } from "./MemberConnections";
+import { AgentSettingsDialog } from "../members/AgentSettingsDialog";
 import { t, useLanguage } from "@/lib/i18n";
 import { fromThisComputer } from "@/lib/thisComputer";
 
@@ -103,6 +104,7 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
   const [place, setPlace] = useState<MemberPlace | null>(null);
   const [usage, setUsage] = useState<MemberUsage | null>(null);
   const [making, setMaking] = useState(false);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationTrigger = useRef<HTMLButtonElement>(null);
   const desktopNavigation = useRef<HTMLDivElement>(null);
@@ -415,6 +417,7 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
                 usage={usage}
                 onLane={(lane) => go({ kind: "agent", id: openAgent.id, lane })}
                 onDelete={() => void deleteAgent(openAgent)}
+                onSettings={() => setSettingsFor(openAgent.id)}
                 onSent={refreshUsage}
                 nameOf={nameOf}
                 known={known}
@@ -454,6 +457,7 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
             }}
           />
         )}
+        <AgentSettingsDialog agentId={settingsFor} via="member" onOpenChange={(o) => !o && setSettingsFor(null)} onSaved={() => void refresh()} />
         <WorkspaceDialogs />
       </div>
     </TooltipProvider>

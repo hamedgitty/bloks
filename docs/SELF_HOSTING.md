@@ -76,7 +76,7 @@ and does not lose anything it needs because of it:
 | Agent computers | Cloud box, Local VM (Docker or Podman on the server; with Docker Compose, the desktop service in [DOCKER.md](DOCKER.md)), Off | This machine, Off | A hosted machine is the agents' computer already, with its own browser and virtual desktop. |
 | Virtual desktop in the Computer panel | not offered | when the image serves one | It needs the hosting image's desktop and viewer. |
 | Bloks browser in the app | not offered | not offered | It is a browser inside the desktop app, so only a workspace running in the app has one. An agent's own browser (Settings, Its own browser) works on any server with Chrome, Chromium, Brave or Edge installed, headless where there is no display, on an engine that takes it (the agent's settings say when its engine does not). |
-| Pairing link from bloks.dev | `bloks-server pair` on the server | asked of Bloks Cloud | Nobody can run `bloks-server pair` on a hosted machine. |
+| Pairing link from bloks.dev | `bloks-server pair` on the server, or Settings, Phone and devices from a device or browser of yours | asked of Bloks Cloud | Nobody can run `bloks-server pair` on a hosted machine. |
 | Waking for routines | not needed | Bloks Cloud wakes the machine | Only a hosted machine is put to sleep. |
 | Moving the workspace | backups, on the server | to and from your Mac, from the app | A move is the way into and out of managed hosting. |
 | Meeting notes | offered | not offered | They listen through a computer of your own. |
@@ -186,8 +186,8 @@ of Bloks' own to sign in with.
 
 It is a listener of its own, apart from the loopback port, and nothing
 that comes through it is treated as the computer itself: an agent's
-credential, pairing and the terminal are never reachable there,
-whatever your proxy sends. A signed in browser holds one session
+credential and the terminal are never reachable there, and nobody
+signed out pairs through it, whatever your proxy sends. A signed in browser holds one session
 cookie (HttpOnly, SameSite=Strict, Secure on https), and that cookie is
 all it has.
 
@@ -214,7 +214,8 @@ How people get in:
 - **You** sign in as the owner when your identity is `BLOKS_OIDC_OWNER`,
   and get what one of your paired devices gets, apart from the
   terminal. Settings, General says who you are signed in as, with Sign
-  out; Settings, Members is where you manage people.
+  out; Settings, Members is where you manage people; Settings, Phone and
+  devices pairs your phone or the desktop app (below).
 - **Somebody you invite** opens the invite's link (it points at
   `BLOKS_WEB_URL/join`), sees who invited them, signs in with the
   provider, and waits while you compare the same four words on the
@@ -324,9 +325,45 @@ limits, remove someone. Admins have the same page in their own app,
 apart from the join password and the switches that are yours.
 
 **Members' own agents** lists the agents members made for themselves,
-by name and maker, for you and your admins. Delete one and it goes with
-its conversations: nobody reads them first, and the record says who
-deleted it and whose it was.
+by name and maker, for you and your admins. Settings on a row opens
+that agent's settings without its conversations; delete one and it goes
+with its conversations: nobody reads them first, and the record says
+who deleted it and whose it was.
+
+**Agent settings, by role.** You change every agent's settings. Your
+admins do too, for every agent but your own solo ones: the agent's menu
+in their app (or Settings on its row under Team agents) opens its name,
+title, instructions, engine and model, reasoning effort, how it asks,
+its own browser and its computer. A member opens the same for the
+agents they made, from the agent's menu, and two things stay with you
+and your admins, each shown off with why: letting it act without asking
+(past Accept edits) and giving it a computer. A member moves an agent
+only to the engines their limits allow. Where an agent works (another
+machine over SSH, or a container) is set on the server itself, since it
+uses that machine's own keys; a browser says so where it would be.
+
+### Pairing from the browser
+
+Settings, Phone and devices, Pair a phone shows the code and QR for the
+iPhone and, under them, the link `bloks-server pair` prints: paste it
+into the desktop app's Settings, Phone and devices, Your servers, and it
+pairs at the server's own address, with Bloks Cloud on or off. Only you
+make a pairing code, from the web door or a device of yours; a device
+you pair is one of yours, so an admin's or a member's browser never
+makes one. They come in through an invite, on each device.
+
+### More than one workspace
+
+One server is one workspace: one data folder, one port, one set of
+agents and people. A browser opens the workspace at its address, so
+Settings, Workspace, General in a browser says which one this is and
+how to have another. For a second (one for work beside the family's,
+say), run a second server with a data folder and port of its own: with
+Docker, a second compose project with its own volume and
+`BLOKS_PORT`, and its own address in front; without, a second systemd
+unit with its own `BLOKS_DATA_DIR` and `BLOKS_PORT`. Pair each to the
+desktop app and they sit side by side in its workspace switcher, each
+reached at its own address.
 
 ## Voices, calls and meeting notes
 

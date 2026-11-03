@@ -24,7 +24,7 @@ import { Loader2 } from "@/components/icons";
 import { LogIn } from "@/components/icons";
 import { Minus } from "@/components/icons";
 import { X } from "@/components/icons";
-import { api, type Bot } from "@/state/store";
+import { api, useStore, type Bot } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/input";
@@ -220,6 +220,8 @@ export function WhereItWorksCard({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [more, setMore] = useState(false);
+  const [atServer, setAtServer] = useState(false);
+  const { state } = useStore();
   const ids = useId();
 
   const load = useCallback(() => {
@@ -228,7 +230,13 @@ export function WhereItWorksCard({ bot }: { bot: Bot }) {
         setView(next);
         setDraft((current) => current ?? draftOf(next, bot.name));
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error & { status?: number }) => {
+        // From a device (a browser, a paired app) this is refused on
+        // purpose: it picks the server's own keys and machines, so it is
+        // set at the server. Said as that, not as something gone wrong.
+        if (e.status === 403) setAtServer(true);
+        else setError(e.message);
+      });
   }, [bot.id, bot.name]);
 
   useEffect(() => load(), [load]);
@@ -250,7 +258,15 @@ export function WhereItWorksCard({ bot }: { bot: Bot }) {
   if (!view || !draft) {
     return (
       <SettingRow label={t("whereItWorks.whereItWorks")} description={t("whereItWorks.whereItsEngineRunsWith")}>
-        {error ? <p className="mt-2 text-small text-destructive">{error}</p> : <Loader2 size={14} className="mt-3 animate-spin text-muted-foreground" />}
+        {atServer ? (
+          <p className="mt-2 rounded-lg bg-muted/60 px-3 py-2 text-pretty text-small leading-relaxed text-muted-foreground">
+            {t("whereItWorks.setAtServer", { computer: state.config?.deployment?.computer || t("workspaceSettings.server.thisServer") })}
+          </p>
+        ) : error ? (
+          <p className="mt-2 text-small text-destructive">{error}</p>
+        ) : (
+          <Loader2 size={14} className="mt-3 animate-spin text-muted-foreground" />
+        )}
       </SettingRow>
     );
   }

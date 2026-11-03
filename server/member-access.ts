@@ -16,7 +16,9 @@
 // shapes what crosses them; access.ts holds the rules. An admin also reaches the people routes: invites,
 // requests to join, roles, limits, who is in which room and agent, and
 // the agents members made for themselves (to delete, never to read). The
-// join password and the approval switch stay the owner's.
+// join password and the approval switch stay the owner's. Who opens and
+// changes an agent's settings is access.ts's (mayChangeSettings): an
+// admin every agent's but the owner's own, a member their own agents'.
 //
 // The same goes for the live event stream. The server broadcasts one
 // stream for the owner; a member sees a frame only when it is about a
@@ -45,6 +47,8 @@ export type MemberAction =
   | { kind: "newAgent" }
   | { kind: "usage" }
   | { kind: "dropAgent"; botId: string }
+  // an agent's settings, for whoever server/access.ts lets change them
+  | { kind: "agentSettings"; botId: string; method: "GET" | "PATCH" }
   | { kind: "leaveWorkspace" }
   | { kind: "conversation"; botId: string; lane: "team" | "private" }
   | { kind: "say"; botId: string; lane: "team" | "private" }
@@ -115,6 +119,11 @@ const ROUTES: Array<{ method: string; pattern: RegExp; action: (m: RegExpMatchAr
   { method: "POST", pattern: /^\/api\/member\/agents$/, action: () => ({ kind: "newAgent" }) },
   { method: "GET", pattern: /^\/api\/member\/usage$/, action: () => ({ kind: "usage" }) },
   { method: "DELETE", pattern: new RegExp(`^/api/member/agents/${ID}$`), action: (m) => ({ kind: "dropAgent", botId: m[1] }) },
+  ...(["GET", "PATCH"] as const).map((method) => ({
+    method,
+    pattern: new RegExp(`^/api/member/agents/${ID}/settings$`),
+    action: (m: RegExpMatchArray) => ({ kind: "agentSettings" as const, botId: m[1], method }),
+  })),
   { method: "POST", pattern: /^\/api\/member\/leave$/, action: () => ({ kind: "leaveWorkspace" }) },
   {
     method: "GET",
@@ -215,7 +224,7 @@ export function memberCan(
   // A guest from a chat channel is in rooms, not in the workspace: the
   // workspace's agents and people are not theirs to reach.
   const workspaceWide = [
-    "workspace", "agents", "newAgent", "usage", "dropAgent", "leaveWorkspace", "conversation", "say", "reply",
+    "workspace", "agents", "newAgent", "usage", "dropAgent", "agentSettings", "leaveWorkspace", "conversation", "say", "reply",
     "notes", "note", "noteKeep", "noteDrop", "people", "admin", "appWatchers", "appTriggers",
     "connections", "appsKey", "apps", "app", "secret", "memories", "forgetMemory", "welcomed",
   ];
@@ -377,10 +386,11 @@ const ROOM_FRAMES = new Set(["room.people", "room.sharing", "room.typing", "room
 const LANE_FRAMES = new Set(["member.lane"]);
 /** The workspace's own news every member hears: who is in it, which way
  * the privacy setting is, that an agent's or a room's list changed (ids
- * only, so the app asks again what it may now see), what the owner is
+ * only, so the app asks again what it may now see), that an agent's
+ * settings changed (its id, for the same reason), what the owner is
  * called now, and the mark the owner chose for it (a member's own choice
  * of mark stays on their side, over this one). */
-const WORKSPACE_FRAMES = new Set(["workspace.people", "workspace.privacy", "workspace.access", "workspace.owner", "workspace.mark"]);
+const WORKSPACE_FRAMES = new Set(["workspace.people", "workspace.privacy", "workspace.access", "workspace.agent", "workspace.owner", "workspace.mark"]);
 /** What only the people who let others in hear: somebody asking, how
  * many are waiting, who came in, an invite closed or taken back. */
 const ADMIN_FRAMES = new Set(["workspace.request", "workspace.waiting", "workspace.joined", "workspace.locked", "workspace.withdrawn", "workspace.left"]);

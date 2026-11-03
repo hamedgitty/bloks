@@ -456,6 +456,17 @@ behind it are built to be narrow.
   was said to it crosses that route either way: deleting it deletes its
   conversations unread, and the record names who deleted it and whose
   it was.
+- **Who changes an agent's settings.** You change any agent's; an admin
+  any agent's but your own solo ones; a member only the agents they
+  made, and even there cannot let one act without asking past accepting
+  edits, give it a computer, or move it to an engine their limits leave
+  out (`mayChangeSettings` and `settingHeld` in `server/access.ts`,
+  served by `/api/workspace/agents/:id/settings` for you and
+  `/api/member/agents/:id/settings` for people you let in). The route
+  refuses whatever the screen shows held, with the same reason, and
+  never an agent's credential or a guest. An agent's settings carry
+  nothing of its conversations: opening a member's agent is not
+  reading it.
 - **Private means private.** A member's one to one with an agent is
   theirs. You can turn on reading members' private conversations for the
   workspace, and every member is told which way it is set. Past the

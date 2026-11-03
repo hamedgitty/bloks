@@ -207,6 +207,11 @@ for five minutes.
   https://bloks.example.com --code 123456` trades the code for a token for
   `bloks-server run`, `team` and `chat` on another machine.
 
+Once one device is paired, or you sign in at a web door of your own
+([SELF_HOSTING.md](SELF_HOSTING.md#signing-in-from-a-browser-with-your-own-identity-provider)),
+the next ones need no shell: Settings, Phone and devices, Pair a phone
+shows the same code, QR and desktop link.
+
 Remove a device in Settings, Phone and devices, and its token stops
 working at once.
 

@@ -6,7 +6,7 @@
 // never a surprise). A solo agent has just the one. A room is the room,
 // with everyone in it.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { MoreHorizontal, Trash2, Users } from "@/components/icons";
+import { MoreHorizontal, Settings, Trash2, Users } from "@/components/icons";
 import { Segmented } from "@/components/ui/segmented";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -75,6 +75,7 @@ export function AgentView({
   usage,
   onLane,
   onDelete,
+  onSettings,
   onSent,
   nameOf,
   known,
@@ -91,6 +92,7 @@ export function AgentView({
   usage: MemberUsage | null;
   onLane: (lane: "team" | "private") => void;
   onDelete: () => void;
+  onSettings: () => void;
   onSent: () => void;
 }) {
   const [data, setData] = useState<Conversation | null>(null);
@@ -146,21 +148,30 @@ export function AgentView({
           <Segmented aria-label={t("memberViews.conversation")} size="sm" value={lane} onChange={(v) => onLane(v)} options={lanes} className="w-full sm:w-[190px]" />
         )}
         {lanes.length === 1 && !agent.solo && <span className="text-body text-muted-foreground">{lane === "team" ? t("memberViews.team") : t("memberViews.private")}</span>}
-        {agent.solo && agent.mine && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label={t("memberViews.moreFor", { agent: agent.name })}>
-                <MoreHorizontal size={16} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+        {/* everyone gets the menu: Settings for whoever may change them,
+            and for anyone else the item off with who does */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={t("memberViews.moreFor", { agent: agent.name })}>
+              <MoreHorizontal size={16} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-w-[280px]">
+            <DropdownMenuItem disabled={!agent.settings} onSelect={onSettings}>
+              <Settings />
+              {t("common.settings")}
+            </DropdownMenuItem>
+            {!agent.settings && (
+              <p className="px-2 pb-1.5 pt-0.5 text-pretty text-small text-muted-foreground">{t("memberViews.settingsNotYours", { owner, agent: agent.name })}</p>
+            )}
+            {agent.solo && agent.mine && (
               <DropdownMenuItem variant="destructive" onSelect={onDelete}>
                 <Trash2 />
                 {t("memberViews.deleteAgent", { agent: agent.name })}
               </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
       {data ? (
         <Transcript

@@ -37,6 +37,7 @@ import { ensureYourName } from "./YourNameDialog";
 import { WorkspaceMark } from "./WorkspaceMark";
 import { MarkPicker } from "./MarkPicker";
 import { MoveHome } from "./hosting/MoveHome";
+import { membersApi } from "@/lib/members";
 import { formatNumber, t, type MessageKey } from "@/lib/i18n";
 
 export const WORKSPACE_PAGES: ReadonlyArray<{ id: "general" | "members" | "online" | "notifications"; label: MessageKey }> = [
@@ -609,6 +610,53 @@ function ReachableOnline({ ws }: { ws: WorkspaceInfo }) {
   );
 }
 
+// ── a server opened in a browser ───────────────────────────────────────
+
+/** How to run a second server beside the first. */
+const SECOND_SERVER_GUIDE = "https://github.com/hamedgitty/bloks/blob/main/docs/SELF_HOSTING.md#more-than-one-workspace";
+
+/** The workspace page a browser has. A server is one workspace, and a
+ * browser shows the one it opened: there is no list of others here to
+ * add to, so the page says what this one is and how another is had. */
+function ServerWorkspacePage() {
+  const { state } = useStore();
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    membersApi
+      .list()
+      .then((data) => live && setName(data.workspace.name))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const computer = state.config?.deployment?.computer || t("workspaceSettings.server.thisServer");
+  return (
+    <SettingsGroup>
+      <SettingRow
+        label={t("workspaceSettings.server.thisWorkspace")}
+        description={t("workspaceSettings.server.runsOn", { computer })}
+        control={name ? <span className="text-ui font-medium text-foreground">{name}</span> : undefined}
+      />
+      <SettingRow
+        label={t("workspaceSettings.server.another")}
+        description={
+          <>
+            <span className="block">{t("workspaceSettings.server.anotherBody", { computer })}</span>
+            <span className="mt-1 block">
+              {t("workspaceSettings.server.anotherApp")}{" "}
+              <a href={SECOND_SERVER_GUIDE} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                {t("workspaceSettings.server.guide")}
+              </a>
+            </span>
+          </>
+        }
+      />
+    </SettingsGroup>
+  );
+}
+
 // ── the page ───────────────────────────────────────────────────────────
 
 /** One of the workspace's pages, for the workspace this window shows. */
@@ -622,6 +670,8 @@ export function WorkspacePageBody({ page }: { page: string }) {
   // the workspace this page shows, managed as in the app, with the name and
   // mark the server says (it has no workspace list to name it from)
   if (!s.available && !window.bloks && id === "members") return <Members onOpenRoom={() => dispatch({ type: "toggleAppSettings", open: false })} />;
+  // and General says which workspace this server is, and how to have another
+  if (!s.available && !window.bloks && id === "general") return <ServerWorkspacePage />;
   if (!s.available || !ws) {
     return (
       <SettingsGroup>

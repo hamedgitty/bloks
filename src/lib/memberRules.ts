@@ -39,6 +39,9 @@ export interface MemberAgent {
   team: { threadId: string | null } | null;
   private: { threadId: string | null } | null;
   busy: boolean;
+  /** Whether they may open its settings: an admin any agent, a member
+   * the agents they made. Absent from a server before there were any. */
+  settings?: boolean;
 }
 
 export interface MemberRoomRow {

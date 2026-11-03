@@ -22829,6 +22829,9 @@ async function serveMember(
       return json(res, 200, { ok: true });
     }
 
+    case "agentSettings":
+      return agentSettingsRoute(req, res, action.method, action.botId, asWho(who));
+
     case "leaveWorkspace": {
       // Said to the owner before the person is gone, while their name is
       // still theirs to say. The answer is sealed with the key this
@@ -23168,7 +23171,166 @@ function memberAgent(bot: BotRecord, me: access.Who, world: access.World) {
     // a private conversation with it, open to anyone who can reach it
     private: access.canReach(bot, me, world) || bot.solo ? { threadId: bot.solo ? mainLaneOf(bot).id : (mine?.id ?? null) } : null,
     busy: Boolean(bot.busy),
+    // whether they may open its settings (agentSettingsRoute)
+    settings: access.mayChangeSettings(bot, me),
   };
+}
+
+// ── an agent's settings, for the people in a workspace ─────────────────
+// The owner's own settings page is the owner's whole say over an agent of
+// theirs. This is the part people share: who it is (name, title,
+// instructions), what it runs on (engine, model, effort), how it asks
+// (approvals), and its browser and computer. The owner reaches it for the
+// agents members made, an admin for every agent but the owner's own solo
+// ones, a member for the agents they made (server/access.ts,
+// mayChangeSettings). Each control says when it is held and why, and the
+// route refuses the same change for the same reason. Nothing here reads
+// or shows a conversation.
+
+/** What held a change, said once for the route and the screen. */
+const SETTINGS_HELD_WORDS = {
+  approvals: () => `Only ${hostName()} and the admins can let an agent act without asking.`,
+  computer: () => `Only ${hostName()} and the admins can give an agent a computer.`,
+  engine: () => `That engine is not one you may use here. Ask ${hostName()} or an admin.`,
+} as const;
+
+/** The engines somebody may put an agent on: the workspace's own that
+ * are on, and for a member only those their limits allow. The one the
+ * agent is on now is always listed, so the picker can say it. */
+function settingsEngines(who: access.Who, current: ModelSelection | null | undefined) {
+  return registry
+    .instances()
+    .filter((i) => i.instanceId === current?.instanceId || (i.enabled && (who.kind === "owner" || who.role === "admin" || workspacePeople.limits.engineAllowed(who.personId, i.instanceId))))
+    .map((i) => ({
+      id: i.instanceId,
+      name: i.displayName ?? i.instanceId,
+      default: i.models.default,
+      models: i.models.options.map((o) => ({ id: o.id, label: o.label, efforts: effortLevels(i, o.id) })),
+      // a member may keep an engine somebody else chose, not pick it again
+      allowed: i.enabled && (who.kind === "owner" || who.role === "admin" || workspacePeople.limits.engineAllowed(who.personId, i.instanceId)),
+    }));
+}
+
+/** An agent's settings as somebody who may change them sees them. */
+function agentSettingsView(bot: BotRecord, who: access.Who) {
+  const maker = bot.solo && bot.solo.by !== "owner" ? people.person(bot.solo.by) : null;
+  const mine = who.kind === "member" ? bot.solo?.by === who.personId : bot.solo?.by === "owner";
+  return {
+    agent: {
+      id: bot.id,
+      name: bot.name,
+      title: bot.title ?? "",
+      description: bot.description ?? "",
+      color: bot.color,
+      shape: bot.shape ?? null,
+      solo: Boolean(bot.solo),
+      mine,
+      // whose it is, for somebody looking after an agent a member made
+      ...(maker && !mine ? { madeBy: { id: maker.id, name: maker.name } } : {}),
+    },
+    settings: {
+      modelSelection: bot.modelSelection ? oneModel(bot.modelSelection) : null,
+      effort: bot.effort ?? null,
+      approvals: bot.approvals ?? "ask",
+      browser: Boolean(bot.browser),
+      computer: bot.computer ?? null,
+    },
+    engines: settingsEngines(who, bot.modelSelection),
+    computers: computerChoices(HOSTED),
+    // what this person cannot widen, and why, for the screen to say
+    held: {
+      ...(access.settingHeld(who, "approvals", "full") ? { approvals: access.MEMBER_APPROVALS } : {}),
+      ...(access.settingHeld(who, "computer", "local") ? { computer: true } : {}),
+    },
+    owner: { name: hostName() },
+  };
+}
+
+/**
+ * GET and PATCH an agent's settings, as `who`. The owner reaches it at
+ * /api/workspace/agents/:id/settings, a member at
+ * /api/member/agents/:id/settings; both end here. A change is checked
+ * whole before anything is written, so a refused field leaves the rest as
+ * it was.
+ */
+async function agentSettingsRoute(req: IncomingMessage, res: ServerResponse, method: "GET" | "PATCH", botId: string, who: access.Who) {
+  const bot = store.bot(botId);
+  if (!bot || bot.archivedAt) return json(res, 404, { error: "no such agent" });
+  if (!access.mayChangeSettings(bot, who)) {
+    // an agent they can talk to is said to be someone else's to change;
+    // one they cannot is not said to exist at all
+    if (who.kind === "member" && access.listed(bot, who, accessWorld())) {
+      return json(res, 403, { error: `${hostName()} and the admins change ${bot.name}'s settings.`, code: "not_yours" });
+    }
+    return json(res, 404, { error: "no such agent" });
+  }
+  if (method === "GET") return json(res, 200, agentSettingsView(bot, who));
+
+  const body = await readBody(req);
+  const patch: Partial<BotRecord> = {};
+  const held = (field: keyof typeof SETTINGS_HELD_WORDS) => json(res, 403, { error: SETTINGS_HELD_WORDS[field](), code: "held", field });
+  if (body.name !== undefined) {
+    const name = clamp(body.name, MAX_NAME_CHARS)?.trim();
+    if (!name) return json(res, 400, { error: "a name is needed" });
+    patch.name = name;
+  }
+  if (body.title !== undefined) patch.title = typeof body.title === "string" ? body.title.trim().slice(0, MAX_TITLE_CHARS) : "";
+  if (body.description !== undefined) patch.description = typeof body.description === "string" ? body.description.slice(0, MAX_DESCRIPTION_CHARS) : "";
+  let on = bot.modelSelection;
+  if (body.modelSelection !== undefined) {
+    const pick = body.modelSelection as { instanceId?: unknown; model?: unknown } | null;
+    const engine = typeof pick?.instanceId === "string" ? registry.get(pick.instanceId) : undefined;
+    if (!engine || typeof pick?.model !== "string" || pick.model.length > MAX_MODEL_ID_CHARS || !/^[\w.:@/\[\]+-]+$/.test(pick.model)) {
+      return json(res, 400, { error: "modelSelection must name an engine this workspace has and a model id" });
+    }
+    // the engine it is on already may stay, a model changed within it;
+    // moving to another is held to what this person may use
+    const moving = engine.instanceId !== bot.modelSelection?.instanceId;
+    if (moving && !settingsEngines(who, null).some((e) => e.id === engine.instanceId && e.allowed)) return held("engine");
+    on = oneModel({ instanceId: engine.instanceId, model: pick.model } as ModelSelection);
+    patch.modelSelection = on;
+  }
+  if (body.effort !== undefined) {
+    if (body.effort === null) patch.effort = undefined;
+    else {
+      const refused = isEffort(body.effort) && body.effort === bot.effort && !patch.modelSelection
+        ? null
+        : effortRefusal(body.effort, on && registry.get(on.instanceId), on?.model);
+      if (refused) return json(res, 400, { error: refused });
+      patch.effort = body.effort as Effort;
+    }
+  }
+  if (body.approvals !== undefined) {
+    if (!APPROVALS.includes(body.approvals as Approvals)) return json(res, 400, { error: "approvals is ask, edits, auto or full" });
+    // what it already has may be said again; more than this person may give may not
+    if (body.approvals !== (bot.approvals ?? "ask") && access.settingHeld(who, "approvals", body.approvals)) return held("approvals");
+    patch.approvals = body.approvals as Approvals;
+  }
+  if (body.browser !== undefined) {
+    if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });
+    patch.browser = body.browser;
+  }
+  if (body.computer !== undefined) {
+    const value = body.computer;
+    if (value !== null && !computerChoices(HOSTED).some((c) => c.id === value) && value !== bot.computer) {
+      return json(res, 400, { error: "computer is one of the choices offered here, or null for automatic" });
+    }
+    const refused = computerRefusal(value, HOSTED);
+    if (refused) return json(res, 400, { error: refused });
+    if (value !== (bot.computer ?? null) && access.settingHeld(who, "computer", value)) return held("computer");
+    patch.computer = value as BotRecord["computer"];
+  }
+
+  const saved = store.patchBot(bot.id, patch);
+  if (!saved) return json(res, 404, { error: "no such agent" });
+  // a browser taken away is closed, not left open for nobody
+  if (patch.browser === false) void closeBrowser(join(DATA_DIR, "browser", bot.id)).catch(() => {});
+  // the owner's screens hear the agent as ever (a member's own agent stays
+  // off them, server/index.ts privateTo); members' apps hear only that
+  // something about an agent changed, and ask again what they may see
+  broadcast({ kind: "bot", bot: clientBot(saved) });
+  broadcast({ kind: "workspace.agent", agentId: bot.id });
+  return json(res, 200, agentSettingsView(saved, who));
 }
 
 /**
@@ -24739,6 +24901,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // reaches the same routes through serveMember, never an agent.
     if (path.startsWith("/api/workspace/")) {
       if (asAgent) return json(res, 403, { error: "that is the person's" });
+      // any agent's settings, the ones members made among them, without
+      // their conversations (agentSettingsRoute)
+      const settingsOf = path.match(/^\/api\/workspace\/agents\/([\w-]+)\/settings$/);
+      if (settingsOf && (method === "GET" || method === "PATCH")) {
+        return agentSettingsRoute(req, res, method, settingsOf[1], { kind: "owner" });
+      }
       // Members' private conversations with one agent, for the owner to
       // read, and only while "Owner and admins can read members' private
       // conversations" is on (server/access.ts). Off, the answer says so

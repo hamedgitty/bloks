@@ -143,8 +143,9 @@ join password, checked only on your computer, can sit behind it too.
 
 What they get is decided by you:
 
-- **Roles.** You are the owner. Admins invite and manage people; members
-  use the agents, rooms and memory.
+- **Roles.** You are the owner. Admins invite and manage people and
+  look after every agent's settings with you; members use the agents,
+  rooms and memory.
 - **Team agents.** Each agent has one shared team conversation, and you
   choose who is in it: everyone, only some people, or everyone except a
   few. Rooms are chosen the same way, one by one.
@@ -175,17 +176,21 @@ What they get is decided by you:
   can ask an agent to message someone ("message Sam about the draft"),
   and it writes in Sam's private conversation, marked as sent for you.
 - **Solo agents.** Members can make agents of their own, private to
-  them, on the engines you allow.
+  them, on the engines you allow, and change them from the agent's menu:
+  name, instructions, engine and model, how it asks, its own browser.
+  Letting one act without asking, or giving it a computer, stays yours
+  and your admins', and the setting says so where it is off.
 - **Limits per person.** What each member may spend on your API keys a
   month, their share of Bloks AI, and how many solo agents they may
   make. A member at their limit is stopped; nobody else notices.
 - **Their own agents, never read.** You and your admins see the agents
-  members made for themselves, by name and maker, and can delete one:
-  it goes with its conversations, unread, and the record says who did
-  it.
+  members made for themselves, by name and maker, and can open their
+  settings or delete one: it goes with its conversations, unread, and
+  the record says who did it.
 
-Every agent they talk to runs on your computer, with your engines, and
-they never reach your settings, your keys or your own conversations.
+Every agent they talk to runs on your computer, with your engines.
+Admins change agents' settings as you do; nobody you let in reaches your
+keys, your own settings or your own conversations.
 Whoever runs the computer can read what is kept on it, and the app says
 so to everyone who joins.
 Conversations with more than two people are drawn as bubbles, with faces
@@ -490,7 +495,10 @@ over.
   an address of your own, too, signed in with Authentik, Keycloak, Google
   or any OpenID Connect provider: you as the owner, your family or team
   from an invite link or straight from a group, and the Members page
-  there to manage them.
+  there to manage them. Pair your phone or the desktop app from Settings,
+  Phone and devices, there too: the code, QR and link `bloks-server pair`
+  prints, with no terminal on the server. One server is one workspace;
+  Settings, Workspace says how to run a second beside it.
   Or let Bloks run one for you: managed hosting is a private machine
   of your own that stays on, and moves your agents over when you sign up
   at [bloks.dev/pricing](https://bloks.dev/pricing). On Windows, the

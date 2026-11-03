@@ -49,6 +49,7 @@ import {
 import { BlockBurst } from "./BlockBurst";
 import { InviteSheet } from "./InviteSheet";
 import { AgentAccessDialog, LimitsDialog, PasswordDialog } from "./MemberDialogs";
+import { AgentSettingsDialog } from "./AgentSettingsDialog";
 import { RequestCard } from "./RequestCard";
 import { NeedsTeam, UpgradeButton, UpgradeLink } from "../TeamLock";
 import { AlertTriangle } from "@/components/icons";
@@ -134,6 +135,7 @@ export function MembersPage({
   const [agents, setAgents] = useState<AgentAccessRow[] | null>(null);
   const [accessFor, setAccessFor] = useState<AgentAccessRow | null>(null);
   const [memberAgents, setMemberAgents] = useState<MemberAgentRow[] | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [newcomer, setNewcomer] = useState<{ id: string; at: number } | null>(null);
   const [copied, copy] = useCopy();
 
@@ -486,10 +488,17 @@ export function MembersPage({
               .map((a) => (
                 <div key={a.id} className="flex items-center gap-3.5 px-[18px] py-3">
                   <span className="flex-1 truncate text-ui text-foreground">{a.name}</span>
-                  <span className="shrink-0 text-body text-muted-foreground">{accessWords(a, data.members)}</span>
+                  <span className="shrink-0 text-body text-muted-foreground max-sm:hidden">{accessWords(a, data.members)}</span>
                   <Button variant="ghost" size="sm" onClick={() => setAccessFor(a)} aria-label={t("membersMembersPage.whoCanUse", { agent: a.name })}>
                     {t("common.change")}
                   </Button>
+                  {/* the owner has the agent's own settings page; an admin
+                      changes a team agent's settings from here */}
+                  {data.you.role === "admin" && (
+                    <Button variant="ghost" size="sm" onClick={() => setSettingsFor(a.id)} aria-label={t("membersMembersPage.settingsFor", { agent: a.name })}>
+                      {t("common.settings")}
+                    </Button>
+                  )}
                 </div>
               ))}
           </Card>
@@ -510,6 +519,14 @@ export function MembersPage({
                     {t("membersMembersPage.memberAgents.line", { name: a.madeBy.name, date: shortDate(a.createdAt) })}
                   </span>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSettingsFor(a.id)}
+                  aria-label={t("membersMembersPage.memberAgents.settingsFor", { agent: a.name, name: a.madeBy.name })}
+                >
+                  {t("common.settings")}
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -590,6 +607,7 @@ export function MembersPage({
       <PasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} changing={Boolean(joining?.password)} onSaved={load} />
       <LimitsDialog member={limitsFor} engines={data.engines ?? []} onOpenChange={(o) => !o && setLimitsFor(null)} onSaved={load} />
       <AgentAccessDialog agent={accessFor} members={data.members} owner={owner} onOpenChange={(o) => !o && setAccessFor(null)} onSaved={load} />
+      <AgentSettingsDialog agentId={settingsFor} via={data.you.role === "owner" ? "owner" : "member"} onOpenChange={(o) => !o && setSettingsFor(null)} onSaved={load} />
     </div>
   );
 }
