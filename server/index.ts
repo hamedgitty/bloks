@@ -18,9 +18,9 @@ import { pipeline, type Duplex } from "node:stream";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { gzipSync } from "node:zlib";
 
 import * as attachments from "./attachments.ts";
+import { sendBody } from "./compress.ts";
 import { dismissedPreparation } from "./preparation-state.ts";
 import { agentTurnLimit, validTurnLimit, pastAgentLimit, chainName, chainExcerpt, chainLimitText, chainAgentRefusal, MIN_AGENT_CHAIN_LIMIT, MAX_AGENT_CHAIN_LIMIT, agentTaskBudget, validTaskBudget, chainPast, taskFor, taskName, chainHoldText, heldSay, heldSaysText, withHeldSay, MIN_TASK_BUDGET, MAX_TASK_BUDGET, type ChainBound, type ChainTask, type HeldSay } from "./agent-chain.ts";
 import { takeBackWaiting } from "./take-back.ts";
@@ -724,7 +724,7 @@ import { TeamLibrary } from "./team-library.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, MAX_TEAM_ROUTINES, parseTeamFile, TeamFileError, teamFromManifest, type GalleryTeam, type TeamFile, type TeamFileMember, type TeamFileRoutine } from "./team-file.ts";
 import * as artifacts from "./artifacts.ts";
 import { ArtifactTurns } from "./artifact-turns.ts";
-import { closeHeld, openInside, openUnder, readHeld, streamHeld } from "./open-inside.ts";
+import { closeHeld, openInside, openUnder, readHeld, streamHeld, type HeldFile } from "./open-inside.ts";
 import * as workspace from "./workspace.ts";
 import * as places from "./workplace.ts";
 import { Gate } from "./workplace-gate.ts";
@@ -3235,7 +3235,10 @@ function settleSidebar() {
 /** How much transcript one answer through Bloks Cloud may carry, as JSON.
  * The relay takes 2 MB a payload and sealing grows a body by about 1.8x,
  * so a list of every conversation in full stops arriving once a few of
- * them get long. Local and same-network callers are not limited. */
+ * them get long. A paired device on the network is held to the same:
+ * its path may be a Tailscale relay or a weak cellular link, where a
+ * list of every conversation in full waits so long the phone gives up
+ * (GitHub 473). Callers on this machine are not limited. */
 const RELAY_TRANSCRIPT_BUDGET = 700_000;
 const RELAY_TAIL = 100;
 
@@ -3456,10 +3459,19 @@ function closeMemberStreams(personId: string) {
  * ring. A client that reconnects tells us the last number it saw; if the
  * gap still fits the ring it gets exactly the missed frames and skips the
  * full re-download, which is most reconnects on a phone. A gap the ring
- * cannot cover gets told so, honestly, and re-hydrates. */
+ * cannot cover gets told so, honestly, and re-hydrates.
+ *
+ * One ring for every stream, held by count and by size. A busy agent's
+ * streaming deltas are small and many, so the count is what lets a
+ * phone that was away a minute catch up rather than re-download the
+ * workspace (GitHub 473). Whole messages and agent records can be large,
+ * so the size keeps what is held, and what one reconnect may be sent,
+ * to a few megabytes whatever is being said. */
 let frameSeq = 0;
 const RING_SIZE = 4096;
+const RING_CHARS = 8 * 1024 * 1024;
 const frameRing: Array<{ seq: number; frame: string; payload: unknown; ownerHidden?: boolean }> = [];
+let ringChars = 0;
 
 /** Look for engine releases on a schedule, so the news is waiting in the
  * model list rather than found by someone wondering where a model went.
@@ -3513,7 +3525,10 @@ function broadcast(payload: unknown) {
   // to a reconnecting phone would be all cost and no truth
   if ((payload as { kind?: string })?.kind !== "screen") {
     frameRing.push({ seq, frame, payload, ...(ownerHidden ? { ownerHidden } : {}) });
-    if (frameRing.length > RING_SIZE) frameRing.shift();
+    ringChars += frame.length;
+    while (frameRing.length > RING_SIZE || (ringChars > RING_CHARS && frameRing.length > 1)) {
+      ringChars -= frameRing.shift()!.frame.length;
+    }
   }
   for (const res of ownerHidden ? [] : [...sseClients]) {
     try {
@@ -23149,21 +23164,8 @@ async function makeInvite(
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {
-  const data = JSON.stringify(body);
-  const accept = (res as { req?: IncomingMessage }).req?.headers["accept-encoding"] ?? "";
-  if (data.length >= 1024 && /\bgzip\b/.test(String(accept))) {
-    const gz = gzipSync(data);
-    res.writeHead(status, {
-      "content-type": "application/json",
-      "content-encoding": "gzip",
-      "content-length": gz.length,
-      vary: "accept-encoding",
-    });
-    res.end(gz);
-    return;
-  }
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(data);
+  // gzipped for a client off this machine that takes it (server/compress.ts)
+  sendBody(res.req, res, status, { "content-type": "application/json" }, JSON.stringify(body), { compressible: true });
 }
 
 /** The one place that answers a browser directly: the OAuth landing page. */
@@ -24848,8 +24850,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const seq = frameSeq;
       // ?messages=N trims each transcript to its tail. Phones hydrate
       // with a page and fetch history if someone actually scrolls.
-      // Through Bloks Cloud the list is also held to what the relay can
-      // carry, and each agent says how many older messages stayed behind.
+      // For a paired device, on the network or through Bloks Cloud, the
+      // list is also held to what a slow path can carry, and each agent
+      // says how many older messages stayed behind.
       const tail = Number(url.searchParams.get("messages") || NaN);
       // slice truncates fractional counts; below one means no messages,
       // rather than slice(-0), which returns the entire conversation.
@@ -24862,7 +24865,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const shown = store.bots.filter((b) => !b.solo || b.solo.by === "owner");
       const lists = shown.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)))
         .map((list) => asAgent ? list.map(({ recalled: _recalled, ...message }) => message) : list);
-      // Through Bloks Cloud the cut is made from the whole conversation, so
+      // For a paired device the cut is made from the whole conversation, so
       // what stayed behind counts every older message, not only those past
       // a list already trimmed to the tail; a client pages back by it.
       const fitted = remoteCaller
@@ -34655,41 +34658,34 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): b
     json(res, 403, { error: "forbidden" });
     return true;
   }
-  const wantsGzip = /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
   // and then opened as the file it really is, inside the folder, and
   // read from that open file (server/open-inside.ts)
   const held = file === root ? null : openInside(root, relative(root, file).split(sep));
   const data = held && readHeld(held);
-  if (data) {
-    const type = MIME[extname(file)] ?? "application/octet-stream";
-    if (wantsGzip && data.length >= 1024 && /^(text\/|application\/(javascript|json)|image\/svg\+xml)/.test(type)) {
-      const gz = gzipSync(data);
-      res.writeHead(200, {
-        "content-type": type,
-        "content-encoding": "gzip",
-        "content-length": gz.length,
-        vary: "accept-encoding",
-        ...SECURITY_HEADERS,
-      });
-      res.end(gz);
-      return true;
-    }
-    res.writeHead(200, {
-      "content-type": type,
-      ...SECURITY_HEADERS,
-    });
-    res.end(data);
+  if (held && data) {
+    sendFile(req, res, held, data, MIME[extname(file)] ?? "application/octet-stream");
     return true;
   }
   // SPA fallback
   const page = openInside(root, ["index.html"]);
   const index = page && readHeld(page);
-  if (index) {
-    res.writeHead(200, { "content-type": "text/html", ...SECURITY_HEADERS });
-    res.end(index);
+  if (page && index) {
+    sendFile(req, res, page, index, "text/html");
     return true;
   }
   return false;
+}
+
+/** One file of the built interface. Text, scripts, styles and SVG go
+ * gzipped to a client off this machine that takes it, squeezed once per
+ * version of the file; images and fonts are as small as they get. There
+ * is no Range or ETag here to keep in step: every answer is the whole
+ * file, and a HEAD (the web door's) gets the same head as its GET. */
+function sendFile(req: IncomingMessage, res: ServerResponse, held: HeldFile, data: Buffer, type: string) {
+  sendBody(req, res, 200, { "content-type": type, ...SECURITY_HEADERS }, data, {
+    compressible: /^(text\/|application\/(json|javascript|manifest\+json)|image\/svg\+xml)/.test(type),
+    file: { key: held.path, tag: `${held.stat.dev}:${held.stat.ino}:${held.stat.mtimeMs}:${data.length}` },
+  });
 }
 
 /** The environment and header names an MCP server has no value for yet. */
@@ -34744,12 +34740,10 @@ noteBound(BIND);
 // On IPv6 too, only from the networks this port reached before: a peer
 // from a global IPv6 address is let go before a byte is read
 // (reachablePeer in server/pairing.ts).
+// Nagle is already off on every connection this server accepts (Node's
+// noDelay default), so an event frame goes out as soon as it is written.
 server.on("connection", (socket) => {
-  if (BIND === "::" && !reachablePeer(socket.remoteAddress)) {
-    socket.destroy();
-    return;
-  }
-  socket.setNoDelay(true);
+  if (BIND === "::" && !reachablePeer(socket.remoteAddress)) socket.destroy();
 });
 /** Tells the local network which port this Bloks is on, while a phone may
  * reach it here, so a phone with a stale port finds it (server/announce.ts).

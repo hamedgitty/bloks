@@ -7,6 +7,11 @@
 // HTTP, with a forged Host, because that is where the guard lives.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { startHarness, type Harness } from "./helpers/server.ts";
 
@@ -232,7 +237,36 @@ test("without a name given, the computer goes by its host name, .local dropped",
   assert.doesNotMatch(plain, /\.local$/i);
 });
 
-test("a paired device on the network gets bounded transcripts and gzipped JSON", async (t) => {
+/** A request as it comes off the wire: headers as sent and the body's raw
+ * bytes, still gzipped if they were. `host` decides where it seems to come
+ * from: a phone names the computer, the app names loopback. */
+function raw(
+  h: Harness,
+  path: string,
+  { headers = {}, token, host, method = "GET", headOnly = false }: { headers?: Record<string, string>; token?: string; host?: string; method?: string; headOnly?: boolean } = {},
+): Promise<{ status: number; headers: IncomingHttpHeaders; bytes: Buffer }> {
+  const port = Number(new URL(h.url).port);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path, method, headers: { host: host ?? `192.168.1.20:${port}`, ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers } },
+      (res) => {
+        // an event stream never ends: its head is the answer
+        if (headOnly) {
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, bytes: Buffer.alloc(0) });
+          req.destroy();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, bytes: Buffer.concat(chunks) }));
+      },
+    );
+    req.on("error", (e) => (headOnly ? undefined : reject(e)));
+    req.end();
+  });
+}
+
+test("a paired device on the network gets bounded transcripts and gzipped JSON; this machine gets neither", async (t) => {
   const h = await startHarness();
   t.after(() => h.stop());
 
@@ -247,12 +281,117 @@ test("a paired device on the network gets bounded transcripts and gzipped JSON",
     });
   }
 
+  // the newest part, and how much more there is to page back through
   const remote = await h.fetchRemote("/api/bots", { token });
   assert.equal(remote.status, 200);
   const remoteBot = remote.body.bots.find((b: any) => b.id === bot.id);
   assert.ok(remoteBot.olderMessages > 0, "a paired device should receive a bounded transcript tail with olderMessages");
+  const earlier = await h.fetchRemote(`/api/bots/${bot.id}/messages?thread=${bot.threadId}&before=${remoteBot.messages[0].id}`, { token });
+  assert.equal(earlier.status, 200);
+  assert.ok(earlier.body.messages.length > 0, "the older messages are there to page back to");
+  // the app on this machine still has the whole conversation
+  const here = (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
+  assert.ok(!here.olderMessages);
+  assert.equal(here.messages.filter((m: any) => m.role === "user").length, 20);
 
-  const gzRes = await h.fetch("/api/bots", { headers: { "accept-encoding": "gzip" } });
-  assert.equal(gzRes.status, 200);
-  assert.equal(gzRes.headers.get("content-encoding"), "gzip");
+  // big enough to be squeezed off the event loop, and still whole
+  const big = await raw(h, "/api/bots", { token, headers: { "accept-encoding": "gzip, deflate, br" } });
+  assert.equal(big.status, 200);
+  assert.equal(big.headers["content-encoding"], "gzip");
+  assert.equal(big.headers.vary, "accept-encoding");
+  // its head went before the squeeze was done, so it has no length
+  assert.equal(big.headers["content-length"], undefined);
+  assert.ok(big.bytes.length < JSON.stringify(remote.body).length / 4);
+  const unpacked = JSON.parse(gunzipSync(big.bytes).toString("utf8"));
+  assert.equal(unpacked.bots.find((b: any) => b.id === bot.id).olderMessages, remoteBot.olderMessages);
+
+  // small enough to be squeezed in place
+  const list = await raw(h, "/api/bots?messages=1", { token, headers: { "accept-encoding": "gzip" } });
+  assert.equal(list.headers["content-encoding"], "gzip");
+  assert.equal(Number(list.headers["content-length"]), list.bytes.length);
+  assert.ok(Array.isArray(JSON.parse(gunzipSync(list.bytes).toString("utf8")).bots));
+
+  // a client that says no to gzip, or never asks, reads it as it is
+  for (const accept of ["gzip;q=0", "identity", ""]) {
+    const plain = await raw(h, "/api/bots?messages=1", { token, headers: accept ? { "accept-encoding": accept } : {} });
+    assert.equal(plain.headers["content-encoding"], undefined, `accept-encoding: ${accept}`);
+    assert.equal(plain.headers.vary, "accept-encoding");
+    assert.ok(Array.isArray(JSON.parse(plain.bytes.toString("utf8")).bots));
+  }
+
+  // nothing to gain on this machine: the app's own window gets it plain
+  const port = new URL(h.url).port;
+  const local = await raw(h, "/api/bots", { host: `127.0.0.1:${port}`, headers: { "accept-encoding": "gzip" } });
+  assert.equal(local.status, 200);
+  assert.equal(local.headers["content-encoding"], undefined);
+  assert.equal(JSON.parse(local.bytes.toString("utf8")).bots.length, remote.body.bots.length);
+
+  // and the event stream is never gzipped, or each frame would wait
+  const events = await raw(h, "/api/events", { token, headOnly: true, headers: { "accept-encoding": "gzip", accept: "text/event-stream" } });
+  assert.equal(events.status, 200);
+  assert.match(String(events.headers["content-type"]), /text\/event-stream/);
+  assert.equal(events.headers["content-encoding"], undefined);
+});
+
+test("the built interface goes gzipped to a paired device, images as they are", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bloks-static-"));
+  mkdirSync(join(dir, "assets"));
+  const script = `console.log(${JSON.stringify("x".repeat(200_000))});\n`;
+  writeFileSync(join(dir, "index.html"), `<!doctype html><title>Bloks</title>${"<!-- page -->".repeat(200)}`);
+  writeFileSync(join(dir, "assets", "app.js"), script);
+  writeFileSync(join(dir, "assets", "icon.png"), Buffer.alloc(4096, 7));
+  const h = await startHarness({ BLOKS_STATIC_DIR: dir });
+  t.after(async () => {
+    await h.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const token = (await pairADevice(h)).body.token as string;
+  const gzip = { "accept-encoding": "gzip" };
+
+  const first = await raw(h, "/assets/app.js", { token, headers: gzip });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers["content-type"], "text/javascript");
+  assert.equal(first.headers["content-encoding"], "gzip");
+  assert.equal(first.headers.vary, "accept-encoding");
+  assert.ok(first.headers["content-security-policy"], "the page's own headers still go with it");
+  assert.equal(gunzipSync(first.bytes).toString("utf8"), script);
+  // squeezed once: the next answer is the same bytes, whole, with a length
+  const again = await raw(h, "/assets/app.js", { token, headers: gzip });
+  assert.equal(Number(again.headers["content-length"]), again.bytes.length);
+  assert.equal(gunzipSync(again.bytes).toString("utf8"), script);
+  // and a new build of the file is read again, not the old squeeze
+  const rebuilt = `console.log("rebuilt ${"y".repeat(5_000)}");\n`;
+  writeFileSync(join(dir, "assets", "app.js"), rebuilt);
+  const fresh = await raw(h, "/assets/app.js", { token, headers: gzip });
+  assert.equal(gunzipSync(fresh.bytes).toString("utf8"), rebuilt);
+
+  const image = await raw(h, "/assets/icon.png", { token, headers: gzip });
+  assert.equal(image.headers["content-encoding"], undefined);
+  assert.equal(image.bytes.length, 4096);
+
+  // any other page of the app is the index, gzipped the same way
+  const page = await raw(h, "/some/page", { token, headers: gzip });
+  assert.equal(page.headers["content-type"], "text/html");
+  assert.match(gunzipSync(page.bytes).toString("utf8"), /<title>Bloks<\/title>/);
+
+  // the app on this machine reads its files as they are
+  const port = new URL(h.url).port;
+  const local = await raw(h, "/assets/app.js", { host: `127.0.0.1:${port}`, headers: gzip });
+  assert.equal(local.headers["content-encoding"], undefined);
+  assert.equal(local.bytes.toString("utf8"), rebuilt);
+});
+
+test("gzip is taken only where Accept-Encoding gives it a weight", async () => {
+  const { acceptsGzip } = await import("../server/compress.ts");
+  assert.equal(acceptsGzip("gzip, deflate, br"), true);
+  assert.equal(acceptsGzip("br;q=1.0, gzip;q=0.8, *;q=0.1"), true);
+  assert.equal(acceptsGzip("GZIP"), true);
+  assert.equal(acceptsGzip("gzip;q=0"), false);
+  assert.equal(acceptsGzip("gzip;q=0.000, *"), false);
+  assert.equal(acceptsGzip("identity"), false);
+  assert.equal(acceptsGzip("*"), true);
+  assert.equal(acceptsGzip("*;q=0"), false);
+  assert.equal(acceptsGzip("x-gzipped"), false);
+  assert.equal(acceptsGzip(""), false);
+  assert.equal(acceptsGzip(undefined), false);
 });

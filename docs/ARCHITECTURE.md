@@ -502,10 +502,22 @@ newest part: `GET /api/bots`, `GET /api/bloks` and a lane switch each fit
 in about 700 KB of messages, shared evenly so one long conversation cannot
 starve the rest, and each transcript says how many `olderMessages` stayed
 behind. `GET /api/bots/:id/messages?thread=&before=` and
-`GET /api/bloks/:id/messages?before=` page back through them. Requests from
-this machine or the same network are not cut. An answer that would still be
-too big is replaced with a short 413, so the phone hears why instead of
-waiting out the relay's timeout.
+`GET /api/bloks/:id/messages?before=` page back through them. A paired
+device on the network (a phone, the desktop app paired by address or on
+the LAN, a browser at the web door) is cut the same way: its path may be a
+Tailscale relay or a weak cellular link, where an agent list in full waited
+so long the phone gave up (GitHub 473). Requests from this machine are not
+cut. An answer that would still be too big is replaced with a short 413,
+so the phone hears why instead of waiting out the relay's timeout.
+
+Off this machine, JSON and the built interface's text, scripts, styles
+and SVG go gzipped to a client whose `Accept-Encoding` takes it, from
+1 KB up, with `Vary: Accept-Encoding` either way (`server/compress.ts`).
+An answer over 64 KB is squeezed on libuv's thread pool, so a 700 KB agent
+list never holds up other requests, and each version of a built file is
+squeezed once. Event streams are never compressed, and nothing on this
+machine is: the app's window and Bloks Cloud's replay of a phone's request
+read it on loopback.
 
 A file is often more than one answer carries: about a megabyte when it
 does not compress. A device that says it takes parts (`parts: true` on a
@@ -590,7 +602,7 @@ Both list routes accept `?messages=N` to keep only the newest N messages
 of each conversation, including zero for names and rosters alone. The CLI
 and MCP room discovery use zero; their history reads use the separate room
 messages route. Missing or invalid counts keep the full local transcript,
-so app hydration still has its history. Through Cloud, `olderMessages`
+so app hydration still has its history. For a paired device, `olderMessages`
 counts everything omitted, including when the requested tail is zero.
 
 The desktop also windows the rendered rows. `useHistoryPaging` reveals the

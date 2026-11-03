@@ -106,6 +106,15 @@ export function isLocalRequest(req: IncomingMessage): boolean {
   }
 }
 
+/** Whether a client on this machine asked this server directly: the app's
+ * own window, a CLI, Bloks Cloud's replay of a phone's request. Not an
+ * authority check (isLocalRequest is that), only where the bytes of the
+ * answer go: nowhere a slow link could make them wait. */
+export function fromThisMachine(req: IncomingMessage): boolean {
+  const host = req.headers.host;
+  return isLoopbackPeer(req) && !forwarded(req) && Boolean(host) && LOOPBACK_HOSTS.has(hostnameOf(host!));
+}
+
 /** The headers proxies add to say a request came from somewhere else:
  * the standard one, the de facto ones, and Cloudflare's and Tailscale's
  * own, for a proxy set up to send only those. */
