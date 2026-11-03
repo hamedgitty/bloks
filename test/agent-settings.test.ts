@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { startHarness } from "./helpers/server.ts";
 import { teamPlan } from "./helpers/team-plan.ts";
 import { JoinClient } from "../server/join-client.ts";
+import { ownScreenWorks } from "../server/hosted.ts";
 
 const waitFor = async <T,>(check: () => T | undefined, ms = 15_000): Promise<T> => {
   const until = Date.now() + ms;
@@ -155,7 +156,10 @@ process.stdin.on("data", function take(chunk) {
     assert.equal((await settingsOf(sam, helper.id, { approvals: "edits" })).status, 200);
     assert.equal((await settingsOf(sam, helper.id, { computer: "off" })).status, 200);
     // never widened again by the maker, with why, and nothing of the change written
-    for (const [field, value] of [["approvals", "auto"], ["approvals", "full"], ["computer", "local"], ["computer", "sandbox"], ["computer", "cloud"]] as const) {
+    // this computer is a choice only where its screen works (a Mac); elsewhere
+    // it is refused as no choice at all, before anyone's rights come into it
+    const widened = [["approvals", "auto"], ["approvals", "full"], ...(ownScreenWorks() ? [["computer", "local"]] : []), ["computer", "sandbox"], ["computer", "cloud"]] as const;
+    for (const [field, value] of widened) {
       const refused = await settingsOf(sam, helper.id, { name: "Half done", [field]: value });
       assert.equal(refused.status, 403, `${field} ${value}`);
       assert.equal(refused.body.code, "held");

@@ -281,6 +281,22 @@ test("a paired device on the network gets bounded transcripts and gzipped JSON; 
     });
   }
 
+  // every answer in before anything is counted, or a late one moves the
+  // count between two looks at the same conversation
+  // (idle, and the same for two looks running, since a queue goes turn by turn)
+  const settled = async () => {
+    const b = (await h.json("/api/bots")).bots.find((b: any) => b.id === bot.id);
+    return b.busy ? null : `${b.messages.length}:${b.messages.at(-1)?.id}`;
+  };
+  const deadline = Date.now() + 60_000;
+  for (let last = await settled(); ; ) {
+    assert.ok(Date.now() < deadline, "the agent never finished answering");
+    await new Promise((r) => setTimeout(r, 300));
+    const now = await settled();
+    if (now && now === last) break;
+    last = now;
+  }
+
   // the newest part, and how much more there is to page back through
   const remote = await h.fetchRemote("/api/bots", { token });
   assert.equal(remote.status, 200);
