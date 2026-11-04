@@ -35,6 +35,9 @@
     "src/App.tsx": [
       "pnpm dev:server"
     ],
+    "src/components/AutomationsPanel.tsx": [
+      "whsec_…"
+    ],
     "src/components/CatalogPage.tsx": [
       "https://github.com/…/SKILL.md",
       "https://…/index.json"

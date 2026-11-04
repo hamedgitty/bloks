@@ -754,6 +754,37 @@ handled as a stranger's words (`server/app-watch.ts`):
   Composio, to make and remove triggers and to authorise the realtime
   channel events arrive on; it never reaches a turn.
 
+## Webhooks
+
+A webhook's URL carries a long random token, and by default that token
+is the whole credential: whoever has the URL can start a turn. Its event
+reaches the agent as data from an outside system, never as instructions
+(`server/webhooks.ts`).
+
+- **A signing secret, when the sender has one.** A webhook can require a
+  Standard Webhooks signature (Svix, Clerk, Resend, Composio and others
+  sign this way). Every request must then carry `webhook-id`,
+  `webhook-timestamp` and `webhook-signature` (or the `svix-` names), an
+  HMAC-SHA256 of the id, the timestamp and the body exactly as it
+  arrived, checked in constant time before the body is parsed. A
+  timestamp more than five minutes off is refused, and so is a
+  `webhook-id` the webhook accepted in the last ten minutes. A refused
+  request gets a 401 with a short reason, reaches no agent, and leaves
+  only a line in the webhook's recent deliveries, nothing of its body.
+- **The secret is a saved key.** It is kept in `config.json` with the
+  other keys, readable only by your account, because the check needs it
+  whole. It is shown once, when Bloks generates it; a pasted one is
+  never shown back, and no route returns either afterwards. It is left
+  out of an unsealed backup and named in a move, and a signed webhook
+  that arrives somewhere without its secret refuses every request until
+  one is set again, rather than taking the URL alone.
+- **Only you set it.** The webhook routes are the owner's. Members,
+  admins and agents' credentials are refused, so no agent can set,
+  remove or read a secret.
+- **What it does not cover.** Seen ids are held in memory, so a restart
+  forgets them; a captured request's timestamp keeps that to five
+  minutes. A webhook without a secret is exactly as before.
+
 ## Your runs, exported for training
 
 Export for training (Settings, Data, and `bloks-server export-runs`)

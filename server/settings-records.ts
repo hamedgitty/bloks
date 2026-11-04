@@ -125,8 +125,8 @@ export function inspectAutomationSettings(kind:AutomationKind,root:unknown,ctx:I
     f.scalar('mode','act');f.scalar('every',30);f.opaque('thread');f.scalar('approvedBy',null);
     f.add('check.policy',policy('check commands require their existing approval; inspection never looks or runs a check'),{status:'absent'});
   }else if(kind==='webhook'){
-    target('botId','agent');target('blokId','room');target('workflowId','automations');f.opaque('thread');f.opaque('token');
-    f.add('ingress.policy',policy('secret ingress URLs and delivery payloads are excluded; inspection does not invoke the hook'),{status:'absent'});
+    target('botId','agent');target('blokId','room');target('workflowId','automations');f.opaque('thread');f.opaque('token');f.bool('signed');
+    f.add('ingress.policy',policy('secret ingress URLs, signing secrets and delivery payloads are excluded; inspection does not invoke the hook'),{status:'absent'});
   }else if(kind==='goal'){
     f.opaque('text');f.opaque('check');f.add('budget',scalar(get(root,'budget'),ctx.redact));f.scalar('status',null);
     f.add('creation.policy',policy('new goals default to twenty turns; a malformed existing budget is not replaced by that default'),{status:'absent'});

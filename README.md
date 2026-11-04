@@ -437,6 +437,11 @@ over.
   on disk so quitting the app never loses a run. **Webhooks** turn any
   outside event into a task, and a scheduler on your own computer can
   wake one exact conversation, labelled as a local service, not as you.
+  Give a webhook a signing secret, generated or the sender's own, and
+  only requests signed the Standard Webhooks way (Svix, Clerk, Resend,
+  Composio and others) get in: fresh, once each, the URL alone no longer
+  enough. A refused one never reaches the agent, and the webhook's
+  recent deliveries say why.
 - **Goals.** Type `/goal`, say what done looks like, and an agent keeps
   going until it is done, stuck or out of turns.
 - **A morning brief** on Overview: what every agent did, what waits on

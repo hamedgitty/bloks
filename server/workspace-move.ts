@@ -73,6 +73,7 @@ export function secretLabel(path: string, config: Record<string, unknown>): stri
   }
   const telegramBot = /^telegram\.bots\.([\w-]+)\.token$/.exec(path);
   if (telegramBot) return "A Telegram bot token";
+  if (/^webhookSecrets\./.test(path)) return "A webhook's signing secret";
   const known: Record<string, string> = {
     "xai.key": "Grok key",
     "composio.key": "Composio key",
@@ -131,6 +132,8 @@ export function keyPage(path: string): string {
   if (/^mcpServers\[/.test(path)) return "plugins";
   if (/^box\./.test(path)) return "computers";
   if (/^credits\./.test(path)) return "plan";
+  // not a Settings page: a webhook's own page, under Automations
+  if (/^webhookSecrets\./.test(path)) return "automations:webhooks";
   return "engines";
 }
 

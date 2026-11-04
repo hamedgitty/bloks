@@ -460,7 +460,18 @@ import {
   clampRows,
   type TerminalSession,
 } from "./terminal.ts";
-import { WebhookStore, cleanThread, webhookMessage } from "./webhooks.ts";
+import {
+  REFUSAL_WORDS,
+  SeenDeliveries,
+  WebhookStore,
+  checkSignature,
+  cleanSigningSecret,
+  cleanThread,
+  generateSigningSecret,
+  publicHook,
+  webhookMessage,
+  type WebhookRefusal,
+} from "./webhooks.ts";
 import {
   WorkflowStore,
   clean as cleanWorkflow,
@@ -1016,7 +1027,14 @@ if (migratedTelegram !== cfg.telegram) {
 const bloks = new BlokStore();
 // the order of the sidebar's headings; pins and activity live on the rows
 const sidebar = new SidebarStore();
-const webhooks = new WebhookStore();
+// Signing secrets sit in config.json with the other saved keys, replaced
+// whole so a removed one leaves the file (server/webhooks.ts).
+const webhooks = new WebhookStore({
+  read: () => cfg.webhookSecrets ?? {},
+  write: (next) => void Object.assign(cfg, saveConfig({ webhookSecrets: next })),
+});
+// The webhook-ids each signed hook has accepted lately, against replays.
+const webhookSeen = new SeenDeliveries();
 const artifactComments = new ArtifactCommentStore();
 // Consequential actions, hash-chained. Nothing waits on it and nothing
 // fails because of it: a record is worth having and never worth losing
@@ -24761,7 +24779,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   if (HOSTED && method === "GET" && path === "/api/health" && isLoopbackPeer(req)) return json(res, 200, healthBody());
 
   // Webhook ingress stands apart from every other boundary: the token in
-  // the URL is the whole credential, exactly as webhook senders expect.
+  // the URL is the whole credential, exactly as webhook senders expect,
+  // unless the hook is signed, and then every request proves it with a
+  // Standard Webhooks signature as well (server/webhooks.ts).
   // Reachable from the network only when pairing is on, like the rest of
   // the server. GETs answer 405 so a pasted URL in a browser produces a
   // diagnosable answer instead of the SPA.
@@ -24786,15 +24806,39 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // the payload is whatever arrived: JSON gets compacted, anything
     // else (form posts, plain text) is passed through as text
     let raw = "";
+    // A signed hook checks the bytes exactly as they came, before anything
+    // reads them as text or JSON: a reformatted body is a different body.
+    // A refusal is said to the sender and kept as a row in the hook's
+    // activity, and nothing of it goes further.
+    let signedId: string | undefined;
+    const signing = hook.signed ? webhooks.secretOf(hook.id) : null;
+    const refuse = (refused: WebhookRefusal) => {
+      webhooks.noteRefused(hook.id, refused);
+      return json(res, refused === "size" ? 413 : 401, { error: REFUSAL_WORDS[refused] });
+    };
     try {
       const chunks: Buffer[] = [];
       let size = 0;
+      let cut = false;
       for await (const chunk of req) {
         size += (chunk as Buffer).length;
-        if (size > 2_000_000) break;
+        if (size > 2_000_000) {
+          cut = true;
+          break;
+        }
         chunks.push(chunk as Buffer);
       }
-      raw = Buffer.concat(chunks).toString("utf8").trim();
+      const bytes = Buffer.concat(chunks);
+      if (hook.signed) {
+        // signed, with no secret here: refuse, never fall back to the URL
+        if (!signing) return refuse("lost");
+        if (cut) return refuse("size");
+        const verdict = checkSignature(signing, req.headers, bytes);
+        if (!verdict.ok) return refuse(verdict.refused);
+        if (webhookSeen.has(hook.id, verdict.id)) return refuse("replay");
+        signedId = verdict.id;
+      }
+      raw = bytes.toString("utf8").trim();
       try {
         const parsed = JSON.parse(raw);
         raw = JSON.stringify(parsed);
@@ -24803,6 +24847,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         /* not JSON; the text itself is the payload */
       }
     } catch {
+      // A body that could not be read was never checked, so a signed hook
+      // takes nothing from it.
+      if (hook.signed) {
+        if (!res.headersSent) json(res, 400, { error: "the body could not be read" });
+        return;
+      }
       raw = "";
     }
     // An agent that cannot take the event is refused before it is
@@ -24848,6 +24898,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // the lane would refuse every later event until the process restarts.
     let text: string;
     try {
+      // accepted from here: the same webhook-id again is a replay
+      if (signedId) webhookSeen.note(hook.id, signedId);
       webhooks.noteFired(hook.id, raw);
       text = webhookMessage(hook.name, raw);
 
@@ -31851,7 +31903,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const workflowId = url.searchParams.get("workflowId") ?? undefined;
       const list =
         botId || blokId || workflowId ? webhooks.for({ botId, blokId, workflowId }) : webhooks.hooks;
-      return json(res, 200, { webhooks: list });
+      return json(res, 200, { webhooks: list.map((hook) => publicHook(hook, webhooks)) });
     }
     if (method === "POST" && path === "/api/webhooks") {
       const body = await readBody(req);
@@ -31867,7 +31919,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (unnamed) return json(res, 400, { error: unnamed });
       const hook = webhooks.create(String(body.name ?? ""), { botId, blokId, workflowId }, thread);
       if (!hook) return json(res, 409, { error: "webhook limit reached" });
-      return json(res, 201, { webhook: hook });
+      return json(res, 201, { webhook: publicHook(hook, webhooks) });
     }
     m = path.match(/^\/api\/webhooks\/([\w-]+)$/);
     if (m && method === "PATCH") {
@@ -31882,7 +31934,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       if (typeof body.enabled === "boolean") hook = webhooks.setEnabled(m[1], body.enabled);
       if (typeof body.name === "string") hook = webhooks.rename(m[1], body.name);
-      return json(res, hook ? 200 : 404, hook ? { webhook: hook } : { error: "no such webhook" });
+      return json(res, hook ? 200 : 404, hook ? { webhook: publicHook(hook, webhooks) } : { error: "no such webhook" });
     }
     if (m && method === "DELETE") {
       const ok = webhooks.remove(m[1]);
@@ -31891,7 +31943,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     m = path.match(/^\/api\/webhooks\/([\w-]+)\/rotate$/);
     if (m && method === "POST") {
       const hook = webhooks.rotate(m[1]);
-      return json(res, hook ? 200 : 404, hook ? { webhook: hook } : { error: "no such webhook" });
+      return json(res, hook ? 200 : 404, hook ? { webhook: publicHook(hook, webhooks) } : { error: "no such webhook" });
+    }
+    // A hook's signing secret: generated here and shown this once, or the
+    // sender's own pasted in, which is never shown back. The owner's, like
+    // every webhook route: no member reaches these (server/member-access.ts)
+    // and no agent (server/agent-cli.ts).
+    m = path.match(/^\/api\/webhooks\/([\w-]+)\/signing$/);
+    if (m && (method === "POST" || method === "DELETE")) {
+      if (asAgent) return json(res, 403, { error: "that is the person's" });
+      if (!webhooks.hooks.some((h) => h.id === m![1])) return json(res, 404, { error: "no such webhook" });
+      res.setHeader("cache-control", "no-store");
+      if (method === "DELETE") {
+        const hook = webhooks.setSecret(m[1], null)!;
+        return json(res, 200, { webhook: publicHook(hook, webhooks) });
+      }
+      const body = await readBody(req);
+      let secret: string;
+      if (body.generate === true) secret = generateSigningSecret();
+      else {
+        const given = cleanSigningSecret(body.secret);
+        if (!given.ok) return json(res, 400, { error: given.error });
+        secret = given.secret;
+      }
+      const hook = webhooks.setSecret(m[1], secret)!;
+      return json(res, 200, { webhook: publicHook(hook, webhooks), ...(body.generate === true ? { secret } : {}) });
     }
 
     // ── skills (markdown instruction sets, shared across agents) ──
@@ -35203,6 +35279,8 @@ function storedSecrets(): Array<string | undefined | null> {
     // a model server's key given where Bloks runs (server/self-host.ts)
     process.env.BLOKS_MODEL_KEY?.trim(),
     ...Object.values(cfg.secrets ?? {}),
+    // webhook signing secrets, the senders' keys as much as ours
+    ...Object.values(cfg.webhookSecrets ?? {}),
     ...connectionRecords().map((record) => record.token),
     // and every member's own apps key and keys
     ...personal.values(people.workspaceMembers().map((p) => p.id)),

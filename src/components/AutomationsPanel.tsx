@@ -74,8 +74,25 @@ interface WebhookRow {
   thread?: string;
   lastFiredAt?: number;
   firedCount?: number;
-  deliveries?: Array<{ at: number; excerpt: string }>;
+  deliveries?: Array<{ at: number; excerpt: string; refused?: WebhookRefusal; times?: number }>;
+  /** Requests need a Standard Webhooks signature. The secret itself never
+   * comes back; only the request that makes one shows it, once. */
+  signed?: boolean;
+  /** Signed, but this computer holds no secret for it: every request is
+   * refused until one is set again. */
+  secretLost?: boolean;
 }
+
+type WebhookRefusal = "headers" | "timestamp" | "replay" | "signature" | "size" | "lost";
+
+const REFUSED_WORDS: Record<WebhookRefusal, MessageKey> = {
+  headers: "automationsPanel.refused.headers",
+  timestamp: "automationsPanel.refused.timestamp",
+  replay: "automationsPanel.refused.replay",
+  signature: "automationsPanel.refused.signature",
+  size: "automationsPanel.refused.size",
+  lost: "automationsPanel.refused.lost",
+};
 
 const HOUR_PX = 52;
 
@@ -1261,6 +1278,199 @@ function RoutineDetails({
   );
 }
 
+/**
+ * A hook's signing secret: off, generated here and shown this once, or the
+ * sender's own pasted in. The server never hands a secret back after that,
+ * so a generated one lives only in this card until the hook changes.
+ */
+function SigningCard({
+  hook,
+  onChanged,
+  onError,
+}: {
+  hook: WebhookRow;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const signed = Boolean(hook.signed);
+
+  // a sender already set up with the old secret stops being let in
+  const replacing = async () =>
+    !signed ||
+    confirm({
+      title: t("automationsPanel.signing.replace.title"),
+      body: t("automationsPanel.signing.replace.body"),
+      confirmLabel: t("automationsPanel.signing.replace.confirm"),
+      destructive: true,
+    });
+
+  const generate = async () => {
+    if (!(await replacing())) return;
+    setBusy(true);
+    api(`/api/webhooks/${hook.id}/signing`, { method: "POST", body: JSON.stringify({ generate: true }) })
+      .then(({ secret }) => {
+        setRevealed(typeof secret === "string" ? secret : null);
+        setPasting(false);
+        onChanged();
+      })
+      .catch((e) => onError(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  const savePasted = async () => {
+    const given = pasted.trim();
+    if (!given) return;
+    // the shape the server takes (server/webhooks.ts cleanSigningSecret),
+    // said before asking to replace anything; the server still decides
+    if (!/^whsec_[A-Za-z0-9+/_=-]+$/.test(given) && !/^[\x21-\x7e]{16,512}$/.test(given)) {
+      setProblem(t("automationsPanel.signing.badSecret"));
+      return;
+    }
+    if (!(await replacing())) return;
+    setBusy(true);
+    setProblem(null);
+    api(`/api/webhooks/${hook.id}/signing`, { method: "POST", body: JSON.stringify({ secret: given }) })
+      .then(() => {
+        setPasted("");
+        setPasting(false);
+        setRevealed(null);
+        toast.success(t("automationsPanel.signing.saved"));
+        onChanged();
+      })
+      // the server's reason is about the shape it wanted, which this says
+      .catch(() => setProblem(t("automationsPanel.signing.badSecret")))
+      .finally(() => setBusy(false));
+  };
+
+  const remove = async () => {
+    const yes = await confirm({
+      title: t("automationsPanel.signing.remove.title"),
+      body: t("automationsPanel.signing.remove.body"),
+      confirmLabel: t("automationsPanel.signing.remove.confirm"),
+      destructive: true,
+    });
+    if (!yes) return;
+    setBusy(true);
+    api(`/api/webhooks/${hook.id}/signing`, { method: "DELETE" })
+      .then(() => {
+        setRevealed(null);
+        onChanged();
+      })
+      .catch((e) => onError(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="mt-4 rounded-2xl border bg-card p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-body font-semibold text-foreground">{t("automationsPanel.signing.title")}</div>
+        <span className={cn("flex items-center gap-1 text-caption", signed ? "text-success" : "text-muted-foreground")}>
+          <span className={cn("size-1.5 rounded-full", signed ? "bg-success" : "bg-muted-foreground/40")} />
+          {signed ? t("automationsPanel.signing.on") : t("automationsPanel.signing.off")}
+        </span>
+      </div>
+      <p className="mt-1 text-pretty text-small text-muted-foreground">
+        {signed ? t("automationsPanel.signing.onHint") : t("automationsPanel.signing.offHint")}
+      </p>
+      {hook.secretLost && (
+        <p className="mt-2 text-pretty text-small text-destructive">{t("automationsPanel.signing.lost")}</p>
+      )}
+
+      {revealed && (
+        <div className="mt-3">
+          <div className="relative rounded-xl bg-foreground/[0.04] p-3 pr-11">
+            <code className="block break-all font-mono text-small leading-relaxed text-foreground">{revealed}</code>
+            <button
+              onClick={() => {
+                void navigator.clipboard.writeText(revealed);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+              className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title={t("automationsPanel.signing.copy")}
+              aria-label={t("automationsPanel.signing.copy")}
+            >
+              {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+            </button>
+          </div>
+          <p className="mt-1.5 text-small text-muted-foreground">{t("automationsPanel.signing.copyNow")}</p>
+        </div>
+      )}
+
+      {pasting ? (
+        <form
+          className="mt-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void savePasted();
+          }}
+        >
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            autoFocus
+            value={pasted}
+            onChange={(e) => {
+              setPasted(e.target.value);
+              setProblem(null);
+            }}
+            aria-label={t("automationsPanel.signing.pasteLabel")}
+            placeholder="whsec_…"
+            className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-body text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring/60"
+          />
+          {problem && <p className="mt-1.5 text-small text-destructive">{problem}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setPasting(false);
+                setPasted("");
+                setProblem(null);
+              }}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" size="sm" disabled={busy || !pasted.trim()}>
+              {t("common.save")}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>
+            {signed ? t("automationsPanel.signing.generateNew") : t("automationsPanel.signing.generate")}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              setPasting(true);
+              setRevealed(null);
+            }}
+          >
+            {t("automationsPanel.signing.useSenders")}
+          </Button>
+          {signed && (
+            <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={() => void remove()}>
+              {t("common.remove")}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Webhooks: list on the left, one hook's whole story on the right. */
 function WebhooksTab({
   targetOf,
@@ -1496,15 +1706,24 @@ function WebhooksTab({
                   {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
                 </button>
               </div>
-              <p className="mt-2 text-small text-muted-foreground">
-                {t("automationsPanel.postAnythingToItOr")}
-              </p>
-              <div className="relative mt-1.5 rounded-xl bg-foreground/[0.04] p-3">
-                <code className="block whitespace-pre-wrap break-all font-mono text-small leading-relaxed text-foreground">
-                  {curl}
-                </code>
-              </div>
+              {selected.signed ? (
+                // a plain curl would only be refused now
+                <p className="mt-2 text-small text-muted-foreground">{t("automationsPanel.signing.onlySigned")}</p>
+              ) : (
+                <>
+                  <p className="mt-2 text-small text-muted-foreground">
+                    {t("automationsPanel.postAnythingToItOr")}
+                  </p>
+                  <div className="relative mt-1.5 rounded-xl bg-foreground/[0.04] p-3">
+                    <code className="block whitespace-pre-wrap break-all font-mono text-small leading-relaxed text-foreground">
+                      {curl}
+                    </code>
+                  </div>
+                </>
+              )}
             </div>
+
+            <SigningCard key={selected.id} hook={selected} onChanged={load} onError={setError} />
 
             {selected.botId && (
               <label className="mt-4 block rounded-2xl border bg-card p-4">
@@ -1544,9 +1763,19 @@ function WebhooksTab({
                       <span className="shrink-0 tabular-nums text-muted-foreground">
                         {formatDate(d.at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                       </span>
-                      <span className="min-w-0 truncate font-mono text-small text-foreground">
-                        {d.excerpt || t("automationsPanel.empty")}
-                      </span>
+                      {d.refused ? (
+                        // a short sentence, worth reading whole at any width
+                        <span className="min-w-0 text-pretty text-small text-destructive">
+                          {t(REFUSED_WORDS[d.refused] ?? "automationsPanel.refused.signature")}
+                          {(d.times ?? 1) > 1 && (
+                            <span className="text-muted-foreground"> {t("automationsPanel.refused.times", { count: d.times! })}</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="min-w-0 truncate font-mono text-small text-foreground">
+                          {d.excerpt || t("automationsPanel.empty")}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>

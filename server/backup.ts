@@ -298,6 +298,7 @@ export const SECRET_PATHS = [
   "home.token",
   "mcpServers[].headers",
   "secrets",
+  "webhookSecrets.*",
   "connections[].token",
   "relay.agentToken",
   "relay.clientToken",

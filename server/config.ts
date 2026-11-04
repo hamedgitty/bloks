@@ -165,6 +165,11 @@ export interface AppConfig {
   /** Values agents asked for via secret cards, injected into engine
    * environments under their env-var names. Never echoed to clients. */
   secrets?: Record<string, string>;
+  /** Webhook signing secrets, by hook id (server/webhooks.ts). Kept here
+   * rather than beside the hook because each is a key the sender holds
+   * too, and HMAC needs it whole. Never handed to a turn, never sent back
+   * out. Replaced whole, so a removed one is gone from the file. */
+  webhookSecrets?: Record<string, string>;
   /** Services agents reach through Bloks without holding the credential
    * (server/connections.ts). The token is a secret like the ones above,
    * kept here for the same reason, and unlike them it never enters a turn.
@@ -480,6 +485,9 @@ export function saveConfig(patch: Partial<AppConfig>, beforeWrite?: () => void):
   // Replaced whole rather than merged, so leaving a key out clears it.
   if (patch.agentDefaults && typeof patch.agentDefaults === "object") {
     disk.agentDefaults = patch.agentDefaults;
+  }
+  if (patch.webhookSecrets && typeof patch.webhookSecrets === "object") {
+    disk.webhookSecrets = patch.webhookSecrets;
   }
   if (Array.isArray((patch as Record<string, unknown>).custom)) {
     disk.custom = (patch as Record<string, unknown>).custom;

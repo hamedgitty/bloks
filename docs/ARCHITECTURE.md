@@ -2808,6 +2808,40 @@ week, as one chip a day in the month, and as a row in words in a
 Check-ins strip under the grid; its history folds a stretch of quiet
 runs into one row.
 
+## Webhooks
+
+`server/webhooks.ts` keeps each hook in `webhooks.json`: its target (an
+agent, a room or a workflow), the token in its URL, and its recent
+deliveries. `POST /hook/<token>` is the ingress, and by default the
+token is the whole credential.
+
+A hook can also be signed the Standard Webhooks way, which Svix, Clerk,
+Resend, Composio and others use. `POST /api/webhooks/:id/signing` with
+`{ generate: true }` makes a `whsec_` secret of 32 random bytes and
+answers with it that once; with `{ secret }` it takes the sender's own,
+`whsec_` and base64 or a raw string of at least 16 characters, and does
+not echo it. `DELETE` turns signing off. The secret is kept with the
+other saved keys in `config.json` (`webhookSecrets`, by hook id), so an
+unsealed backup leaves it out and a move names it to be entered again;
+the hook itself records only `signed: true`, and a signed hook with no
+secret on this computer refuses everything rather than taking the URL
+alone again (`secretLost` in the list). No route returns a secret after
+that first answer, and `storedSecrets` keeps it out of any message.
+
+A signed hook reads the body as bytes, within the same 2 MB limit, and
+checks it before it is parsed: `webhook-id`, `webhook-timestamp` and
+`webhook-signature` (or the same three `svix-` headers), an HMAC-SHA256
+over `${id}.${timestamp}.${body}`, base64, compared in constant time with
+every `v1,` entry. A timestamp more than five minutes off, or a
+`webhook-id` this hook accepted in the last ten minutes, is refused. An
+id is noted only once its event is accepted, so a sender told 503 can
+send it again; the ids are held in memory. A refusal is a 401 (413 for a
+body too large to check) with a short reason, reaches no agent, keeps
+nothing of the body, and is a row in the hook's recent deliveries
+("Refused: signature did not match"), the same refusal again counted on
+one row. Only the owner reaches these routes: members, admins and agents
+are refused (`server/member-access.ts`, `server/agent-cli.ts`).
+
 ## Watchers
 
 `server/watchers.ts` looks at a folder (a snapshot of names, sizes and

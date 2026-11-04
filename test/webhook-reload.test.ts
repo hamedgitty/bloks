@@ -135,13 +135,15 @@ test("reload keeps the existing row checks while accepting each supported target
     { ...row, id: "short-token", token: "short", workflowId: "flow" },
     { ...row, id: "wrong-token", token: 7, workflowId: "flow" },
     { ...row, id: "wrong-name", name: 7, workflowId: "flow" },
+    // anything but true would read as unsigned, so the row is not taken
+    { ...row, id: "odd-signed", signed: "yes", workflowId: "flow" },
     null,
   ];
   const f = await fixture(t, [...valid, ...invalid]);
   // a store from before one conversation per agent: the agent's hook keeps
-  // the lane it used, as the upgrade gives it (GitHub 237)
+  // the lane it used, as the upgrade gives it (GitHub 237); none is signed
   assert.deepEqual(
     (await f.h.json("/api/webhooks")).webhooks,
-    valid.map((hook) => ("botId" in hook ? { ...hook, thread: "Webhooks" } : hook)),
+    valid.map((hook) => ({ ...hook, ...("botId" in hook ? { thread: "Webhooks" } : {}), signed: false })),
   );
 });
