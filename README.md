@@ -465,7 +465,10 @@ over.
   can call it, or call a room. Voices come from ElevenLabs, OpenAI, Fish
   Audio or xAI with a key of yours (xAI's uses your Grok key if you have
   one), from a Chatterbox server you run on your own machine or network,
-  or from the Mac's own voices with no key at all. What you say on a call
+  or from the Mac's own voices with no key at all. Play them at 0.75x to
+  2x, at their natural pitch: Speed in the agent's Voice settings, or the
+  chip on a call, which changes the reply playing now. The speed is kept
+  on each device, for every agent. What you say on a call
   or in meeting notes is written down by a Whisper server of your own,
   ElevenLabs or OpenAI, or the Mac's own recognizer in the Mac app:
   Settings, Voices, Hearing says which, and calls and meeting notes then

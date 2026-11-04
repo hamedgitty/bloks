@@ -2,7 +2,7 @@
 //
 // VoiceCard is the picker in agent settings: every voice the configured
 // vendors offer, one vendor at a time, with a one-tap preview in the
-// agent's own voice.
+// agent's own voice, and how fast voices play here (src/lib/speechSpeed.ts).
 //
 // CallOverlay is the call itself: a loop of listen → think → speak.
 // Your words are recorded in the page and written down by whoever hears
@@ -27,6 +27,8 @@ import { thisComputer } from "@/lib/thisComputer";
 import { t } from "@/lib/i18n";
 import { callEars, type CallEars } from "@/lib/listen";
 import { heardBy, troubleText, useEars } from "@/lib/hearingWords";
+import { nextSpeechSpeed, SPEECH_SPEEDS, speechSpeed, type SpeechSpeed } from "@/lib/speechSpeed";
+import { atSpeechSpeed, useSpeechSpeed } from "@/lib/useSpeechSpeed";
 
 interface VoiceOption {
   provider: VoiceProvider;
@@ -59,9 +61,33 @@ async function fetchSpeech(botId: string, text?: string): Promise<HTMLAudioEleme
   // player as "no supported source", which names nothing to fix
   if (!clip.size || !/^audio\//.test(clip.type)) throw new Error(t("voice.noSoundCameBack"));
   const url = URL.createObjectURL(clip);
-  const audio = new Audio(url);
+  // an agent's voice, so it plays at the listener's chosen speed
+  const audio = atSpeechSpeed(new Audio(url));
   audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
   return audio;
+}
+
+/** A speed as the reader writes numbers: 1.25x, 1,25x, 1.25倍. */
+function speedLabel(speed: SpeechSpeed): string {
+  return t("voice.speedValue", { speed });
+}
+
+/** The small chip on a call that steps through the speeds. It changes
+ * the same choice as the select in an agent's voice settings, and the
+ * reply playing now speeds up or slows down with it. */
+function SpeedChip() {
+  const [speed, setSpeed] = useSpeechSpeed();
+  return (
+    <button
+      type="button"
+      onClick={() => setSpeed(nextSpeechSpeed(speed))}
+      title={t("voice.changeSpeed")}
+      aria-label={t("voice.speedIs", { speed: speedLabel(speed) })}
+      className="h-7 min-w-11 rounded-full border bg-card px-2.5 text-small font-medium tabular-nums text-muted-foreground shadow-sm transition-colors duration-150 hover:text-foreground active:scale-95"
+    >
+      {speedLabel(speed)}
+    </button>
+  );
 }
 
 /** The call lease: one device on the line at a time, workspace-wide.
@@ -128,6 +154,7 @@ export function VoiceCard({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [shown, setShown] = useState<VoiceProvider | null>(null);
+  const [speed, setSpeed] = useSpeechSpeed();
   const speech = state.config?.speech;
   const configured =
     speech?.elevenlabs || speech?.openai || speech?.fish || speech?.xai || speech?.chatterbox || speech?.system;
@@ -189,7 +216,7 @@ export function VoiceCard({ bot }: { bot: Bot }) {
       {open && (
         <div className="mt-3">
           {bot.voice && (
-            <div className="mb-2 flex items-center gap-2">
+            <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <Button size="sm" variant="secondary" onClick={preview} disabled={previewing}>
                 <Volume2 size={13} />
                 {previewing ? t("voice.playing") : t("common.preview")}
@@ -197,7 +224,24 @@ export function VoiceCard({ bot }: { bot: Bot }) {
               <Button size="sm" variant="ghost" onClick={() => choose(null)}>
                 {t("voice.removeVoice")}
               </Button>
-              <label className="ml-auto flex items-center gap-1.5 text-small text-muted-foreground">
+              {/* the listener's own, on this device and for every agent,
+                  which the hint says, since it sits in one agent's card */}
+              <label title={t("voice.speedHint")} className="ml-auto flex items-center gap-1.5 text-small text-muted-foreground">
+                {t("voice.speed")}
+                <select
+                  aria-label={t("voice.speed")}
+                  value={String(speed)}
+                  onChange={(e) => setSpeed(speechSpeed(e.target.value))}
+                  className="h-7 rounded-lg border bg-background px-1.5 text-small tabular-nums text-foreground"
+                >
+                  {SPEECH_SPEEDS.map((option) => (
+                    <option key={option} value={String(option)}>
+                      {speedLabel(option)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5 text-small text-muted-foreground">
                 <input
                   type="checkbox"
                   checked={bot.speakReplies ?? false}
@@ -442,6 +486,9 @@ export function CallOverlay({ bot, onClose }: { bot: Bot; onClose: () => void })
             {error ?? stateLabel}
           </div>
           <HeardBy text={heardBy(ears)} />
+          <div className="mt-3">
+            <SpeedChip />
+          </div>
         </div>
 
         <div className="mt-4 flex items-center gap-4">
@@ -709,6 +756,9 @@ export function GroupCallOverlay({
             {error ?? stateLabel}
           </div>
           <HeardBy text={heardBy(ears)} />
+          <div className="mt-3">
+            <SpeedChip />
+          </div>
         </div>
         <div className="flex items-center gap-4">
           {callState === "speaking" && <TalkButton onClick={interrupt} title={t("voice.interruptAndTalk")} />}
