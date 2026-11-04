@@ -14,7 +14,7 @@
 //
 // The xlsx parser is imported lazily: it is heavier than every other
 // viewer combined and most conversations never open a spreadsheet.
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Check } from "@/components/icons";
 import { X } from "@/components/icons";
 import { Download } from "@/components/icons";
@@ -33,6 +33,8 @@ import { modKey } from "@/lib/thisComputer";
 import { destination } from "@/lib/attachments";
 import { artifactHref, fileBase, fileTarget, openFailure, tooLargeHere, viewerFor, type Viewer } from "@/lib/sharedFile";
 import { formatNumber, t } from "@/lib/i18n";
+import { FOLLOW_MS, followAnswer, tagOfEtag, UNSEEN, type Seen, type VersionAnswer } from "@/lib/followFile";
+import { usePageVisible } from "@/lib/pageVisible";
 
 type ArtifactMeta = NonNullable<Message["artifact"]>;
 
@@ -69,20 +71,21 @@ function kindOf(artifact: ArtifactMeta): { label: string; icon: React.ReactNode;
 }
 
 /** The file's bytes as text, or a sentence saying why not: a missing file
- * answers JSON with a reason, which is not the file. */
-async function fetchText(href: string): Promise<string> {
-  const res = await fetch(href);
+ * answers JSON with a reason, which is not the file. With the version
+ * read, so the viewer knows which one it shows. */
+async function fetchText(href: string): Promise<{ text: string; tag: string | null }> {
+  const res = await fetch(href, { cache: "no-store" });
   if (!res.ok) {
     const said = await res.json().catch(() => ({}) as { error?: string });
     throw new Error(openFailure(res.status, said.error === "no such file" ? undefined : said.error));
   }
-  return res.text();
+  return { text: await res.text(), tag: tagOfEtag(res.headers.get("etag")) };
 }
 
-async function fetchBytes(href: string): Promise<ArrayBuffer> {
-  const res = await fetch(href);
+async function fetchBytes(href: string): Promise<{ bytes: ArrayBuffer; tag: string | null }> {
+  const res = await fetch(href, { cache: "no-store" });
   if (!res.ok) throw new Error(openFailure(res.status));
-  return res.arrayBuffer();
+  return { bytes: await res.arrayBuffer(), tag: tagOfEtag(res.headers.get("etag")) };
 }
 
 /** The most a shared file can be to open in this window, when it reaches
@@ -305,6 +308,23 @@ export function ArtifactViewer({
   const [unplayable, setUnplayable] = useState(false);
   // asking again for the file, never for the agent: nothing here starts a turn
   const [attempt, setAttempt] = useState(0);
+  // Following the file while it is open (src/lib/followFile.ts): what is
+  // known of it, the version on screen, each quiet read of a newer one,
+  // whether it is gone, and when it last changed, for the Updated mark.
+  const seen = useRef<Seen>(UNSEEN);
+  const [version, setVersion] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
+  const quietly = useRef(false);
+  const [removed, setRemoved] = useState(false);
+  const [updated, setUpdated] = useState(0);
+  const visible = usePageVisible();
+  const video = useRef<HTMLVideoElement>(null);
+  const resume = useRef<{ at: number; playing: boolean } | null>(null);
+  // a picture, a video or a PDF is asked for by URL, so a new version is a
+  // new URL, past whatever the browser kept of the old one
+  const src = version ? `${href}?v=${encodeURIComponent(version)}.${round}` : href;
+  // what the content area shows: nothing of a file that is gone
+  const viewer = removed ? null : kind.viewer;
 
   const loadNotes = useCallback(() => {
     void fetch(notesUrl)
@@ -316,49 +336,127 @@ export function ArtifactViewer({
 
   useEffect(() => {
     let alive = true;
-    const failed = (e: unknown) => alive && setError(e instanceof Error ? e.message : String(e));
-    setError(null);
+    // A newer version is read in place of the one on screen, which stays
+    // until it arrives: no loading line, the same elements, so the scroll
+    // stays where it was. One that cannot be read now is asked for again
+    // at the next look, rather than blanking what is there.
+    const refresh = quietly.current;
+    quietly.current = false;
+    const read = (tag: string | null) => {
+      if (!alive) return false;
+      if (tag) seen.current = { tag, removed: false };
+      if (refresh) {
+        setError(null);
+        setUpdated(Date.now());
+      }
+      return true;
+    };
+    const failed = (e: unknown) => {
+      if (!alive) return;
+      if (refresh) seen.current = { ...seen.current, tag: "" };
+      else setError(e instanceof Error ? e.message : String(e));
+    };
+    if (!refresh) setError(null);
     if (kind.viewer === "iframe") {
       // fetched and inlined rather than framed by URL: the sandboxed
       // srcdoc keeps a hostile page scriptless-by-origin, and it renders
       // in embedded webviews that refuse subframe navigations
       fetchText(href)
-        .then((t) => alive && setHtml(t))
+        .then((got) => read(got.tag) && setHtml(got.text))
         .catch(failed);
     } else if (kind.viewer === "table") {
       fetchText(href)
-        .then((t) => alive && setRows(parseCsv(t, artifact.name.endsWith(".tsv") ? "\t" : ",")))
+        .then((got) => read(got.tag) && setRows(parseCsv(got.text, artifact.name.endsWith(".tsv") ? "\t" : ",")))
         .catch(failed);
     } else if (kind.viewer === "sheet") {
       Promise.all([fetchBytes(href), import("xlsx")])
-        .then(([buffer, XLSX]) => {
+        .then(([got, XLSX]) => {
           if (!alive) return;
-          const book = XLSX.read(buffer, { type: "array" });
+          const book = XLSX.read(got.bytes, { type: "array" });
           const sheet = book.Sheets[book.SheetNames[0]];
           const grid: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
-          setRows(grid);
+          if (read(got.tag)) setRows(grid);
         })
         .catch(failed);
     } else if (kind.viewer === "text" || kind.viewer === "markdown") {
       fetchText(href)
-        .then((t) => alive && setText(t.slice(0, 200_000)))
+        .then((got) => read(got.tag) && setText(got.text.slice(0, 200_000)))
         .catch(failed);
+    } else if (refresh) {
+      // a picture, a video or a PDF reads itself from its new URL
+      setUpdated(Date.now());
     }
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [href, attempt]);
+  }, [href, attempt, round]);
+
+  // Asks which version the file is while the viewer is open and the
+  // window can be seen, at once when it is shown again, and reads it
+  // again when that moves. Never takes focus from where the person is.
+  useEffect(() => {
+    if (!visible || kind.viewer === "none") return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      let answer: VersionAnswer = { status: 0 };
+      try {
+        const res = await fetch(`${href}?version`, { cache: "no-store" });
+        answer = { status: res.status, tag: res.ok ? ((await res.json().catch(() => ({}))) as { tag?: unknown }).tag : undefined };
+      } catch {
+        // no answer is no news
+      }
+      if (!live) return;
+      const step = followAnswer(seen.current, answer);
+      seen.current = step.seen;
+      if (step.follow === "removed") {
+        video.current?.pause();
+        setRemoved(true);
+      } else if (step.follow === "reload") {
+        if (video.current) resume.current = { at: video.current.currentTime, playing: !video.current.paused };
+        quietly.current = true;
+        setRemoved(false);
+        setVersion(step.seen.tag);
+        setRound((n) => n + 1);
+      }
+      const every = (await destination()).throughCloud ? FOLLOW_MS.throughCloud : FOLLOW_MS.near;
+      if (live) timer = setTimeout(() => void ask(), every);
+    };
+    void ask();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [href, visible, kind.viewer]);
+
+  // the Updated mark is a moment, not a state
+  useEffect(() => {
+    if (!updated) return;
+    const timer = setTimeout(() => setUpdated(0), 2500);
+    return () => clearTimeout(timer);
+  }, [updated]);
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex h-[85vh] w-full max-w-[900px] flex-col gap-0 overflow-hidden p-0">
-        <div className="flex h-[52px] shrink-0 items-center gap-3 border-b px-5">
+        <div className="flex h-[52px] shrink-0 items-center gap-3 border-b pr-11 pl-5">
           <span className="text-brand-ink">{kind.icon}</span>
           <DialogTitle className="min-w-0 flex-1 truncate text-ui" title={artifact.name}>
             {fileBase(artifact.name)}
           </DialogTitle>
-          {kind.viewer === "markdown" && (
+          {/* said quietly when a newer version comes in, and to a screen
+              reader too, without taking focus from anything */}
+          <span
+            role="status"
+            className={cn(
+              "shrink-0 text-caption text-muted-foreground",
+              updated > 0 && "animate-fade-in rounded-full bg-muted px-2 py-0.5",
+            )}
+          >
+            {updated > 0 ? t("artifacts.updated") : ""}
+          </span>
+          {viewer === "markdown" && (
             <button
               onClick={() => setSource((s) => !s)}
               className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-body text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -366,18 +464,26 @@ export function ArtifactViewer({
               {source ? t("artifacts.showRendered") : t("artifacts.showSource")}
             </button>
           )}
-          <a
-            href={`${href}?download`}
-            download={fileBase(artifact.name)}
-            className="mr-6 flex items-center gap-1.5 rounded-lg px-2 py-1 text-body text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <Download size={14} />
-            {t("artifacts.download")}
-          </a>
+          {!removed && (
+            <a
+              href={`${href}?download`}
+              download={fileBase(artifact.name)}
+              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-body text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Download size={14} />
+              {t("artifacts.download")}
+            </a>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 bg-muted/30">
-          {error && (
+          {removed && (
+            <div role="status" className="flex size-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <span className="text-muted-foreground">{kind.icon}</span>
+              <div className="max-w-[420px] text-ui text-muted-foreground">{t("artifacts.fileRemoved")}</div>
+            </div>
+          )}
+          {error && !removed && (
             <div className="flex flex-col items-start gap-3 p-6">
               <div className="text-body text-destructive">{error}</div>
               <Button size="sm" variant="secondary" onClick={() => setAttempt((n) => n + 1)}>
@@ -385,7 +491,7 @@ export function ArtifactViewer({
               </Button>
             </div>
           )}
-          {kind.viewer === "iframe" &&
+          {viewer === "iframe" &&
             (html !== null ? (
               <iframe
                 srcDoc={html}
@@ -396,21 +502,23 @@ export function ArtifactViewer({
             ) : (
               !error && <div className="p-6 text-body text-muted-foreground">{t("common.loading")}</div>
             ))}
-          {kind.viewer === "pdf" && (
-            <iframe src={href} title={artifact.name} className="size-full border-0" />
+          {viewer === "pdf" && (
+            <iframe src={src} title={artifact.name} className="size-full border-0" />
           )}
-          {kind.viewer === "image" && !error && (
+          {viewer === "image" && !error && (
             <div className="flex size-full items-center justify-center overflow-auto p-4">
               <img
                 key={attempt}
-                src={href}
+                src={src}
                 alt={artifact.name}
-                onError={() => setError(openFailure(404))}
+                // a newer version caught half written is asked for again
+                // at the next look; only the first one failing is an error
+                onError={() => (version ? (seen.current = { ...seen.current, tag: "" }) : setError(openFailure(404)))}
                 className="max-h-full max-w-full object-contain"
               />
             </div>
           )}
-          {kind.viewer === "video" &&
+          {viewer === "video" &&
             (unplayable ? (
               <div className="flex size-full flex-col items-center justify-center gap-3 px-6 text-center">
                 <span className="text-muted-foreground">{kind.icon}</span>
@@ -441,16 +549,26 @@ export function ArtifactViewer({
                 {/* no autoplay: a video starts when the person presses play */}
                 <video
                   key={attempt}
-                  src={href}
+                  ref={video}
+                  src={src}
                   controls
                   playsInline
                   preload="metadata"
+                  // a newer version picks up where the old one was, and
+                  // plays on only if it was playing
+                  onLoadedMetadata={(e) => {
+                    const was = resume.current;
+                    resume.current = null;
+                    if (!was) return;
+                    e.currentTarget.currentTime = Math.min(was.at, e.currentTarget.duration || was.at);
+                    if (was.playing) void e.currentTarget.play().catch(() => {});
+                  }}
                   onError={() => setUnplayable(true)}
                   className="max-h-full max-w-full"
                 />
               </div>
             ))}
-          {(kind.viewer === "table" || kind.viewer === "sheet") &&
+          {(viewer === "table" || viewer === "sheet") &&
             (rows ? (
               <div className="flex size-full min-h-0 flex-col sm:flex-row">
                 <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
@@ -582,7 +700,7 @@ export function ArtifactViewer({
             ) : (
               !error && <div className="p-6 text-body text-muted-foreground">{t("common.loading")}</div>
             ))}
-          {kind.viewer === "markdown" &&
+          {viewer === "markdown" &&
             (text !== null ? (
               source ? (
                 <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-body leading-relaxed text-foreground">
@@ -598,7 +716,7 @@ export function ArtifactViewer({
             ) : (
               !error && <div className="p-6 text-body text-muted-foreground">{t("common.loading")}</div>
             ))}
-          {kind.viewer === "text" &&
+          {viewer === "text" &&
             (text !== null ? (
               <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-body leading-relaxed text-foreground">
                 {text}
@@ -607,7 +725,7 @@ export function ArtifactViewer({
               !error && <div className="p-6 text-body text-muted-foreground">{t("common.loading")}</div>
             ))}
           {/* the notes rail */}
-          {kind.viewer === "none" && (
+          {viewer === "none" && (
             <div className="flex size-full flex-col items-center justify-center gap-3 text-center">
               <span className="text-muted-foreground">{kind.icon}</span>
               <div className="text-ui text-muted-foreground">

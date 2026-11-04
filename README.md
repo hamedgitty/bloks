@@ -247,6 +247,10 @@ natively. [docs/GENERATIVE_UI.md](docs/GENERATIVE_UI.md) is the contract.
 Copy any part of a conversation and paste it into Mail, Docs or Word: it
 arrives as its headings, lists, tables, links and code, in the
 document's own style, without the app's colours, buttons or timestamps.
+A file an agent saves opens in the app as a page, a picture, a table or
+text, and an open one follows the file: when the agent, or anything
+else, writes it again, the preview updates where you are reading and
+says Updated, and a file that is deleted says so.
 
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">

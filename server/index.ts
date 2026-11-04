@@ -28135,6 +28135,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // check can be sent under its name (GitHub 318).
       const opened = artifacts.openArtifact(bot.id, name);
       if (!opened) return json(res, 404, { error: "no such file" });
+      // Which version it is now, and none of its bytes: an open viewer
+      // asks this every few seconds to follow the file as it changes
+      // (src/lib/followFile.ts). The same open, so the same access.
+      if (url.searchParams.has("version")) {
+        opened.close();
+        return json(res, 200, { tag: opened.tag, size: opened.size });
+      }
       // A range, from the header a video player sends to seek, or from
       // the query, which is all that crosses Bloks Cloud: a phone there
       // takes a large file a piece at a time.

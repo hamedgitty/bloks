@@ -954,6 +954,23 @@ offers the download), Markdown rendered with its source a click away,
 text, tables, HTML in a sandboxed frame. A failure says why and offers
 Try again, which asks for the file again and never starts a turn.
 
+An open viewer follows its file (`src/lib/followFile.ts`). The route
+answers `?version` with the file's `tag` and `size` and none of its
+bytes: the same tag it sends as the file's `ETag`, from the open file's
+device, inode, size and times, through the same open and so the same
+access. The viewer asks every 2 seconds (6 through Bloks Cloud, where
+each ask is a sealed round trip) while it is open and the window can be
+seen, and at once when the window is shown again. When the tag moves it
+reads the file again in place: text, Markdown, tables and HTML keep the
+elements they were drawn in, so the scroll stays (a page in the
+sandboxed frame starts at its top, since the frame is not ours to read),
+and a picture, video or PDF is asked for at a new URL, a video carrying
+on from where it was. A quiet Updated mark says so, as a polite status,
+and nothing takes focus. A 404 shows "This file was removed" until the
+file comes back; any other failure is no news. There is no watcher: the
+folder may be on a server reached through Bloks Cloud, and the end of a
+turn would miss everything that is not the agent.
+
 Access is the artifact route's: an owner's device on this computer, the
 network or Bloks Cloud reads any agent's files, a member of a shared
 room is shown a card's name and nothing it could open, and an agent's
