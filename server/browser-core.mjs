@@ -928,6 +928,10 @@ export class AppBrowser {
       if (!tab.dialog) return await work;
       tab.run = ++this.#runSeq;
       work.catch(() => {});
+      // the rest of the step still lands on the page once the dialog is
+      // answered (by the agent, the person or the clock), and its input
+      // is the step's, not the person taking the wheel
+      tab.cutShort = work;
       return { dialog: this.#describe(tab.dialog) };
     } finally {
       watch.stop();
@@ -1036,8 +1040,17 @@ export class AppBrowser {
       throw error;
     } finally {
       tab.step = null;
-      // the step's own input events are not the person taking over
-      setTimeout(() => (tab.acting = false), 300);
+      // the step's own input events are not the person taking over, nor
+      // are those of a step a dialog cut short, for as long as it runs on
+      const run = tab.run;
+      const settled = tab.cutShort ?? Promise.resolve();
+      settled.catch(() => {}).finally(() =>
+        setTimeout(() => {
+          if (tab.run !== run) return;
+          tab.cutShort = null;
+          tab.acting = false;
+        }, 300),
+      );
       this.#hold(who);
       this.changed();
     }

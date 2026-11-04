@@ -203,7 +203,7 @@ test("an XDG data folder the person moved is where their sign-ins are read from"
 test("Connect a provider signs in to the workspace's setup, quoted for the shell it runs in", { skip: !posix }, () => {
   const data = join(fresh("it's here"), "data dir");
   const command = isolatedOpencodeSignInCommand("opencode", data, "darwin");
-  assert.match(command, /^OPENCODE_CONFIG_DIR='.*' XDG_CONFIG_HOME='.*' XDG_DATA_HOME='.*' XDG_STATE_HOME='.*' XDG_CACHE_HOME='.*' opencode auth login$/);
+  assert.match(command, /^OPENCODE_CONFIG_DIR='.*' XDG_CONFIG_HOME='.*' XDG_DATA_HOME='.*' XDG_STATE_HOME='.*' XDG_CACHE_HOME='.*' 'opencode' auth login$/);
   // the shell reads back the same paths, quote and space and all
   const echo = join(fresh("bin"), "echo-env");
   writeFileSync(echo, `#!${process.execPath}\nconsole.log(JSON.stringify({ data: process.env.XDG_DATA_HOME, config: process.env.OPENCODE_CONFIG_DIR, args: process.argv.slice(2) }));\n`, { mode: 0o755 });
@@ -211,7 +211,7 @@ test("Connect a provider signs in to the workspace's setup, quoted for the shell
   assert.deepEqual(said, { data: isolatedOpencodePaths(data).dataDir, config: isolatedOpencodePaths(data).configDir, args: ["auth", "login"] });
 
   const windows = isolatedOpencodeSignInCommand("C:\\Program Files\\opencode.cmd", "C:\\Users\\a\\.bloks", "win32");
-  assert.match(windows, /^\$env:OPENCODE_CONFIG_DIR=".*"; \$env:XDG_CONFIG_HOME=".*"; .*; "C:\\Program Files\\opencode\.cmd" auth login$/);
+  assert.match(windows, /^\$env:OPENCODE_CONFIG_DIR=".*"; \$env:XDG_CONFIG_HOME=".*"; .*; & "C:\\Program Files\\opencode\.cmd" auth login$/);
 });
 
 // ── the driver ───────────────────────────────────────────────────────────

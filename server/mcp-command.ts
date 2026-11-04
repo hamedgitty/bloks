@@ -98,6 +98,22 @@ function candidates(command: string, env: Record<string, string | undefined>, wi
 
 const remembered = new Map<string, { at: number; missing: boolean }>();
 
+/** Looks at the disk still under way, one per file. A stat on a network
+ * volume that has gone away may never come back, and every one stuck
+ * holds a thread of the pool that file reads, DNS and zlib share; so a
+ * file already being looked at is waited on again, never looked at twice. */
+const looking = new Map<string, Promise<Probe>>();
+
+function probeOnce(file: string, windows: boolean): Promise<Probe> {
+  const key = `${windows}\0${file}`;
+  let pending = looking.get(key);
+  if (!pending) {
+    pending = probeDisk(file, windows).finally(() => looking.delete(key));
+    looking.set(key, pending);
+  }
+  return pending;
+}
+
 /**
  * Whether `command` is plainly not there to run: an absolute or `~/` path
  * with no runnable file, or a bare name found nowhere on PATH. False for
@@ -117,14 +133,15 @@ export async function commandMissing(command: string, options: CommandCheck = {}
   const key = `${windows}\0${file}\0${envValue(env, "PATH", windows) ?? ""}\0${envValue(env, "PATHEXT", windows) ?? ""}`;
   const known = options.probe ? undefined : remembered.get(key);
   if (known && Date.now() - known.at < REMEMBER_MS) return known.missing;
-  const probe = options.probe ?? probeDisk;
+  const probe = options.probe ?? probeOnce;
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), options.timeoutMs ?? COMMAND_CHECK_MS)));
   // every candidate at once: a PATH of twenty folders is one wait, not twenty
   const looked = Promise.all(list.map((candidate) => probe(candidate, windows).catch((): Probe => "unknown")));
   const answer = await Promise.race([looked, late]).finally(() => clearTimeout(timer));
-  if (answer === "late") return false;
-  const missing = answer.every((seen) => seen === "absent");
+  // a look past the bound counts as found, and is kept as found too, so a
+  // dead volume costs one wait per while, not one per turn
+  const missing = answer !== "late" && answer.every((seen) => seen === "absent");
   if (!options.probe) {
     if (remembered.size > 200) remembered.clear();
     remembered.set(key, { at: Date.now(), missing });

@@ -606,8 +606,6 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         createdAt: new Date().toISOString(),
       });
 
-      /** `extra` is the turn's own environment, where there is a turn:
-       * the credential that lets an agent act on the workspace as itself. */
       // OpenCode on the workspace's own setup rather than the person's
       // (server/opencode-setup.ts). Never for a turn in a workplace: the
       // folders are this computer's, and the OpenCode there has its own.

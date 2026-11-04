@@ -800,8 +800,9 @@ reaches the agent as data from an outside system, never as instructions
   admins and agents' credentials are refused, so no agent can set,
   remove or read a secret.
 - **What it does not cover.** Seen ids are held in memory, so a restart
-  forgets them; a captured request's timestamp keeps that to five
-  minutes. A webhook without a secret is exactly as before.
+  forgets them; a captured request's timestamp keeps that to ten
+  minutes at most, five either side of now. A webhook without a secret
+  is exactly as before.
 
 ## Your runs, exported for training
 

@@ -90,6 +90,8 @@ export interface TabHandle {
   policy?: NavigationPolicy | null;
   blocked?: string | null;
   acting?: boolean;
+  /** A step a dialog cut short, still running on to its end. */
+  cutShort?: Promise<unknown> | null;
   pollMs?: number;
   /** The dialog the page has open, if any (AppBrowser.dialogOpened). */
   dialog?: OpenDialog | null;

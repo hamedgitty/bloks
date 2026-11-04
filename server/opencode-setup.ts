@@ -115,7 +115,9 @@ function variables(paths: OpencodePaths): Record<string, string> {
  * finds the service file and does not start a background server. */
 export function isolatedOpencodeSignInCommand(cli = "opencode", dataDir: string = DATA_DIR, platform: NodeJS.Platform = process.platform): string {
   const quote = (value: string) => (platform === "win32" ? `"${value.replace(/"/g, '`"')}"` : `'${value.replace(/'/g, `'\\''`)}'`);
-  const bin = /[\s'"]/.test(cli) ? quote(cli) : cli;
+  // always quoted, so a path is only ever a path to the shell; PowerShell
+  // runs a quoted path only through its call operator
+  const bin = platform === "win32" ? `& ${quote(cli)}` : quote(cli);
   const pairs = Object.entries(variables(isolatedOpencodePaths(dataDir)));
   return platform === "win32"
     ? `${pairs.map(([k, v]) => `$env:${k}=${quote(v)}`).join("; ")}; ${bin} auth login`

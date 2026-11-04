@@ -854,7 +854,9 @@ export function WaitingStrip({
           threadId={threadId}
           recoveryKey={threadId}
           senderOf={senderOf}
-          sameLine={() => true}
+          // other people's and agents' posts keep their places in a room,
+          // as the server keeps them; yours move around them
+          sameLine={(message) => senderOf(message) === null}
           working={working}
           onSendNow={onSendNow}
           onSendAgain={onSendAgain}

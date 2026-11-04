@@ -47,6 +47,7 @@ import { SlidersHorizontal } from "@/components/icons";
 import { ResultCard, type BriefResult } from "./BriefCards";
 import { BriefCustomize, type ArrangedSection } from "./BriefCustomize";
 import { DEFAULT_SECTIONS, layoutOf } from "@/lib/briefLayout";
+import { atSpeechSpeed } from "@/lib/useSpeechSpeed";
 import { formatDate, formatNumber, t, tr, type MessageKey } from "@/lib/i18n";
 
 interface BriefPart {
@@ -365,7 +366,8 @@ export function BriefPanel() {
       .then((url) => {
         // stopped, or moved on, while this part was loading
         if (playingRef.current !== at) return URL.revokeObjectURL(url);
-        const player = new Audio(url);
+        // read in an agent's voice, so at the speed chosen for those
+        const player = atSpeechSpeed(new Audio(url));
         audio.current?.pause();
         audio.current = player;
         audioPart.current = at;

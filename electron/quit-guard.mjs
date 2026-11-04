@@ -173,6 +173,14 @@ export function createQuitGuard({
       // a second press is the way.
       arm();
     },
+    /**
+     * The quit it asked for did not happen (a page kept itself open, or
+     * something else said no): ⌘Q is heard again, from the start.
+     */
+    cancelled() {
+      if (state !== "gone") return;
+      state = "idle";
+    },
     /** The setting went off, or the window went: nothing under way. */
     reset() {
       if (state === "gone") return;

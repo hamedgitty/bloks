@@ -2288,7 +2288,7 @@ function showIn(win, id, query = "") {
  * nothing a reload would keep. */
 function pointWindows(id) {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || (windowWorkspace.get(win) ?? shownId) !== id) continue;
+    if (win.isDestroyed() || win === hintWindow() || (windowWorkspace.get(win) ?? shownId) !== id) continue;
     // a server that died again at once fails the load, and the next try
     // or the failure page points the window again
     if (win === notch.window()) {
@@ -2348,8 +2348,11 @@ const terminalWins = new Map();
 /** The main workspace window, rather than the quick ask panel, the
  * notch or a terminal of its own: the one links, menu commands and the
  * Dock icon are for. */
+/** The ⌘Q hint's window, once it is made (electron/quit-guard.mjs): a
+ * panel over the others, never a window a workspace is shown in. */
+let hintWindow = () => null;
 function isWorkspaceWindow(win) {
-  return Boolean(win) && !win.isDestroyed() && win !== quickWin && win !== notch.window() && !terminalWins.has(win);
+  return Boolean(win) && !win.isDestroyed() && win !== quickWin && win !== notch.window() && win !== hintWindow() && !terminalWins.has(win);
 }
 
 // ── the notch ─────────────────────────────────────────────────────────
@@ -3793,7 +3796,23 @@ const quitHint = createQuitHint({
   // the app's own theme when one is chosen, as the window draws it
   dark: () => (registry?.prefs?.theme === "dark" ? true : registry?.prefs?.theme === "light" ? false : nativeTheme.shouldUseDarkColors),
 });
-const quitGuard = createQuitGuard({ quit: () => app.quit(), hint: (phase) => quitHint.show(phase) });
+hintWindow = () => quitHint.window();
+// A quit can be said no to (a workspace page's "leave this page?"). With
+// no will-quit soon after, the guard hears ⌘Q again, or the key would do
+// nothing until Bloks was started again.
+let willQuit = false;
+app.on("will-quit", () => (willQuit = true));
+const quitGuard = createQuitGuard({
+  quit: () => {
+    app.quit();
+    // will-quit comes once the servers have stopped (before-quit waits up
+    // to STOP_BEFORE_QUIT_MS for them), so the wait is that and then some
+    setTimeout(() => {
+      if (!willQuit) quitGuard.cancelled();
+    }, STOP_BEFORE_QUIT_MS + 5_000).unref?.();
+  },
+  hint: (phase) => quitHint.show(phase),
+});
 
 // Every page, the Bloks browser's tabs and a terminal's included, since
 // whichever has the keyboard is the one that hears ⌘Q. Kept from the

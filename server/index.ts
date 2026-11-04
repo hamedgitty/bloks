@@ -7483,6 +7483,7 @@ function deleteLane(botId: string, laneId: string): ReturnType<typeof store.dele
     textPreview.forget(laneId);
     turnTraces.forget(laneId);
     branchSourceGone(botId, laneId);
+    toldMcpMissing.delete(`${laneId}:${botId}`);
   }
   // A rehearsal's lane is the only way to its copy: closed, nothing can
   // follow up on it or apply it, so the copy goes now rather than in a week.
@@ -19931,7 +19932,9 @@ function waitingLine(threadId: string): { ids: string[]; fixed: Set<string>; reo
   const posts = roomQueue.get(threadId);
   if (posts?.length) {
     const ids = posts.map((post) => post.message.id);
-    const fixed = new Set(ids.filter((id) => !waitsInLine(rows.get(id))));
+    // other people's and agents' posts keep their places, as they do for
+    // a Send now: the person orders their own words, not the room's
+    const fixed = new Set(posts.filter((post) => post.author.botId || post.author.personId || !waitsInLine(rows.get(post.message.id))).map((post) => post.message.id));
     return {
       ids,
       fixed,
@@ -19965,7 +19968,8 @@ function moveWaiting(threadId: string, messageId: string, before: string | null)
   const message = store.messagesFor(threadId).find((m) => m.id === messageId);
   const refuse = (status: number, error: string) => ({ status, body: { error, message: message ?? null, waiting: waitingRows(threadId) } });
   if (!message) return refuse(404, "no such message");
-  if (message.role !== "user") return refuse(403, "only your own messages can be moved");
+  // an agent's words, or a member's in a room, are theirs to place
+  if (message.role !== "user" || message.author) return refuse(403, "only your own messages can be moved");
   if (message.via === "service") return refuse(403, "a local service's input keeps its place");
   if (message.deleted) return refuse(409, "That message was taken back.");
   if (!message.queued) return refuse(409, "That message is not waiting any more.");
@@ -22104,6 +22108,10 @@ async function redoMessage(laneId: string, messageId: string, text: string): Pro
     // already waiting here, which goes with it.
     const alone = words.length === 1 && !steerQueues.has(laneId);
     if (alone) release();
+    // what already waited, so these words can be told from it below by
+    // what they are, not by where they landed: the line may be reordered
+    // while they are being said
+    const waited = new Set(steerQueues.get(laneId)?.items ?? []);
     try {
       for (const said of words) await sendUserMessage(found.id, said.text, { taskId: laneId, replyTo: said.replyTo, yours: true });
     } catch (e) {
@@ -22114,7 +22122,11 @@ async function redoMessage(laneId: string, messageId: string, text: string): Pro
     }
     // these were said before whatever was already waiting, so they go first
     const entry = alone ? undefined : steerQueues.get(laneId);
-    if (entry) entry.items = [...entry.items.slice(-words.length), ...entry.items.slice(0, -words.length)];
+    if (entry) {
+      const said = entry.items.filter((item) => !waited.has(item));
+      // in place: a Send now part way through holds this very list
+      entry.items.splice(0, entry.items.length, ...said, ...entry.items.filter((item) => waited.has(item)));
+    }
     return { status: 200, body: { ...rewound, sent: true } };
   } finally {
     // what waited for the lane goes now, as it would after any turn
@@ -25094,6 +25106,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     } catch (e) {
       // Answer, so the sender sees a failure rather than a hung connection.
       if (laneId) webhookLanes.delete(laneId);
+      // and the retry it is told to send, under the same webhook-id, is
+      // taken, not refused as a replay of an event nobody took
+      if (signedId && !res.headersSent) webhookSeen.drop(hook.id, signedId);
       if (!res.headersSent) return json(res, 500, { error: "event not accepted; send it again" });
       throw e;
     }
@@ -27715,6 +27730,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const before = body.before === null || body.before === undefined ? null : body.before;
       if (before !== null && (typeof before !== "string" || !/^[\w-]{1,128}$/.test(before))) {
         return json(res, 400, { error: "before names another waiting message, or null for the end" });
+      }
+      // a conversation the owner may not write in (a member's own, with
+      // reading members' conversations off) is not there to them at all:
+      // no line, no words, not even that it exists
+      const owner = store.botByThread(m[1]);
+      const lane = owner?.tasks.find((t) => t.id === m![1]);
+      if (owner && lane ? access.laneAccess(owner, lane, { kind: "owner" }, accessWorld()) !== "write" : !bloks.get(m[1])) {
+        return json(res, 404, { error: "no such message" });
       }
       const done = moveWaiting(m[1], m[2], before);
       return json(res, done.status, done.body);
@@ -32145,6 +32168,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     if (m && method === "DELETE") {
       const ok = webhooks.remove(m[1]);
+      if (ok) webhookSeen.forget(m[1]);
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "no such webhook" });
     }
     m = path.match(/^\/api\/webhooks\/([\w-]+)\/rotate$/);
@@ -32163,6 +32187,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       res.setHeader("cache-control", "no-store");
       if (method === "DELETE") {
         const hook = webhooks.setSecret(m[1], null)!;
+        webhookSeen.forget(m[1]);
         return json(res, 200, { webhook: publicHook(hook, webhooks) });
       }
       const body = await readBody(req);
@@ -32174,6 +32199,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         secret = given.secret;
       }
       const hook = webhooks.setSecret(m[1], secret)!;
+      webhookSeen.forget(m[1]);
       return json(res, 200, { webhook: publicHook(hook, webhooks), ...(body.generate === true ? { secret } : {}) });
     }
 

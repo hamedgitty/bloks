@@ -80,6 +80,8 @@ export interface WebhookRecord {
 const FILE = join(DATA_DIR, "webhooks.json");
 const MAX_HOOKS = 64;
 const MAX_DELIVERIES = 12;
+/** How long refusals wait to be written, gathered into one write. */
+const REFUSAL_SAVE_MS = 5_000;
 
 /** Where the signing secrets live: config.json, with the other keys,
  * by hook id. The store only reads and writes the map it is handed. */
@@ -213,14 +215,26 @@ export class WebhookStore {
   noteRefused(id: string, refused: WebhookRefusal) {
     const hook = this.hooks.find((h) => h.id === id);
     if (!hook) return;
-    const [newest, ...rest] = hook.deliveries ?? [];
+    // One row per kind of refusal, wherever it sits, brought to the top
+    // with its count: refusals are what anyone holding a leaked address
+    // can send, and they must not push real deliveries off the list.
+    const list = hook.deliveries ?? [];
+    const same = list.find((row) => row.refused === refused);
     const at = Date.now();
-    hook.deliveries =
-      newest?.refused === refused
-        ? [{ ...newest, at, times: (newest.times ?? 1) + 1 }, ...rest]
-        : [{ at, excerpt: "", refused }, ...(hook.deliveries ?? [])].slice(0, MAX_DELIVERIES);
-    this.save();
+    hook.deliveries = [
+      same ? { ...same, at, times: (same.times ?? 1) + 1 } : { at, excerpt: "", refused },
+      ...list.filter((row) => row !== same),
+    ].slice(0, MAX_DELIVERIES);
+    // and written at most every few seconds, so a flood of them is not a
+    // flood of writes to the disk
+    if (this.refusalSave) return;
+    this.refusalSave = setTimeout(() => {
+      this.refusalSave = null;
+      this.save();
+    }, REFUSAL_SAVE_MS);
+    this.refusalSave.unref?.();
   }
+  private refusalSave: NodeJS.Timeout | null = null;
 
   /** The secret this hook's requests are checked against, or null. */
   secretOf(id: string): string | null {
@@ -387,8 +401,9 @@ export function checkSignature(
  * is noted: one refused for being busy is sent again under the same id,
  * and must not be taken for its own replay.
  *
- * Held in memory. A restart forgets them, which reopens at most the five
- * minutes a captured request's timestamp stays good for.
+ * Held in memory. A restart forgets them, which reopens at most the ten
+ * minutes a captured request's timestamp stays good for (five either side
+ * of now, since a sender's clock may run ahead).
  */
 export class SeenDeliveries {
   private seen = new Map<string, Map<string, number>>();
@@ -403,13 +418,29 @@ export class SeenDeliveries {
     return until !== undefined && until > now;
   }
 
+  /** A hook removed, or its secret changed: what it took in is no longer
+   * anything to compare against. */
+  forget(hookId: string) {
+    this.seen.delete(hookId);
+  }
+
+  /** One id taken back: its event was not accepted after all, so the
+   * sender's retry under the same id is not a replay. */
+  drop(hookId: string, id: string) {
+    this.seen.get(hookId)?.delete(id);
+  }
+
   note(hookId: string, id: string, now = Date.now()) {
     let ids = this.seen.get(hookId);
     if (!ids) this.seen.set(hookId, (ids = new Map()));
     ids.delete(id);
     ids.set(id, now + REPLAY_WINDOW_MS);
+    // the oldest come first, so what has expired is cut from the front
+    for (const [old, until] of ids) {
+      if (until > now) break;
+      ids.delete(old);
+    }
     if (ids.size <= this.cap) return;
-    for (const [old, until] of ids) if (until <= now) ids.delete(old);
     // still full of live ids: the oldest go first, as they expire first
     for (const old of ids.keys()) {
       if (ids.size <= this.cap) break;
