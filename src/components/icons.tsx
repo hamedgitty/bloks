@@ -229,6 +229,19 @@ const GitBranchShape = drawn(
     <path d="M17.25 9v.75a3.75 3.75 0 0 1-3.75 3.75h-3a3.75 3.75 0 0 0-3.75 3" />
   </>,
 );
+// A handle to drag a row by: two columns of three dots, the mark every
+// reorderable list uses, filled so they hold up at 14px.
+const GripVerticalShape = drawn(
+  "GripVertical",
+  <>
+    <circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none" />
+  </>,
+);
 const KeyboardShape = drawn(
   "Keyboard",
   <>
@@ -300,6 +313,7 @@ export const Gauge = icon(ChartPieHero, "Gauge");
 export const GitBranch = GitBranchShape;
 export const Globe = icon(GlobeAltHero, "Globe");
 export const GripHorizontal = icon(EllipsisHorizontalHero, "GripHorizontal");
+export const GripVertical = GripVerticalShape;
 export const Hand = icon(HandRaisedHero, "Hand");
 export const HelpCircle = icon(QuestionMarkCircleHero, "HelpCircle");
 export const History = icon(ClockHero, "History");

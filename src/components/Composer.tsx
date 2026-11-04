@@ -692,6 +692,10 @@ export function Composer({
     messages: waiting,
     threadId: bot.threadId,
     recoveryKey: draftKey,
+    // A member's words in a shared conversation wait in a line of their
+    // own, after the owner's (the server's drainMemberWaiting), so the
+    // owner's are never moved past them.
+    sameLine: (m) => !m.author,
     working,
     // Into the running turn when its engine can take words mid-turn,
     // each as it was said; otherwise the same stop Cmd+Enter makes, and

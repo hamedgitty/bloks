@@ -373,7 +373,10 @@ file or a `bloks://install?url=` link through the same review, and use
   What you add while it is still getting ready joins the request it is
   starting. One press changes its mind. When other agents' messages waited
   too, yours go in last and marked as yours, so the answer sits right
-  under them.
+  under them. Waiting words go in the order they are listed above the
+  box, and yours can be moved: drag one by its handle, pick Move up or
+  Move down from the handle's menu, or press Option (Alt) and an arrow.
+  Rooms work the same way.
 - **Questions that do not hold the turn.** A Codex agent can ask you
   something and carry on. When you settle it some other way, the agent
   takes its own question back (`bloks questions`, `bloks unask`) and the

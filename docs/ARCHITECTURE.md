@@ -1726,6 +1726,27 @@ stops every member speaking there and ends the round, so the next
 member does not start in their place and nobody named meanwhile is
 handed it; what waited behind the round goes next.
 
+Waiting words go in the order of their line, and the person may change
+it for their own: `POST /api/threads/:id/messages/:mid/move` with
+`{ before }`, another waiting message's id or null for the end
+(`moveWaiting`). An agent's line is its steer queue; a room's is the
+posts it has yet to start (`roomQueue`), each link of the room's chain
+taking whichever is first when its turn comes, so every post still goes
+exactly once. Words being handed to a turn (a preparation not at
+`next`), words sent with stop and send now, and Bloks's own notes keep
+their places, and the rest trade places around them
+(`server/queue-order.ts`, which the strip uses too). The transcript is
+put in the same order, the waiting words moved to its end with patches
+that say they moved, so a restart (`recoverQueued`) and every screen
+read the same line. A member's words in a shared conversation wait in a
+line of their own after the owner's, and the owner's are never moved
+past them. Who may move a message is whoever may reword it: the owner,
+from this computer or their own devices, never an agent's credential
+(403) and never a member, whose surface has no such route. Words that
+have started going, or a place that is no longer in the line, are
+refused with 409 and the plain reason, and the refusal carries the line
+as it stands for the screen to catch up.
+
 When words go in now, they go into that turn when its engine can take
 them (`steerLane` in `server/index.ts`). Claude Code keeps the stdin
 it was given the prompt on open and reads another stream-json message

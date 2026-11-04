@@ -119,12 +119,15 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
   // the status rides along, for a caller deciding whether trying again
   // could ever help (a 404 will not), and the code, for one that can do
   // something about it (a name to ask for, src/components/YourNameDialog),
-  // and the mark of a hosted workspace that never woke (src/lib/waking.ts)
+  // and the mark of a hosted workspace that never woke (src/lib/waking.ts),
+  // and the whole answer, for a refusal that says how things stand now
+  // (a waiting message that could not move, src/components/WaitingStrip.tsx)
   if (!res.ok) {
     // signed out of a server's web door meanwhile: back to its sign-in
     noteSignedOut(res.status, body.code);
     throw Object.assign(new Error(body.error ?? `${res.status} ${res.statusText}`), {
       status: res.status,
+      body,
       code: typeof body.code === "string" ? body.code : undefined,
       ...(body.waking === true ? { waking: true } : {}),
     });

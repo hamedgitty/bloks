@@ -3,22 +3,27 @@
 // A message written while the agent works is not part of the
 // conversation yet. Shown where it was sent, it sat above minutes of the
 // agent's posts and read as if they answered it. So it waits here, above
-// the composer, in the order it was sent, and enters the conversation
+// the composer, in the order it will go, and enters the conversation
 // when it goes, after everything said meanwhile. Your own can still be
-// reworded (a double-click, as on the bubble it used to be), sent now,
-// or taken back; what another agent or a person in a room queued is
-// shown with who sent it, and is theirs, not yours to change.
+// reworded (a double-click, as on the bubble it used to be), moved up or
+// down the line, sent now, or taken back; what another agent or a person
+// in a room queued is shown with who sent it, and is theirs, not yours
+// to change.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp } from "@/components/icons";
+import { ArrowDown, ArrowUp, GripVertical } from "@/components/icons";
 import { Hourglass } from "@/components/icons";
 import { Pencil } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
-import { api, type Message } from "@/state/store";
+import { api, useOptionalStore, type Message } from "@/state/store";
 import { stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
+import { platformOf } from "@/lib/shortcuts";
+import { dropIndex } from "@/lib/workspaces";
 import { RANK, TrayButton, type Notice } from "@/components/composer/Tray";
 import { confirm } from "@/components/ui/confirm";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { t } from "@/lib/i18n";
+import { dropPlace, moveInQueue, stepPlace, type QueuePlace } from "../../server/queue-order.ts";
 
 /** Opens the editor on a queued message: the server holds back the turn
  * it waits for until the editor closes (GitHub 155). What comes back
@@ -175,6 +180,23 @@ function preparationLine(line: string): string {
   }
 }
 
+/** How a row takes part in moving the line: whether it can move, which
+ * ways, and how it is dragged and drawn while the line is being moved. */
+interface RowOrder {
+  movable: boolean;
+  canUp: boolean;
+  canDown: boolean;
+  onStep: (by: -1 | 1) => void;
+  grip: Pick<React.HTMLAttributes<HTMLButtonElement>, "onPointerDown" | "onPointerMove" | "onPointerUp" | "onPointerCancel">;
+  menuOpen: boolean;
+  onMenu: (open: boolean) => void;
+  /** Lifted and following the pointer, or stepping aside for one that is. */
+  lifted: boolean;
+  shift: number;
+  still: boolean;
+  rowRef: (el: HTMLDivElement | null) => void;
+}
+
 function WaitingRow({
   message,
   threadId,
@@ -186,6 +208,7 @@ function WaitingRow({
   onEditing,
   onEditFailure,
   onEditSave,
+  order,
 }: {
   message: Message;
   threadId: string;
@@ -195,6 +218,7 @@ function WaitingRow({
   onSendNow?: () => void;
   onSendAgain?: (message: Message) => void;
   editNow?: number;
+  order?: RowOrder;
   /** Told when the editor opens and closes, so whatever holds the row
    * keeps it on screen while it has the words. */
   onEditing?: (id: string, on: boolean) => void;
@@ -280,14 +304,76 @@ function WaitingRow({
             : t("waitingStrip.status.afterReply", { time })
           : t("waitingStrip.status.queued", { time });
 
+  const movable = Boolean(order?.movable) && editing === null;
+  // A row rises in once, when it arrives. Moved to a new place in the
+  // line it is the same row, and rising again would read as a new one.
+  const [risen, setRisen] = useState(false);
   return (
     <div
+      ref={order?.rowRef}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget) setRisen(true);
+      }}
       className={cn(
-        "flex animate-rise-in items-start gap-2 rounded-xl bg-muted/60 py-1.5 pl-3 pr-1",
+        "relative flex items-start gap-2 rounded-xl bg-muted/60 py-1.5 pl-3 pr-1",
+        !risen && "animate-rise-in",
         message.unsent && "bg-warning/8",
+        movable && "pl-1",
+        // lifted: above the others, following the pointer exactly (no
+        // easing while held, or it lags behind the hand)
+        order?.lifted
+          ? "z-10 bg-card shadow-[0_10px_28px_-8px_rgb(0_0_0/0.35),0_0_0_1px_var(--border)]"
+          : order?.still
+            ? "transition-none"
+            : "transition-transform duration-200 ease-out",
       )}
+      style={order?.shift ? { transform: `translateY(${order.shift}px)` } : undefined}
       data-waiting={message.id}
+      onKeyDown={
+        movable
+          ? (e) => {
+              // Option and an arrow, anywhere in the row: the keyboard's
+              // way to move it, as in the workspace switcher
+              if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+              if (e.target instanceof HTMLTextAreaElement) return;
+              e.preventDefault();
+              order?.onStep(e.key === "ArrowUp" ? -1 : 1);
+            }
+          : undefined
+      }
     >
+      {movable && order && (
+        <DropdownMenu open={order.menuOpen} onOpenChange={order.onMenu}>
+          <DropdownMenuTrigger asChild>
+            <button
+              {...order.grip}
+              // the menu's own Alt+Down would open it; the row moves instead
+              onKeyDown={(e) => {
+                if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) e.preventDefault();
+              }}
+              aria-label={t("waitingStrip.move")}
+              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+              title={t("waitingStrip.dragToMove", { key: platformOf() === "mac" ? "⌥" : "Alt+" })}
+              className={cn(
+                "flex h-7 w-5 shrink-0 touch-none items-center justify-center rounded-md text-muted-foreground/70 transition-colors duration-150 hover:bg-accent hover:text-foreground",
+                order.lifted ? "cursor-grabbing" : "cursor-grab",
+              )}
+            >
+              <GripVertical size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[160px]">
+            <DropdownMenuItem disabled={!order.canUp} onSelect={() => order.onStep(-1)}>
+              <ArrowUp />
+              {t("waitingStrip.moveUp")}
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={!order.canDown} onSelect={() => order.onStep(1)}>
+              <ArrowDown />
+              {t("waitingStrip.moveDown")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       <div className="min-w-0 flex-1 py-0.5">
         {sender && <div className="text-small font-medium text-muted-foreground">{t("waitingStrip.from", { sender })}</div>}
         {editing !== null ? (
@@ -441,6 +527,7 @@ export function useQueuedNotice({
   threadId,
   recoveryKey = threadId,
   senderOf = waitingSender,
+  sameLine = () => true,
   working,
   onSendNow,
   onSendAgain,
@@ -451,6 +538,9 @@ export function useQueuedNotice({
   /** The composer's conversation key, including its lane. */
   recoveryKey?: string;
   senderOf?: (message: Message) => string | null;
+  /** Whether a waiting message is in the same line as the person's own,
+   * so theirs can be moved past it. Everything is, unless said. */
+  sameLine?: (message: Message) => boolean;
   working: boolean;
   onSendNow?: () => void;
   onSendAgain?: (message: Message) => void;
@@ -495,25 +585,234 @@ export function useQueuedNotice({
     body: (
       <div className="flex max-h-[30vh] flex-col gap-1 overflow-y-auto overscroll-contain">
         <FailedEdits edits={failed} recoveryKey={recoveryKey} />
-        <div aria-label={t("waitingStrip.waitingToSend")} className="flex flex-col gap-1">
-          {messages.map((m) => (
-            <WaitingRow
-              key={m.id}
-              message={m}
-              threadId={threadId}
-              sender={senderOf(m)}
-              working={working}
-              onSendAgain={onSendAgain}
-              editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
-              onEditing={onEditing}
-              onEditFailure={(text, outcome) => keepFailedEdit(recoveryKey, text, outcome)}
-              onEditSave={(text, request) => watchEditSave(recoveryKey, text, request)}
-            />
-          ))}
-        </div>
+        <WaitingList
+          messages={messages}
+          threadId={threadId}
+          recoveryKey={recoveryKey}
+          senderOf={senderOf}
+          sameLine={sameLine}
+          working={working}
+          onSendAgain={onSendAgain}
+          editAsk={editAsk}
+          onEditing={onEditing}
+          className="flex flex-col gap-1"
+        />
       </div>
     ),
   };
+}
+
+// ── moving waiting words (server/queue-order.ts) ──
+
+/** How far the pointer goes on a handle before a press is a drag. */
+const DRAG_SLOP = 4;
+
+interface Lift {
+  id: string;
+  from: number;
+  /** How far the row has been dragged, in pixels. */
+  dy: number;
+  /** Where it would land, counted among the rows with it taken out. */
+  to: number;
+  height: number;
+  /** The rows' middles and the space between them, as they stood at the lift. */
+  centers: number[];
+  gap: number;
+}
+
+/** How far a row that is not lifted steps aside, so the gap left open is
+ * where the lifted one lands. */
+function stepAside(lift: Lift | null, index: number): number {
+  if (!lift || index === lift.from) return 0;
+  const by = lift.height + lift.gap;
+  if (lift.from < lift.to && index > lift.from && index <= lift.to) return -by;
+  if (lift.to < lift.from && index >= lift.to && index < lift.from) return by;
+  return 0;
+}
+
+/** Waiting, and free to change places in its line: not yet being handed
+ * to a turn. The server's own test is the same (moveWaiting). */
+export function inLine(m: Message): boolean {
+  return Boolean(m.queued && !m.deleted && (!m.preparation || m.preparation.state === "next"));
+}
+
+/**
+ * The waiting rows, in the order they go, which the person may change
+ * for their own: drag one by its handle, choose Move up or Move down from
+ * the handle's menu, or press Option (Alt) and an arrow anywhere in the
+ * row. The new order shows at once and goes to the server, whose answer
+ * is the line as it now stands; a refusal says why and shows that line.
+ */
+function WaitingList({
+  messages,
+  threadId,
+  recoveryKey,
+  senderOf,
+  sameLine,
+  working,
+  onSendNow,
+  onSendAgain,
+  editAsk,
+  onEditing,
+  className,
+}: {
+  messages: Message[];
+  threadId: string;
+  recoveryKey: string;
+  senderOf: (message: Message) => string | null;
+  sameLine: (message: Message) => boolean;
+  working: boolean;
+  onSendNow?: () => void;
+  onSendAgain?: (message: Message) => void;
+  editAsk?: { id: string; nonce: number } | null;
+  onEditing?: (id: string, on: boolean) => void;
+  className: string;
+}) {
+  const dispatch = useOptionalStore()?.dispatch;
+  const rows = useRef(new Map<string, HTMLDivElement>());
+  const press = useRef<{ id: string; index: number; x: number; y: number } | null>(null);
+  const [lift, setLift] = useState<Lift | null>(null);
+  const [still, setStill] = useState(false);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [said, setSaid] = useState("");
+
+  const ids = messages.map((m) => m.id);
+  // The rows that keep their places: anything not waiting in this line.
+  const fixed = new Set(messages.filter((m) => !inLine(m) || !sameLine(m)).map((m) => m.id));
+  const free = ids.length - fixed.size;
+  const movable = (m: Message) => free > 1 && !fixed.has(m.id) && senderOf(m) === null && Boolean(m.text);
+
+  /** The server's line, shown as it is: the waiting rows moved to the end
+   * in its order, which is where the server keeps them too. */
+  const show = (waiting: unknown, message?: unknown) => {
+    if (!dispatch) return;
+    if (message && typeof message === "object") dispatch({ type: "messagePatched", threadId, message: message as Message });
+    if (Array.isArray(waiting)) for (const m of waiting as Message[]) dispatch({ type: "messagePatched", threadId, message: m, moved: true });
+  };
+
+  const move = (m: Message, place: QueuePlace | null) => {
+    if (!place) return;
+    const next = moveInQueue(ids, fixed, m.id, place);
+    if (!next.ok || !next.changed) return;
+    // shown in the new order at once; the answer settles it
+    const byId = new Map(messages.map((x) => [x.id, x] as const));
+    show(next.order.flatMap((id) => (byId.get(id)?.queued ? [byId.get(id)] : [])));
+    setSaid(t("waitingStrip.movedTo", { position: next.order.indexOf(m.id) + 1, total: next.order.length }));
+    void api(`/api/threads/${threadId}/messages/${m.id}/move`, { method: "POST", body: JSON.stringify({ before: place.before }) })
+      .then((answer) => show(answer?.waiting))
+      .catch((e: Error & { body?: { waiting?: unknown; message?: unknown } }) => {
+        dispatch?.({ type: "error", message: e.message });
+        show(e.body?.waiting, e.body?.message);
+      });
+  };
+
+  const endDrag = () => {
+    press.current = null;
+    setLift(null);
+  };
+
+  // Escape while a row is lifted puts it back
+  useEffect(() => {
+    if (!lift) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      endDrag();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [lift]);
+
+  const grip = (m: Message, index: number): RowOrder["grip"] => ({
+    onPointerDown: (e) => {
+      if (e.button !== 0) return;
+      // held here, not by the menu, which a press without a drag opens
+      e.preventDefault();
+      press.current = { id: m.id, index, x: e.clientX, y: e.clientY };
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* the pointer already went */
+      }
+    },
+    onPointerMove: (e) => {
+      const held = press.current;
+      if (!held || held.id !== m.id) return;
+      if (!lift) {
+        if (Math.hypot(e.clientX - held.x, e.clientY - held.y) <= DRAG_SLOP) return;
+        const rects = ids.map((id) => rows.current.get(id)?.getBoundingClientRect());
+        const centers = rects.map((r) => (r ? r.top + r.height / 2 : 0));
+        const gap = rects[1] && rects[0] ? Math.max(0, rects[1].top - rects[0].bottom) : 4;
+        setLift({ id: m.id, from: held.index, dy: 0, to: held.index, height: rects[held.index]?.height ?? 40, centers, gap });
+        return;
+      }
+      // no further than the first and last rows
+      const top = lift.centers[0]! - lift.centers[lift.from]!;
+      const bottom = lift.centers.at(-1)! - lift.centers[lift.from]!;
+      const dy = Math.max(top - 8, Math.min(bottom + 8, e.clientY - held.y));
+      setLift({ ...lift, dy, to: dropIndex(lift.centers, lift.from, lift.centers[lift.from]! + dy) });
+    },
+    onPointerUp: () => {
+      const held = press.current;
+      const was = lift;
+      endDrag();
+      if (!held) return;
+      if (!was) {
+        // a press without a drag opens the handle's menu
+        setMenuFor(m.id);
+        return;
+      }
+      // the rows that stood aside are where the new order puts them: for
+      // this frame they arrive without sliding
+      setStill(true);
+      requestAnimationFrame(() => requestAnimationFrame(() => setStill(false)));
+      move(m, dropPlace(ids, fixed, m.id, was.to));
+    },
+    onPointerCancel: endDrag,
+  });
+
+  return (
+    <div aria-label={t("waitingStrip.waitingToSend")} className={className}>
+      {messages.map((m, i) => {
+        const can = movable(m);
+        return (
+          <WaitingRow
+            key={m.id}
+            message={m}
+            threadId={threadId}
+            sender={senderOf(m)}
+            working={working}
+            onSendNow={onSendNow}
+            onSendAgain={onSendAgain}
+            editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
+            onEditing={onEditing}
+            onEditFailure={(text, outcome) => keepFailedEdit(recoveryKey, text, outcome)}
+            onEditSave={(text, request) => watchEditSave(recoveryKey, text, request)}
+            order={{
+              movable: can,
+              canUp: can && stepPlace(ids, fixed, m.id, -1) !== null,
+              canDown: can && stepPlace(ids, fixed, m.id, 1) !== null,
+              onStep: (by) => move(m, stepPlace(ids, fixed, m.id, by)),
+              grip: grip(m, i),
+              menuOpen: menuFor === m.id,
+              onMenu: (open) => setMenuFor(open ? m.id : null),
+              lifted: lift?.id === m.id,
+              shift: lift?.id === m.id ? lift.dy : stepAside(lift, i),
+              still,
+              rowRef: (el) => {
+                if (el) rows.current.set(m.id, el);
+                else rows.current.delete(m.id);
+              },
+            }}
+          />
+        );
+      })}
+      <span aria-live="polite" className="sr-only">
+        {said}
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -548,25 +847,20 @@ export function WaitingStrip({
   if (!messages.length && !failed.length) return null;
   return (
     <div className="px-4 md:px-6">
-      <div
-        className="mx-auto flex max-h-[40vh] max-w-[var(--transcript-width,760px)] flex-col gap-1.5 overflow-y-auto pb-1"
-        aria-label={t("waitingStrip.waitingToSend")}
-      >
+      <div className="mx-auto flex max-h-[40vh] max-w-[var(--transcript-width,760px)] flex-col gap-1.5 overflow-y-auto pb-1">
         <FailedEdits edits={failed} recoveryKey={threadId} />
-        {messages.map((m) => (
-          <WaitingRow
-            key={m.id}
-            message={m}
-            threadId={threadId}
-            sender={senderOf(m)}
-            working={working}
-            onSendNow={onSendNow}
-            onSendAgain={onSendAgain}
-            editNow={editAsk?.id === m.id ? editAsk.nonce : undefined}
-            onEditFailure={(text, outcome) => keepFailedEdit(threadId, text, outcome)}
-            onEditSave={(text, request) => watchEditSave(threadId, text, request)}
-          />
-        ))}
+        <WaitingList
+          messages={messages}
+          threadId={threadId}
+          recoveryKey={threadId}
+          senderOf={senderOf}
+          sameLine={() => true}
+          working={working}
+          onSendNow={onSendNow}
+          onSendAgain={onSendAgain}
+          editAsk={editAsk}
+          className="flex flex-col gap-1.5"
+        />
       </div>
     </div>
   );

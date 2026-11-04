@@ -699,6 +699,7 @@ import { RoomTagQueues } from "./room-tags.ts";
 import { MAX_AGENT_HOPS, heldMention, hopsNotice } from "./room-hops.ts";
 import { RepeatWatch } from "./repeats.ts";
 import { Drain, DRAIN_GRACE_MS, DRAINING_TEXT, drainWindow } from "./drain.ts";
+import { moveInQueue } from "./queue-order.ts";
 import { RUN_WAIT_MAX_MS, Runs, type RunFile, type SeenMessage } from "./runs.ts";
 import { briefOf, briefText, drawNames, planTeam, statedLooks, TeamPlanError, type TeamChange, type TeamPlan as TeamApplyPlan, type TeamWorld } from "./team-apply.ts";
 import { EXIT_RESTART, installFacts, installOf, ServerUpdater, SETTLED_MS, startHelper, UpdateError } from "./server-update.ts";
@@ -12242,6 +12243,20 @@ function inviteLink(input: { inviteId: string; secret: string; relayToken: strin
 /** One dispatch loop per room at a time; latecomers chain behind it. */
 const roomPosting = new Map<string, Promise<unknown>>();
 
+/** A post a room has yet to start, and how to tell whoever posted it. */
+interface RoomPost {
+  message: Message;
+  text: string;
+  author: RoomAuthor;
+  resolve: (said: Message) => void;
+  reject: (error: unknown) => void;
+}
+/** Each room's posts not yet started, in the order they go. Each link of
+ * the chain in roomPosting takes the first of them when its turn comes,
+ * so the order here is the order the room hears them, and the person can
+ * change it for their own waiting words (moveWaiting). */
+const roomQueue = new Map<string, RoomPost[]>();
+
 // ── Send now in a room ──
 // What the person said while a round runs waits for the whole round,
 // every member and every handoff. Send now puts it in the room sooner,
@@ -12449,21 +12464,36 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     ...(author.replyTo ? { replyTo: author.replyTo } : {}),
   });
   broadcast({ kind: "message", threadId: blok.id, message });
+  let resolve!: (said: Message) => void;
+  let reject!: (error: unknown) => void;
+  const completion = new Promise<Message>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  // whoever posted may not be waiting for it; its failure is said in the
+  // room below either way
+  completion.catch(() => {});
+  const line = roomQueue.get(blok.id) ?? [];
+  line.push({ message, text, author, resolve, reject });
+  roomQueue.set(blok.id, line);
   const run = (previous ?? Promise.resolve()).catch(() => {}).then(async () => {
     // a Send now still asking an engine decides whether these words
     // already went in, and who heard them
     await roomNowSettled(blok.id);
-    roomNow.get(blok.id)?.delete(message.id);
-    const current = store.messagesFor(blok.id).find((m) => m.id === message.id);
-    const room = bloks.get(blok.id);
-    if (!room || !current || current.deleted) {
-      roomHeardEarly.get(blok.id)?.delete(message.id);
-      return message;
+    // The first in line now, which is this post unless the person moved
+    // another ahead of it while it waited (moveWaiting): one link, one
+    // post, so every post still goes exactly once.
+    const post = roomQueue.get(blok.id)?.shift();
+    if (!roomQueue.get(blok.id)?.length) roomQueue.delete(blok.id);
+    if (!post) return message;
+    try {
+      const said = await runRoomPost(blok.id, post);
+      post.resolve(said);
+      return said;
+    } catch (error) {
+      post.reject(error);
+      throw error;
     }
-    // into the room's history after what the room said while it waited
-    if (current.queued) deliverQueued(blok.id, [message.id]);
-    const delivered = store.messagesFor(blok.id).find((m) => m.id === message.id) ?? current;
-    return postToRoomNow(room, delivered.text ?? text, author, delivered);
   });
   roomPosting.set(blok.id, run);
   const cleanup = () => {
@@ -12478,7 +12508,23 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     });
     broadcast({ kind: "message", threadId: blok.id, message: notice });
   });
-  return { message, completion: run };
+  return { message, completion };
+}
+
+/** One room post's turn, once it is first in line. */
+async function runRoomPost(roomId: string, post: RoomPost): Promise<Message> {
+  const { message, text, author } = post;
+  roomNow.get(roomId)?.delete(message.id);
+  const current = store.messagesFor(roomId).find((m) => m.id === message.id);
+  const room = bloks.get(roomId);
+  if (!room || !current || current.deleted) {
+    roomHeardEarly.get(roomId)?.delete(message.id);
+    return message;
+  }
+  // into the room's history after what the room said while it waited
+  if (current.queued) deliverQueued(roomId, [message.id]);
+  const delivered = store.messagesFor(roomId).find((m) => m.id === message.id) ?? current;
+  return postToRoomNow(room, delivered.text ?? text, author, delivered);
 }
 
 async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor, message: Message) {
@@ -19840,6 +19886,108 @@ function deliverQueued(threadId: string, messageIds: readonly string[]) {
     queuedAt: m.queuedAt ?? m.at,
   }));
   for (const message of moved) broadcast({ kind: "message.patch", threadId, message, moved: true });
+}
+
+// ── changing the order of waiting words (server/queue-order.ts) ──
+// The person moves their own waiting words up or down: in an agent's
+// conversation the line is its steer queue, in a room the posts it has
+// yet to start, and the order there is the order they go. Words already
+// being handed to a turn, words sent with stop and send now, and
+// Bloks's own notes keep their places; the rest trade places around
+// them. The transcript is put in the same order, waiting words to its
+// end as they will be when they go, so a restart (recoverQueued) and
+// every screen read the same line, and the patches say they moved, so a
+// screen moves them too.
+
+/** Waiting, and free to change places: not yet being handed to a turn. */
+function waitsInLine(m: Message | undefined): boolean {
+  return Boolean(m && m.queued && !m.deleted && (!m.preparation || m.preparation.state === "next"));
+}
+
+/** One conversation's line of waiting words, or null when this server is
+ * running none for it. `ids` in the order they go; `fixed` the ones that
+ * keep their places; `reorder` puts the line in a new order of those ids. */
+function waitingLine(threadId: string): { ids: string[]; fixed: Set<string>; reorder: (order: string[]) => void } | null {
+  const rows = new Map(store.messagesFor(threadId).map((m) => [m.id, m] as const));
+  const entry = steerQueues.get(threadId);
+  if (entry?.items.length) {
+    // a note of Bloks's own has no message, so it is named by its place
+    const ids = entry.items.map((item, i) => item.messageId ?? `note:${i}`);
+    if (new Set(ids).size !== ids.length) return null;
+    const fixed = new Set(ids.filter((_, i) => {
+      const item = entry.items[i]!;
+      return !item.messageId || item.alone || !waitsInLine(rows.get(item.messageId));
+    }));
+    return {
+      ids,
+      fixed,
+      reorder: (order) => {
+        const byId = new Map(ids.map((id, i) => [id, entry.items[i]!] as const));
+        // in place: a Send now part way through holds this very list
+        entry.items.splice(0, entry.items.length, ...order.map((id) => byId.get(id)!));
+      },
+    };
+  }
+  const posts = roomQueue.get(threadId);
+  if (posts?.length) {
+    const ids = posts.map((post) => post.message.id);
+    const fixed = new Set(ids.filter((id) => !waitsInLine(rows.get(id))));
+    return {
+      ids,
+      fixed,
+      reorder: (order) => {
+        const byId = new Map(posts.map((post) => [post.message.id, post] as const));
+        posts.splice(0, posts.length, ...order.map((id) => byId.get(id)!));
+      },
+    };
+  }
+  return null;
+}
+
+/** The words still waiting in a conversation's line, in their order. */
+function waitingRows(threadId: string): Message[] {
+  const line = waitingLine(threadId);
+  if (!line) return [];
+  const rows = new Map(store.messagesFor(threadId).map((m) => [m.id, m] as const));
+  return line.ids.flatMap((id) => {
+    const m = rows.get(id);
+    return m?.queued && !m.deleted ? [m] : [];
+  });
+}
+
+/**
+ * Moves the person's waiting message `messageId` before `before` (another
+ * waiting message, or null for the end of the line). Who may move it is
+ * whoever may reword it (the PATCH below): the owner, for a message of
+ * theirs that has not started going.
+ */
+function moveWaiting(threadId: string, messageId: string, before: string | null): { status: number; body: Record<string, unknown> } {
+  const message = store.messagesFor(threadId).find((m) => m.id === messageId);
+  const refuse = (status: number, error: string) => ({ status, body: { error, message: message ?? null, waiting: waitingRows(threadId) } });
+  if (!message) return refuse(404, "no such message");
+  if (message.role !== "user") return refuse(403, "only your own messages can be moved");
+  if (message.via === "service") return refuse(403, "a local service's input keeps its place");
+  if (message.deleted) return refuse(409, "That message was taken back.");
+  if (!message.queued) return refuse(409, "That message is not waiting any more.");
+  if (message.preparation && message.preparation.state !== "next") {
+    return refuse(409, "These words are already being handed to the turn, so their place cannot change.");
+  }
+  const line = waitingLine(threadId);
+  if (!line || !line.ids.includes(messageId)) return refuse(409, "That message is already on its way.");
+  const moved = moveInQueue(line.ids, line.fixed, messageId, { before });
+  if (!moved.ok) {
+    return refuse(409, moved.why === "fixed"
+      ? "Words sent with stop and send now go first, so their place cannot change."
+      : "The message it was moved next to is not waiting any more.");
+  }
+  if (moved.changed) {
+    line.reorder(moved.order);
+    const rows = new Map(store.messagesFor(threadId).map((m) => [m.id, m] as const));
+    const queued = moved.order.filter((id) => rows.get(id)?.queued && !rows.get(id)?.deleted);
+    const shifted = store.moveToEnd(threadId, queued, () => ({}));
+    for (const m of shifted) broadcast({ kind: "message.patch", threadId, message: m, moved: true });
+  }
+  return { status: 200, body: { ok: true, changed: moved.changed, waiting: waitingRows(threadId) } };
 }
 
 // ── the sender's record of words that waited ──
@@ -27553,6 +27701,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       editOpened(m[1], m[2], editId);
       return json(res, 200, { holding: true });
+    }
+
+    // A waiting message moved up or down the line (moveWaiting): before
+    // another waiting message, or to the end. The owner's, as rewording
+    // it is: never an agent's, and a member is served by their own
+    // surface and never reaches this. A refusal says why and carries the
+    // line as it is, for the screen that asked to catch up.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/move$/);
+    if (m && method === "POST") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "moving a waiting message is for the person whose words they are" });
+      const body = await readBody(req);
+      const before = body.before === null || body.before === undefined ? null : body.before;
+      if (before !== null && (typeof before !== "string" || !/^[\w-]{1,128}$/.test(before))) {
+        return json(res, 400, { error: "before names another waiting message, or null for the end" });
+      }
+      const done = moveWaiting(m[1], m[2], before);
+      return json(res, done.status, done.body);
     }
 
     // Redoing a message the agent already read (redoMessage). GET says
