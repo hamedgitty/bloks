@@ -1081,7 +1081,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             </button>
           ) : (
             first && (
-              <div className="py-3 text-center text-small text-muted-foreground">
+              <div data-copy="skip" className="py-3 text-center text-small text-muted-foreground">
                 {dayLine(first.at)}
               </div>
             )

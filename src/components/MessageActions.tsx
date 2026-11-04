@@ -91,7 +91,7 @@ export function Reactions({
   const entries = Object.entries(reactions ?? {}).filter(([, who]) => who.length > 0);
   if (entries.length === 0) return null;
   return (
-    <div className="mt-1 flex flex-wrap gap-1">
+    <div data-copy="skip" className="mt-1 flex flex-wrap gap-1">
       {entries.map(([emoji, who]) => {
         const mine = who.includes("user");
         return (
@@ -412,6 +412,8 @@ export function MessageActionBar({
       <TooltipProvider delayDuration={500}>
         <div
           data-actions=""
+          // the row and its time are the app's, never part of a copied reply
+          data-copy="skip"
           className={cn(
             "flex h-7 shrink-0 items-center",
             // the icons' own padding sits outside the words' edge, so
@@ -432,6 +434,7 @@ export function MessageActionBar({
   return (
     <TooltipProvider delayDuration={500}>
       <div
+        data-copy="skip"
         className={cn(
           "relative flex shrink-0 items-center self-center rounded-full border border-border/70 bg-popover/95 p-[3px] shadow-[0_4px_14px_-6px_rgba(0,0,0,0.25)] backdrop-blur-md",
           showing,
@@ -469,7 +472,9 @@ export function ReplyContext({
   onAccent?: boolean;
 }) {
   return (
+    // an excerpt of another message, which a copy of this one leaves out
     <div
+      data-copy="skip"
       className={cn(
         "mb-1.5 flex items-start gap-1.5 rounded-lg border-l-2 px-2 py-1",
         onAccent

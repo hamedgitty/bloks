@@ -870,6 +870,30 @@ speaking in it, draws every message as a bubble, with a face and a name
 on the others' and runs from one sender grouped; a chat with one agent
 keeps its full width prose.
 
+## Copying out of the chat
+
+Chromium writes a selection's computed styles into `text/html`, so a
+reply pasted into Mail, Docs or Word would arrive in the theme's colours
+with the action row's buttons. One `copy` and `cut` listener for the
+whole window (`installCleanCopy` in `src/lib/cleanCopy.ts`, installed in
+`src/main.tsx`) writes the selection's text to `text/plain` as the
+browser would, and rebuilds `text/html` from an allowlist
+(`cleanCopyHtml`, a pure function over the cloned selection): headings,
+paragraphs, lists, quotes, tables, `pre` and `code`, `strong` and `em`,
+line breaks, and links whose address is http, https or mailto, each
+bare, with no attribute but that address. Buttons, icons, pictures,
+`time`, fields, anything `aria-hidden`, `sr-only`, `select-none` or
+`hidden`, and anything marked `data-copy="skip"` (the action rows, the
+day line, reactions, a quoted reply, "edited", a code block's bar) go
+with their contents; a link drawn as a button around words (a shared
+file named in a reply) says `data-copy="keep"`. Every other element is
+unwrapped to its words, a box of words becoming a paragraph, and a
+person's own line breaks become `<br>`. A selection inside code, a link
+or one list or table keeps those around it. Text is always escaped. A
+copy in a field being typed in, or one a component already answered,
+is left to the browser, and the Copy buttons write their own text as
+before.
+
 ## Shared files
 
 An agent's deliverables folder (`server/artifacts.ts`) is the one place a

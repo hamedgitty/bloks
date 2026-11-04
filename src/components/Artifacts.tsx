@@ -673,6 +673,8 @@ export function SharedFileLink({
     <>
       <button
         type="button"
+        // words of the reply drawn as a button, so a copy keeps them
+        data-copy="keep"
         onClick={() => void open()}
         disabled={opening.phase === "opening"}
         title={t("artifacts.openName", { name: target?.kind === "artifact" ? fileBase(target.name) : href })}

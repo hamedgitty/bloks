@@ -7,6 +7,7 @@ import { ThemeProvider } from "./lib/theme";
 import "@fontsource-variable/inter/opsz.css";
 import "./styles.css";
 import { startTranscriptWidth } from "./lib/useTranscriptWidth";
+import { installCleanCopy } from "./lib/cleanCopy";
 import { applyAccent, chooseAccent, hasStoredAccent, storedAccent } from "./lib/accent";
 import { accentForMark } from "./lib/workspaceMark";
 import { useLanguage } from "./lib/i18n";
@@ -20,6 +21,8 @@ const workspace = window.bloks?.workspace;
 if (workspace && workspace.kind !== "personal" && workspace.mark && !hasStoredAccent()) chooseAccent(accentForMark(workspace.mark.color));
 else applyAccent(storedAccent());
 startTranscriptWidth();
+// a copy out of a reply pastes as its words and structure, not the theme
+installCleanCopy();
 
 /**
  * The whole interface, drawn again when the language changes. The words

@@ -36,7 +36,7 @@ export function RecalledNotes({ notes }: { notes: RecalledNote[] }) {
   };
 
   return (
-    <div className="mt-1 flex w-full flex-col items-end">
+    <div data-copy="skip" className="mt-1 flex w-full flex-col items-end">
       <button
         onClick={() => setOpen((was) => !was)}
         aria-expanded={open}

@@ -578,7 +578,7 @@ function RoomMessage({
           <>
             {reactions}
             {message.deliveredAt && (
-              <div className="mt-0.5 px-1 text-caption leading-4 tabular-nums text-muted-foreground">
+              <div data-copy="skip" className="mt-0.5 px-1 text-caption leading-4 tabular-nums text-muted-foreground">
                 {queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}
               </div>
             )}

@@ -316,7 +316,8 @@ function MarkdownCode({ block, highlight }: { block: CodeBlock; highlight: strin
     // clip, not hidden: hidden would make this box the thing the bar
     // sticks inside, and the bar would never move
     <div style={SYNTAX} className={cn(FLOW, "max-w-full overflow-clip rounded-xl border bg-(--code-bg)")}>
-      <div className="sticky top-0 z-[1] flex h-8 items-center gap-1 border-b bg-(--code-bg) pr-1 pl-4 text-caption text-muted-foreground">
+      {/* the bar is the app's: a copy across the block takes the code alone */}
+      <div data-copy="skip" className="sticky top-0 z-[1] flex h-8 items-center gap-1 border-b bg-(--code-bg) pr-1 pl-4 text-caption text-muted-foreground">
         <span className="min-w-0 flex-1 truncate font-mono">{block.lang}</span>
         <button
           onClick={toggleWrap}

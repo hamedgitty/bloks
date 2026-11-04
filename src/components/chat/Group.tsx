@@ -104,7 +104,7 @@ export function GroupMessage({
         </div>
         {under}
         {(last || receipts) && (
-          <div className={cn("mt-1 flex min-h-4 items-center gap-1.5 px-1", mine ? "flex-row-reverse" : "flex-row")}>
+          <div data-copy="skip" className={cn("mt-1 flex min-h-4 items-center gap-1.5 px-1", mine ? "flex-row-reverse" : "flex-row")}>
             {last && (
               <time dateTime={new Date(at).toISOString()} className="text-caption tabular-nums text-muted-foreground">
                 {stamp(at)}

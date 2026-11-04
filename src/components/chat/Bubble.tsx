@@ -378,7 +378,7 @@ export function Bubble({
           <>
             {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
             <Markdownish text={message.text ?? ""} highlight={highlight} />
-            {message.editedAt && <span className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>}
+            {message.editedAt && <span data-copy="skip" className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>}
           </>
         }
         under={
@@ -426,7 +426,7 @@ export function Bubble({
         >
           {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
           <Markdownish text={message.text ?? ""} highlight={highlight} />
-          {message.editedAt && <span className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>}
+          {message.editedAt && <span data-copy="skip" className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>}
         </div>
         <Reactions
           reactions={message.reactions}
@@ -544,13 +544,13 @@ export function Bubble({
         bubble={
           <>
             {fromSomewhere && (
-              <div className="mb-0.5 text-caption opacity-80">
+              <div data-copy="skip" className="mb-0.5 text-caption opacity-80">
                 {viaLabel(message)}
               </div>
             )}
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onAccent={group.mine && editing === null && message.via !== "goal" && message.via !== "incident"} />}
             {editing !== null ? editor : words}
-            {message.editedAt && editing === null && <span className="ml-1.5 align-baseline text-caption opacity-75">{t("bubble.edited")}</span>}
+            {message.editedAt && editing === null && <span data-copy="skip" className="ml-1.5 align-baseline text-caption opacity-75">{t("bubble.edited")}</span>}
           </>
         }
         under={
@@ -562,10 +562,10 @@ export function Bubble({
             />
             {message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
             {queued && message.at && message.deliveredAt && (
-              <div className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">{queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}</div>
+              <div data-copy="skip" className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">{queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}</div>
             )}
             {message.delivery && message.delivery.route !== "queued" && !message.queued && (
-              <div className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
+              <div data-copy="skip" className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
             )}
           </>
         }
@@ -605,7 +605,7 @@ export function Bubble({
           rather than beside it where they would push the text around. */}
       <div className={cn("flex max-w-[82%] flex-col items-end sm:max-w-[68%]", editing !== null && "w-full")}>
         {(message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "service" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident") && (
-          <div className="mb-1 px-1 text-caption text-muted-foreground">
+          <div data-copy="skip" className="mb-1 px-1 text-caption text-muted-foreground">
             {viaLabel(message)}
           </div>
         )}
@@ -632,7 +632,7 @@ export function Bubble({
           {message.replyTo && <ReplyContext replyTo={message.replyTo} />}
           {editing !== null ? editor : words}
           {message.editedAt && editing === null && (
-            <span className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>
+            <span data-copy="skip" className="ml-1.5 align-baseline text-caption text-muted-foreground">{t("bubble.edited")}</span>
           )}
         </div>
         <Reactions
@@ -643,7 +643,7 @@ export function Bubble({
         {/* what recall put ahead of these words for the agent */}
         {message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
         {queued && message.at && message.deliveredAt && (
-          <div className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">
+          <div data-copy="skip" className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">
             {queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}
           </div>
         )}
@@ -651,7 +651,7 @@ export function Bubble({
             stopping it: said once, quietly, so a person who expected it
             to wait can see it did not (server/delivery.ts). */}
         {message.delivery && message.delivery.route !== "queued" && !message.queued && (
-          <div className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
+          <div data-copy="skip" className="mt-1 px-1 text-caption text-muted-foreground">{preparationDeliveryLine(message)}</div>
         )}
       </div>
       {/* The same row as a reply's, under your bubble and lined up with

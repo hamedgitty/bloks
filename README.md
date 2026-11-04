@@ -244,6 +244,10 @@ closed set of shapes before it reaches a screen, and nothing in an answer
 fetches anything. With its update, the iPhone draws the same answers
 natively. [docs/GENERATIVE_UI.md](docs/GENERATIVE_UI.md) is the contract.
 
+Copy any part of a conversation and paste it into Mail, Docs or Word: it
+arrives as its headings, lists, tables, links and code, in the
+document's own style, without the app's colours, buttons or timestamps.
+
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">
 </p>
