@@ -154,7 +154,7 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
             <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-small font-medium text-muted-foreground">
               {t("changesCard.undone")}
             </span>
-          ) : ownTotal === 0 ? null : confirming ? (
+          ) : ownTotal === 0 || changes.copied ? null : confirming ? (
             <div className="flex shrink-0 items-center gap-1.5">
               <button
                 onClick={() => setConfirming(false)}
@@ -189,6 +189,11 @@ export function ChangesCard({ message, fresh }: { message: Message; fresh?: bool
         )}
         {rehearsal === "applied" && !undone && (
           <p className="mt-2 text-small text-muted-foreground">{t("changesCard.appliedFromARehearsal")}</p>
+        )}
+        {/* a copy in a branch: the files are the workspace's, and undoing
+            them is the original card's, which knows when it has been */}
+        {changes.copied && !undone && ownTotal > 0 && (
+          <p className="mt-2 text-small text-muted-foreground">{t("changesCard.undoInOriginal")}</p>
         )}
         {confirming && !undone && (
           <p className="mt-2 text-small text-muted-foreground">

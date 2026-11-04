@@ -382,6 +382,12 @@ export interface Message {
   /** Brought over from a session in that engine before Bloks
    * (server/session-import.ts): said there, at the time it keeps. */
   imported?: "claude" | "codex";
+  /** The line that opens a branch (server/branch.ts): the conversation
+   * it was branched from, the answer it was branched at, that
+   * conversation's title then, and `gone` once it has been closed. A
+   * client that does not know the field shows the notice's text, which
+   * says the same thing. */
+  branch?: { from: string; messageId: string; title: string; gone?: boolean };
   /** What recall found in the agent's other conversations and memory
    * files and added to the turn this message started, in the turn's own
    * words and never its standing prompt. Only on the person's own message
@@ -539,6 +545,10 @@ export interface TaskRecord {
    * see server/access.ts for who else may ever read it. Absent, and not
    * the team lane, is one of the owner's own. */
   personId?: string;
+  /** Branched from another of the agent's conversations (server/branch.ts):
+   * which one, at which answer, when, and the request that asked, so the
+   * same request again opens this branch rather than making another. */
+  branch?: { from: string; messageId: string; at: number; requestId?: string };
 }
 
 /** The owner's own lanes, which are what the lane cap and the owner's
@@ -1310,6 +1320,38 @@ export class Store {
     // Not told to onAppend, message by message: these were said before
     // Bloks, so none of them moves the agent up the sidebar, and a lane
     // nobody has searched yet has no index to grow.
+    this.saveBots();
+    return task;
+  }
+
+  /**
+   * A lane holding a branch of another (server/branch.ts), with its
+   * messages written in one go and opened, as a new conversation is.
+   * Its sessions start empty: the next turn is a new session told the
+   * copied conversation. Null when the agent has no room for another lane.
+   */
+  branchLane(
+    botId: string,
+    input: { title: string; branch: NonNullable<TaskRecord["branch"]>; messages: Message[]; context?: TaskRecord["context"] },
+  ): TaskRecord | null {
+    const bot = this.bot(botId);
+    if (!bot || ownerLanes(bot).length >= MAX_TASKS) return null;
+    const task: TaskRecord = {
+      id: newId(),
+      title: input.title,
+      resumeCursors: {},
+      createdAt: Date.now(),
+      branch: input.branch,
+      ...(input.context ? { context: input.context } : {}),
+    };
+    this.messages.set(task.id, input.messages);
+    this.preparationSources.delete(task.id);
+    this.save(task.id, input.messages);
+    bot.tasks.push(task);
+    bot.activeTaskId = task.id;
+    bot.threadId = task.id;
+    // Not told to onAppend, message by message, as an import is not:
+    // these were said already, in the conversation they came from.
     this.saveBots();
     return task;
   }

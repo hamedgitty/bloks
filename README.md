@@ -353,6 +353,12 @@ file or a `bloks://install?url=` link through the same review, and use
   several agents try the same task and keep the best attempt.
 - **Rewind to here.** Take a conversation back to a message you sent, and
   the files with it.
+- **Branch from here.** Try another direction from a good answer without
+  losing the conversation you have: Branch from here, in an answer's ⋯
+  menu, opens a new conversation with the same agent holding everything
+  up to that answer. The agent picks it up in a new session that has
+  heard only that much, and the original stays exactly as it was. Files
+  in the workspace are shared, not copied.
 - **Work somewhere else.** An agent on Claude Code, Codex or another engine
   that runs a program can work in a Docker container or on another
   machine over SSH: a throwaway container that can break nothing here,

@@ -191,6 +191,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * count bumped as each one settles, for the lane asking below. */
   const switching = useRef(new Map<string, number>());
   const [switchesSettled, setSwitchesSettled] = useState(0);
+  /** Branches asked for and not answered yet, by conversation and answer,
+   * with the request id each went with: a second press while the first
+   * is out is the same branch, so it asks nothing more. */
+  const branching = useRef(new Map<string, string>());
 
   // Text fields save as you type, so edits are coalesced per agent
   // rather than sending a request per keystroke.
@@ -475,6 +479,33 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const made = api(`/api/bots/${action.botId}/tasks`, { method: "POST", body: "{}" });
           // refused, or answered with nothing to open: no box is coming
           if (asked) made.then((r) => !r?.bot && dropLaneFocus(asked), () => dropLaneFocus(asked));
+          switchLane(action.botId, made);
+          break;
+        }
+        case "branchTask": {
+          // Opened like a new conversation, and its box takes the keyboard
+          // the same way. The request id makes it one branch however many
+          // times it reaches the server: a press while this one is out
+          // adds nothing, and the server answers the same id with the
+          // branch it already made.
+          const key = `${action.taskId}:${action.messageId}`;
+          if (branching.current.has(key)) break;
+          const requestId = globalThis.crypto?.randomUUID?.() ?? `b${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+          branching.current.set(key, requestId);
+          const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+          const had = document.activeElement === document.body ? null : document.activeElement;
+          const asked =
+            bot && window.matchMedia?.("(pointer: fine)").matches ? askLaneFocus(bot.id, action.taskId, had) : null;
+          const made = api(`/api/threads/${action.taskId}/branch`, {
+            method: "POST",
+            body: JSON.stringify({ messageId: action.messageId, requestId }),
+          });
+          made.then(
+            (r) => {
+              if (asked && !r?.bot) dropLaneFocus(asked);
+            },
+            () => asked && dropLaneFocus(asked),
+          ).finally(() => branching.current.delete(key));
           switchLane(action.botId, made);
           break;
         }

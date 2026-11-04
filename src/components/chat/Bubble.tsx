@@ -231,6 +231,8 @@ export function Bubble({
   onEdit,
   onDelete,
   onRewind,
+  onBranch,
+  branchBlocked,
   previewRedo,
   onRedo,
   redoTick,
@@ -259,6 +261,11 @@ export function Bubble({
   onEdit?: (messageId: string, text: string) => void;
   onDelete?: (messageId: string) => void;
   onRewind?: (messageId: string) => void;
+  /** A new conversation from this answer, in a conversation with one
+   * agent (src/lib/branch.ts); only an agent's message offers it. */
+  onBranch?: (messageId: string) => void;
+  /** Why Branch from here is greyed right now. */
+  branchBlocked?: string | null;
   /** What redoing this message would take back, or that it is not
    * offered: asked of the server, which holds the turns and the files. */
   previewRedo?: (messageId: string) => Promise<RedoPreview>;
@@ -399,6 +406,8 @@ export function Bubble({
             onForward={onForward}
             onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
             onDelete={onDelete ? () => onDelete(message.id) : undefined}
+            onBranch={onBranch ? () => onBranch(message.id) : undefined}
+            branchBlocked={branchBlocked}
           />
         }
         receipts={group.receipts}
@@ -451,6 +460,8 @@ export function Bubble({
           onForward={onForward}
           onReact={onReact ? (emoji) => onReact(message.id, emoji) : undefined}
           onDelete={onDelete ? () => onDelete(message.id) : undefined}
+          onBranch={onBranch ? () => onBranch(message.id) : undefined}
+          branchBlocked={branchBlocked}
         />
       </div>
     );

@@ -57,6 +57,8 @@ import { foldHolding, foldTurns, lastFoldKey, rowsFrom, turnRunning } from "@/li
 import { type RedoPreview } from "@/lib/redo";
 
 import { Bubble, Notice, QuietCheckIns, Rewound, TakenBack } from "./chat/Bubble";
+import { BranchLine } from "./chat/BranchLine";
+import { branchBlocked } from "@/lib/branch";
 import { MessageGuard } from "./chat/MessageGuard";
 import { GroupMessage, PersonAvatar, SeenBy } from "./chat/Group";
 import { Markdownish } from "./Markdown";
@@ -688,6 +690,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   const first = said[0];
   // this conversation, not the agent: another one may be the one working
   const working = openLaneWorking(bot);
+  // Why Branch from here is greyed on this conversation's answers, if it
+  // is: what the server would refuse, said before it is pressed
+  const branchWhy = branchBlocked(openLane, { name: bot.name, lanes: bot.tasks?.length ?? 0, max: MAX_TASKS, working });
   // where it works, when that is not this computer (src/lib/workplace.ts)
   const placeNow = placeLine(bot.workplaceStatus, working);
   // Nothing said, nothing on its way, and nothing still loading: a new
@@ -773,7 +778,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           return <ToolRun key={m.id} messages={run} fresh={fresh} className={group ? "pl-9" : undefined} />;
         }
         case "notice":
-          return <Notice key={m.id} message={m} fresh={fresh} />;
+          return m.branch ? <BranchLine key={m.id} message={m} bot={bot} fresh={fresh} /> : <Notice key={m.id} message={m} fresh={fresh} />;
         case "screen":
           return m.png ? <ScreenFrame key={m.id} png={m.png} mime={m.mime} /> : null;
         case "artifact":
@@ -849,6 +854,8 @@ export function ChatView({ bot }: { bot: Bot }) {
               onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
               onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
               onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
+              onBranch={m.role === "bot" ? (messageId) => dispatch({ type: "branchTask", botId: bot.id, taskId: bot.threadId, messageId }) : undefined}
+              branchBlocked={branchWhy}
               previewRedo={(messageId) => previewRedo(bot.threadId, messageId)}
               onRedo={(messageId, next) => redoFrom(bot.threadId, messageId, next)}
               redoTick={`${bot.messages.length}:${working}`}

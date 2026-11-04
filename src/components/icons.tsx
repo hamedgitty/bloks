@@ -217,6 +217,18 @@ const PanelSplitShape = drawn(
     <rect x="13" y="7.5" width="4.25" height="9" rx="0.75" fill="currentColor" stroke="none" />
   </>,
 );
+// A conversation going two ways from one answer (Branch from here): a
+// line that carries on, and one that leaves it.
+const GitBranchShape = drawn(
+  "GitBranch",
+  <>
+    <circle cx="6.75" cy="5.25" r="2.25" />
+    <circle cx="6.75" cy="18.75" r="2.25" />
+    <circle cx="17.25" cy="6.75" r="2.25" />
+    <path d="M6.75 7.5v9" />
+    <path d="M17.25 9v.75a3.75 3.75 0 0 1-3.75 3.75h-3a3.75 3.75 0 0 0-3.75 3" />
+  </>,
+);
 const KeyboardShape = drawn(
   "Keyboard",
   <>
@@ -285,6 +297,7 @@ export const Folder = icon(FolderHero, "Folder");
 export const FolderKanban = icon(RectangleGroupHero, "FolderKanban");
 export const FolderOpen = icon(FolderOpenHero, "FolderOpen");
 export const Gauge = icon(ChartPieHero, "Gauge");
+export const GitBranch = GitBranchShape;
 export const Globe = icon(GlobeAltHero, "Globe");
 export const GripHorizontal = icon(EllipsisHorizontalHero, "GripHorizontal");
 export const Hand = icon(HandRaisedHero, "Hand");

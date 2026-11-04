@@ -167,6 +167,9 @@ export interface ChangesSummary {
   reverted?: { at: number; restored: number; skipped: number };
   /** Set for a rehearsal: waiting on a decision, applied, or discarded. */
   rehearsal?: { state: "pending" | "applied" | "discarded"; applied?: number; skipped?: number };
+  /** A copy in a branch (server/branch.ts): the files are the ones the
+   * original changed, and undoing them is the original card's to do. */
+  copied?: true;
 }
 
 export interface DiffLine {

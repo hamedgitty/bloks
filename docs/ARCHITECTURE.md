@@ -1006,6 +1006,57 @@ a fresh session that is replayed only what is left. Memory notes are not
 touched; the memory journal has its own undo. Rooms and rehearsal lanes
 refuse.
 
+## Branch
+
+`POST /api/threads/:lane/branch` with a `messageId` and a `requestId`
+makes a new lane for the same agent from one of its answers in this one,
+opens it, and answers as opening a lane does (`bot`, `seq`, and the new
+`threadId`). The lane it came from is not changed at all. The rules are
+in `server/branch.ts`:
+
+- Only an answer: an agent's text message, not taken back, not a message
+  to or from another agent. A branch from the person's own words is
+  Rewind.
+- The copy is every message up to and including that answer that was
+  part of the conversation (nothing `deleted`, `queued`, `unsent` or
+  dismissed), under new ids with the times they were said, replies
+  pointing at their copies. Nothing in it is live: a card still waiting
+  is closed and loses its request, a secret or connector card that waited
+  is dismissed, a changes card is marked `copied` so Undo stays with the
+  original's card, and transport fields (a Telegram return address, a
+  queue place, a service wake, a Continue, held messages) stay behind.
+  The original engine's compaction and session markers are left out.
+  Attachments are shared rather than copied: they are files under the
+  data folder's `attachments/` that no lane owns and closing a lane never
+  removes, so the copied words name the same files, and an agent's
+  deliverables are the agent's, not the lane's.
+- Then one notice with `branch: { from, messageId, title }` and the text
+  "Branched from {title}. Files in the workspace are shared with the
+  original.", which the app draws as a line that opens the original at
+  that answer. When the original is closed, every such line is patched
+  to `gone` and says it was deleted.
+- The new lane has no engine cursors and no `lastInstanceId`, so its first
+  turn is a new session told the copy (`freshTurnText` with `why:
+  "branch"`); a running summary goes with it only when it covers nothing
+  past the branch point. An engine's own fork copies a session to its
+  end, not to a chosen answer, so it is not used.
+- Its title is the original's with "(branch)", then "(branch 2)" and on,
+  the first number free among the agent's lanes, kept to 40 characters.
+- Refused for an agent's credential (403), for a lane the owner cannot
+  write in (403), for a room, the team lane, the guest mail lane and a
+  Signal person's lane (400), and while the lane's turn runs or its
+  changes card is being made, for a rehearsal, an archived agent, or an
+  agent at its lane limit (409). The lane summary's `noBranch` names the
+  kinds that never branch, so the app greys the item with the reason.
+- One branch per `requestId`: the same id again opens the branch it made
+  (200), whatever the lane is doing by then; the id on a different
+  answer is a 409. The id is kept on the lane, so a retry after a
+  restart is still the same branch.
+
+Members of a Team workspace have one private conversation per agent and
+no way to open more on their surface, so their routes do not include
+branching yet.
+
 ## Redo
 
 Saving an edit to a message only rewrites its stored text; the agent has

@@ -241,6 +241,10 @@ export interface Message {
   editedAt?: number;
   /** Said in that engine before Bloks, and brought over with the session. */
   imported?: "claude" | "codex";
+  /** The line that opens a branch (server/branch.ts): the conversation it
+   * came from, the answer it was branched at, that conversation's title
+   * then, and `gone` once it was closed. */
+  branch?: { from: string; messageId: string; title: string; gone?: boolean };
   /** What recall found elsewhere and added to the turn this started. */
   recalled?: RecalledNote[];
   /** Taken back: the row stays, the words are gone. */
@@ -334,6 +338,8 @@ export interface Message {
     reverted?: { at: number; restored: number; skipped: number };
     /** A rehearsal: changes made on a copy, waiting for a decision. */
     rehearsal?: { state: "pending" | "applied" | "discarded" };
+    /** Copied into a branch: the original's card is the one that undoes. */
+    copied?: true;
   };
   text?: string;
   card?: OptionCardData;
@@ -390,6 +396,9 @@ export interface TaskSummary {
   /** A lane that never takes a goal: a shared room's, a rehearsal, or
    * the one that answers mail from people not listed. */
   noGoals?: boolean;
+  /** A kind of conversation that is never branched, and so which reason
+   * Branch from here gives (laneBranchKind in server/index.ts). */
+  noBranch?: "notYours" | "room" | "team" | "guestMail" | "signal" | "rehearsal";
   /** Brought over from a session before Bloks (server/session-import.ts):
    * the engine it was had in, when, and whether it carries that session on. */
   imported?: { engine: "claude" | "codex"; at: number; resumes: boolean };
@@ -1091,6 +1100,8 @@ export type Action =
   | { type: "toggleRoutines"; open?: boolean; tab?: AutomationsTab; focus?: AutomationsFocus }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "newTask"; botId: string }
+  /** Branch from here: a new conversation from one of the agent's answers. */
+  | { type: "branchTask"; botId: string; taskId: string; messageId: string }
   | { type: "selectTask"; botId: string; taskId: string }
   | { type: "closeTask"; botId: string; taskId: string }
   | { type: "clearTask"; botId: string; taskId: string }
@@ -1447,6 +1458,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "toggleShortcuts":
       return { ...state, shortcutsOpen: action.open ?? !state.shortcutsOpen };
     case "newTask":
+    case "branchTask":
     case "selectTask":
     case "closeTask":
     case "clearTask":

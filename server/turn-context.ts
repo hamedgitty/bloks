@@ -37,14 +37,15 @@ export function engineIsFresh(input: FreshnessInput): boolean {
  * the agent knows the story has a gap rather than assuming it has all of
  * it. `why` is what the opening line says happened: another engine had
  * the conversation, the old session could not be carried on, or it was
- * left in another folder or on another account of the engine. `from`
+ * left in another folder or on another account of the engine, or the
+ * person branched it off another conversation (server/branch.ts). `from`
  * names the tool a conversation brought over from before Bloks was had
  * in (server/session-import.ts), which says more than either.
  */
 export function freshTurnText(
   transcript: ReadonlyArray<{ role: "user" | "assistant"; text: string }>,
   turnText: string,
-  opts: { left?: number; why?: "engine" | "session" | "folder" | "account"; folder?: string; from?: string } = {},
+  opts: { left?: number; why?: "engine" | "session" | "folder" | "account" | "branch"; folder?: string; from?: string } = {},
 ): string {
   if (transcript.length === 0) return turnText;
   const history = transcript
@@ -58,7 +59,9 @@ export function freshTurnText(
         ? `You are picking up this conversation in a new session${opts.folder ? ` in ${opts.folder}` : ""}: the person changed the working folder, and the earlier session belonged to the folder it ran in.`
         : opts.why === "account"
           ? "You are picking up this conversation in a new session, on another account of the same engine and the same model: the earlier session belonged to the account it ran on."
-          : "You are picking up this conversation mid-thread; a different engine handled it until now.";
+          : opts.why === "branch"
+            ? "You are picking up this conversation in a new session: the person branched it off another conversation at the last answer below, to try a different direction from there. Nothing said after that answer in the other conversation is part of this one, and the files in the workspace are shared with it, so they may have changed since."
+            : "You are picking up this conversation mid-thread; a different engine handled it until now.";
   const left = opts.left ?? 0;
   const gap =
     left > 0

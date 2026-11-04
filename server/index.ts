@@ -526,6 +526,7 @@ import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { redoCounts, redoPlan, takenBack, type RedoRefusal } from "./redo.ts";
+import { branchCopy, branchDivider, branchPoint, branchTitle, carriedSummary, dividerText } from "./branch.ts";
 import { clockTime, Cooldowns, describeRest, errorWords, failureOf, outReason, REASON_WORDS, restIsNews, RETRY_WAIT_MS, RETRY_INTERVAL_MS, STAY_MS, toldOf, type Rest, type Told } from "./failover.ts";
 import { blockedWords, checkLabel, EngineAccounts, linkSetup, MAIN_ACCOUNT, mainFolder, MAX_ACCOUNTS, signInCommand, takesAccounts, type AccountPick } from "./engine-accounts.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
@@ -3409,6 +3410,12 @@ function clientBot(bot: BotRecord | null) {
         ...(task.goal ? { goal: goalSummary(task.goal, goalJudging.has(task.id)) } : {}),
         // where a goal cannot be set at all, so no screen offers one
         ...(laneGoalRefusal(task) ? { noGoals: true } : {}),
+        // what kind of conversation is never branched, for the app to
+        // say why in its own words (laneBranchKind)
+        ...(() => {
+          const kind = laneBranchKind(bot, task);
+          return kind ? { noBranch: kind } : {};
+        })(),
       };
     }),
   };
@@ -7451,6 +7458,7 @@ function deleteLane(botId: string, laneId: string): ReturnType<typeof store.dele
   if (outcome === "ok") {
     textPreview.forget(laneId);
     turnTraces.forget(laneId);
+    branchSourceGone(botId, laneId);
   }
   // A rehearsal's lane is the only way to its copy: closed, nothing can
   // follow up on it or apply it, so the copy goes now rather than in a week.
@@ -9005,9 +9013,14 @@ async function startClaimedTurn(
               ? { why: "folder" as const, folder: turnCwd ? shownPath(turnCwd) : undefined }
               : accountMoved
                 ? { why: "account" as const }
-                : task.lastInstanceId === ""
-                  ? { why: "session" as const }
-                  : {}),
+                // a branch's first turn, which no engine has served
+                // (server/branch.ts): its story ends at the answer it
+                // was branched from
+                : task.branch && task.lastInstanceId === undefined && !task.usage?.turns
+                  ? { why: "branch" as const }
+                  : task.lastInstanceId === ""
+                    ? { why: "session" as const }
+                    : {}),
         });
       } else if (replaceSession) {
         const told = await story(true);
@@ -21625,7 +21638,119 @@ async function rewindLane(found: BotRecord, task: TaskRecord, index: number, kee
   };
 }
 
-const REDO_IN_A_ROOM = "Redo works in a conversation with one agent, not in a room.";
+// ── branching ──────────────────────────────────────────────────────────
+// Branch from here (server/branch.ts): a new conversation with the same
+// agent, holding a copy of one of its conversations up to and including
+// one of its answers. Rewind goes back in the conversation you have; a
+// branch leaves it exactly as it is and goes on somewhere new.
+
+/** The kinds of conversation that are never branched, with what the
+ * route says about each. The app is told the kind (clientBot's
+ * `noBranch`) and says it in the reader's language. */
+type BranchKind = "notYours" | "room" | "team" | "guestMail" | "signal" | "rehearsal";
+const BRANCH_REFUSED: Record<BranchKind, { status: number; error: string }> = {
+  notYours: { status: 403, error: "Only someone who can write in this conversation can branch it." },
+  room: { status: 400, error: "Branch works in a conversation with one agent, not in a room." },
+  // the copy would be the owner's own, with the team's words in it
+  team: { status: 400, error: "This conversation is shared with the agent's team, so it cannot be branched. Branch one of your own conversations with it." },
+  // strangers' mail would land among the owner's own work
+  guestMail: { status: 400, error: "This conversation answers mail from people you have not listed, so it cannot be branched." },
+  signal: { status: 400, error: "This conversation is somebody's on Signal, so it cannot be branched." },
+  rehearsal: { status: 409, error: "A rehearsal cannot be branched. Apply it or discard it first." },
+};
+
+/** Why this conversation can never be branched, or null when it can.
+ * Who may branch is who may write in it; then what it is for. */
+function laneBranchKind(bot: BotRecord, lane: TaskRecord): BranchKind | null {
+  if (lane.team) return "team";
+  if (access.laneAccess(bot, lane, { kind: "owner" }, accessWorld()) !== "write") return "notYours";
+  if (isSharedLane(lane.id)) return "room";
+  if (lane.guestMail) return "guestMail";
+  if (lane.signalPerson) return "signal";
+  if (rehearsals.forTask(lane.id)) return "rehearsal";
+  return null;
+}
+
+/** Why it cannot be branched right now, or null. A turn still running
+ * (or its changes card still being made) would go on adding to what is
+ * being copied, so the branch waits for it to end. */
+function branchBusy(bot: BotRecord, lane: TaskRecord): string | null {
+  if (bot.archivedAt) return archivedRefusal(bot).message;
+  if (lane.busy || claimedLanes.has(lane.id) || cardsPending.has(lane.id) || (activeRoom.get(lane.id) ?? lane.id) !== lane.id) {
+    return `${bot.name} is working in this conversation. Branch from here once it is done.`;
+  }
+  if (ownerLanes(bot).length >= MAX_TASKS) {
+    return `${bot.name} has ${MAX_TASKS} conversations open, as many as an agent keeps. Close one, then branch.`;
+  }
+  return null;
+}
+
+/**
+ * Branches `laneId` at one of its answers: a new conversation, opened,
+ * holding the copy and the line saying where it came from, its first
+ * turn a new session told the copy. One per request id: a second click,
+ * or the same request sent again, opens the branch the first one made,
+ * whatever the conversation is doing by then.
+ */
+function branchConversation(
+  laneId: string,
+  body: Record<string, unknown>,
+): { status: number; error: string } | { status: number; bot: BotRecord; lane: TaskRecord } {
+  const requestId = body.requestId;
+  if (requestId !== undefined && (typeof requestId !== "string" || !/^[\w-]{1,128}$/.test(requestId))) {
+    return { status: 400, error: "invalid request id" };
+  }
+  const found = store.botByThread(laneId);
+  const source = found?.tasks.find((t) => t.id === laneId);
+  if (!found || !source) return BRANCH_REFUSED.room;
+  if (requestId) {
+    const made = found.tasks.find((t) => t.branch?.requestId === requestId);
+    if (made) {
+      if (made.branch!.from !== laneId || made.branch!.messageId !== body.messageId) {
+        return { status: 409, error: "That request already made a different branch." };
+      }
+      store.setActiveTask(found.id, made.id);
+      return { status: 200, bot: store.bot(found.id)!, lane: made };
+    }
+  }
+  const kind = laneBranchKind(found, source);
+  if (kind) return BRANCH_REFUSED[kind];
+  const messages = store.messagesFor(laneId);
+  const point = branchPoint(messages, body.messageId);
+  if (typeof point === "string") return { status: 400, error: point };
+  const busy = branchBusy(found, source);
+  if (busy) return { status: 409, error: busy };
+
+  const now = Date.now();
+  const answer = messages[point];
+  const copy = branchCopy(messages, point, newId);
+  const lane = store.branchLane(found.id, {
+    title: branchTitle(source.title, found.tasks.map((t) => t.title)),
+    branch: { from: source.id, messageId: answer.id, at: now, ...(requestId ? { requestId } : {}) },
+    messages: [...copy, { id: newId(), ...branchDivider({ id: source.id, title: source.title }, answer.id, now) }],
+    context: carriedSummary(source.context, messages, point, copy),
+  });
+  if (!lane) return { status: 409, error: branchBusy(found, source) ?? `${found.name} has no room for another conversation.` };
+  return { status: 201, bot: store.bot(found.id)!, lane };
+}
+
+/** A conversation closed: every branch line that named it says it was
+ * deleted, and stops being a way back to it. Only branches hold one. */
+function branchSourceGone(botId: string, laneId: string) {
+  for (const lane of store.bot(botId)?.tasks ?? []) {
+    if (!lane.branch) continue;
+    for (const message of store.messagesFor(lane.id)) {
+      if (message.branch?.from !== laneId || message.branch.gone) continue;
+      const patched = store.patchMessage(lane.id, message.id, {
+        branch: { ...message.branch, gone: true },
+        text: dividerText(message.branch.title, true),
+      });
+      if (patched) broadcast({ kind: "message.patch", threadId: lane.id, message: patched });
+    }
+  }
+}
+
+const REDO_IN_A_ROOM ="Redo works in a conversation with one agent, not in a room.";
 const REDO_NOT_YOURS = "Redo is for a message you wrote here.";
 const REDO_REFUSED: Record<RedoRefusal, { status: number; error: string }> = {
   waiting: { status: 409, error: "This message is still waiting for its turn. Edit it where it waits." },
@@ -27185,6 +27310,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 400, { error: "Rewind to one of your own messages." });
       }
       return json(res, 200, await rewindLane(found, task, index));
+    }
+
+    // ── branching ──
+    // A new conversation with the same agent, holding a copy of this one
+    // up to and including one of its answers (branchConversation). This
+    // one does not change at all. The person's, as a rewind is, and as
+    // opening a conversation is: never an agent's. Answered the way
+    // opening one is, so the app shows it at once.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/branch$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "branching a conversation is for the person, not an agent" });
+      const made = branchConversation(m[1], await readBody(req));
+      if ("error" in made) return json(res, made.status, { error: made.error });
+      broadcast({ kind: "bot", bot: clientBot(made.bot) });
+      return json(res, made.status, { threadId: made.lane.id, bot: { ...clientBot(made.bot), ...laneFor(made.lane.id) }, seq: frameSeq });
     }
 
     // Dismissing an unresolved input removes the waiting row, but says

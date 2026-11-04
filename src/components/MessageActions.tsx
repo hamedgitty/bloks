@@ -15,6 +15,7 @@ import { Copy } from "@/components/icons";
 import { SmilePlus } from "@/components/icons";
 import { Pencil } from "@/components/icons";
 import { History } from "@/components/icons";
+import { GitBranch } from "@/components/icons";
 import { MoreHorizontal } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { Send } from "@/components/icons";
@@ -32,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { confirm } from "@/components/ui/confirm";
+import { toast } from "@/components/ui/toast";
 import { stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 import { formatDate, formatLocale, t } from "@/lib/i18n";
@@ -175,11 +177,11 @@ function SaidAt({ at }: { at: number }) {
 /** A name for an icon, shown under it after a moment's rest. `quiet`
  * holds it back, for an icon whose menu is open or has just handed the
  * focus back to it: the name would only cover what was chosen. */
-function Tip({ label, quiet, children }: { label: string; quiet?: boolean; children: React.ReactNode }) {
+function Tip({ label, quiet, side = "bottom", children }: { label: string; quiet?: boolean; side?: "bottom" | "right"; children: React.ReactNode }) {
   return (
     <Tooltip open={quiet ? false : undefined}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="bottom">{label}</TooltipContent>
+      <TooltipContent side={side} className={side === "right" ? "max-w-[260px]" : undefined}>{label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -202,7 +204,9 @@ const Verb = forwardRef<HTMLButtonElement, React.ComponentProps<"button"> & { la
 );
 Verb.displayName = "Verb";
 
-type Action = { label: string; icon: React.ReactNode; run: () => void; destructive?: boolean };
+/** `blocked` is why it cannot be done now: the verb stays where it is,
+ * greyed, saying why on hover, and on a press where nothing hovers. */
+type Action = { label: string; icon: React.ReactNode; run: () => void; destructive?: boolean; blocked?: string | null };
 
 /**
  * What can be done with a message, in one of two looks.
@@ -225,6 +229,8 @@ export function MessageActionBar({
   onEdit,
   onDelete,
   onRewind,
+  onBranch,
+  branchBlocked,
   open,
   className,
   look = "pill",
@@ -241,6 +247,11 @@ export function MessageActionBar({
   onDelete?: () => void;
   /** Your own message, in a conversation with one agent. */
   onRewind?: () => void;
+  /** One of the agent's answers, in a conversation with one agent: a new
+   * conversation from here (src/lib/branch.ts). */
+  onBranch?: () => void;
+  /** Why it cannot branch right now, shown on the greyed item. */
+  branchBlocked?: string | null;
   /** Shown without a hover: the message was tapped (useTapToShow). */
   open?: boolean;
   className?: string;
@@ -306,6 +317,16 @@ export function MessageActionBar({
           ),
       }
     : null;
+  // No question first: nothing is taken back or changed, and the new
+  // conversation is one close away from never having been made.
+  const branch: Action | null = onBranch
+    ? {
+        label: t("messageActions.branchFromHere"),
+        icon: <GitBranch size={size - 1} strokeWidth={1.8} />,
+        run: branchBlocked ? () => toast.info(branchBlocked, { id: "branch-blocked" }) : onBranch,
+        blocked: branchBlocked,
+      }
+    : null;
   const remove: Action | null = onDelete
     ? {
         label: t("common.delete"),
@@ -326,12 +347,16 @@ export function MessageActionBar({
   // swaps forward for edit, since words you sent are the ones you fix.
   const shown: Action[] =
     look === "pill"
-      ? [reply, forward, ...(edit ? [edit] : []), ...(rewind ? [rewind] : []), ...(remove ? [remove] : []), copyAction]
+      ? [reply, forward, ...(edit ? [edit] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(remove ? [remove] : []), copyAction]
       : mine
         ? [copyAction, ...(edit ? [edit] : []), reply]
         : [copyAction, reply, forward];
+  // Branch waits behind the ⋯ next to where Rewind waits on your own
+  // words: the two ways to go somewhere else from a point in the chat.
   const more: Action[] =
-    look === "pill" ? [] : [...(mine ? [forward] : []), ...(rewind ? [rewind] : []), ...(remove ? [remove] : [])];
+    look === "pill"
+      ? []
+      : [...(mine ? [forward] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(remove ? [remove] : [])];
 
   const react = onReact ? (
     <DropdownMenu modal={false} open={menu === "react"} onOpenChange={toggle("react")}>
@@ -364,8 +389,13 @@ export function MessageActionBar({
   const icons = (
     <>
       {shown.map((action) => (
-        <Tip key={action.label === "Copied" ? "Copy" : action.label} label={action.label}>
-          <Verb label={action.label} onClick={action.run} className={look === "pill" ? "rounded-full" : undefined}>
+        <Tip key={action.label === "Copied" ? "Copy" : action.label} label={action.blocked ?? action.label}>
+          <Verb
+            label={action.blocked ? `${action.label}. ${action.blocked}` : action.label}
+            onClick={action.run}
+            aria-disabled={action.blocked ? true : undefined}
+            className={cn(look === "pill" && "rounded-full", action.blocked && "opacity-40")}
+          >
             {action.icon}
           </Verb>
         </Tip>
@@ -381,16 +411,27 @@ export function MessageActionBar({
             </DropdownMenuTrigger>
           </Tip>
           <DropdownMenuContent side="bottom" align={align === "end" ? "end" : "start"} className="min-w-[168px]">
-            {more.map((action) => (
-              <Fragment key={action.label}>
-                {/* the one with no undo stands apart from the rest */}
-                {action.destructive && more.length > 1 && <DropdownMenuSeparator />}
-                <DropdownMenuItem variant={action.destructive ? "destructive" : "default"} onSelect={action.run}>
+            {more.map((action) => {
+              const item = (
+                <DropdownMenuItem
+                  variant={action.destructive ? "destructive" : "default"}
+                  onSelect={action.run}
+                  aria-disabled={action.blocked ? true : undefined}
+                  className={cn(action.blocked && "opacity-40")}
+                >
                   {action.icon}
                   {action.label}
+                  {action.blocked && <span className="sr-only">{action.blocked}</span>}
                 </DropdownMenuItem>
-              </Fragment>
-            ))}
+              );
+              return (
+                <Fragment key={action.label}>
+                  {/* the one with no undo stands apart from the rest */}
+                  {action.destructive && more.length > 1 && <DropdownMenuSeparator />}
+                  {action.blocked ? <Tip label={action.blocked} side="right">{item}</Tip> : item}
+                </Fragment>
+              );
+            })}
           </DropdownMenuContent>
         </DropdownMenu>
       )}
@@ -443,8 +484,13 @@ export function MessageActionBar({
       >
         {react}
         {shown.map((action) => (
-          <Tip key={action.label === "Copied" ? "Copy" : action.label} label={action.label}>
-            <Verb label={action.label} onClick={action.run} className="rounded-full">
+          <Tip key={action.label === "Copied" ? "Copy" : action.label} label={action.blocked ?? action.label}>
+            <Verb
+              label={action.blocked ? `${action.label}. ${action.blocked}` : action.label}
+              onClick={action.run}
+              aria-disabled={action.blocked ? true : undefined}
+              className={cn("rounded-full", action.blocked && "opacity-40")}
+            >
               {action.icon}
             </Verb>
           </Tip>
