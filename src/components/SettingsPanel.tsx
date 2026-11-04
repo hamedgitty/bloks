@@ -36,7 +36,7 @@ import { TriangleAlert } from "@/components/icons";
 import { User } from "@/components/icons";
 import { X } from "@/components/icons";
 import { api, useStore, type Bot, type InstanceInfo, type Skill } from "@/state/store";
-import { useMcpServers, type McpServerRow } from "./McpServers";
+import { McpTargetLine, useMcpServers, type McpServerRow } from "./McpServers";
 import { TeamSignInNotice } from "./TeamSignInNotice";
 import { AgentAccessCard } from "./members/AgentAccessCard";
 import { AgentAvatar, BlokAvatar } from "./Avatar";
@@ -1297,7 +1297,7 @@ function McpAttachCard({ bot }: { bot: Bot }) {
           <SettingRow
             key={server.id}
             label={<span className="truncate font-normal">{server.name}</span>}
-            description={<span className="block truncate">{server.transport === "http" ? server.target : t("settingsPanel.runsCommand", { command: server.target })}</span>}
+            description={<span className="block truncate"><McpTargetLine server={server} text={server.transport === "http" ? server.target : t("settingsPanel.runsCommand", { command: server.target })} /></span>}
             control={
               <Switch
                 checked={on}

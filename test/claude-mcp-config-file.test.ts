@@ -117,7 +117,9 @@ test("a server's environment reaches Claude Code, without the names still waitin
     JSON.stringify({
       instances: { claude: { driver: "claudeAgent", config: { cli } } },
       mcpServers: [
-        { id: "local1", name: "Local tool", transport: "stdio", command: "npx", args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d", WAITING_KEY: "" } },
+        // a program that is there: one whose command is missing is left
+        // out of the turn (server/mcp-command.ts)
+        { id: "local1", name: "Local tool", transport: "stdio", command: process.execPath, args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d", WAITING_KEY: "" } },
         { id: "remote1", name: "Remote tool", transport: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "", "X-Team": "blue" } },
       ],
     }),
@@ -138,7 +140,7 @@ test("a server's environment reaches Claude Code, without the names still waitin
   assert.ok(existsSync(seen), `the turn never ran: ${h.logs().slice(-800)}`);
   const { args, mcp } = JSON.parse(readFileSync(seen, "utf8"));
 
-  assert.deepEqual(mcp.mcpServers.u_local_tool, { command: "npx", args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d" } });
+  assert.deepEqual(mcp.mcpServers.u_local_tool, { command: process.execPath, args: ["tool"], env: { FILLED_KEY: "env_canary_5e1d" } });
   assert.deepEqual(mcp.mcpServers.u_remote_tool, { type: "http", url: "https://mcp.example.com/mcp", headers: { "X-Team": "blue" } });
   assert.ok(!args.some((arg: string) => arg.includes("env_canary")), "a filled value is in argv");
 });

@@ -3303,6 +3303,8 @@
   "mcpServers.authNone": "Aucune",
   "mcpServers.authentication": "Authentification",
   "mcpServers.command": "Commande",
+  "mcpServers.commandNotFound": "Commande introuvable : {command}",
+  "mcpServers.commandNotFoundFix": "Installe-la, ou supprime ce serveur et ajoute-le à nouveau avec le chemin complet du programme. D'ici là, ses agents travaillent sans lui, et leurs conversations en sont informées une fois.",
   "mcpServers.commandOnThisComputer": "Commande sur cet ordinateur",
   "mcpServers.connection": "Connexion",
   "mcpServers.customMcpServersCanBe": "Les serveurs MCP personnalisés peuvent être risqués.",

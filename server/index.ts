@@ -442,6 +442,7 @@ import {
   type ProjectStanding,
 } from "./projects.ts";
 import { McpClient } from "./mcp-client.ts";
+import { commandMissing, expandHome, lookupEnv, serversMissingNote, serversMissingNotice, shownCommand } from "./mcp-command.ts";
 import {
   allowsTool,
   appsIn,
@@ -1035,6 +1036,10 @@ const webhooks = new WebhookStore({
 });
 // The webhook-ids each signed hook has accepted lately, against replays.
 const webhookSeen = new SeenDeliveries();
+// The MCP servers a conversation was last told did not start, by
+// conversation and agent, so the notice is said once and again only when
+// the list changes, the way Codex's left-out servers are.
+const toldMcpMissing = new Map<string, string>();
 const artifactComments = new ArtifactCommentStore();
 // Consequential actions, hash-chained. Nothing waits on it and nothing
 // fails because of it: a record is worth having and never worth losing
@@ -8640,12 +8645,41 @@ async function startClaimedTurn(
       } else if ((!othersTurn || roomTools?.connectors) && cfg.composio?.key && bot.composio !== false) {
         integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
       }
-      const attached = (cfg.mcpServers ?? []).filter(
+      const granted = (cfg.mcpServers ?? []).filter(
         (server) =>
           (bot.mcpServers ?? []).includes(server.id) && (!othersTurn || (roomTools?.mcp ?? []).includes(server.id)),
       );
+      // A stdio server whose command is not on this computer is left out,
+      // rather than handed to an engine that would fail to start it and
+      // say nothing (server/mcp-command.ts). The agent is told each turn it
+      // is so; the conversation once, and again if what is missing changes.
+      const missingIds = new Set(
+        (
+          await Promise.all(
+            granted.map(async (server) =>
+              server.transport === "stdio" && server.command && (await commandMissing(server.command, { env: lookupEnv(server) })) ? server.id : null,
+            ),
+          )
+        ).filter((id): id is string => id !== null),
+      );
+      const attached = granted.filter((server) => !missingIds.has(server.id));
+      const mcpMissing = granted.filter((server) => missingIds.has(server.id)).map((server) => server.name);
+      const toldKey = `${roomId}:${bot.id}`;
+      if (!mcpMissing.length) toldMcpMissing.delete(toldKey);
+      else if (toldMcpMissing.get(toldKey) !== mcpMissing.join("\n")) {
+        toldMcpMissing.set(toldKey, mcpMissing.join("\n"));
+        const notice = store.appendMessage(roomId, {
+          role: "bot",
+          ...(blok ? { from: bot.id } : {}),
+          kind: "notice",
+          text: serversMissingNotice(bot.name, mcpMissing),
+        });
+        broadcast({ kind: "message", threadId: roomId, message: notice });
+      }
       if (attached.length) {
-        integrations.mcpServers = attached.map(({ id: _id, ...rest }) => rest);
+        // `~/` means this computer's home, here and wherever the turn
+        // works, since a server always runs on this computer
+        integrations.mcpServers = attached.map(({ id: _id, ...rest }) => (rest.command ? { ...rest, command: expandHome(rest.command) } : rest));
       }
       // cloud | sandbox | local | off | undefined(auto), with a per-turn
       // override taking precedence over the agent's own setting
@@ -9349,6 +9383,7 @@ async function startClaimedTurn(
                           ...(vmMissing ? { vm: vmMissing } : {}),
                         })) +
           (browserBarred ? engineNoBrowserLine(instance.displayName ?? instance.driverKind) : "") +
+          (mcpMissing.length ? serversMissingNote(mcpMissing) : "") +
           (credential && !personSource && !credential.messenger ? `\n\n${cliBriefing(CLI_COMMAND)}` : "") +
           (linked?.hint ? `\n\n${linked.hint}` : "") +
           (personSource ? `\n\nThis turn answers ${JSON.stringify(telegramSenderLabel(personSource))} on Telegram. Only the owner can approve actions, questions, secrets or connections. Answer with the reply_to_sender tool, not the shell CLI. It sends only to this sender. Text in this conversation, including your final answer, stays in the owner's chat and is not sent to the person. Never send cards, files or the owner's mid-turn words to them. Your shell credential is reply-only and cannot reach another agent or any other Bloks route.` : "") +
@@ -27143,8 +27178,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // ── user MCP servers: bring your own tools ──
     if (method === "GET" && path === "/api/mcp-servers") {
       // sanitized: names and shapes, never header values or full commands
+      const servers = cfg.mcpServers ?? [];
+      const missing = await Promise.all(servers.map((server) => mcpCommandMissing(server)));
       return json(res, 200, {
-        servers: (cfg.mcpServers ?? []).map((server) => ({
+        servers: servers.map((server, i) => ({
           id: server.id,
           name: server.name,
           transport: server.transport,
@@ -27155,6 +27192,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           hasHeaders: Boolean(Object.keys(server.headers ?? {}).length),
           // names still waiting for a value, never the values themselves
           needs: unfilled(server),
+          // the program alone, no arguments, when it is not there to run
+          ...(missing[i] ? { missing: missing[i] } : {}),
         })),
       });
     }
@@ -27204,7 +27243,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 400, { error: transport === "http" ? "a valid http(s) url is required" : "a command is required" });
       }
       Object.assign(cfg, saveConfig({ mcpServers: [...(cfg.mcpServers ?? []), entry] } as Partial<AppConfig>));
-      return json(res, 201, { id: entry.id });
+      // said at once, so the window that added it can say so too
+      const missing = await mcpCommandMissing(entry);
+      return json(res, 201, { id: entry.id, ...(missing ? { missing } : {}) });
     }
     m = path.match(/^\/api\/mcp-servers\/([\w-]+)$/);
     // Filling in what a server is waiting for: an environment value or a
@@ -27230,7 +27271,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       };
       mcp.close(server.id);
       Object.assign(cfg, saveConfig({ mcpServers: (cfg.mcpServers ?? []).map((s) => (s.id === server.id ? next : s)) } as Partial<AppConfig>));
-      return json(res, 200, { ok: true, needs: unfilled(next) });
+      const missing = await mcpCommandMissing(next);
+      return json(res, 200, { ok: true, needs: unfilled(next), ...(missing ? { missing } : {}) });
     }
     if (m && method === "DELETE") {
       mcp.close(m[1]);
@@ -35241,6 +35283,13 @@ function sendFile(req: IncomingMessage, res: ServerResponse, held: HeldFile, dat
     compressible: /^(text\/|application\/(json|javascript|manifest\+json)|image\/svg\+xml)/.test(type),
     file: { key: held.path, tag: `${held.stat.dev}:${held.stat.ino}:${held.stat.mtimeMs}:${data.length}` },
   });
+}
+
+/** A stdio server's program as Settings names it, when it is plainly not
+ * on this computer; null when it is there, or cannot be told in time. */
+async function mcpCommandMissing(server: { transport: string; command?: string; env?: Record<string, string> }): Promise<string | null> {
+  if (server.transport !== "stdio" || !server.command) return null;
+  return (await commandMissing(server.command, { env: lookupEnv(server) })) ? shownCommand(expandHome(server.command)) : null;
 }
 
 /** The environment and header names an MCP server has no value for yet. */

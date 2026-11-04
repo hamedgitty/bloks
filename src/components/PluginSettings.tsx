@@ -27,7 +27,7 @@ import { api, useStore, type PluginFocus, type Skill } from "@/state/store";
 import { useConnectors, type ToolkitCard } from "@/lib/useConnectors";
 import { detailsFor } from "@/lib/appDetails";
 import { tryPrompt } from "@/lib/tryPrompt";
-import { AddMcpServerDialog, BackLink, McpServerSettings, mcpTarget, useMcpServers } from "./McpServers";
+import { AddMcpServerDialog, BackLink, McpServerSettings, McpTargetLine, useMcpServers } from "./McpServers";
 import { cliPluginLine, GitHubPluginSettings, useCliPlugins } from "./CliPlugins";
 import { GitHubMark } from "./ProviderIcons";
 import { AddSkillDialog } from "./SkillsPanel";
@@ -70,7 +70,7 @@ function Row({
 }: {
   tile: React.ReactNode;
   name: string;
-  line?: string;
+  line?: React.ReactNode;
   aside?: React.ReactNode;
   onOpen: () => void;
 }) {
@@ -352,7 +352,7 @@ export function PluginSettings() {
                         </Tile>
                       }
                       name={server.name}
-                      line={mcpTarget(server)}
+                      line={<McpTargetLine server={server} />}
                       aside={
                         <span className="flex shrink-0 items-center gap-3">
                           {(server.needs ?? []).length > 0 && (

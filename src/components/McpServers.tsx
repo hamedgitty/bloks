@@ -43,6 +43,9 @@ export interface McpServerRow {
   /** Environment or header names with no value yet, as a server brought
    * over from another tool arrives. Names only; values never come back. */
   needs?: string[];
+  /** A command server's program, without its arguments, when it is not on
+   * this computer to run. Its agents work without it until it is. */
+  missing?: string;
 }
 
 export function useMcpServers(): { servers: McpServerRow[] | null; reload: () => void } {
@@ -59,6 +62,15 @@ export function useMcpServers(): { servers: McpServerRow[] | null; reload: () =>
 /** How a server is reached, in a few words. */
 export function mcpTarget(server: McpServerRow): string {
   return server.transport === "http" ? server.target : t("mcpServers.runsCommand", { command: server.target });
+}
+
+/** A server's line in a list: how it is reached, or that it cannot start. */
+export function McpTargetLine({ server, text }: { server: McpServerRow; text?: string }) {
+  return server.missing ? (
+    <span className="text-destructive">{t("mcpServers.commandNotFound", { command: server.missing })}</span>
+  ) : (
+    <>{text ?? mcpTarget(server)}</>
+  );
 }
 
 const field = "h-10 rounded-xl text-ui";
@@ -120,9 +132,11 @@ export function AddMcpServerDialog({
             { name: name.trim(), transport, commandLine: target },
       ),
     })
-      .then(({ id }) => {
+      .then(({ id, missing }) => {
         onOpenChange(false);
         onAdded?.(id);
+        // saved all the same: it may be installed next, and its page says how
+        if (typeof missing === "string") toast.error(t("mcpServers.commandNotFound", { command: missing }));
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setBusy(false));
@@ -358,6 +372,15 @@ export function McpServerSettings({ id, onBack }: { id: string; onBack: () => vo
       </div>
 
       <div className="mt-6 flex flex-col gap-4">
+        {server.missing && (
+          <div role="status" className="flex gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-ui text-foreground">
+            <AlertTriangle size={17} className="mt-0.5 shrink-0 text-warning" />
+            <span className="min-w-0">
+              <span className="block break-words font-medium">{t("mcpServers.commandNotFound", { command: server.missing })}</span>
+              <span className="mt-1 block text-pretty text-body text-muted-foreground">{t("mcpServers.commandNotFoundFix")}</span>
+            </span>
+          </div>
+        )}
         <Section title={t("mcpServers.connection")}>
           <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-2.5 text-ui">
             <span className="text-muted-foreground">{t("mcpServers.type")}</span>

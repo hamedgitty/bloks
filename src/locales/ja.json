@@ -3177,6 +3177,8 @@
   "mcpServers.authNone": "なし",
   "mcpServers.authentication": "認証",
   "mcpServers.command": "コマンド",
+  "mcpServers.commandNotFound": "コマンドが見つかりません: {command}",
+  "mcpServers.commandNotFoundFix": "インストールするか、このサーバーを削除して、プログラムのフルパスで追加し直してください。それまでエージェントはこのサーバーなしで動き、その会話には一度だけお知らせが出ます。",
   "mcpServers.commandOnThisComputer": "このコンピュータ上のコマンド",
   "mcpServers.connection": "接続",
   "mcpServers.customMcpServersCanBe": "カスタム MCP サーバーはリスクを伴う場合があります。",

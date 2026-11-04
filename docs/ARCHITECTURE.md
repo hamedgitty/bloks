@@ -116,6 +116,24 @@ beside Its own browser and Computer. The browser proxy starts Chrome in
 the agent's own profile (`server/cdp.ts`), headless on Linux when there
 is no `DISPLAY` or `WAYLAND_DISPLAY`.
 
+**The person's own MCP servers.** Before a turn is handed the servers
+granted to its agent, each stdio server's command is looked for
+(`server/mcp-command.ts`), never run: an absolute or `~/` path must be a
+runnable file, and a bare name must be on the PATH the engines get (the
+server's own `PATH` over it when it sets one, and PATHEXT on Windows).
+The look is bounded at about two seconds and remembered for fifteen,
+and anything other than a plain "nothing there" (a slow volume, a
+permission prompt) counts as found. A server whose command is missing
+is left out of the turn rather than handed to an engine that would fail
+to start it in silence. The agent is told in its system words, every
+turn it is so (`serversMissingNote`), and the conversation gets one
+notice ("Files did not start: its command was not found"), said again
+only when what is missing changes. `GET /api/mcp-servers` and the
+answers to adding or filling in a server carry `missing`, the program
+without its arguments and with the home folder as `~`, which Settings
+shows as "Command not found". A `~/` command is handed over expanded,
+since nothing spawns through a shell.
+
 The registry (`server/harness/registry.ts`) turns a config map into live
 instances. An unknown driver or a bad config becomes an unavailable
 shadow entry rather than a startup failure, so a config written by a

@@ -680,6 +680,12 @@ has no browser or screen rather than promised one, and its turns never
 hold the Local VM from agents that could use it. On a Linux server with
 no display, the agent's browser runs headless.
 
+An MCP server you add as a command is looked for on this computer, never
+run to check it. If the program is not there, Settings, Plugins says
+**Command not found** and how to fix it, and a turn leaves that server
+out instead of starting without its tools in silence: the agent is told,
+and the conversation gets one notice.
+
 OpenCode reads your own setup by default: the plugins, MCP servers and
 instructions in `~/.config/opencode`, and the providers and sessions in
 `~/.local/share/opencode`, shared with OpenCode in your terminal. To keep
