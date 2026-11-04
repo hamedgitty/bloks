@@ -185,7 +185,7 @@ describe("the menu bar", () => {
 
   test("every item has its words in the catalogue, the roles' included", () => {
     const words = menuWords(LOCALES, "en");
-    const menu = appMenuTemplate({ name: "Bloks", packaged: false, command: () => {}, words });
+    const menu = appMenuTemplate({ name: "Bloks", packaged: false, command: () => {}, quit: () => {}, words });
     const said = labels(menu);
     assert.ok(said.includes("Quit Bloks"));
     assert.ok(said.includes("Settings…"));

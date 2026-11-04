@@ -12,7 +12,9 @@ export interface MenuTemplateItem {
   role?: string;
   type?: "separator";
   accelerator?: string;
-  click?: () => void;
+  /** Electron hands a click the item, the window and the event, whose
+   * `triggeredByAccelerator` says the choice came from the item's key. */
+  click?: (item?: unknown, window?: unknown, event?: { triggeredByAccelerator?: boolean }) => void;
   submenu?: MenuTemplateItem[];
 }
 
@@ -20,6 +22,8 @@ export function appMenuTemplate(options: {
   name: string;
   packaged: boolean;
   command: (word: MenuCommand) => void;
+  /** Quit, told whether it came from ⌘Q rather than the mouse. */
+  quit: (byKey: boolean) => void;
   /** Each label in the person's language (electron/menu-words.mjs). */
   words: (key: string, params?: Record<string, string>) => string;
 }): MenuTemplateItem[];

@@ -1584,6 +1584,28 @@ crash leaves a minidump in the computer's crash folder: the crash
 reporter starts with `uploadToServer: false`, and there is no server to
 send one to.
 
+## ⌘Q on a Mac
+
+Quitting the app stops every agent and routine it runs, so on a Mac ⌘Q
+in a Bloks window asks to be held for about a second or pressed twice
+within about 0.6 seconds (`electron/quit-guard.mjs`). The first press
+shows a hint over the window, in a panel that never takes the keyboard
+or a click, and the line under its words fills while the key is held.
+The keys are heard in every page's `before-input-event` (the app, a
+terminal, the Bloks browser's tabs), only while that page has the
+keyboard, and kept there from the menu; the menu's own Quit is an item
+rather than the stock role, and from its key it asks the guard too,
+which never counts one press twice. A Mac may keep Q's release from the
+page while ⌘ is down, so ⌘ coming up, another key or the window losing
+focus counts as the release. Bloks goes only once the keys are up (or
+after three seconds), so a held ⌘Q never lands on the app that comes
+forward next, and a repeat of ⌘Q held from before the window had the
+keyboard is not a press. Quit with the mouse, the Dock, the tray, an
+update and the system logging out all quit at once as before.
+"Hold ⌘Q to quit" in Settings, General, Window is on unless turned off,
+kept with the theme (`prefs.quitGuard` in `electron/workspaces.mjs`),
+and offered only on a Mac.
+
 ## Backups and restore
 
 `server/backup.ts` writes the whole data folder to one file in

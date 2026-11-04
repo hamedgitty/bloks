@@ -71,6 +71,7 @@ import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } fr
 import { terminalQuery } from "./terminal-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
 import { closeHides, trayOn, traySize } from "./tray.mjs";
+import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
 import { AppBrowser, allowedForAgent, downloadName, partitionFor, refusedNavigation } from "./app-browser.mjs";
 import os from "node:os";
 
@@ -116,6 +117,7 @@ import {
   setSameAccent,
   setLanguage,
   setNotch,
+  setQuitGuard,
   setTray,
   settle,
   shownMark,
@@ -1077,6 +1079,8 @@ function workspacesState() {
     ...(notchPlatform() ? { notch: notchOn() } : {}),
     // "Close to the tray", only on Windows (electron/tray.mjs)
     ...(process.platform === "win32" ? { tray: registry.prefs.tray === true } : {}),
+    // "Hold ⌘Q to quit", only on a Mac (electron/quit-guard.mjs)
+    ...(process.platform === "darwin" ? { quitGuard: registry.prefs.quitGuard !== false } : {}),
   };
 }
 
@@ -1998,6 +2002,15 @@ handle("prefs:tray", (_event, on) => {
   saveRegistry();
   tellWorkspaces();
   syncTray();
+});
+// "Hold ⌘Q to quit" (src/components/settings/GeneralPage.tsx), kept with
+// the theme: it is about this Mac's app, not any one workspace.
+handle("prefs:quit-guard", (_event, on) => {
+  if (!registry || typeof on !== "boolean") return;
+  registry = setQuitGuard(registry, on);
+  saveRegistry();
+  tellWorkspaces();
+  if (!on) quitGuard.reset();
 });
 handle("prefs:same-accent", (event, on, showing) => {
   const id = senderWorkspace(event);
@@ -3742,13 +3755,56 @@ function mainWords() {
   return menuWords(LOCALES_DIR(), code);
 }
 
+// ── ⌘Q, held or pressed twice (electron/quit-guard.mjs) ─────────────
+// A Mac only, with the setting on, and only while a Bloks window has the
+// keyboard: with none in front, ⌘Q quits as it always has, and so does
+// every quit that is not the key.
+const quitGuardOn = () => process.platform === "darwin" && registry?.prefs?.quitGuard !== false;
+const quitHint = createQuitHint({
+  BrowserWindow,
+  over: () => BrowserWindow.getFocusedWindow(),
+  words: () => mainWords()("menu.quitHint"),
+  // the app's own theme when one is chosen, as the window draws it
+  dark: () => (registry?.prefs?.theme === "dark" ? true : registry?.prefs?.theme === "light" ? false : nativeTheme.shouldUseDarkColors),
+});
+const quitGuard = createQuitGuard({ quit: () => app.quit(), hint: (phase) => quitHint.show(phase) });
+
+// Every page, the Bloks browser's tabs and a terminal's included, since
+// whichever has the keyboard is the one that hears ⌘Q. Kept from the
+// menu here, so the first press never reaches Quit at all.
+app.on("web-contents-created", (_event, contents) => {
+  if (process.platform !== "darwin") return;
+  contents.on("before-input-event", (event, input) => {
+    if (!quitGuardOn()) return;
+    // a key sent to a tab in the background (an agent's, by its
+    // debugger) is not the person's hand on the keyboard
+    if (!contents.isFocused() || !BrowserWindow.getFocusedWindow()) return;
+    if (input.type === "keyUp") return quitGuard.release(input);
+    if (input.type !== "keyDown") return;
+    if (isQuitKey(input)) {
+      event.preventDefault();
+      quitGuard.press({ repeat: input.isAutoRepeat });
+    } else quitGuard.other(input);
+  });
+});
+// gone from the keyboard: no release of a held ⌘Q will be heard here
+app.on("browser-window-blur", () => quitGuard.blur());
+
+/** Quit in the menu bar. From ⌘Q, in a Bloks window with the setting
+ * on, the guard decides; a page that kept the key from the menu has
+ * already told it, and it does not count the same press twice. */
+function menuQuit(byKey) {
+  if (byKey && quitGuardOn() && BrowserWindow.getFocusedWindow()) return quitGuard.menu();
+  app.quit();
+}
+
 function installAppMenu() {
   if (process.platform !== "darwin") {
     Menu.setApplicationMenu(null);
     return;
   }
   Menu.setApplicationMenu(
-    Menu.buildFromTemplate(appMenuTemplate({ name: app.name, packaged: app.isPackaged, command: menuCommand, words: mainWords() })),
+    Menu.buildFromTemplate(appMenuTemplate({ name: app.name, packaged: app.isPackaged, command: menuCommand, quit: menuQuit, words: mainWords() })),
   );
 }
 

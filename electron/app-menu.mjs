@@ -23,9 +23,14 @@
 // what each press does, the terminal's tabs and a dialog's included,
 // whichever of the two hears the key first.
 //
+// Quit is an item of its own rather than the stock role, because ⌘Q in a
+// Bloks window may ask to be held or pressed again first
+// (electron/quit-guard.mjs). `quit` is told whether the choice came from
+// the key; one made with the mouse quits at once, as the role did.
+//
 // Built by a function with no Electron in it, so a test can read the
 // template without starting the app. The roles bring their own keys (⌘Z,
-// ⌘C, ⌘Q and so on), exactly as the stock menu had them. Their labels are
+// ⌘C and so on), exactly as the stock menu had them. Their labels are
 // given here, in the person's language (electron/menu-words.mjs): the
 // stock ones are English whatever the app is set to read in.
 
@@ -34,11 +39,12 @@
 export const TAB_COMMANDS = ["newConversation", "closeConversation", "previousConversation", "nextConversation"];
 
 /**
- * @param {{ name: string; packaged: boolean; command: (word: "settings" | "shortcuts" | (typeof TAB_COMMANDS)[number]) => void; words: (key: string, params?: Record<string, string>) => string }} options
- *   `command` carries a menu choice to the window it is for; `words`
- *   says each label in the person's language.
+ * @param {{ name: string; packaged: boolean; command: (word: "settings" | "shortcuts" | (typeof TAB_COMMANDS)[number]) => void; quit: (byKey: boolean) => void; words: (key: string, params?: Record<string, string>) => string }} options
+ *   `command` carries a menu choice to the window it is for; `quit` is
+ *   Quit, from its key or not; `words` says each label in the person's
+ *   language.
  */
-export function appMenuTemplate({ name, packaged, command, words: w }) {
+export function appMenuTemplate({ name, packaged, command, quit, words: w }) {
   return [
     {
       // macOS names this menu after the app whatever the label says
@@ -54,7 +60,12 @@ export function appMenuTemplate({ name, packaged, command, words: w }) {
         { role: "hideOthers", label: w("menu.hideOthers") },
         { role: "unhide", label: w("menu.showAll") },
         { type: "separator" },
-        { role: "quit", label: w("menu.quit", { name }) },
+        {
+          label: w("menu.quit", { name }),
+          accelerator: "CmdOrCtrl+Q",
+          // macOS says when a choice came from its key equivalent
+          click: (_item, _window, event) => quit(Boolean(event?.triggeredByAccelerator)),
+        },
       ],
     },
     {

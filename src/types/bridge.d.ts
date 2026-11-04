@@ -181,6 +181,8 @@ export type WorkspacesState =
       notch?: boolean;
       /** "Close to the tray"; absent off Windows (electron/tray.mjs). */
       tray?: boolean;
+      /** "Hold ⌘Q to quit"; absent off macOS (electron/quit-guard.mjs). */
+      quitGuard?: boolean;
       /** What the person is called in their own workspaces, once they
        * have said; null until then. Absent from an older app. */
       ownerName?: string | null;
@@ -294,6 +296,8 @@ declare global {
       prefsNotch?(on: boolean): Promise<void>;
       /** Turns "Close to the tray" on or off (Windows). */
       prefsTray?(on: boolean): Promise<void>;
+      /** Turns "Hold ⌘Q to quit" on or off (macOS). */
+      prefsQuitGuard?(on: boolean): Promise<void>;
       /** The island's page: the pointer is over the island, or has left
        * it, so its window takes the mouse or lets it through. */
       notchHover?(over: boolean): Promise<void>;

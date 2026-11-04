@@ -264,6 +264,23 @@ export function GeneralPage() {
           />
         </SettingsGroup>
       )}
+      {/* What ⌘Q does, a choice only a Mac has: the app says whether
+          there is one. Windows and Linux have no ⌘Q to guard. */}
+      {window.bloks?.prefsQuitGuard && workspaces.available && typeof workspaces.quitGuard === "boolean" && (
+        <SettingsGroup title={t("generalPage.window")}>
+          <SettingRow
+            label={t("generalPage.holdToQuit")}
+            description={t("generalPage.holdToQuitDescription")}
+            control={
+              <Switch
+                aria-label={t("generalPage.holdToQuit")}
+                checked={workspaces.quitGuard}
+                onCheckedChange={(on) => void window.bloks?.prefsQuitGuard?.(on)}
+              />
+            }
+          />
+        </SettingsGroup>
+      )}
       {window.bloks && (
         <SettingsGroup title={t("generalPage.shortcut")}>
           <QuickAskShortcut />

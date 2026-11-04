@@ -532,7 +532,10 @@ over.
   of your own that stays on, and moves your agents over when you sign up
   at [bloks.dev/pricing](https://bloks.dev/pricing). On Windows, the
   desktop app can keep running in the system tray when you close its
-  window: Settings, General, Window.
+  window: Settings, General, Window. On a Mac, one stray ⌘Q no longer
+  stops your agents: hold it for a moment or press it twice. Quit from
+  the menu or the Dock still quits at once, and Settings, General,
+  Window turns the guard off.
 - **Scripts, CI and a terminal.** `bloks-server run Ada "Review the open
   pull requests"` hands an agent a job, waits until it and every teammate
   it handed work to are done, and prints the answer, or one JSON document

@@ -200,6 +200,8 @@ export function parseRegistry(text) {
       notch: raw?.prefs?.notch !== false,
       // "Close to the tray" (Windows): off unless turned on
       tray: raw?.prefs?.tray === true,
+      // "Hold ⌘Q to quit" (macOS): on unless turned off
+      quitGuard: raw?.prefs?.quitGuard !== false,
       // what the person is called in every workspace of their own
       ownerName: cleanPersonName(raw?.prefs?.ownerName) || null,
       // the language the interface and the menu bar are read in; none
@@ -395,6 +397,13 @@ export function setNotch(registry, on) {
 export function setTray(registry, on) {
   if (typeof on !== "boolean" || registry.prefs.tray === on) return registry;
   return { ...registry, prefs: { ...registry.prefs, tray: on } };
+}
+
+/** "Hold ⌘Q to quit" (electron/quit-guard.mjs), on or off. Anything but
+ * a yes or a no leaves it as it was. */
+export function setQuitGuard(registry, on) {
+  if (typeof on !== "boolean" || registry.prefs.quitGuard === on) return registry;
+  return { ...registry, prefs: { ...registry.prefs, quitGuard: on } };
 }
 
 const sorted = (list) => [...list].sort((a, b) => a.order - b.order || a.createdAt - b.createdAt);

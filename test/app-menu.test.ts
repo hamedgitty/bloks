@@ -14,8 +14,9 @@ const words = menuWords(fileURLToPath(new URL("../src/locales", import.meta.url)
 
 function build(packaged = true) {
   const asked: MenuCommand[] = [];
-  const menu = appMenuTemplate({ name: "Bloks", packaged, command: (word) => asked.push(word), words });
-  return { menu, asked };
+  const quits: boolean[] = [];
+  const menu = appMenuTemplate({ name: "Bloks", packaged, command: (word) => asked.push(word), quit: (byKey) => quits.push(byKey), words });
+  return { menu, asked, quits };
 }
 
 const roles = (items: MenuTemplateItem[] = []) => items.map((item) => item.role).filter(Boolean);
@@ -27,10 +28,25 @@ describe("the app menu", () => {
   test("keeps every stock item, with Settings… after About as Apple places it", () => {
     const [app] = build().menu;
     const items = app.submenu ?? [];
-    assert.deepEqual(roles(items), ["about", "services", "hide", "hideOthers", "unhide", "quit"]);
+    assert.deepEqual(roles(items), ["about", "services", "hide", "hideOthers", "unhide"]);
     const settings = items.findIndex((item) => item.label === "Settings…");
     assert.equal(settings, 2, "About, a separator, then Settings…");
     assert.equal(items[settings].accelerator, "CmdOrCtrl+,");
+    // last, after a separator, where the stock Quit was
+    assert.equal(items.at(-1)?.label, "Quit Bloks");
+    assert.equal(items.at(-2)?.type, "separator");
+  });
+
+  // ⌘Q may ask to be held or pressed twice (electron/quit-guard.mjs), so
+  // Quit says whether the key chose it; the mouse quits at once.
+  test("Quit keeps ⌘Q and says whether the key or the mouse chose it", () => {
+    const { menu, quits } = build();
+    const quit = menu[0].submenu?.find((item) => item.label === "Quit Bloks");
+    assert.equal(quit?.accelerator, "CmdOrCtrl+Q");
+    quit?.click?.(undefined, undefined, { triggeredByAccelerator: true });
+    quit?.click?.(undefined, undefined, { triggeredByAccelerator: false });
+    quit?.click?.();
+    assert.deepEqual(quits, [true, false, false]);
   });
 
   test("Settings… asks the window to open Settings", () => {
@@ -142,13 +158,14 @@ describe("the rest of the bar", () => {
 test("no menu key takes one the window answers to", () => {
   // A key equivalent is heard before the page, so a menu item on ⌘K or
   // ⌘/ would quietly take the palette or the sheet away. Settings is one
-  // key the menu owns; the conversation tabs' are the others, and those
-  // are played back to the page as keys, so the page still decides.
+  // key the menu owns, and Quit's ⌘Q, which the stock role had too; the
+  // conversation tabs' are the others, and those are played back to the
+  // page as keys, so the page still decides.
   for (const packaged of [true, false]) {
     const keyed = all(build(packaged).menu).filter((item) => item.accelerator);
     assert.deepEqual(
       keyed.map((item) => item.label ?? item.role),
-      ["Settings…", "New Conversation", "Close Conversation", "Close Window", "Previous Conversation", "Next Conversation"],
+      ["Settings…", "Quit Bloks", "New Conversation", "Close Conversation", "Close Window", "Previous Conversation", "Next Conversation"],
     );
     // and none of them is one the page keeps to itself
     const owned = keyed.map((item) => item.accelerator?.replace("CmdOrCtrl", "Mod"));
