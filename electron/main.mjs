@@ -72,7 +72,7 @@ import { terminalQuery } from "./terminal-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
 import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
-import { AppBrowser, allowedForAgent, downloadName, partitionFor, refusedNavigation } from "./app-browser.mjs";
+import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, holdDialogs, partitionFor, refusedNavigation } from "./app-browser.mjs";
 import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
@@ -2801,12 +2801,21 @@ function makeBrowserTab(held, tabId) {
     },
   };
   const changed = () => held.browser.changed();
-  for (const name of ["did-start-loading", "did-stop-loading", "page-title-updated", "did-navigate-in-page", "render-process-gone"]) wc.on(name, changed);
+  for (const name of ["did-start-loading", "did-stop-loading", "page-title-updated", "did-navigate-in-page"]) wc.on(name, changed);
   wc.on("did-navigate", () => {
-    // a new document: the last snapshot's refs name nothing on it
+    // a new document: the last snapshot's refs name nothing on it, and
+    // no dialog of the last one is still a question
     tab.refs = new Map();
+    held.browser.dialogClosed(tabId);
     changed();
   });
+  wc.on("render-process-gone", () => {
+    held.browser.dialogClosed(tabId);
+    changed();
+  });
+  // A page's own dialogs, held for whoever has the wheel rather than put
+  // in a message box over the whole window (app-browser.mjs).
+  holdDialogs({ browser: held.browser, tab, tabId, contents: wc, log: appLog });
   // Where a tab may go, on every navigation the page starts and every
   // redirect: never somewhere refusedNavigation names, and, while an
   // agent drives it, nowhere its workspace's lists keep agents from.
@@ -2985,7 +2994,7 @@ handle("browser:bounds", (event, rect) => {
 
 /** What the person does in the panel that moves a page an agent may be
  * driving. */
-const PERSON_STEERS = new Set(["navigate", "selectTab", "closeTab", "back", "forward", "reload", "stop"]);
+const PERSON_STEERS = new Set(["navigate", "selectTab", "closeTab", "back", "forward", "reload", "stop", "answerDialog"]);
 
 /** What the person does from the panel. One channel, a fixed set of
  * actions: the page names one, never a path or a script. */
@@ -2998,9 +3007,26 @@ handle("browser:do", async (event, action, arg) => {
   const download = () => browser.state().downloads.find((d) => d.id === arg && d.state === "completed");
   // the person steering while an agent drives is the person taking over
   if (PERSON_STEERS.has(action) && browser.control.by === "agent") browser.takeOver();
+  // What the person did, kept a moment: a "leave this page?" it runs into
+  // is answered stay at once, and their yes in the bar then does it again.
+  const steer = (run) => {
+    if (active) active.redo = { at: Date.now(), run };
+    return run();
+  };
   switch (action) {
-    case "navigate":
-      return browser.navigate(String(arg ?? ""));
+    case "navigate": {
+      const typed = String(arg ?? "");
+      return steer(() => browser.navigate(typed));
+    }
+    case "answerDialog": {
+      const said = arg && typeof arg === "object" ? arg : {};
+      const text = said.text;
+      if (typeof said.id !== "string" || typeof said.accept !== "boolean" || (text !== undefined && (typeof text !== "string" || text.length > PROMPT_LIMIT))) {
+        return { error: "That is not an answer to a dialog." };
+      }
+      const done = await browser.answerDialog(said.id, { accept: said.accept, ...(typeof text === "string" ? { text } : {}) }, "person");
+      return done.error ? { error: done.error } : { ok: true };
+    }
     case "newTab":
       browser.newTab({ kind: "person" });
       return { ok: true };
@@ -3009,13 +3035,13 @@ handle("browser:do", async (event, action, arg) => {
     case "selectTab":
       return { ok: browser.select(String(arg ?? "")) };
     case "back":
-      if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+      if (wc?.navigationHistory.canGoBack()) steer(() => !wc.isDestroyed() && wc.navigationHistory.goBack());
       return { ok: true };
     case "forward":
-      if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
+      if (wc?.navigationHistory.canGoForward()) steer(() => !wc.isDestroyed() && wc.navigationHistory.goForward());
       return { ok: true };
     case "reload":
-      wc?.reload();
+      if (wc) steer(() => !wc.isDestroyed() && wc.reload());
       return { ok: true };
     case "stop":
       wc?.stop();

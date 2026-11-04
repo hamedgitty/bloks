@@ -418,7 +418,7 @@ declare global {
        * the panel when an agent starts browsing. Absent in an older app. */
       browserState?(): Promise<import("../lib/appBrowser").AppBrowserState | null>;
       browserBounds?(rect: { x: number; y: number; width: number; height: number } | null): Promise<import("../lib/appBrowser").AppBrowserState | null>;
-      browserDo?(action: import("../lib/appBrowser").BrowserDo, arg?: string): Promise<{ ok?: boolean; error?: string; url?: string }>;
+      browserDo?(action: import("../lib/appBrowser").BrowserDo, arg?: string | import("../lib/appBrowser").DialogAnswer): Promise<{ ok?: boolean; error?: string; url?: string }>;
       onBrowserState?(handler: (state: import("../lib/appBrowser").AppBrowserState) => void): () => void;
       onBrowserReveal?(handler: (payload: { by?: string }) => void): () => void;
       onQuickOpened(handler: () => void): () => void;

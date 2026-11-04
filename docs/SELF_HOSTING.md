@@ -381,7 +381,10 @@ the panel, laid out at the panel's size, and your clicks, scrolling and
 typing (paste too) reach it. Sign in to a site there and your agents can
 carry on from the page you are on; watch them navigate, click and type
 in the same panel, click the page or press **Take over** to take it
-back, and **Give back** when you are done. Tabs, the pages in them and
+back, and **Give back** when you are done. A headless Chrome draws no
+dialogs, so a page's alert, confirm, prompt or "leave this page?" shows
+as a bar over the page for you to answer, or goes to the agent driving
+it. Tabs, the pages in them and
 every sign-in stay on the server, so they are all still there from your
 phone, or tomorrow, and agents keep browsing when your Mac is closed.
 Each workspace, each server, has a browser of its own.

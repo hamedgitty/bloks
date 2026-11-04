@@ -32,7 +32,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AppBrowser, allowedForAgent, downloadName, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle } from "./browser-core.mjs";
+import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle } from "./browser-core.mjs";
 import { browserSocket, chromePath, launch, Session, type CdpEvent } from "./cdp.ts";
 
 // ── which Chrome ───────────────────────────────────────────────────────
@@ -95,6 +95,21 @@ export type PersonInput =
   | { t: "wheel"; x: number; y: number; dx: number; dy: number; mods: number }
   | { t: "key"; type: "down" | "up"; key: string; code: string; keyCode: number; text?: string; mods: number; repeat: boolean }
   | { t: "text"; text: string };
+
+/** The person's answer to a page's dialog, from the panel's bar. */
+export interface DialogAnswer {
+  id: string;
+  accept: boolean;
+  text?: string;
+}
+
+/** A dialog answer as the panel sent it, checked, or null. */
+export function readDialogAnswer(body: unknown): DialogAnswer | null {
+  const said = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (typeof said.id !== "string" || !/^d\d{1,9}$/.test(said.id) || typeof said.accept !== "boolean") return null;
+  if (said.text !== undefined && (typeof said.text !== "string" || said.text.length > PROMPT_LIMIT)) return null;
+  return { id: said.id, accept: said.accept, ...(typeof said.text === "string" ? { text: said.text } : {}) };
+}
 
 const num = (value: unknown, min: number, max: number, fallback = 0) => {
   const n = Number(value);
@@ -196,6 +211,7 @@ class PageTab implements TabHandle {
   policy: TabHandle["policy"] = null;
   blocked: string | null = null;
   acting = false;
+  dialog: TabHandle["dialog"] = null;
   targetId: string | null = null;
   sessionId: string | null = null;
   closed = false;
@@ -291,6 +307,8 @@ export interface ServerBrowserOptions {
   /** An agent opened a page while nobody was looking. */
   onReveal?: (by: string) => void;
   idleMs?: number;
+  /** How long a page's dialog waits for an answer (the tests' is short). */
+  dialogMs?: number;
   closeIdleMs?: number;
   stateDelayMs?: number;
   watchMs?: number;
@@ -327,6 +345,7 @@ export class ServerBrowser {
       onChange: () => this.changed(),
       ownPorts: opts.ownPorts,
       ...(opts.idleMs ? { idleMs: opts.idleMs } : {}),
+      ...(opts.dialogMs ? { dialogMs: opts.dialogMs } : {}),
     });
   }
 
@@ -645,6 +664,19 @@ export class ServerBrowser {
         return this.browser.changed();
       case "Page.screencastFrame":
         return this.pictured(line, tab, params);
+      // A dialog stops the page until it is answered. A headless Chrome
+      // shows it to nobody, so the answer comes from here, the agent's or
+      // the person's in the panel (AppBrowser.dialogOpened).
+      case "Page.javascriptDialogOpening":
+        this.browser.dialogOpened(tab.id, {
+          type: params?.type,
+          message: params?.message,
+          defaultPrompt: params?.defaultPrompt,
+          answer: (accept: boolean, text: string) => this.send(tab, "Page.handleJavaScriptDialog", { accept, promptText: text }),
+        });
+        return;
+      case "Page.javascriptDialogClosed":
+        return this.browser.dialogClosed(tab.id);
     }
   }
 
@@ -774,9 +806,15 @@ export class ServerBrowser {
   async person(action: string, arg?: unknown): Promise<{ ok?: boolean; error?: string; url?: string }> {
     const browser = this.browser;
     // the person steering while an agent drives is the person taking over
-    if (["navigate", "selectTab", "closeTab", "back", "forward", "reload", "stop"].includes(action) && browser.control.by === "agent") browser.takeOver();
+    if (["navigate", "selectTab", "closeTab", "back", "forward", "reload", "stop", "answerDialog"].includes(action) && browser.control.by === "agent") browser.takeOver();
     const active = browser.active as PageTab | null;
     switch (action) {
+      case "answerDialog": {
+        const said = arg as DialogAnswer | undefined;
+        if (!said?.id) return { error: "That dialog is no longer open." };
+        const done = await browser.answerDialog(said.id, { accept: said.accept, ...(said.text !== undefined ? { text: said.text } : {}) }, "person");
+        return done.error ? { error: done.error } : { ok: true };
+      }
       case "navigate":
         await this.ensure();
         return browser.navigate(String(arg ?? ""));
@@ -838,7 +876,16 @@ export class ServerBrowser {
         this.browser.takeOver();
         tookOver = true;
       }
-      await this.dispatch(tab, input).catch(() => {});
+      // A page stopped on a dialog takes no input until it is answered,
+      // and the event that opened it is not answered either: the rest of
+      // the batch is let go, and the panel shows the dialog instead.
+      if (tab.dialog?.held) break;
+      const watch = this.browser.watchDialog(tab);
+      try {
+        await Promise.race([this.dispatch(tab, input).catch(() => {}), watch.opened]);
+      } finally {
+        watch.stop();
+      }
     }
     return { ok: true, tookOver };
   }

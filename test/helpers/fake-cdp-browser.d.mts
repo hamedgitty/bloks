@@ -20,6 +20,9 @@ export interface FakeTarget {
   frames: number;
   input: Array<Record<string, unknown> & { method: string }>;
   waiting: boolean;
+  /** Every dialog answered on it, in order. */
+  answers: Array<{ type: string; accept: boolean; promptText?: string }>;
+  dialog: { type: string } | null;
 }
 
 export interface FakeBrowser {
@@ -31,6 +34,8 @@ export interface FakeBrowser {
   popup(openerId: string, url: string): FakeTarget;
   follow(targetId: string, url: string): Promise<{ frameId: string; errorText?: string } | null>;
   repaint(targetId: string): void;
+  arm(targetId: string, dialog: { type: "alert" | "confirm" | "prompt"; message?: string; defaultPrompt?: string }): void;
+  askBeforeLeaving(targetId: string): void;
   download(guid: string, name: string, body?: string): void;
   close(): void;
   readonly closed: boolean;

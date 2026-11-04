@@ -19,7 +19,7 @@
 // Elsewhere (a phone, the web app, on a workspace the desktop app runs)
 // there is no browser, only news of the Mac's: a strip in the agent's
 // conversation, with a small live picture when the Mac can send one.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import {
@@ -34,6 +34,7 @@ import {
   Keyboard,
   Loader2,
   Lock,
+  MessageSquare,
   Plus,
   RotateCw,
   X,
@@ -49,6 +50,7 @@ import {
   browsingFor,
   clampBrowserWidth,
   controlLine,
+  dialogBar,
   downloadSize,
   hostLabel,
   isSecure,
@@ -61,7 +63,9 @@ import {
   useBrowserPanel,
   type AppBrowserState,
   type BrowserControl,
+  type BrowserDialog,
   type BrowserDo,
+  type DialogAnswer,
   type BrowserMissing,
   type BrowserTab,
   type ScreenFrame,
@@ -95,7 +99,7 @@ const failed = (error: unknown) => {
 
 /** What the person does in the panel: asked of the app for its own
  * browser, of the server for one it keeps. */
-const act = (action: BrowserDo, arg?: string) =>
+const act = (action: BrowserDo, arg?: string | DialogAnswer) =>
   browserHome() === "server"
     ? api("/api/browser/do", { method: "POST", body: JSON.stringify({ action, ...(arg === undefined ? {} : { arg }) }) }).then(said, failed)
     : (window.bloks?.browserDo?.(action, arg) ?? Promise.resolve(null)).then(said, failed);
@@ -280,7 +284,7 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
       window.removeEventListener("resize", soon);
       document.removeEventListener("visibilitychange", soon);
     };
-  }, [report, state?.activeTabId, shelf, line?.text, onServer]);
+  }, [report, state?.activeTabId, shelf, line?.text, active?.dialog?.id, onServer]);
   useEffect(() => () => void (onServer ? undefined : window.bloks?.browserBounds?.(null)), [onServer]);
 
   // a download starting opens the shelf, so it is seen arriving
@@ -357,6 +361,8 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
         </div>
       )}
 
+      {active?.dialog && <DialogBar key={active.dialog.id} dialog={active.dialog} url={active.url} control={state?.control} />}
+
       {/* where the page goes: the app's view over it, or the server's
           pictures in it; what shows here otherwise is only ever seen when
           there is no page, or something is drawn over it */}
@@ -402,6 +408,89 @@ function NoBrowserHere({ missing }: { missing: BrowserMissing }) {
         {missing === "off" ? t("browserPanel.turnedOffBody") : missing === "path" ? t("browserPanel.wrongChromeBody") : t("browserPanel.noChromeBody")}
       </p>
     </div>
+  );
+}
+
+/**
+ * A page's alert, confirm, prompt or "leave this page?", over the page
+ * rather than on it: in the app the page is a view nothing can be drawn
+ * over, and a server's headless Chrome draws no dialog at all. Answered
+ * here while the person has the wheel; while an agent drives, it is the
+ * agent's to answer, and the bar says it waits. Never takes the focus:
+ * it may come up while the person is typing in the chat.
+ */
+function DialogBar({ dialog, url, control }: { dialog: BrowserDialog; url: string; control: BrowserControl | undefined }) {
+  const bar = dialogBar(dialog, url, control);
+  const [text, setText] = useState(dialog.defaultPrompt ?? "");
+  const [busy, setBusy] = useState(false);
+  const id = useId();
+  const answer = async (accept: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    const said = await act("answerDialog", { id: dialog.id, accept, ...(bar.field && accept ? { text } : {}) });
+    setBusy(false);
+    // the app had to stay on the page before anybody was asked: the yes
+    // lets the next try through, and the person makes it
+    if (accept && dialog.again && said && !said.error) toast(t("browserPanel.dialog.again"));
+  };
+  return (
+    <section
+      role="alertdialog"
+      aria-modal="false"
+      aria-labelledby={`${id}-title`}
+      aria-describedby={bar.body ? `${id}-body` : undefined}
+      className="shrink-0 border-t bg-muted px-3 py-2"
+    >
+      <div className="flex items-start gap-2">
+        <MessageSquare size={13} className="mt-[3px] shrink-0 text-muted-foreground" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p id={`${id}-title`} className="truncate text-small font-medium text-foreground">
+            {bar.title}
+          </p>
+          {bar.body && (
+            <p id={`${id}-body`} className="mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-body text-foreground">
+              {bar.body}
+            </p>
+          )}
+          {bar.waiting && <p className="mt-1 text-small text-muted-foreground">{bar.waiting}</p>}
+        </div>
+      </div>
+      {!bar.waiting && (
+        <form
+          className="mt-2 flex flex-wrap items-center justify-end gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void answer(true);
+          }}
+        >
+          {bar.field && (
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  void answer(false);
+                }
+              }}
+              maxLength={2000}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label={t("browserPanel.dialog.answer")}
+              className="h-7 min-w-0 flex-1 basis-40 rounded-md border border-input bg-background px-2 text-body text-foreground outline-none transition-[border-color] duration-150 placeholder:text-muted-foreground focus-visible:border-ring/60"
+            />
+          )}
+          {bar.dismiss && (
+            <Button type="button" size="sm" variant="ghost" className="h-6 px-2.5 text-small" disabled={busy} onClick={() => void answer(false)}>
+              {bar.dismiss}
+            </Button>
+          )}
+          <Button type="submit" size="sm" variant="brand" className="h-6 px-2.5 text-small" disabled={busy}>
+            {bar.accept}
+          </Button>
+        </form>
+      )}
+    </section>
   );
 }
 

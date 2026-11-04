@@ -31,6 +31,24 @@ export type BrowserControl =
   | { by: "agent"; botId: string; name: string; since: number }
   | { by: "person"; since: number; from?: { botId: string; name: string }; waiting?: { botId: string; name: string } };
 
+/** A dialog a tab's page has open, waiting on an answer
+ * (server/browser-core.mjs dialogOpened). Its words are the page's. */
+export interface BrowserDialog {
+  id: string;
+  type: "alert" | "confirm" | "prompt" | "beforeunload";
+  message: string;
+  defaultPrompt?: string;
+  /** A yes only lets the next try to leave the page through. */
+  again?: true;
+}
+
+/** The person's answer to one, from the panel's bar. */
+export interface DialogAnswer {
+  id: string;
+  accept: boolean;
+  text?: string;
+}
+
 export interface BrowserTab {
   id: string;
   url: string;
@@ -39,6 +57,7 @@ export interface BrowserTab {
   canGoBack: boolean;
   canGoForward: boolean;
   by: TabBy;
+  dialog?: BrowserDialog;
 }
 
 export interface BrowserDownload {
@@ -81,7 +100,7 @@ export interface ScreenFrame {
 export type BrowserDo =
   | "navigate" | "newTab" | "closeTab" | "selectTab" | "back" | "forward" | "reload" | "stop"
   | "takeOver" | "giveBack" | "openExternal" | "openDownload" | "revealDownload" | "openDownloads"
-  | "clearDownloads" | "forgetSites";
+  | "clearDownloads" | "forgetSites" | "answerDialog";
 
 // ── pure ───────────────────────────────────────────────────────────────
 
@@ -134,6 +153,32 @@ export function controlLine(control: BrowserControl | undefined): { tone: "agent
         ? t("appBrowser.control.tookOverFrom", { name: who })
         : t("appBrowser.control.youHaveIt"),
     action: "giveBack",
+  };
+}
+
+/**
+ * The bar over the page while it waits on a dialog: who is asking (the
+ * page's host, the way a browser names one), the page's words, and the
+ * answers. Only the person who has the wheel answers from here: while an
+ * agent drives, the dialog is the agent's to answer, and the bar says it
+ * waits on it, with Take over on the line above.
+ */
+export function dialogBar(dialog: BrowserDialog, url: string | undefined, control: BrowserControl | undefined) {
+  const leave = dialog.type === "beforeunload";
+  const host = hostLabel(url);
+  return {
+    title: leave ? t("browserPanel.dialog.leaveTitle") : host ? t("browserPanel.dialog.hostSays", { host }) : t("browserPanel.dialog.pageSays"),
+    body: leave ? t("browserPanel.dialog.leaveBody") : dialog.message,
+    accept: leave ? t("browserPanel.dialog.leave") : t("browserPanel.dialog.ok"),
+    /** An alert has only OK. */
+    dismiss: dialog.type === "alert" ? null : leave ? t("browserPanel.dialog.stay") : t("common.cancel"),
+    field: dialog.type === "prompt",
+    waiting:
+      control?.by === "agent"
+        ? control.name
+          ? t("browserPanel.dialog.waitingFor", { name: control.name })
+          : t("browserPanel.dialog.waitingForAgent")
+        : null,
   };
 }
 

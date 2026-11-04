@@ -425,6 +425,24 @@ in, which makes it worth guarding.
   its own end of the frame. The snapshot is read from the browser's
   accessibility tree, and an agent's refs name the browser's own nodes,
   so a page cannot forge one by writing an attribute.
+- **A page's dialogs.** An alert, a confirm, a prompt or a "leave this
+  page?" stops the page until it is answered. The agent's step that
+  opened one comes back with it, the page's words framed like the rest
+  of the page (a dialog is the page talking, however official it looks),
+  and the agent answers with the dialog command, as it could click any
+  button: no card, since no dialog can do more than a click could. What
+  an agent types into a prompt is never said back in its answer. While
+  you have the browser, the dialog shows in the panel's bar for you to
+  answer, and waits for you; otherwise one nobody answers is dismissed
+  after 30 seconds, and a "leave this page?" then stays on the page.
+  Nothing is ever accepted by default. In the desktop app Bloks takes
+  the place of Electron's own dialog boxes, so a page an agent opened
+  cannot put a box over the Bloks window; and since Electron asks about
+  leaving a page before anyone can be asked, the app always stays, and a
+  yes afterwards lets the next try through. Your other devices see a
+  dialog's words while it is open (they are shown to you to answer),
+  cut to a thousand characters with control and direction characters
+  taken out; an agent's tab list says only that a tab waits on one.
 - **You can take it back.** You see which agent drives which tab and can
   take over at any time, from the panel or simply by clicking or typing
   in the page. The agent's next step then waits, up to a minute and a
@@ -432,8 +450,8 @@ in, which makes it worth guarding.
   counted against its turn's twelve changes, since none changes the
   workspace; the sites and fields above are what bound them.
 - **What leaves the Mac.** Your other devices hear only each tab's
-  address and title, who drives it and the downloads' names, never what
-  is on a page; a phone looking on gets a small picture of the tab on
+  address and title, who drives it, the words of a dialog it has open
+  and the downloads' names, never what is on a page; a phone looking on gets a small picture of the tab on
   screen, at most every second and a half, and a member's device gets
   none of it. Downloads land in the workspace's own `browser-downloads`
   folder, with the site's name for the file cut down to a plain name.

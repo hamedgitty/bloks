@@ -58,7 +58,7 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
 
   function makeTarget(url, openerId) {
     const targetId = `T${++seq}`;
-    const target = { targetId, url, title: "", openerId, sessions: new Set(), history: [{ id: 1, url, title: "" }], at: 0, fetch: null, viewport: null, userAgent: null, cast: null, frames: 0, input: [], waiting: false };
+    const target = { targetId, url, title: "", openerId, sessions: new Set(), history: [{ id: 1, url, title: "" }], at: 0, fetch: null, viewport: null, userAgent: null, cast: null, frames: 0, input: [], waiting: false, armed: null, leave: false, dialog: null, answers: [] };
     targets.set(targetId, target);
     return target;
   }
@@ -119,6 +119,18 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
     });
   }
 
+  /** A dialog the page opens, which stops it until it is answered, as a
+   * real one does: the call that opened it waits for the answer, and so
+   * does every call into the page meanwhile. */
+  function openDialog(target, said) {
+    const sessionId = [...target.sessions][0];
+    let answered;
+    const closed = new Promise((resolve) => (answered = resolve));
+    target.dialog = { ...said, closed, answered };
+    emit("Page.javascriptDialogOpening", { url: target.url, frameId: target.targetId, message: said.message ?? "", type: said.type, hasBrowserHandler: true, defaultPrompt: said.defaultPrompt ?? "" }, sessionId);
+    return closed;
+  }
+
   function closeTarget(target) {
     targets.delete(target.targetId);
     for (const sessionId of target.sessions) {
@@ -129,6 +141,11 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
   }
 
   async function page(target, method, params) {
+    // a page stopped on a dialog answers nothing but the browser's own
+    // calls until it is answered
+    if (target.dialog && !["Page.handleJavaScriptDialog", "Page.getNavigationHistory", "Page.stopScreencast", "Page.screencastFrameAck"].includes(method)) {
+      await target.dialog.closed;
+    }
     const known = pageAt(target.url);
     const element = (id) => known.elements.find((e) => e.backendNodeId === id);
     switch (method) {
@@ -145,7 +162,22 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
         target.userAgent = params.userAgent;
         return {};
       case "Page.navigate":
+        if (target.leave) {
+          // a page that asks before it is left
+          const { accept } = await openDialog(target, { type: "beforeunload" });
+          if (!accept) return { frameId: target.targetId };
+          target.leave = false;
+        }
         return go(target, String(params.url));
+      case "Page.handleJavaScriptDialog": {
+        const dialog = target.dialog;
+        if (!dialog) throw new Error("No dialog is showing");
+        target.dialog = null;
+        target.answers.push({ type: dialog.type, accept: params.accept, promptText: params.promptText });
+        emit("Page.javascriptDialogClosed", { frameId: target.targetId, result: Boolean(params.accept), userInput: String(params.promptText ?? "") }, [...target.sessions][0]);
+        dialog.answered({ accept: Boolean(params.accept) });
+        return {};
+      }
       case "Page.getNavigationHistory":
         return { currentIndex: target.at, entries: target.history };
       case "Page.navigateToHistoryEntry": {
@@ -167,6 +199,12 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
       case "Input.dispatchKeyEvent":
       case "Input.insertText":
         target.input.push({ method, ...params });
+        // a click on a page armed with a dialog opens it, and waits on it
+        if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased" && target.armed) {
+          const said = target.armed;
+          target.armed = null;
+          await openDialog(target, said);
+        }
         return {};
       case "Accessibility.getFullAXTree":
         return {
@@ -291,6 +329,17 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
     follow(targetId, url) {
       const target = targets.get(targetId);
       return target ? go(target, url) : Promise.resolve(null);
+    },
+    /** The page opens `dialog` on the next click: an alert, a confirm or
+     * a prompt, with its words. */
+    arm(targetId, dialog) {
+      const target = targets.get(targetId);
+      if (target) target.armed = dialog;
+    },
+    /** The page asks before it is left, from now until it is. */
+    askBeforeLeaving(targetId) {
+      const target = targets.get(targetId);
+      if (target) target.leave = true;
     },
     /** The page changes on its own: a new picture, when one is wanted. */
     repaint(targetId) {

@@ -3428,12 +3428,43 @@ Four parts, each in its own place:
   one) and what the person does (`browser:do`, a fixed list of actions);
   the app tells the page its state (`browser:state`) and asks for the
   panel when an agent starts browsing (`browser:reveal`). Downloads go to
-  `<workspace data>/browser-downloads`.
+  `<workspace data>/browser-downloads`. A page's dialogs are held rather
+  than drawn (`holdDialogs`): Bloks replaces Electron's own listener on
+  the webContents' internal `-run-dialog` event, so an alert, a confirm
+  or a prompt becomes `AppBrowser.dialogOpened` with the callback that
+  answers it, and `-cancel-dialogs` closes it. Electron puts a "leave
+  this page?" to `will-prevent-unload` to be answered at once, so the
+  app stays (it never calls `preventDefault` by itself) and records a
+  dialog that is not `held`; a yes sets `tab.leaving` for twenty seconds,
+  and the next `will-prevent-unload` lets the page go. The agent's step
+  that ran into it, or the person's own panel step (`tab.redo`, kept two
+  seconds by `browser:do`), is made again on that yes.
+- **Dialogs, in both** (`server/browser-core.mjs`). Each browser reports
+  a dialog to `dialogOpened(tabId, { type, message, defaultPrompt,
+  answer, held, redo })`; `readDialog` keeps one of four kinds and the
+  words cut to 1,000 characters without control or bidi characters. The
+  agent's command is raced against a dialog on its tab (`#race`): the
+  dialog wins at once, the answer is `{ dialog }`, and the cut-short work
+  finishes by itself once the page is answered, its late snapshot
+  leaving the refs alone (`tab.run`). Anything but the `dialog` command
+  on a tab with a held dialog answers the question again without calling
+  the page, whose every call would only wait. `dialog accept|dismiss`
+  (with `text` for a prompt, else the text it suggests) calls `answer`,
+  then waits for the page to load and settle and snapshots it. A clock
+  of 30 seconds dismisses an unanswered dialog; the person taking over
+  stops it, giving back starts it again. What became of a dialog the
+  agent was told of (timed out, answered by the person, closed by the
+  page) is said with its next answer (`dialogNotes`). `state()` carries
+  each open dialog (`id`, `type`, `message`, `defaultPrompt`, and
+  `again` when a yes only lets the next try through), and the person
+  answers with `answerDialog`, by id.
 - **The server** (`server/app-browser.ts`, routes in `server/index.ts`).
   `POST /api/agent/browser` takes an agent's command, checks it
   (`validateCommand`), decides the site (`siteVerdict`: refused, denied,
   go, or ask), asks the app over the desktop line (`desktopLine.ask("browser")`),
-  and frames what comes back (`frameUntrusted`). A site to ask about, and
+  and frames what comes back (`frameUntrusted`); a dialog the step ran
+  into is said by `dialogWords`, the page's words framed, and the notes
+  by `dialogNoteWords`. A site to ask about, and
   a password, payment or upload field the app reports as `needs`, become
   an approval card in the agent's conversation with request id
   `browser:<random>`; `/api/bots/:id/respond` hands the answer to the
@@ -3458,7 +3489,12 @@ Four parts, each in its own place:
   user agent without "Headless", and only then runs. `Fetch.requestPaused`
   applies `refusedNavigation` and, for an agent's tab, `allowedForAgent`,
   failing a main-frame document with `Aborted` so the page stays where it
-  was. A popup is adopted as a tab driven by whoever drove its opener.
+  was. `Page.javascriptDialogOpening` becomes `dialogOpened`, answered
+  with `Page.handleJavaScriptDialog`, and `Page.javascriptDialogClosed`
+  closes it; a headless Chrome shows a dialog to nobody, and a
+  `Page.navigate` the page asks about leaving waits on it too. The
+  person's input stops at a dialog rather than waiting on it. A popup is
+  adopted as a tab driven by whoever drove its opener.
   Downloads use `Browser.setDownloadBehavior` and are renamed with
   `downloadName` when they finish. The agent's commands reach it through
   the same `runBrowserCommand` as the app's (`askBrowser` in index.ts).
@@ -3479,8 +3515,11 @@ Four parts, each in its own place:
   The dock on the chat's right, resizable and over the chat when the
   window is too narrow, opened from the header's globe; tabs with the
   driving agent's face, the address bar, back, forward, reload, the line
-  saying who has the browser with Take over and Give back, and the
-  downloads shelf. The page learns where the browser is
+  saying who has the browser with Take over and Give back, the bar for a
+  page's dialog under it (`DialogBar`, from `dialogBar`: the page's host
+  asking, its words, OK and Cancel or Leave and Stay, a field for a
+  prompt; while an agent drives, only that it waits on the agent), and
+  the downloads shelf. The page learns where the browser is
   (`useBrowserHome`): "own" when the app answers `browser:state` for this
   workspace, else the server's `where`. For a server's browser the same
   panel draws the page itself (`Screen`: the pictures, the pointer, a

@@ -69,6 +69,7 @@ describe("bloks-mcp", () => {
     assert.deepEqual(names, [
       "ask_agent",
       "browser_click",
+      "browser_dialog",
       "browser_open",
       "browser_press",
       "browser_read",

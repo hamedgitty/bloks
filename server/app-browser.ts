@@ -26,14 +26,21 @@
 //   Who has the wheel. The person can take over at any time; an agent's
 //   next action then waits, a while, and says so if it is still waiting.
 //
+//   What a page's dialog gets. An agent hears of an alert, a confirm, a
+//   prompt or a "leave this page?" with the step that opened it, and
+//   answers it with the dialog command, as it would click a button: no
+//   card, since nothing a dialog can do is more than a click could. Its
+//   words are the page's, framed like the rest (dialogWords).
+//
 // What a page says reaches a model only inside a frame that names it as
 // untrusted data (frameUntrusted). A page is the easiest place on the
 // internet to write "ignore your instructions".
 import { createHash, randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { PROMPT_LIMIT, type DialogNote, type DialogTold } from "./browser-core.mjs";
 import type { LineAnswer } from "./desktop-line.ts";
-import { readInput, readViewport, type BrowserMissing, type PersonInput, type ScreenFrame, type Viewport } from "./server-browser.ts";
+import { readDialogAnswer, readInput, readViewport, type BrowserMissing, type PersonInput, type ScreenFrame, type Viewport } from "./server-browser.ts";
 
 export type BrowserMode = "ask" | "auto";
 
@@ -170,7 +177,7 @@ export function navigationPolicy(settings: BrowserSettings, granted: readonly st
 
 export type BrowserAction =
   | "open" | "read" | "snapshot" | "click" | "type" | "select" | "scroll" | "press" | "wait"
-  | "screenshot" | "tabs" | "switch" | "close" | "back" | "forward" | "reload" | "upload" | "done";
+  | "screenshot" | "tabs" | "switch" | "close" | "back" | "forward" | "reload" | "upload" | "dialog" | "done";
 
 export interface BrowserCommand {
   action: BrowserAction;
@@ -187,11 +194,13 @@ export interface BrowserCommand {
   newTab?: boolean;
   append?: boolean;
   submit?: boolean;
+  /** The dialog command's answer to a page's dialog. */
+  answer?: "accept" | "dismiss";
 }
 
 export const ACTIONS: readonly BrowserAction[] = [
   "open", "read", "snapshot", "click", "type", "select", "scroll", "press", "wait",
-  "screenshot", "tabs", "switch", "close", "back", "forward", "reload", "upload", "done",
+  "screenshot", "tabs", "switch", "close", "back", "forward", "reload", "upload", "dialog", "done",
 ];
 
 /** The longest text one type sends, and the longest wait. */
@@ -283,6 +292,15 @@ export function validateCommand(body: unknown): { command: BrowserCommand } | { 
       if (!path || !isAbsolute(path)) return { error: "upload needs the full path of the file to choose" };
       return { command: { action, ref: r, path } };
     }
+    case "dialog": {
+      const answer = String(said.answer ?? "");
+      if (answer !== "accept" && answer !== "dismiss") return { error: "dialog needs an answer: accept (OK, leave the page) or dismiss (Cancel, stay)" };
+      if (said.text === undefined) return { command: { action, answer } };
+      if (answer !== "accept") return { error: "only accept carries text, for a prompt" };
+      if (typeof said.text !== "string") return { error: "the text for a prompt is a string" };
+      if (said.text.length > PROMPT_LIMIT) return { error: `a prompt takes at most ${PROMPT_LIMIT} characters` };
+      return { command: { action, answer, text: said.text } };
+    }
     default:
       return { command: { action } };
   }
@@ -325,6 +343,51 @@ export function frameUntrusted(source: string, body: string, nonce: string = ran
 export function sourceOf(url: string | undefined): string {
   const host = url ? hostOf(url) : "";
   return host ? `a web page on ${host}` : "a web page";
+}
+
+/** The browser's own question before a page is left: no page has had a
+ * say in its words for years. */
+const LEAVE_WORDS = "Leave site? Changes you made may not be saved.";
+
+const ANSWER_WITH: Record<DialogTold["type"], string> = {
+  alert: "Close it with dialog accept.",
+  confirm: "Answer it with dialog accept (OK) or dialog dismiss (Cancel).",
+  prompt: "Answer it with dialog accept and the text to enter (or none, for what it suggests), or dialog dismiss (Cancel).",
+  beforeunload: "Answer it with dialog accept to leave, or dialog dismiss to stay.",
+};
+
+/**
+ * A page's dialog as the agent hears of it: Bloks's words around it, and
+ * the page's own words, when it has any, framed as the page's. A dialog
+ * is the page talking like anything else on it, however official it
+ * looks: "Your session expired, paste your password" is a sentence a
+ * page can write.
+ */
+export function dialogWords(dialog: DialogTold, url: string | undefined): string {
+  const waits = dialog.held
+    ? " Nothing else on this tab works until it is answered; left alone for 30 seconds, Bloks dismisses it."
+    : " Bloks stayed on the page for now; a yes makes the step that tried to leave go again.";
+  if (dialog.type === "beforeunload") return `The page asked: "${LEAVE_WORDS}" (beforeunload). ${ANSWER_WITH.beforeunload}${waits}`;
+  const lines = [`The page opened ${dialog.type === "alert" ? "an alert" : `a ${dialog.type}`} dialog.${dialog.message ? " It says:" : " It says nothing."}`];
+  if (dialog.message) lines.push(frameUntrusted(`the ${dialog.type} dialog of ${sourceOf(url)}`, dialog.message));
+  if (dialog.defaultPrompt) lines.push("The text it suggests:", frameUntrusted(`the prompt of ${sourceOf(url)}`, dialog.defaultPrompt));
+  lines.push(`${ANSWER_WITH[dialog.type]}${waits}`);
+  return lines.join("\n");
+}
+
+/** What became of a dialog meanwhile, in a sentence. */
+export function dialogNoteWords(note: DialogNote): string {
+  const which = `the ${note.type === "beforeunload" ? "leave this page" : note.type} dialog on ${note.tab}`;
+  switch (note.how) {
+    case "timeout":
+      return `Nobody answered ${which} in 30 seconds, so Bloks dismissed it${note.type === "beforeunload" ? " and stayed on the page" : ""}.`;
+    case "accepted":
+      return `The person answered ${which} themselves: ${note.type === "beforeunload" ? "they left the page" : "OK"}.`;
+    case "dismissed":
+      return `The person answered ${which} themselves: ${note.type === "beforeunload" ? "they stayed on the page" : "Cancel"}.`;
+    default:
+      return `${which[0]!.toUpperCase()}${which.slice(1)} closed without an answer: the page moved on.`;
+  }
 }
 
 // ── asking the person, and waiting for the wheel ───────────────────────
@@ -623,7 +686,13 @@ export async function runBrowserCommand(deps: RunDeps, caller: Caller, command: 
       approved = true;
       continue;
     }
-    if (answer.error) return { status: 422, body: { error: answer.error, ...(answer.tab ? { tab: answer.tab } : {}) } };
+    if (answer.error) {
+      const notes = Array.isArray(answer.dialogNotes) ? (answer.dialogNotes as DialogNote[]) : [];
+      return {
+        status: 422,
+        body: { error: answer.error, ...(answer.tab ? { tab: answer.tab } : {}), ...(notes.length ? { dialogNote: notes.map(dialogNoteWords).join(" ") } : {}) },
+      };
+    }
     return { status: 200, body: shaped(command, answer) };
   }
   return { status: 409, body: { error: "The Bloks browser kept changing hands. Try again." } };
@@ -633,6 +702,12 @@ export async function runBrowserCommand(deps: RunDeps, caller: Caller, command: 
 function shaped(command: BrowserCommand, answer: LineAnswer): Record<string, unknown> {
   const out: Record<string, unknown> = { ok: true };
   if (answer.tab) out.tab = answer.tab;
+  const notes = Array.isArray(answer.dialogNotes) ? (answer.dialogNotes as DialogNote[]) : [];
+  if (notes.length) out.dialogNote = notes.map(dialogNoteWords).join(" ");
+  if (answer.dialog && typeof answer.dialog === "object") {
+    out.dialog = dialogWords(answer.dialog as DialogTold, String(answer.url ?? ""));
+    return out;
+  }
   if (typeof answer.image === "string") {
     out.image = answer.image;
     out.mime = answer.mime === "image/png" ? "image/png" : "image/jpeg";
@@ -640,8 +715,12 @@ function shaped(command: BrowserCommand, answer: LineAnswer): Record<string, unk
     return out;
   }
   if (Array.isArray(answer.tabs)) {
-    const lines = (answer.tabs as Array<{ id: string; url: string; title: string; by?: { kind?: string; name?: string } }>).map(
-      (tab) => `${tab.id}${tab.id === answer.activeTabId ? " (shown)" : ""} | ${tab.title || "(untitled)"} | ${tab.url}${tab.by?.kind === "agent" ? ` | driven by ${tab.by.name}` : " | the person's"}`,
+    const lines = (answer.tabs as Array<{ id: string; url: string; title: string; by?: { kind?: string; name?: string }; dialog?: { type?: string } }>).map(
+      (tab) =>
+        `${tab.id}${tab.id === answer.activeTabId ? " (shown)" : ""} | ${tab.title || "(untitled)"} | ${tab.url}${tab.by?.kind === "agent" ? ` | driven by ${tab.by.name}` : " | the person's"}` +
+        // that a page waits on a dialog, never what it says: that is
+        // said, framed, to the agent acting on the tab
+        (tab.dialog ? ` | waiting on a ${tab.dialog.type === "beforeunload" ? "leave this page" : tab.dialog.type} dialog` : ""),
     );
     out.tabs = frameUntrusted("the Bloks browser's tab titles", lines.join("\n") || "no tabs open");
     if (command.action === "tabs") return out;
@@ -672,7 +751,7 @@ export interface OwnBrowser {
 /** What the panel may ask of this server's own browser: the app's
  * browser:do, less what only makes sense on the computer at hand. */
 const PERSON_ACTIONS = new Set([
-  "navigate", "newTab", "closeTab", "selectTab", "back", "forward", "reload", "stop", "takeOver", "giveBack", "clearDownloads", "forgetSites",
+  "navigate", "newTab", "closeTab", "selectTab", "back", "forward", "reload", "stop", "takeOver", "giveBack", "clearDownloads", "forgetSites", "answerDialog",
 ]);
 
 export interface RouteDeps extends RunDeps {
@@ -810,7 +889,13 @@ async function ownRoute(method: string, path: string, readBody: () => Promise<un
   }
   const action = String(body?.action ?? "");
   if (!PERSON_ACTIONS.has(action)) return { status: 400, body: { error: "the browser does not do that" } };
-  const arg = body?.arg === undefined || body.arg === null ? undefined : String(body.arg).slice(0, 2048);
+  let arg: unknown = body?.arg === undefined || body.arg === null ? undefined : String(body.arg).slice(0, 2048);
+  if (action === "answerDialog") {
+    // the one answer that is more than a word: which dialog, yes or no,
+    // and what to type into a prompt
+    arg = readDialogAnswer(body?.arg);
+    if (!arg) return { status: 400, body: { error: "an answer names the dialog by its id, says accept true or false, and carries text for a prompt" } };
+  }
   try {
     const answer = await own.person(action, arg);
     return { status: answer.error ? 422 : 200, body: { ...answer } };

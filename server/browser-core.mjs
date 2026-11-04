@@ -25,6 +25,14 @@
 //   takes over; while the person has it, an agent's next action is held
 //   and says why (AppBrowser.command).
 //
+//   What a page's own dialogs get. An alert, a confirm, a prompt or a
+//   "leave this page?" stops the page until somebody answers it. Each
+//   browser hears one open its own way and says so here (dialogOpened);
+//   the agent's step that caused it comes back describing it, and the
+//   agent answers with the dialog command. The person answers it in the
+//   panel while they have the wheel. Nobody answering for thirty seconds
+//   is a dismissal, never a yes.
+//
 // What a page says comes back as data. The server frames it as such
 // before any of it reaches a model (server/app-browser.ts).
 //
@@ -45,6 +53,44 @@ export const SNAPSHOT_LIMIT = 300;
 
 /** The longest an agent may wait for something on a page in one go. */
 export const WAIT_LIMIT_MS = 30_000;
+
+/** How long a page's dialog waits for an answer before it is dismissed. */
+export const DIALOG_WAIT_MS = 30_000;
+
+/** How much of a dialog's words are kept: a page can put a book in an
+ * alert, and nobody answering one needs more than the gist. */
+export const DIALOG_TEXT_LIMIT = 1000;
+
+/** The longest answer typed into a page's prompt. */
+export const PROMPT_LIMIT = 2000;
+
+/** How long a yes to leaving lets the next try through, where the
+ * browser had to answer "stay" before anybody was asked (the app's). */
+export const LEAVE_ARM_MS = 20_000;
+
+const DIALOG_TYPES = new Set(["alert", "confirm", "prompt", "beforeunload"]);
+
+/**
+ * A dialog as a browser reported it, made safe to keep and to show: one
+ * of the four kinds, its words without control characters and cut to a
+ * length. A "leave this page?" has no words of the page's own (browsers
+ * stopped showing them years ago), so none are kept for it.
+ */
+export function readDialog(raw) {
+  const said = raw && typeof raw === "object" ? raw : {};
+  const type = DIALOG_TYPES.has(said.type) ? said.type : "alert";
+  const clean = (value) =>
+    String(value ?? "")
+      .replace(/\r\n?/g, "\n")
+      // and nothing that turns text around to read as something else
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "")
+      .slice(0, DIALOG_TEXT_LIMIT);
+  return {
+    type,
+    message: type === "beforeunload" ? "" : clean(said.message),
+    defaultPrompt: type === "prompt" ? clean(said.defaultPrompt) : "",
+  };
+}
 
 /**
  * Why a tab may not go to `url`, or null when it may.
@@ -347,12 +393,14 @@ async function press(tab, def) {
 }
 
 /** The tab's elements, read afresh, with their refs kept on the tab for
- * the commands that follow. */
-async function snapshot(tab) {
+ * the commands that follow. A step a dialog cut short finishes on its
+ * own once the dialog is answered; its late look at the page is not the
+ * one the agent is working from, so it leaves the refs be (tab.run). */
+async function snapshot(tab, run = tab.run) {
   await tab.cdp("Accessibility.enable").catch(() => {});
   const tree = await tab.cdp("Accessibility.getFullAXTree", {});
   const shaped = formatAxSnapshot(tree?.nodes ?? [], { url: tab.url(), title: tab.title() });
-  tab.refs = shaped.refs;
+  if (tab.run === run) tab.refs = shaped.refs;
   return shaped.text;
 }
 
@@ -368,6 +416,7 @@ export const FIELD_WORDS = { password: "a password field", payment: "a payment f
  */
 export async function runOnTab(tab, command) {
   const action = command.action;
+  const run = tab.run;
   switch (action) {
     case "open": {
       tab.refs = new Map();
@@ -375,10 +424,10 @@ export async function runOnTab(tab, command) {
       const went = await tab.cdp("Page.navigate", { url: command.url });
       if (went?.errorText) return { error: `the page did not load: ${went.errorText}` };
       await settle(tab);
-      return { text: await snapshot(tab) };
+      return { text: await snapshot(tab, run) };
     }
     case "snapshot":
-      return { text: await snapshot(tab) };
+      return { text: await snapshot(tab, run) };
     case "read": {
       const text = String((await evaluate(tab, READ)) ?? "");
       const cut = text.length > READ_LIMIT;
@@ -396,7 +445,7 @@ export async function runOnTab(tab, command) {
         await tab.cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
       }
       await settle(tab);
-      return { text: `clicked @${ref}\n\n${await snapshot(tab)}` };
+      return { text: `clicked @${ref}\n\n${await snapshot(tab, run)}` };
     }
     case "type": {
       const { ref, backendNodeId } = nodeFor(tab, command.ref);
@@ -418,7 +467,7 @@ export async function runOnTab(tab, command) {
       if (!command.submit) return { text: typed };
       await press(tab, KEYS.Enter);
       await settle(tab);
-      return { text: `${typed} and pressed Enter\n\n${await snapshot(tab)}` };
+      return { text: `${typed} and pressed Enter\n\n${await snapshot(tab, run)}` };
     }
     case "select": {
       const { ref, backendNodeId } = nodeFor(tab, command.ref);
@@ -468,7 +517,7 @@ export async function runOnTab(tab, command) {
       if (!def) return { error: `no key called ${command.key}. Keys: ${Object.keys(KEYS).join(", ")}` };
       await press(tab, def);
       await settle(tab);
-      return { text: `pressed ${command.key}\n\n${await snapshot(tab)}` };
+      return { text: `pressed ${command.key}\n\n${await snapshot(tab, run)}` };
     }
     case "wait": {
       const until = Date.now() + Math.min(WAIT_LIMIT_MS, Math.max(250, command.ms ?? 5000));
@@ -481,7 +530,7 @@ export async function runOnTab(tab, command) {
         if (await evaluate(tab, test).catch(() => false)) {
           await settle(tab);
           const what = command.text !== undefined ? `"${command.text}" is on the page` : command.gone !== undefined ? `"${command.gone}" is gone` : "the page has loaded";
-          return { text: `${what}\n\n${await snapshot(tab)}` };
+          return { text: `${what}\n\n${await snapshot(tab, run)}` };
         }
         if (Date.now() >= until) {
           const what = command.text !== undefined ? `"${command.text}" did not appear` : command.gone !== undefined ? `"${command.gone}" is still there` : "the page is still loading";
@@ -512,17 +561,41 @@ export async function runOnTab(tab, command) {
       tab.refs = new Map();
       await tab.cdp("Page.navigateToHistoryEntry", { entryId: entry.id });
       await settle(tab);
-      return { text: await snapshot(tab) };
+      return { text: await snapshot(tab, run) };
     }
     case "reload": {
       tab.refs = new Map();
       await tab.cdp("Page.reload", {});
       await settle(tab);
-      return { text: await snapshot(tab) };
+      return { text: await snapshot(tab, run) };
     }
     default:
       return { error: `the Bloks browser does not know ${action}` };
   }
+}
+
+/** What answering a dialog did, in the agent's words. Never the text
+ * typed into a prompt: it may be what the person would not have said. */
+export function dialogOutcome(dialog, accept, text) {
+  if (dialog.type === "beforeunload") return accept ? "left the page" : "stayed on the page";
+  if (dialog.type === "alert") return "closed the alert";
+  if (dialog.type === "confirm") return accept ? "answered OK to the confirm" : "answered Cancel to the confirm";
+  if (!accept) return "answered Cancel to the prompt";
+  if (text === undefined) return "answered OK to the prompt with the text it suggested";
+  return `entered ${text.length} character${text.length === 1 ? "" : "s"} and answered OK to the prompt`;
+}
+
+/** The page once it carries on after a dialog: loaded, if answering sent
+ * it somewhere, and settled, then looked at. */
+async function afterDialog(tab, words) {
+  const run = tab.run;
+  await new Promise((resolve) => setTimeout(resolve, tab.pollMs ?? 150));
+  const until = Date.now() + 5_000;
+  while (Date.now() < until && !(await evaluate(tab, `document.readyState === "complete"`).catch(() => false))) {
+    await new Promise((resolve) => setTimeout(resolve, tab.pollMs ?? 150));
+  }
+  await settle(tab);
+  return { text: `${words}\n\n${await snapshot(tab, run)}` };
 }
 
 // ── who has the browser ────────────────────────────────────────────────
@@ -544,22 +617,28 @@ export class AppBrowser {
   #downloads = [];
   #seq = 0;
   #idleTimer = null;
+  #dialogSeq = 0;
+  #runSeq = 0;
+  #notes = [];
   #makeTab;
   #onChange;
   #now;
   #idleMs;
+  #dialogMs;
   #ownPorts;
 
-  constructor({ makeTab, onChange = () => {}, now = Date.now, idleMs = AGENT_IDLE_MS, ownPorts = () => [] }) {
+  constructor({ makeTab, onChange = () => {}, now = Date.now, idleMs = AGENT_IDLE_MS, dialogMs = DIALOG_WAIT_MS, ownPorts = () => [] }) {
     this.#makeTab = makeTab;
     this.#onChange = onChange;
     this.#now = now;
     this.#idleMs = idleMs;
+    this.#dialogMs = dialogMs;
     this.#ownPorts = ownPorts;
   }
 
   /** What the panel, the server and the phone are shown. Never page
-   * content beyond each tab's address and title. */
+   * content beyond each tab's address and title, and the words of a
+   * dialog it has open, which the person is the one to answer. */
   state() {
     return {
       tabs: this.#tabs.map((tab) => ({
@@ -570,6 +649,19 @@ export class AppBrowser {
         canGoBack: Boolean(tab.canGoBack?.()),
         canGoForward: Boolean(tab.canGoForward?.()),
         by: tab.by,
+        ...(tab.dialog
+          ? {
+              dialog: {
+                id: tab.dialog.id,
+                type: tab.dialog.type,
+                message: tab.dialog.message,
+                ...(tab.dialog.type === "prompt" ? { defaultPrompt: tab.dialog.defaultPrompt } : {}),
+                // a yes only lets the next try through: there is nothing
+                // to go again for the person
+                ...(!tab.dialog.held && !tab.dialog.redo ? { again: true } : {}),
+              },
+            }
+          : {}),
       })),
       activeTabId: this.#active,
       control: { ...this.#control },
@@ -618,6 +710,18 @@ export class AppBrowser {
     const at = this.#tabs.findIndex((tab) => tab.id === id);
     if (at < 0) return false;
     const [gone] = this.#tabs.splice(at, 1);
+    if (gone.dialog) {
+      // let go of the page before it goes, so nothing waits on it
+      const { answer, held } = gone.dialog;
+      this.#forgetDialog(gone);
+      if (held) {
+        try {
+          Promise.resolve(answer(false, "")).catch(() => {});
+        } catch {
+          /* it went first */
+        }
+      }
+    }
     try {
       gone.close?.();
     } catch {
@@ -638,6 +742,8 @@ export class AppBrowser {
     const from = this.#control.by === "agent" ? { botId: this.#control.botId, name: this.#control.name } : this.#control.from;
     clearTimeout(this.#idleTimer);
     this.#control = { by: "person", since: this.#now(), ...(from ? { from } : {}) };
+    // a dialog in front of the person waits for them, however long they take
+    for (const tab of this.#tabs) if (tab.dialog) clearTimeout(tab.dialog.timer);
     this.changed();
   }
 
@@ -645,6 +751,8 @@ export class AppBrowser {
   giveBack() {
     if (this.#control.by !== "person") return;
     this.#control = { by: "idle" };
+    // one they left open has its thirty seconds again from now
+    for (const tab of this.#tabs) if (tab.dialog) this.#dialogClock(tab);
     this.changed();
   }
 
@@ -686,6 +794,165 @@ export class AppBrowser {
     this.changed();
   }
 
+  // ── a page's dialogs ──
+
+  /**
+   * A page opened a dialog, as its browser heard it: `type`, `message`
+   * and `defaultPrompt` as the page gave them, and `answer(accept, text)`,
+   * which answers it in the page. `held` is false where the browser had
+   * to say "stay" to a "leave this page?" before anybody could be asked
+   * (the app's); a yes then lets the next try through, and `redo` makes
+   * that try when the browser knows what it was. Answers the dialog's id.
+   */
+  dialogOpened(tabId, { answer = () => {}, held = true, redo = null, ...said } = {}) {
+    const tab = this.tab(tabId);
+    if (!tab) return null;
+    if (tab.dialog) this.#forgetDialog(tab);
+    tab.dialog = {
+      id: `d${++this.#dialogSeq}`,
+      ...readDialog(said),
+      held: held !== false,
+      answer,
+      redo: typeof redo === "function" ? redo : null,
+      // the agent's step that ran into it, to go again after a yes
+      step: tab.step ?? null,
+      told: false,
+      timer: null,
+    };
+    if (this.#control.by !== "person") this.#dialogClock(tab);
+    for (const wake of [...(tab.dialogWaiters ?? [])]) wake();
+    this.changed();
+    return tab.dialog.id;
+  }
+
+  /** The page or its browser closed a dialog by itself: the tab went
+   * somewhere else, or was closed. */
+  dialogClosed(tabId) {
+    const tab = this.tab(tabId);
+    const dialog = tab?.dialog;
+    if (!dialog) return;
+    this.#forgetDialog(tab);
+    if (dialog.held && dialog.told) this.#note(tab, dialog, "closed");
+    this.changed();
+  }
+
+  /**
+   * An answer to the dialog `id`, from the person in the panel, an agent's
+   * dialog command, or the clock. A prompt's yes carries `text`, or the
+   * text the page suggested when there is none. Never throws: a dialog
+   * gone by the time it is answered is said to be gone.
+   */
+  async answerDialog(id, { accept = false, text } = {}, by = "person") {
+    const tab = this.#tabs.find((t) => t.dialog?.id === id);
+    const dialog = tab?.dialog;
+    if (!dialog) return { error: "That dialog is no longer open." };
+    const yes = accept === true;
+    const typed = yes && dialog.type === "prompt" && typeof text === "string" ? text.slice(0, PROMPT_LIMIT) : undefined;
+    this.#forgetDialog(tab);
+    if (by === "person" && dialog.told) this.#note(tab, dialog, yes ? "accepted" : "dismissed");
+    if (dialog.held) {
+      try {
+        await dialog.answer(yes, yes && dialog.type === "prompt" ? (typed ?? dialog.defaultPrompt) : "");
+      } catch {
+        /* the page let it go first */
+      }
+    } else if (yes) {
+      tab.leaving = this.#now() + LEAVE_ARM_MS;
+      if (by === "person" && dialog.redo) {
+        try {
+          dialog.redo();
+        } catch {
+          /* the tab went meanwhile */
+        }
+      }
+    }
+    this.changed();
+    return { ok: true, tab, dialog, accept: yes, text: typed };
+  }
+
+  /** Until a dialog opens on `tab`, for a step that might be stopped by
+   * one; `stop` when the step is over. */
+  watchDialog(tab) {
+    let stop = () => {};
+    const opened = new Promise((resolve) => {
+      if (tab.dialog) return resolve();
+      const wake = () => {
+        stop();
+        resolve();
+      };
+      tab.dialogWaiters = [...(tab.dialogWaiters ?? []), wake];
+      stop = () => (tab.dialogWaiters = (tab.dialogWaiters ?? []).filter((w) => w !== wake));
+    });
+    return { opened, stop: () => stop() };
+  }
+
+  /** Thirty seconds for somebody to answer, then a no. */
+  #dialogClock(tab) {
+    const dialog = tab.dialog;
+    clearTimeout(dialog.timer);
+    dialog.timer = setTimeout(() => {
+      if (tab.dialog !== dialog) return;
+      // an agent hears of it when it was told of the dialog, or drives
+      if (dialog.told || this.#control.by === "agent") this.#note(tab, dialog, "timeout");
+      void this.answerDialog(dialog.id, { accept: false }, "clock");
+    }, this.#dialogMs);
+    dialog.timer.unref?.();
+  }
+
+  #forgetDialog(tab) {
+    clearTimeout(tab.dialog?.timer);
+    tab.dialog = null;
+  }
+
+  /** What became of a dialog the agent has not heard the end of, said
+   * with the next thing it hears. */
+  #note(tab, dialog, how) {
+    this.#notes = [...this.#notes, { tab: tab.id, type: dialog.type, message: dialog.message, how, at: this.#now() }].slice(-5);
+  }
+
+  /** A dialog as an agent is told of it; told once, it hears how it ends. */
+  #describe(dialog) {
+    dialog.told = true;
+    return { id: dialog.id, type: dialog.type, message: dialog.message, ...(dialog.defaultPrompt ? { defaultPrompt: dialog.defaultPrompt } : {}), held: dialog.held };
+  }
+
+  /** Work on a tab, or the dialog that stopped it, whichever comes first.
+   * Work a dialog cut short is let finish by itself once it is answered;
+   * what it finds then is nobody's to act on (tab.run). */
+  async #race(tab, work) {
+    const watch = this.watchDialog(tab);
+    try {
+      const first = await Promise.race([work.then((answer) => ({ answer })), watch.opened.then(() => ({ answer: null }))]);
+      if (first.answer) return first.answer;
+      // answered already, in the blink between: the work goes on
+      if (!tab.dialog) return await work;
+      tab.run = ++this.#runSeq;
+      work.catch(() => {});
+      return { dialog: this.#describe(tab.dialog) };
+    } finally {
+      watch.stop();
+    }
+  }
+
+  /** The agent's dialog command: its answer, then the page as it carries
+   * on, or the next dialog it opens. */
+  async #answerForAgent(tab, command) {
+    const open = tab.dialog;
+    if (!open) return { error: "no dialog is open on this page. Snapshot to see where it stands.", tab: tab.id };
+    const accept = command.answer === "accept";
+    const done = await this.answerDialog(open.id, { accept, text: command.text }, "agent");
+    if (done.error) return { error: done.error, tab: tab.id };
+    tab.run = ++this.#runSeq;
+    // A "leave this page?" the app had to answer "stay" to already: with
+    // a yes, the step that tried to leave goes again, and through.
+    if (!open.held && accept && open.step) {
+      const again = await this.#race(tab, runOnTab(tab, open.step));
+      return typeof again.text === "string" ? { ...again, text: `left the page\n\n${again.text}` } : again;
+    }
+    const words = !open.held && accept ? "said yes to leaving: the next try to leave this page goes through" : dialogOutcome(open, accept, done.text);
+    return this.#race(tab, afterDialog(tab, words));
+  }
+
   /**
    * One command from an agent (or another app), as the server asked it.
    * `driver` is who: { botId, name } for an agent. Held while the person
@@ -703,6 +970,14 @@ export class AppBrowser {
       // rather than on whatever it last heard
       return { held: true, control: this.control };
     }
+    const answer = await this.#command(command, who);
+    // what became of a dialog meanwhile, said once
+    const notes = this.#notes.filter((note) => this.#now() - note.at < 10 * 60_000).map(({ at: _at, ...note }) => note);
+    this.#notes = [];
+    return notes.length ? { ...answer, dialogNotes: notes } : answer;
+  }
+
+  async #command(command, who) {
     if (command.action === "done") {
       this.release(who.botId);
       return { text: "the browser is yours no longer; the person sees it as free" };
@@ -737,11 +1012,22 @@ export class AppBrowser {
       }
     }
     if (!tab) return { error: "no page is open. Use open with an address first." };
+    if (tab.dialog && command.action !== "dialog") {
+      // A page waiting on its dialog does nothing else until it has an
+      // answer, and every call to it would only wait: the agent hears
+      // the question again instead.
+      if (tab.dialog.held) return { dialog: this.#describe(tab.dialog), tab: tab.id, url: tab.url(), title: tab.title() };
+      // the app already stayed on the page; moving on is the agent's no
+      this.#forgetDialog(tab);
+      this.changed();
+    }
     tab.policy = command.policy ?? null;
     tab.blocked = null;
     tab.acting = true;
+    tab.run = ++this.#runSeq;
+    tab.step = command.action === "dialog" ? null : command;
     try {
-      const answer = await runOnTab(tab, command);
+      const answer = command.action === "dialog" ? await this.#answerForAgent(tab, command) : await this.#race(tab, runOnTab(tab, command));
       // a page that tried to take the agent somewhere it may not go
       if (tab.blocked) answer.blocked = tab.blocked;
       return { ...answer, tab: tab.id, url: tab.url(), title: tab.title() };
@@ -749,6 +1035,7 @@ export class AppBrowser {
       if (error?.agentError) return { error: error.message, tab: tab.id };
       throw error;
     } finally {
+      tab.step = null;
       // the step's own input events are not the person taking over
       setTimeout(() => (tab.acting = false), 300);
       this.#hold(who);

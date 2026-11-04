@@ -305,7 +305,11 @@ and **Take over** whenever you like; the agent's next step waits until
 you **Give back**. Sign in yourself and hand an agent the page you are
 on; tabs, pages and sign-ins stay put through every handoff. Each
 workspace browses in a session of its own, so its sign-ins stay its own
-and never the app's.
+and never the app's. When a page pops up an alert, a confirm, a prompt
+or a "leave this page?", the agent's step comes back with the question
+and the agent answers it; while you have the browser, it shows as a
+small bar over the page with OK and Cancel (or Leave and Stay). One
+nobody answers is dismissed after 30 seconds, never accepted.
 
 It is careful in the same way the rest of Bloks is. In Ask first, a site
 not on your list asks on a card the first time an agent goes there;
