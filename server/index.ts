@@ -21703,6 +21703,9 @@ function branchConversation(
   const found = store.botByThread(laneId);
   const source = found?.tasks.find((t) => t.id === laneId);
   if (!found || !source) return BRANCH_REFUSED.room;
+  // who is asking comes before any branch a request id already made, so
+  // a remembered id never opens a conversation the asker could not branch
+  if (access.laneAccess(found, source, { kind: "owner" }, accessWorld()) !== "write") return BRANCH_REFUSED.notYours;
   if (requestId) {
     const made = found.tasks.find((t) => t.branch?.requestId === requestId);
     if (made) {
@@ -21750,7 +21753,7 @@ function branchSourceGone(botId: string, laneId: string) {
   }
 }
 
-const REDO_IN_A_ROOM ="Redo works in a conversation with one agent, not in a room.";
+const REDO_IN_A_ROOM = "Redo works in a conversation with one agent, not in a room.";
 const REDO_NOT_YOURS = "Redo is for a message you wrote here.";
 const REDO_REFUSED: Record<RedoRefusal, { status: number; error: string }> = {
   waiting: { status: 409, error: "This message is still waiting for its turn. Edit it where it waits." },
