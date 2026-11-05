@@ -77,7 +77,11 @@ process.stdin.on("data", (c) => (input += c));
   assert.ok(arrived, "QA never received the message");
   assert.equal(arrived.role, "user");
   assert.equal(arrived.text, "Please run the release checks.");
-  assert.deepEqual(arrived.agent, { dir: "in", peerId: manager.id, peerName: "Manager" });
+  // The note also carries the tab the sender wrote from, so a reply can
+  // find it; the rest of the note is unchanged.
+  const { laneId: fromLane, ...note } = arrived.agent;
+  assert.deepEqual(note, { dir: "in", peerId: manager.id, peerName: "Manager" });
+  assert.ok(manager.tasks.some((t: any) => t.id === fromLane), "the note names a lane of the sender's");
 
   // QA's engine was told who it is from and how to answer
   const told = await until(async () =>

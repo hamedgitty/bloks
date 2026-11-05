@@ -1961,10 +1961,10 @@ interface DeskAsk {
   text: string;
   serviceMessages?: string[];
   byYou: boolean;
-  from?: { botId: string; name: string };
+  from?: { botId: string; name: string; laneId?: string };
   routine?: Message["routine"];
   replyTo?: ReplyRef;
-  answering?: { peerId: string; peerName: string };
+  answering?: { peerId: string; peerName: string; laneId?: string };
 }
 const deskAsked = new Map<string, DeskAsk>();
 /** What each lane's latest turn was asked, rooms included, which
@@ -2018,10 +2018,10 @@ interface Asked {
   /** When what it answers begins in the conversation (turnSince). */
   since: number;
   byYou: boolean;
-  from?: { botId: string; name: string };
+  from?: { botId: string; name: string; laneId?: string };
   routine?: Message["routine"];
   replyTo?: ReplyRef;
-  answering?: { peerId: string; peerName: string };
+  answering?: { peerId: string; peerName: string; laneId?: string };
 }
 interface Recovery {
   asked: Asked;
@@ -5359,7 +5359,9 @@ async function onRuntimeEvent(event: RuntimeEvent) {
             text: said,
             ...(ui ? { ui } : {}),
             ...(event.codexText ? { codexText: event.codexText } : {}),
-            ...(answering ? { afterAgent: answering } : {}),
+            // the lane is for routing a reply, not part of what a client
+            // is shown about who this turn answers
+            ...(answering ? { afterAgent: { peerId: answering.peerId, peerName: answering.peerName } } : {}),
             ...(quiet || hiding ? { quiet: true } : {}),
           });
           if (hiding && !quiet) gate.hidden.push({ id: savedReply.id, turnId: event.turnId, phase: event.replyPhase, synthetic: event.syntheticText, spoke });
@@ -7217,6 +7219,27 @@ function activeLaneOf(bot: BotRecord): string {
   return active && !active.guestMail && !active.signalPerson ? active.id : mainLaneOf(bot).id;
 }
 
+/** The peer conversation a reply from this lane belongs in: the tab whose
+ * message started the running turn, or the one this lane is already in
+ * exchange with. Undefined means a new request, which goes to the peer's
+ * first conversation. */
+function replyLaneFor(senderLane: TaskRecord, peerId: string): string | undefined {
+  const answering = replyingTo.get(senderLane.id);
+  if (answering?.peerId === peerId && answering.laneId) return answering.laneId;
+  return senderLane.peerLanes?.[peerId];
+}
+
+/** Where an agent's words to this peer go, and whether the conversation
+ * they were exchanged in has since been closed. A closed tab is named in
+ * the receipt rather than silently replaced by the first conversation. */
+function agentLaneFor(senderLane: TaskRecord | undefined, recipient: BotRecord): { laneId: string; closed: boolean } {
+  const wanted = senderLane ? replyLaneFor(senderLane, recipient.id) : undefined;
+  const found = wanted ? recipient.tasks.find((t) => t.id === wanted) : undefined;
+  if (found) return { laneId: found.id, closed: false };
+  if (wanted && senderLane) store.setPeerLane(senderLane.id, recipient.id, null);
+  return { laneId: mainLaneOf(recipient).id, closed: Boolean(wanted) };
+}
+
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
@@ -7592,14 +7615,14 @@ async function startClaimedTurn(
      * ran out partway through the same message. */
     fallback?: boolean;
     /** Another agent sent this message (see AgentNote). */
-    from?: { botId: string; name: string };
+    from?: { botId: string; name: string; laneId?: string };
     /** Authenticated room post or an in-memory agent handoff, not a recovered queue. */
     roomAgentStarted?: boolean;
     /** A routine started this turn; the transcript keeps its prompt alone. */
     routine?: Message["routine"];
     /** A queued message from another agent, already written and worded:
      * only marks what this turn says as that exchange's reply. */
-    answering?: { peerId: string; peerName: string };
+    answering?: { peerId: string; peerName: string; laneId?: string };
     /** Another agent's words are among the waiting ones this turn takes
      * (drainSteer), so it may have been told about the quiet word
      * (agentWordsInTurn). */
@@ -8108,7 +8131,9 @@ async function startClaimedTurn(
       text,
       ...(recalledAhead ? { recalled: recalledAhead.notes } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
-      ...(opts.from ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name } } : {}),
+      ...(opts.from
+        ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name, ...(opts.from.laneId ? { laneId: opts.from.laneId } : {}) } }
+        : {}),
       ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
@@ -8116,12 +8141,17 @@ async function startClaimedTurn(
       ...(groupSource ? { telegramGroup: groupSource } : {}),
       ...(opts.fromSignal ? { fromSignal: opts.fromSignal } : {}),
     });
+    // this lane is in exchange with the tab the words came from, for a
+    // reply sent later in this conversation
+    if (opts.from?.laneId) store.setPeerLane(task.id, opts.from.botId, opts.from.laneId);
     opts.admission?.accepted("sent");
     if (opts.telegramBinding) telegramInputIds.push(userMessage.id);
     broadcast({ kind: "message", threadId: roomId, message: userMessage });
   }
   // what this turn says back belongs to that exchange (see AgentNote)
-  const answering = opts.from ? { peerId: opts.from.botId, peerName: opts.from.name } : opts.answering;
+  const answering = opts.from
+    ? { peerId: opts.from.botId, peerName: opts.from.name, ...(opts.from.laneId ? { laneId: opts.from.laneId } : {}) }
+    : opts.answering;
   if (!blok && answering) replyingTo.set(task.id, answering);
   else replyingTo.delete(task.id);
   // the words as written, for naming the lane; the engine also hears who sent them
@@ -12768,7 +12798,7 @@ async function stopRoom(roomId: string): Promise<number> {
 
 /** Lanes whose running turn was started by another agent's message, so
  * what it says carries that context (Message.afterAgent). */
-const replyingTo = new Map<string, { peerId: string; peerName: string }>();
+const replyingTo = new Map<string, { peerId: string; peerName: string; laneId?: string }>();
 /** Lanes whose agent-started turn said something in the chat. One that
  * finished without a word has nothing for the person to read, so it does
  * not mark the conversation unread. */
@@ -20119,7 +20149,7 @@ function queueOnLane(
   text: string,
   options: {
     replyTo?: ReplyRef;
-    from?: { botId: string; name: string };
+    from?: { botId: string; name: string; laneId?: string };
     admission?: DirectAdmission;
     /** Not the person: a webhook, a watcher, a standing intent, Bloks
      * keeping a goal going, or the incident desk handing a lead what
@@ -20169,7 +20199,9 @@ function queueOnLane(
     ...(options.waitsUntil ? { waitsUntil: options.waitsUntil } : {}),
     namedSkills: !options.from && !options.via && !options.routine && options.personal !== false,
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
-    ...(options.from ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name } } : {}),
+    ...(options.from
+      ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name, ...(options.from.laneId ? { laneId: options.from.laneId } : {}) } }
+      : {}),
     ...(options.via ? { via: options.via } : {}),
     ...(options.serviceWake ? { serviceWake: options.serviceWake } : {}),
     ...(options.incident ? { incident: options.incident } : {}),
@@ -20185,6 +20217,7 @@ function queueOnLane(
     ...(options.delivery ? { delivery: options.delivery } : {}),
     ...(options.preparation ? { preparation: options.preparation } : {}),
   }, options.serviceWake ? { durable: true } : {});
+  if (options.from?.laneId) store.setPeerLane(laneId, options.from.botId, options.from.laneId);
   options.admission?.accepted("queued");
   options.onQueued?.(laneId, message);
   broadcast({ kind: "message", threadId: laneId, message });
@@ -20720,7 +20753,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -20747,7 +20780,7 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
   if (commandTurns.has(lane.id) || (!options.telegramPerson && !options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
@@ -20846,7 +20879,7 @@ async function steerOne(
       midTurn: true,
       ...(joinedTurnId ? { joinedTurnId } : {}),
       ...(options.replyTo ? { replyTo: options.replyTo } : {}),
-      ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name } } : {}),
+      ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name, ...(from.laneId ? { laneId: from.laneId } : {}) } } : {}),
       ...(options.fromTelegram ? { fromTelegram: true } : {}),
       ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
       ...(options.telegramPerson ? { telegramPerson: options.telegramPerson } : {}),
@@ -20855,6 +20888,7 @@ async function steerOne(
       ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
     });
     if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
+    if (from?.laneId) store.setPeerLane(lane.id, from.botId, from.laneId);
     if (from) agentWordsInTurn.add(lane.id);
     // what the turn says from here on is an answer to the person too, and
     // with the person in it, a chain of agents' messages starts over
@@ -21255,7 +21289,7 @@ async function sendUserMessage(
   options: {
     taskId?: string;
     replyTo?: ReplyRef;
-    from?: { botId: string; name: string };
+    from?: { botId: string; name: string; laneId?: string };
     yours?: boolean;
     personal?: boolean;
     /** The person wrote this just now, so a running turn may take it
@@ -21697,7 +21731,9 @@ function drainSteer(threadId: string) {
   const notes = alive.map(({ item }) => store.messagesFor(threadId).find((m) => m.id === item.messageId)?.agent);
   const peer = notes[0];
   const answering =
-    peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId) ? { peerId: peer.peerId, peerName: peer.peerName } : undefined;
+    peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId)
+      ? { peerId: peer.peerId, peerName: peer.peerName, ...(peer.laneId ? { laneId: peer.laneId } : {}) }
+      : undefined;
   // The person's own words wait here with nothing on them, unless they
   // went with anybody else's (Burst); another agent's carry who sent
   // them, a watcher's or a webhook's say so. A
@@ -26479,9 +26515,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         }
         const sender = store.bot(asAgent.botId);
         const recipient = store.bot(m[1]);
-        const from = sender && recipient ? { botId: sender.id, name: sender.name } : undefined;
+        const from = sender && recipient ? { botId: sender.id, name: sender.name, laneId: asAgent.taskId } : undefined;
         if (!sender) return json(res, 403, { error: "the sending agent no longer exists" });
-        const taskId = requestedTask ?? (recipient ? mainLaneOf(recipient).id : undefined);
+        const senderLane = sender.tasks.find((t) => t.id === asAgent.taskId);
+        const taskId = requestedTask ?? (recipient ? agentLaneFor(senderLane, recipient).laneId : undefined);
         let claim: ReservedReport | undefined;
         let refused: ReportResponse | undefined;
         let activityId: string | undefined;
@@ -26581,13 +26618,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (!receipt) return json(res, 500, { error: "This message was not accepted before dispatch." });
         return json(res, receipt.status, receipt.body);
       }
-      // a lane may be named; otherwise the one the person has open, or, for
-      // another agent writing, General: which lane the person happened to
-      // be reading is no business of an agent's message
+      // A lane may be named; otherwise it is the person's open one, or, for
+      // another agent writing, the conversation being answered. A reply goes
+      // to the tab whose message started this turn, or to the peer's tab this
+      // lane is already in exchange with. A new request goes to the peer's
+      // first conversation: which lane the person happened to be reading is
+      // no business of an agent's message.
       let taskId = typeof body.taskId === "string" && body.taskId ? body.taskId : undefined;
+      let laneClosed = false;
+      const sender = asAgent ? store.bot(asAgent.botId) : undefined;
+      const recipient = store.bot(m[1]);
       if (!taskId && asAgent) {
-        const to = store.bot(m[1]);
-        if (to) taskId = mainLaneOf(to).id;
+        const fromLane = sender?.tasks.find((t) => t.id === asAgent.taskId);
+        if (recipient) {
+          const chosen = agentLaneFor(fromLane, recipient);
+          taskId = chosen.laneId;
+          laneClosed = chosen.closed;
+        }
       }
       // `/goal` is Bloks' own, not the engine's: it sets the lane's goal
       // and never reaches an engine, where a command of the same name
@@ -26608,9 +26655,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // Another agent writing: the recipient's chat says who it was from,
       // and the sender's own conversation keeps a record of sending it,
       // with whether it went, waited, or was refused.
-      const sender = asAgent ? store.bot(asAgent.botId) : undefined;
-      const recipient = store.bot(m[1]);
-      const from = sender && recipient && sender.id !== recipient.id ? { botId: sender.id, name: sender.name } : undefined;
+      const from =
+        sender && recipient && sender.id !== recipient.id
+          ? { botId: sender.id, name: sender.name, laneId: asAgent?.taskId }
+          : undefined;
       const noteSent = (status: NonNullable<AgentNote["status"]>) => {
         if (!from || !recipient || !asAgent?.taskId || !sender!.tasks.some((t) => t.id === asAgent.taskId)) return;
         const note = store.appendMessage(asAgent.taskId, {
@@ -26662,7 +26710,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (record && waiting) tieRecord(waiting.laneId, waiting.id, { laneId: asAgent!.taskId, id: record.id });
       const ready = await reach;
       const warning = ready ? readinessWarning(recipient!.name, ready.engine, ready.readiness) : null;
-      return json(res, 202, warning ? { ...result, engine: warning } : result);
+      const closedNote = laneClosed
+        ? "The tab this exchange was in has been closed, so this went to its first conversation."
+        : undefined;
+      const receipt = closedNote
+        ? { ...result, laneClosed: true, note: result.note ? `${result.note} ${closedNote}` : closedNote }
+        : result;
+      return json(res, 202, warning ? { ...receipt, engine: warning } : receipt);
     }
     // ── task lanes ──
     // ── voices: how agents sound ──
@@ -32737,7 +32791,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       store.setActiveTask(recipient.id, active);
       broadcast({ kind: "bot", bot: clientBot(store.bot(recipient.id)) });
-      const from = recipient.id !== sender.id ? { botId: sender.id, name: sender.name } : undefined;
+      const from =
+        recipient.id !== sender.id ? { botId: sender.id, name: sender.name, laneId: asAgent.taskId } : undefined;
       let waiting: { laneId: string; id: string } | undefined;
       let result;
       try {

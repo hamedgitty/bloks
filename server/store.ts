@@ -140,6 +140,10 @@ export interface AgentNote {
    * they go, are taken back, or are never sent (GitHub 337). Absent on
    * words that never waited, and on any that waited before it was kept. */
   record?: { laneId: string; id: string };
+  /** "in" only: the sender's conversation when it wrote these words, so
+   * a reply can go back to the tab that asked rather than the sender's
+   * first conversation. Absent from messages written before it was kept. */
+  laneId?: string;
 }
 
 /** One note recall added to a turn (Message.recalled). */
@@ -549,6 +553,11 @@ export interface TaskRecord {
    * which one, at which answer, when, and the request that asked, so the
    * same request again opens this branch rather than making another. */
   branch?: { from: string; messageId: string; at: number; requestId?: string };
+  /** Which of each peer agent's conversations this one is in exchange
+   * with, so a reply sent in a later turn, or after a restart, finds the
+   * tab that asked. Set when their words arrive here and cleared when
+   * that tab is gone. */
+  peerLanes?: Record<string, string>;
 }
 
 /** The owner's own lanes, which are what the lane cap and the owner's
@@ -1255,6 +1264,20 @@ export class Store {
       if (task) return { bot, task };
     }
     return null;
+  }
+
+  /** Remember, on this lane, which of a peer agent's conversations it is
+   * in exchange with, so a reply finds that tab after the turn that asked
+   * has ended. Null forgets a peer whose tab has gone. */
+  setPeerLane(laneId: string, peerId: string, peerLaneId: string | null): void {
+    const found = this.taskByThread(laneId);
+    if (!found) return;
+    const map = found.task.peerLanes ?? {};
+    if (peerLaneId ? map[peerId] === peerLaneId : !(peerId in map)) return;
+    if (peerLaneId) map[peerId] = peerLaneId;
+    else delete map[peerId];
+    found.task.peerLanes = map;
+    this.saveBots();
   }
 
   /** `extra` lets a lane past the cap: rehearsals run in lanes of their
