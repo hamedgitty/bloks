@@ -307,6 +307,64 @@ export function normalizeCompatUrl(url: string): string | undefined {
   }
 }
 
+// ── headers a person adds to a custom host ─────────────────────────────
+// Some hosts want one more header than the key: Anthropic's version, a
+// gateway's project or org id, a proxy's own token (GitHub 486). Each is
+// sent on every request to that host, the model list and the chat alike.
+// A value can be a credential, so it is kept and handled like a key:
+// stored beside them, never sent back out, shown only as set.
+
+/** How many headers one host may carry. */
+export const MAX_CUSTOM_HEADERS = 10;
+const MAX_HEADER_NAME = 64;
+const MAX_HEADER_VALUE = 4096;
+
+/** What Bloks sets itself on every request: the key goes out as
+ * Authorization, and the body's type and length are the request's own.
+ * The rest belong to the connection, and fetch refuses them anyway. */
+const RESERVED_HEADERS = new Map<string, string>([
+  ["authorization", "Authorization is sent from the endpoint's key"],
+  ["content-type", "Bloks sets Content-Type itself"],
+  ["content-length", "Bloks sets Content-Length itself"],
+  ["host", "Bloks sets Host itself"],
+  ...["connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer", "expect", "proxy-connection"].map(
+    (name): [string, string] => [name, `${name} belongs to the connection and can't be set`],
+  ),
+]);
+
+/** Why a header cannot be sent as given, or null when it can. The words
+ * are the person's to read, so they name the header and never the value. */
+export function customHeaderProblem(name: string, value: string): string | null {
+  if (!name) return "a header needs a name";
+  if (/[\r\n]/.test(name)) return "a header name can't have a line break";
+  if (name.length > MAX_HEADER_NAME) return "that header name is too long";
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return `${name} is not a header name: use letters, digits and dashes`;
+  const reserved = RESERVED_HEADERS.get(name.toLowerCase());
+  if (reserved) return reserved;
+  if (/[\r\n]/.test(value)) return `the value for ${name} can't have a line break`;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(value)) return `the value for ${name} can't have control characters`;
+  if (!value) return `${name} needs a value`;
+  if (value.length > MAX_HEADER_VALUE) return `the value for ${name} is too long`;
+  return null;
+}
+
+/** The headers out of a saved or decoded record that can be sent, as
+ * they were written. Anything else is dropped rather than sent: a file
+ * edited by hand is not a reason to put a line break into a request. */
+export function sendableHeaders(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string" || seen.has(name.toLowerCase())) continue;
+    if (customHeaderProblem(name, value) || Object.keys(out).length >= MAX_CUSTOM_HEADERS) continue;
+    seen.add(name.toLowerCase());
+    out[name] = value;
+  }
+  return out;
+}
+
 /** A CLI engine's install hint. On Windows the app runs no installer, so
  * there is no button to point at, and the line is PowerShell's, not the
  * Mac's (server/engine-commands.ts, GitHub 438). */

@@ -42,6 +42,135 @@ export interface CustomEndpointRow {
   /** Off is chat only. */
   tools: boolean;
   keys: CustomKeyRow[];
+  /** The names of the headers it sends beyond the key. Values never come
+   * back: like keys, they are only set. Absent from an older server. */
+  headers?: string[];
+}
+
+/** As many headers as the server keeps on one host. */
+const MAX_HEADERS = 10;
+
+/**
+ * The headers a host wants beyond its key, as rows of a name and "Set".
+ * Adding one with a name already there replaces its value; the server
+ * takes the whole list each time, and a row sent without a value keeps
+ * the one it has, so a value never has to travel back to this window.
+ */
+function EndpointHeaders({ endpoint, onSaved }: { endpoint: CustomEndpointRow; onSaved: (rows: CustomEndpointRow[]) => void }) {
+  const names = endpoint.headers ?? [];
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const put = (rows: Array<{ name: string; value?: string }>) =>
+    api(`/api/custom-endpoints/${endpoint.id}/headers`, { method: "PUT", body: JSON.stringify({ headers: rows }) }).then(
+      ({ endpoints: next }) => onSaved(next),
+    );
+
+  const close = () => {
+    setAdding(false);
+    setName("");
+    setValue("");
+    setError(null);
+  };
+
+  const add = () => {
+    const given = name.trim();
+    if (busy || !given || !value.trim()) return;
+    setBusy(true);
+    setError(null);
+    put([...names.filter((kept) => kept.toLowerCase() !== given.toLowerCase()).map((kept) => ({ name: kept })), { name: given, value }])
+      .then(close)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  const remove = (gone: string) => {
+    setError(null);
+    put(names.filter((kept) => kept !== gone).map((kept) => ({ name: kept }))).catch((e: Error) => setError(e.message));
+  };
+
+  return (
+    <div className="mt-2">
+      {names.length > 0 && (
+        <>
+          <div className="mb-1 text-small text-muted-foreground">{t("customEndpoints.headers")}</div>
+          <div className="flex flex-col gap-1">
+            {names.map((header) => (
+              <div key={header} className="flex items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-small text-foreground">{header}</span>
+                <span className="shrink-0 text-caption text-muted-foreground">{t("customEndpoints.headerSet")}</span>
+                <button
+                  onClick={() => remove(header)}
+                  title={t("customEndpoints.removeHeader")}
+                  aria-label={t("customEndpoints.removeHeaderNamed", { name: header })}
+                  className="shrink-0 rounded-lg p-1 text-muted-foreground/60 transition-colors hover:text-destructive"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {adding ? (
+        <div className={cn("flex flex-col gap-2", names.length > 0 && "mt-2")}>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && close()}
+              placeholder={t("customEndpoints.headerNamePlaceholder")}
+              aria-label={t("customEndpoints.headerName")}
+              aria-invalid={error ? true : undefined}
+              autoComplete="off"
+              spellCheck={false}
+              className="h-8 font-mono text-body placeholder:font-sans sm:w-[44%]"
+            />
+            <div className="flex min-w-0 flex-1 gap-2">
+              <Input
+                type="password"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") add();
+                  if (e.key === "Escape") close();
+                }}
+                placeholder={t("customEndpoints.headerValue")}
+                aria-label={t("customEndpoints.headerValue")}
+                autoComplete="off"
+                className="h-8 min-w-0 flex-1 text-body"
+              />
+              <Button variant="secondary" onClick={add} disabled={busy || !name.trim() || !value.trim()} className="w-[72px]">
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                {t("common.save")}
+              </Button>
+            </div>
+          </div>
+          {error ? (
+            <div role="alert" className="text-small text-destructive">{error}</div>
+          ) : (
+            <div className="text-small text-muted-foreground">{t("customEndpoints.headersHint")}</div>
+          )}
+        </div>
+      ) : (
+        <>
+          {names.length < MAX_HEADERS && (
+            <button
+              onClick={() => setAdding(true)}
+              className={cn("text-small text-muted-foreground transition-colors hover:text-foreground", names.length > 0 && "mt-2")}
+            >
+              {t("customEndpoints.addHeader")}
+            </button>
+          )}
+          {error && <div role="alert" className="mt-1 text-small text-destructive">{error}</div>}
+        </>
+      )}
+    </div>
+  );
 }
 
 function ToolsSwitch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
@@ -354,6 +483,8 @@ export function CustomEndpoints() {
                 {t("customEndpoints.addAnotherKey")}
               </button>
             )}
+
+            <EndpointHeaders endpoint={endpoint} onSaved={apply} />
           </div>
         );
       })}

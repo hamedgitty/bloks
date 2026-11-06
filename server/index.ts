@@ -132,7 +132,7 @@ import { choosableMark, defaultForKind, markRoute, markView, type MarkRouteDeps 
 import { Reads, type ReadMark } from "./reads.ts";
 import { JoinClient } from "./join-client.ts";
 import * as invites from "./invites.ts";
-import { CLI_PROVIDERS, CUSTOM_SPEC, PROVIDER_SPECS, normalizeCompatUrl, specFor } from "./providers.ts";
+import { CLI_PROVIDERS, CUSTOM_SPEC, MAX_CUSTOM_HEADERS, PROVIDER_SPECS, customHeaderProblem, normalizeCompatUrl, specFor } from "./providers.ts";
 import { callbackPage, finishOAuth, startOAuth, supportsOAuth } from "./oauth.ts";
 import type { ModelSelection, PlanUsage, ProviderAdapter, ProviderInstance, ProviderSnapshot, RuntimeEvent, SendTurnInput, TurnPreparation, UsageNotice } from "./contracts.ts";
 import { planNotices, sortNotices } from "./plan-usage.ts";
@@ -23150,6 +23150,8 @@ function customCatalog() {
         activeKeyId: active?.id ?? null,
         // false is chat only, which is what a host nobody vouched for is
         tools: endpoint.tools === true,
+        // the names alone: a value is as secret as a key, and is only set
+        headers: Object.keys(endpoint.headers ?? {}),
         keys: endpoint.keys.map((cred) => ({
           id: cred.id,
           label: cred.label ?? "",
@@ -23175,6 +23177,42 @@ function parseCustomKey(body: Record<string, unknown>): { key?: string; label?: 
   if (!key) return { error: "a key is required" };
   if (key.length > MAX_KEY_CHARS) return { error: "that key is too long" };
   return { key, ...(label ? { label } : {}) };
+}
+
+/**
+ * A host's whole list of headers, as Settings sends it: rows of a name
+ * and a value. A row with no value keeps the value already saved under
+ * that name, which is how a window that was never sent a value can
+ * still take one row away or add another. A name left out is gone.
+ */
+function parseCustomHeaders(raw: unknown, saved: Record<string, string> = {}): { headers?: Record<string, string>; error?: string } {
+  if (!Array.isArray(raw)) return { error: "headers must be a list of names and values" };
+  if (raw.length > MAX_CUSTOM_HEADERS) return { error: `at most ${MAX_CUSTOM_HEADERS} headers on one host` };
+  const kept = new Map(Object.entries(saved).map(([name, value]) => [name.toLowerCase(), value]));
+  const headers: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const row of raw) {
+    if (!row || typeof row !== "object") return { error: "headers must be a list of names and values" };
+    const { name: rawName, value: rawValue } = row as { name?: unknown; value?: unknown };
+    if (typeof rawName !== "string" || (rawValue !== undefined && typeof rawValue !== "string")) {
+      return { error: "a header is a name and a value, both text" };
+    }
+    // a line break is refused, not trimmed into something that passes
+    const name = rawName.replace(/^[ \t]+|[ \t]+$/g, "");
+    const value = rawValue === undefined ? (kept.get(name.toLowerCase()) ?? "") : rawValue.replace(/^[ \t]+|[ \t]+$/g, "");
+    const problem = customHeaderProblem(name, value);
+    if (problem) return { error: problem };
+    if (seen.has(name.toLowerCase())) return { error: `${name} is there twice` };
+    seen.add(name.toLowerCase());
+    headers[name] = value;
+  }
+  return { headers };
+}
+
+/** The endpoint with exactly these headers, and none when there are none. */
+function withCustomHeaders(endpoint: CustomEndpoint, headers: Record<string, string>): CustomEndpoint {
+  const { headers: _was, ...rest } = endpoint;
+  return Object.keys(headers).length ? { ...rest, headers } : rest;
 }
 
 /** The endpoint with tools on or off. Off is the field gone rather than
@@ -30387,17 +30425,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (body.tools !== undefined && typeof body.tools !== "boolean") {
         return json(res, 400, { error: "tools must be true or false" });
       }
+      // headers can come with the host, every one with its value
+      const given = body.headers === undefined ? { headers: {} } : parseCustomHeaders(body.headers);
+      if (given.error) return json(res, 400, { error: given.error });
       if ((cfg.custom ?? []).length >= MAX_CUSTOM_ENDPOINTS) {
         return json(res, 507, { error: `at most ${MAX_CUSTOM_ENDPOINTS} custom endpoints` });
       }
       const cred: CustomKey = { id: randomBytes(8).toString("hex"), key: parsed.key!, ...(parsed.label ? { label: parsed.label } : {}) };
-      const entry: CustomEndpoint = withCustomTools({
+      const entry: CustomEndpoint = withCustomHeaders(withCustomTools({
         id: randomBytes(8).toString("hex"),
         name,
         url,
         keys: [cred],
         activeKeyId: cred.id,
-      }, body.tools === true);
+      }, body.tools === true), given.headers!);
       await persistCustom([...(cfg.custom ?? []), entry]);
       return json(res, 201, customCatalog());
     }
@@ -30429,6 +30470,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return changed;
       });
       await persistCustom(next);
+      return json(res, 200, customCatalog());
+    }
+    // The host's headers, as one list in place of the one saved (GitHub
+    // 486). Values are kept like keys: written here, never read back out.
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/headers$/);
+    if (m && method === "PUT") {
+      const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
+      if (!endpoint) return json(res, 404, { error: "no such endpoint" });
+      const body = await readBody(req);
+      const given = parseCustomHeaders(body.headers, endpoint.headers);
+      if (given.error) return json(res, 400, { error: given.error });
+      await persistCustom((cfg.custom ?? []).map((entry) => (entry.id === endpoint.id ? withCustomHeaders(entry, given.headers!) : entry)));
       return json(res, 200, customCatalog());
     }
     // Retry on an endpoint whose model list could not be had (GitHub
@@ -35987,6 +36040,8 @@ function storedSecrets(): Array<string | undefined | null> {
     cfg.home?.token,
     ...Object.values(cfg.providers ?? {}).map((p) => p?.key),
     ...(cfg.custom ?? []).flatMap((endpoint) => endpoint.keys.map((cred) => cred.key)),
+    // a custom host's own headers, any of which may be its real credential
+    ...(cfg.custom ?? []).flatMap((endpoint) => Object.values(endpoint.headers ?? {})),
     // a model server's key given where Bloks runs (server/self-host.ts)
     process.env.BLOKS_MODEL_KEY?.trim(),
     ...Object.values(cfg.secrets ?? {}),

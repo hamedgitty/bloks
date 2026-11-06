@@ -25,7 +25,7 @@ import type {
 } from "../contracts.ts";
 import { callMcpTool, listMcpTools, type McpAccess } from "../composio.ts";
 import { newEventId, newId } from "../contracts.ts";
-import type { ProviderSpec } from "../providers.ts";
+import { sendableHeaders, type ProviderSpec } from "../providers.ts";
 import { CREDITS_KIND, CreditsEmpty, EMPTY_WORDS, serviceWords, type CompatAccess } from "../credits.ts";
 import { tagHeaders, type CallTags } from "../bloks-ai.ts";
 import { appendNative } from "./native.ts";
@@ -44,6 +44,9 @@ export interface CompatConfig {
   /** The person says the model behind this URL sees pictures (a custom
    * endpoint's switch), so a turn's attached images go to it as pictures. */
   vision?: boolean;
+  /** Headers the host wants beyond the key (a custom endpoint's, GitHub
+   * 486), sent on every request to it. Values can be credentials. */
+  headers?: Record<string, string>;
 }
 
 /** A turn's words with its pictures beside them, in the shape the chat
@@ -583,6 +586,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
 
   const decodeConfig = (raw: unknown): CompatConfig => {
     const o = (raw ?? {}) as Record<string, unknown>;
+    const headers = sendableHeaders(o.headers);
     return {
       url: typeof o.url === "string" && o.url ? o.url.replace(/\/+$/, "") : spec.url,
       apiKeyEnv: typeof o.apiKeyEnv === "string" ? o.apiKeyEnv : keyEnv,
@@ -591,6 +595,9 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       ...(spec.toolsOptIn && o.tools === true ? { tools: true } : {}),
       // the same reading for pictures: only a literal true sends them
       ...(o.vision === true ? { vision: true } : {}),
+      // read again here, not trusted from whoever wrote the config: a
+      // header that cannot be sent is left out, never sent half-formed
+      ...(Object.keys(headers).length ? { headers } : {}),
     };
   };
 
@@ -670,10 +677,14 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         turnId,
         createdAt: new Date().toISOString(),
       });
+      // The host's own headers go last but can never stand in for the
+      // key or the body's type: those names are refused before they are
+      // saved, and dropped again when the config is read.
       const headers = () => ({
         ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         "content-type": "application/json",
         ...spec.headers,
+        ...config.headers,
       });
       /** The key to send now: the one from the environment, or what the
        * holder of a changing credential says. */
@@ -709,7 +720,9 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
        * taken out: some echo a key back in the message that refuses it. */
       const scrubbed = (words: string) => {
         let out = words;
-        for (const secret of [apiKey]) if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+        for (const secret of [apiKey, ...Object.values(config.headers ?? {})]) {
+          if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+        }
         return out;
       };
       const failed = (why: string) => {

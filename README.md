@@ -709,7 +709,12 @@ supports tool calls; if the host refuses them, the turn stops and says so.
 If a custom endpoint's model list cannot be loaded, its row in Settings
 says why in the host's own words (for example "Couldn't load models: HTTP
 400. anthropic-version: header is required.") with **Retry**, and it is
-not offered as ready until a list arrives.
+not offered as ready until a list arrives. A host that wants more than a
+key (Anthropic's `anthropic-version`, a gateway's org id) takes up to ten
+headers under **Add a header**, sent with every request to it. Their
+values are kept like keys: shown only as set, never sent back to the
+window, and left out of backups. Authorization, Content-Type,
+Content-Length and Host are Bloks's own and refused there.
 
 An agent's own browser and its computer (Cloud box, Local VM, or this
 Mac's screen) reach it as tools on Claude Code, on Codex, and on the ACP

@@ -93,6 +93,19 @@ the spec's, keeps working and carries the reason. Settings shows it on a
 custom endpoint with Retry (`POST /api/custom-endpoints/:id/models`,
 which calls the instance's `refreshCatalog`).
 
+A custom endpoint can carry up to ten headers of its own
+(`CustomEndpoint.headers`), sent after the key and the content type on
+every request. Their values are secrets like keys: `custom[].headers` is
+in the backup's `SECRET_PATHS`, the built engine's `config.headers` is
+secret-bearing to an inspection, `storedSecrets` covers them, and the
+routes say names only. `PUT /api/custom-endpoints/:id/headers` takes the
+whole list, where a row without a value keeps the saved one, so a value
+never travels back to a window. Names the request owns (Authorization,
+Content-Type, Content-Length, Host, the connection's own) and anything
+with a line break are refused when saved and dropped again when an
+engine is built (`customHeaderProblem`, `sendableHeaders` in
+`server/providers.ts`).
+
 **The browser and the computer.** Each driver says which of the agent's
 own browser and its computers (the cloud box, the Local VM, this Mac's
 screen) it hands its engine (`capabilities.screens`, `server/screens.ts`).

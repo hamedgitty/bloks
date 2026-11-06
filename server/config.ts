@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { readSaved, isRecord, writeFileAtomic } from "./atomic-write.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { usableSecrets } from "./env-names.ts";
-import { CUSTOM_SPEC, PROVIDER_SPECS, specFor } from "./providers.ts";
+import { CUSTOM_SPEC, PROVIDER_SPECS, sendableHeaders, specFor } from "./providers.ts";
 import { CREDITS_KIND, CREDITS_SPEC, creditsCompatUrl, creditsEnvToken } from "./credits.ts";
 import { ENV_MODEL_ENDPOINT_ID, cloudOff, envModelEndpoint } from "./self-host.ts";
 
@@ -56,6 +56,13 @@ export interface CustomEndpoint {
    * outside (a llama.cpp server sees only with a vision projector loaded),
    * so it is theirs to say, and off until they do. */
   vision?: boolean;
+  /** Request headers the host wants beyond the key (Anthropic's version,
+   * a gateway's org id), sent on its model list and its chat alike. A
+   * value can be a credential, so each is a secret like the keys above:
+   * never sent back out (server/index.ts customCatalog), left out of a
+   * backup (server/backup.ts SECRET_PATHS). Names are checked by
+   * customHeaderProblem in server/providers.ts. */
+  headers?: Record<string, string>;
 }
 
 export interface AppConfig {
@@ -601,14 +608,22 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // only the active one is injected, so rotating a key is a settings
   // change rather than a new engine in the picker. Tools ride in the
   // instance's config, so switching them is a rebuild of that one
-  // instance, like any other config change.
+  // instance, like any other config change. So do the host's own
+  // headers, whose values are as secret as the key beside them
+  // (server/settings-redaction.ts keeps them out of an inspection).
   for (const endpoint of cfg.custom ?? []) {
     const cred = activeCustomKey(endpoint);
     if (!endpoint.url || !cred?.key) continue;
+    const headers = sendableHeaders(endpoint.headers);
     map[customInstanceId(endpoint.id)] = {
       driver: CUSTOM_SPEC.kind,
       displayName: endpoint.name,
-      config: { url: endpoint.url, ...(endpoint.tools === true ? { tools: true } : {}), ...(endpoint.vision === true ? { vision: true } : {}) },
+      config: {
+        url: endpoint.url,
+        ...(endpoint.tools === true ? { tools: true } : {}),
+        ...(endpoint.vision === true ? { vision: true } : {}),
+        ...(Object.keys(headers).length ? { headers } : {}),
+      },
       environment: { [envVarFor(CUSTOM_SPEC.kind)]: cred.key },
     };
   }

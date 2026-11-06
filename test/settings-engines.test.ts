@@ -91,3 +91,15 @@ test('tools read as the driver reads them: promised, switched on by the owner, o
   assert.deepEqual(field(inspectCustomEndpoint(host,ctx),'vision').effective,value(false));
   assert.deepEqual(field(inspectEngineSettings({driver:'custom',config:{url:'https://example.test/v1',vision:true}},ctx,true),'config.vision').effective,value(true));
 });
+
+test('a custom host says it has headers, never their names or values',()=>{
+  const host={id:'h',name:'Host',url:'https://example.test/v1',keys:[{id:'k',key:'k'}],headers:{[`x-${secret}`]:secret}};
+  const rows=inspectCustomEndpoint(host,ctx);assert.ok(!JSON.stringify(rows).includes(secret));
+  assert.deepEqual(field(rows,'headers').effective,{status:'configured',configured:true});
+  const {headers:_none,...bare}=host;
+  assert.deepEqual(field(inspectCustomEndpoint(bare,ctx),'headers').saved,{status:'absent'});
+  const engine=inspectEngineSettings({driver:'custom',config:{url:'https://example.test/v1',headers:{[`x-${secret}`]:secret}}},ctx,true);
+  assert.ok(!JSON.stringify(engine).includes(secret));
+  assert.deepEqual(field(engine,'config.headers').effective,{status:'configured',configured:true});
+  assert.deepEqual(field(inspectEngineSettings({driver:'custom',config:{url:'https://example.test/v1'}},ctx,true),'config.headers').effective,{status:'configured',configured:false});
+});

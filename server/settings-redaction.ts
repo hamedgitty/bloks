@@ -30,6 +30,9 @@ const SECRET_BEARING = [
   "mcpServers[].args",
   "mcpServers[].env",
   "instances.*.environment",
+  // a custom host's headers as its engine was built with them; the same
+  // values are SECRET_PATHS where they are saved (custom[].headers)
+  "instances.*.config.headers",
 ] as const;
 
 // A paired device's chosen name sits beside its digest under remote.devices.

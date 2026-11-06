@@ -286,6 +286,7 @@ export const SECRET_PATHS = [
   "speech.xaiKey",
   "box.token",
   "custom[].keys[].key",
+  "custom[].headers",
   "chat.slack.botToken",
   "chat.slack.appToken",
   "chat.discord.token",

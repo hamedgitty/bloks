@@ -85,6 +85,9 @@ never your own words or your approval.
 
 **Secrets sit in a plaintext file.** Each workspace's `config.json`
 (`~/.bloks/config.json` for Personal) holds any API keys you paste,
+and the header values you give a custom endpoint, which are handled as
+keys: never sent back to a window, left out of backups and settings
+inspections, and taken out of any error that quotes one. It is
 written `0600` inside a `0700` directory. That keeps
 other user accounts out, but it is not encrypted at rest. Moving these
 into the macOS Keychain is the top open item.
