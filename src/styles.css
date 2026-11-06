@@ -921,6 +921,13 @@
   transform: translate3d(calc(var(--at) * var(--ms) * 1px), 0, 0);
   transition: opacity 240ms ease-out;
 }
+/* What an agent said before asking, on its question's card, fades out
+ * under its third line while there is more to open (OptionCard.tsx),
+ * rather than stopping mid sentence as if that were all of it. */
+.ask-said-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
 /* A label that runs past the ruler's edge fades out rather than being
  * cut through a word ("1m 15"). */
 .trace-ruler {

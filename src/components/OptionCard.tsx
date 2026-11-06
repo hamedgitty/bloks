@@ -7,7 +7,7 @@
 // its change, the page), then Allow and Deny. Once answered, a card has
 // done its job and gets out of the way, settling into one quiet line
 // that opens again if anyone wants to see what was decided.
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle } from "@/components/icons";
 import { ArrowDown } from "@/components/icons";
@@ -15,6 +15,7 @@ import { ArrowUp } from "@/components/icons";
 import { Ban } from "@/components/icons";
 import { Check } from "@/components/icons";
 import { ChevronDown } from "@/components/icons";
+import { ChevronLeft } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
 import { Copy } from "@/components/icons";
 import { FilePen } from "@/components/icons";
@@ -28,6 +29,7 @@ import { AgentAvatar, BlokAvatar } from "@/components/Avatar";
 import { AppWatchCard } from "@/components/AppWatch";
 import { OpenPlaceCard, SettingsProposalCard } from "@/components/AgentGuideCards";
 import { SkillRequestCard } from "@/components/SkillRequestCard";
+import { Markdownish } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -39,6 +41,19 @@ import {
 import { BLOK_COLOR_NAMES, shapeForBot, type BlokColor } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { isApproval } from "@/lib/cardAnswer";
+import {
+  answerOf,
+  answersOf,
+  answerText,
+  emptyStep,
+  isAnswered,
+  pick,
+  reachable,
+  stepsOf,
+  typed,
+  type StepDraft,
+  type StepQuestion,
+} from "@/lib/askSteps";
 import {
   readApproval,
   settledAs,
@@ -103,6 +118,11 @@ export function OptionCard({
     if (!text.trim()) return;
     dispatch({ type: "answerCard", botId, roomId, messageId: message.id, answer: text.trim() });
   };
+  // An engine's question that carries its questions is answered one per
+  // question, with the line the card settles to beside them. All of them
+  // secrets leaves no words for that line, only that it was answered.
+  const answerEach = (text: string, answers: string[][]) =>
+    dispatch({ type: "answerCard", botId, roomId, messageId: message.id, answer: text.trim() || "answer", answers });
   const dismiss = () => dispatch({ type: "dismissCard", botId, roomId, messageId: message.id });
 
   if (card.appWatch) return <AppWatchCard plan={card.appWatch} answered={card.answered} />;
@@ -149,6 +169,7 @@ export function OptionCard({
       face={face}
       dock={dock}
       onAnswer={answer}
+      onAnswers={answerEach}
       onDismiss={dismiss}
     />
   );
@@ -743,12 +764,34 @@ function CopyButton({ text }: { text: string }) {
 
 // ── questions ──────────────────────────────────────────────────────────
 
-/** An answer being typed, by card, for as long as this window is open.
- * Kept outside the card for the same reason as savedRules: the card is
- * drawn afresh when it goes up to wait above the composer, and when its
- * conversation is left and come back to, and a half typed answer should
- * not go with it. */
-const drafts = new Map<string, string>();
+/** What a question card holds while it is open, by card, for as long as
+ * this window is open: each question's answer so far, and which question
+ * is on screen. Kept outside the card for the same reason as savedRules:
+ * the card is drawn afresh when it goes up to wait above the composer,
+ * and when its conversation is left and come back to, and answers half
+ * given should not go with it. */
+interface CardDraft {
+  steps: StepDraft[];
+  at: number;
+}
+const drafts = new Map<string, CardDraft>();
+
+/** On a card of several questions a single choice moves on by itself,
+ * after a beat long enough to see which one took. */
+const ADVANCE_MS = 220;
+
+/** A question coming in from the side it was asked for, a short way, and
+ * the one before it going out the other. Reduce motion keeps only the
+ * fade (App's MotionConfig). */
+const stepMotion = {
+  enter: (dir: number) => ({ opacity: 0, x: dir * 12 }),
+  shown: { opacity: 1, x: 0, transition: { duration: 0.2, ease } },
+  gone: (dir: number) => ({ opacity: 0, x: dir * -8, transition: { duration: 0.1, ease } }),
+};
+
+/** Where the composer's field is, for Escape to hand the keyboard back
+ * to (ChatView's focusBox reads it the same way). */
+const COMPOSER_FIELD = "[data-skill-layer] ~ textarea";
 
 function QuestionCard({
   messageId,
@@ -758,6 +801,7 @@ function QuestionCard({
   face,
   dock,
   onAnswer,
+  onAnswers,
   onDismiss,
 }: {
   messageId: string;
@@ -767,14 +811,11 @@ function QuestionCard({
   face: ReactNode;
   dock?: "card" | "line";
   onAnswer: (text: string) => void;
+  /** An engine's question that carries its questions: one answer each,
+   * and the line the card settles to. */
+  onAnswers: (text: string, answers: string[][]) => void;
   onDismiss: () => void;
 }) {
-  const [custom, setTyped] = useState(() => drafts.get(messageId) ?? "");
-  const setCustom = (text: string) => {
-    if (text) drafts.set(messageId, text);
-    else drafts.delete(messageId);
-    setTyped(text);
-  };
   const workflow = Boolean(card.runId);
   // An engine's question arrives under a generic title, with the question
   // in the subtitle and, for someone else's turn, who it is for in
@@ -792,46 +833,149 @@ function QuestionCard({
   // that explanation is history.
   if (workflow && card.answered) hint = "";
 
-  // A workflow gate has exactly two answers and each one decides what
-  // happens next. Offering a text box beside them would invite an answer
-  // nobody can act on, and anything unrecognised has to be read as a
-  // decline, which is not what somebody typing a sentence would expect.
-  const freeText = !workflow;
+  // Every question of the ask, or the one this card says. A workflow gate
+  // has exactly two answers and each one decides what happens next, so it
+  // takes no words of one's own (askSteps.ts).
+  const steps = useMemo(() => stepsOf(card, question), [card, question]);
+  const structured = Boolean(card.questions?.length);
+  const several = steps.length > 1;
 
-  const send = () => {
-    if (!custom.trim()) return;
-    onAnswer(custom);
-    setCustom("");
+  const [draft, setDraft] = useState<CardDraft>(() => {
+    const kept = drafts.get(messageId);
+    return kept && kept.steps.length === steps.length ? kept : { steps: steps.map(emptyStep), at: 0 };
+  });
+  // read by a choice's own timer, which outlives the render it was set in
+  const latest = useRef(draft);
+  const save = (next: CardDraft) => {
+    latest.current = next;
+    drafts.set(messageId, next);
+    setDraft(next);
   };
+  const [dir, setDir] = useState(1);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const advance = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(advance.current), []);
+
+  const index = Math.min(draft.at, steps.length - 1);
+  const asked = steps[index];
+  const step = draft.steps[index] ?? emptyStep();
+  const last = index === steps.length - 1;
+  const ready = isAnswered(step);
+  const promptId = `${messageId}-question`;
+
+  const go = (to: number) => {
+    clearTimeout(advance.current);
+    const now = latest.current;
+    if (to === now.at || !reachable(now.steps, to)) return;
+    // The button that had the keyboard is about to go with its question;
+    // the card keeps it, so the number keys still answer.
+    if (groupRef.current?.contains(document.activeElement)) groupRef.current.focus({ preventScroll: true });
+    setDir(to > now.at ? 1 : -1);
+    save({ ...now, at: to });
+  };
+
+  const send = (all: StepDraft[]) => {
+    clearTimeout(advance.current);
+    const answers = answersOf(all);
+    if (!answers.some((answer) => answer.length)) return;
+    drafts.delete(messageId);
+    if (!structured) return onAnswer(answers[0].join(", "));
+    // a secret goes to the agent and nowhere else, this card's line included
+    onAnswers(answerText(steps, answers.map((answer, i) => (steps[i].secret ? [] : answer))), answers);
+  };
+
+  const onward = () => {
+    const now = latest.current;
+    if (!isAnswered(now.steps[now.at])) return;
+    if (now.at >= steps.length - 1) send(now.steps);
+    else go(now.at + 1);
+  };
+
+  const choose = (label: string) => {
+    const now = latest.current;
+    const all = now.steps.map((s, i) => (i === index ? pick(asked, s, label) : s));
+    // one question, one choice: the press is the answer, as it always was
+    if (!several && !asked.multiple) return send(all);
+    save({ ...now, steps: all });
+    clearTimeout(advance.current);
+    if (several && !asked.multiple && !last) advance.current = setTimeout(() => go(index + 1), ADVANCE_MS);
+  };
+
+  const write = (text: string) => {
+    clearTimeout(advance.current);
+    const now = latest.current;
+    save({ ...now, steps: now.steps.map((s, i) => (i === index ? typed(asked, s, text) : s)) });
+  };
+
+  const handBack = () => {
+    clearTimeout(advance.current);
+    const field = document.querySelector<HTMLTextAreaElement>(COMPOSER_FIELD);
+    if (field) field.focus();
+    else (document.activeElement as HTMLElement | null)?.blur();
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // a number picks that choice, once the card has focus, and not while
-    // typing an answer of one's own
     if (!e.currentTarget.contains(e.target as Node)) return;
-    if ((e.target as HTMLElement).tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
-    const n = Number(e.key);
-    if (Number.isInteger(n) && n >= 1 && n <= card.options.length) {
+    // Escape leaves the card as it is, answers so far and all, and hands
+    // the keyboard back to the composer.
+    if (e.key === "Escape") {
       e.preventDefault();
-      onAnswer(card.options[n - 1]);
+      e.stopPropagation();
+      handBack();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const onCard = e.target === e.currentTarget;
+    // Shift+Tab from the card itself is a step back while there is one;
+    // anywhere inside it, it moves the keyboard as it always does.
+    if (e.key === "Tab" && e.shiftKey && onCard && several && index > 0) {
+      e.preventDefault();
+      go(index - 1);
+      return;
+    }
+    // Enter on a button presses that button; Enter on the card goes on
+    if (e.key === "Enter" && onCard) {
+      e.preventDefault();
+      onward();
+      return;
+    }
+    // a number picks that option, and not while typing words of one's own
+    if ((e.target as HTMLElement).tagName === "INPUT") return;
+    const n = Number(e.key);
+    if (Number.isInteger(n) && n >= 1 && n <= asked.options.length) {
+      e.preventDefault();
+      choose(asked.options[n - 1].label);
     }
   };
 
   // Waiting above the composer, the question keeps its place here as one
   // line, which takes you down to it.
   if (dock === "line" && !card.answered) {
-    return <WaitingQuestionLine messageId={messageId} at={at} question={question} />;
+    return <WaitingQuestionLine messageId={messageId} at={at} question={steps[0].question} more={steps.length - 1} />;
   }
+
+  // One question answered by a press, or by words and Enter, as cards
+  // always were. Several, or several picks of one, go with a button.
+  const pressToSend = !several && !asked.multiple;
+  const footer = several || asked.multiple;
+  const placeholder = asked.multiple
+    ? t("optionCard.addYourOwn")
+    : asked.options.length
+      ? t("optionCard.orAnswerInYourOwn")
+      : t("optionCard.typeYourAnswer");
 
   return (
     <AnimatePresence mode="wait" initial={false}>
       {card.answered ? (
         <motion.div key="settled" {...enter} className="w-full max-w-[560px]">
-          <SettledQuestion card={card} at={at} question={question} hint={hint} forWhom={forWhom} name={name} />
+          <SettledQuestion card={card} at={at} hint={hint} forWhom={forWhom} name={name} steps={steps} />
         </motion.div>
       ) : (
         // Above the composer it takes the composer's width, edge to edge,
         // so the two read as one column.
         <motion.div key="open" exit={leave} className={cn("w-full", dock !== "card" && "max-w-[560px]")}>
           <div
+            ref={groupRef}
             role="group"
             aria-label={workflow ? t("optionCard.workflowWaiting") : t("optionCard.asks", { agent: name })}
             tabIndex={0}
@@ -860,16 +1004,45 @@ function QuestionCard({
                   </p>
                   <span className="shrink-0 text-caption tabular-nums text-muted-foreground">{stamp(at)}</span>
                 </div>
+                {card.agentSaid && <AgentSaid text={card.agentSaid} agent={name} />}
+                {(several || asked.header) && (
+                  <div className="mt-2 flex min-h-5 items-center gap-2">
+                    <AnimatePresence mode="wait" initial={false}>
+                      {asked.header && (
+                        <motion.span
+                          key={`${index}-${asked.header}`}
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1, transition: { duration: 0.16, ease } }}
+                          exit={{ opacity: 0, transition: { duration: 0.08, ease } }}
+                          className="min-w-0 max-w-[60%] truncate rounded-md bg-muted px-1.5 py-px text-caption font-medium text-muted-foreground"
+                        >
+                          {asked.header}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                    {several && (
+                      <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
+                        {t("optionCard.stepOf", { step: index + 1, total: steps.length })}
+                      </span>
+                    )}
+                    {several && <StepDots questions={steps} steps={draft.steps} at={index} onGo={go} />}
+                  </div>
+                )}
                 {/* anywhere-wrapping so a question that is one long
                     unbroken string folds instead of escaping the card */}
-                <p className="mt-0.5 text-pretty text-lead font-semibold text-foreground [overflow-wrap:anywhere]">
-                  {question}
-                </p>
-                {hint && (
-                  <p className="mt-0.5 text-pretty text-body leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
-                    {hint}
-                  </p>
-                )}
+                <AnimatePresence mode="wait" initial={false} custom={dir}>
+                  <motion.div key={index} custom={dir} variants={stepMotion} initial="enter" animate="shown" exit="gone">
+                    <p id={promptId} className="mt-0.5 text-pretty text-lead font-semibold text-foreground [overflow-wrap:anywhere]">
+                      {asked.question}
+                    </p>
+                    {hint && !structured && (
+                      <p className="mt-0.5 text-pretty text-body leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+                        {hint}
+                      </p>
+                    )}
+                    {asked.multiple && <p className="mt-0.5 text-small text-muted-foreground">{t("optionCard.pickAnyThatApply")}</p>}
+                  </motion.div>
+                </AnimatePresence>
               </div>
               {!workflow && (
                 <button
@@ -883,56 +1056,88 @@ function QuestionCard({
               )}
             </div>
 
-            {card.options.length > 0 && (
-              <div className={cn("flex flex-col gap-0.5 px-2 pt-2.5", !freeText && "pb-2")}>
-                {card.options.map((opt, i) => (
-                  <button
-                    key={opt}
-                    onClick={() => onAnswer(opt)}
-                    className="group/opt flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left text-ui text-foreground transition-[background-color,scale] duration-150 ease-out hover:bg-accent active:scale-[0.99]"
+            <AnimatePresence mode="wait" initial={false} custom={dir}>
+              <motion.div key={index} custom={dir} variants={stepMotion} initial="enter" animate="shown" exit="gone">
+                {asked.options.length > 0 && (
+                  <div
+                    role={asked.multiple ? "group" : "radiogroup"}
+                    aria-labelledby={promptId}
+                    className={cn("flex flex-col gap-0.5 px-2 pt-2.5", !asked.free && !footer && "pb-2")}
                   >
-                    <span
-                      aria-hidden
-                      className="flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] border-foreground/20 transition-colors duration-150 group-hover/opt:border-brand-ink"
-                    >
-                      <span className="size-1.5 rounded-full bg-brand-ink opacity-0 transition-opacity duration-150 group-hover/opt:opacity-100" />
-                    </span>
-                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{opt}</span>
-                    {i < 9 && (
-                      <kbd className="hidden shrink-0 rounded-[5px] border px-1 font-sans text-micro text-muted-foreground sm:group-focus-within/card:inline-block">
-                        {i + 1}
-                      </kbd>
-                    )}
-                  </button>
-                ))}
+                    {asked.options.map((opt, i) => (
+                      <OptionRow
+                        key={opt.label}
+                        label={opt.label}
+                        description={opt.description}
+                        multiple={Boolean(asked.multiple)}
+                        picked={step.picked.includes(opt.label)}
+                        keyHint={i < 9 ? i + 1 : undefined}
+                        onPick={() => choose(opt.label)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {asked.free && (
+                  <div className={cn("px-4 pt-2", footer ? "pb-0.5" : "pb-3.5")}>
+                    <label className="flex h-9 items-center gap-2 rounded-xl border border-input bg-background pl-3 pr-1 transition-[border-color] duration-150 focus-within:border-ring/60">
+                      <input
+                        value={step.text}
+                        type={asked.secret ? "password" : "text"}
+                        autoComplete="off"
+                        onChange={(e) => write(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                          e.preventDefault();
+                          if (pressToSend) send(latest.current.steps);
+                          else onward();
+                        }}
+                        placeholder={placeholder}
+                        aria-label={t("optionCard.yourAnswer")}
+                        className={cn(
+                          "min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground",
+                          !pressToSend && "pr-2",
+                        )}
+                      />
+                      {pressToSend && (
+                        <Button
+                          size="icon-sm"
+                          variant={step.text.trim() ? "brand" : "ghost"}
+                          disabled={!step.text.trim()}
+                          onClick={() => send(latest.current.steps)}
+                          aria-label={t("optionCard.sendAnswer")}
+                          className="size-7 rounded-lg"
+                        >
+                          <ArrowUp size={14} />
+                        </Button>
+                      )}
+                    </label>
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
+
+            {footer && (
+              <div className="flex items-center gap-2 px-4 pb-3.5 pt-3">
+                {several && index > 0 && (
+                  <Button variant="ghost" onClick={() => go(index - 1)} className="-ml-2 gap-1 pl-1.5">
+                    <ChevronLeft size={14} />
+                    {t("optionCard.back")}
+                  </Button>
+                )}
+                <Button variant="brand" disabled={!ready} onClick={onward} className="ml-auto min-w-[84px]">
+                  {!last ? t("optionCard.next") : several ? t("optionCard.sendAnswers") : t("optionCard.sendAnswer")}
+                  {ready && <KeyHint>Enter</KeyHint>}
+                </Button>
               </div>
             )}
 
-            {freeText && (
-              <div className="px-4 pb-3.5 pt-2">
-                <label className="flex h-9 items-center gap-2 rounded-xl border border-input bg-background pl-3 pr-1 transition-[border-color] duration-150 focus-within:border-ring/60">
-                  <input
-                    value={custom}
-                    onChange={(e) => setCustom(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.nativeEvent.isComposing) send();
-                    }}
-                    placeholder={card.options.length ? t("optionCard.orAnswerInYourOwn") : t("optionCard.typeYourAnswer")}
-                    aria-label={t("optionCard.yourAnswer")}
-                    className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
-                  />
-                  <Button
-                    size="icon-sm"
-                    variant={custom.trim() ? "brand" : "ghost"}
-                    disabled={!custom.trim()}
-                    onClick={send}
-                    aria-label={t("optionCard.sendAnswer")}
-                    className="size-7 rounded-lg"
-                  >
-                    <ArrowUp size={14} />
-                  </Button>
-                </label>
-              </div>
+            {/* the question on screen, said once it changes, for a screen
+                reader that would otherwise hear nothing move */}
+            {several && (
+              <p className="sr-only" aria-live="polite">
+                {t("optionCard.stepSaid", { step: index + 1, total: steps.length, question: asked.question })}
+              </p>
             )}
           </div>
         </motion.div>
@@ -941,9 +1146,193 @@ function QuestionCard({
   );
 }
 
+/** One option of a question: a round mark for one choice, a square one
+ * for several, with the option's own explanation under it. */
+function OptionRow({
+  label,
+  description,
+  multiple,
+  picked,
+  keyHint,
+  onPick,
+}: {
+  label: string;
+  description?: string;
+  multiple: boolean;
+  picked: boolean;
+  keyHint?: number;
+  onPick: () => void;
+}) {
+  // named by its label and described by its explanation, as a screen
+  // reader expects of a choice, rather than read as one run of text
+  const about = useId();
+  return (
+    <button
+      type="button"
+      role={multiple ? "checkbox" : "radio"}
+      aria-checked={picked}
+      aria-label={label}
+      aria-describedby={description ? about : undefined}
+      onClick={onPick}
+      className={cn(
+        "group/opt flex w-full gap-3 rounded-xl px-2.5 py-2 text-left text-ui text-foreground transition-[background-color,scale] duration-150 ease-out hover:bg-accent active:scale-[0.99]",
+        description ? "items-start" : "items-center",
+        picked && "bg-accent/70",
+      )}
+    >
+      {/* on the label's first line, however many lines follow */}
+      <span
+        aria-hidden
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center border-[1.5px] transition-colors duration-150",
+          description && "mt-[3px]",
+          multiple ? "rounded-[5px]" : "rounded-full",
+          picked ? (multiple ? "border-brand-ink bg-brand-ink" : "border-brand-ink") : "border-foreground/20 group-hover/opt:border-brand-ink",
+        )}
+      >
+        {multiple ? (
+          <Check size={11} strokeWidth={3} className={cn("text-brand-foreground transition-opacity duration-150", picked ? "opacity-100" : "opacity-0")} />
+        ) : (
+          <span
+            className={cn(
+              "size-1.5 rounded-full bg-brand-ink transition-opacity duration-150",
+              picked ? "opacity-100" : "opacity-0 group-hover/opt:opacity-100",
+            )}
+          />
+        )}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block [overflow-wrap:anywhere]">{label}</span>
+        {description && (
+          <span id={about} className="mt-px block text-small leading-snug text-muted-foreground [overflow-wrap:anywhere]">
+            {description}
+          </span>
+        )}
+      </span>
+      {keyHint !== undefined && (
+        <kbd
+          className={cn(
+            "hidden shrink-0 rounded-[5px] border px-1 font-sans text-micro text-muted-foreground sm:group-focus-within/card:inline-block",
+            description && "mt-[3px]",
+          )}
+        >
+          {keyHint}
+        </kbd>
+      )}
+    </button>
+  );
+}
+
+/** Where the card is in an ask of several: a dot a question, the one on
+ * screen drawn long. One already answered says its answer when pointed
+ * at and goes back to it when pressed; one past the first unanswered
+ * cannot be reached yet. */
+function StepDots({
+  questions,
+  steps,
+  at,
+  onGo,
+}: {
+  questions: readonly StepQuestion[];
+  steps: readonly StepDraft[];
+  at: number;
+  onGo: (index: number) => void;
+}) {
+  return (
+    <div className="-mr-[3px] ml-auto flex shrink-0 items-center" role="group" aria-label={t("optionCard.questionsInThisAsk")}>
+      {questions.map((q, i) => {
+        const here = i === at;
+        const done = isAnswered(steps[i]);
+        const open = !here && reachable(steps, i);
+        const label = done
+          ? t("optionCard.stepAnswered", {
+              step: i + 1,
+              question: q.header || q.question,
+              answer: q.secret ? t("optionCard.keptPrivate") : answerOf(steps[i]).join(", "),
+            })
+          : t("optionCard.stepNotAnswered", { step: i + 1, question: q.header || q.question });
+        return (
+          <button
+            key={i}
+            type="button"
+            aria-label={label}
+            title={label}
+            aria-current={here ? "step" : undefined}
+            aria-disabled={!open}
+            onClick={() => open && onGo(i)}
+            className={cn("group/dot flex h-5 items-center px-[3px]", !open && "cursor-default")}
+          >
+            <span
+              className={cn(
+                "block h-1.5 rounded-full transition-[width,background-color] duration-200 ease-out",
+                here ? "w-4 bg-brand-ink" : "w-1.5",
+                !here && (done ? "bg-foreground/35 group-hover/dot:bg-foreground/60" : "bg-foreground/15"),
+              )}
+            />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The three lines AgentSaid shows closed, at the body size's line
+ * height; its max-h-[60px] says the same. */
+const SAID_HEIGHT = 60;
+
+/**
+ * What the agent said just before asking, on the card, so the person
+ * never scrolls up to find out what the question is about. Its own
+ * words, drawn as it wrote them, three lines of them until asked for
+ * more; a card whose agent said nothing first has none of this.
+ */
+function AgentSaid({ text, agent }: { text: string; agent: string }) {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    // more than the three lines the box shows, at whatever width it has
+    const measure = () => setLong(el.scrollHeight > el.clientHeight + 1 || (open && el.scrollHeight > SAID_HEIGHT + 1));
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [text, open]);
+  return (
+    <div className="mt-1.5">
+      <div
+        ref={box}
+        aria-label={t("optionCard.agentSaidFirst", { agent })}
+        role="group"
+        className={cn(
+          "text-body text-muted-foreground [overflow-wrap:anywhere]",
+          // closed, its blocks sit line under line, so the three lines shown
+          // are three lines of words and never a paragraph's gap
+          !open && "max-h-[60px] overflow-hidden [&>*]:mt-0!",
+          !open && long && "ask-said-fade",
+        )}
+      >
+        <Markdownish text={text} />
+      </div>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="mt-0.5 text-small font-medium text-muted-foreground transition-colors duration-150 hover:text-foreground"
+        >
+          {open ? t("optionCard.less") : t("optionCard.more")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Where a question waiting above the composer was asked. Pressing it
  * brings the card into view and gives it the keyboard. */
-function WaitingQuestionLine({ messageId, at, question }: { messageId: string; at: number; question: string }) {
+function WaitingQuestionLine({ messageId, at, question, more }: { messageId: string; at: number; question: string; more: number }) {
   const toCard = () => {
     const card = document.querySelector<HTMLElement>(`[data-question-dock="${CSS.escape(messageId)}"] [role="group"]`);
     if (!card) return;
@@ -959,7 +1348,12 @@ function WaitingQuestionLine({ messageId, at, question }: { messageId: string; a
       >
         <ArrowDown size={12} className="shrink-0 text-brand-ink" />
         <span className="shrink-0 font-medium text-foreground/80">{t("optionCard.waitingBelow")}</span>
-        <span className="min-w-0 truncate">{question}</span>
+        {/* the count of the rest goes before the question does, which
+            is what tells you which card is below */}
+        <span className="min-w-0 truncate">
+          {question}
+          {more > 0 && <span className="opacity-80"> {t("optionCard.andMore", { count: more })}</span>}
+        </span>
         <span className="shrink-0 tabular-nums opacity-80">{stamp(at)}</span>
       </button>
     </div>
@@ -969,30 +1363,82 @@ function WaitingQuestionLine({ messageId, at, question }: { messageId: string; a
 function SettledQuestion({
   card,
   at,
-  question,
   hint,
   forWhom,
   name,
+  steps,
 }: {
   card: OptionCardData;
   at: number;
-  question: string;
   hint?: string;
   forWhom?: string;
   name: string;
+  /** Its questions as the card stepped through them (askSteps.ts). */
+  steps: readonly StepQuestion[];
 }) {
-  const closed = Boolean(card.cutOff || card.closed) || card.answered === CLOSED_UNANSWERED;
-  // A live engine question settles on the server as "answer", the kind
+  // An engine's question put aside settles as "deny", which is no
+  // answer at all, so it reads as not answered rather than as that word.
+  const putAside = Boolean(card.requestId) && card.answered === "deny" && !card.answers;
+  const closed = Boolean(card.cutOff || card.closed) || card.answered === CLOSED_UNANSWERED || putAside;
+  // What was answered, one list per question: kept on the card by the
+  // server once the engine had it, or this window's own answer until
+  // then. A live engine question otherwise settles as "answer", the kind
   // of reply rather than its words, so there is nothing more to show.
-  const said = closed || card.answered === "answer" ? undefined : card.answered;
+  const answers = closed ? undefined : card.answers;
+  const legacy = closed || answers || card.answered === "answer" ? undefined : card.answered;
   const why = card.cutOff
     ? t("optionCard.closedWhenBloksStopped")
     : card.withdrawn
       ? t("optionCard.withdrawnBy", { agent: name })
       : card.closed;
+  const icon = closed ? <Minus size={12} /> : <Check size={12} className="text-brand-ink" />;
+
+  if (steps.length > 1) {
+    // a secret's answer is never kept, only that it was given
+    const given = steps.filter((q, i) => (answers?.[i]?.length ?? 0) > 0 || (answers && q.secret)).length;
+    const label = card.withdrawn
+      ? t("optionCard.withdrawn")
+      : closed
+        ? t("optionCard.notAnswered")
+        : !answers
+          ? card.answeredBy ? t("optionCard.answeredBy", { name: card.answeredBy }) : t("optionCard.answered")
+          : given === steps.length
+            ? t("optionCard.answeredQuestions", { count: given })
+            : t("optionCard.answeredSome", { count: given, total: steps.length });
+    return (
+      <SettledLine
+        icon={icon}
+        at={at}
+        summary={
+          <>
+            <span className="shrink-0 font-medium text-foreground/80">{label}</span>
+            <span className="min-w-0 truncate">{steps.map((q) => q.header || q.question).join(" · ")}</span>
+          </>
+        }
+      >
+        {forWhom && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{t("optionCard.askedFor", { who: forWhom })}</p>}
+        <ol className="flex min-w-0 flex-col gap-2.5">
+          {steps.map((q, i) => (
+            <li key={i} className="min-w-0">
+              <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{q.question}</p>
+              <AnswerWords question={q} answer={answers?.[i]} known={Boolean(answers)} />
+            </li>
+          ))}
+        </ol>
+        {card.answeredBy && answers && <p className="text-small text-muted-foreground">{t("optionCard.answeredBy", { name: card.answeredBy })}</p>}
+        {why && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{why}</p>}
+      </SettledLine>
+    );
+  }
+
+  const asked = steps[0];
+  const chosen = answers?.[0] ?? (legacy ? [legacy] : []);
+  const said = asked.secret && answers ? t("optionCard.keptPrivate") : chosen.join(", ") || undefined;
+  const labels = asked.options.map((o) => o.label);
+  const own = chosen.filter((c) => !labels.includes(c));
   return (
     <SettledLine
-      icon={closed ? <Minus size={12} /> : <Check size={12} className="text-brand-ink" />}
+      icon={icon}
       at={at}
       summary={
         // the question, then what was said to it, which is the part
@@ -1003,7 +1449,7 @@ function SettledQuestion({
               {card.withdrawn ? t("optionCard.withdrawn") : closed ? t("optionCard.notAnswered") : card.answeredBy ? t("optionCard.answeredBy", { name: card.answeredBy }) : t("optionCard.answered")}
             </span>
           )}
-          <span className="min-w-0 truncate">{question}</span>
+          <span className="min-w-0 truncate">{asked.question}</span>
           {said && (
             <span className="min-w-0 max-w-[50%] shrink-0 truncate font-medium text-foreground/80">
               {card.answeredBy ? t("optionCard.saidBy", { name: card.answeredBy, answer: said }) : said}
@@ -1012,34 +1458,53 @@ function SettledQuestion({
         </>
       }
     >
-      <p className="text-pretty text-body font-medium text-foreground [overflow-wrap:anywhere]">{question}</p>
+      <p className="text-pretty text-body font-medium text-foreground [overflow-wrap:anywhere]">{asked.question}</p>
       {/* Every line here wraps anywhere: an agent's words can hold a path,
           a hash or a link with nothing to break at, and one that did not
           wrap ran out past the conversation column (GitHub 415). */}
       {hint && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{hint}</p>}
       {forWhom && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{t("optionCard.askedFor", { who: forWhom })}</p>}
-      {card.options.length > 0 && (
+      {labels.length > 0 && (
         <ul className="flex flex-col gap-0.5">
-          {card.options.map((opt) => (
+          {labels.map((opt) => (
             <li
               key={opt}
               className={cn(
                 "flex items-start gap-2 text-small",
-                opt === said ? "font-medium text-foreground" : "text-muted-foreground",
+                chosen.includes(opt) ? "font-medium text-foreground" : "text-muted-foreground",
               )}
             >
               {/* on the first line's middle, however many lines follow */}
-              <span className={cn("mt-[6px] size-1.5 shrink-0 rounded-full", opt === said ? "bg-brand-ink" : "bg-foreground/15")} />
+              <span className={cn("mt-[6px] size-1.5 shrink-0 rounded-full", chosen.includes(opt) ? "bg-brand-ink" : "bg-foreground/15")} />
               <span className="min-w-0 [overflow-wrap:anywhere]">{opt}</span>
             </li>
           ))}
         </ul>
       )}
-      {said && !card.options.includes(said) && (
-        <p className="whitespace-pre-wrap text-small text-foreground [overflow-wrap:anywhere]">“{said}”</p>
-      )}
+      {!asked.secret && own.map((words, i) => (
+        <p key={i} className="whitespace-pre-wrap text-small text-foreground [overflow-wrap:anywhere]">“{words}”</p>
+      ))}
       {why && <p className="text-small text-muted-foreground [overflow-wrap:anywhere]">{why}</p>}
     </SettledLine>
+  );
+}
+
+/** One question's answer on a settled card of several: the options
+ * picked as they read, and words of the person's own in quotes. */
+function AnswerWords({ question, answer, known }: { question: StepQuestion; answer?: string[]; known: boolean }) {
+  if (!known) return null;
+  if (question.secret) return <p className="text-small text-muted-foreground">{t("optionCard.keptPrivate")}</p>;
+  if (!answer?.length) return <p className="text-small text-muted-foreground">{t("optionCard.notAnswered")}</p>;
+  const labels = new Set(question.options.map((o) => o.label));
+  return (
+    <p className="whitespace-pre-wrap text-small font-medium text-foreground [overflow-wrap:anywhere]">
+      {answer.map((part, i) => (
+        <span key={i}>
+          {i > 0 && ", "}
+          {labels.has(part) ? part : `“${part}”`}
+        </span>
+      ))}
+    </p>
   );
 }
 

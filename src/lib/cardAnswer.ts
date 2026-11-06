@@ -59,6 +59,10 @@ export interface CardAnswer {
   botId: string;
   messageId: string;
   answer: string;
+  /** One answer per question, for an engine's question that carries its
+   * questions. `answer` goes beside them for a server that reads only
+   * one string. */
+  answers?: string[][];
   roomId?: string;
   /** The agent's lane the card is in (typedLane). Without it the server
    * puts the answer in whichever lane it last heard was open. */
@@ -90,14 +94,16 @@ export function sendCardAnswer(
   }
   if (card?.requestId) {
     // a live provider ask settles against the agent that raised it,
-    // wherever the card happens to be shown
-    const behavior = ref.answer === "Allow" ? "allow" : ref.answer === "Deny" ? "deny" : "answer";
+    // wherever the card happens to be shown. Answers per question are
+    // always an answer, even one whose option reads "Allow".
+    const behavior = ref.answers ? "answer" : ref.answer === "Allow" ? "allow" : ref.answer === "Deny" ? "deny" : "answer";
     return api(`/api/bots/${ref.botId}/respond`, {
       method: "POST",
       body: JSON.stringify({
         requestId: card.requestId,
         behavior,
         message: behavior === "answer" ? ref.answer : undefined,
+        ...(ref.answers ? { answers: ref.answers } : {}),
       }),
     }).then(() => {}, failed);
   }

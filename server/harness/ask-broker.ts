@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { isQuestionTool } from "../policy.ts";
+import type { AskAnswers } from "./ask-questions.ts";
 
 export interface PendingAsk {
   id: string;
@@ -64,6 +65,8 @@ export function summarise(ask: PendingAsk): string {
   if (typeof input.question === "string") return input.question.slice(0, 300);
   // AskUserQuestion nests its prompts: {questions: [{question, options}]}.
   // The person should read the question, never the envelope around it.
+  // The card reads every question (ask-questions.ts); this line, with its
+  // count of the rest, is for the clients that read only one.
   if (Array.isArray(input.questions) && typeof input.questions[0]?.question === "string") {
     const first = input.questions[0].question.slice(0, 300);
     return input.questions.length > 1 ? `${first} (+${input.questions.length - 1} more)` : first;
@@ -144,8 +147,9 @@ export interface AskBrokerOptions {
 
 export interface AskBroker {
   /** Deliver a person's decision. False when the id is unknown, which
-   * usually means it already timed out. */
-  answer(askId: string, behavior: string, message?: string): boolean;
+   * usually means it already timed out. `answers` is one per question,
+   * for an ask that put several (server/harness/ask-questions.ts). */
+  answer(askId: string, behavior: string, message?: string, answers?: AskAnswers): boolean;
   /** Stop taking new connections and remove the socket, but keep the
    * ones already open and their asks. For a turn that has ended while its
    * process runs on (a background task can still ask), so the next turn's
@@ -160,7 +164,7 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
 
   interface Entry {
     ask: PendingAsk;
-    settle: (behavior: string, message: string | undefined, source: string) => void;
+    settle: (behavior: string, message: string | undefined, source: string, answers?: AskAnswers) => void;
   }
   const open = new Map<string, Entry>();
 
@@ -217,13 +221,13 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
           at: Date.now(),
         };
 
-        const settle = (behavior: string, message: string | undefined, source: string) => {
+        const settle = (behavior: string, message: string | undefined, source: string, answers?: AskAnswers) => {
           // delete() doubles as the guard: whoever removes it first wins,
           // so a timeout racing a tap cannot answer twice.
           if (!open.delete(id)) return;
           clearTimeout(timer);
           try {
-            connection.write(JSON.stringify({ t: "answer", id, behavior, message }) + "\n");
+            connection.write(JSON.stringify({ t: "answer", id, behavior, message, ...(answers ? { answers } : {}) }) + "\n");
           } catch {
             /* the proxy is gone; the turn is ending anyway */
           }
@@ -247,7 +251,7 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
   server.listen(options.socketPath);
 
   return {
-    answer(askId, behavior, message) {
+    answer(askId, behavior, message, answers) {
       const entry = open.get(askId);
       if (!entry) return false;
 
@@ -261,7 +265,9 @@ export function createAskBroker(options: AskBrokerOptions): AskBroker {
       // ask (the CLI's own question tool): its words are the answer, and
       // the bridge hands them over as one (server/permission-proxy.ts).
       const asksSomething = entry.ask.kind === "question" || isQuestionTool(entry.ask.tool);
-      entry.settle(asksSomething || behavior === "allow" ? behavior : "deny", message, "user");
+      // Answers per question only ever go with an answer to a question.
+      const settled = asksSomething || behavior === "allow" ? behavior : "deny";
+      entry.settle(settled, message, "user", asksSomething && settled === "answer" ? answers : undefined);
       return true;
     },
 

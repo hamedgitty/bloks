@@ -156,6 +156,10 @@ export type RuntimeEvent = RuntimeEventBase &
         input?: unknown;
         summary: string;
         choices?: string[];
+        /** Every question of a question's ask, in order, each with its
+         * own options. `summary` and `choices` stay the first one's, for
+         * whatever reads only those. */
+        questions?: import("./harness/ask-questions.ts").AskQuestion[];
         /** Nothing is waiting on this question: the engine was told it was
          * taken and carried on (Codex's request_user_input_async). Its
          * answer is said in the conversation, as the person's words. */
@@ -508,7 +512,11 @@ export interface ProviderAdapter {
   respondToRequest(
     threadId: ThreadId,
     requestId: string,
-    decision: { behavior: "allow" | "deny" | "answer"; message?: string },
+    /** `answers`, with an answer, is one per question of the ask's
+     * `questions`, in order; an empty one leaves its question unanswered.
+     * Without it, `message` answers the first question and any others go
+     * unanswered, which is how every older client answers. */
+    decision: { behavior: "allow" | "deny" | "answer"; message?: string; answers?: import("./harness/ask-questions.ts").AskAnswers },
   ): Promise<void>;
   /**
    * The agent takes back a question it asked without waiting (`async` on

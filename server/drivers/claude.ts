@@ -34,6 +34,8 @@ import { callSignature } from "../repeats.ts";
 import { SessionCosts } from "./session-costs.ts";
 import { readClaudeCommands, classifyClaudeCommands, type ClaudeCommandRow } from "../agent-commands.ts";
 import { bridgeSocketPath, createAskBroker, summarise, type AskBroker } from "../harness/ask-broker.ts";
+import { readQuestions } from "../harness/ask-questions.ts";
+import { isQuestionTool } from "../policy.ts";
 import { checkPersonClaudeInit, checkPersonClaudeStatus, personClaudeDenials, personTurnHold, readMemberClaudeInstructions, readPersonClaudeInstructions } from "../person-turn.ts";
 
 /** The answerable options of an ask, wherever the tool put them: a flat
@@ -672,6 +674,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           asking++;
           inputs?.setAsking(true);
           lastSign = Date.now();
+          // A question's every question, for the card that steps through
+          // them; its own question tool arrives as a permission, so the
+          // tool says which it is, never the kind.
+          const questions = ask.kind === "question" || isQuestionTool(ask.tool) ? readQuestions(ask.input) : undefined;
           emit({
             ...envelope(threadId, turnId),
             type: "request.opened",
@@ -681,6 +687,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             input: ask.input,
             summary: summarise(ask),
             choices: askChoices(ask.input),
+            ...(questions ? { questions } : {}),
           });
           checkCompletion();
         },
@@ -1796,7 +1803,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             (b): b is AskBroker => b !== undefined,
           );
           if (!brokers.length) throw new Error("nothing on this thread is waiting to be answered");
-          if (!brokers.some((b) => b.answer(requestId, decision.behavior, decision.message))) {
+          if (!brokers.some((b) => b.answer(requestId, decision.behavior, decision.message, decision.answers))) {
             throw new Error("no such pending request (it may have timed out)");
           }
         },

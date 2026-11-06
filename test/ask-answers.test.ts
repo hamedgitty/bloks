@@ -59,6 +59,11 @@ const calls = {
     { question: "Which database?", header: "Database", multiSelect: false, options: [{ label: "Postgres", description: "A server" }, { label: "SQLite", description: "A file" }] },
     { question: "Which port?", header: "Port", multiSelect: false, options: [{ label: "5432", description: "" }, { label: "8080", description: "" }] },
   ] } } },
+  "NATIVE-SEVERAL": { name: "approve", arguments: { tool_name: "AskUserQuestion", input: { questions: [
+    { question: "Which database?", header: "Database", multiSelect: false, options: [{ label: "Postgres", description: "A server" }, { label: "SQLite", description: "A file" }] },
+    { question: "Which features?", header: "Features", multiSelect: true, options: [{ label: "Auth", description: "" }, { label: "Billing", description: "" }, { label: "Search", description: "" }] },
+    { question: "Which port?", header: "Port", multiSelect: false, options: [{ label: "5432", description: "" }, { label: "8080", description: "" }] },
+  ] } } },
   "OWN-QUESTION": { name: "ask_user", arguments: { question: "Ship it today?", choices: ["Today", "Friday"] } },
   "RUN-COMMAND": { name: "approve", arguments: { tool_name: "Bash", input: { command: "rm -rf build" } } },
   "ASK-THEN-LEAVE": { name: "ask_user", arguments: { question: "Still there?", choices: ["Yes", "No"] } },
@@ -87,6 +92,8 @@ if (!which) {
   });
   // the bridge is up, and on the turn's socket, before anything is asked
   await call(0, "initialize", {});
+  // what the agent says before it asks, which its card carries
+  if (which === "NATIVE-SEVERAL") out({ type: "assistant", message: { content: [{ type: "text", text: "Three things to settle before I scaffold the project." }] } });
   await new Promise((r) => setTimeout(r, 300));
   // something left running asks once the turn's result is in
   if (which === "ASK-AFTERWARDS") done("Working on it.");
@@ -127,7 +134,11 @@ const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
 let thread, turn;
 const waiting = new Map();
 const question = { itemId: "q", questions: [{ id: "q1", question: "Which colour?", options: [{ label: "Red" }, { label: "Blue" }] }] };
-const ask = (id) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method: "item/tool/requestUserInput", params: { threadId: thread, turnId: turn, ...question } }); });
+const several = { itemId: "q", questions: [
+  { id: "q1", header: "Colour", question: "Which colour?", isOther: false, isSecret: false, options: [{ label: "Red", description: "" }, { label: "Blue", description: "" }] },
+  { id: "q2", header: "Size", question: "Which size?", isOther: true, isSecret: false, options: [{ label: "S", description: "" }, { label: "L", description: "" }] },
+] };
+const ask = (id, asked = question) => new Promise((resolve) => { waiting.set(id, resolve); out({ id, method: "item/tool/requestUserInput", params: { threadId: thread, turnId: turn, ...asked } }); });
 const finish = (text) => {
   out({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "answer", text } } });
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
@@ -151,6 +162,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     setTimeout(() => out({ method: "serverRequest/resolved", params: { threadId: thread, requestId: 7 } }), 1200);
     return;
   }
+  if (text.includes("SEVERAL")) return finish("PICKED " + JSON.stringify((await ask(7, several)).answers));
   if (text.includes("QUESTION")) return finish("PICKED " + (await ask(7)).answers.q1.answers[0]);
   finish("Done.");
 });
@@ -248,9 +260,10 @@ test("a choice pressed on Claude Code's own question reaches it as the answer", 
   assert.equal(verdict.behavior, "allow");
   assert.equal(verdict.updatedInput.answers["Which database?"], "SQLite");
   assert.equal(verdict.updatedInput.questions.length, 2, "the questions themselves were not handed back");
-  // the card showed one question, so the other is not answered for the person
-  assert.notEqual(verdict.updatedInput.answers["Which port?"], "SQLite");
-  assert.match(verdict.updatedInput.answers["Which port?"], /not shown/i);
+  // One string answers the one question an older client showed. The
+  // other goes unanswered, with a note the CLI reads out beside it.
+  assert.equal("Which port?" in verdict.updatedInput.answers, false, "a question the person never saw was answered for them");
+  assert.match(verdict.updatedInput.annotations["Which port?"].notes, /not shown/i);
 
   assert.ok(await f.idle(), "the turn never ended");
   const settled = (await f.messages()).find((m) => m.id === asked.id);
@@ -258,6 +271,63 @@ test("a choice pressed on Claude Code's own question reaches it as the answer", 
   assert.ok(!settled.card.dismissed, "an answered question was hidden");
   assert.ok(!settled.card.closed);
   assert.equal((await f.messages()).some(f.closedNote), false, "a delivered answer was reported as a closed request");
+});
+
+test("several questions are one card, and each answer reaches Claude Code against its own question", async (t) => {
+  const f = await fixture(t);
+  await f.say("NATIVE-SEVERAL for the new project");
+  const asked = await f.card();
+
+  // what a phone or an older window reads, as it always was
+  assert.equal(asked.card.title, "Your agent has a question");
+  assert.equal(asked.card.subtitle, "Which database? (+2 more)");
+  assert.deepEqual(asked.card.options, ["Postgres", "SQLite"]);
+  // and the whole ask, for the card that steps through it
+  assert.deepEqual(asked.card.questions.map((q: any) => [q.header, q.question, q.options.length, Boolean(q.multiple), q.free]), [
+    ["Database", "Which database?", 2, false, true],
+    ["Features", "Which features?", 3, true, true],
+    ["Port", "Which port?", 2, false, true],
+  ]);
+  assert.equal(asked.card.questions[0].options[1].description, "A file");
+  // what the agent said just before asking
+  assert.equal(asked.card.agentSaid, "Three things to settle before I scaffold the project.");
+
+  const sent = await f.respond(asked.card.requestId, {
+    behavior: "answer",
+    message: "Database: SQLite",
+    answers: [["SQLite"], ["Auth", "Billing"], ["6543, the usual one is taken"]],
+  });
+  assert.equal(sent.outcome, "delivered");
+
+  const verdict = JSON.parse(await f.heard());
+  assert.equal(verdict.behavior, "allow");
+  assert.deepEqual(verdict.updatedInput.answers, {
+    "Which database?": "SQLite",
+    // several picks of one question, joined the way the CLI reads them
+    "Which features?": "Auth, Billing",
+    // words of the person's own are an answer like any other
+    "Which port?": "6543, the usual one is taken",
+  });
+  assert.equal(verdict.updatedInput.annotations, undefined, "a question answered on the card was told it was not shown");
+
+  assert.ok(await f.idle(), "the turn never ended");
+  const settled = (await f.messages()).find((m) => m.id === asked.id);
+  assert.equal(settled.card.answered, "answer");
+  // kept on the card, for its answered line to open to
+  assert.deepEqual(settled.card.answers, [["SQLite"], ["Auth", "Billing"], ["6543, the usual one is taken"]]);
+});
+
+test("an answer per question is read against what was asked, and a single choice stays single", async (t) => {
+  const f = await fixture(t);
+  await f.say("NATIVE-SEVERAL again");
+  const asked = await f.card();
+  await f.respond(asked.card.requestId, {
+    behavior: "answer",
+    // two picks for a single choice, a stray fourth answer, and junk
+    answers: [["Postgres", "SQLite"], [], [42, "8080"], ["nobody asked this"]],
+  });
+  const verdict = JSON.parse(await f.heard());
+  assert.deepEqual(verdict.updatedInput.answers, { "Which database?": "Postgres", "Which port?": "8080" });
 });
 
 test("a question put aside is told to the agent, and the turn goes on", async (t) => {
@@ -387,6 +457,38 @@ test("a Codex question takes a choice, and takes being put aside", async (t) => 
     "a question put aside left the turn waiting",
   );
   assert.equal((await f.messages()).some(f.closedNote), false);
+});
+
+test("a Codex question of several is one card, answered question by question by id", async (t) => {
+  const f = await fixture(t, "codex");
+  await f.say("SEVERAL at once");
+  const asked = await f.card();
+  assert.deepEqual(asked.card.questions.map((q: any) => [q.header, q.question, q.free]), [
+    ["Colour", "Which colour?", false],
+    ["Size", "Which size?", true],
+  ]);
+  assert.deepEqual(asked.card.options, ["Red", "Blue"]);
+  assert.equal((await f.respond(asked.card.requestId, { behavior: "answer", answers: [["Blue"], ["Medium, if you have it"]] })).outcome, "delivered");
+  assert.deepEqual(JSON.parse(await f.heard("PICKED")), {
+    q1: { answers: ["Blue"] },
+    q2: { answers: ["Medium, if you have it"] },
+  });
+  assert.ok(await f.idle(), "the turn never ended");
+});
+
+test("an older client's single answer to a Codex question of several answers the first, and says the rest were not shown", async (t) => {
+  const f = await fixture(t, "codex");
+  await f.say("SEVERAL from a phone");
+  const asked = await f.card();
+  // what the iPhone app sends: one string, no answers
+  assert.equal((await f.respond(asked.card.requestId, { behavior: "answer", message: "Red" })).outcome, "delivered");
+  const replies = JSON.parse(await f.heard("PICKED"));
+  assert.deepEqual(replies.q1, { answers: ["Red"] });
+  assert.match(replies.q2.answers[0], /not shown/i);
+  assert.ok(await f.idle());
+  // the card keeps what was said, against the question it answered
+  const settled = (await f.messages()).find((m) => m.id === asked.id);
+  assert.deepEqual(settled.card.answers, [["Red"], []]);
 });
 
 test("a question its engine takes back stays on screen and says so, and the next message still reaches the turn", async (t) => {

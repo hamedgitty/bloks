@@ -47,6 +47,7 @@ import { EngineProcesses } from "./engine-processes.ts";
 import { CODEX_PERSON_HOLD, CODEX_PERSON_NEXT, personTurnHold } from "../person-turn.ts";
 import { CodexSpeedUnavailable, type CodexSpeedRefusal, FAST_TIER, fastRefusal, requireFastTier, resolveCodexSpeed } from "../codex-speed.ts";
 import { createAskBroker, type AskBroker } from "../harness/ask-broker.ts";
+import { NOT_SHOWN, readQuestions, type AskAnswers, type AskQuestion } from "../harness/ask-questions.ts";
 import { checkCodexReplyEndpoint, makeCodexReplyFolder } from "../person-turn.ts";
 import { isConnectionEnvName } from "../connections.ts";
 import { screenServers } from "./screen-servers.ts";
@@ -660,6 +661,43 @@ export function asyncQuestion(item: any): { summary: string; choices: string[] }
   return { summary: asked.map((q: { title: string }) => q.title).join(" · "), choices: [...new Set(choices)].slice(0, 5) };
 }
 
+/**
+ * A requestUserInput reply: every question answered by its id.
+ *
+ * A card that answered each question is taken at its word, a question
+ * it left empty getting the usual guidance. A single string from the
+ * person (a phone, an older window, a chat) answered the one question
+ * they were shown, the first, and the rest are told so. Anything else
+ * (put aside, timed out, the turn ending) says the same to every
+ * question, since it is about the ask, not one of its questions.
+ */
+export function codexAnswers(
+  asked: unknown,
+  shown: readonly AskQuestion[] | undefined,
+  behavior: string,
+  message: string | undefined,
+  source: string,
+  answers?: AskAnswers,
+): Record<string, { answers: string[] }> {
+  const said = message || UNANSWERED_QUESTION;
+  const single = !answers && source === "user" && behavior === "answer";
+  const replies: Record<string, { answers: string[] }> = {};
+  (Array.isArray(asked) ? asked : []).forEach((q: any, i: number) => {
+    const id = typeof q?.id === "string" && q.id ? q.id : "";
+    // the answers are in the order the card showed its questions, which
+    // leaves out any it could not read; the id says which is which
+    const at = !shown ? -1
+      : id ? shown.findIndex((s) => s.id === id.trim().slice(0, 200))
+      // with no ids at all, the order is all there is to go on
+      : shown.some((s) => s.id) || i >= shown.length ? -1 : i;
+    const given = at >= 0 ? (answers?.[at] ?? []) : [];
+    replies[id || String(i)] = {
+      answers: answers ? (given.length ? given : [UNANSWERED_QUESTION]) : single && shown && at !== 0 ? [NOT_SHOWN] : [said],
+    };
+  });
+  return replies;
+}
+
 /** What the agent is asking to touch, in a word the transcript can show. */
 function toolOf(method: string, params: any): string {
   if (EDIT_APPROVAL_METHODS.has(method)) return "edit";
@@ -778,7 +816,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       models.checkedAt = catalog.checkedAt;
     });
 
-    type Answer = (behavior: string, message?: string, source?: string, reply?: boolean) => void;
+    type Answer = (behavior: string, message?: string, source?: string, reply?: boolean, answers?: AskAnswers) => void;
     interface RunningTurn {
       turnId: string;
       abort: () => void;
@@ -1049,6 +1087,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const isQuestion = method === QUESTION_METHOD;
         const isMcp = method === MCP_ELICITATION_METHOD;
         const tool = toolOf(method, params);
+        const questions = isQuestion ? readQuestions(params) : undefined;
 
         // MCP tool approval is an empty form. Other elicitations need a
         // form/URL UI; an Allow button cannot supply their requested data.
@@ -1096,20 +1135,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           return rpc.reply(msg.id, permissionReply(true, "auto"));
         }
 
-        const answer: Answer = (behavior, message, source = "user", reply = true) => {
+        const answer: Answer = (behavior, message, source = "user", reply = true, perQuestion) => {
           if (!asks.delete(requestId)) return;
           rpcAsks.delete(msg.id);
           clearTimeout(timer);
           logDecision("resolved", behavior, source);
 
           if (reply && isQuestion) {
-            // Each sub-question is answered by id; we put the same text
-            // against all of them, since the card asked as one thing.
-            const answers: Record<string, { answers: string[] }> = {};
-            for (const q of Array.isArray(params.questions) ? params.questions : []) {
-              answers[q.id] = { answers: [message || UNANSWERED_QUESTION] };
-            }
-            rpc.reply(msg.id, { answers });
+            // A secret's answer is kept out of the native log, which
+            // records every frame sent, this reply among them.
+            (questions ?? []).forEach((q, i) => {
+              if (!q.secret) return;
+              const words = perQuestion ? (perQuestion[i] ?? []) : i === 0 && message ? [message] : [];
+              hiddenTokens.push(...words.filter((word) => word.length > 0));
+            });
+            rpc.reply(msg.id, { answers: codexAnswers(params.questions, questions, behavior, message, source, perQuestion) });
           } else if (reply) {
             const allowed = behavior === "allow";
             rpc.reply(msg.id, permissionReply(allowed, source));
@@ -1148,6 +1188,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           choices: isQuestion
             ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).slice(0, 5)
             : undefined,
+          ...(isQuestion && questions ? { questions } : {}),
         });
       }
 
@@ -1171,6 +1212,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             providerThreadId: params.threadId, providerTurnId: params.turnId, itemId: item.id,
           },
         });
+        // every question for the card, which answers them in one string
+        // here: there is no call to take them one by one
+        const questions = readQuestions(item);
         emit({
           ...envelope(threadId, turnId),
           type: "request.opened",
@@ -1179,6 +1223,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           tool: "ask_user",
           summary: question.summary,
           choices: question.choices,
+          ...(questions ? { questions } : {}),
           async: true,
         });
         // One nobody ever answers is let go of, the oldest first, and its
@@ -2045,7 +2090,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             });
             throw new Error("no such pending request");
           }
-          answer(decision.behavior, decision.message);
+          answer(decision.behavior, decision.message, "user", true, decision.answers);
         },
 
         // The agent taking back a question it asked without waiting, the

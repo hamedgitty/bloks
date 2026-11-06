@@ -54,6 +54,18 @@ export interface OptionCardData {
   options: string[];
   answered?: string;
   dismissed?: boolean;
+  /** An engine's question, every question of its ask in order, each with
+   * its own options (server/harness/ask-questions.ts). The subtitle and
+   * options above stay the first question's, with "(+N more)" when there
+   * are others, for a client that reads only those. */
+  questions?: import("./harness/ask-questions.ts").AskQuestion[];
+  /** What the agent said in this turn just before asking, so the card can
+   * be answered without scrolling up to find out what it is about. Only
+   * ever its own words, and only when it said some. */
+  agentSaid?: string;
+  /** The answers the person sent, one per question, once the engine has
+   * them. A secret's is never kept, only that it was given. */
+  answers?: import("./harness/ask-questions.ts").AskAnswers;
   /** Set when the agent is genuinely blocked on this card. Its absence
    * means the card is a setup question, which can be ignored. */
   requestId?: string;

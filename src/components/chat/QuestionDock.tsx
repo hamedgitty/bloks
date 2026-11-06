@@ -10,6 +10,8 @@
 //
 // Several at once are a stack with a height of its own, scrolled inside,
 // so a run of questions never pushes the conversation off the screen.
+// It is tall enough for one ask of several questions, with what the
+// agent said before it, to show its Next without scrolling on a laptop.
 // Each card is keyed by its message, so one arriving or one answered
 // leaves the others, and whatever is typed into them, as they were.
 import type { Message } from "@/state/store";
@@ -28,7 +30,7 @@ export function QuestionDock({ botId, questions }: { botId: string; questions: r
         <div
           role="region"
           aria-label={t("optionCard.questionsWaiting")}
-          className="-ml-1 -mr-[11px] flex max-h-[min(40vh,420px)] flex-col gap-2 overflow-y-auto overscroll-contain px-1 pb-1 [scrollbar-gutter:stable]"
+          className="-ml-1 -mr-[11px] flex max-h-[min(50vh,480px)] flex-col gap-2 overflow-y-auto overscroll-contain px-1 pb-1 [scrollbar-gutter:stable]"
         >
           {questions.map((m) => (
             <div key={m.id} data-question-dock={m.id} className="shrink-0">

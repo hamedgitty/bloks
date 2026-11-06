@@ -142,6 +142,7 @@ import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.t
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { answersText, keptAnswers, readAnswers, type AskAnswers, type AskQuestion } from "./harness/ask-questions.ts";
 import { COLORS as BLOK_COLORS, MAX_TASKS, ownerLanes, shapeOf, Store, type AgentNote, type BlokColor, type BotRecord, type DroppedWhy, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
 import { addressees, audienceOf, BlokStore, currentSpend, DEFAULT_SHARING, leadOf, MAX_MEMBERS, ranksForExport, type BlokRecord, type RoomSharing } from "./bloks.ts";
 import { answersOf, pickAnswerers, RECENT_LINES, roomAnswers, routeWords, type RoomAnswers, type RoomRoute, type RouteLine } from "./room-route.ts";
@@ -4993,6 +4994,11 @@ type Answerer =
   | { kind: "member"; personId: string; name: string; text: string; room?: { id: string; limited: boolean } }
   | { kind: "delegate"; delegate: TelegramSender; chatId: number; generation: string };
 const answeredBy = new Map<string, Answerer>();
+/** The questions each live question asked, which the answers a card
+ * sends are read against (/respond), and the answers sent, kept on the
+ * card once its engine has them (the request.resolved case). */
+const askQuestions = new Map<string, AskQuestion[]>();
+const sentAnswers = new Map<string, AskAnswers>();
 /** Cards sent to the Telegram chat of a person with full access, which
  * only they can answer from there (GitHub 320). */
 const telegramDelegateAsks = new Map<string, { delegate: TelegramSender; chatId: number; generation: string }>();
@@ -5015,6 +5021,8 @@ function forgetAsk(requestId: string) {
   askTargets.delete(requestId);
   answeredBy.delete(requestId);
   telegramDelegateAsks.delete(requestId);
+  askQuestions.delete(requestId);
+  sentAnswers.delete(requestId);
 }
 
 /** What a card says under its question once it closed with nobody having
@@ -5072,6 +5080,8 @@ function openQuestions(botId: string) {
       id: message.id,
       question: card.subtitle || card.title,
       choices: card.options,
+      // the rest of an ask of several, which the line above counts
+      ...(card.questions && card.questions.length > 1 ? { questions: card.questions.map((q) => ({ question: q.question, choices: q.options.map((o) => o.label) })) } : {}),
       askedAt: new Date(message.at).toISOString(),
       ...(room ? { room: { id: room.id, name: room.name } } : { conversation: { taskId: lane, title: store.taskByThread(lane)?.task.title } }),
     });
@@ -5797,11 +5807,17 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         }
       }
 
+      // A question carries every question of its ask, and the words the
+      // agent said just before asking, for the card to show (ask-questions.ts).
+      const questions = asking && event.questions?.length ? event.questions : undefined;
+      const agentSaid = asking ? wordsBeforeAsking(roomId, inRoom ? bot.id : undefined, questions) : undefined;
       const message = pushMessage({
         role: "bot",
         kind: "options",
         ...(telegramGroup ? { telegramGroup } : {}),
         card: {
+          ...(questions ? { questions } : {}),
+          ...(agentSaid ? { agentSaid } : {}),
           // An engine's own question tool arrives labelled a permission,
           // because what it literally asks is whether it may ask. Read
           // it as the question it is, or the card says "Approval needed"
@@ -5837,6 +5853,8 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         }
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
+        // and are read against the questions it asked (/respond)
+        if (questions) askQuestions.set(event.requestId, questions);
         if (event.providerInstanceId) askEngineByRequest.set(event.requestId, event.providerInstanceId);
         // a question that did not wait, which its agent may withdraw, and
         // the engine that asked it, never one standing in for it
@@ -5953,10 +5971,12 @@ async function onRuntimeEvent(event: RuntimeEvent) {
             habits.note({ at: now, ...target, answer: event.behavior }, now);
             broadcast({ kind: "suggestions" });
           }
+          // what the person answered, for the card's settled line to open to
+          const kept = event.source === "user" && event.behavior === "answer" && event.requestId ? sentAnswers.get(event.requestId) : undefined;
           const patched = store.patchMessage(cardThread, messageId, {
             card:
               event.source === "user"
-                ? { ...existing.card, answered: event.behavior, dismissed: false, ...(decider ? { answeredBy: decider } : {}) }
+                ? { ...existing.card, answered: event.behavior, dismissed: false, ...(decider ? { answeredBy: decider } : {}), ...(kept ? { answers: kept } : {}) }
                 : // Nobody answered: a timeout, the turn's end, the engine
                   // or the agent withdrawing it closed it. It stays in the
                   // conversation and says which.
@@ -21242,6 +21262,34 @@ function agentSaidLast(laneId: string): string | undefined {
   return undefined;
 }
 
+/** How much of what the agent said a question's card keeps: the card
+ * shows three lines of it and opens to the rest. */
+const MAX_AGENT_SAID_CHARS = 4_000;
+
+/**
+ * What the agent said in this turn just before it asked, for the
+ * question's card: its own latest words since the person last spoke,
+ * and only ones no earlier card already carried. Undefined when it said
+ * nothing first, or only the question itself, since the card never
+ * makes up context it was not given. In a room, `from` is the agent:
+ * anyone else's words are not what it is asking about.
+ */
+function wordsBeforeAsking(thread: string, from: string | undefined, questions?: readonly AskQuestion[]): string | undefined {
+  const said = store.messagesFor(thread);
+  for (let i = said.length - 1; i >= 0; i--) {
+    const m = said[i];
+    if (m.deleted || m.queued || m.quiet) continue;
+    if (m.role === "user" || (from !== undefined && m.from !== from)) return undefined;
+    // an earlier ask in the same turn had these words already
+    if (m.kind === "options") return undefined;
+    if (m.role !== "bot" || (m.kind ?? "text") !== "text" || !m.text?.trim()) continue;
+    const text = m.text.trim();
+    const only = (questions ?? []).some((q) => q.question.trim() === text);
+    return only ? undefined : clamp(text, MAX_AGENT_SAID_CHARS);
+  }
+  return undefined;
+}
+
 /** The agent's own engine, when the person asked for a model to be
  * consulted (`delivery.askModel`) and that engine has a small one: the
  * words go nowhere they were not already going, and it is quick enough
@@ -29454,15 +29502,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const askThread = askThreadByRequest.get(requestId) ?? bot.threadId;
       const instance = askInstance(bot, askThread, requestId);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
+      // A question of several is answered one per question. A client
+      // that knows only one answer (a phone, an older window) sends a
+      // message, which answers the first and leaves the rest unanswered
+      // (server/harness/ask-questions.ts). Either way the engine also
+      // gets one string for whatever reads one: the answers as lines,
+      // a secret's left out.
+      const asked = askQuestions.get(requestId);
+      const answers = body.behavior === "answer" && asked ? readAnswers(body.answers, asked) : undefined;
+      const message = answers ? answersText(asked!, keptAnswers(asked!, answers)) : body.message;
       try {
         if (!live) throw new Error("not a live ask");
         // so a copy of the card on a phone can say what was chosen here
-        if (body.behavior === "answer" && typeof body.message === "string") telegramCards.expect(requestId, body.message);
+        if (body.behavior === "answer" && typeof message === "string") telegramCards.expect(requestId, message);
         // the owner's own app, which no agent's credential reaches
         answeredBy.set(requestId, { kind: "owner" });
+        // kept on the card once the engine has them, which is when the
+        // card settles (the request.resolved case)
+        if (asked && body.behavior === "answer") {
+          const one = clamp(body.message, MAX_MESSAGE_CHARS);
+          const sent = answers ?? (one ? [[one]] : undefined);
+          if (sent) sentAnswers.set(requestId, keptAnswers(asked, sent));
+        }
         await instance.adapter.respondToRequest(askThread, requestId, {
           behavior: body.behavior,
-          message: body.message,
+          message,
+          ...(answers ? { answers } : {}),
         });
         // and the turn it was asked in, ending straight after, is no news
         // to someone who just answered it (server/answer-ready.ts)

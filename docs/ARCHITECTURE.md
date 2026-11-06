@@ -4288,6 +4288,38 @@ note, so the agent asks for the access instead of reading it as Bloks
 being down (GitHub 251). A workspace that is not running answers
 `nothing is answering at <address>` instead.
 
+## Questions of several
+
+An engine can put several questions in one ask: Claude Code's own
+AskUserQuestion takes up to four (each with a short header, options with
+descriptions, and `multiSelect`), and Codex's `requestUserInput` a list
+whose questions each say whether words are an answer (`isOther`) and
+whether they are secret. `server/harness/ask-questions.ts` reads either,
+and Bloks' own `ask_user`, into one shape, and the drivers put it on
+`request.opened` as `questions`. The card keeps it beside the fields it
+always had: `subtitle` is still the first question with "(+N more)" and
+`options` its choices, because the iPhone app and older windows read only
+those. It also carries `agentSaid`, the agent's own last words in that
+turn before it asked (never an earlier turn's, never another speaker's
+in a room, and none when it said nothing first).
+
+The app steps through the questions on one card (`OptionCard.tsx`,
+`src/lib/askSteps.ts`) and answers with `answers` on
+`POST /api/bots/:id/respond`, one list of strings per question.
+The server checks them against the ask (no more lists than questions,
+one answer for a single choice, every string bounded) and hands them to
+the engine in its own structure: Claude Code's `answers` keyed by
+question text, several picks joined with commas; Codex's answers keyed by
+question id. A client that sends only `message` answers the first
+question, and the others go unanswered: Claude Code reads a note in
+`annotations` saying they were not shown, Codex reads the same note as
+their answer. Timeouts, a put aside card and the turn ending still say
+the same thing to every question. Once the engine has them the card keeps
+the answers (`answers`), for its answered line to open to; a secret
+question's answer is never kept there, nor said in a conversation, and
+Codex's native log redacts it. Feature `question-steps` says a server
+takes `answers`.
+
 ## Reasoning effort
 
 An agent's `effort` is `off`, `low`, `medium`, `high`, `xhigh` or `max`

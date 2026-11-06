@@ -36,6 +36,7 @@ import { randomUUID } from "node:crypto";
 
 import { readJsonLines } from "./ndjson.ts";
 import { PERSON_REPLY_TOOL, personReplyText } from "./person-turn.ts";
+import { NOT_SHOWN } from "./harness/ask-questions.ts";
 
 /** What the broker is told when it is not there to be told anything. The
  * wording is aimed at the model, not the user: it should give up on this
@@ -185,21 +186,32 @@ function proposedRules(args: any): unknown[] | null {
 /** What a question is told when the person gave it no words. */
 const NO_ANSWER = "No answer was given. Use your best judgment.";
 
-/** For the questions a card did not show. The wording is aimed at the
- * model, which can put each one to the person by itself. */
-const NOT_SHOWN = "Not shown to the person: Bloks puts one question on a card. Ask this one on its own.";
-
-/** The CLI's own question tool reads the person's reply from `answers`
- * in its input, each against the question it answers. The card shows the
- * first question and its choices, so the reply is that one's. Any others
- * are told they were not asked, where the same words against all of them
- * would answer questions the person never saw. */
-function withAnswers(input: any, said: string) {
+/**
+ * The CLI's own question tool reads the person's reply from `answers` in
+ * its input: question text to answer, several picks of one question
+ * joined with commas, and a question left out is one nobody answered.
+ *
+ * A card that sent an answer per question is taken at its word, in the
+ * order the questions were asked. One that sent a single string (a
+ * phone, an older window, a chat) showed only the first question, so the
+ * string is that one's and the others go unanswered, where the same
+ * words against all of them would answer questions the person never saw.
+ * Each of those carries a note saying why, in `annotations`, which the
+ * CLI reads out beside a question left unanswered.
+ */
+function withAnswers(input: any, said: string, perQuestion?: unknown) {
   const answers: Record<string, string> = {};
+  const notes: Record<string, { notes: string }> = {};
+  const given = Array.isArray(perQuestion) ? perQuestion : null;
   input.questions.forEach((asked: any, i: number) => {
-    if (typeof asked?.question === "string") answers[asked.question] = i === 0 ? said : NOT_SHOWN;
+    if (typeof asked?.question !== "string") return;
+    if (given) {
+      const picked = (Array.isArray(given[i]) ? given[i] : []).filter((item: unknown): item is string => typeof item === "string" && item.trim() !== "");
+      if (picked.length) answers[asked.question] = picked.join(", ");
+    } else if (i === 0) answers[asked.question] = said;
+    else notes[asked.question] = { notes: NOT_SHOWN };
   });
-  return { ...input, answers };
+  return { ...input, answers, ...(Object.keys(notes).length ? { annotations: { ...input.annotations, ...notes } } : {}) };
 }
 
 /** The `--permission-prompt-tool` reply, as a string, because the contract
@@ -213,7 +225,7 @@ function permissionVerdict(reply: any, args: any): string {
     const said = reply.message || NO_ANSWER;
     return JSON.stringify(
       Array.isArray(args.input?.questions)
-        ? { behavior: "allow", updatedInput: withAnswers(args.input, said) }
+        ? { behavior: "allow", updatedInput: withAnswers(args.input, said, reply.answers) }
         : { behavior: "deny", message: `Answered in Bloks instead: ${said}` },
     );
   }

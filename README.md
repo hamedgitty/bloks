@@ -384,6 +384,12 @@ file or a `bloks://install?url=` link through the same review, and use
   box, and yours can be moved: drag one by its handle, pick Move up or
   Move down from the handle's menu, or press Option (Alt) and an arrow.
   Rooms work the same way.
+- **Several questions, one card.** When an agent asks a few things at
+  once, the card steps through them: each question with its own choices
+  (one or several), room for your own words, Back and Next, and Send
+  answers at the end. It shows what the agent said just before asking,
+  so you never scroll up to find out what it is about, and once sent it
+  settles into one line that opens to every answer.
 - **Questions that do not hold the turn.** A Codex agent can ask you
   something and carry on. When you settle it some other way, the agent
   takes its own question back (`bloks questions`, `bloks unask`) and the

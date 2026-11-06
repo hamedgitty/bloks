@@ -10,6 +10,7 @@ import type { BlokColor, BlokExpression, BlokShape } from "@/lib/mascot";
 import type { LaneContext } from "@/lib/contextCard";
 import type { CodexSpeed, CodexSpeedStatus } from "@/lib/codexSpeed";
 import type { Effort } from "@/lib/effort";
+import type { StepQuestion } from "@/lib/askSteps";
 import type { HearingStatus } from "@/lib/hearing";
 import type { RoomAnswers, RoomRoute } from "@/lib/roomRoute";
 import type { Workplace, WorkplaceStatus } from "@/lib/workplace";
@@ -46,6 +47,13 @@ export interface OptionCardData {
   subtitle: string;
   options: string[];
   answered?: string;
+  /** An engine's question: every question of its ask, which the card
+   * steps through. Title, subtitle and options stay the first one's. */
+  questions?: StepQuestion[];
+  /** What the agent said just before asking, shown on the card. */
+  agentSaid?: string;
+  /** What was answered, one list per question; a secret's left empty. */
+  answers?: string[][];
   /** In a shared room, the collaborator who answered, when it was not you. */
   answeredBy?: string;
   /** Asked by a turn that was cut off when Bloks stopped; it can no
@@ -1089,7 +1097,7 @@ export type Action =
   /** `lane` opens that conversation; without it, the one that pinged. */
   | { type: "select"; id: string; lane?: string }
   | { type: "send"; botId: string; text: string; replyTo?: Message["replyTo"]; stopFirst?: boolean; delivery?: "now" | "wait"; onFailed?: () => void }
-  | { type: "answerCard"; botId: string; messageId: string; answer: string; roomId?: string }
+  | { type: "answerCard"; botId: string; messageId: string; answer: string; roomId?: string; answers?: string[][] }
   | { type: "dismissCard"; botId: string; messageId: string; roomId?: string }
   /** An answer that did not go: the card can be answered again. */
   | { type: "cardReopened"; botId: string; messageId: string; roomId?: string }
@@ -1416,11 +1424,11 @@ export function reducer(state: AppState, action: Action): AppState {
     // settle the card locally now; the server's own patch arrives a
     // moment later saying the same thing
     case "answerCard":
-      return patchCard(state, action.botId, action.messageId, { answered: action.answer }, action.roomId);
+      return patchCard(state, action.botId, action.messageId, { answered: action.answer, ...(action.answers ? { answers: action.answers } : {}) }, action.roomId);
     case "dismissCard":
       return patchCard(state, action.botId, action.messageId, { dismissed: true }, action.roomId);
     case "cardReopened":
-      return patchCard(state, action.botId, action.messageId, { answered: undefined }, action.roomId);
+      return patchCard(state, action.botId, action.messageId, { answered: undefined, answers: undefined }, action.roomId);
     case "hireTeam":
       return patchCard(state, action.botId, action.messageId, { answered: "Hire the team" });
     case "botAdded":

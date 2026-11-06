@@ -184,4 +184,11 @@ export const FEATURES: readonly string[] = [
   // whether the person is using Bloks on it right now, and while one does
   // their phones are not woken and no Live Activity starts on them
   "presence",
+  // an engine question's card carries `questions` (every question of the
+  // ask, each with its options, header, multiple and free), `agentSaid`
+  // (what the agent said just before asking) and, once answered,
+  // `answers`; POST /api/bots/:id/respond takes `answers`, one list of
+  // strings per question. Without it, a message answers the first
+  // question only (server/harness/ask-questions.ts)
+  "question-steps",
 ];
