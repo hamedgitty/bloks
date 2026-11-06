@@ -785,6 +785,9 @@ export interface InstanceInfo {
     reason?: string;
     authenticated?: boolean;
     version?: string | null;
+    /** Why its last look at its model list came back without one, in the
+     * provider's words. Settings shows it on a custom endpoint, with Retry. */
+    catalogError?: string;
   };
   /** The effort levels the engine takes, least first; empty for one with
    * no dial. Absent from a server from before they were per engine. */

@@ -86,6 +86,51 @@ const ROUND_TIMEOUT_MS = 5 * 60_000;
 
 /** How long a fetched model list is trusted before we look again. */
 const CATALOG_TTL_MS = 10 * 60_000;
+/** How long a model list that could not be had is left before the next
+ * look, so a host that refuses it is not asked again on every glance at
+ * the picker. Retry in Settings does not wait for it. */
+const CATALOG_RETRY_MS = 60_000;
+/** How long the model list may take. */
+const CATALOG_TIMEOUT_MS = 8_000;
+
+/**
+ * A provider's own short words about a request it refused, from the JSON
+ * body when there is one: OpenAI's `error.message` (which most gateways
+ * copy), Anthropic's, a bare `error` or `message`, FastAPI's `detail`.
+ * A page of HTML is nobody's words. One line, and short, since it is
+ * shown on a settings row; empty when there is nothing worth showing.
+ */
+export function providerSaid(body: string): string {
+  let said = "";
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  try {
+    const parsed = JSON.parse(body) as any;
+    const error = parsed?.error;
+    const detail = parsed?.detail;
+    said =
+      text(error) ||
+      text(error?.message) ||
+      text(parsed?.message) ||
+      text(detail) ||
+      (Array.isArray(detail) ? text(detail[0]?.msg) : "") ||
+      (Array.isArray(parsed?.errors) ? text(parsed.errors[0]?.message) : "");
+  } catch {
+    said = /^\s*</.test(body) ? "" : body;
+  }
+  // eslint-disable-next-line no-control-regex
+  const line = said.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return line.length > 200 ? `${line.slice(0, 199).trimEnd()}…` : line;
+}
+
+/** Ends with a full stop unless it already ends a sentence. */
+const sentence = (words: string) => (/[.!?…]$/.test(words) ? words : `${words}.`);
+
+/** What a model list that was refused says: the status, then the
+ * provider's own words. "HTTP 400. anthropic-version: header is required." */
+export function catalogFailure(status: number, body: string): string {
+  const said = providerSaid(body);
+  return `HTTP ${status}.${said ? ` ${sentence(said)}` : ""}`;
+}
 
 /** Turns "meta-llama/llama-4-maverick" into "Llama 4 Maverick". */
 function labelFor(id: string): string {
@@ -602,11 +647,18 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       // reads .models straight after awaiting snapshot()
       const models: ModelCatalog = { default: spec.models.default, options: [...spec.models.options] };
       let catalogAt = 0;
+      /** When the last look at the model list failed, so the next waits. */
+      let failedAt = 0;
       let refreshing: Promise<void> | null = null;
       /** Set when the provider told us the credential is no good. A key
        * with a typo used to read as connected right up until the first
        * message failed. */
       let rejected: string | null = null;
+      /** Why the last look at the model list came back without one: the
+       * status and the provider's own words. A host that needs a header
+       * Bloks did not send (GitHub 486) used to leave an empty picker and
+       * say nothing at all. Null once a list arrives. */
+      let catalogError: string | null = null;
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
@@ -653,24 +705,49 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         return res;
       };
 
+      /** The provider's words with every credential this instance sends
+       * taken out: some echo a key back in the message that refuses it. */
+      const scrubbed = (words: string) => {
+        let out = words;
+        for (const secret of [apiKey]) if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+        return out;
+      };
+      const failed = (why: string) => {
+        catalogError = scrubbed(why);
+        failedAt = Date.now();
+      };
+
       const refreshCatalog = () => {
         if (refreshing) return refreshing;
         refreshing = (async () => {
           try {
             const res = await send(`${config.url}/models`, {
-              signal: AbortSignal.timeout(8_000),
+              signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
             });
-            // 401/403 is the provider saying the key is wrong; a 404 just
-            // means it does not publish a model list, which is fine
+            // 401/403 is the provider saying the key is wrong
             rejected = res.status === 401 || res.status === 403 ? "that key was rejected" : null;
-            if (!res.ok) return;
+            if (!res.ok) {
+              // Kept with the provider's own words, whatever the status: a
+              // 404 from a host that publishes no list is harmless where
+              // the spec has a list of its own, and the whole reason a
+              // custom host has nothing to offer where it has none.
+              failed(catalogFailure(res.status, await res.text().catch(() => "")));
+              return;
+            }
             // the catalog is the spec's, and what was listed goes unread
             if (spec.fixedModels) {
               await res.body?.cancel().catch(() => {});
               catalogAt = Date.now();
+              catalogError = null;
               return;
             }
-            const json: any = await res.json();
+            let json: any;
+            try {
+              json = await res.json();
+            } catch {
+              failed("The model list was not JSON.");
+              return;
+            }
             const rows: any[] = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
             // OpenRouter says which models take tools; others say nothing,
             // and then nothing is filtered on it.
@@ -695,14 +772,26 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               toolCapable,
               created.size ? created : undefined,
             );
-            if (next) {
-              models.default = next.default;
-              models.options = next.options;
+            if (!next) {
+              // a list with nothing in it an agent can talk to
+              failed("It listed no chat models.");
+              return;
             }
+            models.default = next.default;
+            models.options = next.options;
             catalogAt = Date.now();
-          } catch {
-            // provider does not expose /models, or the network is down.
-            // The spec's list stays, which is the whole point of having one.
+            catalogError = null;
+          } catch (error) {
+            // The provider does not answer, or the network is down. The
+            // spec's list stays, which is the whole point of having one,
+            // and the reason is kept for a host that has none.
+            const name = (error as Error)?.name;
+            if (error instanceof CreditsEmpty) failed(error.message);
+            else if (name === "TimeoutError" || name === "AbortError") failed(`No answer in ${CATALOG_TIMEOUT_MS / 1000} seconds.`);
+            else {
+              const code = (error as { cause?: { code?: unknown } })?.cause?.code;
+              failed(`Could not reach it${typeof code === "string" && /^[A-Z_]+$/.test(code) ? ` (${code})` : ""}.`);
+            }
           } finally {
             refreshing = null;
           }
@@ -1268,10 +1357,10 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           const problem = access?.problem();
           return { state: "unavailable", reason: problem ?? `${spec.name} is not connected. ${spec.keyHint}.` };
         }
-        if (Date.now() - catalogAt > CATALOG_TTL_MS) {
+        if (Date.now() - catalogAt > CATALOG_TTL_MS && Date.now() - failedAt > CATALOG_RETRY_MS) {
           // Wait a beat on the first look so the picker opens with real
           // model names, then never block on it again.
-          const first = catalogAt === 0;
+          const first = catalogAt === 0 && failedAt === 0;
           const refresh = refreshCatalog();
           if (first) await Promise.race([refresh, new Promise((r) => setTimeout(r, 2_500))]);
         }
@@ -1284,10 +1373,17 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             return { state: "unavailable", reason: `${spec.name} is not running on this machine` };
           }
         }
+        const said = catalogError ? { catalogError } : {};
         if (rejected) {
-          return { state: "unavailable", reason: access?.problem() ?? `${spec.name}: ${rejected}. ${spec.keyHint}.` };
+          return { state: "unavailable", reason: access?.problem() ?? `${spec.name}: ${rejected}. ${spec.keyHint}.`, ...said };
         }
-        return { state: "available", authenticated: needsKey ? true : undefined, version: null };
+        // Nothing to pick and a reason why: not ready, and saying so. With
+        // a list from before, or the spec's own, it still works, and the
+        // reason rides along for Settings to show beside its Retry.
+        if (catalogError && !models.options.length) {
+          return { state: "unavailable", reason: `Couldn't load models: ${catalogError}`, ...said };
+        }
+        return { state: "available", authenticated: needsKey ? true : undefined, version: null, ...said };
       };
 
       return {
@@ -1297,6 +1393,13 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         enabled: input.enabled,
         models,
         snapshot,
+        // Retry in Settings: a look now, past the wait after a failure,
+        // finished before the answer goes back
+        refreshCatalog: async () => {
+          await refreshing;
+          failedAt = 0;
+          await refreshCatalog();
+        },
         adapter: {
           provider: spec.kind,
           // The cloud box is the one screen the tool loop reaches, as a

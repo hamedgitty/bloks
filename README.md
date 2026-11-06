@@ -706,6 +706,10 @@ Bloks's own engine; Claude Code always uses your own Claude plan or key.
 A custom endpoint is chat only until you turn on **This model can use
 tools** for it in Settings. Turn it on only when the model behind it
 supports tool calls; if the host refuses them, the turn stops and says so.
+If a custom endpoint's model list cannot be loaded, its row in Settings
+says why in the host's own words (for example "Couldn't load models: HTTP
+400. anthropic-version: header is required.") with **Retry**, and it is
+not offered as ready until a list arrives.
 
 An agent's own browser and its computer (Cloud box, Local VM, or this
 Mac's screen) reach it as tools on Claude Code, on Codex, and on the ACP

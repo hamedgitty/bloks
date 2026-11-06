@@ -83,6 +83,16 @@ every lab now answers `/chat/completions`, so providers are data in
 harness hands them the folded history each turn. They stream text but
 they do not run tools.
 
+Their model lists come from `GET /models`. A list that cannot be had
+keeps the status and the provider's own words (`catalogError` on the
+snapshot, with any key the provider echoed taken out), and is looked at
+again after a minute rather than on every snapshot. An engine left with
+nothing to pick, which is a custom endpoint, since it has no list of its
+own, reports itself unavailable for it; one with a list from before, or
+the spec's, keeps working and carries the reason. Settings shows it on a
+custom endpoint with Retry (`POST /api/custom-endpoints/:id/models`,
+which calls the instance's `refreshCatalog`).
+
 **The browser and the computer.** Each driver says which of the agent's
 own browser and its computers (the cloud box, the Local VM, this Mac's
 screen) it hands its engine (`capabilities.screens`, `server/screens.ts`).

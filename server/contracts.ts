@@ -543,6 +543,12 @@ export interface ProviderSnapshot {
   reason?: string;
   authenticated?: boolean;
   version?: string | null;
+  /** Why the engine's last look at its model list came back without
+   * one, as the provider said it: "HTTP 400. anthropic-version: header
+   * is required." Absent once a list arrives. An engine with nothing to
+   * pick because of it is unavailable; one with a list from before, or a
+   * fallback, still works and carries it for Settings to show. */
+  catalogError?: string;
 }
 
 // ── what a plan has left ───────────────────────────────────────────────
@@ -636,6 +642,11 @@ export interface ProviderInstance {
   /** Resolves when a deferred catalog probe has finished, if this engine
    * has one. The picker loads before that, so the harness refetches. */
   catalogReady?: Promise<void>;
+  /** Looks at the provider's model list again now, past any cache or
+   * wait after a failure, and resolves once it has. Settings' Retry on
+   * an endpoint whose list could not be had. Only an engine that fetches
+   * its list has it. */
+  refreshCatalog?(): Promise<void>;
   /** Read-only native skill discovery. Paths are server-only. */
   skills?(cwd: string): Promise<import("./codex-skills.ts").CodexSkill[] | null>;
   snapshot(): Promise<ProviderSnapshot>;

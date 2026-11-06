@@ -8,8 +8,14 @@
 // A host is chat only until the person says its model can use tools.
 // Whether it can depends on what is loaded there, which only they know,
 // so the switch is theirs and the row says plainly which way it is set.
+//
+// A host whose model list could not be had says why on its row, in the
+// provider's own words, with Retry beside it (GitHub 486). An empty
+// picker with no reason was the whole of what a person saw before.
 import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle } from "@/components/icons";
 import { Check } from "@/components/icons";
+import { Loader2 } from "@/components/icons";
 import { Plus } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { api, useStore } from "@/state/store";
@@ -73,6 +79,20 @@ function SeesImages({ on, onChange }: { on: boolean; onChange: (on: boolean) => 
   );
 }
 
+/** Why the host's model list could not be had, and the way to look again. */
+function CatalogProblem({ said, retrying, onRetry }: { said: string; retrying: boolean; onRetry: () => void }) {
+  return (
+    <div role="status" className="mt-2 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2">
+      <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+      <span className="min-w-0 flex-1 break-words text-body text-foreground">{t("customEndpoints.couldntLoadModels", { reason: said })}</span>
+      <Button variant="secondary" size="sm" onClick={onRetry} disabled={retrying} className="-my-0.5 shrink-0">
+        {retrying && <Loader2 size={13} className="animate-spin" />}
+        {t("customEndpoints.retry")}
+      </Button>
+    </div>
+  );
+}
+
 function refreshInstances(dispatch: ReturnType<typeof useStore>["dispatch"]) {
   api("/api/instances")
     .then(({ instances }) => dispatch({ type: "instances", instances }))
@@ -80,7 +100,8 @@ function refreshInstances(dispatch: ReturnType<typeof useStore>["dispatch"]) {
 }
 
 export function CustomEndpoints() {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
+  const [retrying, setRetrying] = useState<string | null>(null);
   const [endpoints, setEndpoints] = useState<CustomEndpointRow[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
@@ -158,6 +179,21 @@ export function CustomEndpoints() {
       });
   };
 
+  // the answer carries every engine as it now stands, so the row, the
+  // picker and the engine list all move together
+  const retry = (id: string) => {
+    if (retrying) return;
+    setRetrying(id);
+    setError(null);
+    api(`/api/custom-endpoints/${id}/models`, { method: "POST" })
+      .then(({ endpoints: rows, instances }) => {
+        setEndpoints(rows);
+        if (Array.isArray(instances)) dispatch({ type: "instances", instances });
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setRetrying(null));
+  };
+
   const addKey = (id: string) => {
     if (busy || !extraKey.trim()) return;
     setBusy(true);
@@ -198,124 +234,129 @@ export function CustomEndpoints() {
         </div>
       </div>
 
-      {(endpoints ?? []).map((endpoint) => (
-        <div key={endpoint.id} className="border-t px-4 py-3">
-          <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate text-ui font-medium text-foreground">{endpoint.name}</span>
-                {!endpoint.tools && <span className="shrink-0 text-caption text-muted-foreground">{t("customEndpoints.chatOnly")}</span>}
+      {(endpoints ?? []).map((endpoint) => {
+        const problem = state.instances.find((instance) => instance.instanceId === endpoint.instanceId)?.snapshot.catalogError;
+        return (
+          <div key={endpoint.id} className="border-t px-4 py-3">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-ui font-medium text-foreground">{endpoint.name}</span>
+                  {!endpoint.tools && <span className="shrink-0 text-caption text-muted-foreground">{t("customEndpoints.chatOnly")}</span>}
+                </div>
+                <div className="truncate text-small text-muted-foreground">{endpoint.url}</div>
               </div>
-              <div className="truncate text-small text-muted-foreground">{endpoint.url}</div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  void api(`/api/custom-endpoints/${endpoint.id}`, { method: "DELETE" })
+                    .then(({ endpoints: rows }) => apply(rows))
+                    .catch((e: Error) => setError(e.message))
+                }
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+              >
+                {t("common.remove")}
+              </Button>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() =>
-                void api(`/api/custom-endpoints/${endpoint.id}`, { method: "DELETE" })
-                  .then(({ endpoints: rows }) => apply(rows))
-                  .catch((e: Error) => setError(e.message))
-              }
-              className="shrink-0 text-muted-foreground hover:text-destructive"
-            >
-              {t("common.remove")}
-            </Button>
-          </div>
 
-          <div className="mt-2 space-y-2">
-            <ToolsSwitch on={endpoint.tools} onChange={(on) => switchTools(endpoint.id, on)} />
-            <SeesImages on={endpoint.vision === true} onChange={(on) => switchVision(endpoint.id, on)} />
-          </div>
+            {problem && <CatalogProblem said={problem} retrying={retrying === endpoint.id} onRetry={() => retry(endpoint.id)} />}
 
-          <div className="mt-2 flex flex-col gap-1">
-            {endpoint.keys.map((cred, index) => (
-              <div key={cred.id} className="flex items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1.5">
-                <span
-                  className={cn("size-1.5 rounded-full", cred.active ? "bg-success" : "bg-muted-foreground/30")}
-                />
-                <span className="min-w-0 flex-1 truncate text-body text-foreground">
-                  {cred.label || (endpoint.keys.length > 1 ? t("customEndpoints.keyNumber", { number: index + 1 }) : t("customEndpoints.apiKey"))}
-                  {cred.active && (
-                    <span className="ml-1.5 text-caption font-normal text-success">{t("customEndpoints.inUse")}</span>
+            <div className="mt-2 space-y-2">
+              <ToolsSwitch on={endpoint.tools} onChange={(on) => switchTools(endpoint.id, on)} />
+              <SeesImages on={endpoint.vision === true} onChange={(on) => switchVision(endpoint.id, on)} />
+            </div>
+
+            <div className="mt-2 flex flex-col gap-1">
+              {endpoint.keys.map((cred, index) => (
+                <div key={cred.id} className="flex items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1.5">
+                  <span
+                    className={cn("size-1.5 rounded-full", cred.active ? "bg-success" : "bg-muted-foreground/30")}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-body text-foreground">
+                    {cred.label || (endpoint.keys.length > 1 ? t("customEndpoints.keyNumber", { number: index + 1 }) : t("customEndpoints.apiKey"))}
+                    {cred.active && (
+                      <span className="ml-1.5 text-caption font-normal text-success">{t("customEndpoints.inUse")}</span>
+                    )}
+                  </span>
+                  {!cred.active && (
+                    <button
+                      onClick={() =>
+                        void api(`/api/custom-endpoints/${endpoint.id}/keys/${cred.id}/use`, {
+                          method: "POST",
+                        })
+                          .then(({ endpoints: rows }) => apply(rows))
+                          .catch((e: Error) => setError(e.message))
+                      }
+                      className="shrink-0 text-small text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {t("customEndpoints.use")}
+                    </button>
                   )}
-                </span>
-                {!cred.active && (
                   <button
                     onClick={() =>
-                      void api(`/api/custom-endpoints/${endpoint.id}/keys/${cred.id}/use`, {
-                        method: "POST",
+                      void api(`/api/custom-endpoints/${endpoint.id}/keys/${cred.id}`, {
+                        method: "DELETE",
                       })
                         .then(({ endpoints: rows }) => apply(rows))
                         .catch((e: Error) => setError(e.message))
                     }
-                    className="shrink-0 text-small text-muted-foreground transition-colors hover:text-foreground"
+                    title={t("customEndpoints.removeKey")}
+                    className="shrink-0 rounded-lg p-1 text-muted-foreground/60 transition-colors hover:text-destructive"
                   >
-                    {t("customEndpoints.use")}
+                    <Trash2 size={12} />
                   </button>
-                )}
-                <button
-                  onClick={() =>
-                    void api(`/api/custom-endpoints/${endpoint.id}/keys/${cred.id}`, {
-                      method: "DELETE",
-                    })
-                      .then(({ endpoints: rows }) => apply(rows))
-                      .catch((e: Error) => setError(e.message))
-                  }
-                  title={t("customEndpoints.removeKey")}
-                  className="shrink-0 rounded-lg p-1 text-muted-foreground/60 transition-colors hover:text-destructive"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
+                </div>
+              ))}
+            </div>
 
-          {keyFor === endpoint.id ? (
-            <div className="mt-2 flex flex-col gap-2">
-              <div className="flex gap-2">
+            {keyFor === endpoint.id ? (
+              <div className="mt-2 flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <Input
+                    autoFocus
+                    type="password"
+                    value={extraKey}
+                    onChange={(e) => setExtraKey(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addKey(endpoint.id);
+                      if (e.key === "Escape") setKeyFor(null);
+                    }}
+                    placeholder={t("customEndpoints.anotherKey")}
+                    autoComplete="off"
+                    className="h-8 text-body"
+                  />
+                  <Button
+                    variant="secondary"
+                    onClick={() => addKey(endpoint.id)}
+                    disabled={busy || !extraKey.trim()}
+                    className="w-[72px]"
+                  >
+                    <Check size={13} />
+                    {t("common.save")}
+                  </Button>
+                </div>
                 <Input
-                  autoFocus
-                  type="password"
-                  value={extraKey}
-                  onChange={(e) => setExtraKey(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") addKey(endpoint.id);
-                    if (e.key === "Escape") setKeyFor(null);
-                  }}
-                  placeholder={t("customEndpoints.anotherKey")}
-                  autoComplete="off"
+                  value={extraLabel}
+                  onChange={(e) => setExtraLabel(e.target.value)}
+                  placeholder={t("customEndpoints.labelOptional")}
                   className="h-8 text-body"
                 />
-                <Button
-                  variant="secondary"
-                  onClick={() => addKey(endpoint.id)}
-                  disabled={busy || !extraKey.trim()}
-                  className="w-[72px]"
-                >
-                  <Check size={13} />
-                  {t("common.save")}
-                </Button>
               </div>
-              <Input
-                value={extraLabel}
-                onChange={(e) => setExtraLabel(e.target.value)}
-                placeholder={t("customEndpoints.labelOptional")}
-                className="h-8 text-body"
-              />
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                setKeyFor(endpoint.id);
-                setError(null);
-              }}
-              className="mt-2 text-small text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {t("customEndpoints.addAnotherKey")}
-            </button>
-          )}
-        </div>
-      ))}
+            ) : (
+              <button
+                onClick={() => {
+                  setKeyFor(endpoint.id);
+                  setError(null);
+                }}
+                className="mt-2 text-small text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {t("customEndpoints.addAnotherKey")}
+              </button>
+            )}
+          </div>
+        );
+      })}
 
       {endpoints !== null && endpoints.length === 0 && !adding && (
         <div className="border-t px-4 py-3 text-body text-muted-foreground">

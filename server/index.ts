@@ -30431,6 +30431,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       await persistCustom(next);
       return json(res, 200, customCatalog());
     }
+    // Retry on an endpoint whose model list could not be had (GitHub
+    // 486): looked at again now, and answered with what it found, so the
+    // row says the new reason, or shows the models, without a reload.
+    m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/models$/);
+    if (m && method === "POST") {
+      const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
+      if (!endpoint) return json(res, 404, { error: "no such endpoint" });
+      await registry.get(customInstanceId(endpoint.id))?.refreshCatalog?.();
+      const instances = await registry.describe();
+      broadcast({ kind: "instances", instances });
+      return json(res, 200, { ...customCatalog(), instances });
+    }
     m = path.match(/^\/api\/custom-endpoints\/([\w-]+)\/keys$/);
     if (m && method === "POST") {
       const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
