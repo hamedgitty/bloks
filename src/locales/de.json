@@ -1110,7 +1110,7 @@
   "bringYourSetup.openbot.notAZip": "Wähle die .zip-Datei, die die Übertragungseinstellung von OpenBot geschrieben hat.",
   "bringYourSetup.openbot.remove": "Entfernen",
   "bringYourSetup.openbot.sending": "Wird gesendet… {percent} %",
-  "bringYourSetup.openbot.stays": "Bleibt in OpenBot: Chatverlauf und Kanäle, die in seiner Datenbank liegen; gespeicherte Anmeldungen und der Tresor, die für OpenBot verschlüsselt sind; seine Connectors, die an seine Server gebunden sind; und Browserprofile.",
+  "bringYourSetup.openbot.stays": "Bleibt in OpenBot: Chatverlauf und Kanäle, gespeicherte Anmeldungen und der Tresor, Connectors und Browserprofile.",
   "bringYourSetup.openbot.tooBig": "Diese Datei ist größer als {max}, mehr darf eine Übertragungsdatei nicht sein.",
   "bringYourSetup.openbot.transferHint": "Eine Übertragungsdatei aus den Einstellungen von OpenBot bringt auch ihre Erinnerungen, Routinen und Bilder mit.",
   "bringYourSetup.ownerAgent": "{name}, wie übernommen",

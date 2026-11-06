@@ -1110,7 +1110,7 @@
   "bringYourSetup.openbot.notAZip": "Choisis le fichier .zip écrit par le réglage de transfert d'OpenBot.",
   "bringYourSetup.openbot.remove": "Retirer",
   "bringYourSetup.openbot.sending": "Envoi… {percent} %",
-  "bringYourSetup.openbot.stays": "Reste dans OpenBot : l'historique des discussions et les canaux, gardés dans sa base de données ; les identifiants enregistrés et le coffre, chiffrés pour OpenBot ; ses connecteurs, liés à ses serveurs ; et les profils de navigateur.",
+  "bringYourSetup.openbot.stays": "Reste dans OpenBot : l'historique des discussions et les canaux, les identifiants enregistrés et le coffre, les connecteurs et les profils de navigateur.",
   "bringYourSetup.openbot.tooBig": "Ce fichier dépasse {max}, la taille maximale d'un fichier de transfert.",
   "bringYourSetup.openbot.transferHint": "Un fichier de transfert issu des réglages d'OpenBot apporte aussi leurs souvenirs, leurs routines et leurs images.",
   "bringYourSetup.ownerAgent": "{name}, tel qu'importé",

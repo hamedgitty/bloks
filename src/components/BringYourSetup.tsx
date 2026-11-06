@@ -451,7 +451,20 @@ function ItemRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <label htmlFor={id} className="flex min-w-0 cursor-pointer items-center gap-1.5">
-            <Icon size={14} className="shrink-0 text-muted-foreground" />
+            {item.kind === "agent" && item.agent?.photo ? (
+              // the face it brings, as an agent's photo looks everywhere
+              // else (AgentAvatar), asked for by the item and never a path
+              <img
+                src={`/api/setup-import/avatar?key=${encodeURIComponent(item.key)}&v=${item.agent.photo}`}
+                width={16}
+                height={16}
+                draggable={false}
+                alt=""
+                className="size-4 shrink-0 rounded-full object-cover"
+              />
+            ) : (
+              <Icon size={14} className="shrink-0 text-muted-foreground" />
+            )}
             <span className="min-w-0 truncate text-ui font-medium text-foreground">{item.title}</span>
           </label>
           <span className="text-small text-muted-foreground">{origin}</span>

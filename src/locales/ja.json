@@ -1071,7 +1071,7 @@
   "bringYourSetup.openbot.notAZip": "OpenBot の転送設定が書き出した .zip ファイルを選んでください。",
   "bringYourSetup.openbot.remove": "外す",
   "bringYourSetup.openbot.sending": "送信中… {percent}%",
-  "bringYourSetup.openbot.stays": "OpenBot に残るもの: データベースにあるチャット履歴とチャンネル、OpenBot 用に暗号化された保存済みログインと保管庫、OpenBot のサーバーに結びついたコネクタ、ブラウザのプロファイル。",
+  "bringYourSetup.openbot.stays": "OpenBot に残るもの: チャット履歴とチャンネル、保存済みログインと保管庫、コネクタ、ブラウザのプロファイル。",
   "bringYourSetup.openbot.tooBig": "このファイルは {max} を超えています。転送ファイルはそれ以下にしてください。",
   "bringYourSetup.openbot.transferHint": "OpenBot の設定から書き出した転送ファイルがあれば、記憶、ルーティン、画像も取り込めます。",
   "bringYourSetup.ownerAgent": "{name}（取り込み後）",

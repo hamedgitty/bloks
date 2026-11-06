@@ -3023,7 +3023,7 @@ function openbot(home: string, options: DetectOptions = {}): SourceScan | null {
 }
 
 /** What stays in OpenBot whatever is picked, as the dry run says it. */
-export const OPENBOT_STAYS = "chat history and channels, which live in its database; saved logins and the vault, which are encrypted to it; its connectors, which are tied to its servers; and browser profiles";
+export const OPENBOT_STAYS = "chat history and channels, saved logins and the vault, connectors and browser profiles";
 
 
 /** Everything found, by source. Reads and never writes. */
@@ -3285,7 +3285,7 @@ export interface ReviewItem {
   skill?: { name: string; description: string };
   mcp?: { name: string; transport: "stdio" | "http"; needs: string[] };
   rule?: { effect: Effect; summary: string };
-  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: boolean };
+  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: string };
   setting?: { engine: Engine; engineName: string; model?: string; effort?: Effort };
   channel?: { platform: ChatPlatform; name: string; perAgent: boolean };
   files?: { count: number; bytes: number };
@@ -3398,7 +3398,8 @@ export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Re
                 skills: item.agent.skills,
                 servers: item.agent.servers,
                 refuses: item.agent.deny.map((d) => d.label),
-                ...(item.agent.avatar ? { photo: true } : {}),
+                // the picture by a hash of its bytes, for the window to ask for
+                ...(item.agent.avatar ? { photo: item.agent.avatar.hash } : {}),
               },
             }
           : {}),

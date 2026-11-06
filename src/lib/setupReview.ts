@@ -42,7 +42,7 @@ export interface SetupItem {
   skill?: { name: string; description: string };
   mcp?: { name: string; transport: "stdio" | "http"; needs: string[] };
   rule?: { effect: "allow" | "deny"; summary: string };
-  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: boolean };
+  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: string };
   setting?: { engine: string; engineName: string; model?: string; effort?: string };
   channel?: { platform: string; name: string; perAgent: boolean };
   files?: { count: number; bytes: number };

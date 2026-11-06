@@ -599,7 +599,7 @@ describe("the review", () => {
     assert.equal(item("openbot:files:ada").picked, false);
     assert.equal(item("openbot:routine:ada/morning-brief").picked, false);
     assert.equal(item("openbot:agent:ada").picked, true);
-    assert.equal(item("openbot:agent:ada").agent!.photo, true);
+    assert.equal(item("openbot:agent:ada").agent!.photo, mod.avatarHashOf(PNG));
     assert.deepEqual(item("openbot:files:ada").files, { count: 1, bytes: 29 });
     assert.deepEqual(item("openbot:routine:ada/morning-brief").routine, { summary: "Weekdays at 08:30", scheduled: true });
     assert.match(item("openbot:agent:bo").notes.join(" "), /uses Claude Code here/);

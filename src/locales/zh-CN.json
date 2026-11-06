@@ -1071,7 +1071,7 @@
   "bringYourSetup.openbot.notAZip": "请选择 OpenBot 迁移设置写出的 .zip 文件。",
   "bringYourSetup.openbot.remove": "移除",
   "bringYourSetup.openbot.sending": "正在发送… {percent}%",
-  "bringYourSetup.openbot.stays": "留在 OpenBot 中的有：保存在其数据库中的聊天记录和频道；为它加密的已保存登录信息和保险库；与其服务器绑定的连接器；以及浏览器配置文件。",
+  "bringYourSetup.openbot.stays": "留在 OpenBot 中的有：聊天记录和频道、已保存的登录信息和保险库、连接器以及浏览器配置文件。",
   "bringYourSetup.openbot.tooBig": "该文件超过 {max}，这是迁移文件的上限。",
   "bringYourSetup.openbot.transferHint": "OpenBot 设置中导出的迁移文件还能带来它们的记忆、例行任务和头像。",
   "bringYourSetup.ownerAgent": "{name}（导入后）",

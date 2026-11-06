@@ -446,6 +446,16 @@ describe("an OpenBot transfer file, sent from the window", () => {
     const keys = source.items.map((i) => i.key);
     for (const key of ["openbot:agent:ada", "openbot:memory:ada/essential", "openbot:files:ada", "openbot:routine:ada/daily"]) assert.ok(keys.includes(key), key);
 
+    // the face the review shows, by the item's key, to the owner only
+    const face = await h.fetch("/api/setup-import/avatar?key=openbot%3Aagent%3Aada");
+    assert.equal(face.status, 200);
+    assert.equal(face.headers.get("content-type"), "image/png");
+    assert.ok(Buffer.from(await face.arrayBuffer()).equals(png));
+    assert.equal((await h.fetch("/api/setup-import/avatar?key=openbot%3Amemory%3Aada%2Fessential")).status, 404);
+    const away = await h.fetchRemote("/api/setup-import/avatar?key=openbot%3Aagent%3Aada");
+    assert.ok(away.status === 401 || away.status === 403);
+    assert.equal(allows("some-agent", "GET", "/api/setup-import/avatar").ok, false);
+
     const picks = source.items.map((i) => ({ key: i.key, digest: i.digest, to: i.suggested.to, botId: i.suggested.botId }));
     const imported = await h.json("/api/setup-import", { method: "POST", body: JSON.stringify({ picks }) });
     assert.deepEqual(imported.results.filter((r: { ok: boolean }) => !r.ok), []);

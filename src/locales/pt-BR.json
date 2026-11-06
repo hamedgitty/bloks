@@ -1110,7 +1110,7 @@
   "bringYourSetup.openbot.notAZip": "Escolha o arquivo .zip que a configuração de transferência do OpenBot gerou.",
   "bringYourSetup.openbot.remove": "Remover",
   "bringYourSetup.openbot.sending": "Enviando… {percent}%",
-  "bringYourSetup.openbot.stays": "Fica no OpenBot: o histórico de chat e os canais, guardados no banco de dados dele; os logins salvos e o cofre, criptografados para ele; os conectores, ligados aos servidores dele; e os perfis do navegador.",
+  "bringYourSetup.openbot.stays": "Fica no OpenBot: o histórico de chat e os canais, os logins salvos e o cofre, os conectores e os perfis do navegador.",
   "bringYourSetup.openbot.tooBig": "Esse arquivo passa de {max}, o máximo para um arquivo de transferência.",
   "bringYourSetup.openbot.transferHint": "Um arquivo de transferência das configurações do OpenBot traz também as memórias, rotinas e imagens deles.",
   "bringYourSetup.ownerAgent": "{name}, como foi trazido",

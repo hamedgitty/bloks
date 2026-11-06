@@ -676,6 +676,7 @@ import {
 } from "./incidents.ts";
 import {
   applyImport,
+  avatarBytes,
   avatarHashOf,
   cleanPicks,
   detectSetup,
@@ -27853,6 +27854,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         transfer: setupTransferState(),
       };
     };
+    // An agent's picture as the review found it, so the window can show
+    // the faces it is about to bring over. Asked for by the item's key and
+    // read fresh, from OpenBot only (the one source that carries
+    // pictures), already checked by its bytes and size; never a path.
+    if (path === "/api/setup-import/avatar" && method === "GET") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "bringing a setup over is the owner's" });
+      const key = url.searchParams.get("key") ?? "";
+      const scan = detectSetup(undefined, "openbot", { openbotTransfer: setupTransfer() });
+      const item = scan.sources.flatMap((s) => s.items).find((i) => i.key === key && i.kind === "agent");
+      const bytes = item ? avatarBytes(item) : undefined;
+      if (!item?.agent?.avatar || !bytes) return json(res, 404, { error: "no picture for that item" });
+      res.writeHead(200, { "content-type": item.agent.avatar.mime, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" });
+      return res.end(bytes);
+    }
     // An OpenBot transfer file, picked by the owner in the window and sent
     // in parts (begun with its name and size, each part PUT by number,
     // then finished), whether the window is the desktop app or a browser
