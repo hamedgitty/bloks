@@ -92,6 +92,16 @@ test('tools read as the driver reads them: promised, switched on by the owner, o
   assert.deepEqual(field(inspectEngineSettings({driver:'custom',config:{url:'https://example.test/v1',vision:true}},ctx,true),'config.vision').effective,value(true));
 });
 
+test('a reasoning effort reads as the driver reads it: only a literal yes',()=>{
+  const host={id:'h',name:'Host',url:'https://example.test/v1',keys:[{id:'k',key:'k'}]};
+  assert.deepEqual(field(inspectCustomEndpoint(host,ctx),'effort').effective,value(false));
+  assert.deepEqual(field(inspectCustomEndpoint({...host,effort:true},ctx),'effort').effective,value(true));
+  assert.deepEqual(field(inspectCustomEndpoint({...host,effort:'yes'},ctx),'effort').effective,value(false));
+  const effort=(config:unknown)=>field(inspectEngineSettings({driver:'custom',config},ctx,true),'config.effort').effective;
+  assert.deepEqual(effort({url:'https://example.test/v1'}),value(false));
+  assert.deepEqual(effort({url:'https://example.test/v1',effort:true}),value(true));
+});
+
 test('a custom host says it has headers, never their names or values',()=>{
   const host={id:'h',name:'Host',url:'https://example.test/v1',keys:[{id:'k',key:'k'}],headers:{[`x-${secret}`]:secret}};
   const rows=inspectCustomEndpoint(host,ctx);assert.ok(!JSON.stringify(rows).includes(secret));

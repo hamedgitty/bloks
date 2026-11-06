@@ -226,6 +226,7 @@ BLOKS_MODEL_URL=http://host.docker.internal:8000/v1
 BLOKS_MODEL_KEY=                     # if your server asks for one
 BLOKS_MODEL_NAME=Qwen
 BLOKS_MODEL_TOOLS=1                  # its model calls tools
+# BLOKS_MODEL_EFFORT=1               # its model takes a reasoning effort
 ```
 
 then `docker compose up -d`. The engine is there, named Qwen, with the

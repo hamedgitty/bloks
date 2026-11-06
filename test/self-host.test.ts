@@ -177,7 +177,7 @@ describe("the image's own update", () => {
 });
 
 describe("a model server named in the environment", () => {
-  const keys = ["BLOKS_MODEL_URL", "BLOKS_MODEL_KEY", "BLOKS_MODEL_NAME", "BLOKS_MODEL_TOOLS", "BLOKS_MODEL_VISION"] as const;
+  const keys = ["BLOKS_MODEL_URL", "BLOKS_MODEL_KEY", "BLOKS_MODEL_NAME", "BLOKS_MODEL_TOOLS", "BLOKS_MODEL_VISION", "BLOKS_MODEL_EFFORT"] as const;
 
   test("is an engine of its own, with its key in its own environment only", (t) => {
     const before = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
@@ -195,6 +195,7 @@ describe("a model server named in the environment", () => {
       name: "vllm:8000",
       tools: false,
       vision: false,
+      effort: false,
     });
 
     const secret = ["model", "server", "key", "for", "test"].join("-");

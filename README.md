@@ -714,7 +714,11 @@ key (Anthropic's `anthropic-version`, a gateway's org id) takes up to ten
 headers under **Add a header**, sent with every request to it. Their
 values are kept like keys: shown only as set, never sent back to the
 window, and left out of backups. Authorization, Content-Type,
-Content-Length and Host are Bloks's own and refused there.
+Content-Length and Host are Bloks's own and refused there. Turn on
+**Takes reasoning effort** for an endpoint whose model takes OpenAI's
+`reasoning_effort` (the o-series, gpt-oss, a gateway that passes it on),
+and its agents get the effort picker with Low, Medium and High, sent with
+each turn. If the host refuses it, the turn stops and says so.
 
 An agent's own browser and its computer (Cloud box, Local VM, or this
 Mac's screen) reach it as tools on Claude Code, on Codex, and on the ACP

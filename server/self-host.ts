@@ -142,6 +142,8 @@ export interface EnvModelEndpoint {
   name: string;
   tools: boolean;
   vision: boolean;
+  /** Its model takes a reasoning effort (BLOKS_MODEL_EFFORT=1). */
+  effort: boolean;
 }
 
 /** The engine id a model server from the environment goes by. Never one
@@ -159,6 +161,7 @@ export const ENV_MODEL_ENDPOINT_ID = "env";
  *   BLOKS_MODEL_NAME    what the engine is called in the app
  *   BLOKS_MODEL_TOOLS=1 its model calls tools (only its owner knows)
  *   BLOKS_MODEL_VISION=1  its model sees pictures
+ *   BLOKS_MODEL_EFFORT=1  its model takes a reasoning effort
  *
  * The same engine an endpoint added in Settings, Engines makes, read from
  * here each start and never written to config.json, so the key stays
@@ -179,6 +182,7 @@ export function envModelEndpoint(env: NodeJS.ProcessEnv = process.env): EnvModel
     name: (env.BLOKS_MODEL_NAME ?? "").trim().slice(0, 60) || host,
     tools: env.BLOKS_MODEL_TOOLS === "1",
     vision: env.BLOKS_MODEL_VISION === "1",
+    effort: env.BLOKS_MODEL_EFFORT === "1",
   };
 }
 

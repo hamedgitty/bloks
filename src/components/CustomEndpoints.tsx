@@ -38,6 +38,8 @@ export interface CustomEndpointRow {
   instanceId: string;
   /** Attached images go to its model as pictures (GitHub 365). */
   vision?: boolean;
+  /** Its agents get the effort picker, and their level is sent. */
+  effort?: boolean;
   activeKeyId: string | null;
   /** Off is chat only. */
   tools: boolean;
@@ -222,6 +224,23 @@ function CatalogProblem({ said, retrying, onRetry }: { said: string; retrying: b
   );
 }
 
+/** The person's word that the model behind this URL takes a reasoning
+ * effort. Like tools and pictures, nobody can tell from the outside, and
+ * a model that does not take one may refuse every request that has it. */
+function TakesEffort({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="flex items-center justify-between gap-3 text-body text-foreground">
+      <span className="min-w-0">
+        {t("customEndpoints.takesReasoningEffort")}
+        <span className="block text-small text-muted-foreground">
+          {on ? t("customEndpoints.agentsCanPickEffort") : t("customEndpoints.noEffortIsSent")}
+        </span>
+      </span>
+      <Switch checked={on} onCheckedChange={onChange} aria-label={t("customEndpoints.takesReasoningEffort")} />
+    </label>
+  );
+}
+
 function refreshInstances(dispatch: ReturnType<typeof useStore>["dispatch"]) {
   api("/api/instances")
     .then(({ instances }) => dispatch({ type: "instances", instances }))
@@ -286,21 +305,10 @@ export function CustomEndpoints() {
 
   // Moved at once, so the switch answers the hand; put back from the
   // server if the save fails, so it never shows a state that is not saved.
-  const switchTools = (id: string, on: boolean) => {
+  const switchFlag = (id: string, flag: "tools" | "vision" | "effort", on: boolean) => {
     setError(null);
-    setEndpoints((rows) => rows && rows.map((row) => (row.id === id ? { ...row, tools: on } : row)));
-    api(`/api/custom-endpoints/${id}`, { method: "PATCH", body: JSON.stringify({ tools: on }) })
-      .then(({ endpoints: rows }) => apply(rows))
-      .catch((e: Error) => {
-        setError(e.message);
-        reload();
-      });
-  };
-
-  const switchVision = (id: string, on: boolean) => {
-    setError(null);
-    setEndpoints((rows) => rows && rows.map((row) => (row.id === id ? { ...row, vision: on } : row)));
-    api(`/api/custom-endpoints/${id}`, { method: "PATCH", body: JSON.stringify({ vision: on }) })
+    setEndpoints((rows) => rows && rows.map((row) => (row.id === id ? { ...row, [flag]: on } : row)));
+    api(`/api/custom-endpoints/${id}`, { method: "PATCH", body: JSON.stringify({ [flag]: on }) })
       .then(({ endpoints: rows }) => apply(rows))
       .catch((e: Error) => {
         setError(e.message);
@@ -392,8 +400,9 @@ export function CustomEndpoints() {
             {problem && <CatalogProblem said={problem} retrying={retrying === endpoint.id} onRetry={() => retry(endpoint.id)} />}
 
             <div className="mt-2 space-y-2">
-              <ToolsSwitch on={endpoint.tools} onChange={(on) => switchTools(endpoint.id, on)} />
-              <SeesImages on={endpoint.vision === true} onChange={(on) => switchVision(endpoint.id, on)} />
+              <ToolsSwitch on={endpoint.tools} onChange={(on) => switchFlag(endpoint.id, "tools", on)} />
+              <SeesImages on={endpoint.vision === true} onChange={(on) => switchFlag(endpoint.id, "vision", on)} />
+              <TakesEffort on={endpoint.effort === true} onChange={(on) => switchFlag(endpoint.id, "effort", on)} />
             </div>
 
             <div className="mt-2 flex flex-col gap-1">

@@ -40,6 +40,8 @@ export function inspectEngineSettings(input:unknown,ctx:InspectionContext,loaded
     addConfig('tools',{status:'value',value:spec.tools===true||(spec.toolsOptIn===true && get(raw,'tools')===true)});
     // pictures read the same way: the provider's word, or a literal true
     addConfig('vision',{status:'value',value:spec.vision===true||get(raw,'vision')===true});
+    // a reasoning effort only on a literal true, as the driver reads it
+    addConfig('effort',{status:'value',value:get(raw,'effort')===true});
     // a custom host's own headers: whether there are any, never a name or value
     const headers=get(raw,'headers');addConfig('headers',configured(headers && typeof headers==='object' && Object.keys(headers).length),true);
   }else{
@@ -62,6 +64,7 @@ export function inspectCustomEndpoint(root:unknown,ctx:InspectionContext):Inspec
   const named=get(root,'activeKeyId');add('activeKeyId',configured(named));
   add('tools',{status:'value',value:get(root,'tools')===true});
   add('vision',{status:'value',value:get(root,'vision')===true});
+  add('effort',{status:'value',value:get(root,'effort')===true});
   const headers=get(root,'headers');add('headers',configured(headers && typeof headers==='object' && Object.keys(headers).length));
   const entries=Array.isArray(keys)?keys:[];
   const chosen=entries.find((key)=>get(key,'id')===named && get(key,'key'))??entries.find((key)=>Boolean(get(key,'key')));

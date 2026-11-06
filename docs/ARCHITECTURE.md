@@ -106,6 +106,16 @@ with a line break are refused when saved and dropped again when an
 engine is built (`customHeaderProblem`, `sendableHeaders` in
 `server/providers.ts`).
 
+A custom endpoint whose owner turned on **Takes reasoning effort**
+(`CustomEndpoint.effort`, or `BLOKS_MODEL_EFFORT=1` for the one from the
+environment) has `capabilities.efforts` of low, medium and high
+(`COMPAT_EFFORTS`), the three every server that takes OpenAI's
+`reasoning_effort` agrees on, so the pickers offer them and dispatch
+narrows a saved level to one of them. Each turn's request carries it,
+streamed or in every round of the tool loop; Bloks's own one-shots (a
+title, a summary) never do. A 4xx that names the field ends the turn
+pointing at the switch, the way a refusal of tools does.
+
 **The browser and the computer.** Each driver says which of the agent's
 own browser and its computers (the cloud box, the Local VM, this Mac's
 screen) it hands its engine (`capabilities.screens`, `server/screens.ts`).

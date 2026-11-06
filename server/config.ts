@@ -63,6 +63,12 @@ export interface CustomEndpoint {
    * backup (server/backup.ts SECRET_PATHS). Names are checked by
    * customHeaderProblem in server/providers.ts. */
   headers?: Record<string, string>;
+  /** The person says the model behind this URL takes a reasoning effort
+   * (OpenAI's reasoning_effort: o-series, gpt-oss, a vLLM or a gateway
+   * that passes it on), so agents on it get the effort picker and their
+   * level is sent. Off until they say so: a model that does not take it
+   * may refuse the whole request. */
+  effort?: boolean;
 }
 
 export interface AppConfig {
@@ -622,6 +628,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
         url: endpoint.url,
         ...(endpoint.tools === true ? { tools: true } : {}),
         ...(endpoint.vision === true ? { vision: true } : {}),
+        ...(endpoint.effort === true ? { effort: true } : {}),
         ...(Object.keys(headers).length ? { headers } : {}),
       },
       environment: { [envVarFor(CUSTOM_SPEC.kind)]: cred.key },
@@ -636,7 +643,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     map[envId] = {
       driver: CUSTOM_SPEC.kind,
       displayName: fromEnv.name,
-      config: { url: fromEnv.url, ...(fromEnv.tools ? { tools: true } : {}), ...(fromEnv.vision ? { vision: true } : {}) },
+      config: { url: fromEnv.url, ...(fromEnv.tools ? { tools: true } : {}), ...(fromEnv.vision ? { vision: true } : {}), ...(fromEnv.effort ? { effort: true } : {}) },
       environment: { [envVarFor(CUSTOM_SPEC.kind)]: fromEnv.key },
     };
   }

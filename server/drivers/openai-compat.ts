@@ -34,6 +34,7 @@ import { callSignature } from "../repeats.ts";
 import { PERSON_REPLY_TOOL } from "../person-turn.ts";
 import type { TurnImage } from "../attachments.ts";
 import { CLOUD_ONLY, NO_SCREENS } from "../screens.ts";
+import { clampEffort, type Effort } from "../effort.ts";
 
 export interface CompatConfig {
   url: string;
@@ -47,7 +48,21 @@ export interface CompatConfig {
   /** Headers the host wants beyond the key (a custom endpoint's, GitHub
    * 486), sent on every request to it. Values can be credentials. */
   headers?: Record<string, string>;
+  /** The person says the model behind this URL takes a reasoning effort
+   * (a custom endpoint's switch), so its agents get the effort picker and
+   * a turn is sent the level as `reasoning_effort`. */
+  effort?: boolean;
 }
+
+/**
+ * The levels sent as OpenAI's `reasoning_effort` to a host whose owner
+ * says its model takes one. Low, medium and high are the three every
+ * server that takes the field agrees on (OpenAI's reasoning models, vLLM
+ * and Groq for gpt-oss, Gemini's compatible API, the gateways that pass
+ * it on); "none", "minimal" and "xhigh" are each one vendor's, and a
+ * model that does not know a level refuses the request outright.
+ */
+export const COMPAT_EFFORTS: readonly Effort[] = ["low", "medium", "high"];
 
 /** A turn's words with its pictures beside them, in the shape the chat
  * API takes: a text part, then one image part each, sent inline as data
@@ -325,6 +340,15 @@ const UNANSWERED =
  * gateway that will not take a `tool` message. A bad key, an empty
  * balance or a rate limit is another problem and keeps its own words.
  */
+/** Whether a refused request was refused for the reasoning effort it
+ * carried: a 4xx that names it, as a model that thinks not at all says
+ * "reasoning_effort is not supported with this model". */
+export function refusedEffort(status: number, body: string): boolean {
+  if (status < 400 || status >= 500) return false;
+  if (status === 401 || status === 402 || status === 403 || status === 408 || status === 429) return false;
+  return /reasoning/i.test(body);
+}
+
 export function refusedTools(status: number, body: string): boolean {
   if (status < 400 || status >= 500) return false;
   if (status === 401 || status === 402 || status === 403 || status === 408 || status === 429) return false;
@@ -595,6 +619,8 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       ...(spec.toolsOptIn && o.tools === true ? { tools: true } : {}),
       // the same reading for pictures: only a literal true sends them
       ...(o.vision === true ? { vision: true } : {}),
+      // and for a reasoning effort
+      ...(o.effort === true ? { effort: true } : {}),
       // read again here, not trusted from whoever wrote the config: a
       // header that cannot be sent is left out, never sent half-formed
       ...(Object.keys(headers).length ? { headers } : {}),
@@ -626,6 +652,8 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       // whether a turn's pictures are sent as pictures: the provider's
       // own word for every model it serves, or the person's for this URL
       const sees = spec.vision === true || config.vision === true;
+      // whether a turn's reasoning effort is sent, by the person's word
+      const thinks = config.effort === true;
       /** What a refused call says. One that carried pictures and was
        * refused over them says so in plain words: a model that does not
        * see reads otherwise as a server fault, and llama.cpp started
@@ -815,15 +843,17 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       const complete = async (
         messages: Array<{ role: string; content: string | ReturnType<typeof withImages> }>,
         model: string,
-        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; tags?: CallTags; boundary?: { before: () => void; accepted: () => void } },
+        opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; tags?: CallTags; boundary?: { before: () => void; accepted: () => void }; effort?: Effort },
       ): Promise<{ text: string; usage: Usage | null }> => {
+        const thinking = opts.effort ? { reasoning_effort: opts.effort } : {};
         const res = await send(`${config.url}/chat/completions`, {
           method: "POST",
-          body: JSON.stringify({ model, messages, stream: opts.stream }),
+          body: JSON.stringify({ model, messages, ...thinking, stream: opts.stream }),
           signal: opts.signal ?? AbortSignal.timeout(120_000),
-        }, opts.tags, opts.boundary ? () => { opts.boundary!.before(); return JSON.stringify({ model, messages, stream: opts.stream }); } : undefined);
+        }, opts.tags, opts.boundary ? () => { opts.boundary!.before(); return JSON.stringify({ model, messages, ...thinking, stream: opts.stream }); } : undefined);
         if (!res.ok) {
           const body = await res.text().catch(() => "");
+          if (opts.effort && refusedEffort(res.status, body)) throw effortRefused(`HTTP ${res.status}`, body);
           throw refused(res.status, body, messages);
         }
         if (!opts.stream) {
@@ -905,6 +935,17 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         );
       };
 
+      /** The end of a turn whose host would not take the reasoning effort
+       * it was sent, said the same way: the switch is the person's, so is
+       * turning it off, and the turn is not quietly asked again without. */
+      const effortRefused = (status: string | null, said: string) => {
+        const detail = [status, said.trim().slice(0, 200)].filter(Boolean).join(": ");
+        return new Error(
+          `${shownName} refused the reasoning effort Bloks sent${detail ? ` (${detail})` : ""}. ` +
+            `The model behind this endpoint may not take one. To use it without, turn off "Takes reasoning effort" for it in Settings, Engines and keys, or set the agent's effort to the engine's own.`,
+        );
+      };
+
       /** One non-streaming completion, returning the whole assistant
        * message so the caller can see tool_calls. */
       const completeRaw = async (
@@ -914,7 +955,9 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         signal: AbortSignal,
         tags?: CallTags,
         boundary?: { before: () => void; accepted: () => void },
+        effort?: Effort,
       ): Promise<{ message: any; usage: Usage | null }> => {
+        const thinking = effort ? { reasoning_effort: effort } : {};
         // The turn's own signal ends it on stop; the bound ends it when the
         // provider simply never answers, which the turn signal never does.
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(ROUND_TIMEOUT_MS)]);
@@ -922,9 +965,9 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         try {
           res = await send(`${config.url}/chat/completions`, {
             method: "POST",
-            body: JSON.stringify({ model, messages, tools, stream: false }),
+            body: JSON.stringify({ model, messages, tools, ...thinking, stream: false }),
             signal: bounded,
-          }, tags, boundary ? () => { boundary.before(); return JSON.stringify({ model, messages, tools, stream: false }); } : undefined);
+          }, tags, boundary ? () => { boundary.before(); return JSON.stringify({ model, messages, tools, ...thinking, stream: false }); } : undefined);
         } catch (e) {
           if ((e as Error).name === "TimeoutError") {
             throw new Error(`${spec.name} took more than ${ROUND_TIMEOUT_MS / 60_000} minutes to answer, so this reply was stopped. Send it again.`);
@@ -933,6 +976,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         }
         if (!res.ok) {
           const body = await res.text().catch(() => "");
+          if (effort && refusedEffort(res.status, body)) throw effortRefused(`HTTP ${res.status}`, body);
           // Only an owner's opt-in is read this way. A catalog engine's
           // tools are this build's promise, and its refusal is a fault.
           if (config.tools && refusedTools(res.status, body)) throw toolsRefused(`HTTP ${res.status}`, body);
@@ -944,6 +988,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         // ended saying nothing at all.
         if (!Array.isArray(json?.choices) && json?.error) {
           const said = typeof json.error === "string" ? json.error : String(json.error.message ?? JSON.stringify(json.error));
+          if (effort && /reasoning/i.test(said)) throw effortRefused(null, said);
           if (config.tools && /tool|function/i.test(said)) throw toolsRefused(null, said);
           throw new Error(`${spec.name}: ${said.slice(0, 200)}`);
         }
@@ -969,6 +1014,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         signal: AbortSignal,
         spent: Spent,
         boundary?: { before: () => void; accepted: () => void },
+        effort?: Effort,
       ) => {
         const computer = turn.integrations?.computer;
         const sandbox = turn.integrations?.sandbox;
@@ -1005,7 +1051,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         let usageTotal = { input: 0, output: 0 };
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const { message, usage } = await completeRaw(messages, model, tools, signal, turn.tags, round === 0 ? boundary : undefined);
+          const { message, usage } = await completeRaw(messages, model, tools, signal, turn.tags, round === 0 ? boundary : undefined, effort);
           if (usage) {
             usageTotal = { input: usageTotal.input + usage.input, output: usageTotal.output + usage.output };
             addPrice(spent, usage);
@@ -1245,6 +1291,9 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         // An engine whose service picks the model is asked for its one
         // model, whatever an agent saved before it had only one.
         const model = spec.fixedModels ? spec.models.default : turn.model || models.default;
+        // Only where the person said the model takes one, and only a level
+        // from the three sent (dispatch already narrowed it to those).
+        const effort = thinks ? clampEffort(turn.effort, COMPAT_EFFORTS) : undefined;
 
         const messages = [
           ...(turn.system ? [{ role: "system", content: turn.system }] : []),
@@ -1310,7 +1359,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
         (async () => {
           try {
             if (toolLoop) {
-              await runWithTools(threadId, turnId, messages, model, turn, abort.signal, spent, boundary);
+              await runWithTools(threadId, turnId, messages, model, turn, abort.signal, spent, boundary, effort);
               boundary.unanswered();
               active.delete(threadId);
               emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: priceOf(spent), ...unpriced() });
@@ -1318,6 +1367,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
             }
             const { text, usage } = await complete(messages, model, {
               stream: true,
+              effort,
               signal: abort.signal,
               tags: turn.tags,
               boundary,
@@ -1420,7 +1470,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           // the Local VM or this Mac are MCP servers over stdio, which an
           // API model has no client for, so its turns are handed neither
           // (server/screens.ts); without the tool loop, not even the box.
-          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true, replyToSender: toolLoop, toolLoop, ...(sees ? { images: true } : {}), screens: toolLoop ? CLOUD_ONLY : NO_SCREENS },
+          capabilities: { sessionModelSwitch: "in-session", replaysNatively: true, replyToSender: toolLoop, toolLoop, ...(sees ? { images: true } : {}), ...(thinks ? { efforts: COMPAT_EFFORTS } : {}), screens: toolLoop ? CLOUD_ONLY : NO_SCREENS },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
           respondToRequest: async (threadId, requestId, decision) => {

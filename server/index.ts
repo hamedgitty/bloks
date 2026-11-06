@@ -23147,6 +23147,8 @@ function customCatalog() {
         url: endpoint.url,
         instanceId: customInstanceId(endpoint.id),
         vision: endpoint.vision === true,
+        // whether its agents get the effort picker, by the person's word
+        effort: endpoint.effort === true,
         activeKeyId: active?.id ?? null,
         // false is chat only, which is what a host nobody vouched for is
         tools: endpoint.tools === true,
@@ -30449,16 +30451,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       await persistCustom(next);
       return json(res, 200, customCatalog());
     }
-    // What the model behind a host can do (call tools, see pictures) is
-    // what changes in place, and only the person can say it (GitHub 359,
-    // 365). The rest is a new host or a key.
+    // What the model behind a host can do (call tools, see pictures, take
+    // a reasoning effort) is what changes in place, and only the person
+    // can say it (GitHub 359, 365, 486). The rest is a new host or a key.
     if (m && method === "PATCH") {
       const endpoint = (cfg.custom ?? []).find((entry) => entry.id === m![1]);
       if (!endpoint) return json(res, 404, { error: "no such endpoint" });
       const body = await readBody(req);
-      if (body.tools === undefined && body.vision === undefined) return json(res, 400, { error: "say tools or vision" });
+      if (body.tools === undefined && body.vision === undefined && body.effort === undefined) return json(res, 400, { error: "say tools, vision or effort" });
       if (body.tools !== undefined && typeof body.tools !== "boolean") return json(res, 400, { error: "tools must be true or false" });
       if (body.vision !== undefined && typeof body.vision !== "boolean") return json(res, 400, { error: "vision must be true or false" });
+      if (body.effort !== undefined && typeof body.effort !== "boolean") return json(res, 400, { error: "effort must be true or false" });
       const next = (cfg.custom ?? []).map((entry) => {
         if (entry.id !== endpoint.id) return entry;
         let changed = typeof body.tools === "boolean" ? withCustomTools(entry, body.tools) : entry;
@@ -30466,6 +30469,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         if (typeof body.vision === "boolean") {
           const { vision: _was, ...rest } = changed;
           changed = body.vision ? { ...rest, vision: true } : rest;
+        }
+        if (typeof body.effort === "boolean") {
+          const { effort: _was, ...rest } = changed;
+          changed = body.effort ? { ...rest, effort: true } : rest;
         }
         return changed;
       });
