@@ -28,6 +28,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { ShortcutKeys } from "@/components/Shortcuts";
 import { Switcher } from "@/components/Switcher";
 import { QuickAsk } from "@/components/QuickAsk";
+import { leftConversation } from "@/lib/lastRead";
 import { NotchIsland } from "@/components/notch/NotchIsland";
 import { TraceDemo } from "@/components/trace/TraceDemo";
 import { Toaster, toast } from "@/components/ui/toast";
@@ -137,6 +138,11 @@ function Shell() {
           : room
             ? "room"
             : "chat";
+  // anything but the chat in the panel ends the visit, so the New line is
+  // asked for again on the way back (src/lib/lastRead.ts)
+  useEffect(() => {
+    if (place !== "chat") leftConversation();
+  }, [place]);
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-sidebar">
       <TitleBar />

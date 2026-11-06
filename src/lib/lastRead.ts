@@ -23,7 +23,8 @@ const looking = () => document.visibilityState === "visible" && document.hasFocu
  * the component: the chat is drawn again from scratch now and then (a
  * phone's drawer closing, a window crossing a width), and asking again
  * then would find the place already read on and lose the line. Leaving
- * is opening another conversation, so one visit is all there is. */
+ * is opening another conversation or another place in the panel
+ * (leftConversation), so one visit is all there is. */
 type Visit = { key: string; opened: boolean; said?: string; held: boolean; from: string | null };
 let visit: Visit | null = null;
 
@@ -31,6 +32,13 @@ const visitFor = (key: string): Visit => {
   if (visit?.key !== key) visit = { key, opened: false, held: false, from: null };
   return visit;
 };
+
+/** The chat gave the panel to something else (a room, Settings, a page):
+ * that is leaving too, so coming back is a new visit that asks for the
+ * place again, rather than the old one that already read on past it. */
+export function leftConversation(): void {
+  visit = null;
+}
 
 export function useLastRead({
   key,
