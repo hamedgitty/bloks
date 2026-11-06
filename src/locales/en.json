@@ -3336,7 +3336,7 @@
   "mcpServers.authentication": "Authentication",
   "mcpServers.command": "Command",
   "mcpServers.commandNotFound": "Command not found: {command}",
-  "mcpServers.commandNotFoundFix": "Install it, or remove this server and add it again with the full path to the program. Until then its agents work without it, and their conversations are told once.",
+  "mcpServers.commandNotFoundFix": "Install it, or remove this server and add it again with the program's full path. In a terminal, which {command} prints it. A PATH in the server's own environment that includes its folder works too. Until then its agents work without it, and their conversations are told once.",
   "mcpServers.commandOnThisComputer": "Command on this computer",
   "mcpServers.connection": "Connection",
   "mcpServers.customMcpServersCanBe": "Custom MCP servers can be risky.",

@@ -519,7 +519,7 @@ import {
 import { selfEditRefusal } from "./agent-self-edit.ts";
 import { fetchWatchedPage } from "./watched-fetch.ts";
 import { carriesLocalKey, makeLocalKey, LOCAL_KEY_HEADER } from "./local-key.ts";
-import { resolveOnPath, widenPath } from "./path.ts";
+import { adoptPath, resolveOnPath, widenPath } from "./path.ts";
 import {
   AuditLog,
   ConnectionHandles,
@@ -36253,6 +36253,15 @@ type ParentPort = { on(event: "message", listener: (message: { data?: { kind?: u
   // a question asked or answered over the line (server/desktop-line.ts)
   if (desktopLine.heard(message?.data)) return;
   if (message?.data?.kind === "stop") shutDown();
+  // the login shell's PATH, which it gave the app only when asked again
+  // (electron/main.mjs adoptLatePath): taken, widened again, and every
+  // engine and MCP command that was not found is looked for again, so
+  // Settings stops saying "not found" about something that is there
+  if (message?.data?.kind === "path" && adoptPath((message.data as { path?: unknown }).path)) {
+    widenPath();
+    void registry.describe().then((instances) => broadcast({ kind: "instances", instances })).catch(() => {});
+    broadcast({ kind: "mcpServers" });
+  }
   // the Bloks browser's tabs and who drives them, as the app sees them
   // (server/app-browser.ts): for the agent waiting on the person, and
   // for the person's other clients

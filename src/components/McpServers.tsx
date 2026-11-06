@@ -25,6 +25,7 @@ import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { AgentAvatar } from "./Avatar";
 import { cn } from "@/lib/cn";
+import { MCP_SERVERS_EVENT } from "@/lib/mcpServersEvent";
 import { t, type MessageKey } from "@/lib/i18n";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
@@ -56,6 +57,11 @@ export function useMcpServers(): { servers: McpServerRow[] | null; reload: () =>
       .catch(() => setServers([]));
   }, []);
   useEffect(reload, [reload]);
+  // and again when the server says its commands may be findable now
+  useEffect(() => {
+    window.addEventListener(MCP_SERVERS_EVENT, reload);
+    return () => window.removeEventListener(MCP_SERVERS_EVENT, reload);
+  }, [reload]);
   return { servers, reload };
 }
 
@@ -377,7 +383,7 @@ export function McpServerSettings({ id, onBack }: { id: string; onBack: () => vo
             <AlertTriangle size={17} className="mt-0.5 shrink-0 text-warning" />
             <span className="min-w-0">
               <span className="block break-words font-medium">{t("mcpServers.commandNotFound", { command: server.missing })}</span>
-              <span className="mt-1 block text-pretty text-body text-muted-foreground">{t("mcpServers.commandNotFoundFix")}</span>
+              <span className="mt-1 block text-pretty text-body text-muted-foreground">{t("mcpServers.commandNotFoundFix", { command: server.missing })}</span>
             </span>
           </div>
         )}

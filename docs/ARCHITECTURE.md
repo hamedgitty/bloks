@@ -167,6 +167,24 @@ without its arguments and with the home folder as `~`, which Settings
 shows as "Command not found". A `~/` command is handed over expanded,
 since nothing spawns through a shell.
 
+Where commands are looked for is PATH, and an app opened from Finder
+starts with launchd's. The desktop app asks the person's login shell
+(`-ilc`) for its PATH before it forks a server, and reads the answer
+from between two markers (`electron/shell-path.mjs`), so a banner, a
+hook that exits non-zero, or a slow exit after the PATH was printed keep
+the answer. A shell that printed nothing in four seconds is asked once
+more in the background for twenty; what it says then is merged into the
+app's own PATH and posted to each running server (`{ kind: "path" }`),
+which takes it (`adoptPath` in `server/path.ts`), describes its engines
+again and tells its windows to read their MCP servers again, so a "not
+found" that was only a slow shell goes away. Under all of that,
+`widenPath` appends the folders installers use that exist on disk:
+brew, npm and pnpm prefixes, nvm, volta, cargo, Bun, Go, the mise, asdf
+and pyenv shims, MacPorts and Homebrew on Linux, each where its own
+variable (`CARGO_HOME`, `GOPATH`, `PYENV_ROOT` and the rest) moves it.
+It is the only layer bloks-server has, which under systemd starts with
+systemd's PATH.
+
 The registry (`server/harness/registry.ts`) turns a config map into live
 instances. An unknown driver or a bad config becomes an unavailable
 shadow entry rather than a startup failure, so a config written by a

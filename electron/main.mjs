@@ -82,6 +82,7 @@ import electronUpdater from "./vendor/electron-updater.cjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { nativeHelper } from "./native-helper.mjs";
 import { anyFreePort, failurePage, parseLsof, portFree, portOrder } from "./ports.mjs";
+import { FIRST_ASK_MS, SECOND_ASK_MS, askLoginShell, mergePath } from "./shell-path.mjs";
 import { keepServerUp, stopServer } from "./server-life.mjs";
 import { createAppLog, lineBudget } from "./app-log.mjs";
 import { stoppedPage, watchRenderer } from "./renderer-watch.mjs";
@@ -152,25 +153,43 @@ const LIGHT_BACKDROP = "#ffffff";
  * inherits it, and so does everything the harness spawns.
  *
  * The interactive flag matters: plenty of people export PATH in .zshrc,
- * which only an interactive shell reads. Banners and rc noise are why
- * only the last line of output is trusted.
+ * which only an interactive shell reads. What the shell printed is read
+ * between markers (electron/shell-path.mjs), so a banner, a hook that
+ * exits non-zero, or a slow exit after the PATH was printed no longer
+ * throw a good answer away. A shell that said nothing in time is asked
+ * once more in the background, for longer, and what it says then goes to
+ * the servers already running (adoptLatePath), which look again for the
+ * engines and MCP commands they could not find.
  */
 async function adoptLoginShellPath() {
   // Windows has no login-shell PATH problem: GUI apps inherit the user
   // environment, and %SHELL% does not exist to ask.
   if (process.platform === "win32") return;
   const shell = process.env.SHELL || "/bin/zsh";
-  const reported = await new Promise((resolve) => {
-    execFile(shell, ["-ilc", 'echo "$PATH"'], { timeout: 4000 }, (error, stdout) => {
-      resolve(error ? null : stdout.trim().split("\n").at(-1));
-    });
+  const first = await askLoginShell({ shell, timeoutMs: FIRST_ASK_MS });
+  if (first.path) {
+    process.env.PATH = mergePath(first.path, process.env.PATH);
+    return;
+  }
+  // the backstop in server/path.ts still applies, now and in the meantime
+  if (!first.timedOut) return;
+  void askLoginShell({ shell, timeoutMs: SECOND_ASK_MS }).then(({ path: late }) => {
+    if (late) adoptLatePath(late);
   });
-  if (!reported) return; // the backstop in server/path.ts still applies
+}
 
-  const merged = [...new Set([...reported.split(":"), ...(process.env.PATH ?? "").split(":")])]
-    .filter(Boolean)
-    .join(":");
-  process.env.PATH = merged;
+/** A PATH the login shell gave only when asked again: this process takes
+ * it, so servers started from now on inherit it, and each one already
+ * running is handed it to take as its own. */
+function adoptLatePath(reported) {
+  process.env.PATH = mergePath(reported, process.env.PATH);
+  for (const run of servers.values()) {
+    try {
+      run.child?.postMessage({ kind: "path", path: process.env.PATH });
+    } catch {
+      /* a server going away will start with it next time */
+    }
+  }
 }
 
 /** Set once Bloks starts quitting: the servers going away is expected

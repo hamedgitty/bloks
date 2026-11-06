@@ -736,7 +736,12 @@ An MCP server you add as a command is looked for on this computer, never
 run to check it. If the program is not there, Settings, Plugins says
 **Command not found** and how to fix it, and a turn leaves that server
 out instead of starting without its tools in silence: the agent is told,
-and the conversation gets one notice.
+and the conversation gets one notice. The fix it suggests is the
+program's full path, or a PATH in the server's own environment. Bloks
+looks where your login shell does, even when the shell is slow to start
+(it asks again in the background and looks again when the answer comes),
+and in the usual folders of cargo, Bun, Go, mise, asdf, pyenv and
+MacPorts, on the desktop app and on bloks-server alike.
 
 OpenCode reads your own setup by default: the plugins, MCP servers and
 instructions in `~/.config/opencode`, and the providers and sessions in

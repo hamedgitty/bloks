@@ -10,23 +10,31 @@
 // Two layers close it. The desktop shell asks the user's login shell for
 // its real PATH before this process starts (electron/main.mjs), which is
 // the correct fix when it works. This file is the backstop for when it
-// does not: the places node CLIs actually get installed on a Mac, checked
-// on disk and appended so lookup can find them.
+// does not, and the only layer bloks-server has under systemd, which
+// starts it with a PATH of its own: the places CLIs actually get
+// installed, checked on disk and appended so lookup can find them. A
+// shell that answers late hands its PATH over too (adoptPath).
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
-/** Where a `npm i -g`, brew, volta, pnpm or plain installer puts a CLI.
+/** Where a `npm i -g`, brew, volta, pnpm or plain installer puts a CLI,
+ * and where the other toolchains people already have keep theirs: Rust's
+ * cargo, Bun, Go, the version managers' shims (mise, asdf, pyenv), and
+ * MacPorts. An MCP server is as often a cargo or a uv binary as an npx
+ * one, and a login shell that was slow to answer leaves only this list.
  * Order matters only for ties, so the common ones come first. */
-function candidateDirs(): string[] {
-  const home = homedir();
-
-  if (process.platform === "win32") {
+export function candidateDirs(
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform === "win32") {
     // npm's global prefix and the installers' usual homes. AppData paths
     // resolve from env because roaming profiles move them.
-    const appData = process.env.APPDATA || join(home, "AppData", "Roaming");
-    const local = process.env.LOCALAPPDATA || join(home, "AppData", "Local");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
+    const local = env.LOCALAPPDATA || join(home, "AppData", "Local");
     return [
       join(appData, "npm"),
       join(local, "Programs"),
@@ -36,8 +44,15 @@ function candidateDirs(): string[] {
       // `npm i -g --prefix ~/.local`, the command the engine hints give,
       // writes its launchers into the prefix itself on Windows, not bin/
       join(home, ".local"),
+      join(home, ".cargo", "bin"),
+      join(home, ".bun", "bin"),
+      join(home, "go", "bin"),
     ];
   }
+
+  // a toolchain's own folder when its variable moves it, else its default
+  const under = (moved: string | undefined, fallback: string, ...rest: string[]) =>
+    join(moved && isAbsolute(moved) ? moved : fallback, ...rest);
 
   const dirs = [
     "/opt/homebrew/bin", // Apple Silicon brew
@@ -49,6 +64,15 @@ function candidateDirs(): string[] {
     join(home, "Library", "pnpm"),
     join(home, ".volta", "bin"),
     join(home, "bin"),
+    under(env.CARGO_HOME, join(home, ".cargo"), "bin"),
+    under(env.BUN_INSTALL, join(home, ".bun"), "bin"),
+    ...(env.GOBIN && isAbsolute(env.GOBIN) ? [env.GOBIN] : []),
+    under(env.GOPATH?.split(delimiter)[0], join(home, "go"), "bin"),
+    under(env.MISE_DATA_DIR, join(home, ".local", "share", "mise"), "shims"),
+    under(env.ASDF_DATA_DIR, join(home, ".asdf"), "shims"),
+    under(env.PYENV_ROOT, join(home, ".pyenv"), "shims"),
+    "/opt/local/bin", // MacPorts
+    "/home/linuxbrew/.linuxbrew/bin", // Homebrew on Linux, for bloks-server
   ];
 
   // nvm keeps one bin directory per installed node; take the newest,
@@ -61,7 +85,7 @@ function candidateDirs(): string[] {
     /* no nvm */
   }
 
-  const prefix = process.env.npm_config_prefix || process.env.PREFIX;
+  const prefix = env.npm_config_prefix || env.PREFIX;
   if (prefix) dirs.push(join(prefix, "bin"));
 
   return dirs;
@@ -157,12 +181,34 @@ export function killTree(pid: number | undefined, fallback: () => void) {
  * resolves a CLI, that resolution should win. This only adds places to
  * look after everything the user's setup said.
  */
-export function widenPath() {
-  const current = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+export function widenPath(
+  options: { home?: string; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
+): string[] {
+  const env = options.env ?? process.env;
+  const current = (env.PATH ?? "").split(delimiter).filter(Boolean);
   const have = new Set(current);
 
-  const missing = candidateDirs().filter((dir) => !have.has(dir) && existsSync(dir));
+  const missing = [...new Set(candidateDirs(options.home, env, options.platform))].filter((dir) => !have.has(dir) && existsSync(dir));
   if (missing.length) {
-    process.env.PATH = [...current, ...missing].join(delimiter);
+    env.PATH = [...current, ...missing].join(delimiter);
   }
+  return missing;
+}
+
+/**
+ * Takes a PATH the desktop app learned late (its login shell answered
+ * only when asked again, electron/main.mjs): its folders first, then
+ * what this process already had, each once. Absolute folders only, as
+ * a shell's PATH is; anything else is not a place to look. True when
+ * PATH changed, so the caller looks again for what it could not find.
+ */
+export function adoptPath(reported: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (typeof reported !== "string" || reported.length > 64 * 1024 || /[\r\n\0]/.test(reported)) return false;
+  const given = reported.split(delimiter).filter((dir) => dir && isAbsolute(dir));
+  if (!given.length) return false;
+  const before = env.PATH ?? "";
+  const next = [...new Set([...given, ...before.split(delimiter).filter(Boolean)])].join(delimiter);
+  if (next === before) return false;
+  env.PATH = next;
+  return true;
 }

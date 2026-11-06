@@ -502,6 +502,11 @@ the switcher, beside the others, and you can turn off Run workspaces on
 this computer to keep the app a window onto your servers alone. Engines (Claude Code,
 Codex and the rest) are installed and signed in as the `bloks` account,
 which the terminal from your own devices is the easiest way to do.
+systemd starts Bloks with a short PATH of its own, and Bloks adds the
+usual install folders that exist under the account's home (npm and pnpm
+prefixes, nvm, volta, cargo, Bun, Go, the mise, asdf and pyenv shims,
+Homebrew on Linux). A CLI or MCP server anywhere else needs its full
+path, or an `Environment=PATH=...` line in the unit.
 
 ## Updates from the app
 

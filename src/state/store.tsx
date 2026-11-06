@@ -9,6 +9,7 @@
 // The app also owns no provider connections of its own. It sends typed
 // commands and folds one event stream; anything that talks to a model
 // happens in the harness.
+import { sayMcpServersChanged } from "@/lib/mcpServersEvent";
 import { takeReadFrame } from "@/lib/readReceipts";
 import { consumeSettingsRequest } from "@/lib/settings-client";
 import {
@@ -1145,6 +1146,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "instances":
           if (Array.isArray(frame.instances)) rawDispatch({ type: "instances", instances: frame.instances });
+          break;
+        // the commands MCP servers run may be findable now (a PATH the
+        // desktop app learned late), so every list of them reads again
+        case "mcpServers":
+          sayMcpServersChanged();
           break;
         // the server looks for engine releases on its own schedule
         case "engineUpdates":

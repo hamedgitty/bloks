@@ -3215,7 +3215,7 @@
   "mcpServers.authentication": "身份验证",
   "mcpServers.command": "命令",
   "mcpServers.commandNotFound": "找不到命令：{command}",
-  "mcpServers.commandNotFoundFix": "请安装它，或移除这个服务器后用程序的完整路径重新添加。在那之前，它的代理会在没有它的情况下工作，相关对话会收到一次提示。",
+  "mcpServers.commandNotFoundFix": "请安装它，或移除这个服务器后用程序的完整路径重新添加。在终端里运行 which {command} 即可看到完整路径。在服务器自己的环境中设置包含其所在文件夹的 PATH 也可以。在那之前，它的代理会在没有它的情况下工作，相关对话会收到一次提示。",
   "mcpServers.commandOnThisComputer": "此电脑上的命令",
   "mcpServers.connection": "连接",
   "mcpServers.customMcpServersCanBe": "自定义 MCP 服务器可能存在风险。",
