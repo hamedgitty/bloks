@@ -577,11 +577,13 @@ import {
   hashOf,
   heldBackWords,
   laneLimitError,
+  MAX_FIRES,
   mayFire,
   newLines,
   orphanWatcherLanes,
   pageText,
   parseFeed,
+  perHourOf,
   roomForWatcher,
   runCheck,
   SETTLE_MS,
@@ -10159,10 +10161,11 @@ function saveWatchers() {
   }
 }
 /** What a client sees: everything but the last look's contents, and
- * whether it is paused because its agent is archived. */
+ * whether it is paused because its agent is archived. Its hourly limit
+ * always, a watcher from before it could be set keeping the old one. */
 const watcherView = ({ seen: _seen, seenItems: _items, app, ...rest }: Watcher) => ({
   ...rest,
-  ...(app ? { app: appView(app) } : {}),
+  ...(app ? { app: appView(app) } : { perHour: perHourOf(rest) }),
   ...(suspendedFor(rest.botId) ? { suspended: "archived" as const } : {}),
 });
 
@@ -10343,7 +10346,7 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
       }
     }
   }
-  w.fires = [{ at: Date.now(), summary: what.split("\n")[0].slice(0, 160) }, ...w.fires].slice(0, 10);
+  w.fires = [{ at: Date.now(), summary: what.split("\n")[0].slice(0, 160) }, ...w.fires].slice(0, MAX_FIRES);
 }
 
 /**
@@ -31886,10 +31889,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         delete w.failing;
         delete w.failures;
       }
+      // A finding held back under the old limit: a raised one gives it its
+      // turn now, a lowered one says how long it waits now.
+      const freed = w.held !== undefined && mayFire(w, Date.now());
+      if (w.held !== undefined && !freed) w.lastError = heldBackWords(w, Date.now());
       saveWatchers();
       armWatcher(w);
       // approving a check takes its baseline straight away
-      if ((moved || (canRun && !couldRun)) && w.enabled) void checkWatcher(w.id);
+      if ((moved || (canRun && !couldRun) || freed) && w.enabled) void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
       return json(res, 200, { watcher: watcherView(w), ...(moved && w.kind === "check" && constantCheck(w.target) ? { note: CONSTANT_CHECK_NOTE } : {}) });
     }

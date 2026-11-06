@@ -27,7 +27,7 @@ import { AgentAvatar } from "./Avatar";
 import { ago, AppDraftFields, appRowStatus, AppWatchDetail, appWhen, type AppDraftValue, type AppsStatus, type AppView } from "./AppWatch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Slider, type SliderStop } from "@/components/ui/slider";
+import { numberStops, Slider, type SliderStop } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/cn";
@@ -48,9 +48,13 @@ interface WatcherRow {
   mentions?: string;
   mode: "act" | "rehearse";
   every: number;
+  /** The most turns it starts in an hour; the server always says. */
+  perHour?: number;
   enabled: boolean;
   lastCheck?: number;
   lastError?: string;
+  /** Since when a finding has waited for the hour's limit to allow a turn. */
+  held?: number;
   laneId?: string;
   /** the conversation its turns go to, by title; absent is a lane of its own */
   thread?: string;
@@ -143,6 +147,12 @@ function lookStops(every: number): SliderStop<number>[] {
   const values = LOOK_EVERY.includes(every) ? LOOK_EVERY : [...LOOK_EVERY, every].sort((a, b) => a - b);
   return values.map((m) => ({ value: m, label: intervalLabel(m) }));
 }
+
+/** The most turns an hour a watcher may start, as the server bounds it
+ * (server/watchers.ts, MIN_PER_HOUR to MAX_PER_HOUR, six unless said). */
+const PER_HOUR = { min: 1, max: 30, usual: 6 };
+// made where it draws, so the stops speak the language chosen now
+const perHourStops = () => numberStops(PER_HOUR.min, PER_HOUR.max, (n) => t("watchersTab.turns", { count: n }));
 
 /** What is being watched, in as few words as a sentence can carry: a
  * folder's last name, a page without its scheme. */
@@ -576,6 +586,17 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
           <Slider aria-label={t("watchersTab.howOftenItLooks")} stops={lookStops(w.every)} value={w.every} onCommit={(every) => patch({ every })} />
         </div>
       )}
+      {/* every kind can be held back by it, a folder and a place included */}
+      <div className="max-w-[460px]">
+        <div className="mb-1.5 text-body text-muted-foreground">{t("watchersTab.atMostInAnHour")}</div>
+        <Slider
+          aria-label={t("watchersTab.atMostInAnHour")}
+          stops={perHourStops()}
+          value={Math.min(PER_HOUR.max, Math.max(PER_HOUR.min, w.perHour ?? PER_HOUR.usual))}
+          onCommit={(perHour) => perHour !== w.perHour && patch({ perHour })}
+        />
+        <div className="mt-1 text-small leading-relaxed text-muted-foreground">{t("watchersTab.pastThatItWaits")}</div>
+      </div>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body text-muted-foreground">
         <label className="flex items-center gap-1.5">
           <Switch checked={w.mode === "rehearse"} onCheckedChange={(on) => patch({ mode: on ? "rehearse" : "act" })} aria-label={t("watchersTab.rehearseFirst")} />

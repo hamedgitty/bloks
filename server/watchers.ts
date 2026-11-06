@@ -19,9 +19,11 @@
 //
 // Three limits keep a watcher from becoming a way to spend money in a
 // loop: a first look only takes a baseline and never fires, a watcher
-// fires at most once per quiet period and a few times an hour, and a
-// folder change made by the watcher's own agent while it works is not a
-// change to react to.
+// fires at most once per quiet period and a few times an hour (six
+// unless it is set otherwise, thirty at most), and a folder change made
+// by the watcher's own agent while it works is not a change to react to.
+// A finding the hourly limit holds back waits for the next turn allowed;
+// it is never taken as seen and dropped.
 //
 // A fourth kind is a check: a short command the agent wrote once, run on
 // a schedule without a model, so a turn is spent only when there is
@@ -87,6 +89,10 @@ export interface Watcher {
   mode: "act" | "rehearse";
   /** Minutes between looks, for pages and feeds. */
   every: number;
+  /** The most turns it may start in an hour (mayFire), MIN_PER_HOUR to
+   * MAX_PER_HOUR. Absent on watchers from before it could be set, which
+   * keep FIRES_PER_HOUR. An app watcher has its own, in `app`. */
+  perHour?: number;
   enabled: boolean;
   createdAt: number;
   /** What the last look saw, to compare the next one with. */
@@ -136,8 +142,13 @@ export const FAILS_TO_PAUSE = 3;
 
 export const MIN_EVERY = 5;
 export const MAX_EVERY = 24 * 60;
-/** No more than this many turns an hour from one watcher. */
+/** No more than this many turns an hour from one watcher, unless it says
+ * otherwise (`perHour`), and never more than MAX_PER_HOUR. */
 export const FIRES_PER_HOUR = 6;
+export const MIN_PER_HOUR = 1;
+export const MAX_PER_HOUR = 30;
+/** Turns remembered per watcher: enough to count the most an hour allows. */
+export const MAX_FIRES = MAX_PER_HOUR;
 /** A folder has to be still this long before its changes count. */
 export const SETTLE_MS = 20_000;
 const MAX_FILES = 3_000;
@@ -488,30 +499,38 @@ export function countLook(w: Pick<Watcher, "failures" | "failing">, ok: boolean,
 
 const HOUR = 60 * 60_000;
 
+/** The most turns this watcher may start in an hour. */
+export const perHourOf = (w: Pick<Watcher, "perHour">) => w.perHour ?? FIRES_PER_HOUR;
+
+const inLastHour = (w: Pick<Watcher, "fires">, now: number) => w.fires.filter((f) => now - f.at < HOUR);
+
 /** Whether the watcher may start another turn now. */
-export function mayFire(w: Pick<Watcher, "fires">, now: number): boolean {
-  return w.fires.filter((f) => now - f.at < HOUR).length < FIRES_PER_HOUR;
+export function mayFire(w: Pick<Watcher, "fires" | "perHour">, now: number): boolean {
+  return inLastHour(w, now).length < perHourOf(w);
 }
 
 /** When the cap next lets the watcher start a turn: an hour after the
  * turn that has to drop out of the last hour to make room. Now, when
  * there is room already. */
-export function nextAllowedAt(w: Pick<Watcher, "fires">, now: number): number {
-  const recent = w.fires
+export function nextAllowedAt(w: Pick<Watcher, "fires" | "perHour">, now: number): number {
+  const recent = inLastHour(w, now)
     .map((f) => f.at)
-    .filter((at) => now - at < HOUR)
     .sort((a, b) => a - b);
-  const over = recent.length - FIRES_PER_HOUR;
+  const over = recent.length - perHourOf(w);
   return over < 0 ? now : recent[over] + HOUR;
 }
 
 /** What a look held back by the cap says, as the watcher's last error:
  * why, and when what it found gets its turn. Minutes from now rather than
- * a clock time, since this machine's time zone need not be the reader's. */
-export function heldBackWords(w: Pick<Watcher, "fires">, now: number): string {
-  const n: number = FIRES_PER_HOUR;
+ * a clock time, since this machine's time zone need not be the reader's.
+ * A limit just lowered below what the hour already started says so. */
+export function heldBackWords(w: Pick<Watcher, "fires" | "perHour">, now: number): string {
+  const n = perHourOf(w);
+  const started = inLastHour(w, now).length;
+  const turns = (count: number) => `${count} ${count === 1 ? "turn" : "turns"}`;
+  const why = started > n ? `it already started ${turns(started)} in the last hour, and its limit is now ${n}` : `it already started ${turns(n)} in the last hour`;
   const minutes = Math.max(1, Math.ceil((nextAllowedAt(w, now) - now) / 60_000));
-  return `Held back: it already started ${n} ${n === 1 ? "turn" : "turns"} in the last hour. What it found waits for the next turn allowed, in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+  return `Held back: ${why}. What it found waits for the next turn allowed, in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
 }
 
 /** What the agent is told. */
@@ -561,7 +580,7 @@ export type PlaceFields = Pick<Watcher, "when" | "radius">;
 export type AppFields = Pick<AppWatch, "toolkit" | "trigger" | "config" | "filter" | "accountId" | "perHour" | "perDay">;
 
 export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: string) => boolean, now = Date.now()):
-  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "enabled" | "thread" | "once" | "until"> & PlaceFields & { app?: AppFields } }
+  | { ok: true; value: Pick<Watcher, "botId" | "name" | "kind" | "target" | "instruction" | "mentions" | "mode" | "every" | "perHour" | "enabled" | "thread" | "once" | "until"> & PlaceFields & { app?: AppFields } }
   | { ok: false; error: string } {
   const kind = raw.kind;
   if (kind !== "folder" && kind !== "page" && kind !== "feed" && kind !== "check" && kind !== "place" && kind !== "app") {
@@ -619,6 +638,14 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
   if (!instruction) return { ok: false, error: "say what the agent should do when it changes" };
   if (instruction.length > MAX_WATCHER_INSTRUCTION) return { ok: false, error: "a watcher instruction is at most 1,000 characters" };
   const every = Math.min(MAX_EVERY, Math.max(MIN_EVERY, Math.round(Number(raw.every) || 30)));
+  // Kept within its bounds, as `every` is; only what is not a number at
+  // all is refused. An app watcher's is among its app fields.
+  let perHour: number | undefined;
+  if (kind !== "app") {
+    const asked = raw.perHour === undefined || raw.perHour === null || raw.perHour === "" ? FIRES_PER_HOUR : Math.round(Number(raw.perHour));
+    if (!Number.isFinite(asked)) return { ok: false, error: `perHour is a number of turns an hour, ${MIN_PER_HOUR} to ${MAX_PER_HOUR}` };
+    perHour = Math.min(MAX_PER_HOUR, Math.max(MIN_PER_HOUR, asked));
+  }
   const mentions = String(raw.mentions ?? "").trim().slice(0, 120);
   // a lane title or id: one line, as short as any other lane's
   const thread = typeof raw.thread === "string" ? raw.thread.replace(/\s+/g, " ").trim().slice(0, 40) : "";
@@ -646,6 +673,7 @@ export function cleanWatcher(raw: Record<string, unknown>, botExists: (id: strin
       mode: raw.mode === "rehearse" ? "rehearse" : "act",
       thread: thread || undefined,
       every,
+      ...(perHour !== undefined ? { perHour } : {}),
       enabled: raw.enabled !== false,
     },
   };

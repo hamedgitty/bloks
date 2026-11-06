@@ -375,7 +375,7 @@ const COMMANDS = {
     },
   },
   watch: {
-    use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place> --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--once] [--until <date and time>] [--thread <conversation>] [--rehearse]',
+    use: 'watch --folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place> --do "<what to do when it changes>" [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--per-hour <turns>] [--once] [--until <date and time>] [--thread <conversation>] [--rehearse]',
     about:
       "act when a folder, a web page or a feed changes, when a cheap check you wrote finds something, or when the person arrives at or leaves a place: " +
       "--check runs a command every --every minutes without waking you. Its first run is a baseline and never acts; after that it acts only on a new finding, " +
@@ -385,6 +385,7 @@ const COMMANDS = {
       '--arrive and --leave take a place as their iPhone names it ("Toronto", "Shinjuku, Tokyo") or as latitude,longitude with --radius in metres (500 unless said); ' +
       "it acts when their phone next says where they are, needs location sharing on there, and a place by coordinates needs Exact position on. " +
       "--once is done after acting once; --until stops it at a time, such as 2026-10-24T18:00, when its purpose runs out. " +
+      "--per-hour is the most turns it starts in an hour, 1 to 30 (6 unless said); a finding past it waits for the next turn allowed, never dropped. " +
       "The instruction (--do) and folder, page or feed target can each be up to 1,000 characters; a check command can be up to 500. Longer text is refused, not cut. " +
       "Its turns come to your first conversation, where the person talks to you; --thread sends them to another, by its title (made if missing) or its id",
     run: async (args) => {
@@ -396,6 +397,8 @@ const COMMANDS = {
       if (flags.once !== undefined && flags.once !== "true" && flags.once !== "false") throw new Error("--once is true or false");
       const asked = flags.every ? Number(flags.every) : undefined;
       if (kind === "place" && flags.radius !== undefined && !Number.isFinite(Number(flags.radius))) throw new Error("--radius needs a number of metres");
+      const perHour = Object.hasOwn(flags, "per-hour") ? Number(flags["per-hour"]) : undefined;
+      if (perHour !== undefined && !Number.isFinite(perHour)) throw new Error("--per-hour needs a number of turns");
       const filed = await request("POST", "/api/watchers", {
         kind,
         target: kind === "place" ? (flags.arrive ?? flags.leave) : flags[kind],
@@ -412,16 +415,17 @@ const COMMANDS = {
         ...(Object.hasOwn(flags, "once") ? { once: flags.once === "true" } : {}),
         ...(Object.hasOwn(flags, "until") ? { until: flags.until } : {}),
         ...(flags.thread ? { thread: flags.thread } : {}),
+        ...(perHour !== undefined ? { perHour } : {}),
         mode: flags.rehearse ? "rehearse" : "act",
       });
-      // The workspace keeps --every within its bounds without saying so,
-      // and an agent that asked for 2 would otherwise plan on 2 (GitHub
-      // 166). A folder is watched as it changes, and a place as the phone
-      // says where it is, so their --every is moot.
-      const every = filed.watcher?.every;
-      if (kind === "folder" || kind === "place" || !Number.isFinite(asked) || typeof every !== "number" || Math.round(asked) === every) return filed;
-      const clamped = `Checks every ${every} minutes (the ${every > asked ? "minimum" : "maximum"}; you asked for ${asked}).`;
-      return { ...filed, note: filed.note ? `${filed.note} ${clamped}` : clamped };
+      // The workspace keeps --every and --per-hour within their bounds
+      // without saying so, and an agent that asked for 2 would otherwise
+      // plan on 2 (GitHub 166). A folder is watched as it changes, and a
+      // place as the phone says where it is, so their --every is moot.
+      return withKeptNotes(filed, [
+        kind === "folder" || kind === "place" ? null : keptNote(asked, filed.watcher?.every, (n) => `Checks every ${n} minutes`),
+        keptNote(perHour, filed.watcher?.perHour, (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
+      ]);
     },
   },
   "watch-app": {
@@ -490,7 +494,7 @@ const COMMANDS = {
     run: async () => (await request("GET", "/api/watchers")).watchers,
   },
   "edit-watch": {
-    use: 'edit-watch <watcher-id> [--do "<what to do>"] [--folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place>] [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--once | --once=false] [--until <date and time>] [--thread <conversation>]',
+    use: 'edit-watch <watcher-id> [--do "<what to do>"] [--folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place>] [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--per-hour <turns>] [--once | --once=false] [--until <date and time>] [--thread <conversation>]',
     about:
       "change supplied fields of one of your watchers, keeping its id and fire history; leave out a flag to keep that field. " +
       "Use --mentions=, --thread= or --until= to clear those fields. The same text limits as watch apply. " +
@@ -498,7 +502,7 @@ const COMMANDS = {
     run: async (args) => {
       const [id, ...rest] = args;
       if (!id || id.startsWith("--")) throw new Error("edit-watch needs a watcher id");
-      const fields = { do: "instruction", name: "name", every: "every", mentions: "mentions", thread: "thread", radius: "radius", until: "until" };
+      const fields = { do: "instruction", name: "name", every: "every", mentions: "mentions", thread: "thread", radius: "radius", until: "until", "per-hour": "perHour" };
       const kinds = ["folder", "page", "feed", "check", "arrive", "leave"];
       for (let i = 0; i < rest.length; i++) {
         const arg = rest[i];
@@ -517,7 +521,7 @@ const COMMANDS = {
       if (targets.length > 1) throw new Error("edit-watch takes only one of --folder, --page, --feed, --check, --arrive or --leave");
       const body = {};
       for (const [flag, field] of Object.entries(fields)) {
-        if (Object.hasOwn(flags, flag)) body[field] = flag === "every" || flag === "radius" ? Number(flags[flag]) : flags[flag];
+        if (Object.hasOwn(flags, flag)) body[field] = flag === "every" || flag === "radius" || flag === "per-hour" ? Number(flags[flag]) : flags[flag];
       }
       if (Object.hasOwn(flags, "once")) body.once = flags.once !== "false";
       if (targets.length) {
@@ -527,10 +531,12 @@ const COMMANDS = {
       if (!Object.keys(body).length) throw new Error("edit-watch needs at least one field to change");
       if (Object.hasOwn(body, "every") && !Number.isFinite(body.every)) throw new Error("--every needs a number of minutes");
       if (Object.hasOwn(body, "radius") && !Number.isFinite(body.radius)) throw new Error("--radius needs a number of metres");
+      if (Object.hasOwn(body, "perHour") && !Number.isFinite(body.perHour)) throw new Error("--per-hour needs a number of turns");
       const edited = await request("PATCH", `/api/watchers/${encodeURIComponent(id)}`, body);
-      const every = edited.watcher?.every;
-      if (edited.watcher?.kind === "folder" || !Number.isFinite(body.every) || typeof every !== "number" || Math.round(body.every) === every) return edited;
-      return { ...edited, note: `Checks every ${every} minutes (the ${every > body.every ? "minimum" : "maximum"}; you asked for ${body.every}).` };
+      return withKeptNotes(edited, [
+        edited.watcher?.kind === "folder" ? null : keptNote(body.every, edited.watcher?.every, (n) => `Checks every ${n} minutes`),
+        keptNote(body.perHour, edited.watcher?.perHour, (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
+      ]);
     },
   },
   unwatch: {
@@ -1454,6 +1460,20 @@ function hours(raw) {
 function localStamp(at) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** What the workspace kept of a number it holds within bounds, said when
+ * that is not what was asked: "Checks every 5 minutes (the minimum; you
+ * asked for 2)." Null when it kept what was asked, or nothing was. */
+function keptNote(asked, kept, words) {
+  if (!Number.isFinite(asked) || typeof kept !== "number" || Math.round(asked) === kept) return null;
+  return `${words(kept)} (the ${kept > asked ? "minimum" : "maximum"}; you asked for ${asked}).`;
+}
+
+/** An answer with those notes after its own. */
+function withKeptNotes(answer, notes) {
+  const said = [answer.note, ...notes].filter(Boolean);
+  return said.length ? { ...answer, note: said.join(" ") } : answer;
 }
 
 /** `--flag value` and `--flag=value`, both of which somebody will type. */
