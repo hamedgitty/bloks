@@ -23,8 +23,9 @@ jobs:
     # arm64, with an Xcode that can cross-compile the x86_64 slice of the
     # Swift helpers. The tests run here first and now take close to fifty
     # minutes, then notarization is a network round trip to Apple, so an
-    # hour stopped being enough with 3.1.1.
-    runs-on: macos-14
+    # hour stopped being enough with 3.1.1. macOS 15: GitHub no longer
+    # starts jobs on its macOS 14 image.
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
