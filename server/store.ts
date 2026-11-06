@@ -144,7 +144,19 @@ export interface AgentNote {
    * a reply can go back to the tab that asked rather than the sender's
    * first conversation. Absent from messages written before it was kept. */
   laneId?: string;
+  /** "out" only, on a record that went from "queued" to "failed": why the
+   * words were dropped before they were read, and whether this
+   * conversation's next turn has been told. The sender may have moved on
+   * by then, so it hears once, in one line, on its next turn here, and
+   * nothing starts a turn just to say it. */
+  dropped?: { why: DroppedWhy; told?: true };
 }
+
+/** Why words that waited for another agent were never read: taken back
+ * by the agent that sent them, deleted by the person, not sent (the
+ * recipient was archived or held, refused them, or Bloks restarted
+ * before they went), or the conversation they waited in was closed. */
+export type DroppedWhy = "taken-back" | "removed" | "not-sent" | "closed";
 
 /** One note recall added to a turn (Message.recalled). */
 export interface RecalledNote {

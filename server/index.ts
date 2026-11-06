@@ -142,7 +142,7 @@ import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.t
 import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/stall.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { COLORS as BLOK_COLORS, MAX_TASKS, ownerLanes, shapeOf, Store, type AgentNote, type BlokColor, type BotRecord, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
+import { COLORS as BLOK_COLORS, MAX_TASKS, ownerLanes, shapeOf, Store, type AgentNote, type BlokColor, type BotRecord, type DroppedWhy, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
 import { addressees, audienceOf, BlokStore, currentSpend, DEFAULT_SHARING, leadOf, MAX_MEMBERS, ranksForExport, type BlokRecord, type RoomSharing } from "./bloks.ts";
 import { answersOf, pickAnswerers, RECENT_LINES, roomAnswers, routeWords, type RoomAnswers, type RoomRoute, type RouteLine } from "./room-route.ts";
 import { cleanSectionOrder, placeAt, SidebarStore, sidebarView, upgradePlaces, type Placed } from "./sidebar.ts";
@@ -7537,8 +7537,10 @@ async function interruptLane(bot: BotRecord, laneId: string) {
  * closed then, the turn would start in a lane that no longer exists. */
 function deleteLane(botId: string, laneId: string): ReturnType<typeof store.deleteTask> {
   if (claimedLanes.has(laneId)) return "busy";
+  const waiting = waitingAgentWords(laneId);
   const outcome = store.deleteTask(botId, laneId);
   if (outcome === "ok") {
+    for (const m of waiting) settleRecord(m, "closed");
     textPreview.forget(laneId);
     turnTraces.forget(laneId);
     branchSourceGone(botId, laneId);
@@ -9164,6 +9166,10 @@ async function startClaimedTurn(
       // answer, kept on the card, told once)
       const answeredNote = personSource || command ? null : proposalsAnswered(task.id, bot.id);
       if (answeredNote) turnText = `${answeredNote}\n\n${turnText}`;
+      // and words it left waiting for another agent that were dropped
+      // since, which nothing starts a turn to say
+      const droppedNote = personSource || command ? null : droppedWordsNote(task.id);
+      if (droppedNote) turnText = `${droppedNote}\n\n${turnText}`;
       // and the skills it asked to add, the same way
       const skillNote = personSource || command ? null : skillRequestsAnswered(task.id, bot.id);
       if (skillNote) turnText = `${skillNote}\n\n${turnText}`;
@@ -20090,14 +20096,22 @@ function tieRecord(laneId: string, messageId: string, record: { laneId: string; 
   } catch { /* an untied record says "waiting", as every record did before */ }
 }
 
+/** The sender's lane while `take-back` tombstones its words, so the
+ * records they settle say it was the sender, and the one it took them
+ * back from is not told again what its own command just answered. */
+let takingBackFrom: string | undefined;
+
 /** The sender's record moves on from "queued" once, when the words it is
  * about go or will never go. A sender lane or row that has gone since
  * is left alone, and nothing here may stop the words themselves going:
- * this runs inside every change to a transcript. */
-function settleRecord(m: Message) {
+ * this runs inside every change to a transcript. `closed` is for words
+ * whose conversation is going with them, which no patch of theirs will
+ * ever say. Words dropped this way are kept on the record for the
+ * sender's next turn there to hear once (droppedWordsNote). */
+function settleRecord(m: Message, closed?: "closed") {
   const record = m.agent?.dir === "in" ? m.agent.record : undefined;
   if (!record) return;
-  const status = recordStatus(m);
+  const status = closed && !m.deliveredAt ? "failed" : recordStatus(m);
   if (!status || status === "queued") return;
   try {
     // asked of the agents first, so a lane that has gone is not read
@@ -20105,12 +20119,52 @@ function settleRecord(m: Message) {
     if (!store.botByThread(record.laneId)) return;
     const row = store.messagesFor(record.laneId).find((r) => r.id === record.id);
     if (row?.agent?.dir !== "out" || row.agent.status !== "queued") return;
+    const why: DroppedWhy = closed ?? (m.deleted ? (takingBackFrom ? "taken-back" : "removed") : "not-sent");
+    const told = why === "taken-back" && takingBackFrom === record.laneId;
     const patched = store.patchMessage(record.laneId, row.id, {
       ...(row.tool ? { tool: { ...row.tool, ok: status !== "failed" } } : {}),
-      agent: { ...row.agent, status },
+      agent: { ...row.agent, status, ...(status === "failed" ? { dropped: { why, ...(told ? { told: true as const } : {}) } } : {}) },
     });
     if (patched) broadcast({ kind: "message.patch", threadId: record.laneId, message: patched });
   } catch { /* the record is ancillary; the words went, or did not, either way */ }
+}
+
+/** Words other agents left waiting in a conversation that is going (closed,
+ * cleared, or its agent removed): their records say so now, while the
+ * words can still be read. */
+function waitingAgentWords(laneId: string): Message[] {
+  return store.messagesFor(laneId).filter((m) => m.agent?.dir === "in" && m.agent.record && m.queued && !m.deleted && !m.unsent && !m.deliveredAt);
+}
+
+/** How a dropped word reads in the line its sender's next turn hears. */
+const DROPPED_WHY: Record<DroppedWhy, string> = {
+  "taken-back": "taken back from another of your conversations",
+  removed: "deleted by the person",
+  "not-sent": "not sent",
+  closed: "the conversation they waited in was closed",
+};
+
+/** What the agent's next turn in a lane hears about words it left
+ * waiting for another agent that were dropped before they were read,
+ * once each, in one line. The turn that sent them has usually ended by
+ * then, and the record row is the person's to read, so this is how the
+ * agent learns it. Never a turn of its own. */
+function droppedWordsNote(laneId: string): string | null {
+  const dropped = store.messagesFor(laneId).slice(-300).filter((m) => m.agent?.dir === "out" && m.agent.status === "failed" && m.agent.dropped && !m.agent.dropped.told);
+  if (!dropped.length) return null;
+  const said = dropped.slice(0, 5).map((m) => {
+    const words = (m.text ?? "").replace(/\s+/g, " ").trim();
+    const short = words.length > 80 ? `${words.slice(0, 80).trimEnd()}…` : words;
+    return `to ${m.agent!.peerName}, ${JSON.stringify(short)} (${DROPPED_WHY[m.agent!.dropped!.why]})`;
+  });
+  if (dropped.length > 5) said.push(`and ${dropped.length - 5} more`);
+  for (const m of dropped) {
+    try {
+      const patched = store.patchMessage(laneId, m.id, { agent: { ...m.agent!, dropped: { ...m.agent!.dropped!, told: true } } });
+      if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+    } catch { /* told this turn either way; a write that failed may tell it again */ }
+  }
+  return `(Since your last turn here, words you left waiting for another agent were dropped before it read them: ${said.join("; ")}. None of them was heard, so send again what still stands.)`;
 }
 
 // ── rewording a queued message ──
@@ -23592,7 +23646,9 @@ async function forgetAgent(bot: BotRecord, actor: "you" | null) {
     await revokeTelegramPersonTurns(bot.id, () => true, "This agent's Telegram bot was removed.");
     startTelegramBot(bot.id);
   }
+  const waiting = bot.tasks.flatMap((task) => waitingAgentWords(task.id));
   store.deleteBot(bot.id);
+  for (const said of waiting) settleRecord(said, "closed");
   // Every lane, not just the first: an agent with three lanes used
   // to leave two files behind. The native copy goes with its gzipped
   // older ones.
@@ -26485,13 +26541,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!caller || caller.id === recipient.id) return json(res, 403, { error: "take-back is only for your messages to another agent" });
       // No body selection and no await: the queue cannot claim words
       // between this operation's selection and its last tombstone.
-      const result = takeBackWaiting({
-        store, queues: steerQueues, caller, callerLaneId: asAgent.taskId, recipient,
-        patched: (threadId, message) => broadcast({
-          kind: message.takeBack ? "message" : "message.patch", threadId, message,
-        }),
-        editClosed,
-      });
+      let result;
+      takingBackFrom = asAgent.taskId;
+      try {
+        result = takeBackWaiting({
+          store, queues: steerQueues, caller, callerLaneId: asAgent.taskId, recipient,
+          patched: (threadId, message) => broadcast({
+            kind: message.takeBack ? "message" : "message.patch", threadId, message,
+          }),
+          editClosed,
+        });
+      } finally {
+        takingBackFrom = undefined;
+      }
       return json(res, result.takenBack.length ? 200 : 409, result.takenBack.length ? result : { ...result, error: result.note });
     }
     // An agent's own questions asked without waiting, and taking back one
@@ -29241,8 +29303,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/clear$/);
     if (m && method === "POST") {
+      const waiting = waitingAgentWords(m[2]);
       const outcome = store.clearTask(m[1], m[2]);
       if (outcome === "missing") return json(res, 404, { error: "no such task" });
+      if (outcome === "ok") for (const said of waiting) settleRecord(said, "closed");
       if (outcome === "busy") return json(res, 409, { error: "that task is running, interrupt it first" });
 
       // the lane keeps its id, so nothing from before the clear may follow it

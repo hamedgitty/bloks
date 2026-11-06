@@ -129,16 +129,21 @@ test("the shipped CLI takes back only its sender's waiting words across lanes, a
   assert.doesNotMatch(fromPerson.note, /bloks take-back/);
   // the records of the words taken back; the tab's first message was heard
   const sentWrong = (m: any) => m.agent?.dir === "out" && m.text === wrong;
-  const oldRows = [...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter(sentWrong);
-  const prior = JSON.stringify(oldRows);
+  const prior = JSON.stringify([(await f.messages(a.id, aMain)).filter(sentWrong), (await f.messages(a.id, aSecond.threadId)).filter(sentWrong)]);
   const result = await command(f.h.url, tokenA2, ["take-back", b.id], f.home);
   assert.equal(result.exit, 0, result.err);
   assert.equal(result.body.ok, true);
   assert.equal(result.body.takenBack.length, 3);
   assert.deepEqual(result.body.takenBack.map((m: any) => m.laneId), [bMain, bMain, bSecond]);
   assert.ok(result.body.takenBack.every((m: any) => m.text === wrong && typeof m.id === "string"));
-  // the same send rows, each now saying its words were not delivered (GitHub 337)
-  const notDelivered = JSON.parse(prior).map((m: any) => ({ ...m, tool: { ...m.tool, ok: false }, agent: { ...m.agent, status: "failed" } }));
+  // the same send rows, each now saying its words were not delivered (GitHub 337),
+  // and why: the conversation that took them back has its answer, and the
+  // other hears it on its next turn there
+  const failed = (told: boolean) => (m: any) => ({
+    ...m, tool: { ...m.tool, ok: false }, agent: { ...m.agent, status: "failed", dropped: { why: "taken-back", ...(told ? { told: true } : {}) } },
+  });
+  const [wasMain, wasSecond] = JSON.parse(prior);
+  const notDelivered = [...wasMain.map(failed(false)), ...wasSecond.map(failed(true))];
   assert.equal(JSON.stringify([...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter(sentWrong)), JSON.stringify(notDelivered));
   const rows = (await f.messages(a.id, aSecond.threadId)).filter((m) => m.takeBack);
   assert.equal(rows.length, 1);

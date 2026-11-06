@@ -1966,6 +1966,21 @@ the turn is in, and `take-back` and `interrupt` name no lane. A lane
 that does not exist is a 404 as before, and the person's own
 credential never meets the rule.
 
+Words that waited behind a busy agent carry where the sender's record
+of them is (`AgentNote.record`), and the record follows them once
+(`settleRecord`). When they are dropped before they were read, the
+record says why on `AgentNote.dropped`: `taken-back` by the sender,
+`removed` by the person, `not-sent` (the recipient archived or held,
+a refusal at the engine, a restart that found them stale), or
+`closed`, when the lane they waited in is closed or cleared, or its
+agent deleted, with them still in it (`waitingAgentWords`). The
+sender's turn has usually ended by then, so its next turn in that lane
+hears every such record in one line, once (`droppedWordsNote`, beside
+the notes on proposals the person answered), and the records are
+marked `told`. Nothing starts a turn just to say it. Words taken back
+from the very lane that sent them are marked told at once: the
+command's own answer said so.
+
 Which of those fits what the person asked, with the rest of the command
 line, is a built-in skill, `using-bloks` (`BLOKS_GUIDE` in
 `server/skills.ts`). It rides along as `page-design` does
