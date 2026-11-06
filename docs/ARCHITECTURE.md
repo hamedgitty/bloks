@@ -2965,7 +2965,11 @@ rehearsal (`openRehearsals`), with the message marked `via: "watcher"`.
 A look is skipped while the agent is busy, so its own edits are not news
 to it, and `mayFire` caps a watcher at its `perHour` turns an hour: 1 to
 30, kept within those bounds as `every` is, six unless set, and six for
-a watcher saved before it could be set. `fires` keeps the newest thirty,
+a watcher saved before it could be set. Through an agent's credential it
+is at most six on a watcher the agent files and no higher than it is on
+one it changes (`agentPerHourCeiling`), with a note saying so; the page
+shows the control only where the limit can bind (a folder, a place, more
+than one look an hour, or a finding held now). `fires` keeps the newest thirty,
 enough to count the highest limit. A look the cap holds back does not
 take what it saw as seen: the watcher is marked `held`, the minute tick
 looks again as soon as the hour allows (`nextAllowedAt`, also a sleeping

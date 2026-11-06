@@ -10,7 +10,7 @@
 // do, and how often to look, read back as one plain sentence before it is
 // filed.
 import { useCallback, useEffect, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Check } from "@/components/icons";
 import { Eye } from "@/components/icons";
 import { FlaskConical } from "@/components/icons";
@@ -38,6 +38,7 @@ import { cn } from "@/lib/cn";
 import { intervalLabel, intervalPhrase } from "@/lib/checkIns";
 import { AUTOMATIONS_LIST, AUTOMATIONS_LIST_SIZE, useColumnFolded } from "@/lib/sideColumn";
 import { ShowColumn, SideColumn } from "./SideColumn";
+import { OPEN } from "./SidebarParts";
 import { formatDate, formatList, formatNumber, t, type MessageKey } from "@/lib/i18n";
 
 type Kind = "folder" | "page" | "feed" | "check" | "place" | "app";
@@ -157,6 +158,13 @@ function lookStops(every: number): SliderStop<number>[] {
 const PER_HOUR = { min: 1, max: 30, usual: 6 };
 // made where it draws, so the stops speak the language chosen now
 const perHourStops = () => numberStops(PER_HOUR.min, PER_HOUR.max, (n) => t("watchersTab.turns", { count: n }));
+
+/** Whether the hourly limit can ever hold this watcher back: one that
+ * looks as things happen (a folder, a place), one whose schedule looks
+ * more than once an hour, or one holding a finding back right now. At an
+ * hour or slower it can never bind, so it is not shown. */
+const capMatters = (w: Pick<WatcherRow, "kind" | "every" | "held">) =>
+  w.held !== undefined || w.kind === "folder" || w.kind === "place" || 60 / w.every > 1;
 
 /** What is being watched, in as few words as a sentence can carry: a
  * folder's last name, a page without its scheme. */
@@ -600,6 +608,7 @@ function Looks({ w }: { w: WatcherRow }) {
 
 function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
   const { state, dispatch } = useStore();
+  const reduce = useReducedMotion();
   const bot = state.bots.find((b) => b.id === w.botId);
   const [instruction, setInstruction] = useState(w.instruction);
   const [thread, setThread] = useState(w.thread ?? "");
@@ -717,17 +726,34 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
           <Slider aria-label={t("watchersTab.howOftenItLooks")} stops={lookStops(w.every)} value={w.every} onCommit={(every) => patch({ every })} />
         </div>
       )}
-      {/* every kind can be held back by it, a folder and a place included */}
-      <div className="max-w-[460px]">
-        <div className="mb-1.5 text-body text-muted-foreground">{t("watchersTab.atMostInAnHour")}</div>
-        <Slider
-          aria-label={t("watchersTab.atMostInAnHour")}
-          stops={perHourStops()}
-          value={Math.min(PER_HOUR.max, Math.max(PER_HOUR.min, w.perHour ?? PER_HOUR.usual))}
-          onCommit={(perHour) => perHour !== w.perHour && patch({ perHour })}
-        />
-        <div className="mt-1 text-small leading-relaxed text-muted-foreground">{t("watchersTab.pastThatItWaits")}</div>
-      </div>
+      {/* Only where it can matter: a folder or a place, which look as often
+          as things happen, a schedule of more than one look an hour, or a
+          finding it is holding back now. Hidden, its value is kept. The
+          margin closes the column's gap with it, so nothing jumps. */}
+      <AnimatePresence initial={false}>
+        {capMatters(w) && (
+          <motion.div
+            key="cap"
+            initial={{ height: 0, opacity: 0, marginTop: -16 }}
+            animate={{ height: "auto", opacity: 1, marginTop: 0 }}
+            exit={{ height: 0, opacity: 0, marginTop: -16 }}
+            transition={reduce ? { duration: 0 } : OPEN}
+            className="overflow-hidden"
+          >
+            <div className="max-w-[460px]">
+              <div className="mb-1.5 text-body text-muted-foreground">{t("watchersTab.atMostInAnHour")}</div>
+              <Slider
+                aria-label={t("watchersTab.atMostInAnHour")}
+                readout="below"
+                stops={perHourStops()}
+                value={Math.min(PER_HOUR.max, Math.max(PER_HOUR.min, w.perHour ?? PER_HOUR.usual))}
+                onCommit={(perHour) => perHour !== w.perHour && patch({ perHour })}
+              />
+              <div className="mt-1 text-small leading-relaxed text-muted-foreground">{t("watchersTab.pastThatItWaits")}</div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body text-muted-foreground">
         <label className="flex items-center gap-1.5">
           <Switch checked={w.mode === "rehearse"} onCheckedChange={(on) => patch({ mode: on ? "rehearse" : "act" })} aria-label={t("watchersTab.rehearseFirst")} />

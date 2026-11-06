@@ -385,7 +385,7 @@ const COMMANDS = {
       '--arrive and --leave take a place as their iPhone names it ("Toronto", "Shinjuku, Tokyo") or as latitude,longitude with --radius in metres (500 unless said); ' +
       "it acts when their phone next says where they are, needs location sharing on there, and a place by coordinates needs Exact position on. " +
       "--once is done after acting once; --until stops it at a time, such as 2026-10-24T18:00, when its purpose runs out. " +
-      "--per-hour is the most turns it starts in an hour, 1 to 30 (6 unless said); a finding past it waits for the next turn allowed, never dropped. " +
+      "--per-hour lowers the most turns it starts in an hour, 1 to 6 (6 unless said; you can lower a watcher's limit but never raise it, and only the person can allow more, up to 30); a finding past it waits for the next turn allowed, never dropped. " +
       "The instruction (--do) and folder, page or feed target can each be up to 1,000 characters; a check command can be up to 500. Longer text is refused, not cut. " +
       "Its turns come to your first conversation, where the person talks to you; --thread sends them to another, by its title (made if missing) or its id",
     run: async (args) => {
@@ -424,7 +424,7 @@ const COMMANDS = {
       // place as the phone says where it is, so their --every is moot.
       return withKeptNotes(filed, [
         kind === "folder" || kind === "place" ? null : keptNote(asked, filed.watcher?.every, (n) => `Checks every ${n} minutes`),
-        keptNote(perHour, filed.watcher?.perHour, (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
+        keptNote(perHour, minimumOnly(perHour, filed.watcher?.perHour), (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
       ]);
     },
   },
@@ -554,7 +554,7 @@ const COMMANDS = {
       const edited = await request("PATCH", `/api/watchers/${encodeURIComponent(id)}`, body);
       return withKeptNotes(edited, [
         edited.watcher?.kind === "folder" ? null : keptNote(body.every, edited.watcher?.every, (n) => `Checks every ${n} minutes`),
-        keptNote(body.perHour, edited.watcher?.perHour, (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
+        keptNote(body.perHour, minimumOnly(body.perHour, edited.watcher?.perHour), (n) => `Starts at most ${n} ${n === 1 ? "turn" : "turns"} an hour`),
       ]);
     },
   },
@@ -1487,6 +1487,12 @@ function localStamp(at) {
 function keptNote(asked, kept, words) {
   if (!Number.isFinite(asked) || typeof kept !== "number" || Math.round(asked) === kept) return null;
   return `${words(kept)} (the ${kept > asked ? "minimum" : "maximum"}; you asked for ${asked}).`;
+}
+
+/** What was kept, only when it was raised to a minimum: an agent's limit
+ * kept lower than asked is said by the workspace itself, with why. */
+function minimumOnly(asked, kept) {
+  return typeof kept === "number" && Number.isFinite(asked) && kept < asked ? Math.round(asked) : kept;
 }
 
 /** An answer with those notes after its own. */

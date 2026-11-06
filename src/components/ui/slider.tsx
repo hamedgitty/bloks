@@ -49,6 +49,7 @@ export function Slider<T>({
   onCommit,
   disabled,
   className,
+  readout = "beside",
   "aria-label": ariaLabel,
 }: {
   stops: SliderStop<T>[];
@@ -59,6 +60,10 @@ export function Slider<T>({
   onCommit?: (value: T) => void;
   disabled?: boolean;
   className?: string;
+  /** Where a long row says its value: beside the track, or under the
+   * thumb with its two ends, the way a short row names its stops. Under,
+   * its track is as wide as a short row's, so the two stack as a pair. */
+  readout?: "beside" | "below";
   "aria-label": string;
 }) {
   const reduce = useReducedMotion();
@@ -90,6 +95,7 @@ export function Slider<T>({
     before.current = index;
   });
   const named = stops.length <= NAMED;
+  const below = !named && readout === "below";
   const at = last > 0 ? index / last : 0;
   const glide = !reduce && (named || held === null);
 
@@ -128,7 +134,7 @@ export function Slider<T>({
   const ease = "transform 220ms var(--ease-out-quart)";
   return (
     <div className={cn("flex items-center gap-4", disabled && "pointer-events-none opacity-50", className)}>
-      <div className={cn("group relative min-w-[160px] flex-1", named && "pb-7")}>
+      <div className={cn("group relative min-w-[160px] flex-1", (named || below) && "pb-7")}>
         <div className="relative h-6">
           {/* the track, and the fill sliding out of it */}
           <div
@@ -176,7 +182,7 @@ export function Slider<T>({
               />
               {/* a long row's value, held up above the thumb while it moves
                   or has the keyboard; a short row's names already say it */}
-              {!named && (
+              {!named && !below && (
                 <span
                   aria-hidden
                   className={cn(
@@ -212,6 +218,26 @@ export function Slider<T>({
           />
         </div>
 
+        {/* a long row's value under its thumb, between its two ends, set as a
+            short row's chosen name is; an end it would crowd steps aside */}
+        {below && (
+          <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-5 text-small" style={{ marginLeft: EDGE, marginRight: EDGE }}>
+            {at > 0.25 && <span className="absolute left-0 top-0 -translate-x-[12px] whitespace-nowrap text-muted-foreground">{stops[0].label}</span>}
+            {at < 0.75 && <span className="absolute right-0 top-0 translate-x-[12px] whitespace-nowrap text-muted-foreground">{stops[last].label}</span>}
+            <span
+              className="absolute top-0 whitespace-nowrap font-medium tabular-nums text-foreground"
+              style={{
+                left: `${at * 100}%`,
+                // hugs its end at either end, as a short row's end names do
+                transform: `translateX(calc(${-at * 100}% - ${12 - 24 * at}px))`,
+                transition: glide ? `left 220ms var(--ease-out-quart), transform 220ms var(--ease-out-quart)` : "none",
+              }}
+            >
+              {stops[index].label}
+            </span>
+          </div>
+        )}
+
         {named && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5" style={{ marginLeft: EDGE, marginRight: EDGE }}>
             {stops.map((stop, i) => (
@@ -235,7 +261,7 @@ export function Slider<T>({
         )}
       </div>
 
-      {!named && (
+      {!named && !below && (
         <div className="relative h-5 min-w-[5.5rem] overflow-hidden text-right text-body font-medium tabular-nums text-foreground">
           <AnimatePresence initial={false} mode="popLayout">
             <motion.span

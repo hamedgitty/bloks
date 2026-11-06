@@ -565,6 +565,7 @@ import {
 } from "./cut-off.ts";
 import { actionItems, cleanSegment, MAX_SEGMENTS, notesPrompt, transcriptOf, type Meeting } from "./meetings.ts";
 import {
+  agentPerHourCeiling,
   checkAllowed,
   checkOutcome,
   cleanWatcher,
@@ -31778,6 +31779,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const placeRefused = checked.value.kind === "place" ? locationRefusal(checked.value.botId, asAgent?.taskId) : null;
       if (placeRefused) return json(res, 403, { error: placeRefused });
       if (!makeWatcherRoom()) return json(res, 409, { error: NO_WATCHER_ROOM });
+      // more turns an hour is the person's to allow (agentPerHourCeiling)
+      const agentCap = asAgent ? agentPerHourCeiling() : undefined;
+      const capped = agentCap !== undefined && checked.value.perHour !== undefined && checked.value.perHour > agentCap;
+      if (capped) checked.value.perHour = agentCap;
       const { app: _app, ...made } = checked.value;
       const w: Watcher = {
         id: newId(),
@@ -31805,6 +31810,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         w.kind === "check" && constantCheck(w.target) ? CONSTANT_CHECK_NOTE : null,
         waiting ? `Filed, but its command does not run until ${hostName()} approves it in Watchers. Tell them it is waiting and what it runs.` : null,
         w.kind === "place" ? placeWatchNote(w) : null,
+        capped ? `An agent may set at most ${agentCap} turns an hour, so it starts at most ${agentCap}; only ${hostName()} can allow more, in Watchers.` : null,
       ]
         .filter(Boolean)
         .join(" ");
@@ -31867,6 +31873,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       );
       if (!checked.ok) return json(res, 400, { error: checked.error });
       if (!Object.hasOwn(body, "until") && until !== undefined) checked.value.until = until;
+      // an agent lowers its watcher's limit, never raises it (agentPerHourCeiling)
+      const agentCap = asAgent ? agentPerHourCeiling(w) : undefined;
+      const capped = agentCap !== undefined && checked.value.perHour !== undefined && checked.value.perHour > agentCap;
+      if (capped) checked.value.perHour = agentCap;
       const placeRefused = checked.value.kind === "place" && w.kind !== "place" ? locationRefusal(checked.value.botId, asAgent?.taskId) : null;
       if (placeRefused) return json(res, 403, { error: placeRefused });
       const renamed = checked.value.thread !== w.thread || checked.value.botId !== w.botId;
@@ -31930,7 +31940,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // approving a check takes its baseline straight away
       if ((moved || (canRun && !couldRun) || freed) && w.enabled) void checkWatcher(w.id);
       broadcast({ kind: "watchers" });
-      return json(res, 200, { watcher: watcherView(w), ...(moved && w.kind === "check" && constantCheck(w.target) ? { note: CONSTANT_CHECK_NOTE } : {}) });
+      const said = [
+        moved && w.kind === "check" && constantCheck(w.target) ? CONSTANT_CHECK_NOTE : null,
+        capped ? `An agent may lower a watcher's limit but not raise it, so it stays at most ${agentCap} ${agentCap === 1 ? "turn" : "turns"} an hour; only ${hostName()} can raise it, in Watchers.` : null,
+      ].filter(Boolean);
+      return json(res, 200, { watcher: watcherView(w), ...(said.length ? { note: said.join(" ") } : {}) });
     }
     m = path.match(/^\/api\/watchers\/([\w-]+)\/check$/);
     if (m && method === "POST") {

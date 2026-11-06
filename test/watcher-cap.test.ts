@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { cleanWatcher, FIRES_PER_HOUR, heldBackWords, MAX_PER_HOUR, mayFire, nextAllowedAt, perHourOf } from "../server/watchers.ts";
+import { agentPerHourCeiling, cleanWatcher, FIRES_PER_HOUR, heldBackWords, MAX_PER_HOUR, mayFire, nextAllowedAt, perHourOf } from "../server/watchers.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
 
@@ -88,8 +88,10 @@ test("bloks watch and edit-watch send --per-hour, and say when it was kept withi
     const body = JSON.parse(text);
     calls.push({ method: req.method, body });
     res.setHeader("content-type", "application/json");
-    const perHour = body.perHour === undefined ? 6 : Math.max(1, Math.min(30, Math.round(body.perHour)));
-    res.end(JSON.stringify({ watcher: { kind: body.kind ?? "page", every: 30, perHour } }));
+    // as the workspace answers an agent: at most six, and why when it kept less
+    const asked = body.perHour === undefined ? 6 : Math.round(body.perHour);
+    const perHour = Math.max(1, Math.min(6, asked));
+    res.end(JSON.stringify({ watcher: { kind: body.kind ?? "page", every: 30, perHour }, ...(asked > 6 ? { note: "An agent may set at most 6 turns an hour." } : {}) }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -103,7 +105,8 @@ test("bloks watch and edit-watch send --per-hour, and say when it was kept withi
   assert.equal(plain.status, 0);
   assert.equal(Object.hasOwn(calls.at(-1)!.body, "perHour"), false, "a watch with no --per-hour sent one");
   const most = await runCli(["watch", "--folder", "/fixture", "--do", "Act.", "--per-hour", "100"], home, url);
-  assert.equal(most.body.note, "Starts at most 30 turns an hour (the maximum; you asked for 100).");
+  // the workspace says why it kept less, and the CLI does not say it again
+  assert.equal(most.body.note, "An agent may set at most 6 turns an hour.");
   const edited = await runCli(["edit-watch", "own-id", "--per-hour", "0"], home, url);
   assert.equal(calls.at(-1)?.method, "PATCH");
   assert.deepEqual(calls.at(-1)?.body, { perHour: 0 });
@@ -117,29 +120,40 @@ test("bloks watch and edit-watch send --per-hour, and say when it was kept withi
   }
   const help = (await runCli(["help"], home, url)).body.commands;
   assert.match(help.find((c: any) => c.name === "watch").use, /--per-hour <turns>/);
-  assert.match(help.find((c: any) => c.name === "watch").about, /--per-hour is the most turns it starts in an hour, 1 to 30 \(6 unless said\)/);
+  assert.match(help.find((c: any) => c.name === "watch").about, /--per-hour lowers the most turns it starts in an hour, 1 to 6 \(6 unless said; you can lower a watcher's limit but never raise it, and only the person can allow more, up to 30\)/);
   assert.match(help.find((c: any) => c.name === "edit-watch").use, /--per-hour <turns>/);
 });
 
 /** A Claude Code stand-in that writes down every message it is given. */
 function standIn(home: string) {
   const heard = join(home, "heard.jsonl");
+  const answers = join(home, "answers.json");
   const cli = join(home, "fake-claude.mjs");
   writeFileSync(
     cli,
     `#!${process.execPath}
-import { appendFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 const [first] = process.argv.slice(2);
 if (first === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (first === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
-((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; process.stdin.off("data", take); go(next); return; } }; process.stdin.on("data", take); })((input) => {
+((go) => { let line = ""; const take = (c) => { line += c; while (line.includes(String.fromCharCode(10))) { const at = line.indexOf(String.fromCharCode(10)); const next = line.slice(0, at); line = line.slice(at + 1); if (!next.trim() || JSON.parse(next).type !== "user") continue; process.stdin.off("data", take); go(next); return; } }; process.stdin.on("data", take); })(async (input) => {
   appendFileSync(${JSON.stringify(heard)}, JSON.stringify(input) + String.fromCharCode(10));
+  // told CALLS <base64 json>, makes those requests with its turn's own credential
+  const asked = input.match(/CALLS ([A-Za-z0-9+\\/=]+)/);
+  if (asked) {
+    const out = [];
+    for (const [method, path, body] of JSON.parse(Buffer.from(asked[1], "base64").toString("utf8"))) {
+      const res = await fetch(process.env.BLOKS_URL + path, { method, headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      out.push({ status: res.status, body: await res.json().catch(() => null) });
+    }
+    writeFileSync(${JSON.stringify(answers)} + ".tmp", JSON.stringify(out)); renameSync(${JSON.stringify(answers)} + ".tmp", ${JSON.stringify(answers)});
+  }
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "On it." }));
 });
 `,
     { mode: 0o755 },
   );
-  return { cli, heard };
+  return { cli, heard, answers };
 }
 
 test("through the server: set, changed and shown, and a raised limit gives a held finding its turn now", { timeout: 180_000 }, async (t) => {
@@ -210,4 +224,71 @@ test("through the server: set, changed and shown, and a raised limit gives a hel
   assert.ok(after, "the turn was not counted");
   assert.equal(after.held, undefined);
   assert.equal(after.lastError, undefined);
+});
+
+test("an agent may lower its watcher's limit, never raise it, and the person sets 1 to 30", { timeout: 180_000 }, async (t) => {
+  assert.equal(agentPerHourCeiling(), 6);
+  assert.equal(agentPerHourCeiling({}), 6, "a watcher from before the limit could be set");
+  assert.equal(agentPerHourCeiling({ perHour: 20 }), 20);
+  assert.equal(agentPerHourCeiling({ perHour: 2 }), 2);
+
+  const home = mkdtempSync(join(tmpdir(), "bloks-cap-agent-"));
+  const fake = standIn(home);
+  mkdirSync(join(home, ".bloks"), { recursive: true });
+  writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ brief: { enabled: false }, backups: { auto: false }, instances: { claude: { driver: "claudeAgent", config: { cli: fake.cli } } } }));
+  const h = await startHarness({ HOME: home });
+  t.after(async () => {
+    await h.stop();
+    rmSync(home, { recursive: true, force: true });
+  });
+  const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Keeper" }) });
+  await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }) });
+  const idle = () => waitFor(async () => ((await h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id)?.busy ? null : true));
+  const asAgent = async (calls: unknown[]) => {
+    rmSync(fake.answers, { force: true });
+    await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: `CALLS ${Buffer.from(JSON.stringify(calls)).toString("base64")}` }) });
+    assert.ok(await waitFor(() => existsSync(fake.answers)), "the turn never ran");
+    await idle();
+    return JSON.parse(readFileSync(fake.answers, "utf8")) as Array<{ status: number; body: any }>;
+  };
+  const page = { kind: "page", target: "http://127.0.0.1:9/menu", instruction: "Act.", enabled: false };
+
+  // filed by the agent: kept to six, and told why
+  const [filed] = await asAgent([["POST", "/api/watchers", { ...page, perHour: 20 }]]);
+  assert.equal(filed.status, 201, JSON.stringify(filed.body));
+  assert.equal(filed.body.watcher.perHour, 6);
+  assert.match(filed.body.note, /An agent may set at most 6 turns an hour, so it starts at most 6; only .* can allow more, in Watchers\./);
+  const id = filed.body.watcher.id;
+
+  // raised by the agent: kept where it is; lowered: as asked, with no note
+  const [raised, lowered] = await asAgent([
+    ["PATCH", `/api/watchers/${id}`, { perHour: 10 }],
+    ["PATCH", `/api/watchers/${id}`, { perHour: 2 }],
+  ]);
+  assert.equal(raised.status, 200);
+  assert.equal(raised.body.watcher.perHour, 6);
+  assert.match(raised.body.note, /An agent may lower a watcher's limit but not raise it, so it stays at most 6 turns an hour/);
+  assert.equal(lowered.body.watcher.perHour, 2);
+  assert.equal(lowered.body.note, undefined);
+  const [back] = await asAgent([["PATCH", `/api/watchers/${id}`, { perHour: 6 }]]);
+  assert.equal(back.body.watcher.perHour, 2, "an agent raised a limit back up after lowering it");
+
+  // the person sets 20; the agent asking for 25 leaves it at 20, and may lower it
+  assert.equal((await h.json(`/api/watchers/${id}`, { method: "PATCH", body: JSON.stringify({ perHour: 20 }) })).watcher.perHour, 20);
+  const [above, under, renamed] = await asAgent([
+    ["PATCH", `/api/watchers/${id}`, { perHour: 25 }],
+    ["PATCH", `/api/watchers/${id}`, { perHour: 15 }],
+    ["PATCH", `/api/watchers/${id}`, { name: "Menu" }],
+  ]);
+  assert.equal(above.body.watcher.perHour, 20, "an agent raised a limit the person set");
+  assert.match(above.body.note, /stays at most 20 turns an hour/);
+  assert.equal(under.body.watcher.perHour, 15);
+  assert.equal(renamed.body.watcher.perHour, 15, "an agent's edit of something else moved the limit");
+  assert.equal(renamed.body.note, undefined);
+
+  // the person sets anything from 1 to 30
+  assert.equal((await h.json(`/api/watchers/${id}`, { method: "PATCH", body: JSON.stringify({ perHour: 30 }) })).watcher.perHour, 30);
+  const mine = await h.json("/api/watchers", { method: "POST", body: JSON.stringify({ ...page, botId: bot.id, perHour: 30 }) });
+  assert.equal(mine.watcher.perHour, 30);
+  assert.equal(mine.note, undefined);
 });
