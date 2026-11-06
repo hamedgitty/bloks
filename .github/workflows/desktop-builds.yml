@@ -75,14 +75,15 @@ jobs:
       #
       # Waiting rather than assuming: both workflows start on the same
       # tag and this one usually finishes first, because signing and
-      # notarizing is a network round trip to Apple.
+      # notarizing is a network round trip to Apple, and the Mac job runs
+      # the whole test suite first. Up to two and a half hours.
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for i in $(seq 1 140); do
+          for i in $(seq 1 300); do
             id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
                    --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | first | .id // empty")
             if [ -n "$id" ]; then
@@ -112,7 +113,7 @@ jobs:
               done
               exit 0
             fi
-            echo "waiting for the draft release ($i/140)"
+            echo "waiting for the draft release ($i/300)"
             sleep 30
           done
           echo "The draft release never appeared. The build is still on this run as an artifact."
@@ -159,14 +160,15 @@ jobs:
       #
       # Waiting rather than assuming: both workflows start on the same
       # tag and this one usually finishes first, because signing and
-      # notarizing is a network round trip to Apple.
+      # notarizing is a network round trip to Apple, and the Mac job runs
+      # the whole test suite first. Up to two and a half hours.
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for i in $(seq 1 140); do
+          for i in $(seq 1 300); do
             id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
                    --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | first | .id // empty")
             if [ -n "$id" ]; then
@@ -196,7 +198,7 @@ jobs:
               done
               exit 0
             fi
-            echo "waiting for the draft release ($i/140)"
+            echo "waiting for the draft release ($i/300)"
             sleep 30
           done
           echo "The draft release never appeared. The build is still on this run as an artifact."
