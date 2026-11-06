@@ -326,7 +326,12 @@ export function visibleTo(message: Pick<Message, "at">, view: MemberView): boole
 export function memberMessage(message: Message, view: MemberView): Message | null {
   if (!visibleTo(message, view)) return null;
   switch (message.kind) {
-    case "text":
+    case "text": {
+      // what the owner's words linked with @ held is the owner's: a page
+      // of their browser, a conversation of theirs (server/mentions.ts)
+      const { mentionContext: _mentionContext, ...words } = message;
+      return words;
+    }
     case "component":
       return message;
     case "notice": {

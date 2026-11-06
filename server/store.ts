@@ -424,6 +424,15 @@ export interface Message {
    * words and never its standing prompt. Only on the person's own message
    * in an agent's conversation, and never shown to another agent. */
   recalled?: RecalledNote[];
+  /** Server-written. The conversations and browser tabs the person's
+   * words linked with @ (server/mentions.ts), and which of them were left
+   * out and why. What each held is never kept here. */
+  mentions?: import("./mentions.ts").MentionNote[];
+  /** Server-written. What those mentions held when the words were sent,
+   * framed, for the engine to hear ahead of them however long the words
+   * wait for a turn. Never read from a client body, and never shown to a
+   * member or another agent. */
+  mentionContext?: string;
   /** Taken back. The row stays so replies pointing at it still make
    * sense and the transcript keeps its shape, but the words are gone
    * and no engine sees it again. */

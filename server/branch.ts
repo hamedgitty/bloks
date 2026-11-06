@@ -91,6 +91,8 @@ export function branchCopy(messages: readonly Message[], upTo: number, mint: () 
       carryOn: _carryOn,
       heldSays: _heldSays,
       chainHoldKey: _chainHoldKey,
+      // what a waiting message's mentions held, for the turn that took it
+      mentionContext: _mentionContext,
       ...rest
     } = m;
     const copy: Message = { ...rest, id: ids.get(m.id)! };

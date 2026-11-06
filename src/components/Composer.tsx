@@ -10,7 +10,7 @@
 // one tray, most pressing first, so a busy conversation never stacks
 // strips up the window.
 import { track } from "@/lib/analytics";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import { Mic } from "@/components/icons";
 import { Plus } from "@/components/icons";
 import { Hand } from "@/components/icons";
@@ -55,6 +55,10 @@ import { modKey } from "@/lib/thisComputer";
 import { edgeMask } from "@/lib/composerSize";
 import { acceptDraft, boxFor, carryFocus, discardRecovery, isEmptyDraft, keepDraft, readDraft, readRecoveries, recoverDraft, restoreRecovery, showBox, takeFocus, takeLaneFocus, type Draft } from "@/lib/drafts";
 import { grouped, insert as insertCommand, matches as matchCommands, segments, slashAt, withBloksCommands, type Command } from "@/lib/slashCommands";
+import { chipAt, chipRuns, incoming, insertMention, keptMentions, mentionAt, mentionOf, mentionOptions, outgoing, uniqueLabel, type ConversationOption, type Mention, type MentionOption, type TabOption } from "@/lib/mentions";
+import { MentionMenu } from "./composer/MentionMenu";
+import { useBrowserState } from "./browser/BrowserPanel";
+import { hostLabel } from "@/lib/appBrowser";
 import { escapeTaken } from "@/lib/useEscape";
 import { ComparePicker } from "./composer/ComparePicker";
 import { t, type MessageKey } from "@/lib/i18n";
@@ -272,16 +276,20 @@ export function Composer({
   const draftKey = `${bot.id}:${bot.activeTaskId ?? bot.threadId}`;
   const [draft, setDraftState] = useState(() => readDraft<Attachment>(draftKey));
   const { text, attachments } = draft;
+  const mentions = draft.mentions ?? [];
   const latest = useRef(draft);
   // Accepted typing and asynchronous intake are visible to a failure in
   // the same batch, before React has rendered the new words or chips.
   const setDraft = (next: Draft<Attachment>) => {
     setDraftState(acceptDraft(latest, next));
   };
-  const setText = (next: SetStateAction<string>) => setDraft({
-    ...latest.current,
-    text: typeof next === "function" ? next(latest.current.text) : next,
-  });
+  // A chip whose label was typed over is words again, and forgotten.
+  const setText = (next: SetStateAction<string>) => {
+    const words = typeof next === "function" ? next(latest.current.text) : next;
+    const kept = keptMentions(words, latest.current.mentions ?? []);
+    const { mentions: _was, ...rest } = latest.current;
+    setDraft({ ...rest, text: words, ...(kept.length ? { mentions: kept } : {}) });
+  };
   const setAttachments = (next: SetStateAction<Attachment[]>) => setDraft({
     ...latest.current,
     attachments: typeof next === "function" ? next(latest.current.attachments) : next,
@@ -304,7 +312,11 @@ export function Composer({
     if (!heldBy) setSendHeld(false);
   }, [heldBy]);
   useEffect(() => {
-    if (prefill) setText(prefill.text);
+    if (!prefill) return;
+    // links the words were sent with come back as chips
+    const back = incoming(prefill.text);
+    const { mentions: _was, ...rest } = latest.current;
+    setDraft({ ...rest, text: back.text, ...(back.mentions.length ? { mentions: back.mentions } : {}) });
   }, [prefill]);
   // Rehearse: the next message runs on a copy of the folder, optionally
   // by other agents too, and comes back as changes to apply or discard
@@ -446,6 +458,55 @@ export function Composer({
     });
   };
 
+  // The @ list: the person's other conversations and the Bloks browser's
+  // tabs, linked into the words as chips (src/lib/mentions.ts). The
+  // server reads each one when the words go, and decides what may be
+  // read; this only offers what the person can already see. Not while
+  // rehearsing, which sends the words elsewhere.
+  const [mentioning, setMentioning] = useState<{ start: number; query: string } | null>(null);
+  const [mentionPick, setMentionPick] = useState(0);
+  const mentionListId = useId();
+  const browserState = useBrowserState();
+  const conversationOptions: ConversationOption[] = mentioning
+    ? state.bots
+        .filter((b) => !b.hidden && !b.archivedAt && (!b.solo || b.solo.by === "owner"))
+        .flatMap((b) =>
+          (b.tasks ?? [])
+            // a shared room's lane is the room's, which has a place of its own
+            .filter((task) => task.id !== laneId && task.noBranch !== "room")
+            .map((task) => ({ botId: b.id, laneId: task.id, agent: b.name, title: task.title, own: b.id === bot.id, lastAt: task.lastAt ?? task.createdAt })),
+        )
+    : [];
+  const tabOptions: TabOption[] = mentioning
+    ? (browserState?.tabs ?? [])
+        .filter((tab) => /^https?:\/\//i.test(tab.url))
+        .map((tab) => ({ id: tab.id, url: tab.url, title: tab.title?.trim() ?? "", host: hostLabel(tab.url) }))
+    : [];
+  const mentionOffered = mentioning && !rehearse ? mentionOptions(conversationOptions, tabOptions, mentioning.query) : [];
+  // words with a space in them that match nothing are a sentence: the
+  // list goes rather than saying so under every word that follows
+  const mentionShown = Boolean(mentioning && !rehearse && (mentionOffered.length > 0 || !mentioning.query.trim()));
+  const readMention = (el: HTMLTextAreaElement) => {
+    setMentioning(mentionAt(el.value, el.selectionStart ?? el.value.length, latest.current.mentions ?? []));
+    setMentionPick(0);
+  };
+  const chooseMention = (option: MentionOption) => {
+    const el = inputRef.current;
+    if (!mentioning || !el) return;
+    const current = latest.current.mentions ?? [];
+    const made = mentionOf(option);
+    const mention: Mention = { ...made, label: uniqueLabel(made.label, made.href, current) };
+    const next = insertMention(text, mentioning.start, mentioning.start + 1 + mentioning.query.length, mention.label);
+    const already = current.some((m) => m.href === mention.href && m.label === mention.label);
+    const { mentions: _was, ...rest } = latest.current;
+    setDraft({ ...rest, text: next.text, mentions: keptMentions(next.text, already ? current : [...current, mention]) });
+    setMentioning(null);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
   /** The one road in, whether the files came by picker, drop or paste. */
   const intake = (files: File[]) => {
     if (!files.length) return;
@@ -530,11 +591,13 @@ export function Composer({
       setSlash(null);
       return;
     }
-    const sent = { text, attachments };
+    const linked = latest.current.mentions ?? [];
+    const sent = { text, attachments, ...(linked.length ? { mentions: linked } : {}) };
     dispatch({
       type: "send",
       botId: bot.id,
-      text: composeOutgoing(text, attachments),
+      // each chip goes as a link, which is what the server reads
+      text: composeOutgoing(outgoing(text, linked), attachments),
       replyTo: replyTo ?? undefined,
       stopFirst,
       ...(deliveryChoice ? { delivery: deliveryChoice } : {}),
@@ -545,6 +608,7 @@ export function Composer({
     // Empty now, before a quick refusal can hand the input back.
     setDraft({ text: "", attachments: [] });
     setSlash(null);
+    setMentioning(null);
     setAttachNotice(null);
     onClearReply?.();
   };
@@ -939,8 +1003,7 @@ export function Composer({
         )
       }
       popover={
-        slash &&
-        slashShown && (
+        slash && slashShown ? (
           <SlashMenu
             label={t("composer.commandsOf", { name: bot.name })}
             offered={offered}
@@ -949,7 +1012,16 @@ export function Composer({
             onChoose={choose}
             empty={t("composer.noSkillsYetAddSome")}
           />
-        )
+        ) : mentionShown ? (
+          <MentionMenu
+            id={mentionListId}
+            offered={mentionOffered}
+            pick={mentionPick}
+            onHover={setMentionPick}
+            onChoose={chooseMention}
+            browser={Boolean(browserState)}
+          />
+        ) : null
       }
       chips={chips || undefined}
       lead={
@@ -1017,14 +1089,23 @@ export function Composer({
           className="pointer-events-none absolute inset-0 overflow-hidden px-1 py-1 text-lead text-transparent [overflow-wrap:break-word] [white-space:pre-wrap]"
         >
           <div>
-            {segments(text, commandIds, dollarIds).map((run, i) =>
-              run.skill ? (
-                <span key={i} className="rounded-[5px] bg-brand-soft ring-2 ring-brand-soft">
-                  {run.text}
-                </span>
-              ) : (
-                <span key={i}>{run.text}</span>
-              ),
+            {/* the @ chips first, then the skills in the words between them */}
+            {chipRuns(text, mentions).flatMap((chunk, c) =>
+              chunk.mention
+                ? [
+                    <span key={`m${c}`} className="rounded-[5px] bg-brand-soft ring-2 ring-brand-soft">
+                      {chunk.text}
+                    </span>,
+                  ]
+                : segments(chunk.text, commandIds, dollarIds).map((run, i) =>
+                    run.skill ? (
+                      <span key={`${c}.${i}`} className="rounded-[5px] bg-brand-soft ring-2 ring-brand-soft">
+                        {run.text}
+                      </span>
+                    ) : (
+                      <span key={`${c}.${i}`}>{run.text}</span>
+                    ),
+                  ),
             )}
             {"​"}
           </div>
@@ -1034,16 +1115,25 @@ export function Composer({
           rows={1}
           value={text}
           aria-label={t("composer.messageTo", { name: bot.name })}
+          aria-controls={mentionShown ? mentionListId : undefined}
+          aria-activedescendant={mentionShown && mentionOffered.length > 0 ? `${mentionListId}-${Math.min(mentionPick, mentionOffered.length - 1)}` : undefined}
           onChange={(e) => {
             setText(e.target.value);
             readSlash(e.target);
+            readMention(e.target);
           }}
           onSelect={(e) => {
             // the caret moved without typing: the word under it may have changed
-            const next = slashAt(e.currentTarget.value, e.currentTarget.selectionStart ?? 0);
+            const el = e.currentTarget;
+            const next = slashAt(el.value, el.selectionStart ?? 0);
             if ((next?.start ?? -1) !== (slash?.start ?? -1)) setSlash(next);
+            const at = mentionAt(el.value, el.selectionStart ?? 0, latest.current.mentions ?? []);
+            if ((at?.start ?? -1) !== (mentioning?.start ?? -1)) setMentioning(at);
           }}
-          onBlur={() => setSlash(null)}
+          onBlur={() => {
+            setSlash(null);
+            setMentioning(null);
+          }}
           onPaste={(e) => {
             // images in the clipboard become chips; so does a paste long
             // enough to bury the conversation
@@ -1081,6 +1171,40 @@ export function Composer({
               if (slashShown) {
                 e.preventDefault();
                 return;
+              }
+            }
+            // the @ list the same way, while it is open
+            if (mentionShown && mentionOffered.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const step = e.key === "ArrowDown" ? 1 : -1;
+                return setMentionPick((i) => (i + step + mentionOffered.length) % mentionOffered.length);
+              }
+              if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") {
+                e.preventDefault();
+                return chooseMention(mentionOffered[Math.min(mentionPick, mentionOffered.length - 1)]);
+              }
+            }
+            if (mentioning && e.key === "Escape") {
+              setMentioning(null);
+              if (mentionShown) {
+                e.preventDefault();
+                return;
+              }
+            }
+            // A chip goes whole: Backspace just after one, or Delete just
+            // before one, takes all of it, never a letter of its label.
+            if ((e.key === "Backspace" || e.key === "Delete") && !e.altKey && !e.metaKey && !e.ctrlKey && mentions.length) {
+              const el = e.currentTarget;
+              if (el.selectionStart === el.selectionEnd) {
+                const chip = chipAt(el.value, el.selectionStart ?? 0, mentions, e.key === "Backspace" ? "back" : "forward");
+                if (chip) {
+                  e.preventDefault();
+                  setText(el.value.slice(0, chip.start) + el.value.slice(chip.end));
+                  setMentioning(null);
+                  requestAnimationFrame(() => el.setSelectionRange(chip.start, chip.start));
+                  return;
+                }
               }
             }
             // ↑ in an empty box edits the last thing you said, the way

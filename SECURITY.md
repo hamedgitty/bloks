@@ -450,6 +450,19 @@ in, which makes it worth guarding.
   its own end of the frame. The snapshot is read from the browser's
   accessibility tree, and an agent's refs name the browser's own nodes,
   so a page cannot forge one by writing an attribute.
+- **A tab you link with @.** In an agent's conversation you can link a
+  tab of the browser into your message (`server/mentions.ts`). Only the
+  owner's own words are read for one, on the owner's routes, never a
+  member's or an agent's. The server finds the
+  open tab at that address and reads its text where it is
+  (`AppBrowser.peek`): no command runs, nobody takes the wheel, a tab
+  waiting on a dialog is left alone, and a site on the never list is not
+  read. The text is trimmed and framed exactly as above, named by its
+  host only, and goes ahead of your words for that turn; it is kept on
+  the message only while the words wait for a turn, and never shown to a
+  member or to another agent reading the conversation. A conversation
+  you link is read only when you could open it yourself
+  (`server/access.ts`), and its record is framed as a record.
 - **A page's dialogs.** An alert, a confirm, a prompt or a "leave this
   page?" stops the page until it is answered. The agent's step that
   opened one comes back with it, the page's words framed like the rest

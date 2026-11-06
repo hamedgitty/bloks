@@ -9,6 +9,7 @@ export const AGENT_IDLE_MS: number;
 export const DIALOG_WAIT_MS: number;
 export const DIALOG_TEXT_LIMIT: number;
 export const PROMPT_LIMIT: number;
+export const PEEK_WAIT_MS: number;
 export const LEAVE_ARM_MS: number;
 export const KEYS: Record<string, { key: string; code: string; keyCode: number; text?: string }>;
 export const FIELD_WORDS: Record<"password" | "payment" | "file", string>;
@@ -226,4 +227,14 @@ export class AppBrowser {
   ): Promise<{ ok: true; error?: undefined; tab: TabHandle; dialog: OpenDialog; accept: boolean; text?: string } | { error: string; ok?: undefined }>;
   watchDialog(tab: TabHandle): { opened: Promise<void>; stop(): void };
   command(command: Command, driver: { botId: string; name: string }): Promise<TabAnswer>;
+  peek(id: string, options?: { waitMs?: number }): Promise<TabPeek>;
+}
+
+/** A tab read for the person's mention of it: its words, or why not. */
+export interface TabPeek {
+  tab?: string;
+  url?: string;
+  title?: string;
+  text?: string;
+  error?: "closed" | "dialog" | "unreadable";
 }

@@ -32,7 +32,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle } from "./browser-core.mjs";
+import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle, type TabPeek } from "./browser-core.mjs";
 import { browserSocket, chromePath, launch, Session, type CdpEvent } from "./cdp.ts";
 
 // ── which Chrome ───────────────────────────────────────────────────────
@@ -361,6 +361,14 @@ export class ServerBrowser {
 
   state(): BrowserState {
     return this.browser.state();
+  }
+
+  /** One tab's words, for the person who named it in a message
+   * (AppBrowser.peek). A Chrome that is not running has no tabs to read,
+   * and is never started for this. */
+  async peek(tab: string): Promise<TabPeek> {
+    if (!this.line) return { error: "closed" };
+    return this.browser.peek(tab).catch(() => ({ error: "unreadable" as const }));
   }
 
   // ── starting, and losing, the browser ──

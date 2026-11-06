@@ -123,7 +123,9 @@ import { PLAN_LIMITS, ROOM_SHARING_WORDS, membersActive, pausedWords, roomSharin
 import { OwnerPlan } from "./owner-plan.ts";
 import { PlanAccount, planRoute, type Account, type PlanRouteDeps } from "./plan-account.ts";
 import { DesktopLine, type LineAnswer } from "./desktop-line.ts";
-import { BrowserGate, browserRoute, readBrowserSettings, type BrowserSettings, type Caller as BrowserCaller, type RouteDeps as BrowserRouteDeps } from "./app-browser.ts";
+import { BrowserGate, browserRoute, hostOf, readBrowserSettings, siteMatches, type BrowserSettings, type Caller as BrowserCaller, type RouteDeps as BrowserRouteDeps } from "./app-browser.ts";
+import { PEEK_WAIT_MS, type TabPeek } from "./browser-core.mjs";
+import { addressKey, mentionFields, mentionsAsLabels, readMentions, RECENT_MESSAGES, withMentions, type ConversationRead, type MentionDrop, type Mentioned, type TabRead } from "./mentions.ts";
 import { missingForAgent, ServerBrowser } from "./server-browser.ts";
 import { MintLimiter, mintPairing, othersRoute, pairCheck } from "./other-workspaces.ts";
 import { choosableMark, defaultForKind, markRoute, markView, type MarkRouteDeps } from "./workspace-mark.ts";
@@ -1971,6 +1973,8 @@ interface DeskAsk {
   from?: { botId: string; name: string; laneId?: string };
   routine?: Message["routine"];
   replyTo?: ReplyRef;
+  /** What the words mentioned, framed, for the retry to hear again. */
+  mentionContext?: string;
   answering?: { peerId: string; peerName: string; laneId?: string };
 }
 const deskAsked = new Map<string, DeskAsk>();
@@ -2028,6 +2032,7 @@ interface Asked {
   from?: { botId: string; name: string; laneId?: string };
   routine?: Message["routine"];
   replyTo?: ReplyRef;
+  mentionContext?: string;
   answering?: { peerId: string; peerName: string; laneId?: string };
 }
 interface Recovery {
@@ -4050,6 +4055,7 @@ function askAgain(bot: BotRecord, laneId: string, recovery: Recovery, delay: num
       ...(asked.from ? { from: asked.from } : {}),
       ...(asked.routine ? { routine: asked.routine } : {}),
       ...(asked.replyTo ? { replyTo: asked.replyTo } : {}),
+      ...(asked.mentionContext ? { mentioned: { notes: [], context: asked.mentionContext } } : {}),
       ...(asked.answering ? { answering: asked.answering } : {}),
       ...(requester ? { requester } : {}),
     }).catch((e) => {
@@ -7650,6 +7656,10 @@ async function startClaimedTurn(
      * that goes on with another, which keeps that turn's count. */
     hops?: number;
     replyTo?: ReplyRef;
+    /** What the person's words link with @ (mentionedIn): the notes go on
+     * the message this writes, and the framed blocks ahead of the words.
+     * A retry carries the blocks alone, its message being written. */
+    mentioned?: Mentioned;
     taskId?: string;
     /** One turn's answer to "where does this run", e.g. a routine that
      * wants the cloud computer regardless of the agent's own setting. */
@@ -8137,6 +8147,7 @@ async function startClaimedTurn(
     ...(opts.from ? { from: opts.from } : opts.answering ? { answering: opts.answering } : {}),
     ...(opts.routine ? { routine: opts.routine } : {}),
     ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+    ...(opts.mentioned?.context ? { mentionContext: opts.mentioned.context } : {}),
   });
 
   // What the agent said elsewhere that bears on what the person just
@@ -8195,6 +8206,7 @@ async function startClaimedTurn(
       text,
       ...(recalledAhead ? { recalled: recalledAhead.notes } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...mentionFields(opts.mentioned),
       ...(opts.from
         ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name, ...(opts.from.laneId ? { laneId: opts.from.laneId } : {}) } }
         : {}),
@@ -8236,6 +8248,7 @@ async function startClaimedTurn(
       ...(opts.from ? { from: opts.from } : opts.answering ? { answering: opts.answering } : {}),
       ...(opts.routine ? { routine: opts.routine } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...(opts.mentioned?.context ? { mentionContext: opts.mentioned.context } : {}),
     });
   } else if (blok || command) turnAsked.delete(task.id);
   // A named skill injects instructions. Take names from the person's
@@ -9101,7 +9114,7 @@ async function startClaimedTurn(
           resumeCursors: task.resumeCursors,
           hasUserTurn: transcript.some((m) => m.role === "user"),
         });
-      let turnText = command ? text : withReply(text, opts.replyTo);
+      let turnText = command ? text : withMentions(withReply(text, opts.replyTo), opts.mentioned?.context);
       // In the turn's words, ahead of the person's, and never in the
       // system prompt, which a resumed session keeps byte for byte for
       // its cache (server/standing-prompt.ts).
@@ -11811,6 +11824,36 @@ function recallAhead(bot: BotRecord, laneId: string, words: string): { notes: Re
   return { notes, block: recallBlock(hits) };
 }
 
+/**
+ * What the person's words link with @ (server/mentions.ts), read on their
+ * behalf: a conversation only when `who` may open it (access.laneAccess,
+ * the same rule as opening it), and a browser tab only for the owner,
+ * whose browser it is. `laneId` is the conversation the words are said
+ * in, which the agent has already. Undefined when nothing is mentioned.
+ */
+function mentionedIn(text: string, who: access.Who, laneId: string | undefined): Promise<Mentioned | undefined> {
+  return readMentions(text, {
+    ...(laneId ? { here: laneId } : {}),
+    conversation: (botId, mentioned) => readMentionedConversation(botId, mentioned, who),
+    tab: (url) => (who.kind === "owner" ? readMentionedTab(url) : Promise.resolve({ dropped: "unreadable" as const })),
+  });
+}
+
+/** One mentioned conversation as its record stands: its title, its
+ * running summary, and what was said in it, by whom. */
+function readMentionedConversation(botId: string, laneId: string, who: access.Who): ConversationRead | { dropped: MentionDrop } {
+  const bot = store.bot(botId);
+  const lane = bot?.tasks.find((t) => t.id === laneId);
+  if (!bot || !lane || !access.laneAccess(bot, lane, who, accessWorld())) return { dropped: "unreadable" };
+  const speaker = speakerFor(bot);
+  const messages = store
+    .messagesFor(lane.id)
+    .filter((m) => m.kind === "text" && m.text?.trim() && !m.deleted && !m.queued && !m.unsent && !dismissedPreparation(m))
+    .slice(-RECENT_MESSAGES)
+    .map((m) => ({ who: speaker(m).who, text: mentionsAsLabels(m.text!) }));
+  return { agent: bot.name, title: lane.title, ...(lane.context?.summary ? { summary: lane.context.summary } : {}), messages };
+}
+
 /** Who said a recalled line, as the person reads it under their message. */
 function noteWho(bot: BotRecord, hit: RecallHit): string {
   if (hit.by === "person") return "You";
@@ -13745,6 +13788,30 @@ function askBrowser(payload: Record<string, unknown>, timeoutMs: number): Promis
     botId: String(said.driver?.botId ?? ""),
     name: String(said.driver?.name ?? "An agent"),
   }) as Promise<LineAnswer>;
+}
+
+/**
+ * The page a tab of the person's browser shows, read for a mention of it
+ * in their words (server/mentions.ts): the open tab at that address, its
+ * words read where it is (AppBrowser.peek), or why there are none. Never
+ * a site on the list agents never use: the person named it, but what is
+ * read goes to an agent all the same.
+ */
+async function readMentionedTab(url: string): Promise<TabRead | { dropped: MentionDrop }> {
+  const here = serverBrowser ? serverBrowser.missing() === null : desktopLine.available && !HOSTED;
+  if (!here) return { dropped: "unavailable" };
+  const state = (serverBrowser?.state() ?? appBrowserState) as { tabs?: Array<{ id: string; url: string }> } | null;
+  const want = addressKey(url);
+  const tab = state?.tabs?.find((t) => addressKey(t.url) === want);
+  if (!tab) return { dropped: "closed" };
+  if (appBrowserSettings.deny.some((denied) => siteMatches(hostOf(tab.url), denied))) return { dropped: "denied" };
+  const read = serverBrowser
+    ? await serverBrowser.peek(tab.id)
+    : ((await desktopLine.ask("browser.read", { tab: tab.id }, PEEK_WAIT_MS + 2_000)) as TabPeek | null);
+  if (!read || typeof read.text !== "string") return { dropped: read?.error === "closed" ? "closed" : "unavailable" };
+  // it may have moved on in the meantime: the page read is the one said
+  if (read.url && appBrowserSettings.deny.some((denied) => siteMatches(hostOf(read.url!), denied))) return { dropped: "denied" };
+  return { url: read.url ?? tab.url, title: read.title ?? "", text: read.text };
 }
 
 /** What the app last said about the browser: its tabs by address and
@@ -15707,6 +15774,7 @@ async function retryIncident(incident: Incident, by: "lead" | "person"): Promise
     ...(asked.answering ? { answering: asked.answering } : {}),
     ...(asked.routine ? { routine: asked.routine } : {}),
     ...(asked.replyTo ? { replyTo: asked.replyTo } : {}),
+    ...(asked.mentionContext ? { mentioned: { notes: [], context: asked.mentionContext } } : {}),
   }).catch((e) => {
     // it never started, which is its retry failing
     deskRetries.delete(lane.id);
@@ -20005,7 +20073,8 @@ function steerWords(laneId: string, item: { messageId?: string; text?: string; t
   if (!item.messageId) return item.text ?? null;
   if (!m || m.deleted || m.unsent || !m.text) return null;
   if (m.telegramBinding && !telegramConnectionCurrent(m.telegramBinding)) return null;
-  return storedPrompt(m);
+  // with what its words mentioned, read as they were sent
+  return withMentions(storedPrompt(m), m.mentionContext);
 }
 
 /** Waiting messages go. Until now they sat above the composer, outside
@@ -20306,6 +20375,9 @@ function queueOnLane(
   text: string,
   options: {
     replyTo?: ReplyRef;
+    /** What the person's words link with @ (mentionedIn), kept on the
+     * waiting message for the turn that takes it. */
+    mentioned?: Mentioned;
     from?: { botId: string; name: string; laneId?: string };
     admission?: DirectAdmission;
     /** Not the person: a webhook, a watcher, a standing intent, Bloks
@@ -20356,6 +20428,7 @@ function queueOnLane(
     ...(options.waitsUntil ? { waitsUntil: options.waitsUntil } : {}),
     namedSkills: !options.from && !options.via && !options.routine && options.personal !== false,
     ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+    ...mentionFields(options.mentioned, true),
     ...(options.from
       ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name, ...(options.from.laneId ? { laneId: options.from.laneId } : {}) } }
       : {}),
@@ -20400,7 +20473,7 @@ function prepareFollowup(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { replyTo?: ReplyRef; personal?: boolean; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; source?: NonNullable<Message["preparation"]>["source"] } = {},
+  options: { replyTo?: ReplyRef; mentioned?: Mentioned; personal?: boolean; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; source?: NonNullable<Message["preparation"]>["source"] } = {},
 ): Message | null {
   const attempt = preparations.get(lane.id);
   if (!attempt || attempt.botId !== bot.id ||
@@ -20910,7 +20983,7 @@ function steerLane(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; mentioned?: Mentioned; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   const previous = steerAttempts.get(lane.id);
   if (!previous && laneInstance(bot, lane.id)?.driverKind !== "codex") return steerOne(bot, lane, text, options);
@@ -20937,7 +21010,7 @@ async function steerOne(
   bot: BotRecord,
   lane: TaskRecord,
   text: string,
-  options: { admission?: DirectAdmission; replyTo?: ReplyRef; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
+  options: { admission?: DirectAdmission; replyTo?: ReplyRef; mentioned?: Mentioned; personal?: boolean; from?: { botId: string; name: string; laneId?: string }; fromTelegram?: boolean; telegramBinding?: Message["telegramBinding"]; telegramPerson?: TelegramSender; telegramDelegate?: TelegramSender; telegramGroup?: TelegramOwnerGroup; delivery?: Delivery; moving?: string } = {},
 ): Promise<Message | null> {
   // an agent's words reach the engine framed, so they are never a command
   if (commandTurns.has(lane.id) || (!options.telegramPerson && !options.from && acceptingNative(bot, lane.id) && commandFor(text, acceptingNative(bot, lane.id)!))) return null;
@@ -20978,7 +21051,10 @@ async function steerOne(
   // still owes them its answer (GitHub 461). One that nobody waits on is
   // told about `bloks quiet` when it holds the CLI to run it.
   const quiet = !unaskedTurn(lane.id) ? false : agentTokens.heldFull(lane.id) ? "command" : "word";
-  const words = withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text, quiet) : text, options.replyTo);
+  const words = withMentions(
+    withReply(options.telegramPerson ? `(Message from ${JSON.stringify(options.telegramPerson.name)} (Telegram). Only the owner can approve actions.)\n\n${text}` : options.telegramDelegate ? delegateWords(options.telegramDelegate, text) : from ? fromAgentPrompt(from, text, quiet) : text, options.replyTo),
+    options.mentioned?.context,
+  );
   // skills are named only in the person's own words
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const sourceTurnId = !from && options.personal !== false ? codexOrigins.get(lane.id)?.turnId : undefined;
@@ -21036,6 +21112,7 @@ async function steerOne(
       midTurn: true,
       ...(joinedTurnId ? { joinedTurnId } : {}),
       ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+      ...mentionFields(options.mentioned),
       ...(from ? { agent: { dir: "in" as const, peerId: from.botId, peerName: from.name, ...(from.laneId ? { laneId: from.laneId } : {}) } } : {}),
       ...(options.fromTelegram ? { fromTelegram: true } : {}),
       ...(options.telegramBinding ? { telegramBinding: options.telegramBinding } : {}),
@@ -21437,7 +21514,7 @@ async function sendWaitingNow(bot: BotRecord, lane: TaskRecord, only?: string): 
       entry.items.splice(at, 1);
       if (!entry.items.length) steerQueues.delete(lane.id);
       const now = { route: "steered" as const, why: "you" as const, line: deliveryLine("steered", "you", bot.name) };
-      const took = await steerLane(bot, lane, m.text!, { replyTo: m.replyTo, personal: true, delivery: now, moving: m.id }).catch(() => null);
+      const took = await steerLane(bot, lane, m.text!, { replyTo: m.replyTo, ...(m.mentionContext ? { mentioned: { notes: [], context: m.mentionContext } } : {}), personal: true, delivery: now, moving: m.id }).catch(() => null);
       if (took) continue;
       // back where it was, ahead of anything said since
       const back = steerQueues.get(lane.id) ?? { botId: bot.id, items: [] };
@@ -21477,6 +21554,10 @@ async function sendUserMessage(
   options: {
     taskId?: string;
     replyTo?: ReplyRef;
+    /** What the person's words link with @, read as they sent them
+     * (mentionedIn). It rides with the words to whichever engine boundary
+     * they reach: a turn, a running turn, or a wait. */
+    mentioned?: Mentioned;
     from?: { botId: string; name: string; laneId?: string };
     yours?: boolean;
     personal?: boolean;
@@ -21570,7 +21651,7 @@ async function sendUserMessage(
       const read = deliveryPlan(mode, text, {}, choice);
       const later = read.route === "queue" && (read.why !== "other" || mode === "queue");
       if (!later && read.route !== "stop") {
-        const pending = prepareFollowup(bot, lane, text, { replyTo: options.replyTo, personal: options.personal });
+        const pending = prepareFollowup(bot, lane, text, { replyTo: options.replyTo, mentioned: options.mentioned, personal: options.personal });
         if (pending) {
           if (!pending.unsent) heard();
           return { ok: !pending.unsent, queued: Boolean(pending.queued), taskId: lane.id, lane: lane.title, note: pending.delivery!.line, delivery: pending.delivery };
@@ -21587,7 +21668,7 @@ async function sendUserMessage(
     const decided = deciding ? await deliveryFor(bot, lane, text, options.delivery) : null;
     if (!first && yours && options.steer && (!decided || decided.route === "now")) {
       const into: Delivery | undefined = decided ? { route: "steered", why: decided.why, line: deliveryLine("steered", decided.why, bot.name) } : undefined;
-      const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo, personal: options.personal, delivery: into });
+      const steered = await steerLane(bot, lane, text, { replyTo: options.replyTo, mentioned: options.mentioned, personal: options.personal, delivery: into });
       if (steered) {
         // the person joined this turn, so it is now one they wait on
         liveActivities.started(lane.id);
@@ -21657,7 +21738,7 @@ async function sendUserMessage(
     const takeBack = options.from ? ` To take back your messages while they wait, use \`bloks take-back ${bot.id}\`.` : "";
     const note = waits + notJoined + stop + takeBack;
     queueOnLane(bot.id, lane.id, text, {
-      replyTo: options.replyTo, from: options.from, personal: options.personal, chain: options.chain?.depth, chainTask: options.chain?.task, admission: noting(note),
+      replyTo: options.replyTo, mentioned: options.mentioned, from: options.from, personal: options.personal, chain: options.chain?.depth, chainTask: options.chain?.task, admission: noting(note),
       ...(drain.on && yours ? { waitsFor: "restart" as const } : paused ? { waitsFor: "pause" as const, waitsUntil: paused.until } : {}),
       ...(delivery ? { delivery } : {}),
       onQueued: options.onQueued,
@@ -21673,7 +21754,7 @@ async function sendUserMessage(
     heard();
     return { ok: true, queued: true, taskId: lane.id, lane: lane.title, note, delivery, stopped: first || undefined };
   }
-  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth, chainTask: options.chain?.task, admission, onQueued: options.onQueued });
+  await startTurn(bot.id, text, { taskId: lane.id, replyTo: options.replyTo, mentioned: options.mentioned, from: options.from, byYou: yours, personal: options.personal, chain: options.chain?.depth, chainTask: options.chain?.task, admission, onQueued: options.onQueued });
   heard();
   // which conversation it went to, so a caller outside the app (the MCP
   // connector) reads the answer from there and not from whichever lane
@@ -21897,7 +21978,7 @@ function drainSteer(threadId: string) {
   const ordered = burst.person && burst.others
     ? [...live.filter(({ message }) => !personsWords(message)), ...live.filter(({ message }) => personsWords(message))]
     : live;
-  const alive = ordered.map(({ item, message }) => ({ item, words: message ? storedPrompt(message, burst) : item.text! }));
+  const alive = ordered.map(({ item, message }) => ({ item, words: message ? withMentions(storedPrompt(message, burst), message.mentionContext) : item.text! }));
   if (alive.length === 0) {
     // Everything that waited was taken back, so no turn starts, and no
     // settle comes along after it to do what a settle does once the
@@ -22327,6 +22408,9 @@ async function redoMessage(laneId: string, messageId: string, text: string): Pro
       return refuse(409, "That message is no longer there to redo. Nothing was taken back.");
     }
     const words = plan.resend.map((m) => ({ text: m.id === messageId ? text : (m.text ?? ""), replyTo: m.replyTo }));
+    // what the words link with @ is read again, as they are said again:
+    // the edit may name other things, and a page may have moved on
+    const mentioned = await Promise.all(words.map((said) => mentionedIn(said.text, { kind: "owner" }, laneId)));
     const { text: _old, ...rewound } = await rewindLane(found, task, plan.start, true);
 
     // One message and nothing waiting is an ordinary send: the lane is
@@ -22342,7 +22426,9 @@ async function redoMessage(laneId: string, messageId: string, text: string): Pro
     // while they are being said
     const waited = new Set(steerQueues.get(laneId)?.items ?? []);
     try {
-      for (const said of words) await sendUserMessage(found.id, said.text, { taskId: laneId, replyTo: said.replyTo, yours: true });
+      for (const [i, said] of words.entries()) {
+        await sendUserMessage(found.id, said.text, { taskId: laneId, replyTo: said.replyTo, ...(mentioned[i] ? { mentioned: mentioned[i] } : {}), yours: true });
+      }
     } catch (e) {
       return {
         status: 200,
@@ -25759,11 +25845,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const trim = (list: Message[]) =>
         Number.isFinite(tail) && tail >= 0 ? list.slice(-tail) : list;
       // What recall gave an agent came from its other conversations, which
-      // another agent reading this one's chat has no business seeing.
+      // another agent reading this one's chat has no business seeing, and
+      // so did what the person's words linked with @.
       // a member's solo agent is theirs: not listed for the owner at all
       const shown = store.bots.filter((b) => !b.solo || b.solo.by === "owner");
       const lists = shown.map((b) => zero ? [] : trim(store.messagesFor(b.threadId)))
-        .map((list) => asAgent ? list.map(({ recalled: _recalled, ...message }) => message) : list);
+        .map((list) => asAgent ? list.map(({ recalled: _recalled, mentionContext: _mentionContext, ...message }) => message) : list);
       // For a paired device the cut is made from the whole conversation, so
       // what stayed behind counts every older message, not only those past
       // a list already trimmed to the tail; a client pages back by it.
@@ -26683,7 +26770,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // workspace says so (server/access.ts)
       const lane = bot.tasks.find((t) => t.id === thread);
       if (lane && !access.laneAccess(bot, lane, { kind: "owner" }, accessWorld())) return json(res, 404, { error: "no such conversation" });
-      return json(res, 200, { ...earlierPage(store.messagesFor(thread), url), ...(asAgent ? {} : { reads: readsFor(thread, "owner") }) });
+      // what the person's words linked with @ held is for the engine that
+      // heard them, not for an agent reading the record
+      const rows = asAgent ? store.messagesFor(thread).map(({ mentionContext: _mentionContext, ...message }) => message as Message) : store.messagesFor(thread);
+      return json(res, 200, { ...earlierPage(rows, url), ...(asAgent ? {} : { reads: readsFor(thread, "owner") }) });
     }
     if (m && method === "POST") {
       const body = await readBody(req);
@@ -26892,11 +26982,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // sender that will not be answered is told so with the ok, rather
       // than waiting on a reply that is not coming (GitHub 239).
       const reach = from && recipient ? readinessOf(recipient).catch(() => null) : null;
+      // The conversations and browser tabs the person's words link with
+      // @, read now, as they send them (server/mentions.ts). Only the
+      // person's own words: an agent's to another are only words.
+      const mentioned = asAgent || !recipient ? undefined : await mentionedIn(text, { kind: "owner" }, taskId ?? activeLaneOf(recipient));
       let result;
       try {
         result = await sendUserMessage(m[1], text, {
           taskId,
           replyTo: replyRef(body.replyTo),
+          ...(mentioned ? { mentioned } : {}),
           from,
           yours: !asAgent,
           // A stop-and-send follow-up must not join the dying turn, even
@@ -27947,11 +28042,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if ((editId !== undefined || beingEdited.get(m[1])?.get(m[2])?.editId !== undefined) && !editMatches(m[1], m[2], editId)) {
         return json(res, 409, { error: "that edit is no longer holding this message" });
       }
+      // Words still waiting have what they link with @ read again: the
+      // turn that takes them hears what the new words mention, as it is
+      // now. Words already heard keep what they were heard with.
+      const remention = existing.queued && existing.role === "user" && !existing.agent && !existing.via && store.taskByThread(m[1])
+        ? await mentionedIn(text, { kind: "owner" }, m[1])
+        : undefined;
       // Asked again with the body in: while it arrived, the words may
       // have gone to a turn or been taken back.
-      const late = refused(store.messagesFor(m[1]).find((msg) => msg.id === m![2]));
+      const current = store.messagesFor(m[1]).find((msg) => msg.id === m![2]);
+      const late = refused(current);
       if (late) return json(res, late.status, { error: late.error });
-      const patched = store.patchMessage(m[1], m[2], { text, editedAt: Date.now() });
+      const patched = store.patchMessage(m[1], m[2], {
+        text,
+        editedAt: Date.now(),
+        ...(current?.queued && (remention || current.mentions || current.mentionContext)
+          ? { mentions: remention?.notes.length ? remention.notes : undefined, mentionContext: remention?.context || undefined }
+          : {}),
+      });
       broadcast({ kind: "message.patch", threadId: m[1], message: patched! });
       // A save closes the editor it came from. Here rather than in a
       // second request from the app, so the burst it held can only go

@@ -866,6 +866,7 @@ async function answerServer(id, child, said) {
     else if (said.what === "workspaces") reply = await othersForPhone(id);
     else if (said.what === "pair") reply = await pairForPhone(id, said.target, said.device);
     else if (said.what === "browser") reply = await browserCommand(id, said);
+    else if (said.what === "browser.read") reply = await browserRead(id, said);
     else if (said.what === "browser.thumbnail") reply = await browserThumbnail(id);
     else reply = { error: "The app does not answer that.", status: 404 };
   } catch (error) {
@@ -3102,6 +3103,15 @@ async function browserCommand(id, said) {
     for (const win of windowsShowing(id)) win.webContents.send("browser:reveal", { by: driver.name });
   }
   return held.browser.command(command, driver);
+}
+
+/** One tab's words, for the person who named it in a message to an
+ * agent (AppBrowser.peek): read where it is, with nothing driven, and
+ * never a browser started for it. */
+async function browserRead(id, said) {
+  const held = browsers.get(id);
+  if (!held) return { error: "closed" };
+  return held.browser.peek(String(said?.tab ?? ""));
 }
 
 /** A small picture of the tab on screen, for a phone looking on. */

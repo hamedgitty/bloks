@@ -14,6 +14,8 @@ import { quietLine } from "@/lib/transcript";
 import { queuedLine, stamp } from "@/lib/when";
 import { attachmentBasename, splitAttachments } from "@/lib/attachments";
 import { RecalledNotes } from "@/components/RecalledNotes";
+import { messageRuns } from "@/lib/mentions";
+import { MentionChip, MentionNotes } from "./Mentions";
 import { Mic } from "@/components/icons";
 import { MessageActionBar, Reactions, ReplyContext, useTapToShow, type ReplyDraft } from "@/components/MessageActions";
 import { Markdownish, withHighlight } from "@/components/Markdown";
@@ -129,7 +131,11 @@ export function UserText({ text, highlight }: { text: string; highlight?: string
           ))}
         </div>
       )}
-      {withHighlight([display], highlight ?? "")}
+      {withHighlight(
+        // each @ link the words carry is a chip that opens what it names
+        messageRuns(display).map((run, i) => ("mention" in run ? <MentionChip key={`m${i}`} mention={run.mention} /> : run.text)),
+        highlight ?? "",
+      )}
     </>
   );
 }
@@ -572,6 +578,7 @@ export function Bubble({
               nameOf={nameOf ?? ((id) => (id === "user" ? "You" : author))}
             />
             {message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
+            {message.mentions?.length ? <MentionNotes notes={message.mentions} agent={agentName ?? t("bubble.theAgent")} /> : null}
             {queued && message.at && message.deliveredAt && (
               <div data-copy="skip" className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">{queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}</div>
             )}
@@ -653,6 +660,8 @@ export function Bubble({
         />
         {/* what recall put ahead of these words for the agent */}
         {message.recalled?.length ? <RecalledNotes notes={message.recalled} /> : null}
+        {/* what the words linked with @ that the agent was not given */}
+        {message.mentions?.length ? <MentionNotes notes={message.mentions} agent={agentName ?? t("bubble.theAgent")} /> : null}
         {queued && message.at && message.deliveredAt && (
           <div data-copy="skip" className="mt-1 px-1 text-caption tabular-nums text-muted-foreground">
             {queuedLine(message.queuedAt ?? message.at, message.deliveredAt)}

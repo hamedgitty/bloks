@@ -252,6 +252,16 @@ text, and an open one follows the file: when the agent, or anything
 else, writes it again, the preview updates where you are reading and
 says Updated, and a file that is deleted says so.
 
+Type @ in an agent's conversation to link another of your conversations
+or a tab open in the Bloks browser. A chip goes into your words, and when
+you send them the agent is given what it links: the conversation's
+summary or its latest messages, or the page's text as it reads right
+then, framed as untrusted, each kept short. Only what you could open
+yourself is read; anything that was not (a tab you closed, a conversation
+that is not yours) is said quietly under your message, and your words go
+either way. A chip opens what it links, and on the iPhone it reads as its
+name.
+
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">
 </p>

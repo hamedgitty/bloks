@@ -64,6 +64,11 @@ export const DIALOG_TEXT_LIMIT = 1000;
 /** The longest answer typed into a page's prompt. */
 export const PROMPT_LIMIT = 2000;
 
+/** How long reading a page for the person's mention of it may take: a
+ * page too busy to answer by then is said to be unreadable, and the
+ * message goes without it. */
+export const PEEK_WAIT_MS = 4_000;
+
 /** How long a yes to leaving lets the next try through, where the
  * browser had to answer "stay" before anybody was asked (the app's). */
 export const LEAVE_ARM_MS = 20_000;
@@ -955,6 +960,34 @@ export class AppBrowser {
     }
     const words = !open.held && accept ? "said yes to leaving: the next try to leave this page goes through" : dialogOutcome(open, accept, done.text);
     return this.#race(tab, afterDialog(tab, words));
+  }
+
+  /**
+   * A tab's address, title and readable words, for the person who named
+   * it in a message to an agent (server/mentions.ts). Not a command:
+   * nobody takes the wheel, the tab on screen stays on screen, and an
+   * agent driving it goes on undisturbed, since reading the words is all
+   * this does. A tab waiting on a dialog is left alone, and a page that
+   * does not answer in PEEK_WAIT_MS is said to be unreadable.
+   */
+  async peek(id, { waitMs = PEEK_WAIT_MS } = {}) {
+    const tab = this.tab(id);
+    if (!tab) return { error: "closed" };
+    if (tab.dialog) return { tab: tab.id, url: tab.url(), title: tab.title(), error: "dialog" };
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), waitMs);
+      timer.unref?.();
+    });
+    try {
+      const text = await Promise.race([evaluate(tab, READ).catch(() => null), late]);
+      // read after the words, so the address is the page they came from
+      const head = { tab: tab.id, url: tab.url(), title: tab.title() };
+      if (typeof text !== "string") return { ...head, error: "unreadable" };
+      return { ...head, text: text.slice(0, READ_LIMIT) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

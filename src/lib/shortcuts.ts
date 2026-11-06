@@ -186,6 +186,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
     when: "libShortcuts.when.mention",
   },
   {
+    id: "mentionContext",
+    group: "composer",
+    keys: [["@"]],
+    does: "libShortcuts.does.mentionContext",
+    when: "libShortcuts.when.mentionContext",
+  },
+  {
     id: "stopDictation",
     group: "composer",
     keys: [["Esc"]],

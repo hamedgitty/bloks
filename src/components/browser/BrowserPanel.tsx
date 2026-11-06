@@ -71,6 +71,7 @@ import {
   type ScreenFrame,
 } from "@/lib/appBrowser";
 import { t } from "@/lib/i18n";
+import { sameAddress } from "@/lib/mentions";
 import { screenInput, type InputSender } from "./screenInput";
 
 /** The server's word on the browser, for a page that does not have the
@@ -109,6 +110,25 @@ const act = (action: BrowserDo, arg?: string | DialogAnswer) =>
 const openOutside = (url: string | undefined) => {
   if (url && /^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
 };
+
+/**
+ * A page the person asked to see from a chip in the chat: the tab that
+ * still shows it, or a new tab at its address once it has closed, with
+ * the panel open on it. Where this page has no browser it can drive (a
+ * phone looking at the Mac's workspace), the address opens outside.
+ */
+export async function showPage(url: string, tabs: readonly BrowserTab[] | undefined): Promise<void> {
+  const home = browserHome();
+  if (home !== "own" && home !== "server") return openOutside(url);
+  setBrowserPanel({ open: true });
+  const tab = tabs?.find((t) => sameAddress(t.url, url));
+  if (tab) {
+    await act("selectTab", tab.id);
+    return;
+  }
+  const made = await act("newTab");
+  if (made?.ok) await act("navigate", url);
+}
 
 /** The app asking for the panel because an agent started browsing: the
  * person watches it happen rather than finding out after. */

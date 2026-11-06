@@ -11,10 +11,14 @@
 // In memory only. A draft is for the next few minutes, not for after a
 // restart.
 import type { Attachment } from "./attachments.js";
+import type { Mention } from "./mentions.js";
 
 export interface Draft<A = unknown> {
   text: string;
   attachments: A[];
+  /** What each @ chip in the words points at (src/lib/mentions.ts). The
+   * words hold the chips; this is only what their labels mean. */
+  mentions?: Mention[];
 }
 
 const drafts = new Map<string, Draft>();
@@ -59,6 +63,7 @@ type DraftRef<A = Attachment> = { current: Draft<A> };
 const snapshot = (draft: Draft<Attachment>): Draft<Attachment> => ({
   text: draft.text,
   attachments: draft.attachments.map((a) => ({ ...a })),
+  ...(draft.mentions?.length ? { mentions: draft.mentions.map((m) => ({ ...m })) } : {}),
 });
 
 export function readRecoveries(key: string): readonly FailedDraft[] {

@@ -37,11 +37,13 @@ import { toast } from "@/components/ui/toast";
 import { stamp } from "@/lib/when";
 import { cn } from "@/lib/cn";
 import { formatDate, formatLocale, t } from "@/lib/i18n";
+import { plainMentions } from "@/lib/mentions";
 
 export type ReplyDraft = { id?: string; author: string; excerpt: string };
 
 export function excerptOf(message: Message): string {
-  return (message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
+  // an @ chip reads as its label, never as the link it travels as
+  return plainMentions(message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
 }
 
 /**
@@ -276,7 +278,7 @@ export function MessageActionBar({
   if (!message.text || message.deleted) return null;
   const draft: ReplyDraft = { id: message.id, author, excerpt: excerptOf(message) };
   const copy = () => {
-    void navigator.clipboard.writeText(message.text ?? "");
+    void navigator.clipboard.writeText(plainMentions(message.text ?? ""));
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -582,7 +584,9 @@ export function ForwardDialog({
   const [sent, setSent] = useState<string | null>(null);
 
   // the person's own message, so its heading is in their language
-  const body = `${t("messageActions.forwardedFrom", { name: author })}\n> ${(message.text ?? "").trim().split("\n").join("\n> ")}`;
+  // what it linked with @ goes as words: a forward passes on what was
+  // said, and is not the person linking those things again
+  const body = `${t("messageActions.forwardedFrom", { name: author })}\n> ${plainMentions(message.text ?? "").trim().split("\n").join("\n> ")}`;
 
   const forward = (target: { id: string; kind: "agent" | "room" }) => {
     if (sent) return;

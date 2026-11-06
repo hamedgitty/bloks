@@ -258,6 +258,9 @@ export interface Message {
   branch?: { from: string; messageId: string; title: string; gone?: boolean };
   /** What recall found elsewhere and added to the turn this started. */
   recalled?: RecalledNote[];
+  /** The conversations and tabs the words linked with @, and which of
+   * them the agent was not given, and why (server/mentions.ts). */
+  mentions?: Array<{ kind: "conversation" | "tab"; label: string; href: string; dropped?: "unreadable" | "closed" | "unavailable" | "denied" | "limit" }>;
   /** Taken back: the row stays, the words are gone. */
   deleted?: boolean;
   /** Came in some other way than you typing it here. "goal" is Bloks

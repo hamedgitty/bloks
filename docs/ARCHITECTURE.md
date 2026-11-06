@@ -3718,6 +3718,50 @@ General).
 person; agents suggest with `note` or `note_about_person` (three a turn),
 only kept notes reach the prompt, and never in a shared room.
 
+## Mentions of a conversation or a tab
+
+In an agent's conversation the composer's @ list offers the person's
+other conversations (this agent's first, newest first, each with its
+agent's face) and the tabs open in the Bloks browser
+(`src/lib/mentions.ts`, `src/components/composer/MentionMenu.tsx`). A
+pick puts a chip in the words: in the box it is `@label`, marked behind
+the text the way a skill is, with a small table beside the draft saying
+what each label points at; Backspace after one, or Delete before one,
+takes it whole. On the way out each chip becomes a Markdown link,
+`[@Launch plan](bloks://agent/<agent>?lane=<lane>)` or
+`[@Pricing](https://example.com/pricing)`. Nothing about a mention lives
+outside the words, so a draft, a failed send handed back, a rewind's
+words, an edit, a Redo, a waiting message and an export all keep it, and
+the iPhone app, which draws inline Markdown, shows the label (a
+conversation's link is the `bloks://agent/<id>?lane=` shape it already
+opens). The chat draws each link in a person's message as a chip that
+opens the conversation, or the tab (a new one at the address once it has
+closed); copying, quoting and forwarding say it as `@label`.
+
+The server reads the links in the person's own words on
+`POST /api/bots/:id/messages`, never in an agent's (`mentionedIn` in
+`server/index.ts`, `server/mentions.ts`). A conversation is read when
+`access.laneAccess` lets the sender open it: its title, its running
+summary (at most 1,500 characters) and then its latest messages, newest
+kept, each cut to 600, within 4,000 in all, in a frame whose ends carry a
+random tag and which says it is a record. A tab is the open one at that
+address, never on the workspace's never list, read in place with
+`AppBrowser.peek` (the app's over the desktop line's `browser.read`, or
+the server's own): no command, no wheel, nothing on a tab waiting on a
+dialog, four seconds at most. Its text, within 6,000, goes in
+`frameUntrusted`, named outside the frame by host only. Five mentions a
+message, 16,000 characters in all; the conversation the words are in is
+skipped. The blocks go ahead of the words (and of a reply's quote) at
+whichever boundary they reach: a new turn, a running turn, or a wait,
+where the waiting message keeps them as `mentionContext` for the turn
+that takes them; a retry asks with them again, editing waiting words
+reads them again, and a Redo reads them again from the words it sends.
+The message keeps a note per mention (`mentions`: kind, label, link and
+why one was left out: unreadable, closed, unavailable, denied, limit),
+and the chat says each one left out under the bubble.
+`mentionContext` is stripped for a member (`memberMessage`) and for an
+agent's credential reading messages, and a branch does not copy it.
+
 ## Bringing a setup over
 
 `server/setup-import.ts` reads what a person already taught other agent
