@@ -477,7 +477,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 
 ## Work that comes back
 - \`routine\` files a time of day or a check-in for you; \`routines\` lists them, \`unroutine\` drops one.
-- \`watch\` looks at a folder, a page, a feed, a command or a place and acts on a change; \`watchers\`, \`edit-watch\`, \`unwatch\`. Its first look is a baseline and the same finding again is not a change, so it is no timer: to be woken every so often, file a check-in with \`routine --every\`. \`watch-app\` (see \`app-events\`) only proposes: nothing listens until the person says yes.
+- \`watch\` looks at a folder, a page, a feed, a command or a place and acts on a change; \`watchers\`, \`edit-watch\`, \`unwatch\`, and \`watch-history\` for what its last looks found, held back or skipped. Its first look is a baseline and the same finding again is not a change, so it is no timer: to be woken every so often, file a check-in with \`routine --every\`. \`watch-app\` (see \`app-events\`) only proposes: nothing listens until the person says yes.
 - \`intent\` proposes a standing intent for the person to approve; \`intents\`, \`unintent\`.
 - \`post\` puts work on the job board for whoever takes it; \`jobs\` reads it.
 - \`pause\`, \`pauses\` and \`unpause\` hold an engine for your own work, up to a day.
