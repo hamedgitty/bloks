@@ -666,7 +666,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               (config.vision ? "Load one that does (llama.cpp needs its --mmproj file), or turn off Sees images for it in Settings." : "Send it again without the image."),
           );
         }
-        return new Error(`${spec.name} HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        return new Error(`${spec.name} HTTP ${status}${body ? `: ${scrubbed(body).slice(0, 200)}` : ""}`);
       };
       const listeners = new Set<RuntimeEventListener>();
       const active = new Map<
@@ -727,7 +727,11 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
       const send = async (url: string, init: RequestInit, tags?: CallTags, makeBody?: () => string): Promise<Response> => {
         await credential();
         const extra = access ? tagHeaders(tags) : {};
-        const request = makeBody ? { ...init, body: makeBody() } : init;
+        const made = makeBody ? { ...init, body: makeBody() } : init;
+        // fetch drops the key when a redirect crosses to another host, but
+        // keeps headers of the endpoint's own, which are kept like keys:
+        // with any of those, a redirect is refused rather than followed
+        const request: RequestInit = Object.keys(config.headers ?? {}).length ? { ...made, redirect: "error" } : made;
         let res = await fetch(url, { ...request, headers: { ...headers(), ...extra } });
         if (res.status === 401 && access) {
           const fresh = await access.refresh(apiKey);
@@ -910,7 +914,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               continue;
             }
             // some gateways surface provider failures inside the stream
-            if (chunk.error) throw new Error(String(chunk.error.message ?? chunk.error).slice(0, 200));
+            if (chunk.error) throw new Error(scrubbed(String(chunk.error.message ?? chunk.error)).slice(0, 200));
             if (Array.isArray(chunk.choices) || chunk.usage) opts.boundary?.accepted();
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
@@ -928,7 +932,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
        * switch that turned them on is the person's, and so is turning it
        * off. Never a quiet retry without them while it still says on. */
       const toolsRefused = (status: string | null, said: string) => {
-        const detail = [status, said.trim().slice(0, 200)].filter(Boolean).join(": ");
+        const detail = [status, scrubbed(said).trim().slice(0, 200)].filter(Boolean).join(": ");
         return new Error(
           `${shownName} refused the tools Bloks sent${detail ? ` (${detail})` : ""}. ` +
             `The model behind this endpoint may not support tool calls. To chat with it without tools, turn off "This model can use tools" for it in Settings, Engines and keys.`,
@@ -939,7 +943,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
        * it was sent, said the same way: the switch is the person's, so is
        * turning it off, and the turn is not quietly asked again without. */
       const effortRefused = (status: string | null, said: string) => {
-        const detail = [status, said.trim().slice(0, 200)].filter(Boolean).join(": ");
+        const detail = [status, scrubbed(said).trim().slice(0, 200)].filter(Boolean).join(": ");
         return new Error(
           `${shownName} refused the reasoning effort Bloks sent${detail ? ` (${detail})` : ""}. ` +
             `The model behind this endpoint may not take one. To use it without, turn off "Takes reasoning effort" for it in Settings, Engines and keys, or set the agent's effort to the engine's own.`,
@@ -990,7 +994,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
           const said = typeof json.error === "string" ? json.error : String(json.error.message ?? JSON.stringify(json.error));
           if (effort && /reasoning/i.test(said)) throw effortRefused(null, said);
           if (config.tools && /tool|function/i.test(said)) throw toolsRefused(null, said);
-          throw new Error(`${spec.name}: ${said.slice(0, 200)}`);
+          throw new Error(`${spec.name}: ${scrubbed(said).slice(0, 200)}`);
         }
         if (Array.isArray(json?.choices)) boundary?.accepted();
         return { message: json.choices?.[0]?.message ?? {}, usage: readUsage(json.usage, priced) };
