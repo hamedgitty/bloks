@@ -55,6 +55,7 @@ import { SideColumn } from "./SideColumn";
 import { openSearch } from "./CommandPalette";
 import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
 import { ListTree } from "@/components/icons";
+import { usePinnedHeads } from "@/lib/pinnedHeads";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -681,6 +682,9 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   // the room whose row is a field for its name
   const [renaming, setRenaming] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  // the list, for which of its headings are pinned (src/lib/pinnedHeads.ts)
+  const [list, setList] = useState<HTMLDivElement | null>(null);
+  usePinnedHeads(list);
   const sidebar = useChatSidebar();
   // Phone-narrow windows have no room for two columns, so the sidebar
   // becomes a header (below); everywhere else it is a column whose width
@@ -1057,23 +1061,28 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
           always had, so sections cost nothing until the first one is
           named. Inside each list, pins first in your order, then the
           rest by recent activity with you. */}
+      {/* Each heading stays pinned at the top while its own rows scroll
+          under it, and the next one takes its place (.sidebar-pin in
+          styles.css, src/lib/pinnedHeads.ts). */}
       <div
-        className="flex-1 overflow-y-auto px-2 pt-1"
+        ref={setList}
+        data-sidebar-list=""
+        className="flex-1 overflow-y-auto px-2"
         onMouseEnter={holdActivity}
         onMouseLeave={() => setHeldActivity(null)}
       >
-        <div className="flex flex-col gap-px">
+        <div className="flex flex-col gap-px pt-1">
           {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling) && (
             <div
               {...fileZone(null, (kind) => (kind === "room" ? unfiledRooms : unfiledBots))}
               className={cn(
                 "flex flex-col gap-px rounded-xl transition-colors duration-150",
-                rowDrop?.section === null && rowDrop.filing && "bg-brand-soft",
+                rowDrop?.section === null && rowDrop.filing && "bg-brand-soft [--pin-tint:var(--brand-soft)]",
               )}
             >
               {unfiledRooms.length > 0 && (
-                <>
-                  <div className="flex items-center justify-between px-2.5 pb-1 pt-1 text-small font-medium text-muted-foreground">
+                <div className="flex flex-col gap-px">
+                  <div data-pin="" className="sidebar-pin sticky top-0 z-10 flex items-center justify-between px-2.5 pb-1 pt-1 text-small font-medium text-muted-foreground">
                     {t("sidebar.rooms")}
                     <button
                       onClick={() => dispatch({ type: "toggleNewRoom", open: true })}
@@ -1084,7 +1093,11 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                     </button>
                   </div>
                   {drawList(unfiledRooms)}
-                  <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-small font-medium text-muted-foreground">
+                </div>
+              )}
+              <div className="flex flex-col gap-px">
+                {unfiledRooms.length > 0 && (
+                  <div data-pin="" className="sidebar-pin sticky top-0 z-10 flex items-center justify-between px-2.5 pb-1 pt-3 text-small font-medium text-muted-foreground">
                     {t("sidebar.agents")}
                     <button
                       onClick={() => setConversations(!conversations)}
@@ -1098,19 +1111,19 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                       <ListTree size={12} />
                     </button>
                   </div>
-                </>
-              )}
-              {drawList(unfiledBots)}
-              {unfiling && (
-                <div
-                  className={cn(
-                    "rounded-xl border border-dashed px-2.5 py-2 text-center text-small text-muted-foreground transition-colors duration-150",
-                    rowDrop?.section === null && "border-brand/40 text-foreground",
-                  )}
-                >
-                  {t("sidebar.removeFrom", { section: unfiling })}
-                </div>
-              )}
+                )}
+                {drawList(unfiledBots)}
+                {unfiling && (
+                  <div
+                    className={cn(
+                      "rounded-xl border border-dashed px-2.5 py-2 text-center text-small text-muted-foreground transition-colors duration-150",
+                      rowDrop?.section === null && "border-brand/40 text-foreground",
+                    )}
+                  >
+                    {t("sidebar.removeFrom", { section: unfiling })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
           {layout.sections.map(({ name, rows }, index) => {
@@ -1128,18 +1141,19 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                 {...fileZone(name, () => shown)}
                 className={cn(
                   "relative flex flex-col gap-px rounded-xl transition-colors duration-150",
-                  rowDrop?.section === name && rowDrop.filing && "bg-brand-soft",
+                  rowDrop?.section === name && rowDrop.filing && "bg-brand-soft [--pin-tint:var(--brand-soft)]",
                 )}
               >
                 {hint && (
                   <span
                     className={cn(
-                      "pointer-events-none absolute inset-x-2 z-10 h-0.5 rounded-full bg-brand",
+                      "pointer-events-none absolute inset-x-2 z-20 h-0.5 rounded-full bg-brand",
                       hint === "before" ? "top-1" : "-bottom-px",
                     )}
                   />
                 )}
                 <button
+                  data-pin=""
                   onClick={() => toggleFolded(name)}
                   aria-expanded={!isFolded}
                   title={isFolded ? t("sidebar.showSectionDragToReorder") : t("sidebar.foldSectionDragToReorder")}
@@ -1172,7 +1186,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                     const neighbour = shownSections[index + (e.key === "ArrowUp" ? -1 : 1)];
                     if (neighbour) saveSectionOrder(moveSection(shownSections, name, neighbour, e.key === "ArrowUp" ? "before" : "after"));
                   }}
-                  className="flex cursor-grab items-center gap-1.5 rounded px-2.5 pb-1 pt-3 text-left text-small font-medium text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+                  className="sidebar-pin sticky top-0 z-10 flex cursor-grab items-center gap-1.5 rounded px-2.5 pb-1 pt-3 text-left text-small font-medium text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
                 >
                   <Folder size={11} className="shrink-0" />
                   <span className="truncate">{name}</span>

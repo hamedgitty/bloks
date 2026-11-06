@@ -928,6 +928,34 @@
   -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
+/* A sidebar heading pinned while its rows scroll under it (Sidebar.tsx).
+ * It wears the sidebar's own surface, tinted as its section is while a
+ * row is dragged onto it (--pin-tint), and while it is pinned the same
+ * surface carries on below it under a mask, so rows go soft as they pass
+ * under it instead of being cut at an edge. No transition: it is where
+ * the list is, not something that happens. */
+.sidebar-pin {
+  background: linear-gradient(var(--pin-tint, transparent), var(--pin-tint, transparent)), var(--sidebar);
+}
+.sidebar-pin::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 100%;
+  height: 14px;
+  pointer-events: none;
+  background: inherit;
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+  mask-image: linear-gradient(to bottom, #000, transparent);
+  visibility: hidden;
+}
+.sidebar-pin[data-stuck] {
+  /* square while pinned, so no row shows past its corners */
+  border-radius: 0;
+}
+.sidebar-pin[data-stuck]::after {
+  visibility: visible;
+}
 /* A label that runs past the ruler's edge fades out rather than being
  * cut through a word ("1m 15"). */
 .trace-ruler {

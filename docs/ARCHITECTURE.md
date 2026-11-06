@@ -4256,7 +4256,13 @@ agent messaging another or a routine waking one. Pins and places are set
 through `PATCH /api/bots/:id` and `PATCH /api/bloks/:id` with `section`,
 `pinned` and `position`, which renumber the section's pins; the order of
 the headings is `GET /api/sidebar` and `PUT /api/sidebar/sections`, kept
-in `sidebar.json` and announced as a `sidebar` frame.
+in `sidebar.json` and announced as a `sidebar` frame. Each heading (Rooms,
+Agents, a section, folded or not) is `position: sticky` within its own
+group, so it stays at the top while its rows scroll under it and the next
+heading pushes it off; while pinned (`data-stuck`, measured by
+`src/lib/pinnedHeads.ts`, since not every browser at the web door can ask
+CSS) the sidebar's surface carries on below it under a mask
+(`.sidebar-pin` in `src/styles.css`), so rows fade as they pass under it.
 
 Transcript width is also a per-device reading choice, kept in `localStorage`.
 `src/lib/transcriptWidth.ts` normalizes it to Narrow (760 px), Medium (800 px)
