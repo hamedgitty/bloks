@@ -575,6 +575,7 @@ import {
   folderChanges,
   folderSnapshot,
   hashOf,
+  heldBackWords,
   laneLimitError,
   mayFire,
   newLines,
@@ -10348,7 +10349,7 @@ async function fireWatcher(w: Watcher, bot: BotRecord, what: string) {
 /**
  * One look. The first only takes a baseline. A look while the agent is
  * busy is skipped rather than taken, so the change is still there for
- * the next one. The edits of the watcher's own turn to the folder it
+ * the next one, and so is a finding the hourly cap holds back. The edits of the watcher's own turn to the folder it
  * watches are not news to it: that turn's end is its new baseline
  * (ownTurns).
  */
@@ -10442,7 +10443,9 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
       // A first side only from a reading recent enough to say where they
       // are now; an old one would make the next reading look like a move.
       if (at && (prev || now - at.observedAt <= CONTEXT_MS)) {
-        const step = placeStep(prev, sideOf(place, w.radius ?? DEFAULT_RADIUS, at), at.observedAt, now, w.when ?? "arrive");
+        // A crossing held back by the cap is as fresh as when it was first
+        // held: the wait was the cap's, not the phone's (GitHub 496).
+        const step = placeStep(prev, sideOf(place, w.radius ?? DEFAULT_RADIUS, at), at.observedAt, Math.min(now, w.held ?? now), w.when ?? "arrive");
         if (step.next) next.seen = JSON.stringify(step.next);
         if (step.fire) what = placeNews(w, at, now);
       }
@@ -10494,13 +10497,20 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         // asked to act once: that was the once
         if (w.once) finishWatcher(w, "once");
       } else {
-        w.lastError = "Held back: it already started six turns in the last hour.";
+        // Held back by the cap: what this look saw is not taken as seen,
+        // so the finding is still news on the first look the hour allows,
+        // which the minute tick takes as soon as it can (GitHub 496).
+        w.held ??= Date.now();
+        w.lastError = heldBackWords(w, Date.now());
+        return { fired: false, note: w.lastError };
       }
     }
-    // reached only if any turn this look called for has started
+    // reached only if any turn this look called for has started, or it
+    // called for none
+    delete w.held;
     if ("seen" in next && !ownEnded) w.seen = next.seen;
     if (next.seenItems) w.seenItems = next.seenItems;
-    return { fired, note: fired ? "changed, and the agent is on it" : what ? w.lastError ?? "" : manual ? "no change since the last look" : "" };
+    return { fired, note: fired ? "changed, and the agent is on it" : manual ? "no change since the last look" : "" };
   } catch (e) {
     if (!current()) return superseded;
     if (watcherFinished(w)) return { fired: false, note: "Its time ran out, so it stopped watching." };
@@ -10591,7 +10601,9 @@ setInterval(() => {
   for (const w of watchers) {
     if (watcherFinished(w, now)) continue;
     if (!w.enabled || w.failing || suspendedFor(w.botId) || w.kind === "place" || w.kind === "app") continue;
-    if ((w.lastCheck ?? 0) + w.every * 60_000 <= now) void checkWatcher(w.id);
+    // a finding held back by the cap is looked at again as soon as the
+    // hour allows, not a whole `every` later
+    if ((w.lastCheck ?? 0) + w.every * 60_000 <= now || (w.held !== undefined && mayFire(w, now))) void checkWatcher(w.id);
   }
   lookAtPlaces();
 }, 60_000).unref?.();
@@ -31841,6 +31853,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (checked.value.until === undefined) delete w.until;
       if (checked.value.when === undefined) delete w.when;
       if (reopened) delete w.done;
+      if (moved || reopened) delete w.held;
       if (moved) {
         delete w.seen;
         delete w.seenItems;

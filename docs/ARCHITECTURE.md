@@ -2963,7 +2963,12 @@ answers with a note saying so and pointing at a check-in routine
 agent's first conversation or the one the watcher names (see Lanes), or a
 rehearsal (`openRehearsals`), with the message marked `via: "watcher"`.
 A look is skipped while the agent is busy, so its own edits are not news
-to it, and `mayFire` caps a watcher at six turns an hour.
+to it, and `mayFire` caps a watcher at six turns an hour. A look the cap
+holds back does not take what it saw as seen: the watcher is marked
+`held`, the minute tick looks again as soon as the hour allows
+(`nextAllowedAt`, also a sleeping machine's next wake), and the finding
+is still news then (GitHub 496). A place crossing held that way counts
+as fresh from when it was first held.
 
 A workspace keeps fifty watchers (`MAX_WATCHERS`), finished ones
 included, so the list doubles as a history of what ran. At the limit,

@@ -52,3 +52,13 @@ test("a room's routine wakes it whatever its agents are doing", () => {
   const due = nextDueAt({ routines: [routine({ targetKind: "room", targetId: "room-1" })], watchers: [], suspended: () => true, now: NOW });
   assert.equal(due, new Date(2026, 9, 21, 11, 30).getTime());
 });
+
+test("a finding held back by the hourly cap is due when the cap allows, a folder's included (GitHub 496)", () => {
+  // six turns, the oldest fifty minutes ago: room again in ten minutes
+  const fires = Array.from({ length: 6 }, (_, i) => ({ at: NOW - (50 - i * 5) * MIN, summary: "s" }));
+  const held = watcher({ kind: "folder", target: "/tmp", held: NOW - 5 * MIN, fires, lastCheck: NOW - 5 * MIN });
+  assert.equal(nextDueAt({ routines: [], watchers: [held], suspended: none, now: NOW }), NOW + 10 * MIN);
+  const page = watcher({ held: NOW - 5 * MIN, fires, lastCheck: NOW - 5 * MIN, every: 60 });
+  assert.equal(nextDueAt({ routines: [], watchers: [page], suspended: none, now: NOW }), NOW + 10 * MIN, "the next look an hour away was taken instead");
+  assert.equal(nextDueAt({ routines: [], watchers: [{ ...held, enabled: false }], suspended: none, now: NOW }), null);
+});

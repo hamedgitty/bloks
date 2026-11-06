@@ -94,6 +94,11 @@ export interface Watcher {
   seenItems?: string[];
   lastCheck?: number;
   lastError?: string;
+  /** When a finding was first held back by the hour's cap (mayFire). What
+   * the held look saw is not taken as seen, so the finding is still news
+   * on the first look the hour allows (GitHub 496). The look that acts on
+   * it, or finds it gone, clears this. */
+  held?: number;
   laneId?: string;
   /** The conversation its turns go to, by title or by id, so the agent
    * hears in the context the work came from (GitHub 138). Absent means
@@ -481,9 +486,32 @@ export function countLook(w: Pick<Watcher, "failures" | "failing">, ok: boolean,
 
 // ── firing ─────────────────────────────────────────────────────────────
 
+const HOUR = 60 * 60_000;
+
 /** Whether the watcher may start another turn now. */
 export function mayFire(w: Pick<Watcher, "fires">, now: number): boolean {
-  return w.fires.filter((f) => now - f.at < 60 * 60 * 1000).length < FIRES_PER_HOUR;
+  return w.fires.filter((f) => now - f.at < HOUR).length < FIRES_PER_HOUR;
+}
+
+/** When the cap next lets the watcher start a turn: an hour after the
+ * turn that has to drop out of the last hour to make room. Now, when
+ * there is room already. */
+export function nextAllowedAt(w: Pick<Watcher, "fires">, now: number): number {
+  const recent = w.fires
+    .map((f) => f.at)
+    .filter((at) => now - at < HOUR)
+    .sort((a, b) => a - b);
+  const over = recent.length - FIRES_PER_HOUR;
+  return over < 0 ? now : recent[over] + HOUR;
+}
+
+/** What a look held back by the cap says, as the watcher's last error:
+ * why, and when what it found gets its turn. Minutes from now rather than
+ * a clock time, since this machine's time zone need not be the reader's. */
+export function heldBackWords(w: Pick<Watcher, "fires">, now: number): string {
+  const n: number = FIRES_PER_HOUR;
+  const minutes = Math.max(1, Math.ceil((nextAllowedAt(w, now) - now) / 60_000));
+  return `Held back: it already started ${n} ${n === 1 ? "turn" : "turns"} in the last hour. What it found waits for the next turn allowed, in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
 }
 
 /** What the agent is told. */

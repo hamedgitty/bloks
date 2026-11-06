@@ -11,9 +11,10 @@
 // Earliest of every routine that will run and every page, feed or check
 // watcher that will look. A folder watcher is left out: a folder on this
 // machine only changes while it is awake. So is a place watcher, which
-// has no schedule of its own: it is asked as a reading arrives.
+// has no schedule of its own: it is asked as a reading arrives. A watcher
+// holding a finding back for the hourly cap is due when the cap allows.
 import { nextScheduledAfter, type Routine } from "./routines.ts";
-import type { Watcher } from "./watchers.ts";
+import { nextAllowedAt, type Watcher } from "./watchers.ts";
 
 export interface NextDueInput {
   routines: readonly Routine[];
@@ -38,10 +39,14 @@ export function nextDueAt({ routines, watchers, suspended, now }: NextDueInput):
     consider(nextScheduledAfter(routine, new Date(now))?.getTime());
   }
   for (const watcher of watchers) {
+    if (!watcher.enabled || watcher.failing || watcher.kind === "place" || watcher.kind === "app") continue;
+    if (suspended(watcher.botId)) continue;
+    // a finding held back by the hourly cap is work waiting on this
+    // machine's clock, a folder's included (GitHub 496)
+    if (watcher.held !== undefined) consider(Math.max(now, nextAllowedAt(watcher, now)));
     // a folder, a place and an app are told when something happens; only
     // what looks on a schedule needs waking for
-    if (!watcher.enabled || watcher.failing || watcher.kind === "folder" || watcher.kind === "place" || watcher.kind === "app") continue;
-    if (suspended(watcher.botId)) continue;
+    if (watcher.kind === "folder") continue;
     const every = Math.max(1, Number(watcher.every) || 0) * 60_000;
     consider(Math.max(now, (watcher.lastCheck ?? 0) + every));
   }
