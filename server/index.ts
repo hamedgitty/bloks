@@ -146,6 +146,7 @@ import { DEFAULT_STALL_MINUTES, STALL_CHOICES, stallPreface } from "./drivers/st
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { answersText, keptAnswers, readAnswers, type AskAnswers, type AskQuestion } from "./harness/ask-questions.ts";
+import { quoteIn } from "./quote-check.ts";
 import { COLORS as BLOK_COLORS, MAX_TASKS, ownerLanes, shapeOf, Store, type AgentNote, type BlokColor, type BotRecord, type DroppedWhy, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
 import { addressees, audienceOf, BlokStore, currentSpend, DEFAULT_SHARING, leadOf, MAX_MEMBERS, ranksForExport, type BlokRecord, type RoomSharing } from "./bloks.ts";
 import { answersOf, pickAnswerers, RECENT_LINES, roomAnswers, routeWords, type RoomAnswers, type RoomRoute, type RouteLine } from "./room-route.ts";
@@ -7399,6 +7400,21 @@ function replyRef(raw: any): ReplyRef | undefined {
   return { ...(typeof raw.id === "string" ? { id: raw.id.slice(0, 40) } : {}), author, excerpt, ...(quote ? { quote } : {}) };
 }
 
+/** A quote from an agent or a member, held to the message it names: kept
+ * only when those words are in it, read past the marks a screen draws
+ * away (server/quote-check.ts). The person's own quotes are theirs to
+ * make and are not checked. */
+function heldQuote(ref: ReplyRef | undefined, threads: readonly string[]): ReplyRef | undefined {
+  if (!ref?.quote) return ref;
+  const said = ref.id ? threads.map((t) => store.messagesFor(t).find((m) => m.id === ref.id)).find(Boolean)?.text : undefined;
+  if (said && quoteIn(said, ref.quote)) return ref;
+  const { quote: _quote, ...rest } = ref;
+  return rest;
+}
+
+/** Every conversation of an agent, where a message it is answering lives. */
+const lanesOf = (botId: string) => store.bot(botId)?.tasks.map((t) => t.id) ?? [];
+
 /** One display-only reply prefix at each engine boundary; saved words stay
  * raw. A quote is said as a quote, line by line, with where it came from:
  * whose message, and how that message begins. */
@@ -10721,7 +10737,7 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         // which the minute tick takes as soon as it can (GitHub 496).
         w.held ??= Date.now();
         w.lastError = heldBackWords(w, Date.now());
-        look = { at: Date.now(), outcome: "held", detail: what, nextAt: nextAllowedAt(w, Date.now()) };
+        look = { at: Date.now(), outcome: "held", detail: w.kind === "place" ? placeCrossing(w) : what, nextAt: nextAllowedAt(w, Date.now()) };
         return { fired: false, note: w.lastError };
       }
     } else {
@@ -10826,8 +10842,10 @@ setInterval(() => {
     if (watcherFinished(w, now)) continue;
     if (!w.enabled || w.failing || suspendedFor(w.botId) || w.kind === "place" || w.kind === "app") continue;
     // a finding held back by the cap is looked at again as soon as the
-    // hour allows, not a whole `every` later
-    if ((w.lastCheck ?? 0) + w.every * 60_000 <= now || (w.held !== undefined && mayFire(w, now))) void checkWatcher(w.id);
+    // hour allows, not a whole `every` later; but a look that failed goes
+    // back to its own spacing, or a site down for three minutes would be
+    // asked every minute and the watcher paused for it
+    if ((w.lastCheck ?? 0) + w.every * 60_000 <= now || (w.held !== undefined && !w.failures && mayFire(w, now))) void checkWatcher(w.id);
   }
   lookAtPlaces();
 }, 60_000).unref?.();
@@ -10988,11 +11006,17 @@ function locationView() {
 
 /** What a place watcher's turn is told happened. */
 function placeNews(w: Watcher, at: SharedLocation, now: number): string {
-  const who = cfg.profile?.name?.trim() || "The person you work for";
   return [
-    `${who} ${crossingWords(w.target, w.radius, w.when ?? "arrive")}.`,
+    placeCrossing(w),
     `Their iPhone placed them in ${placeWords(at)} ${agoWords(now - at.observedAt)} (${new Date(at.observedAt).toISOString()}), ${precisionWords(at)}.`,
   ].join(" ");
+}
+
+/** The crossing alone, with no "minutes ago": the same words from one look
+ * to the next while it waits, so held looks fold into one in the history. */
+function placeCrossing(w: Watcher): string {
+  const who = cfg.profile?.name?.trim() || "The person you work for";
+  return `${who} ${crossingWords(w.target, w.radius, w.when ?? "arrive")}.`;
 }
 
 // ── app watchers (server/app-watch.ts, server/composio-triggers.ts) ────
@@ -20316,6 +20340,9 @@ function deliverQueued(threadId: string, messageIds: readonly string[]) {
     queued: false,
     waitsFor: undefined,
     waitsUntil: undefined,
+    // what its mentions held was for the turn that takes it, which has
+    // it now; a retry keeps its own (Asked), and a redo reads them again
+    mentionContext: undefined,
     deliveredAt,
     at: deliveredAt,
     queuedAt: m.queuedAt ?? m.at,
@@ -23686,7 +23713,7 @@ async function serveMember(
       const body = await readBody(req);
       const text = clamp(body.text, 8_000);
       if (!text) return json(res, 400, { error: "say something first" });
-      const posted = memberPosts(action.roomId, { id: personId, limited: Boolean(who.role) }, text, replyRef(body.replyTo));
+      const posted = memberPosts(action.roomId, { id: personId, limited: Boolean(who.role) }, text, heldQuote(replyRef(body.replyTo), [action.roomId]));
       if ("error" in posted) return json(res, posted.status, { error: posted.error, ...(posted.code ? { code: posted.code } : {}) });
       const view = viewOf(personId, posted.blok.id)!;
       return json(res, 202, { message: memberMessage(posted.message, view) });
@@ -27085,7 +27112,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const unauthorized = () => json(res, 401, { error: "this request's credential expired or was revoked" });
         if (!current()) return unauthorized();
         const requestedTask = typeof body.taskId === "string" && body.taskId ? body.taskId : undefined;
-        const replyTo = replyRef(body.replyTo);
+        const replyTo = heldQuote(replyRef(body.replyTo), lanesOf(m[1]));
         const now = body.now === true;
         // The omitted selector is stable, even if General or lane state changes.
         const identity = JSON.stringify([m[1], text, requestedTask ?? null, replyTo ?? null, now, ...(named.name ? [named.name] : [])]);
@@ -27270,7 +27297,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       try {
         result = await sendUserMessage(m[1], text, {
           taskId,
-          replyTo: replyRef(body.replyTo),
+          replyTo: asAgent ? heldQuote(replyRef(body.replyTo), lanesOf(m[1])) : replyRef(body.replyTo),
           ...(mentioned ? { mentioned } : {}),
           from,
           yours: !asAgent,
@@ -31183,7 +31210,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // someone it named, never back to itself, and counted against the
       // chain it is part of rather than starting a fresh one.
       if (asAgent) {
-        const replyTo = replyRef(roomBody.replyTo);
+        const replyTo = heldQuote(replyRef(roomBody.replyTo), [blok.id]);
         const message = store.appendMessage(blok.id, {
           role: "bot",
           from: asAgent.botId,

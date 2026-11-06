@@ -161,6 +161,14 @@ export function trimTo(text: string, budget: number, cutLine = "(cut here: it go
   return `${cut.trimEnd()}\n${cutLine}`;
 }
 
+/** Attachment tags in another conversation's words, or in a page, said as
+ * words. Left as tags they would read as this turn's own pictures and
+ * files wherever the words are scanned for them (a waiting message is),
+ * crowding out what the person attached here. */
+function quietAttachments(text: string): string {
+  return text.replace(/<attached-([a-z]+)\b[^>]*>/gi, (_tag, kind: string) => `(an attached ${kind.toLowerCase()})`);
+}
+
 /** A frame whose ends carry a random tag, so what is inside cannot close
  * it and go on outside, the way frameUntrusted keeps a page in. */
 function frameRecord(body: string, nonce: string): string {
@@ -196,7 +204,7 @@ export function conversationBlock(mention: Pick<Mention, "href">, read: Conversa
   const parts: string[] = [`Title: ${read.title}`];
   let left = room - parts[0]!.length;
   if (read.summary?.trim()) {
-    const summary = trimTo(read.summary.trim(), Math.min(SUMMARY_CHARS, Math.floor(left / 2)));
+    const summary = trimTo(quietAttachments(read.summary.trim()), Math.min(SUMMARY_CHARS, Math.floor(left / 2)));
     parts.push(`Summary of its earlier part:\n${summary}`);
     left -= summary.length + 30;
   }
@@ -204,7 +212,7 @@ export function conversationBlock(mention: Pick<Mention, "href">, read: Conversa
   const recent = read.messages.slice(-RECENT_MESSAGES);
   for (let i = recent.length - 1; i >= 0; i--) {
     const m = recent[i]!;
-    const line = `${m.who}: ${trimTo(m.text.trim(), MESSAGE_CHARS, "(cut)")}`;
+    const line = `${m.who}: ${trimTo(quietAttachments(m.text.trim()), MESSAGE_CHARS, "(cut)")}`;
     if (line.length + 1 > left) break;
     kept.unshift(line);
     left -= line.length + 1;
@@ -229,7 +237,7 @@ export interface TabRead {
 export function tabBlock(read: TabRead, budget: number, nonce: string): string {
   const head = `${read.title || "(untitled)"} | ${read.url}`;
   const room = Math.max(0, budget - 520 - head.length);
-  const body = read.text.trim() ? trimTo(read.text.trim(), room, "(cut here: the page goes on)") : "(no text on this page)";
+  const body = read.text.trim() ? trimTo(quietAttachments(read.text.trim()), room, "(cut here: the page goes on)") : "(no text on this page)";
   const host = hostOf(read.url);
   return [
     `The browser tab the person linked${host ? ` on ${host}` : ""}, as it read when they sent this:`,

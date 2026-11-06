@@ -103,8 +103,11 @@ export function branchCopy(messages: readonly Message[], upTo: number, mint: () 
     if (m.card) {
       // An engine waits on the original's request, if anything still does;
       // the copy's buttons would answer nobody.
-      const { requestId: _requestId, runId: _runId, ...card } = m.card;
-      copy.card = card.answered || card.dismissed ? card : { ...card, dismissed: true };
+      const { requestId: _requestId, runId: _runId, agentSaidId, ...card } = m.card;
+      // what the agent said before asking is the copy of that message here,
+      // or the card would look for it in the original and always repeat it
+      const said = agentSaidId && ids.has(agentSaidId) ? { agentSaidId: ids.get(agentSaidId)! } : {};
+      copy.card = card.answered || card.dismissed ? { ...card, ...said } : { ...card, ...said, dismissed: true };
     }
     if (m.secret) {
       const { resumeKey: _resumeKey, resumed: _resumed, ...secret } = m.secret;
