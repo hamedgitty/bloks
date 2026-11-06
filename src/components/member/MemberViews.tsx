@@ -23,6 +23,7 @@ import {
   usageNotice,
 } from "@/lib/memberMode";
 import { seedReads } from "@/lib/readReceipts";
+import { useLastRead } from "@/lib/lastRead";
 import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
 import { AgentFace, MemberComposer, OnlyYou, PersonFace, Transcript } from "./MemberParts";
@@ -98,12 +99,17 @@ export function AgentView({
   const [data, setData] = useState<Conversation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // which conversation the messages in hand are, so the New line is never
+  // asked of the last one while the next one loads
+  const key = `${agent.id}:${lane}`;
+  const [loaded, setLoaded] = useState<string | null>(null);
   const load = useCallback(() => {
     memberApi
       .conversation(agent.id, lane)
       .then((c) => {
         seedReads(c.threadId, c.reads);
         setData(c);
+        setLoaded(`${agent.id}:${lane}`);
         setBusy(c.busy);
         setError(null);
       })
@@ -111,10 +117,28 @@ export function AgentView({
   }, [agent.id, lane]);
   useEffect(() => {
     setData(null);
+    setLoaded(null);
     load();
   }, [load]);
   useLive(data?.threadId ?? null, setData, load, setBusy);
   const streaming = useStreaming(data?.threadId ?? null);
+  // Where they left off (src/lib/lastRead.ts): the line above what came
+  // since, and their place said as they read on. Words still waiting to
+  // go are not read yet, by anybody.
+  const said = data?.messages.filter((m) => !m.queued) ?? [];
+  const lastRead = useLastRead({
+    key,
+    threadId: data?.threadId ?? null,
+    lastId: said[said.length - 1]?.id,
+    ready: Boolean(data) && loaded === key,
+    post: memberApi.lastRead,
+  });
+  // their own words, from here or another screen of theirs: what was new
+  // is read, and the line goes
+  const lastSaid = said[said.length - 1];
+  useEffect(() => {
+    if (lastSaid?.role === "user" && lastSaid.author === me) lastRead.clear();
+  }, [lastSaid?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const lanes = [
     ...(agent.team && !agent.solo ? [{ value: "team" as const, label: <><Users size={13} />{t("memberViews.team")}</> }] : []),
@@ -185,6 +209,7 @@ export function AgentView({
           agentFace={() => <AgentFace agent={agent} size={28} />}
           nameOf={nameOf}
           onRead={memberApi.read}
+          newFrom={lastRead.from}
           streaming={streaming}
           busy={busy}
           header={header}
@@ -218,9 +243,10 @@ export function AgentView({
         placeholder={team ? t("memberViews.placeholder.team", { agent: agent.name }) : t("memberViews.placeholder.agent", { agent: agent.name })}
         notice={usageNotice(usage)}
         onSend={async (text) => {
-          const said = await memberApi.say(agent.id, lane, text);
-          setData((was) => (was ? { ...was, messages: withMessage(was.messages, said.message) } : was));
-          if (!said.queued) setBusy(true);
+          const sent = await memberApi.say(agent.id, lane, text);
+          setData((was) => (was ? { ...was, messages: withMessage(was.messages, sent.message) } : was));
+          if (!sent.queued) setBusy(true);
+          lastRead.clear();
           onSent();
         }}
       />

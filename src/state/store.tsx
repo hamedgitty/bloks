@@ -142,6 +142,12 @@ const StoreContext = createContext<{
   dispatch: React.Dispatch<Action>;
 } | null>(null);
 
+/** Said wherever this app reads a conversation (opening it, or its dot
+ * clearing while it is on screen): the chat keeps the person's place
+ * itself (src/lib/lastRead.ts), so the server is not to read it to the
+ * end for them, which would lose where they left off. */
+const KEEPS_PLACE = JSON.stringify({ keepsPlace: true });
+
 /** How long a finished turn's streamed text waits for its message. */
 const STREAM_LINGER_MS = 8_000;
 
@@ -528,7 +534,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         case "selectTask":
           keptUnread.current = null;
-          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}/activate`, { method: "POST" }));
+          switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}/activate`, { method: "POST", body: KEEPS_PLACE }));
           break;
         case "closeTask":
           switchLane(action.botId, api(`/api/bots/${action.botId}/tasks/${action.taskId}`, { method: "DELETE" }));
@@ -583,9 +589,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const open = bot.activeTaskId ?? bot.threadId;
           const pinged = action.lane ? (action.lane === open ? null : action.lane) : pingedLane(bot);
           if (pinged) {
-            switchLane(bot.id, api(`/api/bots/${bot.id}/tasks/${pinged}/activate`, { method: "POST" }));
+            switchLane(bot.id, api(`/api/bots/${bot.id}/tasks/${pinged}/activate`, { method: "POST", body: KEEPS_PLACE }));
           } else if (openLaneUnread(bot)) {
-            api(`/api/bots/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
+            api(`/api/bots/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false, keepsPlace: true }) }).catch(() => {});
           }
           break;
         }
@@ -1061,7 +1067,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             fetch(`/api/bots/${bot.id}`, {
               method: "PATCH",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ unread: false }),
+              body: JSON.stringify({ unread: false, keepsPlace: true }),
             }).catch(() => {});
           }
           const made = serverSeq(frame);

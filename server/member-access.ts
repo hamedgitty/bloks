@@ -41,6 +41,8 @@ export type MemberAction =
   | { kind: "typing"; roomId: string }
   // how far they have read a room or a conversation, theirs to say
   | { kind: "read"; threadId: string }
+  // where they left off in one, kept for them alone (server/last-read.ts)
+  | { kind: "lastRead"; threadId: string }
   // the workspace, and the member's own conversations with its agents
   | { kind: "workspace" }
   | { kind: "agents" }
@@ -113,6 +115,11 @@ const ROUTES: Array<{ method: string; pattern: RegExp; action: (m: RegExpMatchAr
     method: "POST",
     pattern: new RegExp(`^/api/member/threads/${ID}/read$`),
     action: (m) => ({ kind: "read", threadId: m[1] }),
+  },
+  {
+    method: "POST",
+    pattern: new RegExp(`^/api/member/threads/${ID}/last-read$`),
+    action: (m) => ({ kind: "lastRead", threadId: m[1] }),
   },
   { method: "GET", pattern: /^\/api\/member\/workspace$/, action: () => ({ kind: "workspace" }) },
   { method: "GET", pattern: /^\/api\/member\/agents$/, action: () => ({ kind: "agents" }) },

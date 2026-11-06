@@ -270,6 +270,7 @@ Workspaces), written synchronously. No database.
 | `people.json`, `joining.json` | Members, guests and devices; invites, the join key and password, and the joining switches (see People in a workspace) |
 | `member-limits.json`, `owner-plan.json` | What each member may spend and has spent this month; the owner's plan as last known |
 | `reads.json` | How far each person has read each conversation (see Read positions) |
+| `last-read.json` | Where each person left off in each conversation (see Where you left off) |
 | `usage.json`, `model-prices.json` | Daily usage by agent, engine and person; the public price list estimates come from (see Usage and spending limits) |
 | `plan-cache.json` | The Plan page's last good answers from bloks.dev, under a fingerprint of the key |
 | `location.json` | The owner's iPhone's last reading and whether each phone shares, never a trail; left out of backups and moves (see Location) |
@@ -933,6 +934,48 @@ its person sees their own, and the owner only while reading private
 conversations is on, never an admin. Seen by is drawn only where at
 least one other person is in the conversation, and never under the
 reader's own message.
+
+## Where you left off
+
+Where each person left off in each conversation is kept apart from
+Seen by, in `last-read.json` (`server/last-read.ts`): after which message
+they had read, per person per conversation, the owner as `owner`. It is
+what the green New line in a transcript is drawn from, and it is never
+shown to anybody else: no frame carries it, no transcript route returns
+it, and the only answer that mentions it goes to the person's own screen.
+A place moves forward as the person reads and back only when they mark a
+conversation unread from a message, which Seen by must never do.
+
+The chat asks once as a conversation opens:
+`POST /api/threads/:threadId/last-read` (a member's
+`POST /api/member/threads/:threadId/last-read`) answers `from`, the
+message the line goes above, from the place as it was, and moves the
+place on to `through` when given. From then on the window says
+`through` as messages arrive, only while it is shown and focused, so a
+conversation left open on a screen nobody looks at is not read for them
+(`src/lib/lastRead.ts`). The line stays where it was put until the person
+sends or leaves; writing in a conversation reads it to the end on the
+server, from whichever screen the words came. `from` is the first
+message after the place that is not the person's own, provided something
+after it is news as the unread dot counts it (`newFrom`): what the agent
+said, a card, a file, a notice or another person's words, never tool
+calls, screens, messages between agents, a routine's prompt, a quiet
+check-in, the engine's markers or words still waiting to go. So a
+conversation opened while a turn runs shows no line for the work going
+on, and a turn that ran while they were away is new from its start.
+The owner's place is kept only where the owner takes part: their own
+conversations, team conversations and rooms, never a member's private
+one, even while the owner may read those.
+
+A screen that does not keep the place itself (the iPhone app, an older
+desktop app) reads a conversation to the end when it opens it or clears
+its dot (`activate`, `PATCH ... unread: false`), so every screen agrees;
+the app's own chat says `keepsPlace` on those calls. Opening at the line:
+when what came since is taller than the transcript, the chat opens at the
+line rather than the end, unless the palette sent it to a message; a line
+further back than the drawn part opens up to 300 messages more, or asks
+for up to three earlier pages where the transcript arrived as its newest
+part, and otherwise waits for Show earlier.
 
 A room, or a team conversation with another person on its list or
 speaking in it, draws every message as a bubble, with a face and a name

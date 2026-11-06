@@ -1487,6 +1487,8 @@
   "chatView.matchOf": "{at} sur {total}",
   "chatView.meetingNotes": "Notes de réunion",
   "chatView.messagesDeleted": "Ses messages sont supprimés.",
+  "chatView.new": "Nouveau",
+  "chatView.newSince": "Nouveau depuis ta dernière lecture",
   "chatView.nextMatch": "Résultat suivant",
   "chatView.noMatches": "Aucun résultat",
   "chatView.previousMatch": "Résultat précédent",

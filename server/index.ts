@@ -130,6 +130,7 @@ import { missingForAgent, ServerBrowser } from "./server-browser.ts";
 import { MintLimiter, mintPairing, othersRoute, pairCheck } from "./other-workspaces.ts";
 import { choosableMark, defaultForKind, markRoute, markView, type MarkRouteDeps } from "./workspace-mark.ts";
 import { Reads, type ReadMark } from "./reads.ts";
+import { LastRead, newFrom, wroteIt } from "./last-read.ts";
 import { JoinClient } from "./join-client.ts";
 import * as invites from "./invites.ts";
 import { CLI_PROVIDERS, CUSTOM_SPEC, MAX_CUSTOM_HEADERS, PROVIDER_SPECS, customHeaderProblem, normalizeCompatUrl, specFor } from "./providers.ts";
@@ -6769,7 +6770,13 @@ store.onAppend = (threadId, message) => {
 // dozen doors (delivered, taken back, deleted, not sent after a restart),
 // so the sender's record of them follows them from here (settleRecord)
 // rather than from each door.
+// Where each person left off in each conversation (server/last-read.ts).
+// Made before the store's hooks below, which drop a cleared or closed
+// conversation's places with its transcript.
+const lastRead = new LastRead(join(DATA_DIR, "last-read.json"));
+
 store.onRewrite = (threadId, changed) => {
+  if (!changed) lastRead.forgetThread(threadId);
   for (const message of changed ?? []) settleRecord(message);
   const index = recallIndexes.peek(threadId);
   if (!index) return;
@@ -13679,6 +13686,51 @@ function markRead(threadId: string, personId: string, messageId: unknown, visibl
   return { status: 200, body: { read: mark ?? reads.of(threadId).find((r) => r.personId === personId) ?? null } };
 }
 
+// ── where each person left off (server/last-read.ts) ──────────────────
+
+/** A conversation's messages as a place is kept over them: what this
+ * person is shown, without words still waiting to go, which move to the
+ * end when they do. */
+function placeOrder(threadId: string, visible: (m: Message) => boolean): Message[] {
+  return store.messagesFor(threadId).filter((m) => visible(m) && !m.queued);
+}
+
+/**
+ * Somebody opened a conversation, or read on in it: where the "New" line
+ * goes for them, from the place they had, and then their place read on
+ * to `through` when it names a message they may see. Only a person who
+ * takes part keeps a place: the owner reading a member's private
+ * conversation is not in it. The answer is theirs alone; nothing here is
+ * broadcast, so nobody learns where anybody else left off.
+ */
+function readOn(threadId: string, personId: string, through: unknown, visible: (m: Message) => boolean): { status: number; body: unknown } {
+  if (through !== undefined && (typeof through !== "string" || !/^[\w-]{1,80}$/.test(through))) {
+    return { status: 400, body: { error: "through is the last message on screen" } };
+  }
+  const place = readPlace(threadId);
+  if (!place) return { status: 404, body: { error: "no such conversation" } };
+  if ((place.where === "private" || place.where === "solo" || place.where === "owner") && place.laneOwner !== personId) {
+    return { status: 403, body: { error: "only its own person keeps a place in this conversation" } };
+  }
+  const messages = placeOrder(threadId, visible);
+  const from = newFrom(messages, lastRead.of(threadId, personId), wroteIt(personId));
+  if (through) lastRead.readTo(threadId, personId, through, messages.map((m) => m.id));
+  return { status: 200, body: { from } };
+}
+
+/**
+ * The owner opened a conversation on a screen that does not keep their
+ * place itself (the iPhone app, an older desktop app): opening it reads
+ * it to the end, as its dot clearing says, so every screen agrees where
+ * they left off. The app's own chat keeps the place with
+ * POST /api/threads/:id/last-read and says so (`keepsPlace`), so that
+ * opening it still finds the line where it was.
+ */
+function readByOpening(threadId: string, body: { keepsPlace?: unknown } | null | undefined) {
+  if (body?.keepsPlace === true) return;
+  lastRead.readToEnd(threadId, "owner", placeOrder(threadId, () => true).map((m) => m.id));
+}
+
 /** Members, invites and the door, wired to this server. */
 const workspacePeople = createMembers({
   hostName,
@@ -13703,6 +13755,7 @@ const workspacePeople = createMembers({
     for (const bot of store.bots) if (bot.solo?.by === personId && !bot.archivedAt) store.archiveBot(bot.id, Date.now());
     store.dropMemberLanes(personId);
     reads.forgetPerson(personId);
+    lastRead.forgetPerson(personId);
     // their apps and keys go with their folder; nothing of them is kept here
     personal.forget(personId);
   },
@@ -23563,6 +23616,15 @@ async function serveMember(
       return json(res, said.status, said.body);
     }
 
+    case "lastRead": {
+      // where they left off, theirs alone: in a conversation they may
+      // open, over the messages they are shown
+      const view = viewOf(personId, action.threadId);
+      if (!view) return json(res, 404, { error: "no such conversation" });
+      const said = readOn(action.threadId, personId, (await readBody(req)).through, (m) => memberMessage(m, view) !== null);
+      return json(res, said.status, said.body);
+    }
+
     case "workspace": {
       const settings = invites.joiningSettings();
       const limit = workspacePeople.limits.limitOf(personId);
@@ -23683,6 +23745,8 @@ async function serveMember(
         if (!text) return json(res, 400, { error: "say something first" });
         const said = memberSays(bot, lane, { id: personId, name: who.name }, text);
         if ("error" in said) return json(res, said.status, { error: said.error, ...(said.code ? { code: said.code } : {}) });
+        // writing in a conversation is having read it (server/last-read.ts)
+        lastRead.readToEnd(lane.id, personId, placeOrder(lane.id, (m) => memberMessage(m, view) !== null).map((m) => m.id));
         return json(res, 202, { message: memberMessage(said.message, view), queued: said.queued });
       }
 
@@ -26367,6 +26431,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (typeof body.unread === "boolean") {
         const target = store.bot(m[1]);
         if (target) store.markLane(target.id, target.activeTaskId, body.unread);
+        // an agent clearing its own dot is not the person reading
+        if (target && body.unread === false && !asAgent) readByOpening(target.activeTaskId, body);
       }
       // A model id can now be typed in by hand (an engine that takes any
       // id), and it ends up as a process argument, so it is a model id
@@ -27073,6 +27139,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       // A drain or a pause holds words back without saying queued in the
       // answer; written down to wait, they wait, whichever door it was.
+      // writing in a conversation is having read it, whichever screen the
+      // words came from (server/last-read.ts)
+      if (!asAgent && result.taskId) lastRead.readToEnd(result.taskId, "owner", placeOrder(result.taskId, () => true).map((msg) => msg.id));
       const record = noteSent(result.queued || waiting ? "queued" : "sent");
       if (record && waiting) tieRecord(waiting.laneId, waiting.id, { laneId: asAgent!.taskId, id: record.id });
       const ready = await reach;
@@ -27926,6 +27995,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     if (m && method === "POST") {
       if (asAgent) return json(res, 403, { error: "read positions are a person's, not an agent's" });
       const said = markRead(m[1], "owner", (await readBody(req)).messageId, () => true);
+      return json(res, said.status, said.body);
+    }
+    // ── where the owner left off (server/last-read.ts) ──
+    // Said by their own screens as a conversation opens and as it is read,
+    // never by an agent: a place is a person's, and the answer (where the
+    // New line goes) is for the screen that asked and nobody else.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/last-read$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "where somebody left off is a person's, not an agent's" });
+      const said = readOn(m[1], "owner", (await readBody(req)).through, () => true);
       return json(res, said.status, said.body);
     }
     m = path.match(/^\/api\/threads\/([\w-]+)\/reads$/);
@@ -29406,9 +29485,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/activate$/);
     if (m && method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
       if (!store.setActiveTask(m[1], m[2])) return json(res, 404, { error: "no such task" });
       // opening a conversation is reading it
       store.markLane(m[1], m[2], false);
+      if (!asAgent) readByOpening(m[2], body);
       const fresh = store.bot(m[1])!;
       broadcast({ kind: "bot", bot: clientBot(fresh) });
       return json(res, 200, { bot: { ...clientBot(fresh), ...laneFor(m[2]) }, seq: frameSeq });
@@ -29428,6 +29509,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (title) retitleLane(m[1], m[2], title);
       // "mark as unread" on one conversation, from its row in the sidebar
       if (unread !== undefined) store.markLane(m[1], m[2], unread);
+      if (unread === false && !asAgent) readByOpening(m[2], body);
       const fresh = store.bot(m[1])!;
       broadcast({ kind: "bot", bot: clientBot(fresh) });
       return json(res, 200, { bot: { ...clientBot(fresh), ...laneFor(fresh.activeTaskId) }, seq: frameSeq });

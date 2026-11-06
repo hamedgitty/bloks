@@ -2,6 +2,7 @@ import { useSettingsObservation } from "@/lib/useSettingsObservation";
 import { useNamer, useWorkspaceRoster } from "@/lib/members";
 import { isGroup, otherHumans, receiptsAt, runs, senderOf, speakers, teamHumans } from "@/lib/participants";
 import { seedReads, useReadPosition, useReads } from "@/lib/readReceipts";
+import { useLastRead } from "@/lib/lastRead";
 import { useViewingReport } from "@/lib/viewing";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { Search } from "@/components/icons";
@@ -66,6 +67,7 @@ import { GroupMessage, PersonAvatar, SeenBy } from "./chat/Group";
 import { Markdownish } from "./Markdown";
 import { LiveBrowser, ScreenFrame, StreamingBubble, WorkingClock, WorkingLine } from "./chat/Live";
 import { EmptyState } from "./chat/EmptyState";
+import { NewLine } from "./chat/NewLine";
 import { JumpToLatest } from "./chat/JumpToLatest";
 import { HeldSends } from "./chat/HeldSends";
 import { QuestionDock } from "./chat/QuestionDock";
@@ -141,6 +143,14 @@ const telegramSpeaker = (m: Message) => {
 };
 
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+
+/** How far behind what is drawn the New line may open the transcript on
+ * its own, in messages: beyond that it waits for "Show earlier" like the
+ * rest of a long history, rather than drawing thousands of rows. */
+const LINE_REACH = 300;
+/** And how many earlier pages it asks for, where the transcript arrived
+ * as its newest part only (a phone, Bloks Cloud). */
+const LINE_PAGES = 3;
 
 /** The brief wash behind a message the palette sent you to, a little
  * wider than its row. Drawn first in the row, so a bubble, positioned
@@ -316,6 +326,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [landing, setLanding] = useState<{ id: string; nonce: number } | null>(null);
   const [lit, setLit] = useState<string | null>(null);
   const landed = useRef<number | null>(null);
+  // the New line's landing and the pages asked for to reach it, per visit
+  const lineLanded = useRef(false);
+  const linePages = useRef(0);
   const threadKey = `${bot.id}:${bot.threadId}`;
   const lastThreadKey = useRef(threadKey);
   if (lastThreadKey.current !== threadKey) {
@@ -328,10 +341,33 @@ export function ChatView({ bot }: { bot: Bot }) {
     // a landing is on a message in the conversation it was asked for
     setLanding(null);
     setLit(null);
+    lineLanded.current = false;
+    linePages.current = 0;
   }
   // except one handed to this conversation on its way here: Branch with
   // this puts its quote in the new branch's box (src/lib/replyHandoff.ts)
   useEffect(() => listenForReply(threadKey, setReplyTo), [threadKey]);
+  // ── where the person left off (src/lib/lastRead.ts) ──
+  // The New line, asked for once the conversation's messages are in hand,
+  // and their place said as they read on.
+  const lastRead = useLastRead({
+    key: threadKey,
+    threadId: bot.threadId,
+    lastId: said[said.length - 1]?.id,
+    ready: state.hydrated && !(bot.id in state.laneLoads),
+    post: (threadId, through) => api(`/api/threads/${threadId}/last-read`, { method: "POST", body: JSON.stringify(through ? { through } : {}) }),
+  });
+  // Something they said, here or on another screen of theirs: what was
+  // new is read, and the line goes.
+  useEffect(() => {
+    const last = said[said.length - 1];
+    if (last && arrivals.has(last.id) && sentByYou(last)) lastRead.clear();
+  }, [arrivals]); // eslint-disable-line react-hooks/exhaustive-deps
+  // and words that wait for the turn running now were sent all the same
+  const lastWaiting = waiting[waiting.length - 1];
+  useEffect(() => {
+    if (lastWaiting && sentByYou(lastWaiting)) lastRead.clear();
+  }, [lastWaiting?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // ── find within this conversation ──
   // The palette answers "which thread was that in"; this answers "where
   // in this one", which is a different question and needs the whole
@@ -410,10 +446,11 @@ export function ChatView({ bot }: { bot: Bot }) {
   const earlier = useHistoryPaging("bot", bot, said, scrollRef, pinned, !finding);
   const start = earlier.start;
   const landAt = landing ? said.findIndex((m) => m.id === landing.id) : -1;
+  const lineAt = lastRead.from ? said.findIndex((m) => m.id === lastRead.from) : -1;
   // A hit above the rendered slice would be invisible and unscrollable,
   // so finding one opens the window far enough back to show it. So does
-  // a landing.
-  const reach = [currentHit, landAt].filter((i) => i >= 0 && i < start);
+  // a landing, and the New line when it is not too far back.
+  const reach = [currentHit, landAt, start - lineAt <= LINE_REACH ? lineAt : -1].filter((i) => i >= 0 && i < start);
   const visibleStart = reach.length ? Math.max(0, Math.min(...reach) - 4) : start;
   const visibleRows = useMemo(() => rowsFrom(folded.rows, visibleStart), [folded, visibleStart]);
   // A hit in folded work would be just as invisible, so its fold opens,
@@ -498,6 +535,39 @@ export function ChatView({ bot }: { bot: Bot }) {
     row.scrollIntoView({ block: "center", behavior: far || reducedMotion() ? "auto" : "smooth" });
     setLit(landing.id);
   }, [landing, landAt, visibleStart, landShown]);
+  // ── opening at the New line ──
+  // A conversation opens at its end. When what came since is more than
+  // the screen holds, it opens at the line instead, so reading starts
+  // where they left off; when it all fits, the end shows the line anyway.
+  // Never over a message the palette sent them to, and never once they
+  // have scrolled themselves.
+  useLayoutEffect(() => {
+    if (!lastRead.from || lineLanded.current) return;
+    // pages asked for to reach the line leave the end on purpose
+    if (landing || peekAsk(bot.id) || (!pinned.current && linePages.current === 0)) {
+      lineLanded.current = true;
+      return;
+    }
+    const el = scrollRef.current;
+    const line = el?.querySelector("[data-new-line]");
+    if (!el || !line) return;
+    lineLanded.current = true;
+    const above = line.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    if (above >= 0) return;
+    pinned.current = false;
+    // a little air over it, so it reads as the top of what is new
+    el.scrollTop += above - 12;
+  }, [lastRead.from, lineAt, threadKey, visibleStart, landing]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The line further back than a transcript that arrived as its newest
+  // part: a few earlier pages are asked for to reach it, as a landing
+  // does, and no more.
+  useEffect(() => {
+    if (!lastRead.from || lineAt >= 0) return;
+    if (linePages.current >= LINE_PAGES || earlier.remaining <= 0 || earlier.loading) return;
+    linePages.current++;
+    earlier.showEarlier();
+  }, [lastRead.from, lineAt, threadKey, earlier.remaining, earlier.loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // the mark is a moment, not a state
   useEffect(() => {
     if (!lit) return;
@@ -718,10 +788,20 @@ export function ChatView({ bot }: { bot: Bot }) {
   // between them are not next to each other on the page.
   // Each message is drawn inside its own guard, so one that cannot be
   // drawn costs that message and not the conversation (src/lib/rowGuard.ts).
+  // The New line goes once, above the first row that holds anything from
+  // where it starts: a fold, when the turn it opens on ran while they were
+  // away, or the message itself.
+  let lineDrawn = false;
+  const lineAbove = (indices: readonly number[]) => {
+    if (lineDrawn || lineAt < visibleStart || !indices.some((i) => i >= lineAt)) return [];
+    lineDrawn = true;
+    return [<NewLine key="new-line" />];
+  };
   const rowsOf = (list: readonly Message[], indexOf: (offset: number) => number) =>
-    list.map((m, offset) => (
-      <MessageGuard key={m.id} id={m.id} resetKey={m} className={group ? "ml-9" : undefined} render={() => rowOf(list, indexOf, m, offset)} />
-    ));
+    list.flatMap((m, offset) => [
+      ...lineAbove([indexOf(offset)]),
+      <MessageGuard key={m.id} id={m.id} resetKey={m} className={group ? "ml-9" : undefined} render={() => rowOf(list, indexOf, m, offset)} />,
+    ]);
   const rowOf = (list: readonly Message[], indexOf: (offset: number) => number, m: Message, offset: number) => {
       const fresh = arrivals.has(m.id);
       const absolute = indexOf(offset);
@@ -1108,6 +1188,7 @@ export function ChatView({ bot }: { bot: Bot }) {
                     (offset) => row.items[offset].index,
                   )
                 : [
+                    ...lineAbove(row.fold.indices),
                     <TurnFoldLine
                       key={`fold:${row.fold.key}`}
                       fold={row.fold}

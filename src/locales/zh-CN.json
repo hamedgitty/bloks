@@ -1430,6 +1430,8 @@
   "chatView.matchOf": "第 {at} 个，共 {total} 个",
   "chatView.meetingNotes": "会议记录",
   "chatView.messagesDeleted": "其消息将被删除。",
+  "chatView.new": "新消息",
+  "chatView.newSince": "自上次阅读以来的新消息",
   "chatView.nextMatch": "下一个匹配项",
   "chatView.noMatches": "没有匹配项",
   "chatView.previousMatch": "上一个匹配项",

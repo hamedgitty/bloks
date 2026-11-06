@@ -268,6 +268,12 @@ and on an agent's answer **Branch with this**, which opens a branch from
 that answer with the quote waiting in its box. The agent hears the
 quoted words and whose message they came from.
 
+Come back to a conversation and a green **New** line sits above what
+arrived since you last read it, and the chat opens there when there is
+more than a screen of it. Where you left off is kept on the workspace,
+per person, so your computer, your phone and the browser agree, and in a
+Team workspace nobody else ever sees yours.
+
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">
 </p>
@@ -855,6 +861,7 @@ Inside each workspace's folder:
 | `engine-accounts.json`, `engine-accounts/` | The names of an engine's added accounts and which one is in use, and each one's own config folder with the sign-in the engine wrote there (left out of backups) |
 | `opencode/` | OpenCode's own settings, sign-ins and sessions for this workspace, when it has its own setup; `0700` (left out of backups) |
 | `reads.json` | How far each person has read each conversation |
+| `last-read.json` | Where each person left off in each conversation, for the New line |
 | `skills/` | Installed skills, one markdown file each |
 | `skill-history/` | Every version of each of your skills, with who changed it and why |
 | `skill-files/` | The supporting files a skill keeps beside its instructions |

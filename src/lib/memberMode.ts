@@ -89,6 +89,9 @@ export const memberApi = {
   welcomed: () => call<{ ok: true }>("/api/member/welcomed", { method: "POST" }),
   read: (threadId: string, messageId: string) =>
     call<{ read: unknown }>(`/api/member/threads/${threadId}/read`, { method: "POST", body: JSON.stringify({ messageId }) }),
+  // where they left off, theirs alone (src/lib/lastRead.ts)
+  lastRead: (threadId: string, through?: string) =>
+    call<{ from: string | null }>(`/api/member/threads/${threadId}/last-read`, { method: "POST", body: JSON.stringify(through ? { through } : {}) }),
 };
 
 // ── the live stream ────────────────────────────────────────────────────

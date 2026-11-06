@@ -19,6 +19,7 @@ import { useReadPosition, useReads } from "@/lib/readReceipts";
 import { GroupMessage, PersonAvatar, SeenBy } from "@/components/chat/Group";
 import { QuietCheckIns, richText } from "@/components/chat/Bubble";
 import { MessageGuard } from "@/components/chat/MessageGuard";
+import { NewLine } from "@/components/chat/NewLine";
 import { formatTime } from "@/state/store";
 import { quietRunAt } from "@/lib/transcript";
 import { t } from "@/lib/i18n";
@@ -74,9 +75,12 @@ export interface TranscriptProps {
   nameOf?: (id: string) => string;
   /** Says this person's place (src/lib/readReceipts.ts). */
   onRead?: (threadId: string, messageId: string) => Promise<unknown>;
+  /** The message the New line goes above, if anything came since this
+   * person last read (src/lib/lastRead.ts). */
+  newFrom?: string | null;
 }
 
-export function Transcript({ messages, me, people, owner, shared, agentName, streaming, busy, header, empty, onAnswer, threadId = null, agentFace, nameOf, onRead }: TranscriptProps) {
+export function Transcript({ messages, me, people, owner, shared, agentName, streaming, busy, header, empty, onAnswer, threadId = null, agentFace, nameOf, onRead, newFrom = null }: TranscriptProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const seen = useRef(new Set<string>());
@@ -93,6 +97,21 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
     for (const m of messages) seen.current.add(m.id);
     first.current = false;
   }, [messages]);
+  // Opened at the New line when what came since is more than the screen
+  // holds, so reading starts where they left off; once per conversation,
+  // and never after they have scrolled themselves.
+  const landed = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const line = el?.querySelector("[data-new-line]");
+    if (!el || !line || landed.current === threadId) return;
+    landed.current = threadId;
+    if (!pinned.current) return;
+    const above = line.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    if (above >= 0) return;
+    pinned.current = false;
+    el.scrollTop += above - 12;
+  }, [newFrom, threadId]);
 
   const shown = messages.filter((m) => !m.deleted);
   // Shared with other people (a room, a team conversation): every
@@ -129,7 +148,8 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
         {!shown.length && !streaming && empty}
         {/* each message inside its own guard: one that cannot be drawn
             costs that message, not the conversation (src/lib/rowGuard.ts) */}
-        {shown.map((m, i) => (
+        {shown.flatMap((m, i) => [
+          ...(m.id === newFrom ? [<NewLine key="new-line" />] : []),
           <MessageGuard key={m.id} id={m.id} resetKey={m} render={() => {
             if (m.quiet) {
               const run = quietRunAt(shown, i);
@@ -154,8 +174,8 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
                 agentFace={agentFace}
               />
             );
-          }} />
-        ))}
+          }} />,
+        ])}
         {streaming && shared ? (
           <div aria-live="polite">
             <GroupMessage

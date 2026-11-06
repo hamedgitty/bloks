@@ -1430,6 +1430,8 @@
   "chatView.matchOf": "{total} 件中 {at} 件目",
   "chatView.meetingNotes": "ミーティングのメモ",
   "chatView.messagesDeleted": "そのエージェントのメッセージは削除されます。",
+  "chatView.new": "新着",
+  "chatView.newSince": "前回読んだところ以降の新着",
   "chatView.nextMatch": "次の一致",
   "chatView.noMatches": "一致する項目はありません",
   "chatView.previousMatch": "前の一致",
