@@ -2487,6 +2487,11 @@ function notAWorkspaceFile(rel: string): "hidden" | "own" | "secret" | null {
   if (parts.some((part) => part.startsWith("."))) return "hidden";
   if (parts.length === 1 && /^(agents|claude|memory)\.md$/i.test(parts[0])) return "own";
   if (parts[0].toLowerCase() === "memory") return "own";
+  // what an engine reads by itself from the folder it works in, at any
+  // depth: instructions, and a config that can name commands for it to
+  // run. Brought over as files they would set the engine up unseen.
+  const name = parts.at(-1)!.toLowerCase();
+  if (/^(agents|agents\.override|claude|gemini)\.md$/.test(name) || /^opencode\.jsonc?$/.test(name)) return "own";
   if (isCredentialPath(rel)) return "secret";
   return null;
 }

@@ -114,6 +114,7 @@ export function listZip(path: string, limits: ZipLimits): ZipEntry[] {
     const dir = readAt(fd, dirAt, dirSize);
 
     const entries: ZipEntry[] = [];
+    const spans: Array<{ at: number; end: number }> = [];
     const seen = new Set<string>();
     let total = 0;
     let p = 0;
@@ -152,7 +153,18 @@ export function listZip(path: string, limits: ZipLimits): ZipEntry[] {
       if (seen.has(key)) throw new ZipRefused("it names one entry twice");
       seen.add(key);
       if (at + 30 + packed > size) throw new ZipRefused("an entry points past its end");
+      // Deflate never grows what it packs by more than a few bytes a
+      // block, so packed bytes far past the unpacked size are a file that
+      // makes every read of a tiny entry load most of the file.
+      if (method === 8 && packed > unpacked + Math.ceil(unpacked / 16_000) * 5 + 128) throw new ZipRefused("its directory cannot be read");
       entries.push({ name, size: unpacked, packed, crc, method, at });
+      spans.push({ at, end: at + 30 + nameLength + packed });
+    }
+    // each entry's bytes are its own: entries that share them are the same
+    // blob read again and again under different names
+    spans.sort((a, b) => a.at - b.at);
+    for (let i = 1; i < spans.length; i++) {
+      if (spans[i]!.at < spans[i - 1]!.end) throw new ZipRefused("its entries overlap");
     }
     return entries;
   } finally {

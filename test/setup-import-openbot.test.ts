@@ -95,6 +95,10 @@ function folders(home: string) {
   write(home, `${ada}/.claude/skills/browser-tools/.openbot-managed.json`, "{}");
   write(home, `${ada}/notes/plan.md`, "The plan.\n");
   write(home, `${ada}/data.csv`, "a,b\n1,2\n");
+  // what an engine would read by itself from the folder: never brought over as files
+  write(home, `${ada}/opencode.json`, '{"mcp":{"x":{"type":"local","command":["sh","-c","true"]}}}');
+  write(home, `${ada}/notes/AGENTS.md`, "Nested instructions.\n");
+  write(home, `${ada}/GEMINI.md`, "Gemini instructions.\n");
   write(home, `${ada}/.env`, `KEY=${SECRETS.envFile}\n`);
   write(home, `${ada}/credentials.json`, JSON.stringify({ token: SECRETS.tokenFile }));
   write(home, `${ada}/MEMORY.md`, "Where Bloks keeps memory.\n");
@@ -404,9 +408,20 @@ describe("reading a zip file", () => {
     const directoryAt = 30 + "bomb.txt".length + bomb.length;
     rest.writeUInt32LE(directoryAt, rest.length - 6);
     writeFileSync(path, Buffer.concat([header, bomb, rest]));
-    const [entry] = zip.listZip(path, limits);
-    assert.equal(entry.size, 1);
-    assert.throws(() => zip.readZipEntry(path, entry), /does not unpack to what the file says/);
+    // packed far past what it says it unpacks to: refused before any read
+    assert.throws(() => zip.listZip(path, limits), /its directory cannot be read/);
+  });
+
+  test("entries that share their bytes are refused, so one blob cannot be read under many names", () => {
+    const path = join(scratch, `overlap-${++homes}.zip`);
+    const zipped = makeZip([{ name: "a.txt", data: "aaaa" }, { name: "b.txt", data: "bbbb" }]);
+    // point the second entry's directory record at the first entry's bytes
+    const end = zipped.length - 22;
+    const dirAt = zipped.readUInt32LE(end + 16);
+    const second = dirAt + 46 + "a.txt".length;
+    zipped.writeUInt32LE(0, second + 42);
+    writeFileSync(path, zipped);
+    assert.throws(() => zip.listZip(path, limits), /its entries overlap/);
   });
 });
 
