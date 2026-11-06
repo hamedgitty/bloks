@@ -31873,7 +31873,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       );
       if (!checked.ok) return json(res, 400, { error: checked.error });
       if (!Object.hasOwn(body, "until") && until !== undefined) checked.value.until = until;
-      // an agent lowers its watcher's limit, never raises it (agentPerHourCeiling)
+      // an agent sets its watcher's limit up to six, never past what the person allowed (agentPerHourCeiling)
       const agentCap = asAgent ? agentPerHourCeiling(w) : undefined;
       const capped = agentCap !== undefined && checked.value.perHour !== undefined && checked.value.perHour > agentCap;
       if (capped) checked.value.perHour = agentCap;
@@ -31942,7 +31942,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       broadcast({ kind: "watchers" });
       const said = [
         moved && w.kind === "check" && constantCheck(w.target) ? CONSTANT_CHECK_NOTE : null,
-        capped ? `An agent may lower a watcher's limit but not raise it, so it stays at most ${agentCap} ${agentCap === 1 ? "turn" : "turns"} an hour; only ${hostName()} can raise it, in Watchers.` : null,
+        capped ? `An agent may set a watcher's limit up to 6 turns an hour, or keep a higher one ${hostName()} set, so it stays at most ${agentCap} ${agentCap === 1 ? "turn" : "turns"} an hour; only ${hostName()} can allow more, in Watchers.` : null,
       ].filter(Boolean);
       return json(res, 200, { watcher: watcherView(w), ...(said.length ? { note: said.join(" ") } : {}) });
     }

@@ -233,13 +233,13 @@ moving or exporting a workspace, deleting anything, the browser's sites,
 Home Assistant, or anything about security: each is refused by name
 with the page to send you to, and `test/agent-guide.test.ts` holds that.
 
-**An agent can slow its own watchers, never speed them up.** A watcher
+**An agent cannot speed its watchers past the usual six turns an hour.** A watcher
 is a way for an agent to wake itself, so each starts at most so many
 turns an hour (`perHour`, `server/watchers.ts`). You set 1 to 30 on the
 watcher's page. Through an agent's credential the limit is at most the
-usual six on a watcher it files, and no higher than it already is on one
-it changes (`agentPerHourCeiling`): it may lower a limit you raised, never
-raise one; anything more is kept to that and the agent is told so. A finding
+usual six (`agentPerHourCeiling`), so it can put back a limit it lowered
+but never pass six; a higher limit you set stays until it lowers it, and
+anything more is kept to that and the agent is told so. A finding
 past the limit waits for the next turn allowed rather than being dropped.
 
 **The renderer is pinned to its own origin.** The packaged app serves its

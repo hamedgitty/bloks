@@ -504,12 +504,14 @@ export const perHourOf = (w: Pick<Watcher, "perHour">) => w.perHour ?? FIRES_PER
 
 /**
  * The most an agent may set a watcher's limit to. A watcher is a way for
- * an agent to wake itself, so more turns an hour is the person's to
- * allow: one an agent files starts at six at most, and one it changes can
- * be lowered but never raised, a limit the person set higher included,
- * which stays where the person put it. The person sets 1 to 30 freely.
+ * an agent to wake itself, so more turns an hour than the usual six is
+ * the person's to allow: an agent sets anything up to six, so it can put
+ * back a limit it lowered, and never more, though a limit the person set
+ * higher stays where they put it until the agent lowers it. The person
+ * sets 1 to 30 freely.
  */
-export const agentPerHourCeiling = (current?: Pick<Watcher, "perHour">) => (current ? perHourOf(current) : FIRES_PER_HOUR);
+export const agentPerHourCeiling = (current?: Pick<Watcher, "perHour">) =>
+  Math.max(FIRES_PER_HOUR, current ? perHourOf(current) : FIRES_PER_HOUR);
 
 const inLastHour = (w: Pick<Watcher, "fires">, now: number) => w.fires.filter((f) => now - f.at < HOUR);
 

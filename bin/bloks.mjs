@@ -385,7 +385,7 @@ const COMMANDS = {
       '--arrive and --leave take a place as their iPhone names it ("Toronto", "Shinjuku, Tokyo") or as latitude,longitude with --radius in metres (500 unless said); ' +
       "it acts when their phone next says where they are, needs location sharing on there, and a place by coordinates needs Exact position on. " +
       "--once is done after acting once; --until stops it at a time, such as 2026-10-24T18:00, when its purpose runs out. " +
-      "--per-hour lowers the most turns it starts in an hour, 1 to 6 (6 unless said; you can lower a watcher's limit but never raise it, and only the person can allow more, up to 30); a finding past it waits for the next turn allowed, never dropped. " +
+      "--per-hour sets the most turns it starts in an hour, 1 to 6 (6 unless said; a higher limit the person set stays until you lower it, and only the person can allow more, up to 30); a finding past it waits for the next turn allowed, never dropped. " +
       "The instruction (--do) and folder, page or feed target can each be up to 1,000 characters; a check command can be up to 500. Longer text is refused, not cut. " +
       "Its turns come to your first conversation, where the person talks to you; --thread sends them to another, by its title (made if missing) or its id",
     run: async (args) => {

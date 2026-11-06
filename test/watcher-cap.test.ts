@@ -120,7 +120,7 @@ test("bloks watch and edit-watch send --per-hour, and say when it was kept withi
   }
   const help = (await runCli(["help"], home, url)).body.commands;
   assert.match(help.find((c: any) => c.name === "watch").use, /--per-hour <turns>/);
-  assert.match(help.find((c: any) => c.name === "watch").about, /--per-hour lowers the most turns it starts in an hour, 1 to 6 \(6 unless said; you can lower a watcher's limit but never raise it, and only the person can allow more, up to 30\)/);
+  assert.match(help.find((c: any) => c.name === "watch").about, /--per-hour sets the most turns it starts in an hour, 1 to 6 \(6 unless said; a higher limit the person set stays until you lower it, and only the person can allow more, up to 30\)/);
   assert.match(help.find((c: any) => c.name === "edit-watch").use, /--per-hour <turns>/);
 });
 
@@ -226,11 +226,11 @@ test("through the server: set, changed and shown, and a raised limit gives a hel
   assert.equal(after.lastError, undefined);
 });
 
-test("an agent may lower its watcher's limit, never raise it, and the person sets 1 to 30", { timeout: 180_000 }, async (t) => {
+test("an agent sets its watcher's limit up to six, never past what the person allowed, and the person sets 1 to 30", { timeout: 180_000 }, async (t) => {
   assert.equal(agentPerHourCeiling(), 6);
   assert.equal(agentPerHourCeiling({}), 6, "a watcher from before the limit could be set");
   assert.equal(agentPerHourCeiling({ perHour: 20 }), 20);
-  assert.equal(agentPerHourCeiling({ perHour: 2 }), 2);
+  assert.equal(agentPerHourCeiling({ perHour: 2 }), 6, "an agent may put back a limit it lowered");
 
   const home = mkdtempSync(join(tmpdir(), "bloks-cap-agent-"));
   const fake = standIn(home);
@@ -267,11 +267,12 @@ test("an agent may lower its watcher's limit, never raise it, and the person set
   ]);
   assert.equal(raised.status, 200);
   assert.equal(raised.body.watcher.perHour, 6);
-  assert.match(raised.body.note, /An agent may lower a watcher's limit but not raise it, so it stays at most 6 turns an hour/);
+  assert.match(raised.body.note, /An agent may set a watcher's limit up to 6 turns an hour, or keep a higher one .* set, so it stays at most 6 turns an hour/);
   assert.equal(lowered.body.watcher.perHour, 2);
   assert.equal(lowered.body.note, undefined);
   const [back] = await asAgent([["PATCH", `/api/watchers/${id}`, { perHour: 6 }]]);
-  assert.equal(back.body.watcher.perHour, 2, "an agent raised a limit back up after lowering it");
+  assert.equal(back.body.watcher.perHour, 6, "an agent could not put back the limit it lowered");
+  assert.equal(back.body.note, undefined);
 
   // the person sets 20; the agent asking for 25 leaves it at 20, and may lower it
   assert.equal((await h.json(`/api/watchers/${id}`, { method: "PATCH", body: JSON.stringify({ perHour: 20 }) })).watcher.perHour, 20);
