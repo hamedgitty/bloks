@@ -7240,6 +7240,9 @@ function agentLaneFor(senderLane: TaskRecord | undefined, recipient: BotRecord):
   return { laneId: mainLaneOf(recipient).id, closed: Boolean(wanted) };
 }
 
+/** Said in a receipt whose exchange's tab has gone (agentLaneFor). */
+const LANE_CLOSED_NOTE = "The tab this exchange was in has been closed, so this went to its first conversation.";
+
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
@@ -21732,7 +21735,12 @@ function drainSteer(threadId: string) {
   const peer = notes[0];
   const answering =
     peer && notes.every((n) => n?.dir === "in" && n.peerId === peer.peerId)
-      ? { peerId: peer.peerId, peerName: peer.peerName, ...(peer.laneId ? { laneId: peer.laneId } : {}) }
+      ? (() => {
+          // the latest of them names the tab, as the lane's peerLanes does
+          // (queueOnLane), so this turn's reply and a later one agree
+          const laneId = notes.at(-1)?.laneId;
+          return { peerId: peer.peerId, peerName: peer.peerName, ...(laneId ? { laneId } : {}) };
+        })()
       : undefined;
   // The person's own words wait here with nothing on them, unless they
   // went with anybody else's (Burst); another agent's carry who sent
@@ -26518,7 +26526,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const from = sender && recipient ? { botId: sender.id, name: sender.name, laneId: asAgent.taskId } : undefined;
         if (!sender) return json(res, 403, { error: "the sending agent no longer exists" });
         const senderLane = sender.tasks.find((t) => t.id === asAgent.taskId);
-        const taskId = requestedTask ?? (recipient ? agentLaneFor(senderLane, recipient).laneId : undefined);
+        const chosen = !requestedTask && recipient ? agentLaneFor(senderLane, recipient) : undefined;
+        const taskId = requestedTask ?? chosen?.laneId;
         let claim: ReservedReport | undefined;
         let refused: ReportResponse | undefined;
         let activityId: string | undefined;
@@ -26576,12 +26585,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
                 held.accepted = true;
                 asAgent.spent++;
                 // What any other send would have said: why it waits or did
-                // not join a running turn, and whether it can be answered.
+                // not join a running turn, whether it can be answered, and
+                // that the tab this exchange was in has gone.
+                const closed = chosen?.closed ? LANE_CLOSED_NOTE : undefined;
                 const admitted: ReportResponse = { status: 202, body: {
                   ok: true, ...destination,
                   ...(kind === "queued" ? { queued: true } : {}),
                   ...(kind === "steered" ? { steered: true } : {}),
-                  ...(said ? { note: said } : {}),
+                  ...(said || closed ? { note: [said, closed].filter(Boolean).join(" ") } : {}),
+                  ...(closed ? { laneClosed: true } : {}),
                 } };
                 held.response = admitted;
                 finished = reach?.then((ready) => {
@@ -26710,9 +26722,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (record && waiting) tieRecord(waiting.laneId, waiting.id, { laneId: asAgent!.taskId, id: record.id });
       const ready = await reach;
       const warning = ready ? readinessWarning(recipient!.name, ready.engine, ready.readiness) : null;
-      const closedNote = laneClosed
-        ? "The tab this exchange was in has been closed, so this went to its first conversation."
-        : undefined;
+      const closedNote = laneClosed ? LANE_CLOSED_NOTE : undefined;
       const receipt = closedNote
         ? { ...result, laneClosed: true, note: result.note ? `${result.note} ${closedNote}` : closedNote }
         : result;
@@ -29449,7 +29459,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const said = why
           ? await sendUserMessage(bot.id, why, {
               taskId: lane.id,
-              from: { botId: caller.id, name: caller.name },
+              from: { botId: caller.id, name: caller.name, laneId: asAgent.taskId },
               chain: chainFrom(caller, asAgent.taskId),
             }).then(() => true, () => false)
           : false;

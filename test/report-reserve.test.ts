@@ -292,3 +292,15 @@ test('the reserved receipt carries the readiness warning and the waiting note',a
  assert.match(receipt.body.note,/bloks take-back/);
  assert.deepEqual(await f.say(),receipt);
 });
+
+test('the reserved receipt says when the tab its exchange was in has been closed',async t=>{
+ const f=await reporting(t);
+ // the sender's lane was in exchange with a tab of the target's that has since gone
+ await f.control('patch',{bot:f.sender.id,patch:{tasks:f.sender.tasks.map((lane:any)=>lane.id===f.sender.threadId?{...lane,peerLanes:{[f.target.id]:'closed-synthetic-tab'}}:lane)}});
+ await f.use();
+ const receipt=await f.accepted();
+ assert.equal(receipt.body.taskId,f.target.threadId);
+ assert.equal(receipt.body.laneClosed,true);
+ assert.match(receipt.body.note,/tab this exchange was in has been closed/);
+ assert.deepEqual(await f.say(),receipt);
+});
