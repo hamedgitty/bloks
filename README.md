@@ -282,7 +282,8 @@ A lead that needs more people can propose a team: who it wants, what each
 owns, which skills to give them. You approve or you don't. Agents can
 message each other, hire, open rooms, start a new conversation for a
 teammate, and stop one they outrank, with a credential that ends with the
-turn. A built-in skill tells them which command fits what you asked,
+turn. An answer comes back to the conversation that asked, and an agent
+writes only into conversations it is part of. A built-in skill tells them which command fits what you asked,
 and which things only you can do. Another explains how each part of
 Bloks works, so an agent can answer "where do I turn that off" from the
 app's own settings index and leave a button in the chat that takes you

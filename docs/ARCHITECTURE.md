@@ -1935,8 +1935,36 @@ it records a `say`. The person's own route for an empty lane, `POST
 there are three things an agent asked for "a new conversation" may
 mean, and the command line keeps them apart: `tab` is a new lane, `say
 --task <name>` names the work a message hands off for counting turns
-and lands in the recipient's first conversation, and `fresh` keeps the
-lane it is in with a new engine session.
+and lands where any `say` would, and `fresh` keeps the lane it is in
+with a new engine session.
+
+Where a `say` lands is the server's to work out, never which lane the
+person has open (GitHub 493). Each message one agent writes another
+carries the lane it was written from (`AgentNote.laneId`), and the
+lane it arrives in remembers it (`TaskRecord.peerLanes`, by peer), so
+the answer goes back to the tab that asked: first to the lane whose
+message started the running turn, then to the one this lane is in
+exchange with (`replyLaneFor`, `agentLaneFor`). A new request goes to
+the recipient's first conversation (`mainLaneOf`). When the tab an
+exchange was in has been closed, the words go to the first
+conversation and the receipt says `laneClosed`, once: the stale peer
+lane is forgotten as it is found.
+
+An agent may also name a lane with `taskId`, and that is held to a
+rule, because a lane id is a capability: words written there arrive as
+its next turn (GitHub 494). `agentLaneRefusal` allows one of the
+sender's own lanes, the recipient's first one, a lane the sender opened
+with `tab` (`TaskRecord.createdBy`), or one it is in exchange with
+either way round (the lane's `peerLanes` names the sender, or one of
+the sender's lanes names it), and refuses anything else with a 403
+that states the rule, before anything is claimed or written, on the
+kept-back message as on any other. A member's private lane is refused
+to every agent, its own included. The routes an agent uses on its own
+lanes by id (`/show`, `/artifacts`, renaming one) check the same rule;
+closing, `fresh`, `quiet` and the summary already take only the lane
+the turn is in, and `take-back` and `interrupt` name no lane. A lane
+that does not exist is a 404 as before, and the person's own
+credential never meets the rule.
 
 Which of those fits what the person asked, with the rest of the command
 line, is a built-in skill, `using-bloks` (`BLOKS_GUIDE` in

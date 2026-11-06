@@ -558,6 +558,10 @@ export interface TaskRecord {
    * tab that asked. Set when their words arrive here and cleared when
    * that tab is gone. */
   peerLanes?: Record<string, string>;
+  /** The agent that opened this conversation with `bloks tab`, so it may
+   * go on writing here by naming it (GitHub 494). Absent on one the
+   * person opened, and on any opened before it was kept. */
+  createdBy?: string;
 }
 
 /** The owner's own lanes, which are what the lane cap and the owner's
@@ -1392,6 +1396,14 @@ export class Store {
     const found = this.taskByThread(threadId);
     if (!found || found.task.signalPerson === personId) return;
     found.task.signalPerson = personId;
+    this.saveBots();
+  }
+
+  /** Mark the agent that opened a lane with `bloks tab` (TaskRecord.createdBy). */
+  markCreatedBy(threadId: string, botId: string) {
+    const found = this.taskByThread(threadId);
+    if (!found || found.task.createdBy === botId) return;
+    found.task.createdBy = botId;
     this.saveBots();
   }
 

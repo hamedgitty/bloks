@@ -106,14 +106,18 @@ test("the shipped CLI takes back only its sender's waiting words across lanes, a
   const a = await f.make("Agent A"), b = await f.make("Agent B"), c = await f.make("Agent C");
   const aMain = a.threadId, bMain = b.threadId;
   const { bot: aSecond } = await f.h.json(`/api/bots/${a.id}/tasks`, { method: "POST", body: JSON.stringify({ title: "Second" }) });
-  const { bot: bSecond } = await f.h.json(`/api/bots/${b.id}/tasks`, { method: "POST", body: JSON.stringify({ title: "Second" }) });
   const tokenA = await f.hold(a, "A1", aMain);
   const tokenA2 = await f.hold(a, "A2", aSecond.threadId);
   const tokenC = await f.hold(c, "C1");
   await f.hold(b, "B1", bMain);
-  await f.hold(b, "B2", bSecond.threadId);
+  // An agent names only conversations it may write in (GitHub 494): B's
+  // first one, and B's second, which A opened itself with `bloks tab`.
+  const opened = await f.as(tokenA2, "/api/agent/conversations", { to: b.id, title: "Second", text: "HOLD B2" });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const bSecond: string = opened.body.taskId;
+  await waitFor(() => existsSync(join(f.home, "ready-B2")));
   const wrong = "WORDS TO TAKE BACK";
-  for (const [token, lane] of [[tokenA, bMain], [tokenA, bMain], [tokenA2, bSecond.threadId]]) {
+  for (const [token, lane] of [[tokenA, bMain], [tokenA, bMain], [tokenA2, bSecond]]) {
     const sent = await f.as(token, `/api/bots/${b.id}/messages`, { text: wrong, taskId: lane });
     assert.equal(sent.body.queued, true);
     assert.match(sent.body.note, new RegExp(`bloks take-back ${b.id}`));
@@ -123,17 +127,19 @@ test("the shipped CLI takes back only its sender's waiting words across lanes, a
   const fromPerson = await f.h.json(`/api/bots/${b.id}/messages`, { method: "POST", body: JSON.stringify({ text: "PERSON SURVIVES", taskId: bMain }) });
   assert.equal(fromPerson.queued, true);
   assert.doesNotMatch(fromPerson.note, /bloks take-back/);
-  const oldRows = [...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter((m) => m.agent?.dir === "out");
+  // the records of the words taken back; the tab's first message was heard
+  const sentWrong = (m: any) => m.agent?.dir === "out" && m.text === wrong;
+  const oldRows = [...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter(sentWrong);
   const prior = JSON.stringify(oldRows);
   const result = await command(f.h.url, tokenA2, ["take-back", b.id], f.home);
   assert.equal(result.exit, 0, result.err);
   assert.equal(result.body.ok, true);
   assert.equal(result.body.takenBack.length, 3);
-  assert.deepEqual(result.body.takenBack.map((m: any) => m.laneId), [bMain, bMain, bSecond.threadId]);
+  assert.deepEqual(result.body.takenBack.map((m: any) => m.laneId), [bMain, bMain, bSecond]);
   assert.ok(result.body.takenBack.every((m: any) => m.text === wrong && typeof m.id === "string"));
   // the same send rows, each now saying its words were not delivered (GitHub 337)
   const notDelivered = JSON.parse(prior).map((m: any) => ({ ...m, tool: { ...m.tool, ok: false }, agent: { ...m.agent, status: "failed" } }));
-  assert.equal(JSON.stringify([...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter((m) => m.agent?.dir === "out")), JSON.stringify(notDelivered));
+  assert.equal(JSON.stringify([...await f.messages(a.id, aMain), ...await f.messages(a.id, aSecond.threadId)].filter(sentWrong)), JSON.stringify(notDelivered));
   const rows = (await f.messages(a.id, aSecond.threadId)).filter((m) => m.takeBack);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].agent, undefined);
@@ -147,12 +153,12 @@ test("the shipped CLI takes back only its sender's waiting words across lanes, a
   assert.match(duplicate.body.error, /turn may already have.*Send a correction/);
   f.release("B1"); f.release("B2");
   await waitFor(() => f.heard().find((m) => m.text.includes("OTHER AGENT SURVIVES") && m.text.includes("PERSON SURVIVES")));
-  await waitFor(async () => !(await f.busy(b.id, bMain)) && !(await f.busy(b.id, bSecond.threadId)));
+  await waitFor(async () => !(await f.busy(b.id, bMain)) && !(await f.busy(b.id, bSecond)));
   const bTurns = f.heard().filter((m) => (m.who.botId ?? m.who.id) === b.id);
   assert.equal(bTurns.length, 3, "two held turns and only one survivor turn, no empty withdrawn burst");
   assert.ok(bTurns.some((m) => m.text.includes("OTHER AGENT SURVIVES") && m.text.includes("PERSON SURVIVES")));
   assert.ok(!bTurns.some((m) => m.text.includes(wrong)), "the recipient heard withdrawn words");
-  for (const lane of [bMain, bSecond.threadId]) {
+  for (const lane of [bMain, bSecond]) {
     const disk = JSON.parse(readFileSync(join(f.home, ".bloks", `messages-${lane}.json`), "utf8"));
     for (const gone of result.body.takenBack.filter((m: any) => m.laneId === lane)) {
       assert.equal(disk.find((m: any) => m.id === gone.id).deleted, true);
@@ -238,12 +244,15 @@ test("held editors release only after the entire batch is tombstoned, with no tu
   const f = await fixture(t);
   const a = await f.make("Agent A"), b = await f.make("Agent B");
   const main = b.threadId;
-  const { bot: second } = await f.h.json(`/api/bots/${b.id}/tasks`, { method: "POST", body: JSON.stringify({ title: "Second" }) });
   const token = await f.hold(a, "EditorCaller");
   await f.hold(b, "EditorOne", main);
-  await f.hold(b, "EditorTwo", second.threadId);
+  // a second conversation of B's that A opened, so A may name it
+  const opened = await f.as(token, "/api/agent/conversations", { to: b.id, title: "Second", text: "HOLD EditorTwo" });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  const second: string = opened.body.taskId;
+  await waitFor(() => existsSync(join(f.home, "ready-EditorTwo")));
   const waiting: Array<{ lane: string; id: string }> = [];
-  for (const lane of [main, second.threadId]) {
+  for (const lane of [main, second]) {
     await f.as(token, `/api/bots/${b.id}/messages`, { text: "/goal withdrawn words", taskId: lane });
     const message = (await f.messages(b.id, lane)).find((m) => m.text === "/goal withdrawn words");
     waiting.push({ lane, id: message.id });
@@ -251,7 +260,7 @@ test("held editors release only after the entire batch is tombstoned, with no tu
     assert.equal(open.status, 200);
   }
   f.release("EditorOne"); f.release("EditorTwo");
-  await waitFor(async () => !(await f.busy(b.id, main)) && !(await f.busy(b.id, second.threadId)));
+  await waitFor(async () => !(await f.busy(b.id, main)) && !(await f.busy(b.id, second)));
   const result = await f.as(token, `/api/bots/${b.id}/take-back`);
   assert.equal(result.status, 200);
   assert.equal(result.body.takenBack.length, 2);

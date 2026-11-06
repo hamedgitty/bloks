@@ -76,6 +76,7 @@ process.on('message',(m:any)=>{
   if(m.op==='renew'){const held=agentTokens.identify(m.token,Date.now()+7200000,()=>true);value=held?.report}
   if(m.op==='depth')agentChain.set(m.task,m.depth);
   if(m.op==='patch')value=store.patchBot(m.bot,m.patch);
+  if(m.op==='lane'){const lane=store.bot(m.bot)?.tasks.find((t:any)=>t.id===m.task);if(lane)Object.assign(lane,m.patch);value=Boolean(lane&&store.patchBot(m.bot,{}))}
   if(m.op==='fault')reportFault=m.mode;
   if(m.op==='rest')value=cooldowns.rest(m.instance,'limit','usage limit reached, try again in 2 hours');
   if(m.op==='hold'){reportWait=new Promise(done=>reportGate=done)}

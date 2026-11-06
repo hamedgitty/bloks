@@ -7243,6 +7243,39 @@ function agentLaneFor(senderLane: TaskRecord | undefined, recipient: BotRecord):
 /** Said in a receipt whose exchange's tab has gone (agentLaneFor). */
 const LANE_CLOSED_NOTE = "The tab this exchange was in has been closed, so this went to its first conversation.";
 
+/**
+ * Why an agent may not name this conversation of `recipient`'s, or null
+ * when it may (GitHub 494). A lane id is a capability: words written to
+ * one arrive as that conversation's next turn and are answered with its
+ * context, so an agent that learned another lane's id could put words
+ * into a conversation it never took part in. An agent names one of its
+ * own conversations, the recipient's first one (where its words go
+ * without a name anyway), one it opened with `bloks tab`, or one it is
+ * already in exchange with, either way round. A member's private
+ * conversation is theirs, never named by any agent, its own included.
+ * The person's own credential never comes here.
+ */
+function agentLaneRefusal(sender: BotRecord, recipient: BotRecord, lane: TaskRecord): string | null {
+  if (lane.personId) return "that is a person's private conversation, and an agent cannot write into it";
+  if (recipient.id === sender.id) return null;
+  if (lane.id === mainLaneOf(recipient).id) return null;
+  if (lane.createdBy === sender.id) return null;
+  if (lane.peerLanes?.[sender.id]) return null;
+  if (sender.tasks.some((t) => t.peerLanes?.[recipient.id] === lane.id)) return null;
+  return `an agent can name only one of its own conversations, ${recipient.name}'s first one, one it opened with \`bloks tab\`, or one it is already in exchange with. Leave the conversation out: a reply goes back to the one it answers, and a new request goes to ${recipient.name}'s first one`;
+}
+
+/** The same rule on a route an agent uses on its own conversations (a
+ * component, a shared file, a new title): a lane named that is not one
+ * it may name, or null for the person, nothing named, or no such lane,
+ * which each route answers as it always has. */
+function ownLaneRefusal(asAgent: AgentToken | null, bot: BotRecord, taskId: unknown): string | null {
+  if (!asAgent || typeof taskId !== "string") return null;
+  const sender = store.bot(asAgent.botId);
+  const lane = bot.tasks.find((t) => t.id === taskId);
+  return sender && lane ? agentLaneRefusal(sender, bot, lane) : null;
+}
+
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
@@ -26507,6 +26540,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // a name on them would count nothing.
       const named = asAgent ? taskName(body.task) : {};
       if (named.error) return json(res, 400, { error: named.error });
+      // A conversation an agent names is held to who may write there,
+      // before anything is claimed or written, on the kept-back message
+      // too. One that does not exist says so further on, as it always has.
+      if (asAgent && typeof body.taskId === "string" && body.taskId) {
+        const sender = store.bot(asAgent.botId);
+        const recipient = store.bot(m[1]);
+        const lane = recipient?.tasks.find((t) => t.id === body.taskId);
+        const refusal = sender && recipient && lane ? agentLaneRefusal(sender, recipient, lane) : null;
+        if (refusal) return json(res, 403, { error: refusal });
+      }
       if (reservedDirect && asAgent) {
         const current = () => agentTokens.identify(bearerToken(req), Date.now(), turnAlive) === asAgent;
         const unauthorized = () => json(res, 401, { error: "this request's credential expired or was revoked" });
@@ -28546,6 +28589,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const bytes = String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/octet-stream");
       let info: artifacts.ArtifactInfo | null = null;
       let taskId: unknown = url.searchParams.get("taskId") ?? undefined;
+      // refused before a byte is kept, wherever the lane is named
+      const queryRefusal = ownLaneRefusal(asAgent, bot, taskId);
+      if (queryRefusal) {
+        req.resume();
+        return json(res, 403, { error: queryRefusal });
+      }
       if (bytes) {
         const declared = Number(req.headers["content-length"]);
         if (Number.isFinite(declared) && declared > artifacts.MAX_PUBLISH_BYTES) {
@@ -28567,6 +28616,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       } else {
         const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
         if (typeof body.taskId === "string") taskId = body.taskId;
+        const bodyRefusal = ownLaneRefusal(asAgent, bot, taskId);
+        if (bodyRefusal) return json(res, 403, { error: bodyRefusal });
         const name = typeof body.name === "string" ? body.name : "";
         info = artifacts.artifactInfo(bot.id, name);
         if (!info) {
@@ -29044,6 +29095,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const unread = typeof body.unread === "boolean" ? body.unread : undefined;
       if (!title && unread === undefined) return json(res, 400, { error: "a task needs a title" });
       if (!store.bot(m[1])?.tasks.some((t) => t.id === m![2])) return json(res, 404, { error: "no such task" });
+      const laneRefusal = ownLaneRefusal(asAgent, store.bot(m[1])!, m[2]);
+      if (laneRefusal) return json(res, 403, { error: laneRefusal });
       if (title) retitleLane(m[1], m[2], title);
       // "mark as unread" on one conversation, from its row in the sidebar
       if (unread !== undefined) store.markLane(m[1], m[2], unread);
@@ -32800,6 +32853,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         });
       }
       store.setActiveTask(recipient.id, active);
+      // the agent that opened it may go on naming it (agentLaneRefusal)
+      store.markCreatedBy(lane.id, sender.id);
       broadcast({ kind: "bot", bot: clientBot(store.bot(recipient.id)) });
       const from =
         recipient.id !== sender.id ? { botId: sender.id, name: sender.name, laneId: asAgent.taskId } : undefined;
@@ -33915,6 +33970,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const parsed = parseComponent(kind, body.data);
       if (!parsed.ok) return json(res, 400, { error: parsed.error });
+      const laneRefusal = ownLaneRefusal(asAgent, bot, body.taskId);
+      if (laneRefusal) return json(res, 403, { error: laneRefusal });
 
       // The lane it is answering in, which for a background turn is not
       // the one on screen.

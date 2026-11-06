@@ -180,6 +180,22 @@ agent itself or one it may already message, and is refused wherever that
 message would be. An empty conversation, and which one you have open,
 stay yours.
 
+**An agent writes only into conversations it is part of.** An agent's
+words arrive as a conversation's next turn and are answered with that
+conversation's context, so knowing a conversation's id is not enough to
+write there. An agent's credential may name one of the agent's own
+conversations, the recipient's first one (where its words go without a
+name anyway), one it opened with `bloks tab`, or one it is already in
+exchange with, either way round; anything else is refused with that
+rule before a word is written, the kept-back last message included. A
+member's private conversation is never named by an agent, its own
+included, and the routes an agent uses on its own conversations (a
+component, a shared file, a new title) keep to the same rule. Without a
+name, a reply goes back to the conversation it answers and a new request
+to the first one; which conversation you have open never decides it.
+Take-back and stopping another agent name no conversation at all, and
+your own messages go wherever you send them, as before.
+
 **An agent adds to your list, and only you close it.** A routine's report
 that finds something you have to do yourself goes on your list
 (`server/todos.ts`) through `bloks todo`, which is only on the agent's
