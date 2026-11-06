@@ -5817,7 +5817,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         ...(telegramGroup ? { telegramGroup } : {}),
         card: {
           ...(questions ? { questions } : {}),
-          ...(agentSaid ? { agentSaid } : {}),
+          ...(agentSaid ? { agentSaid: agentSaid.text, agentSaidId: agentSaid.id } : {}),
           // An engine's own question tool arrives labelled a permission,
           // because what it literally asks is whether it may ask. Read
           // it as the question it is, or the card says "Approval needed"
@@ -21272,9 +21272,11 @@ const MAX_AGENT_SAID_CHARS = 4_000;
  * and only ones no earlier card already carried. Undefined when it said
  * nothing first, or only the question itself, since the card never
  * makes up context it was not given. In a room, `from` is the agent:
- * anyone else's words are not what it is asking about.
+ * anyone else's words are not what it is asking about. The message they
+ * came from goes with them, so the card can leave them out while that
+ * message is on screen above it.
  */
-function wordsBeforeAsking(thread: string, from: string | undefined, questions?: readonly AskQuestion[]): string | undefined {
+function wordsBeforeAsking(thread: string, from: string | undefined, questions?: readonly AskQuestion[]): { text: string; id: string } | undefined {
   const said = store.messagesFor(thread);
   for (let i = said.length - 1; i >= 0; i--) {
     const m = said[i];
@@ -21285,7 +21287,8 @@ function wordsBeforeAsking(thread: string, from: string | undefined, questions?:
     if (m.role !== "bot" || (m.kind ?? "text") !== "text" || !m.text?.trim()) continue;
     const text = m.text.trim();
     const only = (questions ?? []).some((q) => q.question.trim() === text);
-    return only ? undefined : clamp(text, MAX_AGENT_SAID_CHARS);
+    const kept = only ? undefined : clamp(text, MAX_AGENT_SAID_CHARS);
+    return kept ? { text: kept, id: m.id } : undefined;
   }
   return undefined;
 }

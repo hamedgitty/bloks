@@ -63,6 +63,9 @@ export interface OptionCardData {
    * be answered without scrolling up to find out what it is about. Only
    * ever its own words, and only when it said some. */
   agentSaid?: string;
+  /** The message `agentSaid` came from, which the card leaves the words
+   * out for while it is on screen. */
+  agentSaidId?: string;
   /** The answers the person sent, one per question, once the engine has
    * them. A secret's is never kept, only that it was given. */
   answers?: import("./harness/ask-questions.ts").AskAnswers;

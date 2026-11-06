@@ -4301,7 +4301,10 @@ always had: `subtitle` is still the first question with "(+N more)" and
 `options` its choices, because the iPhone app and older windows read only
 those. It also carries `agentSaid`, the agent's own last words in that
 turn before it asked (never an earlier turn's, never another speaker's
-in a room, and none when it said nothing first).
+in a room, and none when it said nothing first), with `agentSaidId`, the
+message they came from. The card shows them only while that message is
+out of view in the transcript, since on screen just above, a copy is
+only in the way; a change waits while the card is being pressed.
 
 The app steps through the questions on one card (`OptionCard.tsx`,
 `src/lib/askSteps.ts`) and answers with `answers` on

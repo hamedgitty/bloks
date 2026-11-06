@@ -52,6 +52,9 @@ export interface OptionCardData {
   questions?: StepQuestion[];
   /** What the agent said just before asking, shown on the card. */
   agentSaid?: string;
+  /** The message those words came from: the card shows them only while
+   * it is out of view. */
+  agentSaidId?: string;
   /** What was answered, one list per question; a secret's left empty. */
   answers?: string[][];
   /** In a shared room, the collaborator who answered, when it was not you. */

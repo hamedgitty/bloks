@@ -7,8 +7,8 @@
 // its change, the page), then Allow and Deny. Once answered, a card has
 // done its job and gets out of the way, settling into one quiet line
 // that opens again if anyone wants to see what was decided.
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { AlertTriangle } from "@/components/icons";
 import { ArrowDown } from "@/components/icons";
 import { ArrowUp } from "@/components/icons";
@@ -855,6 +855,20 @@ function QuestionCard({
   const groupRef = useRef<HTMLDivElement>(null);
   const advance = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(advance.current), []);
+  // A finger on the card, or a pick a moment ago: the agent's words keep
+  // still until it is done (useOutOfView), so an option never moves under it.
+  const hold = useRef<CardHold>({ down: false, pickedAt: 0 });
+  useEffect(() => {
+    const up = () => (hold.current.down = false);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, []);
+  const saidOutOfView = useOutOfView(card.agentSaid ? card.agentSaidId : undefined, hold);
+  const reduce = useReducedMotion();
 
   const index = Math.min(draft.at, steps.length - 1);
   const asked = steps[index];
@@ -892,6 +906,7 @@ function QuestionCard({
   };
 
   const choose = (label: string) => {
+    hold.current.pickedAt = Date.now();
     const now = latest.current;
     const all = now.steps.map((s, i) => (i === index ? pick(asked, s, label) : s));
     // one question, one choice: the press is the answer, as it always was
@@ -980,6 +995,7 @@ function QuestionCard({
             aria-label={workflow ? t("optionCard.workflowWaiting") : t("optionCard.asks", { agent: name })}
             tabIndex={0}
             onKeyDown={onKeyDown}
+            onPointerDown={() => (hold.current.down = true)}
             className="group/card w-full animate-rise-in rounded-2xl border bg-card shadow-[0_1px_3px_var(--shadow-color)] outline-none"
           >
             <div className="flex items-start gap-3 px-4 pt-3.5">
@@ -1004,7 +1020,21 @@ function QuestionCard({
                   </p>
                   <span className="shrink-0 text-caption tabular-nums text-muted-foreground">{stamp(at)}</span>
                 </div>
-                {card.agentSaid && <AgentSaid text={card.agentSaid} agent={name} />}
+                {/* only while the message they came from is out of view:
+                    on screen just above, a copy here is only in the way */}
+                <AnimatePresence initial={false}>
+                  {card.agentSaid && saidOutOfView && (
+                    <motion.div
+                      key="said"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1, transition: { duration: reduce ? 0 : 0.18, ease } }}
+                      exit={{ height: 0, opacity: 0, transition: { duration: reduce ? 0 : 0.12, ease } }}
+                      className="overflow-hidden"
+                    >
+                      <AgentSaid text={card.agentSaid} agent={name} />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 {(several || asked.header) && (
                   <div className="mt-2 flex min-h-5 items-center gap-2">
                     <AnimatePresence mode="wait" initial={false}>
@@ -1274,6 +1304,95 @@ function StepDots({
       })}
     </div>
   );
+}
+
+/** How long after a pick the card keeps still. */
+const HOLD_MS = 400;
+
+/** Whether a finger is on a question card, and when it last picked. */
+interface CardHold {
+  down: boolean;
+  pickedAt: number;
+}
+
+/** Less of a message than this on screen is a sliver at the transcript's
+ * edge, which nobody reads as the message being there. */
+const SLIVER_PX = 28;
+
+/** Every step of a message passing the transcript's edge, so its share
+ * on screen is read again as it scrolls. */
+const VIEW_STEPS = Array.from({ length: 21 }, (_, i) => i / 20);
+
+/** A message's row in a transcript (ChatView marks each one). */
+const messageRow = (id: string) => document.querySelector(`[data-msg-index][data-message-id="${CSS.escape(id)}"]`);
+
+/** Whether a message is on screen: more of it than a sliver, after every
+ * scrolling box around it has cut it to what it shows. */
+function onScreen(el: Element | null): boolean {
+  if (!el?.isConnected) return false;
+  const whole = el.getBoundingClientRect();
+  if (whole.height <= 0) return false;
+  let top = Math.max(whole.top, 0);
+  let bottom = Math.min(whole.bottom, window.innerHeight);
+  for (let box = el.parentElement; box; box = box.parentElement) {
+    if (!/auto|scroll|hidden|clip/.test(getComputedStyle(box).overflowY)) continue;
+    const edge = box.getBoundingClientRect();
+    top = Math.max(top, edge.top);
+    bottom = Math.min(bottom, edge.bottom);
+  }
+  return bottom - top >= Math.min(SLIVER_PX, whole.height / 2);
+}
+
+/**
+ * Whether the message an agent's words came from is out of view, which
+ * is when its question's card shows them. One the transcript has not
+ * drawn (folded away, or further back than it has loaded) is out of
+ * view, and so is one the card does not know. A change while the card
+ * is being pressed, or just after a pick, waits until that is over.
+ */
+function useOutOfView(id: string | undefined, hold: RefObject<CardHold>): boolean {
+  // read at once, so a card that arrives under its message never draws
+  // the words for a moment only to fold them away
+  const [out, setOut] = useState(() => !id || !onScreen(messageRow(id)));
+  const shown = useRef(out);
+  useLayoutEffect(() => {
+    if (!id) {
+      shown.current = true;
+      setOut(true);
+      return;
+    }
+    let watched: Element | null = null;
+    let later: ReturnType<typeof setTimeout> | undefined;
+    const update = (first = false) => {
+      const row = messageRow(id);
+      if (row !== watched) {
+        if (watched) seen.unobserve(watched);
+        if (row) seen.observe(row);
+        watched = row;
+      }
+      const next = !onScreen(row);
+      if (next === shown.current) return;
+      const wait = first ? 0 : hold.current.down ? 120 : HOLD_MS - (Date.now() - hold.current.pickedAt);
+      if (wait > 0) {
+        clearTimeout(later);
+        later = setTimeout(() => update(), wait);
+        return;
+      }
+      shown.current = next;
+      setOut(next);
+    };
+    const seen = new IntersectionObserver(() => update(), { threshold: VIEW_STEPS });
+    // drawn now, then whenever it crosses an edge; and now and then in
+    // case the transcript drew its row afresh (a fold, earlier messages)
+    update(true);
+    const again = setInterval(() => update(), 1_000);
+    return () => {
+      seen.disconnect();
+      clearInterval(again);
+      clearTimeout(later);
+    };
+  }, [id, hold]);
+  return out;
 }
 
 /** The three lines AgentSaid shows closed, at the body size's line

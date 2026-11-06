@@ -291,6 +291,10 @@ test("several questions are one card, and each answer reaches Claude Code agains
   assert.equal(asked.card.questions[0].options[1].description, "A file");
   // what the agent said just before asking
   assert.equal(asked.card.agentSaid, "Three things to settle before I scaffold the project.");
+  // and the message they came from, which the card leaves them out for
+  // while it is on screen above it
+  const source = (await f.messages()).find((m) => m.kind === "text" && m.text === asked.card.agentSaid);
+  assert.equal(asked.card.agentSaidId, source.id);
 
   const sent = await f.respond(asked.card.requestId, {
     behavior: "answer",
