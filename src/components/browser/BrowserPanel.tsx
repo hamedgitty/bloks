@@ -49,6 +49,8 @@ import {
   browserHome,
   browsingFor,
   clampBrowserWidth,
+  closeKey,
+  closesPanel,
   controlLine,
   dialogBar,
   downloadSize,
@@ -316,6 +318,17 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
   }, [newest]);
 
   const close = () => setBrowserPanel({ open: false });
+  // The person's own last tab closed, here or on another screen of theirs:
+  // the panel goes with it. An agent's closing it stays open on the empty
+  // page (closesPanel). The close it opened already knowing of changes
+  // nothing.
+  const seenClose = useRef<string | null>(null);
+  useEffect(() => {
+    if (!state) return;
+    const was = seenClose.current;
+    seenClose.current = closeKey(state.closed);
+    if (was !== null && closesPanel(state.closed, was)) close();
+  }, [state?.closed]); // eslint-disable-line react-hooks/exhaustive-deps
   const tabs = state?.tabs ?? [];
   const nameOf = (botId: string, fallback: string) => botNames?.[botId] ?? fallback;
 

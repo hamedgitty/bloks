@@ -173,6 +173,8 @@ export interface BrowserState {
   activeTabId: string | null;
   control: Control;
   downloads: Download[];
+  /** The last tab to close, by whom, and whether none is left. */
+  closed: { seq: number; at: number; by: "person" | "agent" | "page"; emptied: boolean } | null;
 }
 
 export function refusedNavigation(url: string, options?: { ownPorts?: Array<number | string> }): string | null;
@@ -207,7 +209,7 @@ export class AppBrowser {
   readonly control: Control;
   newTab(by?: TabBy): TabHandle;
   select(id: string): boolean;
-  close(id: string): boolean;
+  close(id: string, by?: "person" | "agent" | "page"): boolean;
   closeAll(): void;
   takeOver(): void;
   giveBack(): void;

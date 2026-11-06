@@ -625,6 +625,11 @@ export class AppBrowser {
   #dialogSeq = 0;
   #runSeq = 0;
   #notes = [];
+  /** The last tab to close, by whom, and whether it was the last one
+   * open: the person's panel closes with their own last tab and stays
+   * open on the empty page when an agent closed it (BrowserPanel.tsx). */
+  #closed = null;
+  #closeSeq = 0;
   #makeTab;
   #onChange;
   #now;
@@ -671,6 +676,7 @@ export class AppBrowser {
       activeTabId: this.#active,
       control: { ...this.#control },
       downloads: this.#downloads.map((d) => ({ ...d })),
+      closed: this.#closed ? { ...this.#closed } : null,
     };
   }
 
@@ -711,7 +717,10 @@ export class AppBrowser {
     return true;
   }
 
-  close(id) {
+  /** `by` is who closed it: the person from the panel, an agent with its
+   * command, or the page going by itself (window.close, a crash, the
+   * browser shutting). */
+  close(id, by = "page") {
     const at = this.#tabs.findIndex((tab) => tab.id === id);
     if (at < 0) return false;
     const [gone] = this.#tabs.splice(at, 1);
@@ -733,6 +742,7 @@ export class AppBrowser {
       /* already gone with its window */
     }
     if (this.#active === id) this.#active = this.#tabs[Math.min(at, this.#tabs.length - 1)]?.id ?? null;
+    this.#closed = { seq: ++this.#closeSeq, at: this.#now(), by: by === "person" || by === "agent" ? by : "page", emptied: this.#tabs.length === 0 };
     this.changed();
     return true;
   }
@@ -1029,7 +1039,7 @@ export class AppBrowser {
       const tab = this.tab(command.tab);
       if (!tab) return { error: `no tab ${command.tab}` };
       if (tab.by?.kind !== "agent" || tab.by.botId !== who.botId) return { error: "only a tab you opened can be closed by you; the person closes the rest" };
-      this.close(command.tab);
+      this.close(command.tab, "agent");
       return { text: `closed ${command.tab}` };
     }
     let tab = command.newTab || !this.active ? null : this.active;

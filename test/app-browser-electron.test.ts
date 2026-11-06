@@ -19,6 +19,7 @@ import {
   runOnTab,
 } from "../electron/app-browser.mjs";
 import { siteMatches } from "../server/app-browser.ts";
+import { closeKey, closesPanel } from "../src/lib/appBrowser.ts";
 import { axTree, fakeTab, methods, type FakePage } from "./helpers/fake-debugger.ts";
 
 const SHOP: FakePage = {
@@ -308,6 +309,33 @@ test("tabs: listed, switched, closed only by whoever opened them, and kept to a 
   assert.throws(() => browser.newTab(), /12 tabs at most/);
   const answer = await browser.command({ action: "open", url: SHOP.url, newTab: true }, IVY);
   assert.match(answer.error ?? "", /12 tabs at most/, "said to the agent, not thrown at it");
+});
+
+test("who closed the last tab is said, so the person's panel closes with theirs and stays open on an agent's", async () => {
+  const { browser } = browserWith(SHOP);
+  assert.equal(browser.state().closed, null, "nothing closed yet");
+  browser.newTab({ kind: "person" });
+  await browser.command({ action: "open", url: SHOP.url, newTab: true }, IVY);
+  browser.close("t1", "person");
+  assert.deepEqual({ ...browser.state().closed, at: 0 }, { seq: 1, at: 0, by: "person", emptied: false }, "one is still open");
+  await browser.command({ action: "close", tab: "t2" }, IVY);
+  const byAgent = browser.state().closed!;
+  assert.deepEqual([byAgent.seq, byAgent.by, byAgent.emptied], [2, "agent", true]);
+  assert.equal(closesPanel(byAgent, closeKey({ ...byAgent, seq: 1 })), false, "an agent's last close leaves the panel open");
+
+  browser.newTab({ kind: "person" });
+  browser.close("t3", "person");
+  const mine = browser.state().closed!;
+  assert.deepEqual([mine.by, mine.emptied], ["person", true]);
+  assert.equal(closesPanel(mine, closeKey(byAgent)), true, "the person's own last tab takes the panel with it");
+  assert.equal(closesPanel(mine, closeKey(mine)), false, "a close already heard of changes nothing");
+  assert.equal(closesPanel(null, ""), false);
+
+  // a page going by itself, or a browser shutting, is nobody's close
+  browser.newTab({ kind: "person" });
+  browser.close("t4");
+  assert.equal(browser.state().closed!.by, "page");
+  assert.equal(closesPanel(browser.state().closed, closeKey(mine)), false);
 });
 
 test("an agent's address never replaces the page the person has open", async () => {

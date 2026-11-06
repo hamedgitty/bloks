@@ -152,7 +152,7 @@ test("with a Chrome on the server, the person browses and watches from anywhere,
     rmSync(home, { recursive: true, force: true });
   });
 
-  assert.deepEqual(await h.json("/api/browser"), { available: true, where: "server", state: { tabs: [], activeTabId: null, control: { by: "idle" }, downloads: [] } });
+  assert.deepEqual(await h.json("/api/browser"), { available: true, where: "server", state: { tabs: [], activeTabId: null, control: { by: "idle" }, downloads: [], closed: null } });
   assert.equal(existsSync(join(home, ".bloks", "browser-session")), false, "nothing starts until it is wanted");
 
   // the person, at their panel: its size, then a page
@@ -222,4 +222,9 @@ test("with a Chrome on the server, the person browses and watches from anywhere,
     return said.state?.tabs?.length === 2 ? said.state : null;
   });
   assert.deepEqual(both.tabs.map((tab: { by: { kind: string } }) => tab.by.kind), ["person", "agent"]);
+  // closing from the panel is said to be the person's, for every screen
+  // of theirs to close its panel with their last tab (BrowserPanel.tsx)
+  for (const tab of both.tabs) await h.json("/api/browser/do", { method: "POST", body: JSON.stringify({ action: "closeTab", arg: tab.id }) });
+  const closed = (await h.json("/api/browser")).state.closed;
+  assert.deepEqual([closed.by, closed.emptied], ["person", true]);
 });

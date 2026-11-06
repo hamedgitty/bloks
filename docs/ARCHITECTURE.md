@@ -3637,7 +3637,11 @@ Four parts, each in its own place:
   while a dialog or menu is over it, so the native view never covers
   one) and what the person does (`browser:do`, a fixed list of actions);
   the app tells the page its state (`browser:state`) and asks for the
-  panel when an agent starts browsing (`browser:reveal`). Downloads go to
+  panel when an agent starts browsing (`browser:reveal`). The state
+  carries the last close (`closed`: who, `person`, `agent` or `page`, and
+  whether no tab is left), so the panel closes with the person's own last
+  tab, from any screen of theirs, and stays open on the empty page when an
+  agent closed it (`closesPanel` in `src/lib/appBrowser.ts`). Downloads go to
   `<workspace data>/browser-downloads`. A page's dialogs are held rather
   than drawn (`holdDialogs`): Bloks replaces Electron's own listener on
   the webContents' internal `-run-dialog` event, so an alert, a confirm

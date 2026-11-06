@@ -76,6 +76,26 @@ export interface AppBrowserState {
   activeTabId: string | null;
   control: BrowserControl;
   downloads: BrowserDownload[];
+  /** The last tab to close, by whom, and whether none is left
+   * (server/browser-core.mjs). Absent from an older app or server. */
+  closed?: { seq: number; at: number; by: "person" | "agent" | "page"; emptied: boolean } | null;
+}
+
+/** One close, told apart from the one before it, a browser started again
+ * (which counts from one again) included. */
+export const closeKey = (closed: AppBrowserState["closed"]): string => (closed ? `${closed.seq}:${closed.at}` : "");
+
+/**
+ * Whether the panel goes with a close it just heard of: the person's own
+ * last tab, from any screen of theirs. An agent closing the last tab, or a
+ * page going by itself, leaves the panel open on the empty page, so
+ * nothing moves under the person's hands. `seen` is the close this screen
+ * had already heard of (closeKey), so one from before it opened changes
+ * nothing.
+ */
+export function closesPanel(closed: AppBrowserState["closed"], seen: string): boolean {
+  if (!closed || closeKey(closed) === seen) return false;
+  return closed.by === "person" && closed.emptied;
 }
 
 /** Where the browser this page shows lives; null until it is known. */

@@ -835,7 +835,7 @@ export class ServerBrowser {
         }
         return { ok: true };
       case "closeTab":
-        return { ok: browser.close(String(arg ?? "")) };
+        return { ok: browser.close(String(arg ?? ""), "person") };
       case "selectTab":
         return { ok: browser.select(String(arg ?? "")) };
       case "back":

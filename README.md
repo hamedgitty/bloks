@@ -336,7 +336,9 @@ and never the app's. When a page pops up an alert, a confirm, a prompt
 or a "leave this page?", the agent's step comes back with the question
 and the agent answers it; while you have the browser, it shows as a
 small bar over the page with OK and Cancel (or Leave and Stay). One
-nobody answers is dismissed after 30 seconds, never accepted.
+nobody answers is dismissed after 30 seconds, never accepted. Close its
+last tab and the panel closes with it; when an agent closes the last tab,
+the panel stays open where it is, so nothing moves under your hands.
 
 It is careful in the same way the rest of Bloks is. In Ask first, a site
 not on your list asks on a card the first time an agent goes there;
