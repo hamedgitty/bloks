@@ -12,7 +12,7 @@
 // A host whose model list could not be had says why on its row, in the
 // provider's own words, with Retry beside it (GitHub 486). An empty
 // picker with no reason was the whole of what a person saw before.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { AlertTriangle } from "@/components/icons";
 import { Check } from "@/components/icons";
 import { Loader2 } from "@/components/icons";
@@ -65,6 +65,7 @@ function EndpointHeaders({ endpoint, onSaved }: { endpoint: CustomEndpointRow; o
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const labelId = useId();
 
   const put = (rows: Array<{ name: string; value?: string }>) =>
     api(`/api/custom-endpoints/${endpoint.id}/headers`, { method: "PUT", body: JSON.stringify({ headers: rows }) }).then(
@@ -94,11 +95,19 @@ function EndpointHeaders({ endpoint, onSaved }: { endpoint: CustomEndpointRow; o
     put(names.filter((kept) => kept !== gone).map((kept) => ({ name: kept }))).catch((e: Error) => setError(e.message));
   };
 
+  // One group whether it has rows, an open form, or both, under its own
+  // label and set apart from the keys above it, so the form never reads
+  // as another key's
+  const labelled = names.length > 0 || adding;
   return (
-    <div className="mt-2">
+    <div className="mt-4" role={labelled ? "group" : undefined} aria-labelledby={labelled ? labelId : undefined}>
+      {labelled && (
+        <div id={labelId} className="mb-1 text-small text-muted-foreground">
+          {t("customEndpoints.headers")}
+        </div>
+      )}
       {names.length > 0 && (
         <>
-          <div className="mb-1 text-small text-muted-foreground">{t("customEndpoints.headers")}</div>
           <div className="flex flex-col gap-1">
             {names.map((header) => (
               <div key={header} className="flex items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1.5">
