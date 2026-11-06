@@ -258,6 +258,7 @@ const COMMANDS = {
       "without it a message goes on with the task your turn is on. When the person allows a budget across separate tasks, " +
       "each named task counts its own turns in a row toward the limit, and every task together still counts toward that budget, " +
       "so name the work truly: a new name for the same work adds nothing. " +
+      "A reply goes back to the conversation it is answering; a new request goes to the agent's first conversation. " +
       "When the agent cannot answer right now (its engine is not signed in, out until a time, or unavailable), the answer says so in `engine`",
     run: async (args) => {
       // --now and --task before the text, either side of who it is to,
@@ -308,7 +309,7 @@ const COMMANDS = {
     use: "tab <agent-id|me> [--title <title>] <first message…>",
     about:
       "open a new conversation, a tab of its own, for yourself (me) or another agent, with its first message in it, which starts a turn there. " +
-      "Use it for a separate piece of work the person wants kept apart; `say` goes on in an agent's first conversation instead, and `fresh` keeps this one with a new session. " +
+      "Use it for a separate piece of work the person wants kept apart; `say` answers the conversation it is replying to, or goes on in an agent's first conversation when it is a new request, and `fresh` keeps this one with a new session. " +
       "--title names the tab, in up to 40 characters; without it the tab is named from the message. " +
       "It is refused, and nothing is opened, wherever `say` to that agent would be. The answer names the tab and its id",
     run: async (args) => {
