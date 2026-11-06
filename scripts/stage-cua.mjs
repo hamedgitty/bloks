@@ -99,6 +99,7 @@ for (const triple of PLATFORMS) {
 // version fails here too, until its checksum is added.
 const BINARY_SHA256 = {
   "0.37.0": "7d491f67f54be5f3b380ffd85c64b242eaefd05dad6df78012cde227c95aee2a",
+  "0.38.0": "2bb8dc4a7e69185ffd04c4a9c0eab590bd2c54b72c2c1be13ab675be4f487732",
 };
 const BINARY_OUT = "stage/cua-driver";
 rmSync(BINARY_OUT, { force: true });
