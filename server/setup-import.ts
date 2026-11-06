@@ -11,7 +11,10 @@
 //   Read only, and only from known places. Each source is a short list of
 //   files and folders by name under the person's home. Nothing is searched
 //   for, nothing outside those names is opened, and nothing in a source
-//   folder is ever written.
+//   folder is ever written. The one database read is OpenBot's, opened
+//   read only for the one table its own guide names, and a transfer file
+//   is read only once the person has picked it, and only by the paths
+//   that format documents.
 //
 //   Never a credential without a yes. Files that hold sign-ins (auth.json,
 //   .credentials.json, .env, tokens, keychains) are never opened, even
@@ -38,6 +41,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
+import { FILE_MAX_BYTES } from "./attachments.ts";
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
 import { isEffort, type Effort } from "./effort.ts";
 import { reservedEnvName } from "./env-names.ts";
@@ -45,12 +49,14 @@ import { parseJson5 } from "./json5.ts";
 import { MAX_DESCRIPTION_CHARS, MAX_MCP_SERVERS, MAX_NAME_CHARS, MAX_TITLE_CHARS } from "./limits.ts";
 import { cleanRule, describe as describeRule, isQuestionTool, plainWords, type Effect, type Field, type Op, type Rule } from "./policy.ts";
 import { cleanNote, MAX_NOTE, type ProfileNote } from "./profile-notes.ts";
+import { describe as describeRoutine, MAX_ROUTINE_PROMPT, type Routine } from "./routines.ts";
 import { countChars, MAX_SKILL_CHARS, slugify } from "./skills.ts";
 import { MEMORY_FILE_MAX_BYTES } from "./workspace.ts";
+import { listZip, readZipEntry, ZipRefused, type ZipEntry, type ZipLimits } from "./zip-read.ts";
 
 // ── what there is to find ──────────────────────────────────────────────
 
-export type SourceId = "claude" | "codex" | "cursor" | "openclaw" | "hermes";
+export type SourceId = "claude" | "codex" | "cursor" | "openclaw" | "hermes" | "openbot";
 
 export const SOURCE_NAMES: Record<SourceId, string> = {
   claude: "Claude Code",
@@ -58,19 +64,51 @@ export const SOURCE_NAMES: Record<SourceId, string> = {
   cursor: "Cursor",
   openclaw: "OpenClaw",
   hermes: "Hermes",
+  openbot: "OpenBot",
 };
 
 export const SOURCE_IDS = Object.keys(SOURCE_NAMES) as SourceId[];
 
-export type ItemKind = "agent" | "instructions" | "memory" | "skill" | "mcp" | "setting" | "rule" | "fact" | "channel";
+export type ItemKind = "agent" | "instructions" | "memory" | "skill" | "mcp" | "setting" | "rule" | "fact" | "channel" | "files" | "routine";
 
 /** Where an item can go. Each kind has its own short list. */
-export type Destination = "agent" | "brief" | "memory" | "skills" | "mcp" | "engine" | "rules" | "about" | "channel";
+export type Destination = "agent" | "brief" | "memory" | "skills" | "mcp" | "engine" | "rules" | "about" | "channel" | "files" | "routine";
 
-/** The engines a model setting can be carried to. */
-export type Engine = "claude" | "codex";
+/** The engine families an agent or a model setting can be carried to:
+ * each one Bloks runs, by the name a person knows it by. */
+export type Engine = "claude" | "codex" | "grok" | "opencode" | "gemini" | "cursor" | "cline" | "kimi" | "devin" | "pi" | "openrouter" | "deepseek";
 
-export const ENGINE_NAMES: Record<Engine, string> = { claude: "Claude Code", codex: "Codex" };
+export const ENGINE_NAMES: Record<Engine, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  grok: "Grok",
+  opencode: "OpenCode",
+  gemini: "Gemini",
+  cursor: "Cursor",
+  cline: "Cline",
+  kimi: "Kimi",
+  devin: "Devin",
+  pi: "Pi",
+  openrouter: "OpenRouter",
+  deepseek: "DeepSeek",
+};
+
+/** The drivers (server/drivers/) that run each family, the one a person
+ * most likely set up first: a CLI before the same lab's API. */
+export const ENGINE_DRIVERS: Record<Engine, readonly string[]> = {
+  claude: ["claudeAgent"],
+  codex: ["codex"],
+  grok: ["grokCli", "grok"],
+  opencode: ["opencode"],
+  gemini: ["geminiCli", "gemini"],
+  cursor: ["cursor"],
+  cline: ["cline"],
+  kimi: ["kimi"],
+  devin: ["devin"],
+  pi: ["pi"],
+  openrouter: ["openrouter"],
+  deepseek: ["deepseek"],
+};
 
 /** An MCP server as it will be registered: every value that could be a
  * credential is already gone. */
@@ -92,7 +130,14 @@ export interface AgentImport {
   title: string;
   /** Its prompt: the agent's instructions. */
   instructions: string;
+  /** An empty model is that engine's own default. */
   model?: { engine: Engine; model: string };
+  /** What it ran on in the other tool, when no engine here is of the same
+   * family, so the review can say it moves to the default. */
+  ranOn?: string;
+  /** Its picture, known by a hash of its bytes, which are kept beside
+   * the scan (AVATARS) rather than in it. */
+  avatar?: { mime: string; hash: string; bytes: number };
   effort?: Effort;
   color?: string;
   /** Skills and servers it asked for, by name, attached when Bloks has them. */
@@ -117,6 +162,23 @@ export interface ChannelImport {
   platform: ChatPlatform;
   /** Which of the other tool's accounts on that platform, when it had several. */
   account?: string;
+}
+
+/** Files from an agent's own folder, by path inside it. */
+export interface FilesImport {
+  files: Array<{ path: string; bytes: number }>;
+  total: number;
+}
+
+/** A schedule another tool ran an agent on. It always arrives paused. */
+export interface RoutineImport {
+  name?: string;
+  prompt: string;
+  /** "HH:MM" and the days, 0 for Sunday; no days is every day. */
+  time: string;
+  days: number[];
+  /** Whether the schedule could be read, or is a stand in to set. */
+  scheduled: boolean;
 }
 
 /**
@@ -152,6 +214,20 @@ export function secretValue(item: FoundItem, slotId: string): string | undefined
   return SECRET_VALUES.get(item)?.get(slotId);
 }
 
+/**
+ * Bytes an item brings that a scan should not carry: an agent's picture,
+ * and the way to read each of its workspace files when the import comes
+ * to copy them. Kept beside the item for the same reason the values are,
+ * so a scan stays small and plain enough to print.
+ */
+const AVATARS = new WeakMap<FoundItem, Buffer>();
+const FILE_READERS = new WeakMap<FoundItem, (path: string) => Buffer>();
+
+/** An agent's picture, as the scan read it. */
+export function avatarBytes(item: FoundItem): Buffer | undefined {
+  return AVATARS.get(item);
+}
+
 export interface FoundItem {
   /** Stable from one look to the next: the source and what the thing is. */
   key: string;
@@ -175,9 +251,14 @@ export interface FoundItem {
   agent?: AgentImport;
   setting?: SettingImport;
   channel?: ChannelImport;
+  files?: FilesImport;
+  routine?: RoutineImport;
   secrets?: SecretSlot[];
   /** An earlier item with the same content, from another tool's folder. */
   sameAs?: string;
+  /** The agent this is a part of, in a tool whose agents each bring their
+   * own: it goes to whatever that agent becomes here. */
+  owner?: { key: string; name: string };
 }
 
 export interface Skipped {
@@ -410,6 +491,12 @@ function fromHome(home: string, path: string): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/** What a file an import wrote is known by, so an undo takes it back
+ * only while it is still those bytes. */
+export function bytesHash(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -1205,8 +1292,9 @@ function addTopics(b: Builder, dir: string) {
 }
 
 /** A skill folder's SKILL.md. `tag` keeps two folders of one tool apart
- * when both hold a skill by the same name. */
-function addSkill(b: Builder, dir: string, tag = "") {
+ * when both hold a skill by the same name; `owner` is the agent it came
+ * with, in a tool whose agents keep skills of their own. */
+function addSkill(b: Builder, dir: string, tag = "", owner?: FoundItem["owner"]) {
   const path = join(dir, "SKILL.md");
   const from = fromHome(b.home, path);
   const read = readKnown(path, MAX_SKILL_FILE_BYTES, /\.md$/i);
@@ -1226,13 +1314,22 @@ function addSkill(b: Builder, dir: string, tag = "") {
     others > 0
       ? [`Only its instructions come across. The ${plural(others, "other file", "other files")} in its folder stay${others === 1 ? "s" : ""} in ${fromHome(b.home, dir)}.`]
       : [];
-  pushSkill(b, { key: `${b.source}:skill:${tag}${folder}`, id: folder, from, parsed, notes });
+  pushSkill(b, { key: `${b.source}:skill:${tag}${folder}`, id: folder, from, parsed, notes, owner });
 }
 
 /** One skill item, from whatever file it was made from. */
 function pushSkill(
   b: Builder,
-  input: { key: string; id: string; from: string; parsed: { name?: string; description?: string; body: string }; notes?: string[]; title?: string; head?: string },
+  input: {
+    key: string;
+    id: string;
+    from: string;
+    parsed: { name?: string; description?: string; body: string };
+    notes?: string[];
+    title?: string;
+    head?: string;
+    owner?: FoundItem["owner"];
+  },
 ) {
   const { text: scrubbed, removed } = scrubSecrets(input.parsed.body);
   if (!scrubbed.trim()) return void b.skipped.push({ from: input.from, why: "it has no instructions" });
@@ -1258,6 +1355,7 @@ function pushSkill(
     notes: [...removedNote(removed), ...(input.notes ?? [])],
     destinations: ["skills"],
     skill,
+    ...(input.owner ? { owner: input.owner } : {}),
   });
 }
 
@@ -2039,9 +2137,898 @@ function hermes(home: string): SourceScan | null {
   return finish(b, "~/.hermes");
 }
 
+// ── OpenBot ────────────────────────────────────────────────────────────
+//
+// OpenBot keeps several agents, each with its own instructions, skills,
+// memories and folder. Its own guide documents where they live: an app
+// data folder holding one SQLite database, a folder per agent under
+// ~/OpenBot/Agents, and a transfer file its settings write. Nothing else
+// about it is documented, so nothing else is assumed. The JSON inside the
+// database and the transfer file is read tolerantly: a field is taken
+// only when its name and its type leave no doubt, the rest is passed
+// over, and no value is ever made up. Every item is shown before anything
+// is written, so a wrong reading is something to see and untick.
+//
+// An agent's parts come with it. Its skills, memories, files and routines
+// go to whatever the agent becomes here (`owner`), unless the person
+// sends them to another agent.
+
+/** OpenBot's app data folder, under the home folder, on each system. */
+export function openbotDataFolder(home: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") return join(home, "Library", "Application Support", "OpenBot");
+  // %APPDATA%, where Windows keeps it unless a profile was moved
+  if (platform === "win32") return join(home, "AppData", "Roaming", "OpenBot");
+  return join(home, ".config", "OpenBot");
+}
+
+/** A transfer file, picked by the person, and the name they knew it by. */
+export interface TransferFile {
+  path: string;
+  name: string;
+}
+
+export interface DetectOptions {
+  openbotTransfer?: TransferFile | null;
+  /** The system whose folders to look in. This one, but for a test. */
+  platform?: NodeJS.Platform;
+}
+
+/** What a transfer file may hold. A whole OpenBot, workspaces included,
+ * fits well inside these; a file built to exhaust a reader does not. */
+const TRANSFER_LIMITS: ZipLimits = { entries: 5_000, total: 512 * 1024 * 1024, entry: 64 * 1024 * 1024 };
+/** The file itself, as it arrives. */
+export const MAX_TRANSFER_BYTES = 256 * 1024 * 1024;
+const TRANSFER_JSON = "openbot-transfer.json";
+const TRANSFER_FORMAT = "openbot-instance-transfer";
+const MAX_TRANSFER_JSON_BYTES = 8 * 1024 * 1024;
+const MAX_DATABASE_BYTES = 512 * 1024 * 1024;
+const MAX_AGENT_JSON_BYTES = 1024 * 1024;
+/** An agent's picture, as large as an agent file carries one. */
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+/** Files one agent brings, and their bytes together; each file is held to
+ * what a file handed to an agent may be (server/attachments.ts). */
+const MAX_WORKSPACE_FILES = 500;
+const MAX_WORKSPACE_BYTES = 100 * 1024 * 1024;
+const MAX_WORKSPACE_DEPTH = 8;
+const MAX_MEMORIES = 2_000;
+const MAX_ROUTINES_PER_AGENT = 20;
+/** The topic file searchable memories become. */
+const MEMORY_TOPIC = "From OpenBot.md";
+
+/** What a transfer file holds, judged whole. */
+interface Transfer {
+  path: string;
+  name: string;
+  json: Record<string, unknown>;
+  entries: Map<string, ZipEntry>;
+}
+
+/** A transfer file judged whole, or ZipRefused saying why not. */
+function openTransfer(file: TransferFile): Transfer {
+  const entries = new Map(listZip(file.path, TRANSFER_LIMITS).map((e) => [e.name, e]));
+  const head = entries.get(TRANSFER_JSON);
+  if (!head) throw new ZipRefused(`it has no ${TRANSFER_JSON}, so it is not an OpenBot transfer file`);
+  if (head.size > MAX_TRANSFER_JSON_BYTES) throw new ZipRefused(`its ${TRANSFER_JSON} is larger than ${kb(MAX_TRANSFER_JSON_BYTES)}`);
+  const json = readJson(readZipEntry(file.path, head).toString("utf8"));
+  // The format's name and version are documented and the keys that hold
+  // them are not, so it is the value that is looked for.
+  if (!isRecord(json) || !Object.values(json).includes(TRANSFER_FORMAT)) throw new ZipRefused("it is not an OpenBot transfer file");
+  if (typeof json.version === "number" && json.version !== 1) throw new ZipRefused("a newer OpenBot wrote it, in a version of the format Bloks does not read yet");
+  return { path: file.path, name: file.name, json, entries };
+}
+
+/** Why a transfer file cannot be read, or null when it can: asked as it
+ * arrives, so a file that would be refused is never kept. */
+export function transferProblem(path: string): string | null {
+  try {
+    openTransfer({ path, name: basename(path) });
+    return null;
+  } catch (error) {
+    return error instanceof ZipRefused ? error.message : "it could not be read";
+  }
+}
+
+/** A string field by one of its names, trimmed, or undefined. */
+function field(raw: Record<string, unknown>, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = raw[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+type MemoryKind = "essential" | "searchable";
+
+/** One OpenBot agent, as far as its JSON says. */
+interface OpenBotAgent {
+  /** Its folder, in the transfer file or under ~/OpenBot/Agents. */
+  key: string;
+  name?: string;
+  title?: string;
+  instructions?: string;
+  provider?: string;
+  model?: string;
+  effort?: Effort;
+  memories: Array<{ text: string; kind: MemoryKind | null }>;
+  routines: Record<string, unknown>[];
+  servers: Array<[string, unknown]>;
+}
+
+/** A memory as written: a string, or an object with its text and, when it
+ * says so in a way that cannot be read two ways, which kind it is. */
+function memoryOf(entry: unknown, kind: MemoryKind | null): { text: string; kind: MemoryKind | null } | null {
+  if (typeof entry === "string") return entry.trim() ? { text: entry.trim(), kind } : null;
+  if (!isRecord(entry)) return null;
+  const text = field(entry, "text", "content");
+  if (!text) return null;
+  let marked = kind;
+  if (entry.essential === true) marked = "essential";
+  else if (entry.essential === false) marked = "searchable";
+  for (const name of ["kind", "type", "tier", "mode"]) {
+    if (entry[name] === "essential" || entry[name] === "searchable") marked = entry[name] as MemoryKind;
+  }
+  return { text, kind: marked };
+}
+
+/** What can be read out of one agent's JSON without guessing. */
+function agentFromJson(raw: Record<string, unknown>, key: string): OpenBotAgent {
+  const memories: OpenBotAgent["memories"] = [];
+  const collect = (list: unknown, kind: MemoryKind | null) => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      if (memories.length >= MAX_MEMORIES) return;
+      const memory = memoryOf(entry, kind);
+      if (memory) memories.push(memory);
+    }
+  };
+  collect(raw.memories, null);
+  collect(raw.essentialMemories, "essential");
+  collect(raw.searchableMemories, "searchable");
+  const listed = raw.mcpServers ?? raw.mcp_servers;
+  const servers: Array<[string, unknown]> = isRecord(listed)
+    ? Object.entries(listed)
+    : Array.isArray(listed)
+      ? listed.filter(isRecord).flatMap((s): Array<[string, unknown]> => (typeof s.name === "string" && s.name.trim() ? [[s.name, s]] : []))
+      : [];
+  const effort = effortFrom(raw.reasoningEffort ?? raw.reasoning_effort ?? raw.effort);
+  return {
+    key,
+    name: field(raw, "name"),
+    title: field(raw, "title"),
+    instructions: typeof raw.instructions === "string" ? raw.instructions : undefined,
+    provider: field(raw, "provider"),
+    model: field(raw, "model"),
+    ...(effort ? { effort } : {}),
+    memories,
+    routines: Array.isArray(raw.routines) ? raw.routines.filter(isRecord).slice(0, MAX_ROUTINES_PER_AGENT) : [],
+    servers: servers.slice(0, MAX_MCP_PER_SOURCE),
+  };
+}
+
+/**
+ * The providers OpenBot runs, by the names it might write them, and the
+ * family each is here. Null where Bloks has no engine of that family: the
+ * agent comes across on the default engine, and says so.
+ */
+const OPENBOT_PROVIDERS: Record<string, { name: string; engine: Engine | null }> = {
+  codex: { name: "Codex", engine: "codex" },
+  claude: { name: "Claude Code", engine: "claude" },
+  claudecode: { name: "Claude Code", engine: "claude" },
+  grok: { name: "Grok", engine: "grok" },
+  grokcli: { name: "Grok", engine: "grok" },
+  opencode: { name: "OpenCode", engine: "opencode" },
+  gemini: { name: "Gemini", engine: "gemini" },
+  geminicli: { name: "Gemini", engine: "gemini" },
+  cursor: { name: "Cursor", engine: "cursor" },
+  cursoragent: { name: "Cursor", engine: "cursor" },
+  cline: { name: "Cline", engine: "cline" },
+  kimi: { name: "Kimi", engine: "kimi" },
+  kimicli: { name: "Kimi", engine: "kimi" },
+  devin: { name: "Devin", engine: "devin" },
+  githubcopilot: { name: "GitHub Copilot", engine: null },
+  copilot: { name: "GitHub Copilot", engine: null },
+  hermes: { name: "Hermes", engine: null },
+  pi: { name: "Pi", engine: "pi" },
+  muse: { name: "Muse", engine: null },
+  openrouter: { name: "OpenRouter", engine: "openrouter" },
+  deepseek: { name: "DeepSeek", engine: "deepseek" },
+  custom: { name: "a custom endpoint", engine: null },
+  openaicompatible: { name: "a custom endpoint", engine: null },
+  acp: { name: "a custom ACP agent", engine: null },
+  customacp: { name: "a custom ACP agent", engine: null },
+};
+
+function providerOf(raw: string | undefined): { name: string; engine: Engine | null } | null {
+  if (!raw) return null;
+  const known = OPENBOT_PROVIDERS[raw.toLowerCase().replace(/[^a-z0-9]/g, "")];
+  if (known) return known;
+  const name = scrubSecrets(raw).text.replace(/[\x00-\x1f]/g, "").slice(0, 40).trim();
+  return name ? { name, engine: null } : null;
+}
+
+/** What an agent that moves to the default engine says. The review names
+ * that engine when it knows it. */
+export function ranOnNote(ranOn: string, here?: string | null): string {
+  return `Ran on ${ranOn} in OpenBot; uses ${here || "your default engine"} here. Change it after import.`;
+}
+
+/** Days of the week from cron's last field, 7 being Sunday as well as 0,
+ * or null for anything more than a list of days and ranges. */
+function cronDays(spec: string): number[] | null {
+  if (spec === "*") return [];
+  const days = new Set<number>();
+  for (const part of spec.split(",")) {
+    const m = /^(\d)(?:-(\d))?$/.exec(part);
+    if (!m) return null;
+    const from = Number(m[1]);
+    const to = m[2] === undefined ? from : Number(m[2]);
+    if (from > 7 || to > 7 || to < from) return null;
+    for (let d = from; d <= to; d++) days.add(d % 7);
+  }
+  return days.size === 7 ? [] : [...days].sort();
+}
+
+/**
+ * A routine, as one here: what it says, and when. A time of day with its
+ * days, or a cron line of that shape, reads exactly; anything else is a
+ * schedule this cannot be sure of, and the routine comes with a stand in
+ * time to set, which it says.
+ */
+function routineFrom(raw: Record<string, unknown>): { routine: RoutineImport; removed: number } | { skip: string } {
+  const said = field(raw, "prompt", "instructions");
+  if (!said) return { skip: "it has nothing to say when it runs" };
+  if (said.length > MAX_ROUTINE_PROMPT) return { skip: `longer than a routine holds (${MAX_ROUTINE_PROMPT.toLocaleString("en-US")} characters)` };
+  const { text: prompt, removed } = scrubSecrets(said);
+  const named = field(raw, "name", "title");
+  const name = named ? scrubSecrets(named).text.replace(/[\x00-\x1f]/g, "").slice(0, 60).trim() : "";
+  const time = field(raw, "time");
+  const days = Array.isArray(raw.days) && raw.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) ? [...new Set(raw.days as number[])].sort() : null;
+  let when: { time: string; days: number[] } | null = null;
+  if (time && /^([01]\d|2[0-3]):[0-5]\d$/.test(time)) when = { time, days: days ?? [] };
+  else {
+    const cron = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+(\S+)$/.exec(field(raw, "cron", "schedule") ?? "");
+    const onDays = cron ? cronDays(cron[3]) : null;
+    if (cron && Number(cron[1]) < 60 && Number(cron[2]) < 24 && onDays) {
+      when = { time: `${cron[2].padStart(2, "0")}:${cron[1].padStart(2, "0")}`, days: onDays };
+    }
+  }
+  return {
+    routine: { ...(name ? { name } : {}), prompt, time: when?.time ?? "09:00", days: when?.days ?? [], scheduled: Boolean(when) },
+    removed,
+  };
+}
+
+/** A picture by its first bytes: the three an agent's photo may be. */
+function imageType(bytes: Buffer): string | null {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 12 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  return null;
+}
+
+function sizeWords(bytes: number): string {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? "byte" : "bytes"}`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+/**
+ * The rows of OpenBot's agents table, each one agent's JSON, or why it
+ * could not be read, or null when there is no database.
+ *
+ * Opened read only and asked one question, of the one table OpenBot's
+ * guide names. Never written, and never waited on: when OpenBot is
+ * running and holds it, or the Node running Bloks has no SQLite, that is
+ * said and the folders are read instead. node:sqlite is loaded here, and
+ * only here, when there is a database to read, so a Node without it (22
+ * before 22.13) loses this one step and nothing else.
+ */
+function openbotDatabase(path: string): { agents: Record<string, unknown>[] } | { skip: string } | null {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return null;
+  }
+  if (stat.isSymbolicLink()) return { skip: "a link to somewhere else, so it was not opened" };
+  if (!stat.isFile()) return null;
+  if (stat.size > MAX_DATABASE_BYTES) return { skip: `larger than ${kb(MAX_DATABASE_BYTES)}, so names come from the agents' folders` };
+  type Sqlite = { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => { prepare(sql: string): { all(): unknown[] }; close(): void } };
+  let sqlite: Sqlite | undefined;
+  try {
+    sqlite = process.getBuiltinModule?.("node:sqlite") as Sqlite | undefined;
+  } catch {
+    sqlite = undefined;
+  }
+  if (!sqlite?.DatabaseSync) return { skip: "this version of Node cannot read OpenBot's database, so names come from the agents' folders" };
+  let db: InstanceType<Sqlite["DatabaseSync"]> | null = null;
+  try {
+    db = new sqlite.DatabaseSync(path, { readOnly: true });
+    const agents: Record<string, unknown>[] = [];
+    for (const row of db.prepare("SELECT agent_json FROM projection_agents").all()) {
+      if (agents.length >= MAX_AGENTS_PER_SOURCE) break;
+      const json = isRecord(row) ? row.agent_json : undefined;
+      if (typeof json !== "string" || json.length > MAX_AGENT_JSON_BYTES) continue;
+      const parsed = readJson(json);
+      if (isRecord(parsed)) agents.push(parsed);
+    }
+    return { agents };
+  } catch (error) {
+    const said = error instanceof Error ? error.message : String(error);
+    if (/busy|locked/i.test(said)) return { skip: "OpenBot is using its database right now, so names come from the agents' folders. Look again once OpenBot is closed" };
+    if (/no such (table|column)/i.test(said)) return { skip: "its agents are not where OpenBot's guide says, so names come from the agents' folders" };
+    return { skip: "could not be read, so names come from the agents' folders" };
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // closing a database that never opened has nothing to undo
+    }
+  }
+}
+
+interface WorkspaceList {
+  files: Array<{ path: string; bytes: number; stamp: string }>;
+  total: number;
+  hidden: number;
+  links: number;
+  secret: number;
+  large: string[];
+  over: number;
+}
+
+const emptyList = (): WorkspaceList => ({ files: [], total: 0, hidden: 0, links: 0, secret: 0, large: [], over: 0 });
+
+/** Why a path in an agent's folder is not one of its files, or null. The
+ * instruction file is the agent's instructions already, and MEMORY.md and
+ * memory/ at the top are where Bloks keeps an agent's memory. */
+function notAWorkspaceFile(rel: string): "hidden" | "own" | "secret" | null {
+  const parts = rel.split("/");
+  if (parts.some((part) => part.startsWith("."))) return "hidden";
+  if (parts.length === 1 && /^(agents|claude|memory)\.md$/i.test(parts[0])) return "own";
+  if (parts[0].toLowerCase() === "memory") return "own";
+  if (isCredentialPath(rel)) return "secret";
+  return null;
+}
+
+/** One file into the list, or the count of why not. */
+function listFile(list: WorkspaceList, path: string, bytes: number, stamp: string) {
+  const why = notAWorkspaceFile(path);
+  if (why === "hidden") list.hidden++;
+  else if (why === "secret") list.secret++;
+  else if (why === "own") return;
+  else if (bytes > FILE_MAX_BYTES) list.large.push(path);
+  else if (list.files.length >= MAX_WORKSPACE_FILES || list.total + bytes > MAX_WORKSPACE_BYTES) list.over++;
+  else {
+    list.files.push({ path, bytes, stamp });
+    list.total += bytes;
+  }
+}
+
+/** The regular files in an agent's folder, a few levels down. A link is
+ * never followed, and a hidden folder (.git, its skills) is not entered. */
+function folderFiles(root: string): WorkspaceList {
+  const list = emptyList();
+  const walk = (dir: string, rel: string, depth: number) => {
+    let names: string[];
+    try {
+      names = readdirSync(dir).sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const path = join(dir, name);
+      const inside = rel ? `${rel}/${name}` : name;
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) list.links++;
+      else if (stat.isDirectory()) {
+        const why = notAWorkspaceFile(inside);
+        if (why === "hidden") list.hidden++;
+        else if (!why && depth < MAX_WORKSPACE_DEPTH) walk(path, inside, depth + 1);
+      } else if (stat.isFile()) listFile(list, inside, stat.size, `${stat.size}:${Math.round(stat.mtimeMs)}`);
+    }
+  };
+  walk(root, "", 1);
+  return list;
+}
+
+/** A workspace file's bytes at import, from a folder: still a regular
+ * file, not a link, and no larger than a file may be. */
+function readFolderFile(root: string, rel: string): Buffer {
+  const path = join(root, ...rel.split("/"));
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${rel} is not a file any more`);
+  if (stat.size > FILE_MAX_BYTES) throw new Error(`${rel} is larger than ${sizeWords(FILE_MAX_BYTES)} now`);
+  return readFileSync(path);
+}
+
+/** The first heading of an instruction file, when it names the agent
+ * rather than the file. */
+function headingName(text: string): string | undefined {
+  const heading = /^#\s+(.+)$/m.exec(text)?.[1]?.replace(/[*_`]/g, "").trim();
+  if (!heading || heading.length > MAX_NAME_CHARS || /^(agents|claude)(\.md)?$|^(instructions|system prompt)$/i.test(heading)) return undefined;
+  return scrubSecrets(heading).removed ? undefined : heading;
+}
+
+type Owner = NonNullable<FoundItem["owner"]>;
+
+interface AgentParts {
+  from: string;
+  /** The instruction file in its folder, for an agent whose JSON has none. */
+  instructionFile?: { read: Read; from: string };
+  /** Lists its skills, as its own. */
+  skills: (owner: Owner) => void;
+  files?: { list: WorkspaceList; read: (path: string) => Buffer; from: string };
+  avatar?: { bytes: Buffer; mime: string } | { skip: string };
+}
+
+/** One OpenBot agent, and every part of it, as items. */
+function addOpenBotAgent(b: Builder, agent: OpenBotAgent, number: number, parts: AgentParts) {
+  const id = /^[\w.-]{1,64}$/.test(agent.key) ? agent.key : sha256(agent.key).slice(0, 16);
+  const file = parts.instructionFile?.read;
+  if (file && "skip" in file) b.skipped.push({ from: parts.instructionFile!.from, why: file.skip });
+  const fileText = file && "text" in file ? file.text : undefined;
+  const named = agent.name ? scrubSecrets(agent.name).text : fileText ? headingName(fileText) : undefined;
+  const name = (named ?? "").replace(/[\x00-\x1f]/g, "").slice(0, MAX_NAME_CHARS).trim() || `OpenBot agent ${number}`;
+  const owner: Owner = { key: `openbot:agent:${id}`, name };
+
+  const before = b.items.length;
+  parts.skills(owner);
+  const skillIds = b.items.slice(before).filter((i) => i.skill).map((i) => i.skill!.id);
+
+  const { text: instructions, removed } = scrubSecrets((agent.instructions ?? fileText ?? "").trim());
+  const notes = removedNote(removed);
+  const provider = providerOf(agent.provider);
+  let model: AgentImport["model"];
+  let ranOn: string | undefined;
+  if (provider?.engine) {
+    // a model id only means something on an engine of the same family
+    const modelId = agent.model && /^[\w.:/@+[\]-]{1,100}$/.test(agent.model) ? agent.model : "";
+    if (agent.model && !modelId) notes.push(`Its model, ${scrubSecrets(agent.model).text.slice(0, 60)}, is not one Bloks can name, so it runs on ${ENGINE_NAMES[provider.engine]}'s default.`);
+    model = { engine: provider.engine, model: modelId };
+  } else if (provider) {
+    ranOn = provider.name;
+    notes.push(ranOnNote(provider.name));
+  }
+  if (instructions.length > MAX_DESCRIPTION_CHARS) {
+    notes.push(`Its instructions are longer than an agent's hold (${MAX_DESCRIPTION_CHARS.toLocaleString("en-US")} characters), so the whole of them goes to the agent's memory, which it reads every turn.`);
+  }
+  let avatar: AgentImport["avatar"];
+  if (parts.avatar && "skip" in parts.avatar) notes.push(parts.avatar.skip);
+  else if (parts.avatar) avatar = { mime: parts.avatar.mime, hash: avatarHashOf(parts.avatar.bytes), bytes: parts.avatar.bytes.length };
+  const servers = agent.servers.length;
+  if (servers) {
+    notes.push(
+      servers === 1
+        ? "Its MCP server comes over attached to nothing, as servers from every tool do. Attach it once its keys are in."
+        : "Its MCP servers come over attached to nothing, as servers from every tool do. Attach them once their keys are in.",
+    );
+  }
+  const title = scrubSecrets(agent.title ?? "").text.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE_CHARS) || "Brought over from OpenBot";
+  const imported: AgentImport = {
+    name,
+    title,
+    instructions,
+    ...(model ? { model } : {}),
+    ...(ranOn ? { ranOn } : {}),
+    ...(agent.effort ? { effort: agent.effort } : {}),
+    ...(avatar ? { avatar } : {}),
+    skills: skillIds,
+    servers: [],
+    deny: [],
+  };
+  const about = [
+    title,
+    model ? `Engine: ${ENGINE_NAMES[model.engine]}${model.model ? `, ${model.model}` : ""}` : ranOn ? `Ran on: ${ranOn}` : "",
+    agent.effort ? `Thinking: ${agent.effort}` : "",
+    skillIds.length ? `Skills: ${skillIds.join(", ")}` : "",
+    avatar ? "With its picture" : "",
+  ].filter(Boolean);
+  const item: FoundItem = {
+    key: owner.key,
+    source: "openbot",
+    kind: "agent",
+    title: name,
+    from: parts.from,
+    text: [...about, ...(instructions ? ["", instructions] : [])].join("\n"),
+    digest: digestOf({ kind: "agent", ...imported }),
+    notes,
+    destinations: ["agent"],
+    agent: imported,
+  };
+  if (parts.avatar && !("skip" in parts.avatar)) AVATARS.set(item, parts.avatar.bytes);
+  b.items.push(item);
+
+  addMemories(b, owner, id, agent.memories, parts.from);
+  if (parts.files) addWorkspaceFiles(b, owner, id, parts.files);
+  addRoutines(b, owner, id, agent.routines, parts.from);
+  for (const [server, raw] of agent.servers) {
+    const clean = server.replace(/[\x00-\x1f]/g, "").trim().slice(0, 40);
+    const listed = b.items.find((i) => i.kind === "mcp" && i.mcp?.name === clean);
+    if (listed) listed.notes.push(`${name} used it too.`);
+    else addMcp(b, server, raw, parts.from, [`${name} used it in OpenBot.`]);
+  }
+}
+
+/** Essential memories as the agent's standing memory, searchable ones as
+ * a note it looks up, each kind one item. A memory that says neither goes
+ * with the searchable ones, which an agent reads only when they fit. */
+function addMemories(b: Builder, owner: Owner, id: string, memories: OpenBotAgent["memories"], from: string) {
+  const unmarked = memories.filter((m) => m.kind === null).length;
+  for (const kind of ["essential", "searchable"] as const) {
+    const these = memories.filter((m) => (kind === "essential" ? m.kind === "essential" : m.kind !== "essential"));
+    if (!these.length) continue;
+    let removed = 0;
+    let text = "";
+    let kept = 0;
+    for (const memory of these) {
+      const scrubbed = scrubSecrets(memory.text);
+      const line = `- ${scrubbed.text.trim().replace(/\n/g, "\n  ")}`;
+      // what one memory file holds, with room for the heading it lands under
+      if (Buffer.byteLength(text ? `${text}\n${line}` : line, "utf8") > MAX_TEXT_FILE_BYTES - 1024) break;
+      removed += scrubbed.removed;
+      text = text ? `${text}\n${line}` : line;
+      kept++;
+    }
+    if (!kept) continue;
+    const notes = removedNote(removed);
+    notes.push(
+      kind === "essential"
+        ? `${plural(kept, "memory", "memories")} for ${owner.name}'s standing memory, which it reads every turn.`
+        : `${plural(kept, "memory", "memories")} kept as a note in ${owner.name}'s memory, which it looks up when a topic comes up.`,
+    );
+    const left = these.length - kept;
+    if (left) notes.push(`${plural(left, "more did", "more did")} not fit in one memory file (${kb(MAX_TEXT_FILE_BYTES)}), so ${left === 1 ? "it was" : "they were"} left out.`);
+    if (kind === "essential" && (text.split("\n").length > 150 || Buffer.byteLength(text, "utf8") > 20_000)) {
+      notes.push("More than a turn reads of standing memory, so the end of it will not be read each turn. Move some to its notes after import.");
+    }
+    if (kind === "searchable" && unmarked) {
+      notes.push(`${plural(unmarked, "memory did", "memories did")} not say which kind ${unmarked === 1 ? "it was" : "they were"}, so ${unmarked === 1 ? "it is" : "they are"} with these.`);
+    }
+    b.items.push({
+      key: `openbot:memory:${id}/${kind}`,
+      source: "openbot",
+      kind: "memory",
+      title: kind === "essential" ? "Essential memories" : "Searchable memories",
+      from,
+      text,
+      digest: digestOf({ kind: "memory", text, topic: kind === "essential" ? null : MEMORY_TOPIC }),
+      notes,
+      destinations: ["memory"],
+      ...(kind === "searchable" ? { topic: MEMORY_TOPIC } : {}),
+      owner,
+    });
+  }
+}
+
+/** The files in an agent's folder, as one item, unticked: they are often
+ * many, and often only meant for the tool they were made in. */
+function addWorkspaceFiles(b: Builder, owner: Owner, id: string, input: NonNullable<AgentParts["files"]>) {
+  const { list } = input;
+  const notes: string[] = [];
+  if (list.secret) {
+    notes.push(`${plural(list.secret, "file looks", "files look")} like ${list.secret === 1 ? "it holds" : "they hold"} a sign-in or a key, so ${list.secret === 1 ? "it was" : "they were"} left out.`);
+  }
+  if (list.hidden) notes.push("Hidden files and folders stay in OpenBot.");
+  if (list.links) notes.push(`${plural(list.links, "link was", "links were")} not followed.`);
+  if (list.large.length) {
+    notes.push(`Larger than ${sizeWords(FILE_MAX_BYTES)}, so left out: ${list.large.slice(0, 5).join(", ")}${list.large.length > 5 ? `, and ${list.large.length - 5} more` : ""}.`);
+  }
+  if (list.over) notes.push(`${plural(list.over, "more file was", "more files were")} past what one agent brings (${MAX_WORKSPACE_FILES} files, ${sizeWords(MAX_WORKSPACE_BYTES)}), so left out.`);
+  if (!list.files.length) {
+    if (notes.length) b.skipped.push({ from: input.from, why: `none of its files came across. ${notes.join(" ")}` });
+    return;
+  }
+  // how many and how large is said beside the title, and in the dry run
+  notes.unshift(`Copied into ${owner.name}'s workspace. A file already there by the same name is left as it is.`);
+  const shown = list.files.slice(0, 40).map((f) => `${f.path}  ${sizeWords(f.bytes)}`);
+  if (list.files.length > shown.length) shown.push(`and ${list.files.length - shown.length} more`);
+  const item: FoundItem = {
+    key: `openbot:files:${id}`,
+    source: "openbot",
+    kind: "files",
+    title: "Workspace files",
+    from: input.from,
+    text: shown.join("\n"),
+    digest: digestOf({ kind: "files", files: list.files.map((f) => [f.path, f.stamp]) }),
+    notes,
+    destinations: ["files"],
+    files: { files: list.files.map(({ path, bytes }) => ({ path, bytes })), total: list.total },
+    owner,
+  };
+  FILE_READERS.set(item, input.read);
+  b.items.push(item);
+}
+
+/** Each routine as an item of its own, unticked, to arrive paused. */
+function addRoutines(b: Builder, owner: Owner, id: string, routines: Record<string, unknown>[], from: string) {
+  routines.forEach((raw, index) => {
+    const made = routineFrom(raw);
+    const label = field(raw, "name", "title") ?? `routine ${index + 1}`;
+    if ("skip" in made) return void b.skipped.push({ from: `${from}: ${scrubSecrets(label).text.slice(0, 60)}`, why: made.skip });
+    const { routine, removed } = made;
+    let key = `openbot:routine:${id}/${slugify(routine.name ?? "") || index + 1}`;
+    if (b.items.some((i) => i.key === key)) key = `${key}-${index + 1}`;
+    const summary = describeRoutine({ time: routine.time, days: routine.days } as Routine);
+    const notes = [...removedNote(removed), `Arrives paused, for ${owner.name}. Switch it on under Routines once you have looked at it.`];
+    if (!routine.scheduled) notes.push("Its schedule could not be read, so it is set to every day at 09:00. Set its time before switching it on.");
+    b.items.push({
+      key,
+      source: "openbot",
+      kind: "routine",
+      title: routine.name || routine.prompt.replace(/\s+/g, " ").slice(0, 60),
+      from,
+      text: `${summary}\n\n${routine.prompt}`,
+      digest: digestOf({ kind: "routine", ...routine }),
+      notes,
+      destinations: ["routine"],
+      routine,
+      owner,
+    });
+  });
+}
+
+/** The agents in a transfer file: those its JSON lists, matched to their
+ * folders where it says which, and any folder it does not list. */
+function transferAgents(transfer: Transfer): OpenBotAgent[] {
+  const folders = new Set<string>();
+  for (const name of transfer.entries.keys()) {
+    const m = /^agents\/([^/]+)\//.exec(name);
+    if (m) folders.add(m[1]);
+  }
+  const out: OpenBotAgent[] = [];
+  const taken = new Set<string>();
+  const add = (raw: Record<string, unknown>, keys: Array<string | undefined>, fallback: string) => {
+    const named = keys.filter((k): k is string => Boolean(k));
+    const key = named.find((k) => folders.has(k) && !taken.has(k)) ?? named.find((k) => !taken.has(k)) ?? fallback;
+    taken.add(key);
+    out.push(agentFromJson(raw, key));
+  };
+  const listed = transfer.json.agents;
+  if (Array.isArray(listed)) {
+    listed.filter(isRecord).forEach((raw, i) => add(raw, [field(raw, "key"), field(raw, "id"), field(raw, "slug")], `agent-${i + 1}`));
+  } else if (isRecord(listed)) {
+    Object.entries(listed).forEach(([k, raw], i) => {
+      if (isRecord(raw)) add(raw, [k, field(raw, "key"), field(raw, "id")], `agent-${i + 1}`);
+    });
+  }
+  for (const key of [...folders].sort()) if (!taken.has(key)) add({}, [key], key);
+  return out;
+}
+
+/** One agent out of a transfer file: its JSON, then its folder there. */
+function addTransferAgent(b: Builder, transfer: Transfer, agent: OpenBotAgent, number: number) {
+  const prefix = `agents/${agent.key}/`;
+  const from = `${transfer.name}: ${prefix.slice(0, -1)}`;
+  const readText = (name: string, max: number): Read => {
+    const entry = transfer.entries.get(name);
+    if (!entry) return null;
+    if (entry.size > max) return { skip: `larger than ${kb(max)}, so it was left alone` };
+    try {
+      return { text: readZipEntry(transfer.path, entry).toString("utf8").replace(/\r\n/g, "\n") };
+    } catch (error) {
+      return { skip: error instanceof ZipRefused ? error.message : "could not be read" };
+    }
+  };
+  const inside = [...transfer.entries.values()].filter((e) => e.name.startsWith(prefix) && !e.name.endsWith("/"));
+
+  let instructionFile: AgentParts["instructionFile"];
+  if (agent.instructions === undefined) {
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const read = readText(`${prefix}workspace/${name}`, MAX_TEXT_FILE_BYTES);
+      if (read) {
+        instructionFile = { read, from: `${transfer.name}: ${prefix}workspace/${name}` };
+        break;
+      }
+    }
+  }
+
+  // its picture: a file of its own beside its folders, known by its bytes,
+  // one called avatar looked at first
+  let avatar: AgentParts["avatar"];
+  const loose = inside.filter((e) => !e.name.slice(prefix.length).includes("/"));
+  const named = (e: ZipEntry) => Number(/^avatar/i.test(e.name.slice(prefix.length)));
+  for (const entry of loose.sort((x, y) => named(y) - named(x))) {
+    if (entry.size > MAX_AVATAR_BYTES) {
+      avatar ??= { skip: `Its picture is larger than ${sizeWords(MAX_AVATAR_BYTES)}, so it was left out.` };
+      continue;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = readZipEntry(transfer.path, entry);
+    } catch {
+      continue;
+    }
+    const mime = imageType(bytes);
+    if (mime) {
+      avatar = { bytes, mime };
+      break;
+    }
+    avatar ??= { skip: "Its picture is not a PNG, JPEG or WebP image, so it was left out." };
+  }
+
+  const skills = (owner: Owner) => {
+    let managed = 0;
+    const slugs = [...new Set(inside.map((e) => /^skills\/([^/]+)\/SKILL\.md$/.exec(e.name.slice(prefix.length))?.[1]).filter((s): s is string => Boolean(s)))].sort();
+    for (const slug of slugs.slice(0, MAX_SKILLS_PER_SOURCE)) {
+      const folder = `${prefix}skills/${slug}/`;
+      if (transfer.entries.has(`${folder}.openbot-managed.json`)) {
+        managed++;
+        continue;
+      }
+      const path = `${folder}SKILL.md`;
+      const at = `${transfer.name}: ${path}`;
+      const read = readText(path, MAX_SKILL_FILE_BYTES);
+      if (!read) continue;
+      if ("skip" in read) {
+        b.skipped.push({ from: at, why: read.skip });
+        continue;
+      }
+      const parsed = readFrontmatter(read.text);
+      if (parsed.broken) {
+        b.skipped.push({ from: at, why: "its header is never closed, so Bloks cannot tell where the instructions start" });
+        continue;
+      }
+      const others = inside.filter((e) => e.name.startsWith(folder) && e.name !== path && !e.name.slice(folder.length).startsWith(".")).length;
+      const notes = others ? [`Only its instructions come across. The ${plural(others, "other file", "other files")} in its folder stay${others === 1 ? "s" : ""} in the transfer file.`] : [];
+      pushSkill(b, { key: `openbot:skill:${agent.key}/${slug}`, id: slug, from: at, parsed, notes, owner });
+    }
+    if (managed) {
+      b.skipped.push({
+        from: `${transfer.name}: ${prefix}skills`,
+        why: `${plural(managed, "skill OpenBot installed itself was", "skills OpenBot installed itself were")} left out, since ${managed === 1 ? "it is" : "they are"} OpenBot's own`,
+      });
+    }
+  };
+
+  const list = emptyList();
+  const root = `${prefix}workspace/`;
+  for (const entry of inside) {
+    if (entry.name.startsWith(root)) listFile(list, entry.name.slice(root.length), entry.size, `${entry.size}:${entry.crc}`);
+  }
+  const files = {
+    list,
+    from: `${transfer.name}: ${root.slice(0, -1)}`,
+    read: (path: string) => {
+      const entry = transfer.entries.get(`${root}${path}`);
+      if (!entry) throw new Error(`${path} is not in the transfer file any more`);
+      return readZipEntry(transfer.path, entry);
+    },
+  };
+  addOpenBotAgent(b, agent, number, { from, instructionFile, skills, files, avatar });
+}
+
+/** One agent from its folder under ~/OpenBot/Agents, with what the
+ * database says about it; or from the database alone, when it has no
+ * folder. */
+function addFolderAgent(b: Builder, agent: OpenBotAgent, number: number, dir: string | null, dbFrom: string) {
+  const from = dir ? fromHome(b.home, dir) : dbFrom;
+  let instructionFile: AgentParts["instructionFile"];
+  if (dir && agent.instructions === undefined) {
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const read = readKnown(join(dir, name), MAX_TEXT_FILE_BYTES, /\.md$/i);
+      if (read) {
+        instructionFile = { read, from: fromHome(b.home, join(dir, name)) };
+        break;
+      }
+    }
+  }
+  const skills = (owner: Owner) => {
+    if (!dir) return;
+    let managed = 0;
+    for (const where of [".agents", ".claude"]) {
+      const root = join(dir, where, "skills");
+      for (const slug of foldersIn(root, MAX_SKILLS_PER_SOURCE)) {
+        let theirs = true;
+        try {
+          lstatSync(join(root, slug, ".openbot-managed.json"));
+        } catch {
+          theirs = false;
+        }
+        if (theirs) managed++;
+        else addSkill(b, join(root, slug), `${agent.key}/`, owner);
+      }
+    }
+    if (managed) {
+      b.skipped.push({
+        from: `${from}: skills`,
+        why: `${plural(managed, "skill OpenBot installed itself was", "skills OpenBot installed itself were")} left out, since ${managed === 1 ? "it is" : "they are"} OpenBot's own`,
+      });
+    }
+  };
+  const files = dir ? { list: folderFiles(dir), read: (path: string) => readFolderFile(dir, path), from } : undefined;
+  addOpenBotAgent(b, agent, number, { from, instructionFile, skills, files });
+}
+
+/**
+ * OpenBot: a transfer file when the person picked one, then each agent's
+ * folder, named and set up from the database where it can be read.
+ */
+function openbot(home: string, options: DetectOptions = {}): SourceScan | null {
+  const data = openbotDataFolder(home, options.platform);
+  const agentsRoot = join(home, "OpenBot", "Agents");
+  const picked = options.openbotTransfer ?? null;
+  if (!picked && !isFolder(data) && !isFolder(agentsRoot)) return null;
+  const b = begin(home, "openbot");
+
+  let transfer: Transfer | null = null;
+  if (picked) {
+    try {
+      transfer = openTransfer(picked);
+    } catch (error) {
+      b.skipped.push({ from: picked.name, why: `${error instanceof ZipRefused ? error.message : "it could not be read"}, so nothing in it was read` });
+    }
+  }
+
+  // the database: names and settings, by the agent's id
+  const dbPath = join(data, "openbot.db");
+  const dbFrom = fromHome(home, dbPath);
+  const rows = openbotDatabase(dbPath);
+  const known = new Map<string, Record<string, unknown>>();
+  if (rows && "skip" in rows) b.skipped.push({ from: dbFrom, why: rows.skip });
+  else if (rows) {
+    for (const raw of rows.agents) {
+      const name = field(raw, "name");
+      const id = field(raw, "id") ?? (name ? `named-${slugify(name)}` : undefined);
+      if (id && !known.has(id)) known.set(id, raw);
+    }
+  }
+
+  let number = 0;
+  let over = 0;
+  const seen = new Set<string>();
+  const room = () => {
+    if (number < MAX_AGENTS_PER_SOURCE) return true;
+    over++;
+    return false;
+  };
+  if (transfer) {
+    for (const agent of transferAgents(transfer)) {
+      if (!room()) continue;
+      seen.add(agent.key);
+      addTransferAgent(b, transfer, agent, ++number);
+    }
+    const names = [...transfer.entries.keys()].filter((n) => !n.endsWith("/"));
+    const shared = names.filter((n) => n.startsWith("shared/")).length;
+    if (shared) {
+      b.skipped.push({ from: `${transfer.name}: shared`, why: `${plural(shared, "file", "files")} shared between agents stay in the transfer file. Copy the ones an agent needs into its workspace` });
+    }
+    const other = names.filter((n) => n !== TRANSFER_JSON && !n.startsWith("agents/") && !n.startsWith("shared/")).length;
+    if (other) {
+      b.skipped.push({ from: transfer.name, why: `${plural(other, "other entry was", "other entries were")} not read, since the transfer format does not say what ${other === 1 ? "it is" : "they are"}` });
+    }
+  }
+  for (const key of foldersIn(agentsRoot, MAX_AGENTS_PER_SOURCE)) {
+    if (seen.has(key) || !room()) continue;
+    seen.add(key);
+    addFolderAgent(b, agentFromJson(known.get(key) ?? {}, key), ++number, join(agentsRoot, key), dbFrom);
+  }
+  for (const [key, raw] of known) {
+    if (seen.has(key) || !room()) continue;
+    seen.add(key);
+    addFolderAgent(b, agentFromJson(raw, key), ++number, null, dbFrom);
+  }
+  if (over) b.skipped.push({ from: "OpenBot", why: `${plural(over, "more agent was", "more agents were")} left out: Bloks brings ${MAX_AGENTS_PER_SOURCE} from one tool at a time` });
+
+  if (!transfer && filesIn(join(home, "OpenBot", "Shared"), /./, 1).length) {
+    b.skipped.push({ from: "~/OpenBot/Shared", why: "files shared between agents stay where they are. Copy the ones an agent needs into its workspace" });
+  }
+  const folder = transfer ? transfer.name : fromHome(home, isFolder(agentsRoot) ? join(home, "OpenBot") : data);
+  return finish(b, folder);
+}
+
+/** What stays in OpenBot whatever is picked, as the dry run says it. */
+export const OPENBOT_STAYS = "chat history and channels, which live in its database; saved logins and the vault, which are encrypted to it; its connectors, which are tied to its servers; and browser profiles";
+
+
 /** Everything found, by source. Reads and never writes. */
-export function detectSetup(home: string = homedir(), only?: SourceId): Scan {
-  const readers: Record<SourceId, (home: string) => SourceScan | null> = { claude, codex, cursor, openclaw, hermes };
+export function detectSetup(home: string = homedir(), only?: SourceId, options: DetectOptions = {}): Scan {
+  const readers: Record<SourceId, (home: string) => SourceScan | null> = { claude, codex, cursor, openclaw, hermes, openbot: (h) => openbot(h, options) };
   const sources = SOURCE_IDS.filter((id) => !only || id === only)
     .map((id) => readers[id](home))
     .filter((s): s is SourceScan => s !== null && (s.items.length > 0 || s.skipped.length > 0));
@@ -2050,19 +3037,22 @@ export function detectSetup(home: string = homedir(), only?: SourceId): Scan {
   // Code's skills, and people link one folder into another) is offered
   // once: the later copy says where the first is and waits unticked.
   const first = new Map<string, FoundItem>();
+  // Two of one tool's agents carrying the same skill is the same case.
   for (const item of sources.flatMap((s) => s.items)) {
     if (item.kind !== "skill" && item.kind !== "mcp" && item.kind !== "agent") continue;
     const seen = first.get(item.digest);
     if (seen && seen.source !== item.source) item.sameAs = `${SOURCE_NAMES[seen.source]}'s ${seen.title}`;
+    else if (seen && item.owner && seen.owner && seen.owner.key !== item.owner.key) item.sameAs = `${seen.owner.name}'s ${seen.title}`;
     else if (!seen) first.set(item.digest, item);
   }
   return { home, sources };
 }
 
 /** How a source's items are listed, and the order an import applies
- * them in: skills and servers before the agents that attach them. */
-export const KIND_ORDER: ItemKind[] = ["agent", "instructions", "memory", "skill", "mcp", "setting", "rule", "fact", "channel"];
-const APPLY_ORDER: ItemKind[] = ["skill", "mcp", "instructions", "memory", "agent", "setting", "rule", "fact", "channel"];
+ * them in: skills and servers before the agents that attach them, and
+ * agents before the parts that go to them. */
+export const KIND_ORDER: ItemKind[] = ["agent", "instructions", "memory", "files", "skill", "mcp", "setting", "routine", "rule", "fact", "channel"];
+const APPLY_ORDER: ItemKind[] = ["skill", "mcp", "agent", "instructions", "memory", "files", "setting", "routine", "rule", "fact", "channel"];
 
 // ── what came from where ───────────────────────────────────────────────
 
@@ -2195,6 +3185,27 @@ export interface ImportDeps {
   /** Checks the token with the app itself and saves it switched off. */
   connectChannel(input: ChannelInput): Promise<void>;
   disconnectChannel(platform: ChatPlatform, botId?: string): void;
+  /** The name of the engine a new agent runs on, for an item to say so. */
+  defaultEngine?(): string | null;
+  /** A short hash of an agent's photo, or null when it has none. */
+  avatarHash(botId: string): string | null;
+  setAvatar(botId: string, mime: string, bytes: Buffer): void;
+  clearAvatar(botId: string): void;
+  /** A file into an agent's workspace, never over one already there:
+   * written, there already with the same bytes, or taken by another. */
+  writeWorkspaceFile(botId: string, path: string, bytes: Buffer): "written" | "same" | "taken";
+  /** null when it is not there, or is not a plain file any more. */
+  readWorkspaceFile(botId: string, path: string): Buffer | null;
+  removeWorkspaceFile(botId: string, path: string): boolean;
+  /** A routine for an agent, filed paused. Null when there is no room. */
+  addRoutine(input: { botId: string; name?: string; prompt: string; time: string; days: number[] }): string | null;
+  routine(id: string): { enabled: boolean } | null;
+  removeRoutine(id: string): boolean;
+}
+
+/** A short hash of a picture's bytes, the way an undo knows it. */
+export function avatarHashOf(bytes: Buffer): string {
+  return bytesHash(bytes).slice(0, 32);
 }
 
 /** How an undo knows a connection is still the one an import made,
@@ -2228,7 +3239,10 @@ function stillThere(entry: RecordEntry, deps: ImportDeps): boolean {
       return deps.notes().some((n) => n.id === entry.ref);
     case "agent":
     case "engine":
+    case "files":
       return Boolean(entry.botId && deps.agent(entry.botId));
+    case "routine":
+      return Boolean(entry.ref && deps.routine(entry.ref));
     case "channel":
       return Boolean(entry.ref && (entry.ref === "telegram" ? entry.botId && deps.channel("telegram", entry.botId) : deps.channel(entry.ref as ChatPlatform)));
     default:
@@ -2271,9 +3285,14 @@ export interface ReviewItem {
   skill?: { name: string; description: string };
   mcp?: { name: string; transport: "stdio" | "http"; needs: string[] };
   rule?: { effect: Effect; summary: string };
-  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[] };
+  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: boolean };
   setting?: { engine: Engine; engineName: string; model?: string; effort?: Effort };
   channel?: { platform: ChatPlatform; name: string; perAgent: boolean };
+  files?: { count: number; bytes: number };
+  routine?: { summary: string; scheduled: boolean };
+  /** The agent it is a part of, which it goes to unless the person says;
+   * `here` when an earlier import of that agent is still here to take it. */
+  owner?: { key: string; name: string; here?: boolean };
 }
 
 export interface ReviewSource {
@@ -2317,6 +3336,7 @@ function conflictOf(item: FoundItem, ours: boolean, deps: ImportDeps): Conflict 
  * whether it was brought over before, and what it would clash with. */
 export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Review {
   let fresh = 0;
+  const engineHere = deps.defaultEngine?.() ?? null;
   const sources = scan.sources.map((source) => ({
     id: source.id,
     name: source.name,
@@ -2331,11 +3351,20 @@ export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Re
       const usual = item.destinations[0];
       // Where it went last time, while that agent is still here, even if
       // what was added has since been undone: the person chose it once.
-      const toAgent = (to?: Destination) => to === "brief" || to === "memory" || to === "engine" || (to === "channel" && item.channel?.platform === "telegram");
+      const toAgent = (to?: Destination) =>
+        to === "brief" || to === "memory" || to === "engine" || to === "files" || to === "routine" || (to === "channel" && item.channel?.platform === "telegram");
       const agentGone = toAgent(before?.to) && !(before?.botId && deps.agent(before.botId));
       const again = before && item.destinations.includes(before.to) && !agentGone ? before : null;
       const to = again?.to ?? usual;
-      const suggested = toAgent(to) ? { to, botId: again?.botId ?? "new" } : { to };
+      // A part of an agent goes with it, which is said as the agent it
+      // came with for as long as that is where it went.
+      const ownerBot = item.owner ? record.get(item.owner.key)?.botId : undefined;
+      const fallback = item.owner ? "owner" : "new";
+      const botId = again?.botId && again.botId !== ownerBot ? again.botId : fallback;
+      const suggested = toAgent(to) ? { to, botId } : { to };
+      const notes = item.agent?.ranOn && !item.agent.model && engineHere
+        ? item.notes.map((note) => (note === ranOnNote(item.agent!.ranOn!) ? ranOnNote(item.agent!.ranOn!, engineHere) : note))
+        : item.notes;
       const conflict = conflictOf(item, Boolean(before && there), deps);
       return {
         key: item.key,
@@ -2346,11 +3375,12 @@ export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Re
         preview: item.text.length > PREVIEW_CHARS ? `${item.text.slice(0, PREVIEW_CHARS).trimEnd()}\n…` : item.text,
         chars: item.text.length,
         digest: item.digest,
-        notes: item.notes,
+        notes,
         status,
         destinations: item.destinations,
         suggested,
-        picked: status !== "imported" && item.kind !== "rule" && item.kind !== "channel" && !item.sameAs,
+        // rules, chat apps, files and schedules wait for a person to tick them
+        picked: status !== "imported" && !["rule", "channel", "files", "routine"].includes(item.kind) && !item.sameAs,
         ...(conflict ? { conflict } : {}),
         ...(item.secrets?.length ? { secrets: item.secrets.map((s) => ({ ...s })) } : {}),
         ...(item.sameAs ? { sameAs: item.sameAs } : {}),
@@ -2364,10 +3394,11 @@ export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Re
               agent: {
                 name: item.agent.name,
                 title: item.agent.title,
-                ...(item.agent.model ? { model: item.agent.model.model } : {}),
+                ...(item.agent.model ? { model: item.agent.model.model || ENGINE_NAMES[item.agent.model.engine] } : {}),
                 skills: item.agent.skills,
                 servers: item.agent.servers,
                 refuses: item.agent.deny.map((d) => d.label),
+                ...(item.agent.avatar ? { photo: true } : {}),
               },
             }
           : {}),
@@ -2375,6 +3406,9 @@ export function reviewOf(scan: Scan, record: ImportRecord, deps: ImportDeps): Re
         ...(item.channel
           ? { channel: { platform: item.channel.platform, name: PLATFORM_NAMES[item.channel.platform], perAgent: item.channel.platform === "telegram" } }
           : {}),
+        ...(item.files ? { files: { count: item.files.files.length, bytes: item.files.total } } : {}),
+        ...(item.routine ? { routine: { summary: describeRoutine({ time: item.routine.time, days: item.routine.days } as Routine), scheduled: item.routine.scheduled } } : {}),
+        ...(item.owner ? { owner: { ...item.owner, ...(ownerBot && deps.agent(ownerBot) ? { here: true } : {}) } } : {}),
       };
     }),
   }));
@@ -2426,6 +3460,9 @@ export type UndoStep = { key: string; title: string } & (
   | { kind: "rule-added"; id: string }
   | { kind: "note-added"; id: string }
   | { kind: "channel"; platform: ChatPlatform; botId?: string; tokenHash: string }
+  | { kind: "avatar-set"; botId: string; name: string; hash: string }
+  | { kind: "files-added"; botId: string; files: Array<{ path: string; hash: string }> }
+  | { kind: "routine-added"; id: string; name: string }
 );
 
 export interface ImportOutcome {
@@ -2446,10 +3483,11 @@ export interface ImportOutcome {
     rules: boolean;
     notes: boolean;
     channels: Set<ChatPlatform>;
+    routines: boolean;
   };
 }
 
-const DESTINATIONS = new Set<Destination>(["agent", "brief", "memory", "skills", "mcp", "engine", "rules", "about", "channel"]);
+const DESTINATIONS = new Set<Destination>(["agent", "brief", "memory", "skills", "mcp", "engine", "rules", "about", "channel", "files", "routine"]);
 
 /** A slot's answer, checked into shape. A value is what the person typed,
  * trimmed, and no longer than any key is. */
@@ -2573,10 +3611,12 @@ export async function applyImport(scan: Scan, picks: unknown, deps: ImportDeps, 
     created: [],
     steps: [],
     records: [],
-    touched: { agents: new Set(), memory: new Set(), skills: false, mcp: false, rules: false, notes: false, channels: new Set() },
+    touched: { agents: new Set(), memory: new Set(), skills: false, mcp: false, rules: false, notes: false, channels: new Set(), routines: false },
   };
   // one new agent per source per import, whatever number of items go to it
   const fresh = new Map<SourceId, string>();
+  // what each agent item became in this import, for the parts that go to it
+  const madeFor = new Map<string, string>();
   const kept = new Set<string>();
   const remember = (key: string, entry: RecordEntry) => {
     if (!kept.has(key)) {
@@ -2587,6 +3627,13 @@ export async function applyImport(scan: Scan, picks: unknown, deps: ImportDeps, 
   };
 
   const agentFor = (pick: Pick, item: FoundItem): string => {
+    if (pick.botId === "owner") {
+      if (!item.owner) throw new Error("choose an agent for this, or a new one");
+      const earlier = record.get(item.owner.key);
+      const id = madeFor.get(item.owner.key) ?? (earlier?.to === "agent" && earlier.botId && deps.agent(earlier.botId) ? earlier.botId : undefined);
+      if (!id || !deps.agent(id)) throw new Error(`bring ${item.owner.name} over too, or choose another agent for this.`);
+      return id;
+    }
     if (pick.botId === "new") {
       const made = fresh.get(item.source);
       if (made && deps.agent(made)) return made;
@@ -2801,8 +3848,71 @@ export async function applyImport(scan: Scan, picks: unknown, deps: ImportDeps, 
         }
         case "agent": {
           const result = importAgent(item, pick, last, deps, outcome, sourceOf.get(item.source)!, record);
+          madeFor.set(item.key, result.botId);
           remember(item.key, { digest: item.digest, at: now, to: "agent", botId: result.botId, ref: result.botId });
           outcome.results.push({ key: item.key, ok: true, ...result });
+          break;
+        }
+        case "files": {
+          const botId = agentFor(pick, item);
+          const bot = deps.agent(botId)!;
+          const read = FILE_READERS.get(item);
+          if (!read) throw new Error("its files cannot be read any more. Look again.");
+          // Each file on its own: one that changed into something else
+          // since the look, or that the workspace refuses, is named and
+          // the rest still come.
+          const written: Array<{ path: string; hash: string }> = [];
+          let taken = 0;
+          const failed: string[] = [];
+          for (const file of item.files!.files) {
+            try {
+              const bytes = read(file.path);
+              const did = deps.writeWorkspaceFile(botId, file.path, bytes);
+              if (did === "written") written.push({ path: file.path, hash: bytesHash(bytes) });
+              else if (did === "taken") taken++;
+            } catch {
+              failed.push(file.path);
+            }
+          }
+          if (written.length) {
+            outcome.steps.push({ kind: "files-added", key: item.key, title: item.title, botId, files: written });
+            outcome.touched.agents.add(botId);
+          }
+          remember(item.key, { digest: item.digest, at: now, to: "files", botId, ref: botId });
+          const said = [
+            taken ? `${plural(taken, "file was", "files were")} already in ${bot.name}'s workspace and ${taken === 1 ? "was" : "were"} left as ${taken === 1 ? "it is" : "they are"}.` : "",
+            failed.length ? `${plural(failed.length, "file", "files")} could not be read: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? ", and more" : ""}.` : "",
+          ].filter(Boolean);
+          outcome.results.push({
+            key: item.key,
+            ok: true,
+            did: written.length ? (last?.to === "files" ? "updated" : "added") : "unchanged",
+            botId,
+            ...(said.length ? { note: said.join(" ") } : {}),
+          });
+          break;
+        }
+        case "routine": {
+          const routine = item.routine!;
+          const botId = agentFor(pick, item);
+          const still = last?.to === "routine" && last.ref && deps.routine(last.ref) ? last.ref : null;
+          if (still) {
+            remember(item.key, { digest: item.digest, at: now, to: "routine", botId, ref: still });
+            outcome.results.push({
+              key: item.key,
+              ok: true,
+              did: "unchanged",
+              botId,
+              ...(last!.digest !== item.digest ? { note: "The one from the last import is still here. Change it under Routines." } : {}),
+            });
+            break;
+          }
+          const id = deps.addRoutine({ botId, ...(routine.name ? { name: routine.name } : {}), prompt: routine.prompt, time: routine.time, days: routine.days });
+          if (!id) throw new Error("Bloks holds 50 routines. Remove one under Routines, then import this.");
+          outcome.steps.push({ kind: "routine-added", key: item.key, title: item.title, id, name: item.title });
+          outcome.touched.routines = true;
+          remember(item.key, { digest: item.digest, at: now, to: "routine", botId, ref: id });
+          outcome.results.push({ key: item.key, ok: true, did: "added", botId, note: "Added paused. Switch it on under Routines." });
           break;
         }
         case "engine": {
@@ -2910,7 +4020,7 @@ function importAgent(
   if (a.effort) settings.effort = a.effort;
   if (a.model) {
     const engine = deps.engine(a.model.engine);
-    if (engine) settings.modelSelection = { instanceId: engine.instanceId, model: a.model.model };
+    if (engine) settings.modelSelection = { instanceId: engine.instanceId, model: a.model.model || engine.model };
     else notes.push(`It runs on your default engine: ${ENGINE_NAMES[a.model.engine]} is not set up in Bloks yet.`);
   }
 
@@ -2919,7 +4029,9 @@ function importAgent(
   const library = deps.skills();
   for (const wanted of a.skills) {
     const slug = slugify(wanted.replace(/:/g, "-"));
-    const brought = source.items.find((i) => i.skill && slugify(i.skill.id) === slug);
+    // its own copy first, where each agent brought skills of its own
+    const named = source.items.filter((i) => i.skill && slugify(i.skill.id) === slug);
+    const brought = named.find((i) => i.owner?.key === item.key) ?? named[0];
     const ref = brought ? outcomeRef(outcome, brought.key, deps, record, "skills") : undefined;
     const id = ref ?? library.find((s) => s.id === slug)?.id;
     if (id && !skillIds.includes(id)) skillIds.push(id);
@@ -2961,6 +4073,18 @@ function importAgent(
     outcome.steps.push({ kind: "agent-created", key: item.key, title: item.title, botId, name });
     if (taken) notes.push(`Added as ${name}, beside the agent already called ${a.name}.`);
     did = "added";
+  }
+
+  // Its picture, on an agent made now or one that has none: a photo the
+  // person chose is theirs, and an import does not write over it.
+  const photo = a.avatar ? AVATARS.get(item) : undefined;
+  if (photo && a.avatar && deps.avatarHash(botId) === null) {
+    deps.setAvatar(botId, a.avatar.mime, photo);
+    outcome.touched.agents.add(botId);
+    if (did !== "added") {
+      outcome.steps.push({ kind: "avatar-set", key: item.key, title: `${a.name}'s picture`, botId, name: a.name, hash: avatarHashOf(photo) });
+      if (did === "unchanged") did = "updated";
+    }
   }
 
   if (long) {
@@ -3018,13 +4142,15 @@ const KIND_LABELS: Record<ItemKind, string> = {
   rule: "Rules",
   fact: "About you",
   channel: "Chat apps",
+  files: "Workspace files",
+  routine: "Routines",
 };
 
 /** What a scan found, as `bloks-server import --dry-run` prints it: by
  * source, grouped by what each becomes, and what was left out. Reads
  * nothing more and writes nothing; no value is ever in it. */
 export function dryRunReport(scan: Scan): string {
-  if (!scan.sources.length) return `Nothing to bring over. Bloks looks in ~/.claude, ~/.codex, ~/.cursor, ~/.openclaw and ~/.hermes.\n`;
+  if (!scan.sources.length) return `Nothing to bring over. Bloks looks in ~/.claude, ~/.codex, ~/.cursor, ~/.openclaw, ~/.hermes and OpenBot's folders.\n`;
   const lines: string[] = [];
   for (const source of scan.sources) {
     lines.push(`${source.name} (${source.folder})`);
@@ -3036,6 +4162,8 @@ export function dryRunReport(scan: Scan): string {
         const extra = [
           item.sameAs ? `same as ${item.sameAs}` : "",
           item.secrets?.length ? `needs ${item.secrets.map((s) => s.name).join(", ")}` : "",
+          item.files ? `${plural(item.files.files.length, "file", "files")}, ${sizeWords(item.files.total)}` : "",
+          item.routine ? describeRoutine({ time: item.routine.time, days: item.routine.days } as Routine) : "",
         ].filter(Boolean);
         lines.push(`    ${item.title}${extra.length ? ` (${extra.join("; ")})` : ""}`);
         for (const note of item.notes) lines.push(`      ${note}`);
@@ -3045,6 +4173,7 @@ export function dryRunReport(scan: Scan): string {
       lines.push("  Left out");
       for (const skip of source.skipped) lines.push(`    ${skip.from}: ${skip.why}`);
     }
+    if (source.id === "openbot") lines.push(`  Stays in OpenBot: ${OPENBOT_STAYS}.`);
     lines.push("");
   }
   const count = scan.sources.reduce((n, s) => n + s.items.length, 0);

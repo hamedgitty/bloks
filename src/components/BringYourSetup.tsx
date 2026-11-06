@@ -18,14 +18,19 @@
 // What is read is the computer the workspace runs on, which is not always
 // the one this window is on: the desktop app can be a window onto a
 // server elsewhere (GitHub 397). So the screen asks which computer that
-// is first, and names it whenever it is not this one.
-import { useCallback, useEffect, useMemo, useState } from "react";
+// is first, and names it whenever it is not this one. The one thing that
+// travels from this window is a transfer file the person picks, sent to
+// that computer to be read there like the folders are.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Archive } from "@/components/icons";
 import { Bot } from "@/components/icons";
 import { Brain } from "@/components/icons";
+import { CalendarClock } from "@/components/icons";
 import { Check } from "@/components/icons";
 import { ChevronRight } from "@/components/icons";
 import { Cpu } from "@/components/icons";
 import { FileText } from "@/components/icons";
+import { FolderOpen } from "@/components/icons";
 import { Loader2 } from "@/components/icons";
 import { Lock } from "@/components/icons";
 import { MessagesSquare } from "@/components/icons";
@@ -34,11 +39,13 @@ import { Server } from "@/components/icons";
 import { ShieldCheck } from "@/components/icons";
 import { Sparkles } from "@/components/icons";
 import { Undo2 } from "@/components/icons";
+import { Upload } from "@/components/icons";
 import { UserRound } from "@/components/icons";
 import { api, useStore } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
+import { formatBytes, sendInParts } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import {
   choicesFrom,
@@ -46,6 +53,7 @@ import {
   groupReview,
   landingLine,
   missingSecrets,
+  ownerMissing,
   pickFor,
   type Choice,
   type SetupDestination as Destination,
@@ -54,6 +62,7 @@ import {
   type SetupReview,
   type SetupRun,
   type SetupSource,
+  type SetupTransfer,
 } from "@/lib/setupReview";
 import { thisComputer } from "@/lib/thisComputer";
 import { formatDate, formatList, t, tr, type MessageKey } from "@/lib/i18n";
@@ -114,7 +123,11 @@ export function useSetupReview(): {
 
 /** The folders each tool keeps its setup in, as the person would copy
  * them (server/setup-import.ts reads these and nothing else). */
-const SETUP_FOLDERS = "~/.claude, ~/.codex, ~/.cursor, ~/.openclaw or ~/.hermes";
+const SETUP_FOLDERS = "~/.claude, ~/.codex, ~/.cursor, ~/.openclaw, ~/.hermes or ~/OpenBot";
+
+/** The largest transfer file the server takes (MAX_TRANSFER_BYTES in
+ * server/setup-import.ts), said before anything is sent. */
+const TRANSFER_MAX_BYTES = 256 * 1024 * 1024;
 
 const KIND: Record<Kind, { label: MessageKey; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
   agent: { label: "common.agent", icon: Bot },
@@ -126,6 +139,8 @@ const KIND: Record<Kind, { label: MessageKey; icon: React.ComponentType<{ size?:
   rule: { label: "bringYourSetup.kind.rule", icon: Scale },
   fact: { label: "bringYourSetup.kind.fact", icon: UserRound },
   channel: { label: "bringYourSetup.kind.channel", icon: MessagesSquare },
+  files: { label: "bringYourSetup.kind.files", icon: FolderOpen },
+  routine: { label: "bringYourSetup.kind.routine", icon: CalendarClock },
 };
 
 /**
@@ -189,15 +204,19 @@ function StatusChip({ status }: { status: SetupItem["status"] }) {
   );
 }
 
-/** Which agent, or a new one named after where this came from. */
+/** Which agent, or a new one named after where this came from. A part of
+ * an agent that came with it is offered that agent first, as whatever it
+ * becomes here, in place of a new one. */
 function AgentPicker({
   value,
   agentName,
+  owner,
   onChange,
   label,
 }: {
   value: string | undefined;
   agentName: string;
+  owner?: SetupItem["owner"];
   onChange: (botId: string) => void;
   label: string;
 }) {
@@ -206,11 +225,15 @@ function AgentPicker({
   return (
     <select
       aria-label={label}
-      value={value ?? "new"}
+      value={value ?? (owner ? "owner" : "new")}
       onChange={(e) => onChange(e.target.value)}
       className="h-7 min-w-0 max-w-full rounded-md border bg-background px-2 text-body text-foreground"
     >
-      <option value="new">{t("bringYourSetup.newAgent", { name: agentName })}</option>
+      {owner ? (
+        <option value="owner">{t("bringYourSetup.ownerAgent", { name: owner.name })}</option>
+      ) : (
+        <option value="new">{t("bringYourSetup.newAgent", { name: agentName })}</option>
+      )}
       {agents.map((agent) => (
         <option key={agent.id} value={agent.id}>
           {agent.name}
@@ -221,11 +244,28 @@ function AgentPicker({
 }
 
 function WhereItGoes({ item, source, choice, onChange }: { item: SetupItem; source: SetupSource; choice: Choice; onChange: (next: Choice) => void }) {
+  if (item.kind === "files" || item.kind === "routine") {
+    const picker = (
+      <AgentPicker
+        value={choice.botId}
+        agentName={source.agentName}
+        owner={item.owner}
+        label={t("bringYourSetup.whichAgentGoesTo", { item: item.title })}
+        onChange={(botId) => onChange({ ...choice, botId })}
+      />
+    );
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-small text-muted-foreground">
+        {item.kind === "files" ? tr("bringYourSetup.filesForAgent", { agent: picker }) : tr("bringYourSetup.routineForAgent", { agent: picker })}
+      </div>
+    );
+  }
   if (item.kind === "instructions" || item.kind === "memory") {
     const picker = (
       <AgentPicker
         value={choice.botId}
         agentName={source.agentName}
+        owner={item.owner}
         label={t("bringYourSetup.whichAgentGoesTo", { item: item.title })}
         onChange={(botId) => onChange({ ...choice, botId })}
       />
@@ -375,12 +415,15 @@ function ItemRow({
   source,
   choice,
   result,
+  ownerGone,
   onChange,
 }: {
   item: SetupItem;
   source: SetupSource;
   choice: Choice;
   result?: Result;
+  /** The agent this part goes with, when it is not coming over. */
+  ownerGone?: string | null;
   onChange: (next: Choice) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -390,6 +433,12 @@ function ItemRow({
   // a fact's preview is its title, and a rule's is its summary: nothing more to show
   const hasPreview = item.kind !== "fact" && item.kind !== "rule";
   const missing = choice.on ? missingSecrets(item, choice) : [];
+  // a part of an agent says whose it is; the rest say what and from where
+  const origin = item.owner
+    ? t("bringYourSetup.ownerFromSource", { name: item.owner.name, source: source.name })
+    : item.kind === "instructions" || item.kind === "memory"
+      ? t("bringYourSetup.kindFromSource", { kind: t(meta.label), source: source.name })
+      : source.name;
   return (
     <li className={cn("flex gap-3 px-3.5 py-3 transition-colors duration-150", choice.on && "bg-brand-soft/30")}>
       <input
@@ -405,15 +454,21 @@ function ItemRow({
             <Icon size={14} className="shrink-0 text-muted-foreground" />
             <span className="min-w-0 truncate text-ui font-medium text-foreground">{item.title}</span>
           </label>
-          <span className="text-small text-muted-foreground">
-            {item.kind === "instructions" || item.kind === "memory" ? t("bringYourSetup.kindFromSource", { kind: t(meta.label), source: source.name }) : source.name}
-          </span>
+          <span className="text-small text-muted-foreground">{origin}</span>
           <StatusChip status={item.status} />
         </div>
         {item.kind === "skill" && item.skill?.description && (
           <div className="mt-0.5 text-body leading-relaxed text-muted-foreground">{item.skill.description}</div>
         )}
         {item.kind === "agent" && item.agent?.title && <div className="mt-0.5 text-body leading-relaxed text-muted-foreground">{item.agent.title}</div>}
+        {item.kind === "files" && item.files && (
+          <div className="mt-0.5 text-body leading-relaxed text-muted-foreground">
+            {t("bringYourSetup.filesSummary", { count: item.files.count, size: formatBytes(item.files.bytes) })}
+          </div>
+        )}
+        {item.kind === "routine" && item.routine && (
+          <div className="mt-0.5 text-body leading-relaxed text-muted-foreground">{item.routine.summary}</div>
+        )}
         <div className="mt-0.5 truncate font-mono text-caption text-muted-foreground/80">{item.from}</div>
         {item.sameAs && <div className="mt-1 text-small text-muted-foreground">{t("bringYourSetup.sameAs", { name: item.sameAs })}</div>}
         <div className="mt-2 flex flex-col gap-2">
@@ -425,6 +480,7 @@ function ItemRow({
               {t("bringYourSetup.needsItsValues", { values: formatList(missing.map((s) => s.name.toLowerCase())) })}
             </div>
           )}
+          {ownerGone && <div className="text-small text-warning">{t("bringYourSetup.ownerMissing", { name: ownerGone })}</div>}
         </div>
         {item.notes.length > 0 && (
           <ul className="mt-1.5 flex flex-col gap-0.5">
@@ -468,6 +524,134 @@ function ItemRow({
 
 function when(at: number): string {
   return formatDate(at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * Picking an OpenBot transfer file, or the one being read and the way to
+ * stop reading it. The file goes to the computer the workspace runs on a
+ * part at a time, as an attachment does, so it works the same from the
+ * desktop app, a window paired to another computer, and a browser on a
+ * server with no screen; that computer judges it and says why when it
+ * will not read it.
+ */
+function TransferChooser({
+  transfer,
+  onReview,
+  quiet = false,
+}: {
+  transfer: SetupTransfer | null | undefined;
+  onReview: (next: SetupReview) => void;
+  /** The one line offered where OpenBot was not found. */
+  quiet?: boolean;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<"sending" | "removing" | null>(null);
+  const [sent, setSent] = useState(0);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const send = async (file: File) => {
+    setProblem(null);
+    if (!/\.zip$/i.test(file.name)) return setProblem(t("bringYourSetup.openbot.notAZip"));
+    if (file.size > TRANSFER_MAX_BYTES) return setProblem(t("bringYourSetup.openbot.tooBig", { max: formatBytes(TRANSFER_MAX_BYTES) }));
+    setBusy("sending");
+    setSent(0);
+    try {
+      const out = await sendInParts<{ review: SetupReview }>(file, {
+        partBytes: 384 * 1024,
+        base: "/api/setup-import/transfer/uploads",
+        onPart: (done, parts) => setSent(Math.round((done / Math.max(parts, 1)) * 100)),
+      });
+      onReview(out.review);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : t("bringYourSetup.somethingWentWrong"));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const remove = async () => {
+    setProblem(null);
+    setBusy("removing");
+    try {
+      const out: { review: SetupReview } = await api("/api/setup-import/transfer", { method: "DELETE" });
+      onReview(out.review);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : t("bringYourSetup.somethingWentWrong"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const picker = (
+    <input
+      ref={input}
+      type="file"
+      accept=".zip,application/zip"
+      className="sr-only"
+      tabIndex={-1}
+      aria-hidden
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (file) void send(file);
+      }}
+    />
+  );
+  const choose = (label: string, variant: "secondary" | "ghost" = "secondary") => (
+    <Button size="sm" variant={variant} disabled={busy !== null} onClick={() => input.current?.click()}>
+      {busy === "sending" ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+      {busy === "sending" ? t("bringYourSetup.openbot.sending", { percent: sent }) : label}
+    </Button>
+  );
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {picker}
+      {transfer ? (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-small text-muted-foreground">
+          <Archive size={13} className="shrink-0" />
+          <span className="min-w-0 max-w-full truncate font-mono text-caption text-foreground/80">{transfer.name}</span>
+          <span>{formatBytes(transfer.bytes)}</span>
+          <span className="flex flex-wrap items-center gap-1.5">
+            {choose(t("bringYourSetup.openbot.chooseAnother"))}
+            <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void remove()}>
+              {busy === "removing" && <Loader2 size={13} className="animate-spin" />}
+              {t("bringYourSetup.openbot.remove")}
+            </Button>
+          </span>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-small leading-relaxed text-muted-foreground">
+          <span>{quiet ? t("bringYourSetup.openbot.haveTransfer") : t("bringYourSetup.openbot.transferHint")}</span>
+          {choose(quiet ? t("bringYourSetup.openbot.chooseIt") : t("bringYourSetup.openbot.choose"), quiet ? "ghost" : "secondary")}
+        </div>
+      )}
+      {problem && (
+        <div className="text-small text-destructive" role="alert">
+          {problem}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * OpenBot, said once above its items: what it brings, the transfer file
+ * that brings more, and in one quiet line what stays behind and why.
+ */
+function OpenBotSource({ review, onReview }: { review: SetupReview; onReview: (next: SetupReview) => void }) {
+  return (
+    <section aria-label={t("bringYourSetup.openbot.name")} className="flex flex-col gap-2 rounded-2xl border bg-card px-3.5 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <h2 className="text-ui font-semibold text-foreground">{t("bringYourSetup.openbot.name")}</h2>
+        <span className="text-small text-muted-foreground">{t("bringYourSetup.openbot.hint")}</span>
+      </div>
+      <TransferChooser transfer={review.transfer} onReview={onReview} />
+      <div className="flex items-start gap-1.5 text-small leading-relaxed text-muted-foreground">
+        <Lock size={12} className="mt-[3px] shrink-0" />
+        <span>{t("bringYourSetup.openbot.stays")}</span>
+      </div>
+    </section>
+  );
 }
 
 /**
@@ -620,6 +804,10 @@ export function SetupReviewList({
 
   // the last import, from an earlier visit, while it can still be undone
   const earlier = !run && !summary && !compact ? review.lastRun : null;
+  // OpenBot found, said above its items; otherwise, from a server that
+  // reads transfer files, the one line that offers one
+  const openbot = review.sources.some((s) => s.id === "openbot");
+  const takesTransfer = review.transfer !== undefined;
 
   return (
     <div className="flex min-h-0 flex-col">
@@ -647,6 +835,7 @@ export function SetupReviewList({
         </div>
       )}
       <div className="flex flex-col gap-5">
+        {openbot && <OpenBotSource review={review} onReview={onReview} />}
         {groups.map((group) => {
           const keys = group.entries.map((e) => e.item.key);
           const on = keys.filter((k) => choices[k]?.on).length;
@@ -674,6 +863,7 @@ export function SetupReviewList({
                     source={source}
                     choice={choices[item.key] ?? { on: false, to: item.suggested.to, botId: item.suggested.botId }}
                     result={results[item.key]}
+                    ownerGone={choices[item.key] ? ownerMissing(item, choices[item.key], choices) : null}
                     onChange={(next) => set(item.key, next)}
                   />
                 ))}
@@ -704,6 +894,11 @@ export function SetupReviewList({
                 ))}
             </div>
           </details>
+        )}
+        {!openbot && takesTransfer && (
+          <div className="px-1">
+            <TransferChooser quiet transfer={review.transfer} onReview={onReview} />
+          </div>
         )}
       </div>
 
@@ -784,6 +979,11 @@ export function BringYourSetupPage() {
           <div className="mt-1 text-body leading-relaxed text-muted-foreground">
             {where && !where.here ? t("bringYourSetup.checksOn", { computer: where.computer }) : t("bringYourSetup.checks")}
           </div>
+          {review.transfer !== undefined && (
+            <div className="mt-3">
+              <TransferChooser quiet transfer={review.transfer} onReview={set} />
+            </div>
+          )}
           {review.lastRun && (
             <div className="mt-3">
               <UndoImport run={review.lastRun} onReview={set} lead={t("bringYourSetup.lastImport", { when: when(review.lastRun.at), count: review.lastRun.items })} />

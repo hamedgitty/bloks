@@ -18,6 +18,7 @@ import { allows, NEVER } from "../server/agent-cli.ts";
 import { JoinClient } from "../server/join-client.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { teamPlan } from "./helpers/team-plan.ts";
+import { makeZip } from "./helpers/zip.ts";
 
 const SECRETS = ["sk-ant-api03-ROUTESROUTESROUTES0123456789", "ghp" + "_routesroutesroutesroutes0123456789", "sk-ant-oat01-NEVERREADNEVERREAD999"];
 
@@ -359,5 +360,120 @@ describe("bringing agents, keys and a chat app over, and taking them back", () =
     const twice = await h.fetch("/api/setup-import/undo", { method: "POST", body: JSON.stringify({ runId: lastRun.id }) });
     assert.equal(twice.status, 409);
     assert.equal((await h.fetch("/api/setup-import/undo", { method: "POST", body: JSON.stringify({ runId: "nope" }) })).status, 404);
+  });
+});
+
+// An OpenBot transfer file is the one thing that travels from the window:
+// picked there, sent in parts as an attachment is, so it crosses Bloks
+// Cloud and reaches a server with no screen, and judged whole on arrival.
+// A file it would refuse is never kept.
+describe("an OpenBot transfer file, sent from the window", () => {
+  let h: Harness;
+  before(async () => {
+    h = await startHarness();
+  });
+  after(async () => {
+    await h?.stop();
+  });
+
+  // it says it is a picture, and is taken as the file it is anyway
+  const send = async (bytes: Buffer, name = "my openbot.zip") => {
+    const started = await h.fetch("/api/setup-import/transfer/uploads", { method: "POST", body: JSON.stringify({ name, size: bytes.length, type: "image/png" }) });
+    assert.equal(started.status, 201);
+    const { id, partSize, parts } = await started.json();
+    for (let i = 0; i < parts; i++) {
+      const put = await h.fetch(`/api/setup-import/transfer/uploads/${id}/${i}`, {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream" },
+        body: new Uint8Array(bytes.subarray(i * partSize, (i + 1) * partSize)),
+      });
+      assert.equal(put.status, 200);
+    }
+    return h.fetch(`/api/setup-import/transfer/uploads/${id}/finish`, { method: "POST" });
+  };
+  const kept = () => join(h.home, ".bloks", "setup-transfer", "openbot-transfer.zip");
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]);
+  const transfer = makeZip([
+    {
+      name: "openbot-transfer.json",
+      data: JSON.stringify({
+        format: "openbot-instance-transfer",
+        version: 1,
+        agents: [
+          {
+            key: "ada",
+            name: "Ada",
+            instructions: "Be thorough.",
+            memories: [{ text: "Likes tea", essential: true }],
+            routines: [{ name: "Daily", prompt: "Say hello", time: "09:15", days: [1, 3] }],
+          },
+        ],
+      }),
+    },
+    { name: "agents/ada/avatar.png", data: png },
+    // big enough to need several parts
+    { name: "agents/ada/workspace/notes/plan.md", data: "plan ".repeat(200_000), deflate: true },
+    { name: "agents/ada/workspace/data.bin", data: Buffer.alloc(500_000, 7) },
+  ]);
+
+  test("an agent never reaches it, nor anyone unpaired", async () => {
+    for (const method of ["GET", "DELETE"]) assert.equal(allows("some-agent", method, "/api/setup-import/transfer").ok, false);
+    assert.equal(allows("some-agent", "POST", "/api/setup-import/transfer/uploads").ok, false);
+    for (const [method, path] of [["GET", "/api/setup-import/transfer"], ["POST", "/api/setup-import/transfer/uploads"], ["DELETE", "/api/setup-import/transfer"]]) {
+      const remote = await h.fetchRemote(path, { method, body: method === "POST" ? JSON.stringify({ name: "x.zip", size: 10 }) : undefined });
+      assert.ok(remote.status === 401 || remote.status === 403, `${method} ${path} answered ${remote.status}`);
+    }
+  });
+
+  test("a hostile file is refused and nothing of it is kept", async () => {
+    const res = await send(makeZip([{ name: "openbot-transfer.json", data: "{}" }, { name: "../../evil.sh", data: "rm -rf ~" }]));
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /That file cannot be read: it holds an entry whose path climbs out of the file/);
+    assert.equal(existsSync(kept()), false);
+    assert.equal((await h.json("/api/setup-import/transfer")).transfer, null);
+    assert.equal((await h.json("/api/setup-import")).transfer, null, "the look says none is being read");
+  });
+
+  test("a good one is read, its agent brought over with its parts, taken back, and the file removed", async () => {
+    const res = await send(transfer);
+    assert.equal(res.status, 200);
+    const out = await res.json();
+    assert.equal(out.transfer.name, "my openbot.zip");
+    assert.equal(out.transfer.bytes, transfer.length);
+    assert.equal(JSON.stringify(out).includes(h.home), false, "where it is kept is never said");
+    const source = (out.review as Review).sources.find((s) => s.id === "openbot")!;
+    assert.equal((out.review.sources as Array<{ id: string; folder: string }>).find((s) => s.id === "openbot")!.folder, "my openbot.zip");
+    const keys = source.items.map((i) => i.key);
+    for (const key of ["openbot:agent:ada", "openbot:memory:ada/essential", "openbot:files:ada", "openbot:routine:ada/daily"]) assert.ok(keys.includes(key), key);
+
+    const picks = source.items.map((i) => ({ key: i.key, digest: i.digest, to: i.suggested.to, botId: i.suggested.botId }));
+    const imported = await h.json("/api/setup-import", { method: "POST", body: JSON.stringify({ picks }) });
+    assert.deepEqual(imported.results.filter((r: { ok: boolean }) => !r.ok), []);
+    const { bots } = await h.json("/api/bots");
+    const ada = bots.find((b: { name: string }) => b.name === "Ada");
+    assert.equal(ada.description, "Be thorough.");
+    assert.ok(ada.avatarAt, "with its picture");
+    const photo = await h.fetch(`/api/bots/${ada.id}/avatar`);
+    assert.equal(photo.headers.get("content-type"), "image/png");
+    assert.ok(Buffer.from(await photo.arrayBuffer()).equals(png));
+    const folder = join(h.home, ".bloks", "workspaces", ada.id);
+    assert.equal(readFileSync(join(folder, "notes", "plan.md"), "utf8"), "plan ".repeat(200_000));
+    assert.equal(readFileSync(join(folder, "data.bin")).length, 500_000);
+    assert.match((await h.json(`/api/bots/${ada.id}/memory`)).text, /## From OpenBot: Essential memories\n\n- Likes tea/);
+    const { routines } = await h.json("/api/routines");
+    assert.deepEqual(
+      routines.map((r: { targetId: string; name: string; time: string; days: number[]; enabled: boolean }) => [r.targetId, r.name, r.time, r.days, r.enabled]),
+      [[ada.id, "Daily", "09:15", [1, 3], false]],
+    );
+
+    const undone = await h.json("/api/setup-import/undo", { method: "POST", body: JSON.stringify({ runId: imported.run.id }) });
+    assert.deepEqual(undone.kept, []);
+    assert.equal(existsSync(join(folder, "notes", "plan.md")), false);
+    assert.deepEqual((await h.json("/api/routines")).routines, []);
+
+    const removed = await h.json("/api/setup-import/transfer", { method: "DELETE" });
+    assert.equal(removed.transfer, null);
+    assert.equal(existsSync(kept()), false);
+    assert.equal((removed.review as Review).sources.some((s) => s.id === "openbot"), false);
   });
 });

@@ -38,11 +38,12 @@
 //                                when it runs this), or go back if it does
 //                                not start; --check only says if there is
 //                                one. The app's About page does the same
-//   bloks-server import [TOOL] --dry-run [--json]
+//   bloks-server import [TOOL] --dry-run [--json] [--transfer FILE]
 //                                what Bring your setup would find from Claude
-//                                Code, Codex, Cursor, OpenClaw or Hermes on this
-//                                machine, and what each becomes. Reads only;
-//                                the import itself is chosen in the app
+//                                Code, Codex, Cursor, OpenClaw, Hermes or
+//                                OpenBot on this machine (and in an OpenBot
+//                                transfer file), and what each becomes. Reads
+//                                only; the import itself is chosen in the app
 //   bloks-server stop            stop the running server
 //   bloks-server export-runs [--format openai|sharegpt|trajectory] [--dry-run]
 //                                write agents' runs to a file on this computer
@@ -789,15 +790,22 @@ if (handOver) {
     // The import itself is a list to tick in the app, where each value a
     // server or a chat app needs is typed or copied on purpose, so from
     // here there is only the look.
-    const sources = ["claude", "codex", "cursor", "openclaw", "hermes"];
-    const source = args.find((a) => !a.startsWith("-"));
+    const sources = ["claude", "codex", "cursor", "openclaw", "hermes", "openbot"];
+    // an OpenBot transfer file to read as well, named the way it is given
+    const at = args.indexOf("--transfer");
+    const transfer = at >= 0 ? args[at + 1] : undefined;
+    if (at >= 0 && (!transfer || transfer.startsWith("-"))) fail("Which file? bloks-server import openbot --dry-run --transfer FILE.zip");
+    const source = args.find((a, i) => !a.startsWith("-") && (at < 0 || i !== at + 1));
     if (source && source !== "all" && !sources.includes(source)) fail(`Which tool? One of: ${sources.join(", ")}, or all.`);
     if (!args.includes("--dry-run")) {
-      fail("Only a look from here: bloks-server import [claude|codex|cursor|openclaw|hermes] --dry-run. To bring things over, open Bloks, Settings, Bring your setup.");
+      fail("Only a look from here: bloks-server import [claude|codex|cursor|openclaw|hermes|openbot] --dry-run [--transfer FILE.zip]. To bring things over, open Bloks, Settings, Bring your setup.");
     }
+    if (transfer && !existsSync(transfer)) fail(`There is no file at ${transfer}.`);
     const file = join(root, "server", "setup-import.ts");
     const code = await import(pathToFileURL(existsSync(file) ? file : join(root, "dist-server", "setup-import.js")).href);
-    const scan = code.detectSetup(homedir(), source && source !== "all" ? source : undefined);
+    const scan = code.detectSetup(homedir(), source && source !== "all" ? source : undefined, {
+      ...(transfer ? { openbotTransfer: { path: resolve(transfer), name: basename(transfer) } } : {}),
+    });
     if (args.includes("--json")) {
       // the same shape the app's review is made from, which holds no values
       console.log(JSON.stringify(scan, null, 2));

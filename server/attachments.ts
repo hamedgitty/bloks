@@ -269,10 +269,14 @@ export class AttachmentUploads {
   private readonly uploads = new Map<string, Upload>();
   private readonly dir: string;
   private readonly now: () => number;
+  /** For a kind of file that is not an attachment, with a size of its
+   * own: every upload is a file, whatever type it says it is. */
+  private readonly maxBytes?: number;
 
-  constructor(opts: { dir?: string; now?: () => number } = {}) {
+  constructor(opts: { dir?: string; now?: () => number; maxBytes?: number } = {}) {
     this.dir = opts.dir ?? ATTACHMENTS_DIR;
     this.now = opts.now ?? Date.now;
+    this.maxBytes = opts.maxBytes;
   }
 
   private get incoming() {
@@ -285,8 +289,8 @@ export class AttachmentUploads {
     if (typeof size !== "number" || !Number.isInteger(size) || size < 0) throw new AttachmentError("Say how big the file is, in bytes.", 400);
     if (size === 0) throw new AttachmentError("That file is empty.", 400);
     const type = String(input.type ?? "").split(";")[0]!.trim().toLowerCase();
-    const image = IMAGE_TYPES.has(type);
-    const max = image ? IMAGE_MAX_BYTES : FILE_MAX_BYTES;
+    const image = this.maxBytes === undefined && IMAGE_TYPES.has(type);
+    const max = this.maxBytes ?? (image ? IMAGE_MAX_BYTES : FILE_MAX_BYTES);
     if (size > max) {
       throw new AttachmentError(image ? "images top out at 10 MB" : `files sent here top out at ${max / (1024 * 1024)} MB`, 413);
     }

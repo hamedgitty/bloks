@@ -10,8 +10,8 @@
 // items' own titles and previews are the files' words and stay as read.
 import { t, type MessageKey } from "./i18n.ts";
 
-export type SetupKind = "agent" | "instructions" | "memory" | "skill" | "mcp" | "setting" | "rule" | "fact" | "channel";
-export type SetupDestination = "agent" | "brief" | "memory" | "skills" | "mcp" | "engine" | "rules" | "about" | "channel";
+export type SetupKind = "agent" | "instructions" | "memory" | "skill" | "mcp" | "setting" | "rule" | "fact" | "channel" | "files" | "routine";
+export type SetupDestination = "agent" | "brief" | "memory" | "skills" | "mcp" | "engine" | "rules" | "about" | "channel" | "files" | "routine";
 
 export interface SecretSlot {
   id: string;
@@ -42,9 +42,14 @@ export interface SetupItem {
   skill?: { name: string; description: string };
   mcp?: { name: string; transport: "stdio" | "http"; needs: string[] };
   rule?: { effect: "allow" | "deny"; summary: string };
-  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[] };
+  agent?: { name: string; title: string; model?: string; skills: string[]; servers: string[]; refuses: string[]; photo?: boolean };
   setting?: { engine: string; engineName: string; model?: string; effort?: string };
   channel?: { platform: string; name: string; perAgent: boolean };
+  files?: { count: number; bytes: number };
+  routine?: { summary: string; scheduled: boolean };
+  /** The agent it came with, in a tool whose agents bring their own
+   * parts; `here` when an earlier import of it is still here. */
+  owner?: { key: string; name: string; here?: boolean };
 }
 
 export interface SetupSource {
@@ -62,11 +67,20 @@ export interface SetupRun {
   items: number;
 }
 
+/** An OpenBot transfer file the server is reading, as it says it. */
+export interface SetupTransfer {
+  name: string;
+  bytes: number;
+  at: number;
+}
+
 export interface SetupReview {
   sources: SetupSource[];
   fresh: number;
   /** The newest import that can still be undone. Absent from an older server. */
   lastRun?: SetupRun | null;
+  /** The transfer file being read, if one was picked. Absent from an older server. */
+  transfer?: SetupTransfer | null;
 }
 
 /** What the person has chosen for one item. */
@@ -82,14 +96,17 @@ export interface Choice {
 }
 
 /** The groups, in the order a person would set things up by hand: who
- * the agents are, what they know, what they can use, what they may do,
- * what they know about you, and where they can be reached. */
+ * the agents are, what they know and keep, what they can use, when they
+ * work on their own, what they may do, what they know about you, and
+ * where they can be reached. */
 export const GROUPS: Array<{ id: string; label: MessageKey; kinds: SetupKind[] }> = [
   { id: "agents", label: "setupReview.group.agents", kinds: ["agent"] },
   { id: "knowledge", label: "setupReview.group.knowledge", kinds: ["instructions", "memory"] },
+  { id: "files", label: "setupReview.group.files", kinds: ["files"] },
   { id: "skills", label: "setupReview.group.skills", kinds: ["skill"] },
   { id: "servers", label: "setupReview.group.servers", kinds: ["mcp"] },
   { id: "models", label: "setupReview.group.models", kinds: ["setting"] },
+  { id: "routines", label: "setupReview.group.routines", kinds: ["routine"] },
   { id: "rules", label: "setupReview.group.rules", kinds: ["rule"] },
   { id: "about", label: "setupReview.group.about", kinds: ["fact"] },
   { id: "chat", label: "setupReview.group.chat", kinds: ["channel"] },
@@ -134,6 +151,16 @@ export function choicesFrom(review: SetupReview): Record<string, Choice> {
 /** A slot a ticked item cannot go without and that has no answer yet. */
 export function missingSecrets(item: SetupItem, choice: Choice): SecretSlot[] {
   return (item.secrets ?? []).filter((slot) => slot.required && !choice.copy?.[slot.id] && !choice.typed?.[slot.id]?.trim());
+}
+
+/**
+ * The agent a ticked part goes with, by name, when that agent is neither
+ * ticked nor brought over before: the import would refuse the part, so
+ * the window says so first. Null when there is nothing to say.
+ */
+export function ownerMissing(item: SetupItem, choice: Choice, choices: Record<string, Choice>): string | null {
+  if (!choice.on || choice.botId !== "owner" || !item.owner || item.owner.here) return null;
+  return choices[item.owner.key]?.on ? null : item.owner.name;
 }
 
 /** What the window sends for one ticked item. A typed value goes only

@@ -115,10 +115,18 @@ Cursor editor is refused where the Cursor CLI is meant, and every change
 is written to the activity ledger.
 
 **Bringing a setup over copies a key only when you tick it.** Bring
-your setup reads Claude Code's, Codex's, Cursor's, OpenClaw's and
-Hermes' files under your home folder, read only, by name, and never
+your setup reads Claude Code's, Codex's, Cursor's, OpenClaw's, Hermes'
+and OpenBot's files under your home folder, read only, by name, and never
 opens a file named like a credential (`auth.json`, `.credentials.json`,
-`.env`, tokens, keys, OpenClaw's `credentials` folder). An MCP server's
+`.env`, tokens, keys, OpenClaw's `credentials` folder). The one database
+it opens is OpenBot's, read only, for one table of agent settings; its
+chat history, vault and saved logins are never read. An OpenBot transfer
+file you pick is sent to the workspace's computer and judged whole before
+anything in it is read: a path that is absolute or climbs out, a link,
+an encrypted entry or one past the size limits refuses the whole file,
+which is then not kept. Files it brings into an agent's workspace are
+regular files only, never over one already there, and never one named
+like a credential. An MCP server's
 environment and headers, and a chat app's token, arrive as names with
 empty values. Each value is typed in by you, or copied from the other
 tool's config because you ticked the box for that one value; a value is

@@ -332,12 +332,17 @@ type Sendable = Pick<File, "name" | "size" | "type" | "slice">;
  * Cloud. A part whose answer was lost is sent again; a send that fails
  * is called off so nothing half-sent is left behind. Answers with what
  * the server says it kept.
+ *
+ * `base` is where the parts go: an attachment's place unless said, or
+ * another route that takes a file the same way (a transfer file for
+ * Bring your setup), which answers the finish in a shape of its own.
  */
-export async function sendInParts(
+export async function sendInParts<Kept = { kind: "image"; path: string; mime: string; bytes: number } | { kind: "file"; path: string; name: string; bytes: number }>(
   file: Sendable,
-  options: { fetcher?: Fetcher; partBytes: number },
-): Promise<{ kind: "image"; path: string; mime: string; bytes: number } | { kind: "file"; path: string; name: string; bytes: number }> {
+  options: { fetcher?: Fetcher; partBytes: number; base?: string; onPart?: (sent: number, parts: number) => void },
+): Promise<Kept> {
   const fetcher = options.fetcher ?? fetch;
+  const base = options.base ?? "/api/attachments/uploads";
   const call = async (path: string, init: RequestInit) => {
     const response = await fetcher(path, init);
     const body = await response.json().catch(() => ({}));
@@ -349,7 +354,7 @@ export async function sendInParts(
     }
     return body;
   };
-  const started = await call("/api/attachments/uploads", {
+  const started = await call(base, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: file.name, size: file.size, type: file.type }),
@@ -357,17 +362,19 @@ export async function sendInParts(
   const partSize = typeof started.partSize === "number" && started.partSize > 0 ? started.partSize : options.partBytes;
   try {
     let next = 0;
+    let sent = 0;
     // a few at once, as a workspace move does: each is a round trip
     const lane = async () => {
       for (let index = next++; index < started.parts; index = next++) {
         const piece = new Uint8Array(await file.slice(index * partSize, Math.min(file.size, (index + 1) * partSize)).arrayBuffer());
         for (let tries = 1; ; tries++) {
           try {
-            await call(`/api/attachments/uploads/${started.id}/${index}`, {
+            await call(`${base}/${started.id}/${index}`, {
               method: "PUT",
               headers: { "content-type": "application/octet-stream" },
               body: piece,
             });
+            options.onPart?.(++sent, started.parts);
             break;
           } catch (error) {
             const status = (error as { status?: number }).status ?? 0;
@@ -379,9 +386,9 @@ export async function sendInParts(
       }
     };
     await Promise.all([lane(), lane(), lane()]);
-    return await call(`/api/attachments/uploads/${started.id}/finish`, { method: "POST" });
+    return (await call(`${base}/${started.id}/finish`, { method: "POST" })) as Kept;
   } catch (error) {
-    void fetcher(`/api/attachments/uploads/${started.id}`, { method: "DELETE" }).catch(() => {});
+    void fetcher(`${base}/${started.id}`, { method: "DELETE" }).catch(() => {});
     throw error;
   }
 }

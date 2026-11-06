@@ -10,14 +10,14 @@ import { CLOUD_KEY, licenceFrom, licenceToUse } from "./licence.ts";
 import "./pending-restore.ts";
 import { codexTextFor, itemProgress, isProgressText, type CodexText } from "./codex-text.ts";
 import { SaidOnce, desktopNotice, noticeKey, unreadCount as desktopUnreadCount } from "./desktop-notice.ts";
-import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, unlinkSync, watch, writeFileSync, renameSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, unlinkSync, watch, writeFileSync, writeSync, renameSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect } from "node:net";
 import { pipeline, type Duplex } from "node:stream";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import * as attachments from "./attachments.ts";
 import { sendBody } from "./compress.ts";
@@ -676,16 +676,22 @@ import {
 } from "./incidents.ts";
 import {
   applyImport,
+  avatarHashOf,
   cleanPicks,
   detectSetup,
+  ENGINE_DRIVERS as SETUP_ENGINE_DRIVERS,
   ImportRecord,
+  MAX_TRANSFER_BYTES,
   reviewOf,
   scrubSecrets,
   tokenHash as setupTokenHash,
+  transferProblem,
   type AgentSettings,
   type ChatPlatform as SetupChatPlatform,
+  type Engine as SetupEngine,
   type ImportDeps,
   type McpEntry,
+  type TransferFile,
 } from "./setup-import.ts";
 import { ImportRuns, undoRun } from "./setup-undo.ts";
 import {
@@ -2676,6 +2682,83 @@ const intentWoken = new Map<string, number>();
 const setupRecord = new ImportRecord(join(DATA_DIR, "setup-import.json"));
 // And what each import changed, so it can be taken back (server/setup-undo.ts).
 const setupRuns = new ImportRuns(join(DATA_DIR, "setup-import-runs.json"));
+// An OpenBot transfer file the owner picked, kept in a folder of its own
+// so the look and the import can both read it again, and so a backup
+// leaves it out (server/backup.ts): it is the other app's, not the
+// workspace's. Only the owner replaces or removes it.
+const SETUP_TRANSFER_DIR = join(DATA_DIR, "setup-transfer");
+const SETUP_TRANSFER_FILE = join(SETUP_TRANSFER_DIR, "openbot-transfer.zip");
+const SETUP_TRANSFER_NOTE = join(SETUP_TRANSFER_DIR, "openbot-transfer.json");
+// It arrives in parts, as any file does, so one of a few hundred
+// megabytes still crosses Bloks Cloud.
+const transferUploads = new attachments.AttachmentUploads({ dir: SETUP_TRANSFER_DIR, maxBytes: MAX_TRANSFER_BYTES });
+
+/** The transfer file kept for Bring your setup, if there is one: the name
+ * the owner knew it by, its size, and when it was picked. */
+function setupTransfer(): (TransferFile & { bytes: number; at: number }) | null {
+  let stat;
+  try {
+    stat = lstatSync(SETUP_TRANSFER_FILE);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return null;
+  const note = readSaved<Record<string, unknown>>(SETUP_TRANSFER_NOTE, {}, isRecord);
+  return {
+    path: SETUP_TRANSFER_FILE,
+    name: typeof note.name === "string" && note.name ? note.name : "openbot-transfer.zip",
+    bytes: stat.size,
+    at: typeof note.at === "number" ? note.at : Math.round(stat.mtimeMs),
+  };
+}
+
+/** What the window is told of it: never where it is kept. */
+function setupTransferState(): { name: string; bytes: number; at: number } | null {
+  const kept = setupTransfer();
+  return kept ? { name: kept.name, bytes: kept.bytes, at: kept.at } : null;
+}
+
+/** This computer's setup, the transfer file included, read fresh. */
+function setupScan() {
+  return detectSetup(undefined, undefined, { openbotTransfer: setupTransfer() });
+}
+
+/** The engine each family an import asks for runs on here, the way the
+ * session import finds Claude Code and Codex: an available instance of
+ * one of its drivers, signed in first. Null for one not set up. */
+async function setupEngines(wanted: Iterable<SetupEngine>): Promise<Partial<Record<SetupEngine, ModelSelection | null>>> {
+  const described = await registry.describe();
+  const out: Partial<Record<SetupEngine, ModelSelection | null>> = {};
+  for (const engine of wanted) {
+    const of = SETUP_ENGINE_DRIVERS[engine].flatMap((kind) => described.filter((d) => d.driverKind === kind));
+    const available = of.filter((d) => d.snapshot.state === "available");
+    const pick = available.find((d) => d.snapshot.authenticated !== false) ?? available[0] ?? of[0];
+    out[engine] = pick ? { instanceId: pick.instanceId, model: pick.models.default } : null;
+  }
+  return out;
+}
+
+/**
+ * Where a file an import brings goes in an agent's workspace: plain
+ * names only, none hidden, and no link on the way, each folder made as
+ * it is reached. Null for a path that is not one.
+ */
+function importedFilePath(botId: string, rel: string): string | null {
+  const parts = rel.split("/");
+  // eslint-disable-next-line no-control-regex
+  if (!parts.length || parts.some((p) => !p || p === "." || p === ".." || p.startsWith(".") || p.length > 255 || /[\\\u0000-\u001f]/.test(p))) return null;
+  let here = workspace.ensureWorkspace(botId);
+  for (const part of parts.slice(0, -1)) {
+    here = join(here, part);
+    try {
+      const stat = lstatSync(here);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
+    } catch {
+      mkdirSync(here, { mode: 0o700 });
+    }
+  }
+  return join(here, parts[parts.length - 1]);
+}
 // Which past sessions became which conversations (server/session-import.ts),
 // and the engine sessions Bloks ran itself, which are conversations here
 // already and never something to bring over.
@@ -2839,7 +2922,7 @@ function sessionImportDeps(): SessionImportDeps {
  */
 function setupImportDeps(
   settings: Partial<BotRecord> = {},
-  engines: Partial<Record<SessionEngine, ModelSelection | null>> = {},
+  engines: Partial<Record<SetupEngine, ModelSelection | null>> = {},
 ): ImportDeps {
   const settingsOf = (bot: BotRecord): AgentSettings => ({
     title: bot.title ?? "",
@@ -2992,6 +3075,78 @@ function setupImportDeps(
       cfg.chat = next;
       startChat(platform);
     },
+    defaultEngine() {
+      const wanted = cfg.agentDefaults?.modelSelection;
+      const instance = registry.get(wanted && registry.get(wanted.instanceId) ? wanted.instanceId : bootSelection.instanceId);
+      return instance ? (instance.displayName ?? instance.driverKind) : null;
+    },
+    avatarHash(botId) {
+      if (!store.bot(botId)?.avatarAt) return null;
+      const photo = readAvatar(botId);
+      return photo ? avatarHashOf(photo.bytes) : null;
+    },
+    // the same files the photo route writes, and the same broadcast after
+    setAvatar(botId, mime, bytes) {
+      mkdirSync(AVATARS_DIR, { recursive: true, mode: 0o700 });
+      writeFileSync(join(AVATARS_DIR, botId), bytes, { mode: 0o600 });
+      writeFileSync(join(AVATARS_DIR, `${botId}.mime`), mime, { mode: 0o600 });
+      store.patchBot(botId, { avatarAt: Date.now() });
+    },
+    clearAvatar(botId) {
+      for (const file of [join(AVATARS_DIR, botId), join(AVATARS_DIR, `${botId}.mime`)]) {
+        try {
+          unlinkSync(file);
+        } catch {}
+      }
+      store.patchBot(botId, { avatarAt: null });
+    },
+    // Never over a file already there: created new or not at all, and a
+    // link left where the file would go is refused by the create itself.
+    writeWorkspaceFile(botId, rel, bytes) {
+      const path = importedFilePath(botId, rel);
+      if (!path) throw new Error(`${rel} is not a name a workspace file can have`);
+      let fd: number;
+      try {
+        fd = openSync(path, "wx", 0o600);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        const held = openInside(workspace.workspaceDir(botId), rel.split("/"));
+        const there = held ? readHeld(held, bytes.length) : null;
+        return there && there.equals(bytes) ? "same" : "taken";
+      }
+      try {
+        for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+      } finally {
+        closeSync(fd);
+      }
+      return "written";
+    },
+    readWorkspaceFile(botId, rel) {
+      const held = openInside(workspace.workspaceDir(botId), rel.split("/"));
+      return held ? readHeld(held, attachments.FILE_MAX_BYTES) : null;
+    },
+    removeWorkspaceFile(botId, rel) {
+      const path = importedFilePath(botId, rel);
+      if (!path) return false;
+      try {
+        if (!lstatSync(path).isFile()) return false;
+        unlinkSync(path);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    // filed paused, as a team file's are: a schedule from somewhere else
+    // runs only once the person has looked at it and switched it on
+    addRoutine({ botId, name, prompt, time, days }) {
+      const clean = normalizeRoutine({ targetKind: "agent", targetId: botId, prompt, time, days, ...(name ? { name } : {}), enabled: false });
+      return clean ? (routines.create(clean)?.id ?? null) : null;
+    },
+    routine(id) {
+      const found = routines.get(id);
+      return found ? { enabled: found.enabled } : null;
+    },
+    removeRoutine: (id) => routines.remove(id),
   };
 }
 // An agent doing the work on a clone of its folder, for you to apply or not.
@@ -24634,6 +24789,7 @@ const attachmentUploads = new attachments.AttachmentUploads();
 setInterval(() => {
   moveUploads.clear(true);
   attachmentUploads.sweep();
+  transferUploads.sweep();
 }, 60 * 60_000).unref?.();
 
 /** A request body as bytes, refused past `max`. What is past it is read
@@ -27687,11 +27843,63 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, { computer: computerName(), here: local });
     }
     // The look also says which import, if any, can still be undone, so the
-    // offer outlives the window it was made in.
+    // offer outlives the window it was made in, and which transfer file is
+    // being read, if one was picked.
     const setupLook = () => {
       const last = setupRuns.latest();
-      return { ...reviewOf(detectSetup(), setupRecord, setupImportDeps()), lastRun: last ? { id: last.id, at: last.at, items: last.items } : null };
+      return {
+        ...reviewOf(setupScan(), setupRecord, setupImportDeps()),
+        lastRun: last ? { id: last.id, at: last.at, items: last.items } : null,
+        transfer: setupTransferState(),
+      };
     };
+    // An OpenBot transfer file, picked by the owner in the window and sent
+    // in parts (begun with its name and size, each part PUT by number,
+    // then finished), whether the window is the desktop app or a browser
+    // on a server with no screen. It is judged whole as it lands and kept
+    // only if it reads; a file it would refuse is deleted then and there.
+    if (path === "/api/setup-import/transfer" || path.startsWith("/api/setup-import/transfer/")) {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "bringing a setup over is the owner's" });
+      try {
+        if (path === "/api/setup-import/transfer") {
+          if (method === "GET") return json(res, 200, { transfer: setupTransferState() });
+          if (method !== "DELETE") return json(res, 405, { error: "GET it, or DELETE to stop reading it" });
+          rmSync(SETUP_TRANSFER_FILE, { force: true });
+          rmSync(SETUP_TRANSFER_NOTE, { force: true });
+          return json(res, 200, { transfer: null, review: setupLook() });
+        }
+        if (path === "/api/setup-import/transfer/uploads") {
+          if (method !== "POST") return json(res, 405, { error: "POST the file's name and size to begin" });
+          const body = await readBody(req);
+          return json(res, 201, transferUploads.start({ name: body.name, size: body.size, type: "application/zip" }));
+        }
+        const up = path.match(/^\/api\/setup-import\/transfer\/uploads\/([0-9a-f-]{36})(?:\/(\d{1,6}|finish))?$/);
+        if (!up) return json(res, 404, { error: "not found" });
+        if (!up[2]) {
+          if (method === "DELETE") return json(res, 200, { ok: transferUploads.cancel(up[1]) });
+          return json(res, 405, { error: "DELETE to stop sending it" });
+        }
+        if (up[2] !== "finish") {
+          if (method !== "PUT") return json(res, 405, { error: "PUT the part" });
+          return json(res, 200, transferUploads.put(up[1], Number(up[2]), await readBytes(req, attachments.UPLOAD_PART_BYTES)));
+        }
+        if (method !== "POST") return json(res, 405, { error: "POST to finish" });
+        const kept = transferUploads.finish(up[1]);
+        const folder = dirname(kept.path);
+        try {
+          const problem = transferProblem(kept.path);
+          if (problem) return json(res, 400, { error: `That file cannot be read: ${problem}.` });
+          renameSync(kept.path, SETUP_TRANSFER_FILE);
+          writeFileAtomic(SETUP_TRANSFER_NOTE, JSON.stringify({ name: "name" in kept ? kept.name : "openbot-transfer.zip", at: Date.now() }), 0o600);
+        } finally {
+          rmSync(folder, { recursive: true, force: true });
+        }
+        return json(res, 200, { transfer: setupTransferState(), review: setupLook() });
+      } catch (e) {
+        if (e instanceof attachments.AttachmentError) return json(res, e.status, { error: e.message });
+        throw e;
+      }
+    }
     if (path === "/api/setup-import" && (method === "GET" || method === "POST")) {
       if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "bringing a setup over is the owner's" });
       if (method === "GET") return json(res, 200, setupLook());
@@ -27699,14 +27907,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const picks = cleanPicks(body.picks);
       // A new agent's settings mean asking the engines which one answers,
       // which takes a moment; only an import that makes one, or that sets
-      // an agent's engine, waits for it.
+      // an agent's engine, waits for it, and only for the engines it names.
       const makesAgent = picks.some((pick) => pick.botId === "new" || pick.to === "agent");
-      const engines =
-        picks.some((pick) => pick.to === "agent" || pick.to === "engine")
-          ? { claude: await selectionForEngine("claude"), codex: await selectionForEngine("codex") }
-          : {};
+      const scan = setupScan();
+      const items = new Map(scan.sources.flatMap((s) => s.items).map((item) => [item.key, item]));
+      const wanted = new Set<SetupEngine>();
+      for (const pick of picks) {
+        const item = items.get(pick.key);
+        const engine = pick.to === "agent" ? item?.agent?.model?.engine : pick.to === "engine" ? item?.setting?.engine : undefined;
+        if (engine) wanted.add(engine);
+      }
+      const engines = wanted.size ? await setupEngines(wanted) : {};
       const now = Date.now();
-      const outcome = await applyImport(detectSetup(), picks, setupImportDeps(makesAgent ? await newAgentSettings() : {}, engines), setupRecord, now);
+      const outcome = await applyImport(scan, picks, setupImportDeps(makesAgent ? await newAgentSettings() : {}, engines), setupRecord, now);
       const run = setupRuns.add(outcome, now);
       for (const id of outcome.created) {
         const made = store.bot(id);
@@ -27719,6 +27932,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (outcome.touched.skills) broadcast({ kind: "skills" });
       if (outcome.touched.rules) broadcast({ kind: "rules" });
       if (outcome.touched.notes) broadcast({ kind: "profile" });
+      if (outcome.touched.routines) broadcast({ kind: "routines" });
       if (outcome.touched.channels.size) broadcast({ kind: "config", ...(await configStatus()) });
       const brought = outcome.results.filter((r) => r.ok && r.did !== "unchanged").length;
       if (brought) {
@@ -27754,6 +27968,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (undone.touched.skills) broadcast({ kind: "skills" });
       if (undone.touched.rules) broadcast({ kind: "rules" });
       if (undone.touched.notes) broadcast({ kind: "profile" });
+      if (undone.touched.routines) broadcast({ kind: "routines" });
       if (undone.touched.channels) broadcast({ kind: "config", ...(await configStatus()) });
       record({
         at: Date.now(),

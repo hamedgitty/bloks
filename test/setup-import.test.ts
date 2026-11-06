@@ -645,6 +645,17 @@ function world(): World {
     disconnectChannel: (platform, botId) => {
       w.channels.delete(channelKey(platform, botId));
     },
+    // pictures, workspace files and routines come only from OpenBot,
+    // whose own tests (test/setup-import-openbot.test.ts) fake them in full
+    avatarHash: () => null,
+    setAvatar: () => {},
+    clearAvatar: () => {},
+    writeWorkspaceFile: () => "written",
+    readWorkspaceFile: () => null,
+    removeWorkspaceFile: () => false,
+    addRoutine: () => null,
+    routine: () => null,
+    removeRoutine: () => false,
   };
   return w;
 }

@@ -283,6 +283,7 @@ Workspaces), written synchronously. No database.
 | `proposals.json` | Suggested skills and changes to skills, staged until the person keeps or dismisses them |
 | `setup-import.json` | What was brought over from other agent tools, by item: a digest, where it went, and the exact text added |
 | `setup-import-runs.json` | The newest 20 imports from other agent tools, step by step, for undo; never a key |
+| `setup-transfer/` | An OpenBot transfer file the owner picked for Bring your setup, and the name it was picked under; left out of backups |
 | `session-import.json` | Which past Claude Code and Codex sessions became which lanes, with the digest of what came over |
 | `engine-sessions.json` | Engine session ids Bloks itself ran, so they are never offered back as past sessions |
 | `events/`, `native/` | Canonical events, and raw provider traffic |
@@ -3903,8 +3904,9 @@ agent's credential reading messages, and a branch does not copy it.
 ## Bringing a setup over
 
 `server/setup-import.ts` reads what a person already taught other agent
-tools, from a short list of known places under their home. Nothing is
-searched for and nothing there is written.
+tools, from a short list of known places under their home, and from a
+transfer file they pick. Nothing is searched for and nothing there is
+written.
 
 - Claude Code: `~/.claude/CLAUDE.md` (its `@path` imports are named, not
   followed), `rules/**/*.md`, subagents in `agents/*.md`, skills in
@@ -3932,6 +3934,61 @@ searched for and nothing there is written.
   WhatsApp, Signal and the rest are named as left out.
 - Hermes: `SOUL.md`, the memories folder and skills a few folders down
   in `~/.hermes`, each looked for rather than assumed.
+- OpenBot: several agents, each with its own parts. Found when its app
+  data folder (`~/Library/Application Support/OpenBot`,
+  `%APPDATA%\OpenBot` as `~/AppData/Roaming/OpenBot`, or
+  `~/.config/OpenBot`) or `~/OpenBot/Agents` exists, or when the owner
+  has picked a transfer file. Each folder under `~/OpenBot/Agents` is an
+  agent: its instruction file (`AGENTS.md`, else `CLAUDE.md`), its skills
+  in `.agents/skills` and `.claude/skills` (those carrying
+  `.openbot-managed.json` are OpenBot's own and left out), and its other
+  regular files. Names and settings come first from a transfer file,
+  then from `agent_json` in the `projection_agents` table of
+  `openbot.db`, opened read only with `node:sqlite` (loaded only when
+  there is a database, through `process.getBuiltinModule`, so a Node
+  without it loses only this step; Node 22.13 and newer and Electron's
+  own have it) and never waited on, then from the folder: the
+  instruction file's first heading, else "OpenBot agent" and a number.
+  Undocumented JSON is read tolerantly: a field is taken only when its
+  name and type are unambiguous (a string `name`, `title`,
+  `instructions`, `provider`, `model`; an effort; arrays of memories and
+  routines; `mcpServers`), the rest is passed over.
+
+A transfer file is a `.zip` read by `server/zip-read.ts`, a small reader
+of its own: the central directory is judged whole before any entry is
+read, and an absolute name, a `..`, a link, an encrypted entry, a name
+given twice, more than 5,000 entries, more than 512 MB unpacked or one
+entry over 64 MB refuses the whole file. An entry is inflated to exactly
+its declared size and its CRC checked. Only `openbot-transfer.json`
+(whose format value and version 1 are checked), `agents/<key>/` (a
+picture checked by its bytes as PNG, JPEG or WebP, up to 2 MB;
+`skills/<slug>/SKILL.md`; `workspace/`) and `shared/` are read; anything
+else is named as not read.
+
+An OpenBot agent's provider maps to the engine of the same family here
+(`ENGINE_DRIVERS` in `server/setup-import.ts`): Codex to `codex`, Claude
+Code to `claudeAgent`, Grok to `grokCli` then `grok`, OpenCode to
+`opencode`, Gemini to `geminiCli` then `gemini`, Cursor, Cline, Devin and
+Pi to their own drivers, Kimi, OpenRouter and DeepSeek to their API
+providers. GitHub Copilot, Hermes, Muse, custom endpoints and custom ACP
+agents have no family here: the agent comes on the default engine and
+says so, naming it. A model id carries over only within the family.
+Essential memories become a block in the agent's `MEMORY.md`, searchable
+ones (and any that say neither) the topic file `memory/From OpenBot.md`.
+Workspace files (unticked) are copied into the agent's workspace, never
+over a file already there: regular files only, no links, nothing hidden,
+nothing named like a credential, not its instruction file or a top
+level `MEMORY.md` or `memory/`, at most 20 MB each, 500 files and 100 MB
+an agent. Routines (unticked) are filed paused, their schedule read from
+a `time` and `days` or a plain weekly cron line, else set to 09:00 every
+day and said. MCP servers go through the same rules as every other
+server and are attached to nothing. Each part carries `owner`, the agent
+item it came with; the review suggests `botId: "owner"`, which the
+import resolves to the agent that item became in the same import or an
+earlier one still here, so agents are applied before the parts that go
+to them. Chat history, channels, saved logins and the vault, connectors
+and browser profiles stay in OpenBot, which the review says under the
+source.
 
 What each becomes: a subagent is an agent, its prompt the instructions
 (or, past 4,000 characters, the opening plus the whole in `MEMORY.md`),
@@ -3998,7 +4055,9 @@ Every import that changed something is kept in `setup-import-runs.json`
 changed (with its settings before), instructions and memory before and
 after, a skill added or replaced (with the one it replaced), a server
 added or updated (its earlier shape with values blanked), a rule or a
-suggestion added, a chat app connected (by a hash of its token). `POST
+suggestion added, a chat app connected (by a hash of its token), a
+picture set on an agent that had none, files copied (each by a hash of
+its bytes) and a routine filed. `POST
 /api/setup-import/undo` walks them back newest first, each only if what
 is there is still what the import left; anything changed since, a
 suggestion the person kept, or an agent they have talked with stays and
@@ -4006,13 +4065,26 @@ says why. Agents it made are archived, not deleted. The record goes back
 to what it said before for each item that went back whole. The look
 returns `lastRun` so the offer outlives the window.
 
-All three routes answer only the owner at this computer or on their own
-paired devices, never an agent's credential or a member. The first run
-offers the review as an optional step when something new was found, and
-Settings has it as a page. `bloks-server import [tool] --dry-run
-[--json]` prints the same scan from a terminal, with no server needed
-and nothing written; the import itself is only in the app, where the
-slots are answered.
+A transfer file is picked in the window and sent in parts, as an
+attachment is, to `/api/setup-import/transfer/uploads` (begun with its
+name and size, up to 256 MB, each part `PUT` by number, then finished),
+so it reaches the workspace's computer from the desktop app, a window
+paired to another computer through Bloks Cloud, or a browser on
+`bloks-server`. It is judged whole as it lands and kept, as
+`setup-transfer/openbot-transfer.zip` beside the name it was picked
+under, only if it reads; a backup leaves that folder out. `GET` and
+`DELETE /api/setup-import/transfer` say which file is being read and
+stop reading it; the look carries `transfer` too. The look and the
+import both read the file again, so a file replaced between them
+changes the digests and the items are refused.
+
+All of these routes answer only the owner at this computer or on their
+own paired devices, never an agent's credential or a member. The first
+run offers the review as an optional step when something new was found,
+and Settings has it as a page. `bloks-server import [tool] --dry-run
+[--json] [--transfer FILE]` prints the same scan from a terminal, with
+no server needed and nothing written; the import itself is only in the
+app, where the slots are answered.
 
 ## Bringing past sessions over
 

@@ -595,10 +595,14 @@ over.
 
 Bring your subagents, instructions, skills, commands, tool servers, rules
 and chat bots over from Claude Code, Codex, Cursor, OpenClaw or Hermes,
-reviewing each item first, grouped by what it becomes here. A name that
-is taken is yours to settle, a key comes only when you tick it, and the
-whole import can be undone. `bloks-server import --dry-run` shows what
-would come over from a terminal. Bring your past Claude Code and Codex
+reviewing each item first, grouped by what it becomes here. OpenBot's
+agents come with their instructions, skills and memories, and with an
+OpenBot transfer file (picked in the app, or uploaded from a browser on
+`bloks-server`) their pictures, files and routines too, each routine
+paused until you switch it on. A name that is taken is yours to settle,
+a key comes only when you tick it, and the whole import can be undone.
+`bloks-server import --dry-run` shows what would come over from a
+terminal. Bring your past Claude Code and Codex
 sessions over as conversations and carry one on. Your workspace is
 backed up every day, and a whole workspace can be written out to one
 file and taken into an empty one elsewhere. Keys never travel in either.

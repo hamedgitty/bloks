@@ -416,6 +416,9 @@ export function leftOutBecause(rel: string, isDir: boolean, undo: boolean): stri
     // engine's own
     if (isDir && (name === "engine-accounts" || name === "opencode")) return "engine sign-ins, which stay on this computer";
     if (isDir && (name === "cache" || name === "tmp")) return "cache";
+    // a transfer file picked for Bring your setup is the other app's
+    // export, not the workspace, and can be large
+    if (isDir && name === "setup-transfer") return "a transfer file from another app, read to bring a setup over";
     if (isDir && name === "checkpoints" && !undo) return "Undo history, not asked for";
     if (!isDir && (name === "server.lock" || name === "port")) return "belongs to the running server";
     // what the last server update did, and the output of a server it started

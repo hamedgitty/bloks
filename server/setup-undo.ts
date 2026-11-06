@@ -1,8 +1,8 @@
 // Taking an import back.
 //
 // Bringing a setup over writes in a dozen places at once: agents, their
-// memory, the skill library, the server list, rules, About you, a chat
-// app. Getting one of those wrong should not mean finding and undoing
+// memory and pictures, files in their workspaces, the skill library, the
+// server list, routines, rules, About you, a chat app. Getting one of those wrong should not mean finding and undoing
 // each by hand, so every import keeps what it changed, a step at a time
 // (server/setup-import.ts, UndoStep), and an undo walks them back,
 // newest first.
@@ -20,7 +20,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { isRecord, readSaved, writeFileAtomic } from "./atomic-write.ts";
-import type { ImportDeps, ImportOutcome, ImportRecord, McpEntry, RecordEntry, UndoStep } from "./setup-import.ts";
+import { bytesHash, type ImportDeps, type ImportOutcome, type ImportRecord, type McpEntry, type RecordEntry, type UndoStep } from "./setup-import.ts";
 
 /** Imports kept for undoing. Older ones age out: by then what they added
  * has long been the person's own. */
@@ -40,7 +40,17 @@ export interface UndoResult {
   undone: Array<{ key: string; title: string }>;
   kept: Array<{ key: string; title: string; why: string }>;
   /** What changed, so the caller can tell open windows. */
-  touched: { agents: Set<string>; archived: Set<string>; memory: Set<string>; skills: boolean; mcp: boolean; rules: boolean; notes: boolean; channels: boolean };
+  touched: {
+    agents: Set<string>;
+    archived: Set<string>;
+    memory: Set<string>;
+    skills: boolean;
+    mcp: boolean;
+    rules: boolean;
+    notes: boolean;
+    channels: boolean;
+    routines: boolean;
+  };
 }
 
 /** The imports, newest last, in one small file beside the workspace. */
@@ -102,7 +112,7 @@ export function undoRun(run: ImportRun, deps: ImportDeps, record: ImportRecord):
   const result: UndoResult = {
     undone: [],
     kept: [],
-    touched: { agents: new Set(), archived: new Set(), memory: new Set(), skills: false, mcp: false, rules: false, notes: false, channels: false },
+    touched: { agents: new Set(), archived: new Set(), memory: new Set(), skills: false, mcp: false, rules: false, notes: false, channels: false, routines: false },
   };
   const keep = (step: UndoStep, why: string) => result.kept.push({ key: step.key, title: step.title, why });
   const done = (step: UndoStep) => result.undone.push({ key: step.key, title: step.title });
@@ -226,6 +236,34 @@ function undoStep(step: UndoStep, deps: ImportDeps, result: UndoResult): string 
       if (now.tokenHash !== step.tokenHash) return "its token has changed since, so the connection was kept.";
       deps.disconnectChannel(step.platform, step.botId);
       result.touched.channels = true;
+      return null;
+    }
+    case "avatar-set": {
+      if (!deps.agent(step.botId)) return null;
+      if (deps.avatarHash(step.botId) !== step.hash) return `${step.name} has another picture since, so it was kept.`;
+      deps.clearAvatar(step.botId);
+      result.touched.agents.add(step.botId);
+      return null;
+    }
+    case "files-added": {
+      // each file goes only while it is still what was copied; one the
+      // person has changed is theirs, and the rest still go
+      if (!deps.agent(step.botId)) return null;
+      let kept = 0;
+      for (const file of step.files) {
+        const now = deps.readWorkspaceFile(step.botId, file.path);
+        if (!now) continue;
+        if (bytesHash(now) !== file.hash) kept++;
+        else deps.removeWorkspaceFile(step.botId, file.path);
+      }
+      result.touched.agents.add(step.botId);
+      return kept ? `${kept} of its files ${kept === 1 ? "has" : "have"} changed since, so ${kept === 1 ? "it was" : "they were"} kept.` : null;
+    }
+    case "routine-added": {
+      const now = deps.routine(step.id);
+      if (!now) return null;
+      if (now.enabled) return "you switched it on since, so it stays.";
+      if (deps.removeRoutine(step.id)) result.touched.routines = true;
       return null;
     }
   }
