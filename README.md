@@ -262,6 +262,12 @@ that is not yours) is said quietly under your message, and your words go
 either way. A chip opens what it links, and on the iPhone it reads as its
 name.
 
+Select a few words in any message and a small bar over them offers
+**Quote**, which replies with exactly those words (⌘' does the same),
+and on an agent's answer **Branch with this**, which opens a branch from
+that answer with the quote waiting in its box. The agent hears the
+quoted words and whose message they came from.
+
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">
 </p>

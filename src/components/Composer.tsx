@@ -16,6 +16,7 @@ import { Plus } from "@/components/icons";
 import { Hand } from "@/components/icons";
 import { Archive } from "@/components/icons";
 import { CornerUpLeft } from "@/components/icons";
+import { Quote } from "@/components/icons";
 import { File as FileIcon } from "@/components/icons";
 import { FileImage } from "@/components/icons";
 import { Undo2 } from "@/components/icons";
@@ -183,13 +184,19 @@ function VoiceMeter({ level }: { level: number }) {
 }
 
 /** What the next message answers, inside the box with the files, since it
- * travels with the words rather than being something to read about. */
+ * travels with the words rather than being something to read about. A
+ * quote shows the words quoted, in quotation marks, whole on hover. */
 function ReplyTag({ draft, onClear }: { draft: ReplyDraft; onClear: () => void }) {
   return (
-    <span className="flex min-w-0 max-w-full animate-pop-in items-center gap-1.5 rounded-xl bg-brand-soft py-1 pl-2 pr-1 text-small">
-      <CornerUpLeft size={12} className="shrink-0 text-brand-ink" />
+    <span
+      className="flex min-w-0 max-w-full animate-pop-in items-center gap-1.5 rounded-xl bg-brand-soft py-1 pl-2 pr-1 text-small"
+      title={draft.quote}
+    >
+      {draft.quote ? <Quote size={12} className="shrink-0 text-brand-ink" /> : <CornerUpLeft size={12} className="shrink-0 text-brand-ink" />}
       <span className="shrink-0 font-medium text-brand-ink">{draft.author}</span>
-      <span className="min-w-0 truncate text-muted-foreground">{draft.excerpt}</span>
+      <span className="min-w-0 truncate text-muted-foreground">
+        {draft.quote ? t("composer.quoted", { words: draft.quote.replace(/\s+/g, " ") }) : draft.excerpt}
+      </span>
       <button
         type="button"
         onClick={onClear}
@@ -1115,6 +1122,8 @@ export function Composer({
           rows={1}
           value={text}
           aria-label={t("composer.messageTo", { name: bot.name })}
+          // where a quote taken from the conversation hands the keyboard
+          data-composer-input=""
           aria-controls={mentionShown ? mentionListId : undefined}
           aria-activedescendant={mentionShown && mentionOffered.length > 0 ? `${mentionListId}-${Math.min(mentionPick, mentionOffered.length - 1)}` : undefined}
           onChange={(e) => {

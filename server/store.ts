@@ -320,7 +320,7 @@ export interface Message {
   png?: string;
   mime?: string;
   /** set when this message answers an earlier one */
-  replyTo?: { id?: string; author: string; excerpt: string };
+  replyTo?: { id?: string; author: string; excerpt: string; quote?: string };
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   /** Sent while the lane was busy; drains into the next turn. Not part

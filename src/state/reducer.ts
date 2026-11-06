@@ -370,7 +370,8 @@ export interface Message {
   png?: string;
   mime?: string;
   /** set when this message answers an earlier one */
-  replyTo?: { id?: string; author: string; excerpt: string };
+  /** `quote` is the exact words selected in that message, when quoted. */
+  replyTo?: { id?: string; author: string; excerpt: string; quote?: string };
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   at: number;
@@ -1114,8 +1115,9 @@ export type Action =
   | { type: "toggleRoutines"; open?: boolean; tab?: AutomationsTab; focus?: AutomationsFocus }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "newTask"; botId: string }
-  /** Branch from here: a new conversation from one of the agent's answers. */
-  | { type: "branchTask"; botId: string; taskId: string; messageId: string }
+  /** Branch from here: a new conversation from one of the agent's answers,
+   * and with `quote`, words selected in it, for the branch's box as a reply. */
+  | { type: "branchTask"; botId: string; taskId: string; messageId: string; quote?: { author: string; excerpt: string; quote: string } }
   | { type: "selectTask"; botId: string; taskId: string }
   | { type: "closeTask"; botId: string; taskId: string }
   | { type: "clearTask"; botId: string; taskId: string }

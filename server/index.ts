@@ -541,7 +541,7 @@ import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
 import { redoCounts, redoPlan, takenBack, type RedoRefusal } from "./redo.ts";
-import { branchCopy, branchDivider, branchPoint, branchTitle, carriedSummary, dividerText } from "./branch.ts";
+import { branchAnswerId, branchCopy, branchDivider, branchPoint, branchTitle, carriedSummary, dividerText } from "./branch.ts";
 import { clockTime, Cooldowns, describeRest, errorWords, failureOf, outReason, REASON_WORDS, restIsNews, RETRY_WAIT_MS, RETRY_INTERVAL_MS, STAY_MS, toldOf, type Rest, type Told } from "./failover.ts";
 import { blockedWords, checkLabel, EngineAccounts, linkSetup, MAIN_ACCOUNT, mainFolder, MAX_ACCOUNTS, signInCommand, takesAccounts, type AccountPick } from "./engine-accounts.ts";
 import { agentReadiness, engineReadiness, readinessWarning, type Readiness } from "./engine-readiness.ts";
@@ -7192,9 +7192,13 @@ function roomLine(blokId: string, speakerId: string): (m: Message) => string {
     const from = m.from ? store.bot(m.from) : null;
     return from ? (from.id === speakerId ? `${from.name} (you)` : from.name) : "Agent";
   };
+  // a quote is the words picked out of the message it answers, said on
+  // the one line a room's history gives each message
   return (m) =>
     m.replyTo
-      ? `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
+      ? m.replyTo.quote
+        ? `${named(m)} (quoting ${m.replyTo.author}: "${m.replyTo.quote.replace(/\s+/g, " ")}"): ${m.text}`
+        : `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
       : `${named(m)}: ${m.text}`;
 }
 
@@ -7214,19 +7218,32 @@ interface ReplyRef {
   id?: string;
   author: string;
   excerpt: string;
+  /** The exact words the person selected in that message and quoted,
+   * when they quoted rather than replied to the whole of it. */
+  quote?: string;
 }
+
+/** The longest quote a reply carries (the app cuts a selection here too,
+ * src/lib/selectionQuote.ts): a passage, not a copy of the message. */
+const QUOTE_MAX = 2000;
 
 function replyRef(raw: any): ReplyRef | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const author = clamp(raw.author, 60);
   const excerpt = clamp(raw.excerpt, 200);
   if (!author || !excerpt) return undefined;
-  return { ...(typeof raw.id === "string" ? { id: raw.id.slice(0, 40) } : {}), author, excerpt };
+  const quote = typeof raw.quote === "string" ? raw.quote.replace(/\r\n?/g, "\n").trim().slice(0, QUOTE_MAX).trim() : "";
+  return { ...(typeof raw.id === "string" ? { id: raw.id.slice(0, 40) } : {}), author, excerpt, ...(quote ? { quote } : {}) };
 }
 
-/** One display-only reply prefix at each engine boundary; saved words stay raw. */
+/** One display-only reply prefix at each engine boundary; saved words stay
+ * raw. A quote is said as a quote, line by line, with where it came from:
+ * whose message, and how that message begins. */
 function withReply(text: string, ref?: ReplyRef): string {
-  return ref ? `(Replying to ${ref.author}'s earlier message: "${ref.excerpt}")\n\n${text}` : text;
+  if (!ref) return text;
+  if (!ref.quote) return `(Replying to ${ref.author}'s earlier message: "${ref.excerpt}")\n\n${text}`;
+  const quoted = ref.quote.split("\n").map((line) => `> ${line}`).join("\n");
+  return `(Replying to ${ref.author}'s earlier message, which begins "${ref.excerpt}", and quoting this part of it:\n${quoted}\n)\n\n${text}`;
 }
 
 /** An agent's main conversation, General when it is still there. Not by
@@ -27946,7 +27963,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const made = branchConversation(m[1], await readBody(req));
       if ("error" in made) return json(res, made.status, { error: made.error });
       broadcast({ kind: "bot", bot: clientBot(made.bot) });
-      return json(res, made.status, { threadId: made.lane.id, bot: { ...clientBot(made.bot), ...laneFor(made.lane.id) }, seq: frameSeq });
+      // and the answer it starts from, by its id there, for a reply the app
+      // puts in its box (Branch with this)
+      const answerId = branchAnswerId(store.messagesFor(made.lane.id));
+      return json(res, made.status, { threadId: made.lane.id, ...(answerId ? { messageId: answerId } : {}), bot: { ...clientBot(made.bot), ...laneFor(made.lane.id) }, seq: frameSeq });
     }
 
     // Dismissing an unresolved input removes the waiting row, but says

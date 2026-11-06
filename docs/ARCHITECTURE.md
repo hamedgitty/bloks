@@ -1070,10 +1070,40 @@ in `server/branch.ts`:
   (200), whatever the lane is doing by then; the id on a different
   answer is a 409. The id is kept on the lane, so a retry after a
   restart is still the same branch.
+- The answer names the branch's copy of the answer it started from
+  (`messageId`, `branchAnswerId`), for Branch with this.
 
 Members of a Team workspace have one private conversation per agent and
 no way to open more on their surface, so their routes do not include
 branching yet.
+
+### Quoting a selection
+
+Words selected inside one message bring up a small toolbar
+(`src/components/chat/SelectionQuote.tsx`, `src/lib/selectionQuote.ts`)
+once the selection settles: on letting go of the mouse, after a moment's
+stillness from the keyboard, and on a touch screen after the handles
+rest, where it sits below the words so the system's own menu above them
+keeps its place. It is placed over the selection, never on it, kept
+inside the window, and goes on a scroll, a click elsewhere or Escape.
+A selection across two messages, or reaching into anything marked
+`data-copy="skip"` (the action row, a reply's quoted card), shows
+nothing; pressing it keeps the selection, so the copy listener
+(`src/lib/cleanCopy.ts`) and the tap menu (`useTapToShow`, which ignores
+a tap that ends a selection) are untouched. ⌘' (Ctrl+' elsewhere)
+quotes a selection without it.
+
+**Quote** sets the composer's reply to that message with `quote`, the
+exact selected words (lines kept, at most 2,000 characters, cut at a word
+with an ellipsis), shown in the reply strip and on the sent bubble's
+reply card. The server keeps it on `replyTo` (`replyRef`, same cap) and
+the engine hears it as a quote, line by line, with whose message it came
+from and how that message begins (`withReply`); a room's history line
+says "quoting" with the words. **Branch with this**, on one of the
+agent's answers, runs Branch from here and hands the quote to the new
+conversation's view (`src/lib/replyHandoff.ts`), which puts it in the box
+as a reply to the branch's copy of the answer, not sent. Rooms offer
+Quote alone.
 
 ## Redo
 

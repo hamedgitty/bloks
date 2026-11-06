@@ -13,6 +13,7 @@
 // chat, and every member is on this Mac to open them.
 import { useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from "react";
 import { CornerUpLeft } from "@/components/icons";
+import { Quote } from "@/components/icons";
 import { File as FileIcon } from "@/components/icons";
 import { FileImage } from "@/components/icons";
 import { Mic } from "@/components/icons";
@@ -147,13 +148,16 @@ function mentionRuns(text: string, names: readonly string[]): Array<{ text: stri
   return runs;
 }
 
-/** What the next message answers, inside the box with the files. */
+/** What the next message answers, inside the box with the files: the
+ * words quoted, when it quotes, whole on hover. */
 function ReplyTag({ draft, onClear }: { draft: ReplyDraft; onClear: () => void }) {
   return (
-    <span className="flex min-w-0 max-w-full animate-pop-in items-center gap-1.5 rounded-xl bg-brand-soft py-1 pl-2 pr-1 text-small">
-      <CornerUpLeft size={12} className="shrink-0 text-brand-ink" />
+    <span className="flex min-w-0 max-w-full animate-pop-in items-center gap-1.5 rounded-xl bg-brand-soft py-1 pl-2 pr-1 text-small" title={draft.quote}>
+      {draft.quote ? <Quote size={12} className="shrink-0 text-brand-ink" /> : <CornerUpLeft size={12} className="shrink-0 text-brand-ink" />}
       <span className="shrink-0 font-medium text-brand-ink">{draft.author}</span>
-      <span className="min-w-0 truncate text-muted-foreground">{draft.excerpt}</span>
+      <span className="min-w-0 truncate text-muted-foreground">
+        {draft.quote ? t("composer.quoted", { words: draft.quote.replace(/\s+/g, " ") }) : draft.excerpt}
+      </span>
       <button
         type="button"
         onClick={onClear}
@@ -702,6 +706,8 @@ export function RoomComposer({
           rows={1}
           value={text}
           aria-label={t("roomComposer.messageTo", { name: blok.name })}
+          // where a quote taken from the room hands the keyboard
+          data-composer-input=""
           onChange={(e) => {
             setText(e.target.value);
             readMention(e.target);

@@ -39,7 +39,9 @@ import { cn } from "@/lib/cn";
 import { formatDate, formatLocale, t } from "@/lib/i18n";
 import { plainMentions } from "@/lib/mentions";
 
-export type ReplyDraft = { id?: string; author: string; excerpt: string };
+/** `quote` is the exact words selected in that message, when the person
+ * quoted part of it rather than replying to the whole. */
+export type ReplyDraft = { id?: string; author: string; excerpt: string; quote?: string };
 
 export function excerptOf(message: Message): string {
   // an @ chip reads as its label, never as the link it travels as
@@ -536,13 +538,14 @@ export function ReplyContext({
         <span className={cn("font-medium", onAccent ? "text-brand-foreground" : onDark ? "text-primary-foreground" : "text-brand-ink")}>
           {replyTo.author}
         </span>
+        {/* a quote is the words picked out of it, a few lines of them */}
         <span
           className={cn(
-            "block truncate",
+            replyTo.quote ? "line-clamp-3 whitespace-pre-line" : "block truncate",
             onAccent ? "text-brand-foreground/80" : onDark ? "text-primary-foreground/80" : "text-muted-foreground",
           )}
         >
-          {replyTo.excerpt}
+          {replyTo.quote ? t("composer.quoted", { words: replyTo.quote }) : replyTo.excerpt}
         </span>
       </span>
     </div>

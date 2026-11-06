@@ -33,7 +33,8 @@ import { GroupCallButton } from "./Voice";
 import { splitWaiting } from "@/lib/transcript";
 import { useHistoryPaging } from "@/lib/useHistoryPaging";
 import { ArtifactCard } from "./Artifacts";
-import { ForwardDialog, MessageActionBar, Reactions, ReplyContext, useTapToShow, type ReplyDraft } from "./MessageActions";
+import { ForwardDialog, MessageActionBar, Reactions, ReplyContext, excerptOf, useTapToShow, type ReplyDraft } from "./MessageActions";
+import { SelectionQuote } from "./chat/SelectionQuote";
 import { IntentNote, UserText, richText } from "./chat/Bubble";
 import { GroupMessage, PersonAvatar, SeenBy } from "./chat/Group";
 import { receiptsAt, runs, senderOf } from "@/lib/participants";
@@ -1388,6 +1389,25 @@ export function RoomView({ blok }: { blok: Blok }) {
         onSent={() => {
           if (!pinned.current) toLatest();
         }}
+      />
+      {/* words selected in one message, quoted into the reply; a room has
+          no branches, so Quote is all it offers */}
+      <SelectionQuote
+        container={scrollRef}
+        source={(id) => {
+          const m = said.find((x) => x.id === id);
+          if (!m || m.deleted || m.kind !== "text" || !m.text) return null;
+          const author =
+            m.role === "bot"
+              ? (members.find((b) => b.id === m.from)?.name ?? t("common.anAgent"))
+              : m.author
+                ? personName(m.author)
+                : m.via
+                  ? (CHANNEL_NAMES[m.via] ?? t("roomView.theLinkedChat"))
+                  : t("roomView.you");
+          return { author, excerpt: excerptOf(m), branchable: false };
+        }}
+        onQuote={setReplyTo}
       />
       {forwarding && (
         <ForwardDialog

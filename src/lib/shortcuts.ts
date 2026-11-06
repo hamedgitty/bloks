@@ -147,6 +147,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
     when: "libShortcuts.when.findStep",
   },
   {
+    id: "quoteSelection",
+    group: "conversation",
+    keys: [["Mod", "'"]],
+    does: "libShortcuts.does.quoteSelection",
+    when: "libShortcuts.when.quoteSelection",
+  },
+  {
     id: "editLast",
     group: "conversation",
     keys: [["Up"]],

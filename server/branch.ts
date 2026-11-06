@@ -141,6 +141,14 @@ export function branchDivider(source: { id: string; title: string }, messageId: 
   };
 }
 
+/** The copy of the answer a branch starts from, in the branch's own
+ * messages: the last one copied, just before its line. The app replies to
+ * it there when the branch was opened with a quote. */
+export function branchAnswerId(messages: readonly Message[]): string | undefined {
+  const line = messages.findIndex((m) => m.branch);
+  return line > 0 ? messages[line - 1]!.id : undefined;
+}
+
 /** A title that already says it is a branch, and the title under it. */
 const BRANCHED = /\s\(branch(?: \d+)?\)$/;
 

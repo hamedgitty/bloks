@@ -33,6 +33,7 @@ import { serverSeq, snapshotOrder, type SnapshotLoad } from "./snapshotOrder";
 import { sendHeld, takeWake, wakeFetch, wakeGaveUp } from "@/lib/waking";
 import { placeRow, type Listed } from "@/lib/sections";
 import { askLaneFocus, dropLaneFocus } from "@/lib/drafts";
+import { handReply } from "@/lib/replyHandoff";
 import { followMenuKeys } from "@/lib/conversationKeys";
 import { platformOf } from "@/lib/shortcuts";
 import { noteSignedOut } from "@/lib/webDoor";
@@ -509,6 +510,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             },
             () => asked && dropLaneFocus(asked),
           ).finally(() => branching.current.delete(key));
+          // Branch with this: the words selected go in the branch's box as
+          // a reply to its copy of the answer, not sent. Handed before the
+          // lane switches, and taken whenever its view is up.
+          if (action.quote) {
+            const quote = action.quote;
+            made.then(
+              (r: { threadId?: string; messageId?: string }) => {
+                if (r?.threadId) handReply(`${action.botId}:${r.threadId}`, { ...quote, ...(r.messageId ? { id: r.messageId } : {}) });
+              },
+              () => {},
+            );
+          }
           switchLane(action.botId, made);
           break;
         }

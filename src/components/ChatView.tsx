@@ -47,7 +47,9 @@ import { MeetingPanel } from "./MeetingPanel";
 import { meetingNotesHere } from "@/lib/thisComputer";
 import { useEars } from "@/lib/hearingWords";
 import { AudioLines } from "@/components/icons";
-import { ForwardDialog, type ReplyDraft } from "./MessageActions";
+import { ForwardDialog, excerptOf, type ReplyDraft } from "./MessageActions";
+import { SelectionQuote } from "./chat/SelectionQuote";
+import { listenForReply } from "@/lib/replyHandoff";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { placeLine, placeTrouble } from "@/lib/workplace";
@@ -327,6 +329,9 @@ export function ChatView({ bot }: { bot: Bot }) {
     setLanding(null);
     setLit(null);
   }
+  // except one handed to this conversation on its way here: Branch with
+  // this puts its quote in the new branch's box (src/lib/replyHandoff.ts)
+  useEffect(() => listenForReply(threadKey, setReplyTo), [threadKey]);
   // ── find within this conversation ──
   // The palette answers "which thread was that in"; this answers "where
   // in this one", which is a different question and needs the whole
@@ -1172,6 +1177,23 @@ export function ChatView({ bot }: { bot: Bot }) {
         waiting={waiting}
         editAsk={editAsk}
         onSendAgain={sendAgain}
+      />
+      {/* words selected in one message: quote them, or branch with them */}
+      <SelectionQuote
+        container={scrollRef}
+        source={(id) => {
+          const m = bot.messages.find((x) => x.id === id);
+          if (!m || m.deleted || m.kind !== "text" || !m.text) return null;
+          return {
+            author: telegramSpeaker(m)?.name ?? (m.role === "user" ? (m.author ? personName(m.author) : t("chatView.you")) : bot.name),
+            excerpt: excerptOf(m),
+            // one of the agent's own answers, as Branch from here takes
+            branchable: m.role === "bot" && !m.takeBack && (!m.agent || m.agent.dir === "reply"),
+          };
+        }}
+        onQuote={setReplyTo}
+        onBranch={(draft) => dispatch({ type: "branchTask", botId: bot.id, taskId: bot.threadId, messageId: draft.id, quote: { author: draft.author, excerpt: draft.excerpt, quote: draft.quote } })}
+        branchBlocked={branchWhy}
       />
       </div>
       {terminal.slot("right")}
