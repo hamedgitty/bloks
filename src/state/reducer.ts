@@ -1129,7 +1129,9 @@ export type Action =
   | { type: "deleteBot"; botId: string; forget?: boolean }
   | { type: "restoreBot"; botId: string }
   | { type: "duplicateBot"; botId: string }
-  | { type: "markLaneUnread"; botId: string; taskId: string }
+  /** `from`: unread from this message on, the New line going above it
+   * (server/last-read.ts); without it, the whole conversation's dot. */
+  | { type: "markLaneUnread"; botId: string; taskId: string; from?: string }
   | { type: "botPatched"; bot: Partial<Bot> & { id: string } }
   | { type: "messageAdded"; threadId: string; message: Message }
   /** `moved`: a queued message that went, so it leaves its place and

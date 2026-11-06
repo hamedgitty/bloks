@@ -572,6 +572,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (action.botId === stateRef.current.selectedId && shown && (shown.activeTaskId ?? shown.threadId) === action.taskId) {
             keptUnread.current = { botId: action.botId, laneId: action.taskId };
           }
+          // from a message: the place goes back to just before it as well,
+          // so every screen of theirs opens with the line there
+          if (action.from) {
+            api(`/api/threads/${action.taskId}/unread-from`, {
+              method: "POST",
+              body: JSON.stringify({ messageId: action.from }),
+            }).catch(showError);
+            break;
+          }
           api(`/api/bots/${action.botId}/tasks/${action.taskId}`, {
             method: "PATCH",
             body: JSON.stringify({ unread: true }),

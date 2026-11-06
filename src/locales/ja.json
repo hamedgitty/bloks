@@ -3863,6 +3863,7 @@
   "messageActions.forwardTo": "転送先…",
   "messageActions.forwardedFrom": "（{name} から転送）",
   "messageActions.justNow": "たった今",
+  "messageActions.markUnreadFromHere": "ここから未読にする",
   "messageActions.more": "その他",
   "messageActions.moreActions": "その他の操作",
   "messageActions.react": "リアクション",

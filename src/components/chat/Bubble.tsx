@@ -239,6 +239,7 @@ export function Bubble({
   onRewind,
   onBranch,
   branchBlocked,
+  onUnreadFrom,
   previewRedo,
   onRedo,
   redoTick,
@@ -272,6 +273,8 @@ export function Bubble({
   onBranch?: (messageId: string) => void;
   /** Why Branch from here is greyed right now. */
   branchBlocked?: string | null;
+  /** Somebody else's words only: unread again from this message. */
+  onUnreadFrom?: (messageId: string) => void;
   /** What redoing this message would take back, or that it is not
    * offered: asked of the server, which holds the turns and the files. */
   previewRedo?: (messageId: string) => Promise<RedoPreview>;
@@ -414,6 +417,7 @@ export function Bubble({
             onDelete={onDelete ? () => onDelete(message.id) : undefined}
             onBranch={onBranch ? () => onBranch(message.id) : undefined}
             branchBlocked={branchBlocked}
+            onUnreadFrom={onUnreadFrom ? () => onUnreadFrom(message.id) : undefined}
           />
         }
         receipts={group.receipts}
@@ -468,6 +472,7 @@ export function Bubble({
           onDelete={onDelete ? () => onDelete(message.id) : undefined}
           onBranch={onBranch ? () => onBranch(message.id) : undefined}
           branchBlocked={branchBlocked}
+          onUnreadFrom={onUnreadFrom ? () => onUnreadFrom(message.id) : undefined}
         />
       </div>
     );
@@ -601,6 +606,7 @@ export function Bubble({
               onEdit={group.mine && onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" && message.via !== "service" ? startEditing : undefined}
               onDelete={onDelete ? () => onDelete(message.id) : undefined}
               onRewind={group.mine && onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
+              onUnreadFrom={onUnreadFrom ? () => onUnreadFrom(message.id) : undefined}
             />
           ) : null
         }
@@ -691,6 +697,7 @@ export function Bubble({
         onEdit={onEdit && !unresolvedDismissal && message.via !== "goal" && message.via !== "incident" && message.via !== "service" ? startEditing : undefined}
         onDelete={onDelete ? () => onDelete(message.id) : undefined}
         onRewind={onRewind && !unresolvedDismissal ? () => onRewind(message.id) : undefined}
+        onUnreadFrom={onUnreadFrom ? () => onUnreadFrom(message.id) : undefined}
       />
     </div>
   );

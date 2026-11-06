@@ -18,6 +18,7 @@ import { History } from "@/components/icons";
 import { GitBranch } from "@/components/icons";
 import { MoreHorizontal } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
+import { BellDot } from "@/components/icons";
 import { Send } from "@/components/icons";
 import { Users } from "@/components/icons";
 import { X } from "@/components/icons";
@@ -235,6 +236,7 @@ export function MessageActionBar({
   onRewind,
   onBranch,
   branchBlocked,
+  onUnreadFrom,
   open,
   className,
   look = "pill",
@@ -256,6 +258,9 @@ export function MessageActionBar({
   onBranch?: () => void;
   /** Why it cannot branch right now, shown on the greyed item. */
   branchBlocked?: string | null;
+  /** Somebody else's words: the conversation unread again from here, the
+   * New line going above this message (server/last-read.ts). */
+  onUnreadFrom?: () => void;
   /** Shown without a hover: the message was tapped (useTapToShow). */
   open?: boolean;
   className?: string;
@@ -331,6 +336,11 @@ export function MessageActionBar({
         blocked: branchBlocked,
       }
     : null;
+  // No question first either: it changes only where the person left
+  // off, and reading on puts that back.
+  const unreadFrom: Action | null = onUnreadFrom
+    ? { label: t("messageActions.markUnreadFromHere"), icon: <BellDot size={size - 1} strokeWidth={1.8} />, run: onUnreadFrom }
+    : null;
   const remove: Action | null = onDelete
     ? {
         label: t("common.delete"),
@@ -351,7 +361,7 @@ export function MessageActionBar({
   // swaps forward for edit, since words you sent are the ones you fix.
   const shown: Action[] =
     look === "pill"
-      ? [reply, forward, ...(edit ? [edit] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(remove ? [remove] : []), copyAction]
+      ? [reply, forward, ...(edit ? [edit] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(unreadFrom ? [unreadFrom] : []), ...(remove ? [remove] : []), copyAction]
       : mine
         ? [copyAction, ...(edit ? [edit] : []), reply]
         : [copyAction, reply, forward];
@@ -360,7 +370,7 @@ export function MessageActionBar({
   const more: Action[] =
     look === "pill"
       ? []
-      : [...(mine ? [forward] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(remove ? [remove] : [])];
+      : [...(mine ? [forward] : []), ...(rewind ? [rewind] : []), ...(branch ? [branch] : []), ...(unreadFrom ? [unreadFrom] : []), ...(remove ? [remove] : [])];
 
   const react = onReact ? (
     <DropdownMenu modal={false} open={menu === "react"} onOpenChange={toggle("react")}>

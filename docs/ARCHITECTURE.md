@@ -967,6 +967,16 @@ The owner's place is kept only where the owner takes part: their own
 conversations, team conversations and rooms, never a member's private
 one, even while the owner may read those.
 
+Mark unread from here, in the menu of an agent's message or another
+person's (never the person's own words), is
+`POST /api/threads/:threadId/unread-from` with the message: the owner's
+place goes back to just before it and the lane is marked unread
+(`store.markLane`), so the dot comes back and every screen opens with the
+line above that message. On the screen it was pressed on, the line moves
+there at once and nothing more is read for them until they send or leave,
+as the sidebar's Mark as unread keeps its dot. Only the owner's own and
+team conversations take it; a member has no unread to mark.
+
 A screen that does not keep the place itself (the iPhone app, an older
 desktop app) reads a conversation to the end when it opens it or clears
 its dot (`activate`, `PATCH ... unread: false`), so every screen agrees;

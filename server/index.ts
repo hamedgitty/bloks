@@ -28007,6 +28007,27 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const said = readOn(m[1], "owner", (await readBody(req)).through, () => true);
       return json(res, said.status, said.body);
     }
+    // "Mark unread from here": the place goes back to just before a
+    // message, and the conversation is unread again, on every screen.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/unread-from$/);
+    if (m && method === "POST") {
+      if (asAgent) return json(res, 403, { error: "where somebody left off is a person's, not an agent's" });
+      const found = store.taskByThread(m[1]);
+      // the owner's own conversations and the team ones, as their list
+      // shows them; never a member's private one or a member's own agent
+      if (!found || found.task.personId || (found.bot.solo && found.bot.solo.by !== "owner")) {
+        return json(res, 404, { error: "no such conversation" });
+      }
+      const messageId = (await readBody(req)).messageId;
+      if (typeof messageId !== "string" || !/^[\w-]{1,80}$/.test(messageId)) {
+        return json(res, 400, { error: "messageId is the first message to read again" });
+      }
+      const messages = placeOrder(m[1], () => true);
+      if (!lastRead.unreadFrom(m[1], "owner", messageId, messages.map((msg) => msg.id))) return json(res, 404, { error: "no such message" });
+      store.markLane(found.bot.id, found.task.id, true);
+      broadcast({ kind: "bot", bot: clientBot(store.bot(found.bot.id)) });
+      return json(res, 200, { from: newFrom(messages, lastRead.of(m[1], "owner"), wroteIt("owner")) });
+    }
     m = path.match(/^\/api\/threads\/([\w-]+)\/reads$/);
     if (m && method === "GET") {
       if (asAgent) return json(res, 403, { error: "read positions are a person's, not an agent's" });

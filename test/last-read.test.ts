@@ -134,6 +134,7 @@ test("the member route for a place is a member's and a guest's", () => {
   assert.deepEqual(memberCan("POST", "/api/member/threads/t_1/last-read", () => null, () => false, "member"), { ok: true, action: { kind: "lastRead", threadId: "t_1" } });
   assert.equal(memberCan("POST", "/api/member/threads/t_1/last-read", () => null, () => false, null).ok, true);
   assert.equal(memberCan("GET", "/api/member/threads/t_1/last-read", () => null, () => false, "member").ok, false, "there is nothing to read back");
+  assert.equal(memberCan("POST", "/api/member/threads/t_1/unread-from", () => null, () => false, "member").ok, false, "a member has no unread to mark");
 });
 
 test("the owner's place: opened, read on, read by opening on another screen, and read by writing", async (t) => {
@@ -186,6 +187,50 @@ test("the owner's place: opened, read on, read by opening on another screen, and
   assert.ok(await lastRead());
   assert.equal((await h.fetch(`/api/bots/${chief.id}/tasks/${chief.threadId}/clear`, { method: "POST" })).status, 200);
   assert.equal(await lastRead(), null);
+});
+
+test("Mark unread from here: the place goes back to just before a message, and the conversation is unread again", async (t) => {
+  const h = await startHarness();
+  t.after(() => h.stop());
+  const provider = await fakeProvider(t);
+  provider.state.answerAtOnce = true;
+  const chief = await agentOn(h, provider.port, "Chief");
+  const post = (path: string, body: unknown) => h.fetch(path, { method: "POST", body: JSON.stringify(body) });
+  const lastRead = async (through?: string) => (await (await post(`/api/threads/${chief.threadId}/last-read`, through ? { through } : {})).json()).from;
+  for (const text of ["first", "second"]) {
+    await post(`/api/bots/${chief.id}/messages`, { text, taskId: chief.threadId });
+    await idle(h, chief);
+  }
+  const said = await waitFor(async () => {
+    const all = await messagesOf(h, chief);
+    return all.filter((m) => m.role === "bot" && m.kind === "text").length >= 3 ? all : null;
+  });
+  assert.ok(said);
+  const replies = said.filter((m: any) => m.role === "bot" && m.kind === "text");
+  const answer = replies.at(-2).id as string;
+  await lastRead(said.at(-1).id);
+  assert.equal(await lastRead(), null, "read to the end");
+
+  // from an earlier answer: the line goes above it, and the dot is back
+  const marked = await post(`/api/threads/${chief.threadId}/unread-from`, { messageId: answer });
+  assert.equal(marked.status, 200);
+  assert.deepEqual(await marked.json(), { from: answer });
+  const { bots } = await h.json("/api/bots");
+  const shown = bots.find((b: any) => b.id === chief.id);
+  assert.equal(shown.tasks[0].unread, true);
+  assert.equal(shown.unread, true, "the agent's own flag follows, for the iPhone and the Dock");
+  // every screen opens it there, until it is read again
+  assert.equal(await lastRead(), answer);
+  assert.equal(await lastRead(said.at(-1).id), answer);
+  assert.equal(await lastRead(), null);
+
+  // from the very first message: everything after is new
+  assert.deepEqual(await (await post(`/api/threads/${chief.threadId}/unread-from`, { messageId: said[0].id })).json(), { from: said[0].id });
+
+  // what is refused: no such message, no message named, no such conversation
+  assert.equal((await post(`/api/threads/${chief.threadId}/unread-from`, { messageId: "nope" })).status, 404);
+  assert.equal((await post(`/api/threads/${chief.threadId}/unread-from`, {})).status, 400);
+  assert.equal((await post("/api/threads/t_missing/unread-from", { messageId: answer })).status, 404);
 });
 
 async function workspace(t: { after(fn: () => unknown): void }) {

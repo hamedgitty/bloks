@@ -363,6 +363,13 @@ export function ChatView({ bot }: { bot: Bot }) {
     const last = said[said.length - 1];
     if (last && arrivals.has(last.id) && sentByYou(last)) lastRead.clear();
   }, [arrivals]); // eslint-disable-line react-hooks/exhaustive-deps
+  // "Mark unread from here" (MessageActions.tsx): the line moves above
+  // that message at once, and the conversation is unread again on every
+  // screen, with its place just before it
+  const markUnreadFrom = (messageId: string) => {
+    lastRead.markFrom(messageId);
+    dispatch({ type: "markLaneUnread", botId: bot.id, taskId: bot.activeTaskId ?? bot.threadId, from: messageId });
+  };
   // and words that wait for the turn running now were sent all the same
   const lastWaiting = waiting[waiting.length - 1];
   useEffect(() => {
@@ -941,6 +948,8 @@ export function ChatView({ bot }: { bot: Bot }) {
               onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
               onBranch={m.role === "bot" ? (messageId) => dispatch({ type: "branchTask", botId: bot.id, taskId: bot.threadId, messageId }) : undefined}
               branchBlocked={branchWhy}
+              // somebody else's words only: what you wrote you have read
+              onUnreadFrom={sentByYou(m) ? undefined : markUnreadFrom}
               previewRedo={(messageId) => previewRedo(bot.threadId, messageId)}
               onRedo={(messageId, next) => redoFrom(bot.threadId, messageId, next)}
               redoTick={`${bot.messages.length}:${working}`}

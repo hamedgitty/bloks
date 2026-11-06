@@ -3868,6 +3868,7 @@
   "messageActions.forwardTo": "转发至…",
   "messageActions.forwardedFrom": "（转发自 {name}）",
   "messageActions.justNow": "刚刚",
+  "messageActions.markUnreadFromHere": "从这里标记为未读",
   "messageActions.more": "更多",
   "messageActions.moreActions": "更多操作",
   "messageActions.react": "回应",

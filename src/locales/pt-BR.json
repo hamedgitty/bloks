@@ -4009,6 +4009,7 @@
   "messageActions.forwardTo": "Encaminhar para…",
   "messageActions.forwardedFrom": "(Encaminhado de {name})",
   "messageActions.justNow": "agora há pouco",
+  "messageActions.markUnreadFromHere": "Marcar como não lido a partir daqui",
   "messageActions.more": "Mais",
   "messageActions.moreActions": "Mais ações",
   "messageActions.react": "Reagir",

@@ -270,9 +270,11 @@ quoted words and whose message they came from.
 
 Come back to a conversation and a green **New** line sits above what
 arrived since you last read it, and the chat opens there when there is
-more than a screen of it. Where you left off is kept on the workspace,
-per person, so your computer, your phone and the browser agree, and in a
-Team workspace nobody else ever sees yours.
+more than a screen of it. **Mark unread from here**, in the menu of a
+reply, puts the line above it and the dot back, for later. Where you
+left off is kept on the workspace, per person, so your computer, your
+phone and the browser agree, and in a Team workspace nobody else ever
+sees yours.
 
 <p align="center">
   <img alt="An answer drawn as a card: three headline numbers, a bar chart of signups by channel, a table, and two follow-up questions to click" src="docs/screenshots/answer.png" width="560">
