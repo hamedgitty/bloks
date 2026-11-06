@@ -481,7 +481,7 @@ export function Composer({
           (b.tasks ?? [])
             // a shared room's lane is the room's, which has a place of its own
             .filter((task) => task.id !== laneId && task.noBranch !== "room")
-            .map((task) => ({ botId: b.id, laneId: task.id, agent: b.name, title: task.title, own: b.id === bot.id, lastAt: task.lastAt ?? task.createdAt })),
+            .map((task) => ({ botId: b.id, laneId: task.id, agent: b.name, title: task.title, own: b.id === bot.id, first: task.id === b.tasks?.[0]?.id, lastAt: task.lastAt ?? task.createdAt })),
         )
     : [];
   const tabOptions: TabOption[] = mentioning

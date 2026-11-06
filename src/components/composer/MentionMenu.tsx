@@ -76,8 +76,10 @@ export function MentionMenu({
                         ) : (
                           <span className="size-5 shrink-0 rounded-full bg-muted" aria-hidden />
                         )}
-                        <span className="min-w-0 flex-1 truncate text-body text-foreground">{option.title}</span>
-                        <span className="max-w-[40%] shrink-0 truncate text-caption text-muted-foreground">{option.agent}</span>
+                        {/* another agent's first conversation is that agent, so
+                            its name leads; a list of Generals told nobody which */}
+                        <span className="min-w-0 flex-1 truncate text-body text-foreground">{option.first && !option.own ? option.agent : option.title}</span>
+                        <span className="max-w-[40%] shrink-0 truncate text-caption text-muted-foreground">{option.first && !option.own ? option.title : option.agent}</span>
                       </>
                     ) : (
                       <>

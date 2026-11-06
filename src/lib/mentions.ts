@@ -29,6 +29,9 @@ export interface ConversationOption {
   title: string;
   /** This conversation's own agent, listed first. */
   own: boolean;
+  /** The agent's first conversation, which is the agent to the person
+   * more than it is a title: most are called General. */
+  first?: boolean;
   lastAt: number;
 }
 
@@ -77,8 +80,9 @@ export function cleanLabel(label: string): string {
 
 /** The label for a conversation: its title, with its agent's name in
  * front when it is another agent's, so "General" says whose. */
-export function conversationLabel(option: Pick<ConversationOption, "agent" | "title" | "own">): string {
-  return cleanLabel(option.own ? option.title : `${option.agent}: ${option.title}`);
+export function conversationLabel(option: Pick<ConversationOption, "agent" | "title" | "own" | "first">): string {
+  if (option.own) return cleanLabel(option.title);
+  return cleanLabel(option.first ? option.agent : `${option.agent}: ${option.title}`);
 }
 
 /** A label no other chip in the words has for something else: two tabs

@@ -105,7 +105,9 @@ describe("chips in the composer", () => {
   });
 
   test("another agent's conversation says whose it is", () => {
-    assert.equal(conversationLabel({ agent: "Ada", title: "General", own: false }), "Ada: General");
+    assert.equal(conversationLabel({ agent: "Ada", title: "Invoices", own: false }), "Ada: Invoices");
+    // another agent's first conversation is the agent, not one more "General"
+    assert.equal(conversationLabel({ agent: "Ada", title: "General", own: false, first: true }), "Ada");
     assert.equal(conversationLabel({ agent: "Ada", title: "General", own: true }), "General");
     assert.ok(conversationLabel({ agent: "A", title: "x".repeat(200), own: true }).length <= 80);
   });
