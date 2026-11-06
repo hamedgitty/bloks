@@ -444,7 +444,8 @@ over.
   invoice lands here, file it", "when I land, send me the hotel address".
   Each starts at most so many turns an hour, six unless you set it, and
   a finding past that waits for the next turn allowed rather than being
-  dropped.
+  dropped. Each keeps its last fifty looks, so you can see what it found,
+  what it held back and why it stayed quiet.
 - **App watchers**: an agent starts when something happens in a
   connected app. "Whenever I get an email from Acme, draft a reply",
   "when an issue is labelled bug, triage it". An agent can propose one;

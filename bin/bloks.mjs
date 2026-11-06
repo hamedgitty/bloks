@@ -493,6 +493,25 @@ const COMMANDS = {
     about: "your watchers, and when each last fired",
     run: async () => (await request("GET", "/api/watchers")).watchers,
   },
+  "watch-history": {
+    use: "watch-history <watcher-id>",
+    about:
+      "what one of your watchers' last fifty looks found, newest first: a turn started, nothing new, held back by its hourly limit (with when the next turn is allowed), " +
+      "skipped while you were busy, or failed, each with a short line saying what or why. Looks alike in a row are one entry with how many and since when",
+    run: async (args) => {
+      const [id] = positional(args);
+      if (!id) throw new Error("watch-history needs a watcher id, from `watchers`");
+      const { looks } = await request("GET", `/api/watchers/${encodeURIComponent(id)}/looks`);
+      const said = { fired: "started a turn", quiet: "nothing new", held: "held back", busy: "skipped, busy", failed: "failed" };
+      return (looks ?? []).map((look) => ({
+        at: localStamp(new Date(look.at)),
+        outcome: said[look.outcome] ?? look.outcome,
+        ...(look.detail ? { detail: look.detail } : {}),
+        ...(look.count > 1 ? { looks: look.count, since: localStamp(new Date(look.from)) } : {}),
+        ...(look.outcome === "held" && look.nextAt ? { nextTurnAllowed: localStamp(new Date(look.nextAt)) } : {}),
+      }));
+    },
+  },
   "edit-watch": {
     use: 'edit-watch <watcher-id> [--do "<what to do>"] [--folder <path> | --page <url> | --feed <url> | --check "<command>" | --arrive <place> | --leave <place>] [--name <name>] [--every <minutes>] [--mentions <text>] [--radius <metres>] [--per-hour <turns>] [--once | --once=false] [--until <date and time>] [--thread <conversation>]',
     about:

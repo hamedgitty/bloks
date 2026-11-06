@@ -11,16 +11,20 @@
 // filed.
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { Check } from "@/components/icons";
 import { Eye } from "@/components/icons";
 import { FlaskConical } from "@/components/icons";
 import { Folder } from "@/components/icons";
 import { Globe } from "@/components/icons";
+import { Hourglass } from "@/components/icons";
 import { Loader2 } from "@/components/icons";
 import { MapPin } from "@/components/icons";
+import { Pause } from "@/components/icons";
 import { Rss } from "@/components/icons";
 import { ShieldCheck } from "@/components/icons";
 import { SquareTerminal } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
+import { TriangleAlert } from "@/components/icons";
 import { Zap } from "@/components/icons";
 import { api, useStore } from "@/state/store";
 import { AgentAvatar } from "./Avatar";
@@ -467,6 +471,133 @@ function placeTerms(w: WatcherRow): string {
   return t("watchersTab.place.terms", { terms: formatList(terms, { type: "unit" }) });
 }
 
+/** One entry of a watcher's history, as GET /api/watchers/:id/looks
+ * sends it (server/watcher-looks.ts): several alike in a row are one,
+ * with how many and since when. */
+interface Look {
+  at: number;
+  outcome: "fired" | "quiet" | "held" | "busy" | "failed";
+  detail?: string;
+  nextAt?: number;
+  count?: number;
+  from?: number;
+}
+
+const LOOK: Record<Look["outcome"], { icon: typeof Folder; label: MessageKey; tone: string }> = {
+  fired: { icon: Zap, label: "watchersTab.look.fired", tone: "text-foreground" },
+  quiet: { icon: Check, label: "watchersTab.look.quiet", tone: "text-muted-foreground" },
+  held: { icon: Hourglass, label: "watchersTab.look.held", tone: "text-warning" },
+  busy: { icon: Pause, label: "watchersTab.look.busy", tone: "text-muted-foreground" },
+  failed: { icon: TriangleAlert, label: "watchersTab.look.failed", tone: "text-warning" },
+};
+/** Entries shown before Show all. */
+const LOOKS_SHOWN = 8;
+const HOUR = 60 * 60_000;
+const clock = (at: number) => formatDate(at, { timeStyle: "short" });
+const stamp = (at: number) => formatDate(at, { dateStyle: "medium", timeStyle: "short" });
+
+/** When its limit next allows a turn, as the server reckons it
+ * (nextAllowedAt in server/watchers.ts): an hour after the turn that has
+ * to drop out of the last hour to make room. */
+function nextTurnAt(w: WatcherRow, now = Date.now()): number {
+  const recent = w.fires.map((f) => f.at).filter((at) => now - at < HOUR).sort((a, b) => a - b);
+  const over = recent.length - (w.perHour ?? PER_HOUR.usual);
+  return over < 0 ? now : recent[over] + HOUR;
+}
+
+/** A finding held back by the hourly limit: why, and when it gets its
+ * turn, in the reader's own clock rather than the server's words. */
+function HeldBack({ w }: { w: WatcherRow }) {
+  const now = Date.now();
+  const at = nextTurnAt(w, now);
+  const started = w.fires.filter((f) => now - f.at < HOUR).length;
+  return (
+    <div role="status" className="flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-3 text-body text-foreground">
+      <Hourglass size={14} className="mt-0.5 shrink-0 text-warning" />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="font-medium">{t("watchersTab.heldBackTitle")}</span>
+        <span className="text-muted-foreground">
+          {at > now ? t("watchersTab.heldBackUntil", { count: started, time: clock(at) }) : t("watchersTab.heldBackSoon")}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** What its last looks found, newest first: a mark and a word for each
+ * outcome, how long ago, and the line saying what or why. */
+function Looks({ w }: { w: WatcherRow }) {
+  const { state } = useStore();
+  const [looks, setLooks] = useState<Look[] | null>(null);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api(`/api/watchers/${w.id}/looks`)
+      .then((r) => live && setLooks(r.looks ?? []))
+      .catch(() => live && setLooks((was) => was ?? []));
+    return () => {
+      live = false;
+    };
+  }, [w.id, state.ticks.watchers]);
+  useEffect(() => setAll(false), [w.id]);
+  const shown = looks && !all ? looks.slice(0, LOOKS_SHOWN) : (looks ?? []);
+  const now = Date.now();
+  return (
+    <div>
+      <div className="mb-1.5 text-small font-medium text-muted-foreground">{t("watchersTab.recentLooks")}</div>
+      {looks === null ? null : looks.length === 0 ? (
+        <div className="text-body text-muted-foreground">{t("watchersTab.noLooksYet")}</div>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-1">
+            {shown.map((look) => {
+              const mark = LOOK[look.outcome] ?? LOOK.quiet;
+              const Mark = mark.icon;
+              const label = t(mark.label);
+              const more = [
+                look.count && look.count > 1 ? t("watchersTab.look.inARow", { count: look.count }) : null,
+                look.outcome === "held" && look.nextAt && look.nextAt > now ? t("watchersTab.look.nextTurnAt", { time: clock(look.nextAt) }) : null,
+              ].filter(Boolean);
+              return (
+                <li
+                  key={`${look.at}-${look.outcome}`}
+                  className="flex items-center gap-3 text-body"
+                  title={look.from ? t("watchersTab.look.span", { from: stamp(look.from), to: stamp(look.at) }) : stamp(look.at)}
+                >
+                  <span className="w-[76px] shrink-0 whitespace-nowrap text-muted-foreground sm:w-[86px]">{ago(look.at)}</span>
+                  <span className={cn("flex shrink-0 items-center gap-1.5 text-small font-medium sm:w-[112px]", mark.tone)}>
+                    <Mark size={13} className={look.outcome === "fired" ? "text-brand-ink" : undefined} aria-hidden />
+                    {/* the word beside the mark from a tablet up; on a phone
+                        the line below says it where there is no other */}
+                    <span className="sr-only sm:not-sr-only">{label}</span>
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {look.detail ? (
+                      <span className="text-foreground">{look.detail}</span>
+                    ) : (
+                      <span className="text-muted-foreground sm:hidden">{label}</span>
+                    )}
+                    {more.length > 0 && <span className={cn("ml-2 text-muted-foreground", !look.detail && "sm:ml-0")}>{formatList(more as string[], { type: "unit" })}</span>}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {looks.length > LOOKS_SHOWN && (
+            <button
+              type="button"
+              onClick={() => setAll((v) => !v)}
+              className="mt-1.5 text-small text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {all ? t("watchersTab.showFewer") : t("watchersTab.showAllLooks", { count: looks.length })}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
   const { state, dispatch } = useStore();
   const bot = state.bots.find((b) => b.id === w.botId);
@@ -628,24 +759,14 @@ function Detail({ w, onChanged }: { w: WatcherRow; onChanged: () => void }) {
           </div>
         </div>
       )}
-      {w.lastError && !w.failing && <div className="rounded-lg bg-warning/10 px-3 py-2 text-body text-warning">{w.lastError}</div>}
-      <div>
-        <div className="mb-1.5 text-small font-medium text-muted-foreground">{t("watchersTab.triggered")}</div>
-        {w.fires.length === 0 ? (
-          <div className="text-body text-muted-foreground">
-            {t("watchersTab.notYet")}
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {w.fires.map((f) => (
-              <li key={f.at} className="flex gap-3 text-body">
-                <span className="w-[86px] shrink-0 text-muted-foreground">{ago(f.at)}</span>
-                <span className="min-w-0 truncate text-foreground">{f.summary}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* a finding waiting for the hourly limit is said in the reader's
+          words and clock, in place of the server's last error about it */}
+      {w.held !== undefined && w.enabled && !w.failing ? (
+        <HeldBack w={w} />
+      ) : (
+        w.lastError && !w.failing && <div className="rounded-lg bg-warning/10 px-3 py-2 text-body text-warning">{w.lastError}</div>
+      )}
+      <Looks w={w} />
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="secondary" size="sm" disabled={checking} onClick={check}>
           {checking ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />} {t("watchersTab.checkNow")}
@@ -739,11 +860,13 @@ export function WatchersTab() {
                               ? t("watchersTab.stoppedForFailing")
                               : waiting
                                 ? t("watchersTab.needsYourApproval")
-                                : w.lastError
-                                  ? t("watchersTab.needsALook")
-                                  : w.fires[0]
-                                    ? t("watchersTab.triggeredAgo", { when: ago(w.fires[0].at) })
-                                    : t("watchersTab.checkedAgo", { when: ago(w.lastCheck) })))}
+                                : w.held !== undefined
+                                  ? t("watchersTab.look.held")
+                                  : w.lastError
+                                    ? t("watchersTab.needsALook")
+                                    : w.fires[0]
+                                      ? t("watchersTab.triggeredAgo", { when: ago(w.fires[0].at) })
+                                      : t("watchersTab.checkedAgo", { when: ago(w.lastCheck) })))}
                   </span>
                 </span>
               </button>

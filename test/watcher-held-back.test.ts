@@ -245,6 +245,25 @@ test("a look held back by the hourly cap keeps the finding as news, for every ki
   }
   assert.match(heard(), /team plan is \$30/);
   assert.match(heard(), /invoice-0043\.pdf/);
+
+  // ── and the page's history says all of it, across both restarts
+  const { looks } = await h.json(`/api/watchers/${ids.page}/looks`);
+  assert.deepEqual(
+    looks.slice(0, 5).map((l: any) => [l.outcome, l.detail, l.count ?? 1]),
+    [
+      ["fired", "+ The team plan is $30 a month.", 1],
+      ["busy", "Keeper was working.", 1],
+      ["fired", "+ The basic plan is now $8 a month.", 1],
+      ["held", "+ The basic plan is now $8 a month.", 2],
+      ["quiet", "Took its first look as the baseline.", 1],
+    ],
+  );
+  const held = looks[3];
+  assert.ok(held.nextAt > held.at && held.nextAt - held.at <= 60 * MIN, "a held-back look did not say when the next turn is allowed");
+  assert.ok(held.from < held.at);
+  // the turns it started before looks were kept come after them
+  const earlier = (await h.json(`/api/watchers/${ids.check}/looks`)).looks.filter((l: any) => /Earlier finding/.test(l.detail ?? ""));
+  assert.equal(earlier.length, 6);
 });
 
 test("when a held finding gets its turn, in words that need no time zone", () => {

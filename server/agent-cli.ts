@@ -216,6 +216,7 @@ export const RULES: Rule[] = [
   { method: "PATCH", path: "/api/routines/:id", why: "change a routine" },
   { method: "DELETE", path: "/api/routines/:id", why: "drop a routine" },
   { method: "GET", path: "/api/watchers", why: "see its own watchers" },
+  { method: "GET", path: "/api/watchers/:id/looks", why: "see what one of its own watchers' last looks found, and why one did not act" },
   // An app watcher an agent files is only ever a proposal: the route puts
   // a card in front of the person and nothing listens until they say yes
   // (POST /api/watchers/:id/confirm is not on this list, and the route

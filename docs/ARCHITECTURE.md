@@ -2974,6 +2974,26 @@ A place crossing held that way counts as fresh from when it was first
 held. A limit raised past what the hour started gives a held finding its
 turn at once.
 
+Each watcher keeps its last fifty looks (`server/watcher-looks.ts`):
+when, the outcome (`fired`, `quiet`, `held` with `nextAt`, `busy` for a
+look skipped while the agent worked or was held, or because other checks
+were running, and `failed`) and one line of at most 200 characters (the
+first line of the finding, the redacted error, or why it skipped). Looks
+that run alike in a row (quiet, busy, held, with the same line) are one
+entry with a `count` and `from`, so a long turn's skipped looks cannot
+push a held one out. Holds the watcher already shows as a standing state
+(its engine paused, waiting for approval, past the chain limit) are not
+looks, and an app watcher's history stays its `app.runs`. Because
+watchers.json is written whole at every look, the looks go to a file of
+their own, `watcher-looks.jsonl` (0600), one appended line per look,
+rewritten with only what is kept once it holds four times the most fifty
+watchers keep, and at once when a watcher is removed, so nothing it found
+stays on disk after it. `GET /api/watchers/:id/looks` answers them newest
+first, followed by turns in `fires` older than the oldest look, so a
+watcher from before this, or one that rarely acts, still shows when it
+did; an agent may read only its own (`bloks watch-history`). They are
+not in the list, which every look redraws.
+
 A workspace keeps fifty watchers (`MAX_WATCHERS`), finished ones
 included, so the list doubles as a history of what ran. At the limit,
 every way of filing one (the person, an agent, an admin's app watcher)

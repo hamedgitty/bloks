@@ -580,6 +580,7 @@ import {
   MAX_FIRES,
   mayFire,
   newLines,
+  nextAllowedAt,
   orphanWatcherLanes,
   pageText,
   parseFeed,
@@ -592,6 +593,7 @@ import {
   type AppFields,
   type Watcher,
 } from "./watchers.ts";
+import { lookHistory, LookLog, type Look } from "./watcher-looks.ts";
 import {
   appEventTurn,
   appSentence,
@@ -10152,6 +10154,9 @@ function collectMeetingItems(laneId: string, ok: boolean) {
 
 const WATCHERS_FILE = join(DATA_DIR, "watchers.json");
 let watchers: Watcher[] = readSaved(WATCHERS_FILE, [], Array.isArray);
+/** What each watcher's last looks found, in a file of their own. */
+const watcherLooks = new LookLog(join(DATA_DIR, "watcher-looks.jsonl"));
+watcherLooks.keepOnly(watchers.map((w) => w.id));
 function saveWatchers() {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
@@ -10377,15 +10382,25 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
   const run = watcherRuns.get(w);
   const current = () => watchers.includes(w) && watcherRuns.get(w) === run;
   const superseded = { fired: false, note: "This look belongs to an earlier watcher lifetime or target." };
+  // What this look comes to in the watcher's history (server/watcher-looks.ts),
+  // written as it ends. A hold that is a standing state the watcher already
+  // shows (paused, waiting for approval, past the chain limit) is not one.
+  let look: Look | undefined;
   try {
     const bot = store.bot(w.botId);
     if (!bot) throw new Error("its agent is gone");
     const lane = w.laneId ? bot.tasks.find((t) => t.id === w.laneId) : undefined;
-    if (lane?.busy || (w.kind === "folder" && bot.busy)) return { fired: false, note: `${bot.name} is working; it will look again shortly` };
+    if (lane?.busy || (w.kind === "folder" && bot.busy)) {
+      look = { at: Date.now(), outcome: "busy", detail: `${bot.name} was working.` };
+      return { fired: false, note: `${bot.name} is working; it will look again shortly` };
+    }
     // A person holding the agent would have its turn refused, so a look
     // now would only use the change up. The first look after the release
     // finds it instead (GitHub 135).
-    if (wheel.heldBy(bot.id)) return { fired: false, note: `${bot.name} is being held right now; it will look again once released` };
+    if (wheel.heldBy(bot.id)) {
+      look = { at: Date.now(), outcome: "busy", detail: `${bot.name} was being held.` };
+      return { fired: false, note: `${bot.name} is being held right now; it will look again once released` };
+    }
     // Nor is there a look while its engine is paused: the turn it calls
     // for would only wait, and the change is still there for the first
     // look after the pause ends. Said once in its conversation.
@@ -10424,8 +10439,12 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     // What this look saw, kept here until the turn it calls for has
     // started: a turn refused now leaves the change to be found again.
     const next: { seen?: string; seenItems?: string[] } = {};
+    const first = w.seen === undefined && w.seenItems === undefined;
     if (w.kind === "check") {
-      if (runningChecks >= MAX_CHECKS_AT_ONCE) return { fired: false, note: "other checks are running; it will look again shortly" };
+      if (runningChecks >= MAX_CHECKS_AT_ONCE) {
+        look = { at: Date.now(), outcome: "busy", detail: "Other checks were running." };
+        return { fired: false, note: "other checks are running; it will look again shortly" };
+      }
       runningChecks++;
       let result: Awaited<ReturnType<typeof runCheck>>;
       try {
@@ -10494,6 +10513,9 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         // queued work and asynchronous startup may outlive the deadline.
         if (watcherFinished(w)) return { fired: false, note: "Its time ran out, so it stopped watching." };
         await fireWatcher(w, bot, what);
+        // at the turn's own time, so the turns kept from before looks were
+        // are told apart from it (lookHistory)
+        look = { at: w.fires[0].at, outcome: "fired", detail: w.fires[0].summary };
         if (!current()) return { fired: true, note: "Dispatched before this watcher was reopened or changed." };
         fired = true;
         ownEnded = w.kind === "folder" && w.mode !== "rehearse" && !ownTurns.has(w.id);
@@ -10505,8 +10527,11 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
         // which the minute tick takes as soon as it can (GitHub 496).
         w.held ??= Date.now();
         w.lastError = heldBackWords(w, Date.now());
+        look = { at: Date.now(), outcome: "held", detail: what, nextAt: nextAllowedAt(w, Date.now()) };
         return { fired: false, note: w.lastError };
       }
+    } else {
+      look = { at: Date.now(), outcome: "quiet", ...(first && ("seen" in next || next.seenItems) ? { detail: "Took its first look as the baseline." } : {}) };
     }
     // reached only if any turn this look called for has started, or it
     // called for none
@@ -10520,9 +10545,11 @@ async function checkWatcher(id: string, manual = false): Promise<{ fired: boolea
     w.lastError = redactSecrets((e as Error).message).slice(0, 200);
     w.lastCheck = Date.now();
     watcherFailed(w, w.lastError);
+    look = { at: w.lastCheck, outcome: "failed", detail: w.lastError };
     return { fired: false, note: w.lastError };
   } finally {
     checking.delete(id);
+    if (look && watchers.includes(w)) watcherLooks.record(w.id, look);
     saveWatchers();
     broadcast({ kind: "watchers" });
   }
@@ -10710,7 +10737,10 @@ function makeWatcherRoom(dry = false): boolean {
   const kept = roomForWatcher(watchers, watcherAtWork);
   if (!kept) return false;
   if (dry || kept.length === watchers.length) return true;
-  for (const gone of watchers.filter((w) => !kept.includes(w))) disarmWatcher(gone.id);
+  for (const gone of watchers.filter((w) => !kept.includes(w))) {
+    disarmWatcher(gone.id);
+    watcherLooks.forget(gone.id);
+  }
   watchers = kept;
   return true;
 }
@@ -11324,6 +11354,7 @@ async function memberAppWatchers(
       }
     }
     watchers = watchers.filter((x) => x.id !== w.id);
+    watcherLooks.forget(w.id);
     saveWatchers();
     syncAppDelivery();
     broadcast({ kind: "watchers" });
@@ -31802,6 +31833,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (method === "DELETE") {
         disarmWatcher(w.id);
         watchers = watchers.filter((x) => x.id !== w.id);
+        watcherLooks.forget(w.id);
         saveWatchers();
         // Its own lane goes with it, or old ones fill the agent's limit
         // (GitHub 166). Through the close an agent asks for, so a lane
@@ -31911,6 +31943,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       return json(res, 200, await checkWatcher(w.id, true));
     }
+    // What a watcher's last looks found, newest first: asked for apart from
+    // the list, which every look redraws, so fifty watchers' fifty looks
+    // are not sent each time one of them looks. An app watcher's history
+    // is the events it heard, already in the list (app.runs).
+    m = path.match(/^\/api\/watchers\/([\w-]+)\/looks$/);
+    if (m && method === "GET") {
+      const w = watchers.find((x) => x.id === m![1]);
+      if (!w || (asAgent && w.botId !== asAgent.botId)) return json(res, 404, { error: "no such watcher" });
+      return json(res, 200, { looks: w.kind === "app" ? [] : lookHistory(watcherLooks.list(w.id), w.fires) });
+    }
     // An agent's proposed app watcher, answered: yes makes its trigger at
     // Composio and it listens from then; no removes it. The person's
     // alone: no rule lets an agent's credential here (server/agent-cli.ts).
@@ -31924,6 +31966,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (m[2] === "decline") {
         settleAppCard(proposal, "Not now");
         watchers = watchers.filter((x) => x.id !== w.id);
+        watcherLooks.forget(w.id);
         saveWatchers();
         broadcast({ kind: "watchers" });
         return json(res, 200, { ok: true });
