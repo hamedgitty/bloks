@@ -3019,7 +3019,14 @@ from the turn's own credential (`seq`, the lane's turn count when it was
 minted), only for a check-in or a turn nobody waits on (`unaskedTurn`),
 and only while nothing of the turn has reached the person: no text
 previewed or saved, no card, file or open question, none of their words
-in it or on their way in (`SteerHolds`). A refusal is a 409 with a
+in it or on their way in (`SteerHolds`). A question an earlier turn left
+open is not this turn's (`heldByRequest`, by the lane turn it was asked
+in): it stays open, on its card and waiting, and a turn finished quietly
+past it gives back the conversation's dot it took on starting, unless the
+person has opened it since. An approval, a question asked since the work
+began, one nobody knows the turn of, or any question in a retry, the
+backup or a pickup (whose work may be older than the conversation's
+latest turn) still refuses. A refusal is a 409 with a
 reason, and tells the agent to answer substantively. Once accepted
 (`QuietGate` in `server/quiet-finish.ts`), what the turn says is saved
 `quiet` and not previewed; a card, a file, a team proposal or a question

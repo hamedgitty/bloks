@@ -49,7 +49,7 @@ import { ENGINE_PACKAGES, engineUpdates } from "./engine-updates.ts";
 import { FEATURES } from "./features.ts";
 import { ReplyNotifications, settledFrame, settledReply } from "./reply-notifications.ts";
 import { TextPreview } from "./text-preview.ts";
-import { belongs, QUIET_ACCEPTED, quietKind, quietRefused, SteerHolds, writer, type QuietGate, type QuietRefusal } from "./quiet-finish.ts";
+import { belongs, heldByRequest, QUIET_ACCEPTED, quietKind, quietRefused, SteerHolds, writer, type OpenAsk, type QuietGate, type QuietRefusal } from "./quiet-finish.ts";
 import { LaneTurns, buildTrace, emptyTrace, readTurn, turnAt, turnCovers, type LiveTraces, type Trace } from "./trace.ts";
 import { AnswerReady, answerDue, answersAllowed, attentionFrom, Viewing, viewingReport, type Attention } from "./answer-ready.ts";
 import { Presence, presenceReport, quietWake } from "./presence.ts";
@@ -3470,6 +3470,9 @@ function fitTranscripts(lists: Message[][], tail = RELAY_TAIL): Array<{ messages
  * one it judged (judgeGoal), so a judge that took a minute never starts a
  * turn behind the person's back, or on a reply no longer the latest. */
 const laneTurns = new Map<string, number>();
+/** The lane turn each lane's current work began in: the turn itself, or
+ * for a retry, the backup or a pickup, the one it goes on from. */
+const workSince = new Map<string, number>();
 /** Lanes whose goal is being judged right now, for the chip to say so. */
 const goalJudging = new Set<string>();
 /** The active choice survives client reloads, never transcript/history storage. */
@@ -5184,6 +5187,7 @@ function forgetAsk(requestId: string) {
   askMessageByRequest.delete(requestId);
   askCardThread.delete(requestId);
   askThreadByRequest.delete(requestId);
+  askedIn.delete(requestId);
   askEngineByRequest.delete(requestId);
   asyncAskOrigin.delete(requestId);
   withdrawing.delete(requestId);
@@ -6023,6 +6027,8 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         }
         // answers must reach the lane that asked, not the active one
         askThreadByRequest.set(event.requestId, event.threadId);
+        // and in which of its turns: asked again, it is the later one's
+        askedIn.set(event.requestId, { seq: laneTurns.get(event.threadId) ?? 0, question: asking });
         // and are read against the questions it asked (/respond)
         if (questions) askQuestions.set(event.requestId, questions);
         if (event.providerInstanceId) askEngineByRequest.set(event.requestId, event.providerInstanceId);
@@ -6524,7 +6530,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       const quietGate = quietGates.get(event.threadId)?.turnId === event.turnId ? quietGates.get(event.threadId) : undefined;
       const quietAction = quietGate?.state === "accepted" && !inRoom && event.ok !== false && !handedOver &&
         event.stopReason !== "interrupted" && !pickingUp && !refolding &&
-        !turnsForYou.has(event.threadId) && ![...askThreadByRequest.values()].includes(event.threadId);
+        !turnsForYou.has(event.threadId) && !requestHolds(event.threadId, quietGate.since);
       if (quietGate && !quietAction) cancelQuiet(event.threadId, quietGate);
       if (quietGate) quietGates.delete(event.threadId);
       // Restored words take the same notification path as ordinary ones,
@@ -6594,7 +6600,9 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       spokeInTurn.delete(event.threadId);
       if (origin?.turnId === event.turnId) codexOrigins.delete(event.threadId);
       if (quietAgentTurn || quietRun || quietEnd) {
-        // nothing new here
+        // nothing new here, and an earlier question still waiting keeps
+        // the dot its reply had, unless the person has opened it since
+        if (quietAction && quietGate.passed && dotTaken.get(event.threadId) === quietGate.since) store.markLane(bot.id, event.threadId, true);
       } else if (bot.tasks.some((t) => t.id === event.threadId)) store.markLane(bot.id, event.threadId, true);
       else store.patchBot(bot.id, { unread: true });
       broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
@@ -7246,6 +7254,12 @@ function callConflict(token?: string): { device: string; targetId: string } | nu
 
 /** Which lane raised a live ask, so the answer lands in the right one. */
 const askThreadByRequest = new Map<string, string>();
+/** And in which of its turns, and whether it only asks (requestHolds). */
+const askedIn = new Map<string, OpenAsk>();
+/** The lane turn whose work took an unread lane's dot as it started, until
+ * the person opens the lane: a turn finished quietly past an earlier
+ * question gives it back (the reply's dot is that question's attention). */
+const dotTaken = new Map<string, number>();
 /**
  * When each running turn began.
  *
@@ -8824,6 +8838,11 @@ async function startClaimedTurn(
   if (opts.serviceMessages?.length || !(opts.fallback || opts.retry || opts.carriedOn) || !answerAsked.has(task.id)) answerAsked.set(task.id, askedForAnswer);
   // a goal judged before this turn began is not judging this one
   laneTurns.set(task.id, (laneTurns.get(task.id) ?? 0) + 1);
+  // A retry, the backup or a pickup goes on with work that need not be
+  // the lane's latest (an incident is tried again after other turns), so
+  // when its work began is not known, and every open request holds it.
+  if (goesOn) workSince.delete(task.id);
+  else workSince.set(task.id, laneTurns.get(task.id)!);
   // the busy flag holds the lane from here
   if (claimedLanes.get(task.id) === claim) claimedLanes.delete(task.id);
   codexDispatches.delete(task.id);
@@ -8852,6 +8871,10 @@ async function startClaimedTurn(
   // hour would otherwise read the lane for the person each time, and a
   // reply they have not seen yet would lose its dot to a run that, being
   // quiet, puts none back.
+  // The dot new work takes is given back only if it finishes quietly past
+  // an earlier question, which a retry, the backup or a pickup never does.
+  if (!goesOn && !checkIn && store.taskByThread(task.id)?.task.unread) dotTaken.set(task.id, laneTurns.get(task.id)!);
+  else dotTaken.delete(task.id);
   if (!checkIn) store.markLane(bot.id, task.id, false);
   artifactTurns.begin(task.id, bot.id);
   turnTokens.delete(task.id);
@@ -13907,6 +13930,7 @@ function readOn(threadId: string, personId: string, through: unknown, visible: (
  * opening it still finds the line where it was.
  */
 function readByOpening(threadId: string, body: { keepsPlace?: unknown } | null | undefined) {
+  dotTaken.delete(threadId);
   if (body?.keepsPlace === true) return;
   lastRead.readToEnd(threadId, "owner", placeOrder(threadId, () => true).map((m) => m.id));
 }
@@ -16377,6 +16401,15 @@ function foldFinished(laneId: string, gate: QuietGate): boolean {
   return true;
 }
 
+/** Whether a request still open in the lane keeps its turn, whose work
+ * began at lane turn `since`, from finishing quietly (heldByRequest). */
+function requestHolds(laneId: string, since: number | undefined): boolean {
+  for (const [requestId, lane] of askThreadByRequest) {
+    if (lane === laneId && heldByRequest(askedIn.get(requestId), since)) return true;
+  }
+  return false;
+}
+
 /** `POST /api/bots/:me/tasks/:id/quiet`: checked and taken in one step,
  * with nothing awaited, so a steer or an event cannot fall in between. */
 function acceptQuiet(credential: { seq?: number }, laneId: string): { status: number; body: Record<string, unknown> } {
@@ -16395,7 +16428,10 @@ function acceptQuiet(credential: { seq?: number }, laneId: string): { status: nu
   if (turnsForYou.has(laneId)) return refuse("person_in_turn");
   const checkIn = checkInTurns.has(laneId);
   if (!checkIn && !unaskedTurn(laneId)) return refuse("not_eligible");
-  if ([...askThreadByRequest.values()].includes(laneId)) return refuse("open_request");
+  const since = workSince.get(laneId);
+  if (requestHolds(laneId, since)) return refuse("open_request");
+  // what is still open here is an earlier turn's question
+  const passed = [...askThreadByRequest.values()].includes(laneId);
   if (shownInTurn.get(laneId) === seq || spokeInTurn.has(laneId)) return refuse("already_shown");
   // the turn so far: after the words it started on
   const said = store.messagesFor(laneId).filter((m) => !m.queued && !m.unsent);
@@ -16410,7 +16446,7 @@ function acceptQuiet(credential: { seq?: number }, laneId: string): { status: nu
   const quietAsk = (prompt?.via === "routine" && prompt.routine?.quiet) || (prompt?.via === "incident" && prompt.incident?.kind === "note");
   if (checkIn && (!prompt || prompt.deleted || !quietAsk)) return refuse("not_eligible");
   quietGates.set(laneId, {
-    seq, turnId, state: "accepted",
+    seq, turnId, since, passed, state: "accepted",
     ...(checkIn && prompt ? { promptId: prompt.id } : {}),
     checked: checkIn ? turn.map((m) => m.id) : [],
     rows: [], hidden: [],
