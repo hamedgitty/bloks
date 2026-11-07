@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # To read CI's verdict on the tagged commit (scripts/wait-for-ci.sh).
+  checks: read
 
 jobs:
   macos:
@@ -81,10 +83,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # The same gate CI runs. A release that skips it is how a broken
-      # build gets a version number.
+      # build gets a version number. CI has already run the suite on this
+      # exact commit, so this waits for that verdict instead of running it
+      # again here, where it took 80 to 90 minutes and failed on timing
+      # alone more than once.
       - run: pnpm typecheck
 
-      - run: pnpm test
+      - name: Wait for CI to pass on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-ci.sh
 
       # One draft, made here, and nothing else is allowed to make one.
       #

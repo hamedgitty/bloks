@@ -25,13 +25,16 @@ test("a write belongs to the finished turn only by its runtime turn or its turn'
 
 test("each request or event is its own writer, and none outlives its callback", async () => {
   assert.equal(writer.getStore(), undefined);
-  const seen: unknown[] = [];
+  // Each callback says what it saw under its own name. The timers only
+  // make them interleave; which one wakes first is the runner's business,
+  // and a busy one has woken them out of order.
+  const seen = new Map<string, unknown>();
   await Promise.all([
-    writer.run({ lane: "a", seq: 1 }, async () => { await new Promise((r) => setTimeout(r, 20)); seen.push(writer.getStore()); }),
-    writer.run({ lane: "b", turnId: "t" }, async () => { await new Promise((r) => setTimeout(r, 5)); seen.push(writer.getStore()); }),
-    writer.run(undefined, async () => { await new Promise((r) => setTimeout(r, 10)); seen.push(writer.getStore()); }),
+    writer.run({ lane: "a", seq: 1 }, async () => { await new Promise((r) => setTimeout(r, 20)); seen.set("a", writer.getStore()); }),
+    writer.run({ lane: "b", turnId: "t" }, async () => { await new Promise((r) => setTimeout(r, 5)); seen.set("b", writer.getStore()); }),
+    writer.run(undefined, async () => { await new Promise((r) => setTimeout(r, 10)); seen.set("none", writer.getStore()); }),
   ]);
-  assert.deepEqual(seen, [{ lane: "b", turnId: "t" }, undefined, { lane: "a", seq: 1 }]);
+  assert.deepEqual(Object.fromEntries(seen), { a: { lane: "a", seq: 1 }, b: { lane: "b", turnId: "t" }, none: undefined });
   writer.run({ lane: "a", seq: 1 }, () => writer.run({ lane: "a", turnId: "t" }, () => assert.deepEqual(writer.getStore(), { lane: "a", turnId: "t" })));
   assert.equal(writer.getStore(), undefined, "nothing is left bound after the callbacks return");
 });

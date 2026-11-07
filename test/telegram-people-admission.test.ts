@@ -67,6 +67,9 @@ test("upgrade sends interrupted or unconfirmed by transport stay uncertain and a
   });
   await until(async () => (await f.status()).upgradeNotices.every((n: any) => n.state === "uncertain"), "dispatch was not marked uncertain");
   assert.equal(f.sent(SAM).filter((m) => m.body.text === TELEGRAM_PEOPLE_UPGRADE).length, 0);
+  // The notice can be marked uncertain before the fake server has logged
+  // the send that broke, so wait for the log rather than read it once.
+  await until(() => f.sent(LEE).some((m) => m.body.text === TELEGRAM_PEOPLE_UPGRADE), "the pending notice was never tried");
   assert.equal(f.sent(LEE).filter((m) => m.body.text === TELEGRAM_PEOPLE_UPGRADE).length, 1);
   await f.reboot(); await f.flushed();
   assert.equal(f.sent(LEE).filter((m) => m.body.text === TELEGRAM_PEOPLE_UPGRADE).length, 1);

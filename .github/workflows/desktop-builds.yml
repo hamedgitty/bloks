@@ -24,6 +24,8 @@ on:
 
 permissions:
   contents: write
+  # To read CI's verdict on the tagged commit (scripts/wait-for-ci.sh).
+  checks: read
 
 jobs:
   linux:
@@ -42,8 +44,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # The suite on Linux: origin checks, limits, the whole request path.
-      - run: pnpm test
+      # CI has run the suite on Linux for this exact commit. Wait for its
+      # verdict rather than run it a second time.
+      - name: Wait for CI to pass on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-ci.sh
 
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --linux --publish never

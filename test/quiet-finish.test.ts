@@ -260,6 +260,10 @@ test("queued person input does not cancel a quiet check-in and gets its own answ
   f.text(next, "The example calendar is clear.");
   f.end(next, "The example calendar is clear.");
   assert.ok(await f.idle(b));
+  // On a loaded runner the settled frame and the phone reply can trail the
+  // idle lane by more than one pause, so wait for each, then pause again so
+  // a second one would have had time to show up.
+  assert.ok(await waitFor(() => (settledIn(frames, b.threadId).length > 0 && phone.replies().length > 0 ? true : null)));
   await pause();
   assert.equal(settledIn(frames, b.threadId).length, 1);
   assert.equal(phone.replies().length, 1);
