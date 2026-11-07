@@ -24,7 +24,7 @@ import { asyncQuestion, CodexDriver } from "../server/drivers/codex.ts";
 import { JoinClient } from "../server/join-client.ts";
 import { startHarness } from "./helpers/server.ts";
 import { teamPlan } from "./helpers/team-plan.ts";
-import { waitFor } from "./helpers/turns.ts";
+import { idle, waitFor } from "./helpers/turns.ts";
 
 async function setup(t: TestContext, fullAuto = false) {
   const peers: ReturnType<typeof makePeer>[] = [];
@@ -300,7 +300,11 @@ test("only an async item with something to ask is read as a question", () => {
  * it ran, which is whose authority it had; WHICH-SANDBOX says only that.
  * BLOCKED asks a question its turn waits on and an approval, and waits.
  * CLI[tag|args] runs the agent's command line and says what it answered,
- * as CLI-tag. Each turn notes its words and credential in turns.jsonl. */
+ * as CLI-tag; with ASK-FIRST it asks a question of its own a second
+ * before, and with SLOW it says so a second and a half after. FAIL<n>-word
+ * fails its first n tries, the first asking a question without waiting
+ * before it fails, and the try after them goes on as the rest of its words
+ * say. Each turn notes its words and credential in turns.jsonl. */
 function codexHome(extra: Record<string, unknown> = {}): string {
   const home = mkdtempSync(join(tmpdir(), "bloks-async-questions-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
@@ -310,7 +314,7 @@ function codexHome(extra: Record<string, unknown> = {}): string {
     `#!${process.execPath}
 import { createInterface } from "node:readline";
 import { execFile } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 if (process.argv[2] === "--version") { console.log("codex-cli 0.164.0"); process.exit(0); }
 if (process.argv[2] === "login") { console.log("Logged in using ChatGPT"); process.exit(0); }
 process.stdin.on("end", () => process.exit(0));
@@ -351,7 +355,18 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     out({ id: "blocking", method: "item/tool/requestUserInput", params: { threadId: thread, turnId: turn, questions: [{ id: "date", question: "When should it ship?", options: [{ label: "Friday" }] }] } });
     return out({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: thread, turnId: turn, itemId: "c1", command: "rm -rf build" } });
   }
+  const failing = text.match(/FAIL(\\d)-\\w+/);
+  const tries = failing ? readFileSync(${JSON.stringify(join(home, "turns.jsonl"))}, "utf8").split("\\n").filter((l) => l.includes(failing[0])).length : 0;
+  if (failing && tries <= Number(failing[1])) {
+    if (tries === 1) ask("q-" + failing[0], [{ title: "Which ledger should I use?", options: ["Main", "Archive"] }]);
+    return out({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "failed", error: { message: "the example engine is having a moment" } } } });
+  }
   const cli = text.match(/CLI\\[(\\w+)\\|([^\\]]+)\\]/);
+  if (cli && text.includes("ASK-FIRST")) {
+    ask("q-first", [{ title: "Which day works?", options: ["Monday", "Tuesday"] }]);
+    return setTimeout(() => execFile(process.execPath, [process.env.BLOKS_CLI, ...cli[2].trim().split(/\\s+/)], (_error, stdout) => finish("CLI-" + cli[1] + " " + stdout.trim())), 1000);
+  }
+  if (cli && text.includes("SLOW")) return execFile(process.execPath, [process.env.BLOKS_CLI, ...cli[2].trim().split(/\\s+/)], (_error, stdout) => setTimeout(() => finish("CLI-" + cli[1] + " " + stdout.trim()), 1500));
   if (cli) return execFile(process.execPath, [process.env.BLOKS_CLI, ...cli[2].trim().split(/\\s+/)], (_error, stdout) => finish("CLI-" + cli[1] + " " + stdout.trim()));
   if (text.includes("ASYNC-ENDS")) { ask("q-name", [{ title: "What should the release be called?" }]); return finish("Carried on without it."); }
   if (text.includes("Replying to")) return finish("GOT " + JSON.stringify({ text, sandbox }));
@@ -364,9 +379,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   return home;
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, env: Record<string, string> = {}) {
   const home = codexHome();
-  let h = await startHarness({ HOME: home });
+  let h = await startHarness({ HOME: home, ...env });
   t.after(async () => {
     await h.stop();
     rmSync(home, { recursive: true, force: true });
@@ -421,8 +436,45 @@ async function fixture(t: TestContext) {
     /** Gone with no chance to tidy up, then started again on the same data. */
     async reboot() {
       await h.crash();
-      h = await startHarness({ HOME: home });
+      h = await startHarness({ HOME: home, ...env });
     },
+  };
+}
+
+/** What Kat's command line answered, said as CLI-tag. */
+async function cliSaid(f: Awaited<ReturnType<typeof fixture>>, tag: string) {
+  const row = await waitFor(async () => (await f.messages()).findLast((m) => m.role === "bot" && m.kind === "text" && (m.text ?? "").startsWith(`CLI-${tag} `)));
+  assert.ok(row, `the agent never said CLI-${tag}`);
+  return { row, answer: JSON.parse(String(row.text).slice(`CLI-${tag} `.length)) };
+}
+
+/** Kat's lane once the latest turn whose words include `words` is over.
+ * The lane reads "needs-you" all along while a card is open, so it is
+ * asked with that turn's own credential: a quiet call made again changes
+ * nothing, and the step that ends the turn and settles the lane's dot also
+ * spends the credential (or the call is refused as not running). */
+async function turnEnded(f: Awaited<ReturnType<typeof fixture>>, words: string) {
+  const token = await f.token(words);
+  const over = await waitFor(async () => {
+    const res = await f.as(token, "POST", `/api/bots/${f.bot.id}/tasks/${f.bot.threadId}/quiet`);
+    const body = await res.json().catch(() => ({}));
+    return res.status === 401 || body.reason === "not_running" ? true : null;
+  });
+  assert.ok(over, `the turn that began with "${words}" never ended`);
+  return f.lane();
+}
+
+/** Another agent, Lee, whose turn is kept running so its credential can
+ * write to Kat as `bloks say` does: what it asks is a turn nobody waits
+ * on. */
+async function anotherAgent(f: Awaited<ReturnType<typeof fixture>>) {
+  const { bot: sender } = await f.h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Lee" }) });
+  await f.h.fetch(`/api/bots/${sender.id}`, { method: "PATCH", body: JSON.stringify({ modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" } }) });
+  await f.h.json(`/api/bots/${sender.id}/messages`, { method: "POST", body: JSON.stringify({ text: "ASYNC-WORKING on the example handover", taskId: sender.threadId }) });
+  const senderToken = await f.token("ASYNC-WORKING on the example handover");
+  return async (text: string) => {
+    const res = await f.h.fetch(`/api/bots/${f.bot.id}/messages`, { method: "POST", headers: { authorization: `Bearer ${senderToken}` }, body: JSON.stringify({ text }) });
+    assert.ok(res.ok, await res.text());
   };
 }
 
@@ -475,6 +527,113 @@ test("an answer given after the turn ended starts the next turn, and is said onc
   const after = await f.messages();
   assert.equal(after.filter((m) => m.role === "user" && m.text === "Lighthouse").length, 1);
   assert.equal(after.filter((m) => m.kind === "text" && (m.text ?? "").startsWith("GOT ")).length, 1);
+});
+
+// An earlier turn's question waits for the person, on its card, for as
+// long as they like. A later turn nobody waits on, here another agent's
+// `bloks say`, may still finish quietly: the question is not its own, and
+// stays open, waiting and answerable. A question of its own, or the
+// person's own words, keep it from finishing quietly as before.
+test("a question an earlier turn left open does not keep a later turn from finishing quietly, and stays open to answer", async (t) => {
+  const f = await fixture(t);
+  const ended = (words: string) => turnEnded(f, words);
+  const said = (tag: string) => cliSaid(f, tag);
+  await f.say("ASYNC-ENDS the release notes");
+  const asked = await f.card();
+  const before = await ended("ASYNC-ENDS the release notes");
+  assert.equal(before.state, "needs-you");
+  assert.equal(before.unread, true, "the reply left a dot");
+
+  const sayAs = await anotherAgent(f);
+
+  await sayAs("CLI[quiet|quiet] check the example inventory");
+  const quiet = await said("quiet");
+  assert.equal(quiet.answer.quiet, "accepted", JSON.stringify(quiet.answer));
+  const after = await ended("CLI[quiet|quiet] check the example inventory");
+  assert.equal((await said("quiet")).row.quiet, true, "what it wrote after the finish is kept quiet");
+  assert.equal(after.state, "needs-you", "the lane still waits on the person");
+  assert.equal(after.unread, true, "the quiet turn gave back the dot it took");
+  const card = (await f.messages()).find((m) => m.id === asked.id);
+  assert.ok(!card.card.answered && !card.card.closed && !card.card.withdrawn && !card.quiet, JSON.stringify(card.card));
+
+  // opened while the turn runs, the person has seen it: no dot comes back
+  await sayAs("SLOW CLI[seen|quiet] check the example inventory once more");
+  await f.token("SLOW CLI[seen|quiet] check the example inventory once more");
+  await f.h.fetch(`/api/bots/${f.bot.id}/tasks/${f.bot.threadId}/activate`, { method: "POST", body: "{}" });
+  assert.equal((await said("seen")).answer.quiet, "accepted");
+  const seen = await ended("SLOW CLI[seen|quiet] check the example inventory once more");
+  assert.equal((await said("seen")).row.quiet, true);
+  assert.equal(seen.unread, false, "the person opened it during the turn");
+  assert.equal(seen.state, "needs-you");
+
+  // read before the turn, it stays read: the dot given back is the one found
+  await sayAs("CLI[again|quiet] check the example inventory again");
+  assert.equal((await said("again")).answer.quiet, "accepted");
+  const read = await ended("CLI[again|quiet] check the example inventory again");
+  assert.equal((await said("again")).row.quiet, true);
+  assert.equal(read.unread, false, "no dot for what the person had seen");
+  assert.equal(read.state, "needs-you");
+
+  // a question of its own still keeps it from finishing quietly
+  await sayAs("ASK-FIRST CLI[own|quiet] check the example calendar");
+  const own = await said("own");
+  assert.match(own.answer.error, /will not finish quietly \(open_request\)/, JSON.stringify(own.answer));
+  await ended("ASK-FIRST CLI[own|quiet] check the example calendar");
+  assert.notEqual((await said("own")).row.quiet, true, "its report is delivered");
+
+  // and so do the person's own words, whatever is still open
+  await f.say("CLI[person|quiet] anything new?");
+  const person = await said("person");
+  assert.match(person.answer.error, /will not finish quietly/, JSON.stringify(person.answer));
+  await ended("CLI[person|quiet] anything new?");
+  assert.notEqual((await said("person")).row.quiet, true);
+
+  // the earlier question is answered as it would have been
+  assert.equal((await f.respond(asked.card.requestId, { behavior: "answer", message: "Lighthouse" })).outcome, "delivered");
+  const got = (await f.heard("GOT")).text;
+  assert.match(got, /What should the release be called\?/);
+  assert.match(got, /Lighthouse$/);
+});
+
+test("a retry goes on with the work that failed: the question its failed try left still keeps it from finishing quietly", async (t) => {
+  const f = await fixture(t, { BLOKS_RETRY_WAIT_MS: "200" });
+  const sayAs = await anotherAgent(f);
+  await sayAs("FAIL1-backlog CLI[retry|quiet] check the example backlog");
+  const asked = await f.card();
+  const retry = await cliSaid(f, "retry");
+  assert.match(retry.answer.error, /will not finish quietly \(open_request\)/, JSON.stringify(retry.answer));
+  await turnEnded(f, "FAIL1-backlog");
+  assert.ok((await f.messages()).some((m) => m.kind === "notice" && /Trying again/.test(m.text ?? "")), "it was not a retry");
+  assert.notEqual((await cliSaid(f, "retry")).row.quiet, true, "its report is delivered");
+  const card = (await f.messages()).find((m) => m.id === asked.id);
+  assert.ok(!card.card.answered && !card.card.closed && !card.card.withdrawn, JSON.stringify(card.card));
+});
+
+test("a failed turn tried again from its incident after other work is still that work: its question holds it", async (t) => {
+  const f = await fixture(t, { BLOKS_RETRY_WAIT_MS: "200" });
+  assert.equal((await f.h.fetch("/api/config", { method: "PUT", body: JSON.stringify({ incidents: { enabled: true, lead: "person" } }) })).status, 200);
+  const sayAs = await anotherAgent(f);
+  await sayAs("FAIL2-ledger CLI[desk|quiet] check the example ledger");
+  const asked = await f.card();
+  const incident = await waitFor(async () => ((await f.h.json("/api/incidents")).incidents as any[]).find((i) => i.open && i.where.laneId === f.bot.threadId && i.state === "needs-you"), 30_000);
+  assert.ok(incident, "the failed turn never became an incident");
+  await turnEnded(f, "FAIL2-ledger");
+
+  // other work in between, new, finishes quietly past the question
+  await sayAs("CLI[between|quiet] check the example inventory");
+  assert.equal((await cliSaid(f, "between")).answer.quiet, "accepted");
+  await turnEnded(f, "CLI[between|quiet] check the example inventory");
+  assert.equal((await cliSaid(f, "between")).row.quiet, true);
+
+  // tried again, it goes on with its own work, which asked the question
+  await idle(f.h, f.bot);
+  assert.equal((await f.h.fetch(`/api/incidents/${incident.id}/retry`, { method: "POST" })).status, 202);
+  const desk = await cliSaid(f, "desk");
+  assert.match(desk.answer.error, /will not finish quietly \(open_request\)/, JSON.stringify(desk.answer));
+  await turnEnded(f, "FAIL2-ledger");
+  assert.notEqual((await cliSaid(f, "desk")).row.quiet, true, "its report is delivered");
+  const card = (await f.messages()).find((m) => m.id === asked.id);
+  assert.ok(!card.card.answered && !card.card.closed && !card.card.withdrawn, JSON.stringify(card.card));
 });
 
 test("a collaborator's answer arrives as their own words, with their authority and never the owner's", async (t) => {

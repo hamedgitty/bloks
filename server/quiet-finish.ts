@@ -31,6 +31,12 @@ export interface QuietGate {
   /** The lane turn it was accepted in (laneTurns) and its runtime turn. */
   seq: number;
   turnId: string;
+  /** The lane turn its work began in (heldByRequest). Not known for a
+   * retry, the backup or a pickup, whose work may be older than the
+   * lane's latest. */
+  since?: number;
+  /** An earlier turn's question was open when it was accepted. */
+  passed?: boolean;
   /** superseded: something for the person came after, so the turn ends
    * as usual, and a later call is refused. */
   state: "accepted" | "superseded";
@@ -50,6 +56,19 @@ export interface QuietGate {
 export function belongs(gate: QuietGate, laneId: string, m: Message, w: Writer | undefined): boolean {
   if (!w || w.lane !== laneId || m.role !== "bot" || m.queued || m.unsent) return false;
   return w.turnId !== undefined ? w.turnId === gate.turnId : w.seq !== undefined && w.seq === gate.seq;
+}
+
+/** An open request, by the lane turn it was asked in (laneTurns) and
+ * whether it only asks, as a question does, rather than wanting a yes. */
+export type OpenAsk = { seq: number; question: boolean };
+
+/** Whether an open request keeps a turn whose work began at lane turn
+ * `since` from finishing quietly. A question asked before then stays
+ * open, on its card and waiting, for the person to answer when they
+ * choose, and does not hold it. An approval, a question of the turn's own
+ * work, or a request whose turn is not known always does. */
+export function heldByRequest(asked: OpenAsk | undefined, since: number | undefined): boolean {
+  return !asked || !asked.question || since === undefined || asked.seq >= since;
 }
 
 /** Words on their way into a lane's running turn (steerOne), counted per

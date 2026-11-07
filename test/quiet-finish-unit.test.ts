@@ -1,10 +1,11 @@
 // The parts of `bloks quiet` that need no server (server/quiet-finish.ts,
 // TextPreview.close): which writes belong to the finished turn, whose words
-// are still on their way into it, and what the preview shows after it.
+// are still on their way into it, which open requests hold it, and what
+// the preview shows after it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RuntimeEvent } from "../server/contracts.ts";
-import { belongs, SteerHolds, writer, type QuietGate } from "../server/quiet-finish.ts";
+import { belongs, heldByRequest, SteerHolds, writer, type QuietGate } from "../server/quiet-finish.ts";
 import type { Message } from "../server/store.ts";
 import { TextPreview } from "../server/text-preview.ts";
 
@@ -21,6 +22,16 @@ test("a write belongs to the finished turn only by its runtime turn or its turn'
   assert.equal(belongs(gate, "lane", row(), { lane: "other", seq: 3 }), false, "another lane's turn");
   assert.equal(belongs(gate, "lane", row({ role: "user" }), { lane: "lane", seq: 3 }), false, "the person's words");
   assert.equal(belongs(gate, "lane", row({ queued: true }), { lane: "lane", seq: 3 }), false, "words waiting for a later turn");
+});
+
+test("only a question asked before the turn's work began leaves it free to finish quietly", () => {
+  assert.equal(heldByRequest({ seq: 3, question: true }, 4), false, "an earlier turn's question");
+  assert.equal(heldByRequest({ seq: 4, question: true }, 4), true, "a question of this turn");
+  assert.equal(heldByRequest({ seq: 5, question: true }, 4), true, "a question asked after the work began");
+  assert.equal(heldByRequest({ seq: 3, question: false }, 4), true, "an earlier turn's approval");
+  assert.equal(heldByRequest({ seq: 4, question: false }, 4), true, "this turn's approval");
+  assert.equal(heldByRequest(undefined, 4), true, "a request nobody knows the turn of");
+  assert.equal(heldByRequest({ seq: 3, question: true }, undefined), true, "a retry, the backup or a pickup, whose work start is not known");
 });
 
 test("each request or event is its own writer, and none outlives its callback", async () => {
