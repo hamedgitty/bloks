@@ -1008,6 +1008,10 @@ requests are read, and answered when there is time. Small and focused
 gets merged quickly; a branch that renames files, fixes a bug and adds a
 feature may sit for a while.
 
+Questions, ideas, or want to talk something through first? The
+[Bloks Discord](https://discord.gg/FhV3SuGYfS) is where people using
+Bloks help each other.
+
 ```sh
 pnpm test
 ```
