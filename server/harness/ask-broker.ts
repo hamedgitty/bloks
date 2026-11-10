@@ -102,15 +102,21 @@ export function socketPathFits(path: string, room = SUN_PATH): boolean {
  * listens in it, under a short random name. The broker removes the
  * socket when it closes, the same as it would the preferred one.
  *
- * Windows has no such address (its sockets are named pipes), so the path
- * there is left as it was.
+ * Windows has no such address: a local socket there is a named pipe, and
+ * a pipe has to be named under \\.\pipe\. A file path given to listen
+ * fails, the failure was swallowed, and every approval a Windows turn
+ * asked for came back "permission broker unavailable" with no card (web
+ * searches and reads of shared files among them). So Windows gets a pipe
+ * of its own, under a name nobody can guess: other users' processes can
+ * read a pipe's name but not write to one this user made.
  */
 export function bridgeSocketPath(
   preferred: string,
   options: { tempDir?: string; room?: number; platform?: NodeJS.Platform } = {},
 ): string | null {
   const room = options.room ?? SUN_PATH;
-  if ((options.platform ?? process.platform) === "win32" || socketPathFits(preferred, room)) return preferred;
+  if ((options.platform ?? process.platform) === "win32") return `\\\\.\\pipe\\bloks-${randomBytes(12).toString("hex")}`;
+  if (socketPathFits(preferred, room)) return preferred;
 
   const uid = process.getuid?.();
   const dir = join(options.tempDir ?? tmpdir(), `bloks-${uid ?? "user"}`);

@@ -31,6 +31,14 @@ describe("the bridge's socket path", () => {
     assert.equal(bridgeSocketPath(preferred), preferred);
   });
 
+  test("Windows gets a named pipe, never a file path it cannot listen on, under a name nobody can guess", () => {
+    const preferred = "C:\\Users\\AI\\.bloks\\perm-abc-123456.sock";
+    const first = bridgeSocketPath(preferred, { platform: "win32" })!;
+    const second = bridgeSocketPath(preferred, { platform: "win32" })!;
+    assert.match(first, /^\\\\\.\\pipe\\bloks-[0-9a-f]{24}$/);
+    assert.notEqual(first, second);
+  });
+
   test("length is counted in bytes, so an accented home that looks short still moves", (t) => {
     const temp = mkdtempSync(join(tmpdir(), "bloks-sock-"));
     t.after(() => rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
