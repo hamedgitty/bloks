@@ -141,6 +141,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The one piece the other jobs cannot check for Windows: approvals
+      # travel a named pipe here, and once they quietly did not (GitHub 501).
+      - run: node --test test/windows-bridge.test.ts
       - run: pnpm build && pnpm build:server
       - run: pnpm exec electron-builder --win --publish never
       # Same reasoning as the Linux job above.
