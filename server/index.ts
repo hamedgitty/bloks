@@ -8492,7 +8492,9 @@ async function startClaimedTurn(
     // each word framed as the turn that took it heard it
     const burstOfMessage = burstsIn(history);
     const settled = history
-      .filter((m) => m.kind === "text" && m.text && !m.deleted && !m.queued && !dismissedPreparation(m) && !m.unsent)
+      // by the rule the summary's count counts with, so the transcript
+      // starts where the summary ends
+      .filter(summaryCounts)
       // A Telegram person is told their own exchange and nothing else:
       // what they said and what was sent to them. The owner's words, the
       // agent's answers to the owner and the lane's summary of both stay

@@ -1567,6 +1567,15 @@ the length of what it reads once, not dozens of waits. Nothing is saved
 until the last request is done, and nothing at all if one fails or the
 conversation changes under it.
 
+A saved summary counts the first `through` settled messages
+(`summaryCounts`). Taking one of them back (`DELETE
+/api/threads/:lane/messages/:id`) or editing it to new words (`PATCH`)
+drops the summary before the message changes, as a rewind does, so its
+old words are not told again and the count cannot start a message late.
+The next turn is told what is left whole and summarises again when that
+fills up. Both routes save the message before they say it changed; one
+that cannot be saved fails with a 500 and stays as it was.
+
 The same cache is why a resumed Claude Code session keeps its system
 prompt byte for byte (`server/standing-prompt.ts`). The agent's
 MEMORY.md and the notes about the person stay as they were when the
