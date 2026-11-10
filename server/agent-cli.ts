@@ -160,6 +160,13 @@ export const RULES: Rule[] = [
   { method: "GET", path: "/api/agent/settings/proposals", why: "list the everyday settings it may propose changing, with their current values" },
   { method: "POST", path: "/api/agent/settings/proposals", why: "propose changing one everyday setting, on a card the person answers with Change or Keep; nothing changes until they tap Change" },
   { method: "GET", path: "/api/agent/settings/proposals/:id", why: "wait for the person's answer to a setting it proposed" },
+  // Other agents' models, changed only on the owner's Apply, every one on
+  // one card or none of them (server/model-proposals.ts). PATCH
+  // /api/bots/:id stays sidebar only for another agent, and the route
+  // that takes the Apply (/api/model-proposals) is on NEVER.
+  { method: "GET", path: "/api/agent/models", why: "see the engines and the models each offers, and which engine and model every agent is on" },
+  { method: "POST", path: "/api/agent/models/proposals", why: "propose changing the engine and model of named agents, on one card the owner answers with Apply or Keep; nothing changes until they apply it, and then all of it or none" },
+  { method: "GET", path: "/api/agent/models/proposals/:id", why: "wait for the owner's answer to model changes it proposed" },
   // The goal the person set for the conversation this turn runs in, if
   // any. Reading only: a goal starts turns unattended and can run a
   // command on the person's computer, so setting one is theirs alone,
@@ -399,6 +406,8 @@ export const NEVER = [
   // the person's answer to a setting an agent proposed: proposing is an
   // agent's, the Change is theirs
   "/api/settings-proposals",
+  // and to other agents' models an agent proposed: the Apply is theirs
+  "/api/model-proposals",
   // and to a skill an agent asked to add: asking is an agent's, the Add
   // is theirs
   "/api/skill-requests",

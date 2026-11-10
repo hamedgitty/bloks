@@ -496,7 +496,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 ## What only the person can do
 Say so plainly, and show them where rather than naming a page from memory:
 - \`where <words>\` finds the page and the way there in words. \`open <page-id>\` puts a card in the chat whose one button takes them there; it only opens the page.
-- \`settings propose\` lists the few everyday settings you may change for them, on a card they answer with Change or Keep. Anything else is theirs to change.
+- \`settings propose\` lists the few everyday settings you may change for them, on a card they answer with Change or Keep. \`models propose\` puts other agents' engines and models on one card they apply whole or keep. Anything else is theirs to change.
 - Answer a card, switch which tab is open, rewind, delete an agent, set a goal (/goal in the chat).
 - Always theirs: approvals and rules, the limit on agents writing to agents, engines, sign-ins and keys, members and invites, phones and Bloks Cloud, the plan and spending limits, backups and moving or exporting a workspace, the browser's sites, Home Assistant. Point them there with \`open\`.
 - How a feature works and where it lives: the how-bloks-works skill.
@@ -505,7 +505,7 @@ Say so plainly, and show them where rather than naming a page from memory:
 Every command answers JSON. Report what it said: the tab's title and id, whether it started or is queued, an engine warning, a card waiting. A refusal means nothing happened: say why in a sentence and what the person can do, and do not look for another way around it.
 
 Return: a sentence or two on what changed, or on what the person needs to do.
-Approval: anything that waits on a card (an app watcher, an intent, a skill revision, a new skill, a change to the home, a secret) is not done until the person says yes; say it is waiting.`,
+Approval: anything that waits on a card (an app watcher, an intent, a skill revision, a new skill, model changes, a change to the home, a secret) is not done until the person says yes; say it is waiting.`,
   },
   {
     id: "how-bloks-works",
@@ -570,7 +570,7 @@ Skills are instructions agents pick up, from the library; a SKILL.md sitting in 
 Ready teams and skills, installed only after a review that names what each creates; routines start paused. Where: Plugins, Catalogue (\`plugins:catalog\`). Only the person installs.
 
 ## Engines and keys
-Each agent picks an engine. Engines that run a program (Claude Code, Codex, Gemini CLI and others) work in folders; API engines get a smaller set of tools from Bloks. A backup engine takes a turn that hit a limit or outage. Claude Code and Codex can have more than one account signed in; when the one in use reaches its plan limit, the next turn starts on another with the same model, in a new session told the conversation so far. Engines and keys belong to a workspace. Where: Settings, Engines and keys (\`engines\`); an agent's engine in its settings (\`agent\`); defaults in Settings, New agents (\`new-agents\`); voices in Settings, Voices (\`voices\`). You: \`pause\` your own engine up to a day; \`settings propose agent.model\`, \`agent.effort\`, \`newAgents.effort\`. Only the person: installing, signing in, accounts, keys, endpoints.
+Each agent picks an engine. Engines that run a program (Claude Code, Codex, Gemini CLI and others) work in folders; API engines get a smaller set of tools from Bloks. A backup engine takes a turn that hit a limit or outage. Claude Code and Codex can have more than one account signed in; when the one in use reaches its plan limit, the next turn starts on another with the same model, in a new session told the conversation so far. Engines and keys belong to a workspace. Where: Settings, Engines and keys (\`engines\`); an agent's engine in its settings (\`agent\`); defaults in Settings, New agents (\`new-agents\`); voices in Settings, Voices (\`voices\`). You: \`pause\` your own engine up to a day; \`settings propose agent.model\`, \`agent.effort\`, \`newAgents.effort\`; \`models propose\` for other agents' engines and models, on one card the owner applies whole or keeps. Only the person: installing, signing in, accounts, keys, endpoints.
 
 ## Bloks AI, plan and spending
 Bloks AI is a monthly allowance on their Bloks plan: no key or sign-in. Usage shows cost, tokens and turns by agent and engine; a monthly spending limit on an engine with their own key pauses new turns there, or hands them to a backup. Members have limits of their own. Where: Settings, Plan (\`plan\`); Usage (\`usage\`); Members (\`workspace:members\`). Only the person.

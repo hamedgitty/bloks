@@ -124,6 +124,10 @@ export interface OptionCardData {
    * (server/settings-proposals.ts): answered through its own route, never
    * as a reply, and applied only on the person's Change. */
   settingsProposal?: import("./settings-proposals.ts").ProposalCard;
+  /** Present when an agent proposed changing other agents' models
+   * (server/model-proposals.ts): every change on one card, answered
+   * through its own route by the owner alone, all applied or none. */
+  modelProposal?: import("./model-proposals.ts").ModelProposalCard;
   /** Present when an agent asked to add a new skill to the library and
    * use it (server/skill-requests.ts): answered through its own route,
    * and added only on the person's Add. */

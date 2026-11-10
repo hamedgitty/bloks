@@ -4536,6 +4536,42 @@ are the page's own. It is recorded as `settings.changed` with actor
 at the start of its next turn in that conversation, once (`told` on
 the card).
 
+### Models an agent proposes for other agents
+
+An agent's credential reaches another agent's `PATCH /api/bots/:id` for
+its place in the sidebar only, and that stays so. To change other
+agents' models (GitHub 497) it proposes them instead. `bloks models` is
+`GET /api/agent/models`: the engines, each with its models and whether
+it is switched on, and every agent with the engine and model it is on.
+`bloks models propose <agent> <engine> <model> [...] --why "<reason>"`
+is `POST /api/agent/models/proposals` with `{ changes: [{ agent, engine,
+model }], why }`, read by `server/model-proposals.ts` against the agents
+and engines there are now: an agent by id or by a name only it has, an
+engine by id or name, a model the engine lists (or its default), up to
+`MAX_TARGETS` agents, each once. A model the engine does not list, an
+engine that is not there or is switched off (unless the agent is on it
+already), an agent that is not there, and an agent already on that
+model are each refused, all of them in one answer, and nothing is
+proposed. A member's own agents are not listed, and a proposal is only
+made in a conversation the owner reads, never on a hosted workspace.
+
+An accepted proposal is a card (`Message.card.modelProposal`, a
+`ModelProposalCard`) listing each agent, the engine and model it is on
+as saved, and the engine and model proposed; the command waits as a
+settings proposal does, and `bloks models proposal <id>` waits again.
+Apply and Keep are `POST /api/model-proposals/:lane/:message/(apply|keep)`,
+the owner's alone at this computer: on `NEVER`, and refused to a
+member's credential, a paired device and the web door. Apply checks
+every agent again (`blockers`): one whose saved engine and model are no
+longer what the card says, one gone, or an engine or model no longer
+offered fails the whole card, and nothing changes. Otherwise every
+agent is changed in one write (`store.patchBots`), only its
+`modelSelection`, read back, broadcast, and recorded as
+`settings.changed` with actor `you`, one entry per agent. A turn under
+way keeps its engine; the next one uses the new choice. The agent hears
+the result per agent from the command still waiting, or at the start of
+its next turn in that conversation, once.
+
 ## Rule suggestions
 
 When the owner keeps answering the same approval the same way, Bloks

@@ -83,6 +83,34 @@ const COMMANDS = {
       return request("GET", `/api/agent/settings${query.size ? `?${query}` : ""}`);
     },
   },
+  models: {
+    use: 'models | models propose <agent> <engine> <model> [<agent> <engine> <model>...] [--why "<reason>"] | models proposal <id>',
+    about:
+      "with nothing after it, the engines, each with the models it offers and whether it is switched on, and which engine and model every agent is on. " +
+      "propose puts one card in this conversation for the owner listing each agent you name (by id, or by a name only it has), the engine and model it is on, and the engine and model you propose: " +
+      "nothing changes until they press Apply, and then every change is made or none is. An unknown agent, engine or model is refused with the reason, and nothing is proposed. " +
+      "It waits a minute for their answer; proposal <id> waits again. Another agent's settings are never changed directly",
+    run: (args) => {
+      if (args[0] === "propose") {
+        const flags = parseFlags(args.slice(1));
+        const words = positional(args.slice(1));
+        if (!words.length) throw new Error('propose needs an agent, an engine and a model for each change, like `models propose Ada claude claude-sonnet-5 --why "..."`; `models` lists them');
+        if (words.length % 3) throw new Error("propose takes each change as three words: the agent, the engine and the model. Quote a name with spaces in it");
+        const changes = [];
+        for (let i = 0; i < words.length; i += 3) changes.push({ agent: words[i], engine: words[i + 1], model: words[i + 2] });
+        return request("POST", "/api/agent/models/proposals", {
+          changes,
+          ...(flags.why && flags.why !== "true" ? { why: flags.why } : {}),
+        });
+      }
+      if (args[0] === "proposal") {
+        if (!args[1]) throw new Error("proposal needs the id `models propose` answered with");
+        return request("GET", `/api/agent/models/proposals/${encodeURIComponent(args[1])}`);
+      }
+      if (args.length) throw new Error("models takes propose or proposal, or nothing to list the engines and agents");
+      return request("GET", "/api/agent/models");
+    },
+  },
   where: {
     use: "where <words…>",
     about:

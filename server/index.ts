@@ -29,6 +29,7 @@ import { CONTEXT_MS, EMPTY_STATE, FRESH_WAIT_MS, Whereabouts, cleanState, crossi
 import { SettingsPages, type SettingsCategory } from "./settings-pages.ts";
 import { openCard, placeOf, say, where } from "./where.ts";
 import { MAX_WHY, PROPOSABLE, proposable, readValue, refusal as proposalRefusal, valueLabel, type ProposalCard, type ProposalState } from "./settings-proposals.ts";
+import { blockers as modelBlockers, changeWords, readModelProposal, type ModelProposalCard, type ModelWorld } from "./model-proposals.ts";
 import { DEVICE_CATEGORIES, noStore, readReport, serveSettingsRead } from "./settings-read-http.ts";
 import { settingsCatalog } from "./settings-catalog.ts";
 import { inspectionRedactor } from "./settings-redaction.ts";
@@ -9439,6 +9440,9 @@ async function startClaimedTurn(
       // and the skills it asked to add, the same way
       const skillNote = personSource || command ? null : skillRequestsAnswered(task.id, bot.id);
       if (skillNote) turnText = `${skillNote}\n\n${turnText}`;
+      // and the models it proposed for other agents
+      const modelNote = personSource || command ? null : modelProposalsAnswered(task.id, bot.id);
+      if (modelNote) turnText = `${modelNote}\n\n${turnText}`;
       const stalledNote = personSource ? undefined : stalledSince.get(task.id);
       if (stalledNote && !command) {
         stalledSince.delete(task.id);
@@ -19454,6 +19458,200 @@ function proposalsAnswered(laneId: string, botId: string): string | null {
     );
     const patched = store.patchMessage(laneId, message.id, { card: { ...message.card!, settingsProposal: { ...plan, told: true } } });
     if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+  }
+  return lines.length ? `(Since your last turn here, ${lines.join("; ")}.)` : null;
+}
+
+// ── models an agent proposes for other agents (server/model-proposals.ts)
+// The card carries the whole list and what each agent was on when it was
+// made, so an Apply after a restart still checks and applies the same
+// list. Waiting reuses the settings proposals' waiters.
+
+/** The agents a proposal may name and the engines it may name, as they
+ * are now. A member's own agent is theirs and not listed for the owner,
+ * and an archived one runs nothing. */
+function modelWorld(): ModelWorld {
+  return {
+    agents: store.bots
+      .filter((b) => (!b.solo || b.solo.by === "owner") && !b.archivedAt && !b.hidden)
+      .map((b) => ({ id: b.id, name: b.name, selection: b.modelSelection ? { instanceId: b.modelSelection.instanceId, model: b.modelSelection.model ?? "" } : null })),
+    engines: registry.instances().map((i) => ({
+      id: i.instanceId,
+      name: i.displayName ?? i.instanceId,
+      enabled: i.enabled,
+      default: i.models.default,
+      options: i.models.options.map((o) => ({ id: o.id, label: o.label })),
+    })),
+  };
+}
+
+/** A model proposal card by its id, in the lanes of the agent that made it. */
+function findModelProposal(botId: string, id: string, firstLane?: string): { laneId: string; message: Message } | null {
+  const bot = store.bot(botId);
+  const lanes = [...new Set([firstLane, ...(bot?.tasks ?? []).map((t) => t.id)].filter((x): x is string => Boolean(x)))];
+  for (const laneId of lanes) {
+    const message = store.messagesFor(laneId).find((m) => m.card?.modelProposal?.id === id);
+    if (message) return { laneId, message };
+  }
+  return null;
+}
+
+/** A model proposal card changed, kept and shown. */
+function patchModelProposal(laneId: string, message: Message, patch: Partial<ModelProposalCard>, answered?: string): Message | null {
+  const plan = message.card!.modelProposal!;
+  const patched = store.patchMessage(laneId, message.id, {
+    card: { ...message.card!, ...(answered ? { answered } : {}), modelProposal: { ...plan, ...patch } },
+  });
+  if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+  return patched;
+}
+
+/** How a model proposal stands, for the agent, one line per agent. Marks
+ * it told when it is settled, so its next turn does not hear it twice. */
+function modelProposalOutcome(laneId: string, message: Message): { status: number; body: Record<string, unknown> } {
+  const plan = message.card!.modelProposal!;
+  const changes = plan.targets.map((t) => ({ agent: t.name, id: t.botId, from: `${t.from.engine}, ${t.from.label}`, to: `${t.to.engine}, ${t.to.label}` }));
+  if (!plan.outcome) {
+    return {
+      status: 202,
+      body: {
+        pending: true,
+        proposal: plan.id,
+        changes,
+        note: `The person was asked on a card to change ${plan.targets.length === 1 ? "this model" : `these ${plan.targets.length} models`}. Nothing has changed yet. Run \`bloks models proposal ${plan.id}\` to wait for the answer, or carry on: you will be told how it went at the start of your next turn here.`,
+      },
+    };
+  }
+  if (!plan.told) patchModelProposal(laneId, message, { told: true });
+  if (plan.outcome === "changed") {
+    return { status: 200, body: { ok: true, changed: changes.map((c) => ({ ...c, result: "changed" })), note: `The person pressed Apply, and every change is saved: ${plan.targets.map(changeWords).join("; ")}. Each takes effect from that agent's next turn.` } };
+  }
+  if (plan.outcome === "kept") {
+    return { status: 200, body: { ok: false, kept: true, changed: changes.map((c) => ({ ...c, result: "unchanged" })), note: "The person kept every model as it is. Nothing changed. Do not propose it again in this conversation unless they ask." } };
+  }
+  return {
+    status: 409,
+    body: {
+      error: `The person pressed Apply, but nothing changed: ${plan.error ?? "the list no longer matched"}. Run \`bloks models\` to see where each agent is now before you propose again.`,
+      changed: changes.map((c) => ({ ...c, result: "unchanged" })),
+    },
+  };
+}
+
+/** An agent's proposal: refused with every reason at once, or a card in
+ * the conversation its turn runs in, and then the person's answer if it
+ * comes while it waits. */
+async function proposeModels(credential: AgentToken, body: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const bot = store.bot(credential.botId);
+  if (!bot) return { status: 404, body: { error: "no such agent" } };
+  const laneId = credential.taskId;
+  // the owner answers it, so it goes where the owner reads: never a
+  // member's private conversation, nor any of a member's own agent's
+  if (privateTo(laneId)) return { status: 403, body: { error: "Only the owner can change other agents' models, and they do not see this conversation. Nothing was proposed." } };
+  // the card is answered at the computer Bloks runs on, which a hosted
+  // workspace does not put in front of anybody
+  if (HOSTED) return { status: 403, body: { error: "A hosted workspace has no computer of the owner's to answer this on. Tell them in your reply which agents to change and to what: each agent's model is in its own settings. Nothing was proposed." } };
+  const world = modelWorld();
+  const read = readModelProposal(body, world);
+  if (!read.ok) return { status: 400, body: { error: `Nothing was proposed: ${read.errors.join("; ")}.` } };
+  const open = store.messagesFor(laneId).find((m) => {
+    const p = m.card?.modelProposal;
+    return p && p.botId === bot.id && !p.outcome;
+  });
+  if (open) return { status: 409, body: { error: `You already proposed model changes here, and they are waiting on the person. Wait for them with \`bloks models proposal ${open.card!.modelProposal!.id}\`.` } };
+  const why = typeof body.why === "string" ? body.why.replace(/\s+/g, " ").trim().slice(0, MAX_WHY) : "";
+  const plan: ModelProposalCard = {
+    id: randomUUID(),
+    laneId,
+    botId: bot.id,
+    agentName: bot.name,
+    targets: read.targets,
+    ...(why ? { why } : {}),
+  };
+  const card = store.appendMessage(laneId, {
+    role: "bot",
+    kind: "options",
+    card: {
+      // what a client that does not know the card draws: the list, and
+      // where it can be answered
+      title: `${bot.name} suggests changing ${read.targets.length === 1 ? "a model" : `${read.targets.length} models`}`,
+      subtitle: `${read.targets.map(changeWords).join(". ")}.${why ? ` ${why}` : ""} Nothing changes unless you apply it in Bloks on your computer.`,
+      options: [],
+      modelProposal: plan,
+    },
+  });
+  broadcast({ kind: "message", threadId: laneId, message: card });
+  store.markLane(bot.id, laneId, true);
+  broadcast({ kind: "bot", bot: clientBot(store.bot(bot.id)) });
+  await proposalWait(plan.id);
+  const now = store.messagesFor(laneId).find((m) => m.id === card.id) ?? card;
+  return modelProposalOutcome(laneId, now);
+}
+
+/** The owner's answer to a model proposal card. Apply checks the whole
+ * list against what is there now and changes every agent on it in one
+ * write, or none of them; Keep leaves them all. */
+function answerModelProposal(laneId: string, messageId: string, apply: boolean): { status: number; body: Record<string, unknown> } {
+  const message = store.messagesFor(laneId).find((m) => m.id === messageId);
+  const plan = message?.card?.modelProposal;
+  if (!message || !plan) return { status: 404, body: { error: "no such proposal" } };
+  if (plan.outcome) return { status: 409, body: { error: "this proposal was answered already" } };
+  const settle = (patch: Partial<ModelProposalCard>, answered: string) => {
+    patchModelProposal(laneId, message, patch, answered);
+    wakeProposal(plan.id);
+  };
+  if (!apply) {
+    settle({ outcome: "kept" }, "Kept");
+    return { status: 200, body: { ok: true, outcome: "kept" } };
+  }
+  const blocked = modelBlockers(plan, modelWorld());
+  if (blocked.length) {
+    const error = blocked.join("; ");
+    settle({ outcome: "failed", error }, "Not changed");
+    return { status: 409, body: { error: `Nothing changed: ${error}.` } };
+  }
+  // one write for all of them, so a stop partway cannot leave half a list
+  // applied; effort and everything else about each agent stays as it is
+  const changed = store.patchBots(plan.targets.map((t) => ({ id: t.botId, patch: { modelSelection: oneModel({ instanceId: t.to.instanceId, model: t.to.model } as ModelSelection) } })));
+  for (const bot of changed) broadcast({ kind: "bot", bot: clientBot(bot) });
+  // read back as saved before saying it is done
+  const unsure = plan.targets.filter((t) => {
+    const saved = store.bot(t.botId)?.modelSelection;
+    return saved?.instanceId !== t.to.instanceId || saved.model !== t.to.model;
+  });
+  if (unsure.length) {
+    const error = `${unsure.map((t) => t.name).join(", ")} did not save as proposed; open each agent's settings to see where it is`;
+    settle({ outcome: "failed", error }, "Not changed");
+    return { status: 500, body: { error } };
+  }
+  settle({ outcome: "changed" }, "Applied");
+  for (const target of plan.targets) {
+    record({
+      at: Date.now(),
+      kind: "settings.changed",
+      actor: "you",
+      summary: `Changed ${changeWords(target)}, as ${plan.agentName} proposed`,
+      detail: { agent: target.name, from: `${target.from.engine}, ${target.from.label}`, to: `${target.to.engine}, ${target.to.label}`, proposedBy: plan.agentName },
+    });
+  }
+  return { status: 200, body: { ok: true, outcome: "changed", changed: plan.targets.map((t) => t.botId) } };
+}
+
+/** What the agent's next turn in a lane hears about model proposals the
+ * person answered since, once each. */
+function modelProposalsAnswered(laneId: string, botId: string): string | null {
+  const lines: string[] = [];
+  for (const message of store.messagesFor(laneId).slice(-300)) {
+    const plan = message.card?.modelProposal;
+    if (!plan || plan.botId !== botId || !plan.outcome || plan.told) continue;
+    lines.push(
+      plan.outcome === "changed"
+        ? `the person applied the model changes you proposed: ${plan.targets.map(changeWords).join("; ")}`
+        : plan.outcome === "kept"
+          ? `the person kept the models you proposed changing as they are, so nothing changed`
+          : `the person pressed Apply on the model changes you proposed, but nothing changed (${plan.error ?? "refused"})`,
+    );
+    patchModelProposal(laneId, message, { told: true });
   }
   return lines.length ? `(Since your last turn here, ${lines.join("; ")}.)` : null;
 }
@@ -33873,6 +34071,51 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const outcome = proposalOutcome(found.laneId, found.message);
       return json(res, outcome.status, outcome.body);
+    }
+    // Other agents' models, as they are and as they could be, and a list
+    // of changes to them proposed on one card the owner answers
+    // (server/model-proposals.ts). PATCH /api/bots/:id stays shut to an
+    // agent for another agent's model: this is the way round, and it
+    // never changes anything by itself.
+    if (method === "GET" && path === "/api/agent/models") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const world = modelWorld();
+      return json(res, 200, {
+        engines: world.engines.map((e) => ({ id: e.id, name: e.name, on: e.enabled, default: e.default, models: e.options })),
+        agents: world.agents.map((a) => {
+          const engine = a.selection ? world.engines.find((e) => e.id === a.selection!.instanceId) : undefined;
+          return { id: a.id, name: a.name, engine: a.selection?.instanceId ?? null, engineName: engine?.name ?? a.selection?.instanceId ?? null, model: a.selection ? a.selection.model || engine?.default || "" : null };
+        }),
+        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do.",
+      });
+    }
+    if (method === "POST" && path === "/api/agent/models/proposals") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const answered = await proposeModels(asAgent, await readBody(req));
+      return json(res, answered.status, answered.body);
+    }
+    m = path.match(/^\/api\/agent\/models\/proposals\/([\w-]+)$/);
+    if (m && method === "GET") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      let found = findModelProposal(asAgent.botId, m[1], asAgent.taskId);
+      if (!found) return json(res, 404, { error: "no model proposal of yours by that id" });
+      if (!found.message.card!.modelProposal!.outcome) {
+        await proposalWait(m[1]);
+        found = findModelProposal(asAgent.botId, m[1], found.laneId) ?? found;
+      }
+      const outcome = modelProposalOutcome(found.laneId, found.message);
+      return json(res, outcome.status, outcome.body);
+    }
+    // The owner's answer to one, at this computer. Not an agent's, whose
+    // credential no rule lets here (server/agent-cli.ts), not a member's,
+    // and not a paired device's or a browser's at the web door either:
+    // which engine runs an agent reaches the owner's sign-ins and keys,
+    // and the card that says all of it is drawn here.
+    m = path.match(/^\/api\/model-proposals\/([\w:.-]+)\/([\w-]+)\/(apply|keep)$/);
+    if (m && method === "POST") {
+      if (asAgent || namesMember() || remoteCaller) return json(res, 403, { error: "only the owner, in Bloks on their computer, answers a proposed change to agents' models" });
+      const answered = answerModelProposal(m[1], m[2], m[3] === "apply");
+      return json(res, answered.status, answered.body);
     }
     // A new skill for the library, asked for by an agent with its own use
     // of it, on one card the person answers (server/skill-requests.ts).

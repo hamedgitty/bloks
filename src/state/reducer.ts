@@ -89,6 +89,10 @@ export interface OptionCardData {
   /** Present when an agent proposed changing a setting
    * (server/settings-proposals.ts). Answered through its own route. */
   settingsProposal?: SettingsProposalPlan;
+  /** Present when an agent proposed changing other agents' models
+   * (server/model-proposals.ts). Answered through its own route, by the
+   * owner at their computer. */
+  modelProposal?: ModelProposalPlan;
   /** Present when an agent asked to add a new skill to the library and
    * use it (server/skill-requests.ts). Answered through its own route. */
   skillRequest?: SkillRequestPlan;
@@ -106,6 +110,28 @@ export interface OpenPlacePlan {
   /** The agent whose own settings it opens. */
   botId?: string;
   workspace?: boolean;
+}
+
+/** One side of a proposed model change: the engine and the model as the
+ * card says them. */
+export interface ModelSidePlan {
+  instanceId: string;
+  model: string;
+  engine: string;
+  label: string;
+}
+
+/** Models an agent proposed for other agents (server/model-proposals.ts). */
+export interface ModelProposalPlan {
+  id: string;
+  laneId: string;
+  botId: string;
+  agentName: string;
+  targets: Array<{ botId: string; name: string; from: ModelSidePlan; to: ModelSidePlan }>;
+  why?: string;
+  told?: boolean;
+  outcome?: "changed" | "kept" | "failed";
+  error?: string;
 }
 
 /** A setting an agent proposed changing (server/settings-proposals.ts). */
