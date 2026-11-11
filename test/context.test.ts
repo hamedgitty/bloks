@@ -38,6 +38,7 @@ test("Antigravity's exhausted trajectory takes the context recovery path", () =>
 describe("how much a model will take", () => {
   test("the families we actually run", () => {
     assert.equal(contextLimitFor("claude-sonnet-5"), 200_000);
+    assert.equal(contextLimitFor("claude-fable-5-2"), 1_000_000);
     assert.equal(contextLimitFor("claude-fable-5-1"), 1_000_000);
     assert.equal(contextLimitFor("gpt-6-astra"), 272_000);
     assert.equal(contextLimitFor("gemini-2.5-pro"), 1_000_000);
