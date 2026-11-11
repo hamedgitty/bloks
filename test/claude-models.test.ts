@@ -41,6 +41,7 @@ process.stdin.resume();
   const claude = instances.find((i: any) => i.instanceId === "claude");
   assert.equal(claude.models.acceptsAnyId, true);
   assert.match(claude.models.note, /not fetched/i);
+  assert.ok(claude.models.options.some((o: any) => o.id === "claude-fable-5-2"), "no entry for claude-fable-5-2");
   for (const alias of ["opus", "sonnet", "haiku"]) {
     assert.ok(claude.models.options.some((o: any) => o.id === alias), `no Latest entry for ${alias}`);
   }
