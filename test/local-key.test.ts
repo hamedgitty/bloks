@@ -54,6 +54,22 @@ test("the app's own server needs no key: its window is its own page", async (t) 
   assert.equal((await fetch(`${h.url}/api/config`)).status, 200);
 });
 
+test("tests run inside bloks-server still get a server without the key", async (t) => {
+  // bin/bloks-server.mjs sets the flag for everything it starts, an agent
+  // running these tests included; a harness that kept it would never pass
+  // its own readiness check, which carries no key
+  const before = process.env.BLOKS_LOCAL_KEY;
+  process.env.BLOKS_LOCAL_KEY = "1";
+  t.after(() => {
+    if (before === undefined) delete process.env.BLOKS_LOCAL_KEY;
+    else process.env.BLOKS_LOCAL_KEY = before;
+  });
+  const h = await startHarness();
+  t.after(() => h.stop());
+  assert.equal((await fetch(`${h.url}/api/config`)).status, 200);
+  assert.equal(existsSync(join(h.home, ".bloks", LOCAL_KEY_FILE)), false, "the server made a key");
+});
+
 test("an agent's own turn credential works on a server started with the key, and nothing wider does", async (t) => {
   // #480: the agent block let the credential through, then the remote
   // surface took the request for a stranger's and sent it to pair
