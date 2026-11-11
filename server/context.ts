@@ -35,6 +35,7 @@ import type { ModelSelection } from "./contracts.ts";
  * forgetting this replaces.
  */
 const LIMITS: Array<[RegExp, number]> = [
+  [/^claude-fable-5-2(?:$|-)/i, 1_000_000],
   [/^claude-fable-5-1(?:$|-)/i, 1_000_000],
   [/^claude-opus-5-5(?:$|-)/i, 1_000_000],
   [/^claude/i, 200_000],
