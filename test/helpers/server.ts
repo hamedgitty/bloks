@@ -174,6 +174,10 @@ export async function startHarness(extraEnv: Record<string, string> = {}): Promi
         // bin/bloks-server.mjs sets this, so a test run from inside a Bloks
         // agent would inherit it and find pairing forced on
         BLOKS_LOOPBACK_ONLY: "",
+        // and this, which makes any request without that start's key a
+        // stranger's (server/local-key.ts), the readiness check below
+        // included; a test of the key turns it on in extraEnv
+        BLOKS_LOCAL_KEY: "",
         // and these, which would make a test's server think it was
         // started by bloks-server and may update itself; a test that
         // wants releases serves its own (server/server-update.ts)
