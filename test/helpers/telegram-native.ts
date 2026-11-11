@@ -159,7 +159,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     if (rapid === "RAPID_INPUT") writeFileSync(join(deliverables(), "rapid.txt"), "rapid request work");
     const receipt = rapid === "RAPID_REFUSE" ? { id: m.id, error: { code: -32000, message: "fixture cannot steer" } } : { id: m.id, result: { turnId: turn } };
     const frames = [receipt];
-    if (rapid !== "RAPID_EMPTY") frames.push({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "rapid-final", text: rapid === "RAPID_REFUSE" ? "EARLIER RESULT" : "RAPID FINAL" } } });
+    if (rapid !== "RAPID_EMPTY") frames.push({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id: "rapid-final", text: rapid === "RAPID_REFUSE" ? "EARLIER RESULT" : existsSync(root + "/rapid-answer.json") ? JSON.parse(readFileSync(root + "/rapid-answer.json", "utf8")) : "RAPID FINAL" } } });
     frames.push({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
     // One atomic pipe write: the receipt and completion precede the
     // awaiting caller's microtask that saves its accepted input row.
@@ -179,8 +179,26 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     await nap(21_500);
     return finish("**Before**\\n\\n| Item | Price | Note |\\n| --- | --- | --- |\\n| [Sample A](https://example.com/a-(b)) | **12** | |\\n\\n- After");
   }
+  if (text.includes("OPENUI_EMPTY")) return finish(null);
+  if (text.includes("OPENUI_FALLBACK")) return finish(null, "rate limit exceeded");
+  if (text.includes("OPENUI_FAILED")) {
+    say("failed-ui", JSON.parse(readFileSync(root + "/openui-answer.json", "utf8")));
+    return finish(null, "tool_stalled");
+  }
+  if (text.includes("OPENUI_SAMPLE")) {
+    writeFileSync(root + "/openui-started", "1");
+    if (existsSync(root + "/openui-progress")) {
+      say("openui-note", "Checking the sample.");
+      tool("openui-tool", "sample-check");
+      await nap(21_500);
+    }
+    if (existsSync(root + "/openui-hold")) {
+      for (let i = 0; i < 3000 && !existsSync(root + "/openui-release"); i++) await nap(20);
+    }
+    return finish(JSON.parse(readFileSync(root + "/openui-answer.json", "utf8")));
+  }
   if (text.includes("DELIVERY_BARRIER")) return finish("DELIVERY DONE");
-  if (text.includes("RAPID_REFUSE")) return finish("QUEUED RESULT");
+  if (text.includes("RAPID_REFUSE")) return finish(existsSync(root + "/rapid-queued-answer.json") ? JSON.parse(readFileSync(root + "/rapid-queued-answer.json", "utf8")) : "QUEUED RESULT");
   if (text.includes("TIMEOUT_")) {
     if (text.includes("TIMEOUT_RETRY") && !existsSync(root + "/timeout-retried")) {
       writeFileSync(root + "/timeout-retried", "1");
@@ -208,6 +226,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     }
     for (let i = 0; i < 3000 && !existsSync(root + "/timeout-release"); i++) await nap(20);
     if (text.includes("TIMEOUT_EMPTY")) return finish(null);
+    if (text.includes("TIMEOUT_RETRY") && existsSync(root + "/retry-ui.json")) return finish(JSON.parse(readFileSync(root + "/retry-ui.json", "utf8")));
     return finish("REQUEST RESULT");
   }
   if (text.includes("CTX_HOLD")) { writeFileSync(root+"/ctx-started","1"); for(let i=0;i<1000&&!existsSync(root+"/ctx-release");i++)await nap(20);return finish("CTX DONE"); }
@@ -365,13 +384,21 @@ function fakeClaude(root: string): string {
   const cli = join(root, "fake-claude.mjs");
   writeFileSync(cli, `#!${process.execPath}
 import { createConnection } from "node:net";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
+const root = ${JSON.stringify(root)};
 if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (frame) => console.log(JSON.stringify(frame));
 process.stdin.once("data", async (input) => {
   out({ type: "system", subtype: "init", session_id: "sess-native", model: "claude-sonnet-5" });
+  if (String(input).includes("OPENUI_FALLBACK")) {
+    const text = JSON.parse(readFileSync(root + "/fallback-ui.json", "utf8"));
+    writeFileSync(root + "/fallback-started", "1");
+    out({ type: "assistant", message: { content: [{ type: "text", text }] } });
+    out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 100, total_cost_usd: 0, session_id: "sess-native", result: text });
+    return setTimeout(() => process.exit(0), 50);
+  }
   if (String(input).includes("CLAUDE_THINKING")) {
     out({ type: "system", subtype: "thinking_tokens", estimated_tokens: 32, text: "PRIVATE_THINKING" });
     out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "PRIVATE_THINKING" }, { type: "text", text: "A visible note." }] } });

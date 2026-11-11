@@ -271,3 +271,61 @@ test("a turn that could not run answers with why, and a refused steer forgets it
   assert.equal(g.turn.completed, false);
   await g.turn.stop();
 });
+
+test("component source is the exact non-joined request and final row captured at completion", async () => {
+  const rows = [row("older", "user"), row("OLD", "bot")];
+  const f = fixture(rows);
+  f.turn.joining();
+  rows.push(row("OLD END", "bot"));
+  f.turn.ended();
+  const request = row("request", "user", { queued: true });
+  rows.push(request);
+  f.turn.joined(false);
+  f.turn.allowComponentsFor(request.id);
+  request.queued = false;
+  const answer = row("OUR ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] });
+  rows.push(row("earlier note", "bot"), answer);
+  f.turn.ended();
+  rows.push(row("next", "user"), row("OTHER ANSWER", "bot"));
+  const captured = f.turn.componentSource();
+  assert.equal(captured?.message.id, answer.id);
+  assert.equal(captured?.current(), true);
+  answer.ui![0]!.tree.props.changed = "new";
+  assert.equal(captured?.current(), false, "a same-ID changed UI must not pass at handoff");
+  assert.equal(f.turn.componentSource(), null);
+  await f.turn.stop();
+});
+
+test("component source rejects changed or deleted request and reply at handoff", async () => {
+  for (const which of ["request", "reply"] as const) for (const change of ["deleted", "text", "quiet"] as const) {
+    const request = row("request", "user");
+    const answer = row("answer", "bot");
+    const rows = [request, answer];
+    const f = fixture(rows);
+    f.turn.allowComponentsFor(request.id);
+    f.turn.ended();
+    const source = f.turn.componentSource();
+    assert.ok(source);
+    const target = which === "request" ? request : answer;
+    if (change === "text") target.text = "changed";
+    else if (change === "deleted") target.deleted = true;
+    else target.quiet = true;
+    assert.equal(source.current(), false, `${which} ${change}`);
+    await f.turn.stop();
+  }
+});
+
+test("empty, failed, joined and continued turns never borrow a later component source", async () => {
+  for (const kind of ["empty", "failed", "joined", "continued"] as const) {
+    const request = row("request", "user", kind === "joined" ? { midTurn: true } : {});
+    const rows = [request];
+    const f = fixture(rows);
+    f.turn.allowComponentsFor(request.id);
+    if (kind !== "empty") rows.push(row("current", "bot"));
+    if (kind === "continued") f.turn.excludeComponentsOnContinuation();
+    f.turn.ended(undefined, kind !== "failed");
+    rows.push(row("later", "user"), row("later answer", "bot"));
+    assert.equal(f.turn.componentSource(), null, kind);
+    await f.turn.stop();
+  }
+});
