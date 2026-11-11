@@ -15,6 +15,11 @@ export class TurnProgress {
   private failed?: string;
   /** Which of the lane's turns the captured end was. */
   private endedIn?: number;
+  /** A component may be added only to the exact request and selected text
+   * captured at this completion, never a later re-selection. */
+  private componentCapture?: { request: string; reply: string; requestId: string; replyId: string };
+  private componentsExcluded = false;
+  private componentRequest?: string;
   private join?: { after?: string; accepted: boolean };
   private progress: Progress;
   private messages: () => readonly Message[];
@@ -50,6 +55,7 @@ export class TurnProgress {
       // the old turn did not consume this request
       this.finished = undefined;
       this.failed = undefined;
+      this.componentCapture = undefined;
       return;
     }
     this.join.accepted = true;
@@ -109,7 +115,7 @@ export class TurnProgress {
   /** Capture before another turn can start, even if the waiter or the
    * answer send itself has to wait. A still-queued request is not this turn.
    * `failure` is why the turn could not run, said instead of its span. */
-  ended(failure?: string): void {
+  ended(failure?: string, componentEligible = true): void {
     // While a steer is still being asked, a later end replaces an earlier
     // one: joined() keeps only the end of the turn the words went into.
     const tentative = this.join?.accepted === false;
@@ -117,6 +123,11 @@ export class TurnProgress {
     this.finished = this.span();
     this.failed = failure;
     this.endedIn = this.turn?.();
+    const request = this.taken();
+    const reply = this.finished.findLast(botWords);
+    if (!tentative && componentEligible && !this.componentsExcluded && request && request.id === this.componentRequest && !request.midTurn && reply) {
+      this.componentCapture = { request: JSON.stringify(request), reply: JSON.stringify(reply), requestId: request.id, replyId: reply.id };
+    }
     // A refusal discards this tentative end and queues a different turn.
     if (!tentative) void this.stop();
   }
@@ -134,6 +145,30 @@ export class TurnProgress {
   answerSpan(): readonly Message[] {
     if (!this.taken()) return [];
     return this.finished ?? this.span();
+  }
+
+  /** Only the explicitly identified queued waiter may capture a component. */
+  allowComponentsFor(requestId: string): void {
+    this.componentRequest = requestId;
+  }
+
+  /** A retry/pickup of a request already taken keeps its ordinary answer,
+   * but does not gain the narrower component addition. */
+  excludeComponentsOnContinuation(): void {
+    if (!this.join && this.taken()) this.componentsExcluded = true;
+  }
+
+  componentSource(): { message: Message; current: () => boolean } | null {
+    const captured = this.componentCapture;
+    if (!captured || !this.completed || this.failed !== undefined || this.componentsExcluded) return null;
+    const current = () => {
+      const rows = this.messages();
+      const request = rows.find((m) => m.id === captured.requestId);
+      const reply = rows.find((m) => m.id === captured.replyId);
+      return Boolean(request && reply && !request.deleted && !request.queued && !request.unsent && !request.midTurn &&
+        botWords(reply) && JSON.stringify(request) === captured.request && JSON.stringify(reply) === captured.reply);
+    };
+    return current() ? { message: JSON.parse(captured.reply) as Message, current } : null;
   }
 
   stop(): Promise<void> {
