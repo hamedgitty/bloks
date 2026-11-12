@@ -20,8 +20,8 @@ importers:
         specifier: 2.2.0
         version: 2.2.0(react@19.3.1)
       '@openuidev/lang-core':
-        specifier: 1.0.2
-        version: 1.0.2(zod@4.6.7)
+        specifier: 1.1.0
+        version: 1.1.0(zod@4.6.7)
       '@openuidev/react-lang':
         specifier: 1.0.2
         version: 1.0.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
@@ -491,8 +491,8 @@ packages:
       '@openuidev/react-lang':
         optional: true
 
-  '@openuidev/lang-core@1.0.2':
-    resolution: {integrity: sha512-mxrWXgSmGx9N8ZHFiRgvqCmCH8j3x0PTHJVRvtRPlucxDAihthgMR4W6RXJN5KnCl/5fk1SzcT9JHrvGTKcBFw==}
+  '@openuidev/lang-core@1.1.0':
+    resolution: {integrity: sha512-aeiAmOr3TEWXEaEyUpJtUuz/+l2WUZap07zpn3RpZbUaYHpqB9YPAx23Fgd5UElcZlbg+wrrS4GyWSGcJ7fgyg==}
     peerDependencies:
       '@modelcontextprotocol/sdk': '>=1.0.0'
       zod: ^3.25.0 || ^4.0.0
@@ -3020,7 +3020,7 @@ snapshots:
     optionalDependencies:
       '@openuidev/react-lang': 1.0.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
 
-  '@openuidev/lang-core@1.0.2(zod@4.6.7)':
+  '@openuidev/lang-core@1.1.0(zod@4.6.7)':
     dependencies:
       ci-info: 4.4.0
       zod: 4.6.7
@@ -3030,7 +3030,7 @@ snapshots:
   '@openuidev/react-lang@1.0.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
       '@openuidev/devtools': 0.3.1(@openuidev/observability@0.0.4)(@openuidev/react-lang@1.0.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      '@openuidev/lang-core': 1.0.2(zod@4.6.7)
+      '@openuidev/lang-core': 1.1.0(zod@4.6.7)
       '@openuidev/observability': 0.0.4
       react: 19.3.1
       zod: 4.6.7
