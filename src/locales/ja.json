@@ -3932,6 +3932,8 @@
   "modelProposal.onlyIfYouApply": "適用を押すまで何も変わりません。押すとすべてが変わるか、何も変わりません。",
   "modelProposal.title_other": "{name}が{count}件のモデル変更を提案しています",
   "modelProposal.to": "へ",
+  "modelProposal.withdrawn": "取り下げ済み",
+  "modelProposal.withdrawnSentence": "{name}はこの提案を取り下げました。回答は不要です。",
   "moveHome.bringEverythingInItTo": "その中のすべてを {computer} に移し、ここで実行します。",
   "moveHome.confirm.afterwards": "その後はここで実行され、ホストされているマシンは空のまま稼働し続けます。",
   "moveHome.confirm.intoEmpty": "{name} に入ります（空です）。",

@@ -84,13 +84,13 @@ const COMMANDS = {
     },
   },
   models: {
-    use: 'models | models propose <agent> <engine> <model> [<agent> <engine> <model>...] [--why "<reason>"] | models proposal <id>',
+    use: 'models | models propose <agent> <engine> <model> [<agent> <engine> <model>...] [--why "<reason>"] | models proposal <id> | models withdraw <id>',
     about:
       "with nothing after it, the engines, each with the models it offers and whether it is switched on, and which engine and model every agent is on. " +
       "propose puts one card in this conversation for the owner listing each agent you name (by id, or by a name only it has), the engine and model it is on, and the engine and model you propose: " +
       "nothing changes until they press Apply, and then every change is made or none is. An unknown agent, engine or model is refused with the reason, and nothing is proposed; " +
       "an engine that runs any model id (anyModelId in the list) takes one it does not list, by its exact id. " +
-      "It waits a minute for their answer; proposal <id> waits again. Another agent's settings are never changed directly",
+      "It waits a minute for their answer; proposal <id> waits again. withdraw <id> takes back a card of yours they have not answered, and nothing changes. Another agent's settings are never changed directly",
     run: (args) => {
       if (args[0] === "propose") {
         const flags = parseFlags(args.slice(1));
@@ -108,7 +108,11 @@ const COMMANDS = {
         if (!args[1]) throw new Error("proposal needs the id `models propose` answered with");
         return request("GET", `/api/agent/models/proposals/${encodeURIComponent(args[1])}`);
       }
-      if (args.length) throw new Error("models takes propose or proposal, or nothing to list the engines and agents");
+      if (args[0] === "withdraw") {
+        if (args.length !== 2 || !args[1]) throw new Error("withdraw needs the one id `models propose` answered with");
+        return request("DELETE", `/api/agent/models/proposals/${encodeURIComponent(args[1])}`);
+      }
+      if (args.length) throw new Error("models takes propose, proposal or withdraw, or nothing to list the engines and agents");
       return request("GET", "/api/agent/models");
     },
   },

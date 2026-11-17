@@ -132,7 +132,7 @@ export interface ModelProposalPlan {
   targets: Array<{ botId: string; name: string; from: ModelSidePlan; to: ModelSidePlan }>;
   why?: string;
   told?: boolean;
-  outcome?: "changed" | "kept" | "failed";
+  outcome?: "changed" | "kept" | "failed" | "withdrawn";
   error?: string;
 }
 

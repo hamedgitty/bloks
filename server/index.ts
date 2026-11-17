@@ -19632,6 +19632,9 @@ function modelProposalOutcome(laneId: string, message: Message): { status: numbe
     };
   }
   if (!plan.told) patchModelProposal(laneId, message, { told: true });
+  if (plan.outcome === "withdrawn") {
+    return { status: 200, body: { ok: false, withdrawn: true, proposal: plan.id, changed: changes.map((c) => ({ ...c, result: "unchanged" })), note: "You withdrew this proposal before the person answered it. Nothing changed." } };
+  }
   if (plan.outcome === "changed") {
     return { status: 200, body: { ok: true, changed: changes.map((c) => ({ ...c, result: "changed" })), note: `The person pressed Apply, and every change is saved: ${plan.targets.map(changeWords).join("; ")}. Each takes effect from that agent's next turn.` } };
   }
@@ -19667,7 +19670,10 @@ async function proposeModels(credential: AgentToken, body: Record<string, unknow
     const p = m.card?.modelProposal;
     return p && p.botId === bot.id && !p.outcome;
   });
-  if (open) return { status: 409, body: { error: `You already proposed model changes here, and they are waiting on the person. Wait for them with \`bloks models proposal ${open.card!.modelProposal!.id}\`.` } };
+  if (open) {
+    const openId = open.card!.modelProposal!.id;
+    return { status: 409, body: { error: `You already proposed model changes here (${openId}), and they are waiting on the person. Wait for them with \`bloks models proposal ${openId}\`, or, if that card no longer says what you want, take it back with \`bloks models withdraw ${openId}\` and propose again.`, proposal: openId } };
+  }
   const why = typeof body.why === "string" ? body.why.replace(/\s+/g, " ").trim().slice(0, MAX_WHY) : "";
   const plan: ModelProposalCard = {
     id: randomUUID(),
@@ -19704,6 +19710,7 @@ function answerModelProposal(laneId: string, messageId: string, apply: boolean):
   const message = store.messagesFor(laneId).find((m) => m.id === messageId);
   const plan = message?.card?.modelProposal;
   if (!message || !plan) return { status: 404, body: { error: "no such proposal" } };
+  if (plan.outcome === "withdrawn") return { status: 409, body: { error: `${plan.agentName} withdrew this proposal, so nothing changed` } };
   if (plan.outcome) return { status: 409, body: { error: "this proposal was answered already" } };
   const settle = (patch: Partial<ModelProposalCard>, answered: string) => {
     patchModelProposal(laneId, message, patch, answered);
@@ -19744,6 +19751,28 @@ function answerModelProposal(laneId: string, messageId: string, apply: boolean):
     });
   }
   return { status: 200, body: { ok: true, outcome: "changed", changed: plan.targets.map((t) => t.botId) } };
+}
+
+/** The agent takes back a card of its own the person has not answered,
+ * when the conversation has moved past it (GitHub 518): it closes as
+ * withdrawn, nothing changes, and the next proposal here can go up. Only
+ * the agent that made it, and only while it has no outcome. An Apply or
+ * Keep and a withdrawal each settle the card at once, so whichever comes
+ * first stands and the other is refused as answered. */
+function withdrawModelProposal(credential: AgentToken, id: string): { status: number; body: Record<string, unknown> } {
+  const found = findModelProposal(credential.botId, id, credential.taskId);
+  const plan = found?.message.card?.modelProposal;
+  // another agent's reads as unknown, as for a question
+  if (!found || !plan || plan.botId !== credential.botId) return { status: 404, body: { error: "No model proposal of yours has that id, so nothing changed." } };
+  if (plan.outcome) {
+    const how = plan.outcome === "withdrawn" ? "You withdrew it already" : plan.outcome === "kept" ? "The person kept the models as they are" : plan.outcome === "changed" ? "The person applied it" : "The person pressed Apply and nothing changed";
+    return { status: 409, body: { error: `This proposal is settled, so there is nothing to withdraw. ${how}. Run \`bloks models proposal ${plan.id}\` for how it went.`, outcome: plan.outcome } };
+  }
+  // told: the agent did this itself, so its next turn has nothing to hear
+  const patched = patchModelProposal(found.laneId, found.message, { outcome: "withdrawn", told: true }, "Withdrawn");
+  if (!patched?.card?.modelProposal?.outcome) return { status: 500, body: { error: "The card could not be closed, so it still waits on the person. Run withdraw again." } };
+  wakeProposal(plan.id);
+  return { status: 200, body: { ok: true, withdrawn: plan.id, note: "The card is closed as withdrawn. Nothing changed, and the person need not answer it." } };
 }
 
 /** What the agent's next turn in a lane hears about model proposals the
@@ -34404,7 +34433,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           const engine = a.selection ? world.engines.find((e) => e.id === a.selection!.instanceId) : undefined;
           return { id: a.id, name: a.name, engine: a.selection?.instanceId ?? null, engineName: engine?.name ?? a.selection?.instanceId ?? null, model: a.selection ? a.selection.model || engine?.default || "" : null };
         }),
-        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do. An engine with anyModelId runs a model id it does not list, so one newer than its list can be proposed by its exact id.",
+        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do. An engine with anyModelId runs a model id it does not list, so one newer than its list can be proposed by its exact id. `bloks models withdraw <id>` takes back a card of yours still waiting.",
       });
     }
     if (method === "POST" && path === "/api/agent/models/proposals") {
@@ -34423,6 +34452,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const outcome = modelProposalOutcome(found.laneId, found.message);
       return json(res, outcome.status, outcome.body);
+    }
+    if (m && method === "DELETE") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const withdrawn = withdrawModelProposal(asAgent, m[1]);
+      return json(res, withdrawn.status, withdrawn.body);
     }
     // The owner's answer to one, at this computer. Not an agent's, whose
     // credential no rule lets here (server/agent-cli.ts), not a member's,

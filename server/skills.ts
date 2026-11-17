@@ -497,7 +497,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 ## What only the person can do
 Say so plainly, and show them where rather than naming a page from memory:
 - \`where <words>\` finds the page and the way there in words. \`open <page-id>\` puts a card in the chat whose one button takes them there; it only opens the page.
-- \`settings propose\` lists the few everyday settings you may change for them, on a card they answer with Change or Keep. \`models propose\` puts other agents' engines and models on one card they apply whole or keep. Anything else is theirs to change.
+- \`settings propose\` lists the few everyday settings you may change for them, on a card they answer with Change or Keep. \`models propose\` puts other agents' engines and models on one card they apply whole or keep, and \`models withdraw <id>\` takes back one they have not answered. Anything else is theirs to change.
 - Answer a card, switch which tab is open, rewind, delete an agent, set a goal (/goal in the chat).
 - Always theirs: approvals and rules, the limit on agents writing to agents, engines, sign-ins and keys, members and invites, phones and Bloks Cloud, the plan and spending limits, backups and moving or exporting a workspace, the browser's sites, Home Assistant. Point them there with \`open\`.
 - How a feature works and where it lives: the how-bloks-works skill.

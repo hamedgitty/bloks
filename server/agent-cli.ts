@@ -167,6 +167,7 @@ export const RULES: Rule[] = [
   { method: "GET", path: "/api/agent/models", why: "see the engines and the models each offers, and which engine and model every agent is on" },
   { method: "POST", path: "/api/agent/models/proposals", why: "propose changing the engine and model of named agents, on one card the owner answers with Apply or Keep; nothing changes until they apply it, and then all of it or none" },
   { method: "GET", path: "/api/agent/models/proposals/:id", why: "wait for the owner's answer to model changes it proposed" },
+  { method: "DELETE", path: "/api/agent/models/proposals/:id", why: "withdraw model changes of its own the owner has not answered, closing the card with nothing changed" },
   // The goal the person set for the conversation this turn runs in, if
   // any. Reading only: a goal starts turns unattended and can run a
   // command on the person's computer, so setting one is theirs alone,

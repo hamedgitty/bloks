@@ -4613,6 +4613,17 @@ way keeps its engine; the next one uses the new choice. The agent hears
 the result per agent from the command still waiting, or at the start of
 its next turn in that conversation, once.
 
+One proposal waits at a time per agent in a conversation, so a card the
+conversation has moved past would hold the next one up until the owner
+found it. `bloks models withdraw <id>` is `DELETE
+/api/agent/models/proposals/:id` (GitHub 518): the agent that made the
+card, and only it, closes it while it has no outcome, as `withdrawn`,
+with nothing changed and nothing told at its next turn; the app says it
+was withdrawn and asks nothing. Apply, Keep and a withdrawal each settle
+the card at once, so whichever comes first stands and the others are
+refused. The refusal of a second proposal names the open card's id and
+this command.
+
 ## Rule suggestions
 
 When the owner keeps answering the same approval the same way, Bloks

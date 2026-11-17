@@ -4081,6 +4081,8 @@
   "modelProposal.title_one": "{name} schlägt eine Modelländerung vor",
   "modelProposal.title_other": "{name} schlägt {count} Modelländerungen vor",
   "modelProposal.to": "zu",
+  "modelProposal.withdrawn": "Zurückgezogen",
+  "modelProposal.withdrawnSentence": "{name} hat diesen Vorschlag zurückgezogen. Eine Antwort ist nicht nötig.",
   "moveHome.bringEverythingInItTo": "Bring alles darin auf {computer}, damit es hier läuft.",
   "moveHome.confirm.afterwards": "Danach läuft es hier, und dein gehostetes Gerät bleibt leer und eingeschaltet.",
   "moveHome.confirm.intoEmpty": "Es landet in {name}, das leer ist.",

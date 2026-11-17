@@ -4081,6 +4081,8 @@
   "modelProposal.title_one": "{name} sugere uma mudança de modelo",
   "modelProposal.title_other": "{name} sugere {count} mudanças de modelo",
   "modelProposal.to": "para",
+  "modelProposal.withdrawn": "Retirada",
+  "modelProposal.withdrawnSentence": "{name} retirou esta proposta. Não é preciso responder.",
   "moveHome.bringEverythingInItTo": "Traga tudo o que ele contém para {computer}, para rodar aqui.",
   "moveHome.confirm.afterwards": "Depois, ele roda aqui, e sua máquina hospedada fica vazia e em execução.",
   "moveHome.confirm.intoEmpty": "Vai para {name}, que está vazio.",

@@ -5,7 +5,7 @@
 // changes every one of them or none, and Keep leaves them all, so what
 // the owner reads here is exactly what changes. A model typed by its id,
 // one the engine runs but does not list, is marked as the picker marks
-// it.
+// it, and a card the agent took back says so and asks nothing.
 import { useState } from "react";
 import { ArrowRight, Check, Loader2 } from "@/components/icons";
 import { api, type ModelProposalPlan, type ModelSidePlan } from "@/state/store";
@@ -51,7 +51,9 @@ export function ModelProposalCard({ plan, messageId }: { plan: ModelProposalPlan
         ? t("modelProposal.kept")
         : plan.outcome === "failed"
           ? t("modelProposal.notChanged")
-          : t("modelProposal.eyebrow");
+          : plan.outcome === "withdrawn"
+            ? t("modelProposal.withdrawn")
+            : t("modelProposal.eyebrow");
   return (
     <div className={shell}>
       <div className="px-4 pt-4">
@@ -94,6 +96,8 @@ export function ModelProposalCard({ plan, messageId }: { plan: ModelProposalPlan
           <span className="text-body text-muted-foreground">{t("modelProposal.keptSentence")}</span>
         ) : plan.outcome === "failed" ? (
           <span className="text-body text-muted-foreground">{t("modelProposal.failedSentence", { error: plan.error ?? "" })}</span>
+        ) : plan.outcome === "withdrawn" ? (
+          <span className="text-body text-muted-foreground">{t("modelProposal.withdrawnSentence", { name: plan.agentName })}</span>
         ) : (
           <>
             <button onClick={() => answer(true)} disabled={busy !== null} className={primary}>

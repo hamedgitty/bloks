@@ -132,6 +132,7 @@ describe("who may do what", () => {
     assert.equal(allows("bot-1", "GET", "/api/agent/models").ok, true);
     assert.equal(allows("bot-1", "POST", "/api/agent/models/proposals").ok, true);
     assert.equal(allows("bot-1", "GET", "/api/agent/models/proposals/abc-123").ok, true);
+    assert.equal(allows("bot-1", "DELETE", "/api/agent/models/proposals/abc-123").ok, true);
     assert.ok(NEVER.includes("/api/model-proposals"));
     assert.equal(allows("bot-1", "POST", "/api/model-proposals/lane-1/msg-1/apply").ok, false);
     assert.equal(allows("bot-1", "POST", "/api/model-proposals/lane-1/msg-1/keep").ok, false);
@@ -278,5 +279,68 @@ describe("over the wire", () => {
     assert.equal(apply.status, 200, await apply.clone().text());
     const saved = (await f.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === ben.id).modelSelection;
     assert.deepEqual({ instanceId: saved.instanceId, model: saved.model }, { instanceId: "claude", model: "claude-fable-9-9" });
+  });
+
+  test("an agent withdraws its own unanswered card, and nobody else's (GitHub 518)", async (t) => {
+    const f = await controlledChain(t, {}, { BLOKS_SETTINGS_WAIT_MS: "400" });
+    const ada = await f.hire("Ada");
+    const ben = await f.hire("Ben");
+    const eve = await f.hire("Eve");
+    const model = async (bot: { id: string }) => (await f.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id).modelSelection.model;
+    const was = await model(ben);
+    const turn = await f.begin(ada);
+    const proposed = await bloks(f.h.url, turn, f.home, ["models", "propose", "Ben", "claude", "claude-opus-5"]);
+    assert.equal(proposed.body.pending, true, JSON.stringify(proposed.body));
+    const first = proposed.body.proposal as string;
+    const card = (await f.messages(ada)).find((m) => m.card?.modelProposal?.id === first);
+
+    // a second card waits on the first, and the refusal says how to take it back
+    const blocked = await bloks(f.h.url, turn, f.home, ["models", "propose", "Eve", "claude", "claude-opus-5"]);
+    assert.equal(blocked.exit, 1);
+    assert.ok(blocked.body.error.includes(`bloks models withdraw ${first}`), blocked.body.error);
+
+    // another agent cannot withdraw it
+    const other = await f.begin(eve);
+    const theirs = await bloks(f.h.url, other, f.home, ["models", "withdraw", first]);
+    assert.equal(theirs.exit, 1);
+    assert.match(theirs.body.error, /No model proposal of yours has that id/);
+    await f.finish(other, eve);
+
+    // its own agent can, while a wait on it hears so; nothing changes
+    const waiting = bloks(f.h.url, turn, f.home, ["models", "proposal", first]);
+    const withdrawn = await bloks(f.h.url, turn, f.home, ["models", "withdraw", first]);
+    assert.equal(withdrawn.exit, 0, JSON.stringify(withdrawn.body));
+    assert.equal(withdrawn.body.withdrawn, first);
+    const heard = await waiting;
+    assert.equal(heard.body.withdrawn, true, JSON.stringify(heard.body));
+    const closed = (await f.messages(ada)).find((m) => m.id === card.id);
+    assert.equal(closed.card.modelProposal.outcome, "withdrawn");
+    assert.equal(closed.card.answered, "Withdrawn");
+    assert.equal(await model(ben), was);
+    // settled: neither a second withdraw nor the owner's Apply does anything
+    const again = await bloks(f.h.url, turn, f.home, ["models", "withdraw", first]);
+    assert.equal(again.exit, 1);
+    assert.match(again.body.error, /You withdrew it already/);
+    const late = await f.h.fetch(`/api/model-proposals/${closed.card.modelProposal.laneId}/${card.id}/apply`, { method: "POST", body: "{}" });
+    assert.equal(late.status, 409);
+    assert.match((await late.json()).error, /Ada withdrew this proposal/);
+    assert.equal(await model(ben), was);
+
+    // the next card goes up, and once applied cannot be withdrawn
+    const next = await bloks(f.h.url, turn, f.home, ["models", "propose", "Ben", "claude", "claude-opus-5"]);
+    assert.equal(next.body.pending, true, JSON.stringify(next.body));
+    const second = (await f.messages(ada)).find((m) => m.card?.modelProposal?.id === next.body.proposal);
+    const apply = await f.h.fetch(`/api/model-proposals/${second.card.modelProposal.laneId}/${second.id}/apply`, { method: "POST", body: "{}" });
+    assert.equal(apply.status, 200, await apply.clone().text());
+    assert.equal(await model(ben), "claude-opus-5");
+    const after = await bloks(f.h.url, turn, f.home, ["models", "withdraw", next.body.proposal]);
+    assert.equal(after.exit, 1);
+    assert.match(after.body.error, /The person applied it/);
+
+    // its next turn hears of the card applied, not of the one it withdrew itself
+    await f.finish(turn, ada);
+    const later = await f.begin(ada, "Carry on");
+    assert.match(later.text, /the person applied the model changes you proposed/);
+    assert.doesNotMatch(later.text, /kept the models|nothing changed/);
   });
 });

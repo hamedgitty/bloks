@@ -4130,6 +4130,8 @@
   "modelProposal.title_one": "{name} suggests a model change",
   "modelProposal.title_other": "{name} suggests {count} model changes",
   "modelProposal.to": "to",
+  "modelProposal.withdrawn": "Withdrawn",
+  "modelProposal.withdrawnSentence": "{name} withdrew this proposal. No answer is needed.",
   "moveHome.bringEverythingInItTo": "Bring everything in it to {computer}, to run here.",
   "moveHome.confirm.afterwards": "Afterwards it runs here, and your hosted machine is left empty and running.",
   "moveHome.confirm.intoEmpty": "It lands in {name}, which is empty.",

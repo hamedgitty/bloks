@@ -3937,6 +3937,8 @@
   "modelProposal.onlyIfYouApply": "在你按下应用之前不会有任何更改。届时全部更改，或全部不变。",
   "modelProposal.title_other": "{name}建议更改{count}个模型",
   "modelProposal.to": "改为",
+  "modelProposal.withdrawn": "已撤回",
+  "modelProposal.withdrawnSentence": "{name}撤回了这个提议。无需回答。",
   "moveHome.bringEverythingInItTo": "将其中的全部内容带到 {computer} 上，在此运行。",
   "moveHome.confirm.afterwards": "之后它将在此运行，你的托管机器会保持空置并继续运行。",
   "moveHome.confirm.intoEmpty": "将放入 {name}，该工作区为空。",

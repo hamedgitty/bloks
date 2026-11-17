@@ -95,7 +95,7 @@ export interface ModelProposalCard {
   why?: string;
   /** Set once the agent has been told how it went. */
   told?: boolean;
-  outcome?: "changed" | "kept" | "failed";
+  outcome?: "changed" | "kept" | "failed" | "withdrawn";
   /** Why nothing changed, when Apply could not. */
   error?: string;
 }

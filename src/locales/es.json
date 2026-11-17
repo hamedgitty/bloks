@@ -4081,6 +4081,8 @@
   "modelProposal.title_one": "{name} sugiere un cambio de modelo",
   "modelProposal.title_other": "{name} sugiere {count} cambios de modelo",
   "modelProposal.to": "a",
+  "modelProposal.withdrawn": "Retirada",
+  "modelProposal.withdrawnSentence": "{name} retiró esta propuesta. No hace falta responder.",
   "moveHome.bringEverythingInItTo": "Trae todo lo que contiene a {computer}, para que funcione aquí.",
   "moveHome.confirm.afterwards": "Después funciona aquí, y tu máquina alojada queda vacía y en ejecución.",
   "moveHome.confirm.intoEmpty": "Se instala en {name}, que está vacío.",
