@@ -93,6 +93,29 @@ describe("reading a proposal", () => {
     assert.ok(!readModelProposal({ changes: many }, WORLD).ok);
   });
 
+  test("an engine that runs any id takes a typed one it does not list, held to the picker's rule (GitHub 517)", () => {
+    const any: ModelWorld = { ...WORLD, engines: WORLD.engines.map((e) => (e.id === "claude" ? { ...e, acceptsAnyId: true } : e)) };
+    const read = readModelProposal({ changes: [{ agent: "Ada", engine: "claude", model: "claude-fable-9-9" }] }, any);
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.targets[0]!.to, { instanceId: "claude", model: "claude-fable-9-9", engine: "Claude Code", label: "claude-fable-9-9", unlisted: true });
+    // a listed one is still found by its name, and is not marked
+    const listed = readModelProposal({ changes: [{ agent: "Ada", engine: "claude", model: "Claude Opus 5" }] }, any);
+    assert.ok(listed.ok);
+    assert.equal(listed.targets[0]!.to.unlisted, undefined);
+    // the typed id is a model id and nothing else
+    for (const bad of ["claude fable", "claude;rm", "x".repeat(201)]) {
+      const refused = readModelProposal({ changes: [{ agent: "Ada", engine: "claude", model: bad }] }, any);
+      assert.ok(!refused.ok, bad);
+      assert.match(refused.errors[0]!, /is not a model id Claude Code could run/);
+    }
+    // Apply passes it again, and refuses it once the engine stops taking any id
+    assert.deepEqual(blockers(read, any), []);
+    assert.deepEqual(blockers(read, WORLD), ["Claude Code no longer offers claude-fable-9-9 for Ada"]);
+    // and an engine that only runs its list still refuses one it does not list
+    const codex = readModelProposal({ changes: [{ agent: "Ada", engine: "codex", model: "gpt-9" }] }, any);
+    assert.ok(!codex.ok && /Codex has no model "gpt-9"/.test(codex.errors[0]!));
+  });
+
   test("a card is out of date once any agent on it has moved, and then applies to nobody", () => {
     const read = readModelProposal({ changes: [{ agent: "Ada", engine: "codex", model: "gpt-5" }, { agent: "Ben", engine: "claude", model: "claude-opus-5" }] }, WORLD);
     assert.ok(read.ok);
@@ -152,9 +175,9 @@ describe("over the wire", () => {
     assert.equal(listed.body.agents.find((a: any) => a.id === ben.id)?.model, "claude-sonnet-5");
 
     // an unknown model and an agent that is not there: refused, no card
-    const unknown = await bloks(f.h.url, turn, f.home, ["models", "propose", "Ben", "claude", "claude-imaginary-9"]);
+    const unknown = await bloks(f.h.url, turn, f.home, ["models", "propose", "Ben", "claude", "claude imaginary 9"]);
     assert.equal(unknown.exit, 1);
-    assert.match(unknown.body.error, /Nothing was proposed: Ben: Claude has no model "claude-imaginary-9"\. It offers: /);
+    assert.match(unknown.body.error, /Nothing was proposed: Ben: "claude imaginary 9" is not a model id Claude could run\. It takes any model id /);
     const nobody = await bloks(f.h.url, turn, f.home, ["models", "propose", "Nobody", "claude", "claude-opus-5"]);
     assert.equal(nobody.exit, 1);
     assert.match(nobody.body.error, /there is no agent "Nobody" here/);
@@ -238,5 +261,22 @@ describe("over the wire", () => {
     assert.match(next.text, /the person kept the models you proposed changing as they are/);
     assert.match(next.text, /the person pressed Apply on the model changes you proposed, but nothing changed \(Ben is on Claude, Claude Haiku 4\.5 now/);
     assert.doesNotMatch(next.text, /applied the model changes you proposed/, "the change it already heard is not told twice");
+  });
+
+  test("a model id newer than the list is proposed as typed, marked, and applied (GitHub 517)", async (t) => {
+    const f = await controlledChain(t, {}, { BLOKS_SETTINGS_WAIT_MS: "400" });
+    const ada = await f.hire("Ada");
+    const ben = await f.hire("Ben");
+    const turn = await f.begin(ada);
+    const listed = await bloks(f.h.url, turn, f.home, ["models"]);
+    assert.equal(listed.body.engines.find((e: any) => e.id === "claude").anyModelId, true);
+    const typed = await bloks(f.h.url, turn, f.home, ["models", "propose", "Ben", "claude", "claude-fable-9-9"]);
+    assert.equal(typed.body.pending, true, JSON.stringify(typed.body));
+    const card = (await f.messages(ada)).find((m) => m.card?.modelProposal?.id === typed.body.proposal);
+    assert.deepEqual(card.card.modelProposal.targets[0].to, { instanceId: "claude", model: "claude-fable-9-9", engine: "Claude", label: "claude-fable-9-9", unlisted: true });
+    const apply = await f.h.fetch(`/api/model-proposals/${card.card.modelProposal.laneId}/${card.id}/apply`, { method: "POST", body: "{}" });
+    assert.equal(apply.status, 200, await apply.clone().text());
+    const saved = (await f.h.json("/api/bots?messages=0")).bots.find((b: any) => b.id === ben.id).modelSelection;
+    assert.deepEqual({ instanceId: saved.instanceId, model: saved.model }, { instanceId: "claude", model: "claude-fable-9-9" });
   });
 });

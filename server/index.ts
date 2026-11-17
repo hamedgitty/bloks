@@ -19589,6 +19589,7 @@ function modelWorld(): ModelWorld {
       enabled: i.enabled,
       default: i.models.default,
       options: i.models.options.map((o) => ({ id: o.id, label: o.label })),
+      ...(i.models.acceptsAnyId ? { acceptsAnyId: true } : {}),
     })),
   };
 }
@@ -34398,12 +34399,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
       const world = modelWorld();
       return json(res, 200, {
-        engines: world.engines.map((e) => ({ id: e.id, name: e.name, on: e.enabled, default: e.default, models: e.options })),
+        engines: world.engines.map((e) => ({ id: e.id, name: e.name, on: e.enabled, default: e.default, models: e.options, ...(e.acceptsAnyId ? { anyModelId: true } : {}) })),
         agents: world.agents.map((a) => {
           const engine = a.selection ? world.engines.find((e) => e.id === a.selection!.instanceId) : undefined;
           return { id: a.id, name: a.name, engine: a.selection?.instanceId ?? null, engineName: engine?.name ?? a.selection?.instanceId ?? null, model: a.selection ? a.selection.model || engine?.default || "" : null };
         }),
-        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do.",
+        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do. An engine with anyModelId runs a model id it does not list, so one newer than its list can be proposed by its exact id.",
       });
     }
     if (method === "POST" && path === "/api/agent/models/proposals") {

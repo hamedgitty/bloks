@@ -3,7 +3,9 @@
 // and the engine and model proposed, with a switch of engine marked,
 // since another engine has other tools and other safeguards. Apply
 // changes every one of them or none, and Keep leaves them all, so what
-// the owner reads here is exactly what changes.
+// the owner reads here is exactly what changes. A model typed by its id,
+// one the engine runs but does not list, is marked as the picker marks
+// it.
 import { useState } from "react";
 import { ArrowRight, Check, Loader2 } from "@/components/icons";
 import { api, type ModelProposalPlan, type ModelSidePlan } from "@/state/store";
@@ -20,7 +22,10 @@ const quiet = "rounded-xl px-3 py-2 text-ui text-muted-foreground transition-col
 function Side({ side, strong, engineMoves }: { side: ModelSidePlan; strong?: boolean; engineMoves?: boolean }) {
   return (
     <span className="flex min-w-0 flex-col">
-      <span className={`break-words text-body text-foreground ${strong ? "font-medium" : ""}`}>{side.label}</span>
+      <span className={`break-words text-body text-foreground ${strong ? "font-medium" : ""}`}>
+        {side.label}
+        {side.unlisted && <span className="ml-1.5 whitespace-nowrap text-caption font-normal text-muted-foreground">{t("modelPicker.custom")}</span>}
+      </span>
       <span className={`break-words text-small ${engineMoves ? "font-medium text-brand-ink" : "text-muted-foreground"}`}>{side.engine}</span>
     </span>
   );

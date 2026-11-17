@@ -119,6 +119,8 @@ export interface ModelSidePlan {
   model: string;
   engine: string;
   label: string;
+  /** A typed id the engine does not list, which it runs as it is. */
+  unlisted?: true;
 }
 
 /** Models an agent proposed for other agents (server/model-proposals.ts). */

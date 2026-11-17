@@ -4583,7 +4583,13 @@ is `POST /api/agent/models/proposals` with `{ changes: [{ agent, engine,
 model }], why }`, read by `server/model-proposals.ts` against the agents
 and engines there are now: an agent by id or by a name only it has, an
 engine by id or name, a model the engine lists (or its default), up to
-`MAX_TARGETS` agents, each once. A model the engine does not list, an
+`MAX_TARGETS` agents, each once. An engine whose catalog
+`acceptsAnyId` (Claude Code, whose list ships with Bloks) also takes a
+model id it does not list, held to the picker's rule for a typed id
+(GitHub 121: `MAX_MODEL_ID_CHARS`, the model id characters), so a model
+newer than this version of Bloks can be proposed (GitHub 517); the card
+marks it as the picker does, and `bloks models` says `anyModelId` for
+such an engine. A model the engine does not list and would not run, an
 engine that is not there or is switched off (unless the agent is on it
 already), an agent that is not there, and an agent already on that
 model are each refused, all of them in one answer, and nothing is

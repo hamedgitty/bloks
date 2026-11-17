@@ -88,7 +88,8 @@ const COMMANDS = {
     about:
       "with nothing after it, the engines, each with the models it offers and whether it is switched on, and which engine and model every agent is on. " +
       "propose puts one card in this conversation for the owner listing each agent you name (by id, or by a name only it has), the engine and model it is on, and the engine and model you propose: " +
-      "nothing changes until they press Apply, and then every change is made or none is. An unknown agent, engine or model is refused with the reason, and nothing is proposed. " +
+      "nothing changes until they press Apply, and then every change is made or none is. An unknown agent, engine or model is refused with the reason, and nothing is proposed; " +
+      "an engine that runs any model id (anyModelId in the list) takes one it does not list, by its exact id. " +
       "It waits a minute for their answer; proposal <id> waits again. Another agent's settings are never changed directly",
     run: (args) => {
       if (args[0] === "propose") {

@@ -22,6 +22,12 @@
 // its turns take the nearest level the new model offers, as they would
 // after a change in its settings.
 //
+// An engine that takes any model id (Claude Code, whose list ships with
+// Bloks) takes one typed in here too, as its picker does (GitHub 121): a
+// model newer than this version of Bloks is the change most worth
+// proposing (GitHub 517). It is held to the picker's rule for a model id,
+// and the card says it is not in the list.
+//
 // Pure: reading a proposal against the agents and engines there are, and
 // checking it again before it applies. The card, the waiting and the
 // change itself are server/index.ts's.
@@ -42,6 +48,8 @@ export interface EngineView {
   /** The model it runs when an agent names none. */
   default: string;
   options: Array<{ id: string; label?: string }>;
+  /** It runs any model id it is given, listed or not (ModelCatalog). */
+  acceptsAnyId?: boolean;
 }
 
 /** An agent as the proposal reads it: its saved engine and model, as
@@ -64,6 +72,8 @@ export interface ModelSide {
   model: string;
   engine: string;
   label: string;
+  /** A typed id the engine does not list, which it takes as it is. */
+  unlisted?: true;
 }
 
 export interface ModelTarget {
@@ -92,19 +102,25 @@ export interface ModelProposalCard {
 
 const flat = (text: string) => text.trim().toLowerCase();
 
-/** An engine's model, by id or by the name the picker shows. */
-function modelOn(engine: EngineView, asked: string): { id: string; label?: string } | null {
+/** A model id as the picker takes one typed in, and PATCH /api/bots/:id saves it. */
+const modelId = (id: string) => id.length <= MAX_MODEL_ID_CHARS && MODEL_ID.test(id);
+
+/** An engine's model, by id or by the name the picker shows, or, on an
+ * engine that takes any id, a model id it does not list. */
+function modelOn(engine: EngineView, asked: string): { id: string; label?: string; unlisted?: true } | null {
   const want = flat(asked);
   const listed = engine.options.find((o) => o.id === asked.trim()) ?? engine.options.find((o) => flat(o.id) === want || (o.label && flat(o.label) === want));
   if (listed) return listed;
-  return engine.default && flat(engine.default) === want ? { id: engine.default } : null;
+  if (engine.default && flat(engine.default) === want) return { id: engine.default };
+  return engine.acceptsAnyId && modelId(asked.trim()) ? { id: asked.trim(), unlisted: true } : null;
 }
 
 /** How the card says a model on an engine. */
 export function sideOf(engine: EngineView | undefined, instanceId: string, model: string): ModelSide {
   const id = model || engine?.default || "";
-  const label = engine?.options.find((o) => o.id === id)?.label || id || "the engine's default";
-  return { instanceId, model, engine: engine?.name ?? instanceId, label };
+  const listed = engine?.options.find((o) => o.id === id);
+  const label = listed?.label || id || "the engine's default";
+  return { instanceId, model, engine: engine?.name ?? instanceId, label, ...(id && engine?.acceptsAnyId && !listed && id !== engine.default ? { unlisted: true as const } : {}) };
 }
 
 /** An agent by its id, or by its name when that names only one. */
@@ -171,9 +187,11 @@ export function readModelProposal(raw: unknown, world: ModelWorld): { ok: true; 
       continue;
     }
     const model = modelOn(engine, modelAsked);
-    if (!model || model.id.length > MAX_MODEL_ID_CHARS || !MODEL_ID.test(model.id)) {
+    if (!model || !modelId(model.id)) {
       const offered = [...new Set([engine.default, ...engine.options.map((o) => o.id)].filter(Boolean))];
-      errors.push(`${agent.name}: ${engine.name} has no model "${modelAsked.slice(0, 60)}". It offers: ${offered.join(", ") || "none it lists"}`);
+      errors.push(engine.acceptsAnyId
+        ? `${agent.name}: "${modelAsked.slice(0, 60)}" is not a model id ${engine.name} could run. It takes any model id of up to ${MAX_MODEL_ID_CHARS} letters, digits and . _ : @ / [ ] + -, and lists: ${offered.join(", ") || "none"}`
+        : `${agent.name}: ${engine.name} has no model "${modelAsked.slice(0, 60)}". It offers: ${offered.join(", ") || "none it lists"}`);
       continue;
     }
     const from = agent.selection;
@@ -222,6 +240,7 @@ export function blockers(card: Pick<ModelProposalCard, "targets">, world: ModelW
       out.push(`the engine ${engine.name} for ${target.name} is switched off`);
       continue;
     }
+    // a typed id passes again only where the engine still takes any id
     if (!modelOn(engine, target.to.model)) out.push(`${engine.name} no longer offers ${target.to.label} for ${target.name}`);
   }
   return out;
