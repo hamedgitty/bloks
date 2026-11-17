@@ -258,13 +258,14 @@ function LocalVmCard({ bot }: { bot: Bot }) {
   );
 }
 
-export function ComputerPanel({ bot }: { bot: Bot }) {
+export function ComputerPanel({ bot, docked = false, shown = true }: { bot: Bot; docked?: boolean; shown?: boolean }) {
   const { state, dispatch } = useStore();
   const hosted = Boolean(state.config?.hosted?.on);
   // Off a Mac nothing can work this computer's own screen, so the server
   // leaves it out of the choices and Automatic never falls back on it.
   const ownScreen = offersThisComputer(state.config?.hosted?.computers);
-  useEscape(() => dispatch({ type: "toggleComputer", open: false }));
+  // in the side dock the dock is what closes it
+  useEscape(() => dispatch({ type: "toggleComputer", open: false }), !docked);
   const [phase, setPhase] = useState<Phase>("checking");
   const [boxState, setBoxState] = useState<string | null>(null);
   const [polledFrame, setPolledFrame] = useState<{ png: string; mime: string } | null>(null);
@@ -341,7 +342,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const live = state.screens[bot.id];
   const sseFlowing = Boolean(bot.busy && live);
   const inFlight = useRef(false);
-  const visible = usePageVisible();
+  // nothing is asked for while another panel of the dock is in front
+  const visible = usePageVisible() && shown;
   useEffect(() => {
     if (phase !== "ready" || sseFlowing || !visible) return;
     let alive = true;
@@ -422,12 +424,19 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside className="fixed inset-0 z-50 flex w-full animate-panel-in flex-col bg-background md:static md:z-auto md:h-full md:w-[380px] md:max-w-[85vw] md:shrink-0 md:border-l">
+    <aside
+      className={
+        docked
+          ? "flex h-full min-h-0 w-full flex-col bg-background"
+          : "fixed inset-0 z-50 flex w-full animate-panel-in flex-col bg-background md:static md:z-auto md:h-full md:w-[380px] md:max-w-[85vw] md:shrink-0 md:border-l"
+      }
+    >
       {/* Header */}
       {/* The title and the way out, nothing else: the agent's settings
           are one click away in the chat header already, and a second door
-          to them here only crowded the panel. */}
-      <div className="flex h-[52px] shrink-0 items-center justify-between border-b pl-4 pr-3">
+          to them here only crowded the panel. In the dock, the dock's
+          ribbon says both. */}
+      <div className={cn("flex h-[52px] shrink-0 items-center justify-between border-b pl-4 pr-3", docked && "hidden")}>
         <span className="text-ui font-semibold text-foreground">{t("computerPanel.computer")}</span>
         <Button
           variant="ghost"

@@ -56,12 +56,17 @@ export function useTerminalDock({
   botName,
   onClose,
   askNew,
+  sideDock = false,
 }: {
   open: boolean;
   botId: string;
   botName: string;
   onClose: () => void;
   askNew: number;
+  /** The conversation has a side dock (dock/SideDock.tsx): a terminal on
+   * the right is one of its panels, drawn in `dockSlot`, rather than a
+   * column of its own with its own edge. */
+  sideDock?: boolean;
 }) {
   const [layout, setLayout] = useTerminalLayout();
   const [holder] = useState(() => {
@@ -112,8 +117,12 @@ export function useTerminalDock({
   const size = dragging ?? shownSize(layout, room);
   const way = popOutWay();
 
+  // on the right, in the dock: the dock sizes it and draws its edge
+  const inDock = sideDock && dockSide(layout) === "right";
+  const dockSlot = open && inDock ? <div key="terminal" ref={attach} className="flex h-full min-h-0 w-full min-w-0 flex-col" /> : null;
+
   const slot = (at: TerminalPosition): ReactNode => {
-    if (side !== at) return null;
+    if (side !== at || (at === "right" && inDock)) return null;
     const piece = (
       <div
         key="terminal"
@@ -170,7 +179,7 @@ export function useTerminalDock({
       )
     : null;
 
-  return { layout, body, slot, overlay, panel };
+  return { layout, setLayout, inDock, body, slot, dockSlot, overlay, panel };
 }
 
 /**

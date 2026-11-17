@@ -20,7 +20,6 @@ import { NewAgentScreen } from "@/components/NewAgentScreen";
 import { AgentSettingsPage } from "@/components/SettingsPanel";
 import { RoomView } from "@/components/RoomView";
 import { NewRoomDialog } from "@/components/NewRoomDialog";
-import { ComputerPanel } from "@/components/ComputerPanel";
 import { AutomationsPanel } from "@/components/AutomationsPanel";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { WorkspaceDialogs } from "@/components/WorkspaceDialogs";
@@ -201,10 +200,6 @@ function Shell() {
         </main>
       )}
       </PlaceFade>
-      {/* In the panel's row, to the right of the work. Left outside it,
-          as a child of the window's column, it took the full height and
-          squeezed the chat and the sidebar to nothing. */}
-      {state.computerOpen && bot && <ComputerPanel bot={bot} />}
       </div>
       </div>
       {state.newRoomOpen && <NewRoomDialog />}

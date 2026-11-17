@@ -45,10 +45,8 @@ import { AgentAvatar } from "@/components/Avatar";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import { platformOf } from "@/lib/shortcuts";
 import {
-  BROWSER_SIDE_BY_SIDE,
   browserHome,
   browsingFor,
-  clampBrowserWidth,
   closeKey,
   closesPanel,
   controlLine,
@@ -57,6 +55,7 @@ import {
   hostLabel,
   isSecure,
   refreshBrowser,
+  revealInDock,
   setBrowserPanel,
   shownAddress,
   tabLabel,
@@ -137,7 +136,7 @@ export async function showPage(url: string, tabs: readonly BrowserTab[] | undefi
 export function useBrowserReveal() {
   useEffect(() => {
     if (!window.bloks?.onBrowserReveal) return;
-    return window.bloks.onBrowserReveal(() => setBrowserPanel({ open: true }));
+    return window.bloks.onBrowserReveal(() => revealInDock());
   }, []);
 }
 
@@ -171,99 +170,19 @@ function useSomethingOver(panel: HTMLElement | null, watching: boolean): boolean
 }
 
 /**
- * The panel, docked on the chat's right, or over the chat when the window
- * is too narrow for both. Drawn where this page can show the browser:
- * the desktop app's own, or the one the server keeps.
+ * The browser as a panel of the side dock (dock/SideDock.tsx), drawn where
+ * this page can show it: the desktop app's own, or the one the server
+ * keeps. `shown` is false while the dock is being resized or another panel
+ * is in front, and the app's page view is then put out of sight.
  */
-export function BrowserDock({ botNames }: { botNames?: Record<string, string> }) {
-  const { open, width } = useBrowserPanel();
+export function DockedBrowser({ shown, botNames }: { shown: boolean; botNames?: Record<string, string> }) {
   const { home } = useBrowserWhere();
-  const [room, setRoom] = useState(0);
-  const [dragging, setDragging] = useState<number | null>(null);
-  const [holder, setHolder] = useState<HTMLDivElement | null>(null);
-
-  // the room the chat and the panel share, measured on the row they share
-  useLayoutEffect(() => {
-    const row = holder?.parentElement;
-    if (!row) return;
-    const measure = () => setRoom(row.getBoundingClientRect().width);
-    measure();
-    const watch = new ResizeObserver(measure);
-    watch.observe(row);
-    return () => watch.disconnect();
-  }, [holder]);
-
   // a server's browser may have come to be since the page loaded
   useEffect(() => {
-    if (open) refreshBrowser(loadFromServer);
-  }, [open]);
-
-  if (!open || (home !== "own" && home !== "server")) return null;
-  const narrow = room > 0 && room < BROWSER_SIDE_BY_SIDE;
-  const shown = narrow ? room : clampBrowserWidth(dragging ?? width, room || window.innerWidth);
-  return (
-    <>
-      {!narrow && (
-        <Edge
-          width={shown}
-          room={room}
-          onDrag={setDragging}
-          onDone={(next) => {
-            setDragging(null);
-            setBrowserPanel({ width: next });
-          }}
-        />
-      )}
-      <div
-        ref={setHolder}
-        className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border-l bg-card", narrow && "absolute inset-0 z-30 border-l-0")}
-        style={narrow ? undefined : { width: shown }}
-      >
-        <BrowserPanel resizing={dragging !== null} botNames={botNames} onServer={home === "server"} />
-      </div>
-    </>
-  );
-}
-
-/** The edge between the chat and the panel: drag it, or focus it and use
- * the arrow keys (Shift for bigger steps). */
-function Edge({ width, room, onDrag, onDone }: { width: number; room: number; onDrag: (w: number) => void; onDone: (w: number) => void }) {
-  const clamp = (w: number) => clampBrowserWidth(w, room || window.innerWidth);
-  return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={t("browserPanel.resizeTheBrowser")}
-      aria-valuenow={Math.round(width)}
-      tabIndex={0}
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        e.preventDefault();
-        const start = e.clientX;
-        let last = width;
-        const move = (event: PointerEvent) => {
-          last = clamp(width + (start - event.clientX));
-          onDrag(last);
-        };
-        const up = () => {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", up);
-          window.removeEventListener("pointercancel", up);
-          onDone(last);
-        };
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-        window.addEventListener("pointercancel", up);
-      }}
-      onKeyDown={(e) => {
-        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-        e.preventDefault();
-        const step = (e.shiftKey ? 64 : 16) * (e.key === "ArrowLeft" ? 1 : -1);
-        onDone(clamp(width + step));
-      }}
-      className="w-1.5 shrink-0 cursor-ew-resize bg-transparent outline-none transition-colors duration-150 hover:bg-accent focus-visible:bg-accent"
-    />
-  );
+    if (shown) refreshBrowser(loadFromServer);
+  }, [shown]);
+  if (home !== "own" && home !== "server") return null;
+  return <BrowserPanel resizing={!shown} botNames={botNames} onServer={home === "server"} />;
 }
 
 function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; botNames?: Record<string, string>; onServer: boolean }) {
@@ -340,9 +259,6 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
           <Plus size={16} />
         </HeaderButton>
         <div className="min-w-2 flex-1 self-stretch" />
-        <HeaderButton label={t("browserPanel.hideTheBrowserItsTabs")} onClick={close}>
-          <X size={16} />
-        </HeaderButton>
       </div>
 
       <div className="flex shrink-0 items-center gap-1 border-t px-1.5 py-1.5">

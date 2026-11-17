@@ -61,6 +61,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     does: "libShortcuts.does.palette",
   },
   { id: "toggleSidebar", group: "navigation", keys: [["Mod", "B"]], does: "libShortcuts.does.toggleSidebar" },
+  { id: "dockToggle", group: "navigation", keys: [["Mod", "Alt", "B"]], does: "libShortcuts.does.dockToggle", when: "libShortcuts.when.inAChat" },
   { id: "back", group: "navigation", keys: [["Mod", "["]], does: "libShortcuts.does.back" },
   { id: "forward", group: "navigation", keys: [["Mod", "]"]], does: "libShortcuts.does.forward" },
   {

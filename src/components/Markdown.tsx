@@ -25,6 +25,8 @@ import { splitHighlight } from "@/lib/find";
 import { looksShared } from "@/lib/sharedFile";
 import { TableScroll } from "./TableScroll";
 import { SharedFileLink } from "./Artifacts";
+import { useDockHost } from "./dock/context";
+import { modKey } from "@/lib/thisComputer";
 import { GenUIBlock, useInsideGenUi } from "./genui/GenUIBlock";
 import { isOpenUiLang } from "@/lib/genui/schema";
 import { t } from "@/lib/i18n";
@@ -118,22 +120,43 @@ function inlineMd(text: string, keyBase: string, highlight: string, mentions?: R
           return [<em key={k}>{render(token.children, k)}</em>];
         case "link":
           return [
-            <a
-              key={k}
-              href={token.href}
-              target="_blank"
-              rel="noreferrer"
-              title={token.href}
-              // anywhere, not break-word: only anywhere lets a long URL
-              // stop setting the width of a table cell it sits in
-              className="text-brand-ink underline decoration-brand-ink/35 underline-offset-3 transition-[text-decoration-color] duration-150 [overflow-wrap:anywhere] hover:decoration-brand-ink"
-            >
+            <WebLink key={k} href={token.href}>
               {render(token.children, k)}
-            </a>,
+            </WebLink>,
           ];
       }
     });
   return render(parseInline(text), keyBase);
+}
+
+/**
+ * A web address in a reply. Beside a chat with a side dock it opens in
+ * the Bloks browser there, so the page is read next to the conversation
+ * (GitHub 509); ⌘ or Ctrl with the click, or the middle button, still
+ * opens it in the person's own browser, and so does the browser panel's
+ * own button. Anywhere else it is the plain link it always was.
+ */
+function WebLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const host = useDockHost();
+  const inside = host?.openLink && /^https?:\/\//i.test(href) ? host.openLink : null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title={inside ? `${href}\n${t("markdown.linkOpensInDock", { mod: modKey() })}` : href}
+      onClick={(e) => {
+        if (!inside || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        inside(href);
+      }}
+      // anywhere, not break-word: only anywhere lets a long URL
+      // stop setting the width of a table cell it sits in
+      className="text-brand-ink underline decoration-brand-ink/35 underline-offset-3 transition-[text-decoration-color] duration-150 [overflow-wrap:anywhere] hover:decoration-brand-ink"
+    >
+      {children}
+    </a>
+  );
 }
 
 /** One line of inline markdown on its own, for places that are not a

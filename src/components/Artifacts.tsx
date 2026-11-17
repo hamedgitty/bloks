@@ -24,6 +24,7 @@ import { FileSpreadsheet } from "@/components/icons";
 import { FileText } from "@/components/icons";
 import { FileVideo } from "@/components/icons";
 import { Presentation } from "@/components/icons";
+import { Maximize2 } from "@/components/icons";
 import { type Message } from "@/state/store";
 import { Markdownish } from "@/components/Markdown";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -35,6 +36,7 @@ import { artifactHref, fileBase, fileTarget, openFailure, tooLargeHere, viewerFo
 import { formatNumber, t } from "@/lib/i18n";
 import { FOLLOW_MS, followAnswer, tagOfEtag, UNSEEN, type Seen, type VersionAnswer } from "@/lib/followFile";
 import { usePageVisible } from "@/lib/pageVisible";
+import { useDockHost } from "@/components/dock/context";
 
 type ArtifactMeta = NonNullable<Message["artifact"]>;
 
@@ -108,6 +110,9 @@ function useOpenLimit(): number | null {
 
 export function ArtifactCard({ botId, artifact }: { botId: string; artifact: ArtifactMeta }) {
   const [viewing, setViewing] = useState(false);
+  // beside the chat, in the dock, where there is one (GitHub 509)
+  const host = useDockHost();
+  const view = () => (host ? host.openDoc({ botId, ...artifact }) : setViewing(true));
   const kind = kindOf(artifact);
   const href = artifactHref(botId, artifact.name);
   // said on the card rather than after a click on View or Download, both
@@ -132,7 +137,7 @@ export function ArtifactCard({ botId, artifact }: { botId: string; artifact: Art
         {!tooLarge && (
           <span className="flex shrink-0 items-center gap-1">
             {kind.viewer !== "none" && (
-              <Button size="sm" variant="secondary" onClick={() => setViewing(true)}>
+              <Button size="sm" variant="secondary" onClick={view}>
                 {t("artifacts.view")}
               </Button>
             )}
@@ -287,6 +292,39 @@ export function ArtifactViewer({
   artifact: ArtifactMeta;
   onClose: () => void;
 }) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex h-[85vh] w-full max-w-[900px] flex-col gap-0 overflow-hidden p-0">
+        <ArtifactView botId={botId} artifact={artifact} onClose={onClose} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The viewer itself, in a dialog over the chat or in the side dock beside
+ * it (dock/DocsPanel.tsx). Docked, it keeps its place while another
+ * document is in front, since it stays drawn, and asks after newer
+ * versions only while it is the one shown.
+ */
+export function ArtifactView({
+  botId,
+  artifact,
+  onClose,
+  docked = false,
+  active = true,
+  onExpand,
+}: {
+  botId: string;
+  artifact: ArtifactMeta;
+  onClose: () => void;
+  docked?: boolean;
+  /** Docked: the same file in the larger viewer over the chat. */
+  onExpand?: () => void;
+  /** Shown now: a docked one behind another asks the server nothing. */
+  active?: boolean;
+}) {
+  const Title = DialogTitle;
   const kind = kindOf(artifact);
   const href = artifactHref(botId, artifact.name);
   const [rows, setRows] = useState<string[][] | null>(null);
@@ -317,7 +355,8 @@ export function ArtifactViewer({
   const quietly = useRef(false);
   const [removed, setRemoved] = useState(false);
   const [updated, setUpdated] = useState(0);
-  const visible = usePageVisible();
+  const pageVisible = usePageVisible();
+  const visible = pageVisible && active;
   const video = useRef<HTMLVideoElement>(null);
   const resume = useRef<{ at: number; playing: boolean } | null>(null);
   // a picture, a video or a PDF is asked for by URL, so a new version is a
@@ -438,13 +477,19 @@ export function ArtifactViewer({
   }, [updated]);
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex h-[85vh] w-full max-w-[900px] flex-col gap-0 overflow-hidden p-0">
-        <div className="flex h-[52px] shrink-0 items-center gap-3 border-b pr-11 pl-5">
-          <span className="text-brand-ink">{kind.icon}</span>
-          <DialogTitle className="min-w-0 flex-1 truncate text-ui" title={artifact.name}>
-            {fileBase(artifact.name)}
-          </DialogTitle>
+    <>
+        <div className={cn("flex shrink-0 items-center gap-3 border-b", docked ? "h-10 gap-2 pl-3 pr-1.5" : "h-[52px] pr-11 pl-5")}>
+          {!docked && <span className="text-brand-ink">{kind.icon}</span>}
+          {docked ? (
+            // the tab above names the file; here, what kind it is
+            <span className="min-w-0 flex-1 truncate text-small text-muted-foreground" title={artifact.name}>
+              {kind.label}
+            </span>
+          ) : (
+            <Title className="min-w-0 flex-1 truncate text-ui" title={artifact.name}>
+              {fileBase(artifact.name)}
+            </Title>
+          )}
           {/* said quietly when a newer version comes in, and to a screen
               reader too, without taking focus from anything */}
           <span
@@ -468,15 +513,27 @@ export function ArtifactViewer({
             <a
               href={`${href}?download`}
               download={fileBase(artifact.name)}
+              title={t("artifacts.download")}
+              aria-label={docked ? t("artifacts.download") : undefined}
               className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-body text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <Download size={14} />
-              {t("artifacts.download")}
+              {!docked && t("artifacts.download")}
             </a>
+          )}
+          {onExpand && (
+            <button
+              onClick={onExpand}
+              title={t("artifacts.openLarger")}
+              aria-label={t("artifacts.openLarger")}
+              className="flex items-center rounded-lg px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Maximize2 size={14} />
+            </button>
           )}
         </div>
 
-        <div className="min-h-0 flex-1 bg-muted/30">
+        <div className="@container min-h-0 flex-1 bg-muted/30">
           {removed && (
             <div role="status" className="flex size-full flex-col items-center justify-center gap-3 px-6 text-center">
               <span className="text-muted-foreground">{kind.icon}</span>
@@ -570,7 +627,7 @@ export function ArtifactViewer({
             ))}
           {(viewer === "table" || viewer === "sheet") &&
             (rows ? (
-              <div className="flex size-full min-h-0 flex-col sm:flex-row">
+              <div className="flex size-full min-h-0 flex-col @2xl:flex-row">
                 <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
                   <GridTable
                     rows={rows}
@@ -586,7 +643,7 @@ export function ArtifactViewer({
                     not: 260px of notes beside a table on a phone leaves
                     about a hundred pixels of spreadsheet, which is neither
                     a table nor a comment thread. */}
-                <div className="flex max-h-[45%] w-full shrink-0 flex-col border-t bg-card sm:max-h-none sm:w-[260px] sm:border-l sm:border-t-0">
+                <div className="flex max-h-[45%] w-full shrink-0 flex-col border-t bg-card @2xl:max-h-none @2xl:w-[260px] @2xl:border-l @2xl:border-t-0">
                   <div className="flex items-center justify-between border-b px-3 py-2">
                     <span className="text-small font-semibold text-foreground">{t("artifacts.notes")}</span>
                     {notes.some((n) => !n.resolved) && (
@@ -740,8 +797,7 @@ export function ArtifactViewer({
             </div>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+    </>
   );
 }
 
@@ -768,6 +824,7 @@ export function SharedFileLink({
   className?: string;
 }) {
   const [opening, setOpening] = useState<Opening>({ phase: "idle" });
+  const host = useDockHost();
   const target = fileTarget(href);
   const open = useCallback(async () => {
     setOpening({ phase: "opening" });
@@ -781,11 +838,17 @@ export function SharedFileLink({
         });
         return;
       }
-      setOpening({ phase: "open", botId: String(body.botId), artifact: body.artifact as ArtifactMeta });
+      const found = { botId: String(body.botId), artifact: body.artifact as ArtifactMeta };
+      if (host) {
+        host.openDoc({ botId: found.botId, ...found.artifact });
+        setOpening({ phase: "idle" });
+      } else {
+        setOpening({ phase: "open", ...found });
+      }
     } catch {
       setOpening({ phase: "failed", message: openFailure(0) });
     }
-  }, [href]);
+  }, [href, host]);
 
   return (
     <>

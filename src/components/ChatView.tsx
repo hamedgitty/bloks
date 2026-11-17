@@ -19,9 +19,15 @@ import { MessageComponent } from "./Gallery";
 import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
-import { BrowserDock, BrowsingOnMac, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
-import { setBrowserPanel, useBrowserPanel } from "@/lib/appBrowser";
-import { Globe } from "@/components/icons";
+import { BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
+import { Activity, FileText, Globe, PanelRight } from "@/components/icons";
+import { SideDock, type DockPane } from "./dock/SideDock";
+import { DocsPanel } from "./dock/DocsPanel";
+import { DockHostContext, type DockHost } from "./dock/context";
+import { ComputerPanel } from "./ComputerPanel";
+import { chatKey, dock, placeIn, useDockState, type DockPanel } from "@/lib/dock";
+import { dockChord } from "@/lib/dockKeys";
+import { moveTerminal } from "@/lib/terminalLayout";
 import { stepTab, terminalChord } from "@/lib/terminalTabs";
 import { closeRefusal, conversationChord, keysOwner, keysWhere, type ConversationChord } from "@/lib/conversationKeys";
 import { toast } from "@/components/ui/toast";
@@ -311,8 +317,12 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [terminalOpen, setTerminalOpen] = useState(false);
   // bumped by ⌃⇧` to ask the panel for a new tab as it opens
   const [terminalAskNew, setTerminalAskNew] = useState(0);
+  // whether the terminal is on screen, for the keys below: in the side
+  // dock, that is the dock showing it (set once the dock is read)
   const terminalShown = useRef(terminalOpen);
-  terminalShown.current = terminalOpen;
+  // what ⌃` does, which depends on where the terminal sits (below)
+  const toggleTerminalRef = useRef<() => void>(() => setTerminalOpen((open) => !open));
+  const openTerminalRef = useRef<() => void>(() => setTerminalOpen(true));
 
   const streaming = state.streaming[bot.threadId];
   const provisioning = state.provisioning[bot.id];
@@ -444,11 +454,15 @@ export function ChatView({ bot }: { bot: Bot }) {
       const chord = e.defaultPrevented ? null : terminalChord(e, platformOf());
       if (chord === "toggle") {
         e.preventDefault();
-        setTerminalOpen((open) => !open);
+        toggleTerminalRef.current();
       } else if (chord === "new" && !terminalShown.current) {
         e.preventDefault();
         setTerminalAskNew((n) => n + 1);
-        setTerminalOpen(true);
+        openTerminalRef.current();
+      } else if (!e.defaultPrevented && dockChord(e, platformOf())) {
+        // ⌘⌥B shows and hides the side dock, as ⌘B does the sidebar
+        e.preventDefault();
+        toggleDockRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -601,7 +615,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       openFind();
     } else if (ask.kind === "terminal") {
       takeAsk(ask);
-      setTerminalOpen(true);
+      openTerminalRef.current();
     } else if (ask.kind === "close") {
       takeAsk(ask);
       closeOpen();
@@ -728,17 +742,54 @@ export function ChatView({ bot }: { bot: Bot }) {
     focusBox();
   };
 
+  // ── the side dock (dock/SideDock.tsx, src/lib/dock.ts) ──
+  // One column on the right for the documents, the browser, a terminal
+  // moved to the right, the agent's computer and a turn's timeline,
+  // remembered per conversation.
+  const dockKey = chatKey(bot.id, bot.activeTaskId ?? bot.threadId);
+  useLayoutEffect(() => dock.setCurrent(dockKey), [dockKey]);
+  const dockState = useDockState();
+  const dockPlace = placeIn(dockState, dockKey);
+  const dockShows = (panel: DockPanel) => dockPlace.open && dockPlace.panel === panel;
+
   const terminal = useTerminalDock({
     open: terminalOpen,
     botId: bot.id,
     botName: bot.name,
     askNew: terminalAskNew,
+    sideDock: true,
     onClose: () => {
       setTerminalOpen(false);
+      dock.drop(dockKey, "terminal");
       // the keyboard goes back where you were typing before
       focusBox();
     },
   });
+  // On the right, the terminal is the dock's: ⌃` shows and hides it there,
+  // and anywhere else it opens and closes where it sits, as it always did.
+  terminalShown.current = terminalOpen && (!terminal.inDock || dockShows("terminal"));
+  toggleTerminalRef.current = () => {
+    if (!terminal.inDock) return setTerminalOpen((open) => !open);
+    if (dockShows("terminal")) return dock.hide(dockKey);
+    setTerminalOpen(true);
+    dock.show(dockKey, "terminal");
+  };
+  openTerminalRef.current = () => {
+    setTerminalOpen(true);
+    if (terminal.inDock) dock.show(dockKey, "terminal");
+  };
+  // Moved to the right while open, it goes into the dock; moved out, the
+  // dock lets it go. A dock remembered on the terminal opens it again.
+  useEffect(() => {
+    if (!terminal.inDock) {
+      dock.drop(dockKey, "terminal");
+      return;
+    }
+    if (terminalOpen && !dockShows("terminal") && dockPlace.panel !== "terminal") dock.show(dockKey, "terminal");
+  }, [terminal.inDock]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (dockShows("terminal") && terminal.inDock && !terminalOpen) setTerminalOpen(true);
+  }, [dockKey, dockPlace.open, dockPlace.panel]); // eslint-disable-line react-hooks/exhaustive-deps
   useSettingsObservation({
     "terminal.height": { status: "observed", value: terminal.layout.sizes.bottom },
     "terminal.open": { status: "observed", value: terminalOpen },
@@ -749,10 +800,10 @@ export function ChatView({ bot }: { bot: Bot }) {
   // app and wherever a server keeps a browser of its own, opened too when
   // an agent starts browsing, and news of the Mac's anywhere else.
   useBrowserReveal();
-  const browserPanel = useBrowserPanel();
   const browserState = useBrowserState();
   const browserWhere = useBrowserWhere();
   const someoneBrowsing = browserState?.control.by === "agent";
+  const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
   const botNames = useMemo(() => Object.fromEntries(state.bots.map((b) => [b.id, b.name])), [state.bots]);
 
   // the two-agent exchange opened from one of its rows, if any
@@ -762,7 +813,82 @@ export function ChatView({ bot }: { bot: Bot }) {
   // moving to another one puts it away.
   const [traceAsk, setTraceAsk] = useState<{ key: string; ask: TraceAsk } | null>(null);
   const traceShown = traceAsk?.key === threadKey ? traceAsk.ask : null;
-  const openTrace = (ask: TraceAsk) => setTraceAsk({ key: threadKey, ask });
+  const openTrace = (ask: TraceAsk) => {
+    setTraceAsk({ key: threadKey, ask });
+    dock.show(dockKey, "trace");
+  };
+  // The computer, asked for from anywhere (an agent's settings, say), is
+  // a panel of the dock now: the ask is taken here and the dock opens on it.
+  useEffect(() => {
+    if (!state.computerOpen) return;
+    dock.show(dockKey, "computer");
+    dispatch({ type: "toggleComputer", open: false });
+  }, [state.computerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dockPanes: DockPane[] = [
+    {
+      id: "docs",
+      label: t("dock.docs.label"),
+      icon: <FileText size={15} />,
+      keepAlive: true,
+      render: (shown) => <DocsPanel placeKey={dockKey} place={dockPlace} shown={shown} />,
+    },
+    ...(browserHere
+      ? [
+          {
+            id: "browser" as const,
+            label: t("dock.browser.label"),
+            detail: browserWhere.home === "server" ? t("dock.browser.onServer") : t("dock.browser.here"),
+            icon: <Globe size={15} />,
+            dot: someoneBrowsing,
+            render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} />,
+          },
+        ]
+      : []),
+    {
+      id: "terminal",
+      label: t("dock.terminal.label"),
+      icon: <SquareTerminal size={15} />,
+      keepAlive: true,
+      render: () =>
+        terminal.dockSlot ?? <div className="flex h-full items-center justify-center text-small text-muted-foreground">{t("common.loading")}</div>,
+    },
+    {
+      id: "computer",
+      label: t("dock.computer.label"),
+      icon: <Monitor size={15} />,
+      keepAlive: true,
+      render: (shown) => <ComputerPanel bot={bot} docked shown={shown} />,
+    },
+    {
+      id: "trace",
+      label: t("dock.trace.label"),
+      icon: <Activity size={15} />,
+      render: () => (
+        <TracePanel
+          docked
+          bot={bot}
+          taskId={bot.activeTaskId ?? bot.threadId}
+          ask={traceShown ?? {}}
+          working={working}
+          onClose={() => dock.drop(dockKey, "trace")}
+        />
+      ),
+    },
+  ];
+  const offered = dockPanes.map((p) => p.id);
+  const toggleDockRef = useRef<() => void>(() => {});
+  toggleDockRef.current = () => dock.toggle(dockKey, offered);
+  // A terminal picked on the ribbon comes into the dock from wherever it sat.
+  const pickPanel = (panel: DockPanel) => {
+    if (panel !== "terminal") return;
+    if (!terminal.inDock) terminal.setLayout((l) => moveTerminal(l, "right"));
+    setTerminalOpen(true);
+  };
+  const dockHost: DockHost = {
+    openDoc: (doc) => dock.openDoc(dockKey, doc),
+    openLink: browserHere ? (url) => void showPage(url, browserState?.tabs) : null,
+  };
   const lanesInSidebar = useLanesInSidebar();
   // One conversation is the usual agent (GitHub 237): with nothing to
   // switch to, the strip would only be a "+" inviting a second. New
@@ -982,6 +1108,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   };
 
   return (
+    <DockHostContext.Provider value={dockHost}>
     <main ref={mainRef} className="@container/chat relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       {/* Header. Who you are talking to sits in the middle at every width,
           with the same room kept on both sides, so a narrow window does not
@@ -1033,38 +1160,27 @@ export function ChatView({ bot }: { bot: Bot }) {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => setTerminalOpen((open) => !open)}
-            className={cn(terminalOpen && "bg-accent text-foreground")}
+            onClick={() => toggleTerminalRef.current()}
+            className={cn(terminalShown.current && "bg-accent text-foreground")}
             title={`${t("chatView.terminalIn", { name: bot.name })}  ${keysFor("terminalToggle", platformOf())[0]}`}
             aria-label={t("chatView.terminal")}
-            aria-pressed={terminalOpen}
+            aria-pressed={terminalShown.current}
           >
             <SquareTerminal size={17} />
           </Button>
-          {(browserWhere.home === "own" || browserWhere.home === "server") && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setBrowserPanel({ open: !browserPanel.open })}
-              className={cn("relative", browserPanel.open && "bg-accent text-foreground")}
-              title={someoneBrowsing && browserState?.control.by === "agent" ? t("chatView.browsing", { name: browserState.control.name }) : t("chatView.browser")}
-              aria-label={t("chatView.browser")}
-              aria-pressed={browserPanel.open}
-            >
-              <Globe size={17} />
-              {someoneBrowsing && !browserPanel.open && (
-                <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-brand" />
-              )}
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => dispatch({ type: "toggleComputer" })}
-            className={cn(state.computerOpen && "bg-accent text-foreground")}
-            title={t("chatView.agentComputer")}
+            onClick={() => toggleDockRef.current()}
+            className={cn("relative", dockPlace.open && "bg-accent text-foreground")}
+            title={`${someoneBrowsing && browserState?.control.by === "agent" ? t("chatView.browsing", { name: browserState.control.name }) : t("dock.toggle")}  ${keysFor("dockToggle", platformOf())[0]}`}
+            aria-label={t("dock.toggle")}
+            aria-pressed={dockPlace.open}
           >
-            <Monitor size={17} />
+            <PanelRight size={17} />
+            {someoneBrowsing && !dockShows("browser") && (
+              <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-brand" />
+            )}
           </Button>
         </div>
       </div>
@@ -1302,17 +1418,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         branchBlocked={branchWhy}
       />
       </div>
-      {terminal.slot("right")}
-      {traceShown && (
-        <TracePanel
-          bot={bot}
-          taskId={bot.activeTaskId ?? bot.threadId}
-          ask={traceShown}
-          working={working}
-          onClose={() => setTraceAsk(null)}
-        />
-      )}
-      <BrowserDock botNames={botNames} />
+      <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
       </div>
       {terminal.overlay}
       {terminal.panel}
@@ -1334,5 +1440,6 @@ export function ChatView({ bot }: { bot: Bot }) {
         />
       )}
     </main>
+    </DockHostContext.Provider>
   );
 }

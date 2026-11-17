@@ -23,6 +23,7 @@
 // drive it from here.
 import { useEffect, useSyncExternalStore } from "react";
 import { formatNumber, t } from "./i18n.ts";
+import { dock, isRoomKey, placeIn, useDockCurrent, useDockState } from "./dock.ts";
 
 export type TabBy = { kind: "person" } | { kind: "agent"; botId: string; name: string };
 
@@ -316,7 +317,7 @@ export async function browserIsHere(): Promise<boolean> {
 export function revealBrowser() {
   if (where.home !== "server" || where.missing) return;
   if (typeof window === "undefined" || window.innerWidth < BROWSER_SIDE_BY_SIDE + 240) return;
-  setBrowserPanel({ open: true });
+  revealInDock();
 }
 
 export function useAppBrowser(load: () => Promise<unknown>): AppBrowserState | null {
@@ -344,49 +345,33 @@ export function useBrowserHome(load: () => Promise<unknown>): { home: BrowserHom
 
 // ── the panel, open or not ─────────────────────────────────────────────
 
-const OPEN_KEY = "bloks-browser-open";
-const WIDTH_KEY = "bloks-browser-width";
+// The browser is one panel of the side dock (src/lib/dock.ts), so whether
+// it is open is the dock's word for the conversation on screen: open on
+// the browser there. Asking for it opens the dock on it; closing it closes
+// the dock if the browser is what it shows. A room never has it opened for
+// it by an agent's browsing (revealBrowser above, useBrowserReveal), only
+// by the person. The width is the dock's.
 
-function readNumber(key: string, fallback: number): number {
-  try {
-    const n = Number(localStorage.getItem(key));
-    return Number.isFinite(n) && n > 0 ? n : fallback;
-  } catch {
-    return fallback;
-  }
+/** Opens or closes the browser in the dock of the conversation on screen. */
+export function setBrowserPanel(next: { open?: boolean; width?: number }) {
+  const key = dock.current();
+  if (next.width !== undefined) dock.setWidth(next.width);
+  if (next.open === undefined || !key) return;
+  if (next.open) dock.show(key, "browser");
+  else if (placeIn(dock.get(), key).panel === "browser") dock.hide(key);
 }
 
-let panel = {
-  open: (() => {
-    try {
-      return localStorage.getItem(OPEN_KEY) === "1";
-    } catch {
-      return false;
-    }
-  })(),
-  width: readNumber(WIDTH_KEY, BROWSER_SIZE.fallback),
-};
-const panelListeners = new Set<() => void>();
-
-export function setBrowserPanel(next: Partial<typeof panel>) {
-  panel = { ...panel, ...next };
-  try {
-    localStorage.setItem(OPEN_KEY, panel.open ? "1" : "0");
-    localStorage.setItem(WIDTH_KEY, String(Math.round(panel.width)));
-  } catch {
-    /* storage refused; the panel still works for this window */
-  }
-  for (const listener of panelListeners) listener();
+/** An agent started browsing: the browser opens in a chat's dock, never a
+ * room's, where several agents at work would pull it back and forth. */
+export function revealInDock() {
+  const key = dock.current();
+  if (key && !isRoomKey(key)) dock.show(key, "browser");
 }
 
-/** Whether the panel is open, and how wide: one for every conversation,
- * so moving between agents keeps it where it was. */
-export function useBrowserPanel(): typeof panel {
-  return useSyncExternalStore(
-    (listener) => {
-      panelListeners.add(listener);
-      return () => panelListeners.delete(listener);
-    },
-    () => panel,
-  );
+/** Whether the browser is what the dock shows here, and the dock's width. */
+export function useBrowserPanel(): { open: boolean; width: number } {
+  const state = useDockState();
+  const key = useDockCurrent();
+  const place = key ? placeIn(state, key) : null;
+  return { open: Boolean(place?.open && place.panel === "browser"), width: state.width };
 }
