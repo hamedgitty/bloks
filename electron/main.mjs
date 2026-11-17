@@ -3915,9 +3915,12 @@ app.whenReady().then(async () => {
   );
 
   // Electron grants permission requests by default. This app needs exactly
-  // two, and the renderer shows untrusted content, so everything else is
-  // refused explicitly rather than left to a default.
-  const GRANTED = new Set(["media", "clipboard-sanitized-write"]);
+  // these, and the renderer shows untrusted content, so everything else is
+  // refused explicitly rather than left to a default. The microphone asks
+  // as "media"; since Electron 45 the screen asks as "display-capture"
+  // (it used to ask as "media" too), and refusing it would stop the
+  // screen preview before the handler above ever runs.
+  const GRANTED = new Set(["media", "display-capture", "clipboard-sanitized-write"]);
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) =>
     callback(GRANTED.has(permission)),
   );
