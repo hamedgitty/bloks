@@ -42,6 +42,8 @@ import { useNamer, useWorkspaceRoster } from "@/lib/members";
 import { seedReads, useReadPosition, useReads } from "@/lib/readReceipts";
 import { useViewingReport } from "@/lib/viewing";
 import { JumpToLatest } from "./chat/JumpToLatest";
+import { TurnTimeline } from "./chat/TurnTimeline";
+import { turnMarks } from "@/lib/turnTimeline";
 import { HeldSends } from "./chat/HeldSends";
 import { heldToShow, isHostedWindow, useHeldSends, useWake } from "@/lib/waking";
 import { RoomComposer } from "./room/RoomComposer";
@@ -779,6 +781,8 @@ export function RoomView({ blok }: { blok: Blok }) {
   const start = earlier.start;
   // which messages have answers hanging off them, for the stream's hint
   const counts = replyCounts(said);
+  // where each person's turn starts, for the rail beside the stream
+  const turns = useMemo(() => turnMarks(said), [said]);
 
   // A room is a group: every message a bubble, a run from one sender as
   // one, and with people in it, who has read how far
@@ -1359,6 +1363,18 @@ export function RoomView({ blok }: { blok: Blok }) {
         )}
       </div>
 
+      {lens === "stream" && !fresh && (
+        <TurnTimeline
+          marks={turns}
+          scroller={scrollRef}
+          rowOf={(id) => `[data-room-msg="${CSS.escape(id)}"]`}
+          onJump={(mark) => land(mark.id, false)}
+          authorOf={(mark) =>
+            mark.author ? personName(mark.author) : blok.sharing && ownerName ? ownerName : t("roomView.you")
+          }
+          tick={`${said.length}:${start}:${openFolds.size}:${voices.length}`}
+        />
+      )}
       <JumpToLatest show={away && lens === "stream" && !fresh} fresh={freshBelow} onJump={toLatest} />
       </div>
 

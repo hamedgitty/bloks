@@ -69,6 +69,8 @@ import { LiveBrowser, ScreenFrame, StreamingBubble, WorkingClock, WorkingLine } 
 import { EmptyState } from "./chat/EmptyState";
 import { NewLine } from "./chat/NewLine";
 import { JumpToLatest } from "./chat/JumpToLatest";
+import { TurnTimeline } from "./chat/TurnTimeline";
+import { turnMarks } from "@/lib/turnTimeline";
 import { HeldSends } from "./chat/HeldSends";
 import { QuestionDock } from "./chat/QuestionDock";
 import { onAsk, peekAsk, takeAsk } from "@/lib/chatAsk";
@@ -397,6 +399,9 @@ export function ChatView({ bot }: { bot: Bot }) {
     setQuery("");
   };
   const hits = useMemo(() => findHits(said, query), [said, query]);
+  // where each turn starts, for the rail beside the transcript
+  // (chat/TurnTimeline.tsx)
+  const turns = useMemo(() => turnMarks(said), [said]);
   // The last turn folds once it has ended, and not before: this
   // conversation's turn, whatever the agent's other ones are doing.
   const openLane = bot.tasks?.find((t) => t.id === (bot.activeTaskId ?? bot.threadId));
@@ -1247,6 +1252,17 @@ export function ChatView({ bot }: { bot: Bot }) {
           />
         </div>
       </div>
+      {!empty && (
+        <TurnTimeline
+          marks={turns}
+          scroller={scrollRef}
+          rowOf={(id) => `[data-message-id="${CSS.escape(id)}"]`}
+          // the palette's landing: what it needs is drawn, then it is lit
+          onJump={(mark) => setLanding({ id: mark.id, nonce: Date.now() })}
+          authorOf={(mark) => (mark.author ? personName(mark.author) : t("chatView.you"))}
+          tick={`${said.length}:${visibleStart}:${openFolds.size}:${streaming ? 1 : 0}`}
+        />
+      )}
       <JumpToLatest show={away && !empty} fresh={freshBelow} onJump={toLatest} />
       </div>
 
