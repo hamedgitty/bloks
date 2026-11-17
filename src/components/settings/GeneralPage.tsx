@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { useTheme, type Theme } from "@/lib/theme";
 import { useTranscriptWidth } from "@/lib/useTranscriptWidth";
 import { useConversationsView } from "@/lib/conversationsView";
+import { useCompactAgentRows } from "@/lib/agentRows";
 import { useWorkspaces } from "@/lib/workspaces";
 import { setSameAccent } from "@/lib/accent";
 import { thisComputer } from "@/lib/thisComputer";
@@ -163,6 +164,7 @@ export function GeneralPage() {
   const workspaces = useWorkspaces();
   const [width, setWidth] = useTranscriptWidth();
   const [conversations, setConversations] = useConversationsView();
+  const [compactRows, setCompactRows] = useCompactAgentRows();
   const shared = Boolean(window.bloks?.workspace && workspaces.available && workspaces.sameAccent);
   return (
     <>
@@ -230,6 +232,11 @@ export function GeneralPage() {
           label={t("generalPage.showConversationsInTheSidebar")}
           description={t("generalPage.listEachAgentsConversationsUnder")}
           control={<Switch aria-label={t("generalPage.showConversationsInTheSidebar")} checked={conversations} onCheckedChange={setConversations} />}
+        />
+        <SettingRow
+          label={t("generalPage.compactAgentRows")}
+          description={t("generalPage.compactAgentRowsHint")}
+          control={<Switch aria-label={t("generalPage.compactAgentRows")} checked={compactRows} onCheckedChange={setCompactRows} />}
         />
         {/* the app says whether there is one: only on a Mac */}
         {window.bloks?.prefsNotch && workspaces.available && typeof workspaces.notch === "boolean" && (

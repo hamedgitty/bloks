@@ -54,6 +54,8 @@ import { CHAT_COLUMN } from "@/lib/sideColumn";
 import { SideColumn } from "./SideColumn";
 import { openSearch } from "./CommandPalette";
 import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
+import { agentRowShape, bareTrailing, useCompactAgentRows, type AgentRowShape } from "@/lib/agentRows";
+import { Loader2 } from "@/components/icons";
 import { ListTree } from "@/components/icons";
 import { usePinnedHeads } from "@/lib/pinnedHeads";
 import {
@@ -401,21 +403,23 @@ function BotListItem({
   bot,
   onMenu,
   onDrag,
-  compact,
+  shape,
 }: {
   bot: Bot;
   onMenu: (menu: MenuState) => void;
   /** Given in the full list, where a row can be dragged to a place. */
   onDrag?: (row: FilingState | null) => void;
-  /** The conversations view: one line per agent, with its other
-   * conversations listed underneath instead of one conversation's preview. */
-  compact?: boolean;
+  /** Two lines with a face, one line with a small one (the conversations
+   * view, its other conversations listed underneath), or one line with
+   * none (compact rows, src/lib/agentRows.ts). */
+  shape: AgentRowShape;
 }) {
   const { state, dispatch } = useStore();
   const selected = state.selectedId === bot.id;
   const heardAt = lastHeardAt(bot);
   const drag = rowDrag(filingOf("agent", bot), onDrag);
-  if (compact) {
+  if (shape === "bare") return <BareAgentRow bot={bot} onMenu={onMenu} drag={drag} />;
+  if (shape === "line") {
     // the agent's row is General; the others are listed beneath it
     const general = bot.tasks?.[0];
     const generalOpen = selected && (bot.activeTaskId ?? bot.threadId) === general?.id;
@@ -517,6 +521,104 @@ function BotListItem({
         </div>
       </div>
     </button>
+  );
+}
+
+/**
+ * An agent as one short line with no face (GitHub 508): its name, and after
+ * it what the face and the second line used to say about it. A spinner
+ * while it works, the waiting word when it has stopped for you, the unread
+ * mark, and otherwise when it last spoke. The click, the menu, the drag and
+ * the keys are the line view's, and so is the + that opens a new
+ * conversation; the conversation it opens is the one the full row would.
+ */
+function BareAgentRow({
+  bot,
+  onMenu,
+  drag,
+}: {
+  bot: Bot;
+  onMenu: (menu: MenuState) => void;
+  drag: ReturnType<typeof rowDrag>;
+}) {
+  const { state, dispatch } = useStore();
+  const conversations = useConversationsView()[0];
+  // With conversations listed, the row is General and the rest sit under
+  // it; without, it is whichever one a click opens, as the full row's is.
+  const general = bot.tasks?.[0];
+  const row = rowState(bot);
+  const lane = conversations ? general : (row.lane ?? general);
+  const laneState = conversations ? general?.state : row.state;
+  const unread = conversations ? general?.unread : row.unread;
+  const open =
+    state.selectedId === bot.id && (!conversations || (bot.activeTaskId ?? bot.threadId) === general?.id);
+  const trailing = bareTrailing(laneState ? { state: laneState, unread } : undefined);
+  const at = conversations ? (general ? (general.lastAt ?? general.createdAt) : 0) : (lastHeardAt(bot) ?? 0);
+  const label =
+    trailing === "working"
+      ? t("sidebar.bareWorking", { name: bot.name })
+      : trailing === "waiting"
+        ? t("sidebar.bareWaiting", { name: bot.name })
+        : trailing === "unread"
+          ? t("sidebar.bareUnread", { name: bot.name })
+          : bot.name;
+  return (
+    <div
+      className="group/agent relative"
+      data-sidebar-row={bot.id}
+      data-sidebar-waiting={Boolean(bot.unread || bot.tasks?.some((task) => task.state === "needs-you"))}
+    >
+      <button
+        data-lane-of={bot.id}
+        onKeyDown={(e) => laneRowKeys(e, bot.id)}
+        onClick={() => dispatch({ type: "select", id: bot.id, ...(conversations ? { lane: general?.id } : {}) })}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onMenu({ kind: "agent", id: bot.id, x: e.clientX, y: e.clientY });
+        }}
+        {...drag}
+        aria-label={label}
+        aria-current={open ? "page" : undefined}
+        className={cn(
+          "flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left transition-[background-color,scale] duration-150 ease-out active:scale-[0.99]",
+          open ? "bg-accent" : "hover:bg-accent/60",
+        )}
+      >
+        <span
+          className={cn(
+            "min-w-0 truncate text-ui",
+            unread && !open ? "font-semibold text-foreground" : "font-medium text-foreground",
+          )}
+        >
+          {bot.name}
+        </span>
+        {trailing === "working" && (
+          <Loader2 size={12} aria-hidden className="shrink-0 text-working motion-safe:animate-spin" />
+        )}
+        <span className="min-w-2 flex-1" />
+        {/* the trailing state steps aside for the + on hover, as the line
+            view's does, so the two never sit on top of each other */}
+        <span className="flex shrink-0 items-center gap-1.5 transition-opacity duration-150 group-hover/agent:opacity-0">
+          {lane && <LaneRing lane={lane} />}
+          {trailing === "waiting" && <span className="text-caption text-warning">{t("sidebar.waiting")}</span>}
+          {trailing === "time" && at > 0 && (
+            <span className="text-caption tabular-nums text-muted-foreground/80">{formatWhen(at)}</span>
+          )}
+          {(trailing === "waiting" || trailing === "unread") && <LaneMark state={laneState ?? "idle"} unread={unread} />}
+        </span>
+      </button>
+      <button
+        onClick={() => {
+          dispatch({ type: "select", id: bot.id });
+          dispatch({ type: "newTask", botId: bot.id });
+        }}
+        title={t("sidebar.newConversationWith", { name: bot.name })}
+        aria-label={t("sidebar.newConversationWith", { name: bot.name })}
+        className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/agent:opacity-100"
+      >
+        <Plus size={14} />
+      </button>
+    </div>
   );
 }
 
@@ -677,6 +779,7 @@ export function useSecurityRisky(): number {
 export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   const { state, dispatch } = useStore();
   const [conversations, setConversations] = useConversationsView();
+  const [compactRows] = useCompactAgentRows();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [filing, setFiling] = useState<FilingState | null>(null);
   // the room whose row is a field for its name
@@ -987,7 +1090,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
               />
             ) : (
               <>
-                <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} compact={conversations} />
+                <BotListItem bot={row.bot} onMenu={setMenu} onDrag={fileDrag} shape={agentRowShape({ compact: compactRows, conversations })} />
                 <ConversationRows bot={row.bot} open={conversations && !folded} />
               </>
             )}

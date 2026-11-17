@@ -75,7 +75,7 @@ export const SETTINGS_PAGE_INDEX = [] = [
     label: "settingsPages.general.label",
     description: "settingsPages.general.description",
     keywords:
-      "appearance theme dark light system accent colour color width transcript narrow medium wide sidebar conversations threads shortcut hotkey quick ask your name owner call me language translate translation locale",
+      "appearance theme dark light system accent colour color width transcript narrow medium wide sidebar conversations threads compact rows photos avatars dense shortcut hotkey quick ask your name owner call me language translate translation locale",
     keywordsKey: "settingsPages.general.keywords",
     rows: [
       "settingsPages.general.row.yourName",
@@ -84,6 +84,7 @@ export const SETTINGS_PAGE_INDEX = [] = [
       "settingsPages.general.row.sameAccentInEveryWorkspace",
       "settingsPages.general.row.transcriptWidth",
       "settingsPages.general.row.showConversationsInTheSidebar",
+      "settingsPages.general.row.compactAgentRows",
       "settingsPages.general.row.quickAskShortcut",
       "settingsPages.general.row.language",
     ],
