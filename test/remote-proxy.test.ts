@@ -250,3 +250,87 @@ test("paired by address, a desktop's viewer and its socket are passed to that co
     server.close();
   }
 });
+
+// An agent's terminals are an event stream that never ends. Paired by
+// address, the proxy once waited for the whole answer before sending a
+// byte, so the terminal panel sat empty with its + greyed out for good.
+test("paired by address, an agent's terminal streams reach the window as they come", async () => {
+  const asked: Array<{ url: string; authorization?: string }> = [];
+  const server = createHttpServer((req, res) => {
+    asked.push({ url: req.url ?? "", authorization: req.headers.authorization });
+    if (req.url === "/api/bots/off/terminals/stream") {
+      res.writeHead(403, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ error: "terminals are off on this server" }));
+    }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    res.write(req.url?.includes("/terminals/") ? 'data: {"list":[]}\n\n' : 'data: {"out":"$ "}\n\n');
+    // and never ends, as a live stream does
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const at = `127.0.0.1:${(server.address() as { port: number }).port}`;
+  const firstFrame = async (port: number, path: string) => {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 3_000);
+    try {
+      const answer = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { accept: "text/event-stream" }, signal: abort.signal });
+      assert.equal(answer.status, 200);
+      assert.match(answer.headers.get("content-type") ?? "", /^text\/event-stream/);
+      const { value } = await answer.body!.getReader().read();
+      return Buffer.from(value!).toString("utf8");
+    } finally {
+      clearTimeout(timer);
+      abort.abort();
+    }
+  };
+  try {
+    for (const profile of [{ url: `http://${at}`, deviceId: "d", deviceToken: "device-token" }, { lan: at, deviceId: "d", deviceToken: "device-token" }]) {
+      const proxy = await startLanProxy(profile, { staticDir: ui });
+      try {
+        assert.equal(await firstFrame(proxy.port, "/api/bots/b-1/terminals/stream"), 'data: {"list":[]}\n\n');
+        assert.equal(await firstFrame(proxy.port, "/api/bots/b-1/terminal/stream?id=t1"), 'data: {"out":"$ "}\n\n');
+        assert.equal(asked.at(-1)?.url, "/api/bots/b-1/terminal/stream?id=t1");
+        assert.equal(asked.at(-1)?.authorization, "Bearer device-token");
+        // a stream the server refuses is said as it said it, not hung
+        const refused = await fetch(`http://127.0.0.1:${proxy.port}/api/bots/off/terminals/stream`, { signal: AbortSignal.timeout(3_000) });
+        assert.equal(refused.status, 403);
+        assert.deepEqual(await refused.json(), { error: "terminals are off on this server" });
+      } finally {
+        proxy.stop();
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+// An answer that breaks off after its headers went out once threw inside
+// the error path (headers already sent), and the window waited forever.
+test("paired by address, an answer cut off midway still ends for the window", async () => {
+  const server = createHttpServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-length": "1000" });
+    res.write('{"partial":');
+    setTimeout(() => res.destroy(), 50);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const at = `127.0.0.1:${(server.address() as { port: number }).port}`;
+  const proxy = await startLanProxy({ lan: at, deviceId: "d", deviceToken: "device-token" }, { staticDir: ui });
+  try {
+    const outcome = await fetch(`http://127.0.0.1:${proxy.port}/api/bots`, { signal: AbortSignal.timeout(3_000) }).then(
+      async (answer) => {
+        try {
+          await answer.text();
+          return `ended ${answer.status}`;
+        } catch {
+          return "ended broken";
+        }
+      },
+      (e: Error) => (e.name === "TimeoutError" ? "hung" : "ended broken"),
+    );
+    assert.equal(outcome, "ended 503");
+  } finally {
+    proxy.stop();
+    server.closeAllConnections();
+    server.close();
+  }
+});

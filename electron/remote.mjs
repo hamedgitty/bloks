@@ -912,9 +912,12 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
     // a desktop's viewer answers on that computer, under its ticket
     if (DESKTOP_PATH.test(url.pathname)) return passDesktopTo(base, req, res, url);
     if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
-    if (url.pathname === "/api/events") {
-      // the owner's computer's own stream, passed through as it comes; the
-      // window's EventSource dials again when it ends
+    // The owner's computer's own stream, and an agent's terminals, passed
+    // through as they come: an event stream never ends, so the whole-answer
+    // wait below would hold back every frame. The window's EventSource
+    // dials again when one ends.
+    const events = url.pathname === "/api/events";
+    if (events || (req.method === "GET" && STREAMABLE.some((route) => route.test(url.pathname)))) {
       const abort = new AbortController();
       open.add(abort);
       req.on("close", () => {
@@ -922,7 +925,16 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
         open.delete(abort);
       });
       try {
-        const upstream = await fetcher(`${base}/api/events${url.search}`, { headers: { accept: "text/event-stream", ...auth }, signal: abort.signal });
+        const upstream = await fetcher(`${base}${url.pathname}${url.search}`, { headers: { accept: "text/event-stream", ...auth }, signal: abort.signal });
+        if (!events && upstream.status !== 200) {
+          // a terminal the server refuses (switched off, no such agent)
+          // is said as it said it, so the panel can say so too
+          const type = upstream.headers.get("content-type") ?? "application/json";
+          const said = Buffer.from(await upstream.arrayBuffer());
+          res.writeHead(upstream.status, { "content-type": /^application\/json\b/i.test(type) ? type : "application/json", "x-content-type-options": "nosniff" });
+          res.end(/^application\/json\b/i.test(type) ? said : JSON.stringify({ error: away }));
+          return;
+        }
         if (upstream.status !== 200 || !upstream.body) throw new Error(String(upstream.status));
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         const reader = upstream.body.getReader();
@@ -947,6 +959,9 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
         signal: AbortSignal.timeout(75_000),
       });
       const type = answer.headers.get("content-type") ?? "application/octet-stream";
+      // the whole answer before its headers, so one that breaks off
+      // midway is said as unreachable rather than sent half
+      const whole = Buffer.from(await answer.arrayBuffer());
       res.writeHead(answer.status, {
         "content-type": type,
         "x-content-type-options": "nosniff",
@@ -954,8 +969,11 @@ export async function startLanProxy(profile, { staticDir, port = 0, client, fetc
         // owner's server would have had it
         ...(/^application\/json\b/i.test(type) ? {} : { "content-security-policy": "sandbox allow-scripts" }),
       });
-      res.end(Buffer.from(await answer.arrayBuffer()));
+      res.end(whole);
     } catch (e) {
+      // headers already out leave nothing to say but to cut it short;
+      // either way the window hears, rather than waits for good
+      if (res.headersSent) return void res.destroy();
       const status = e?.status ?? 503;
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: status === 413 ? e.message : away }));
