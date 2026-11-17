@@ -1,10 +1,12 @@
 // Settings, Plugins: managing what agents can reach, where the Plugins
-// page in the rail is for finding it. Four lists under one switch, Apps,
-// MCPs, CLIs and Skills, each counted, each searchable, and each item
-// opening a page of its own: an app's connection and who may use it, a
-// server's connection, values and agents, a CLI on this computer and the
-// protected connection beside it (src/components/CliPlugins.tsx), a
-// skill's text and the agents using it.
+// page in the rail is for finding it. Five lists under one switch, Apps,
+// MCPs, CLIs, Skills and Extensions, each counted, each searchable, and
+// each item opening a page of its own: an app's connection and who may
+// use it, a server's connection, values and agents, a CLI on this
+// computer and the protected connection beside it
+// (src/components/CliPlugins.tsx), a skill's text and the agents using
+// it, and an extension's permissions, settings and switch
+// (src/components/extensions/ExtensionSettings.tsx).
 //
 // The switches here are the ones Bloks really has. Apps are connected or
 // not, and each agent may use connected apps or not; servers and skills
@@ -34,6 +36,8 @@ import { AddSkillDialog } from "./SkillsPanel";
 import { SkillDetail } from "./SkillVersions";
 import { ServiceIcon } from "./Customize";
 import { ComposioKeyDialog } from "./ComposioKeyDialog";
+import { ExtensionPage, ExtensionRowAside, InstallExtensionDialog, extensionLine } from "./extensions/ExtensionSettings";
+import { useExtensions } from "@/lib/extensions";
 import { AgentAvatar } from "./Avatar";
 import { Switch } from "@/components/ui/switch";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -42,7 +46,7 @@ import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/cn";
 import { t, tr, type MessageKey } from "@/lib/i18n";
 
-type List = "apps" | "mcps" | "clis" | "skills";
+type List = "apps" | "mcps" | "clis" | "skills" | "extensions";
 
 const pill =
   "flex h-9 items-center rounded-full outline-none transition-[background-color,color,scale,opacity] duration-150 ease-out active:scale-[0.97]";
@@ -117,13 +121,15 @@ export function PluginSettings() {
   const [query, setQuery] = useState("");
   const [addingServer, setAddingServer] = useState(false);
   const [addingSkill, setAddingSkill] = useState(false);
+  const [addingExtension, setAddingExtension] = useState(false);
+  const extensions = useExtensions();
   const searchRef = useRef<HTMLInputElement>(null);
   const agents = state.bots.filter((b) => !b.hidden);
 
   // a page opened from elsewhere (Manage on an app) shows its own list
   // behind it, so Back lands where it belongs
   useEffect(() => {
-    if (focus) setList(focus.kind === "app" ? "apps" : focus.kind === "mcp" ? "mcps" : focus.kind === "cli" ? "clis" : "skills");
+    if (focus) setList(focus.kind === "app" ? "apps" : focus.kind === "mcp" ? "mcps" : focus.kind === "cli" ? "clis" : focus.kind === "extension" ? "extensions" : "skills");
   }, [focus]);
 
   const q = query.trim().toLowerCase();
@@ -134,6 +140,7 @@ export function PluginSettings() {
   const shownServers = (servers ?? []).filter((s) => !q || `${s.name} ${s.target}`.toLowerCase().includes(q));
   const shownClis = (clis ?? []).filter((p) => !q || `${p.name} git gh cli`.toLowerCase().includes(q));
   const shownSkills = (skills ?? []).filter((s) => !q || `${s.name} ${s.description}`.toLowerCase().includes(q));
+  const shownExtensions = (extensions ?? []).filter((e) => !q || `${e.name} ${e.description} ${e.id}`.toLowerCase().includes(q));
 
   if (focus?.kind === "mcp") {
     return (
@@ -147,6 +154,17 @@ export function PluginSettings() {
     );
   }
   if (focus?.kind === "cli") return <GitHubPluginSettings onBack={() => setFocus(null)} />;
+  if (focus?.kind === "extension") {
+    const ext = extensions?.find((e) => e.id === focus.id);
+    return ext ? (
+      <ExtensionPage ext={ext} onBack={() => setFocus(null)} />
+    ) : (
+      <div>
+        <BackLink onBack={() => setFocus(null)} />
+        <p className="mt-6 text-ui text-muted-foreground">{extensions === null ? t("common.loading2") : t("extensions.notFound")}</p>
+      </div>
+    );
+  }
   if (focus?.kind === "app") {
     const card = connectors.cards?.find((c) => c.slug === focus.id);
     return card ? (
@@ -196,6 +214,7 @@ export function PluginSettings() {
     mcps: servers === null ? null : servers.length,
     clis: clis === null ? null : clis.length,
     skills: skills === null ? null : skills.length,
+    extensions: extensions === null ? null : extensions.length,
   };
 
   return (
@@ -226,6 +245,10 @@ export function PluginSettings() {
                 <Sparkles />
                 {t("pluginSettings.addASkill")}
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setAddingExtension(true)}>
+                <Puzzle />
+                {t("extensions.installAnExtension")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -239,6 +262,7 @@ export function PluginSettings() {
               ["mcps", "pluginSettings.tab.mcps"],
               ["clis", "pluginSettings.tab.clis"],
               ["skills", "common.skills"],
+              ["extensions", "pluginSettings.tab.extensions"],
             ] as const satisfies ReadonlyArray<readonly [string, MessageKey]>
           ).map(([value, text]) => (
             <button
@@ -266,7 +290,7 @@ export function PluginSettings() {
             ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={list === "apps" ? t("pluginSettings.searchApps") : list === "mcps" ? t("pluginSettings.searchMcpServers") : list === "clis" ? t("pluginSettings.searchClis") : t("pluginSettings.searchSkills")}
+            placeholder={list === "apps" ? t("pluginSettings.searchApps") : list === "mcps" ? t("pluginSettings.searchMcpServers") : list === "clis" ? t("pluginSettings.searchClis") : list === "extensions" ? t("extensions.search") : t("pluginSettings.searchSkills")}
             aria-label={t("common.search")}
             className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
           />
@@ -448,6 +472,40 @@ export function PluginSettings() {
               })}
             </Card>
           ))}
+
+        {list === "extensions" &&
+          (extensions === null ? (
+            <Loading />
+          ) : shownExtensions.length === 0 ? (
+            <Empty>
+              {q ? t("extensions.noneMatch", { query: query.trim() }) : t("extensions.noneYet")}{" "}
+              {!q && (
+                <button onClick={() => setAddingExtension(true)} className="text-foreground underline underline-offset-2">
+                  {t("extensions.installOne")}
+                </button>
+              )}
+            </Empty>
+          ) : (
+            <>
+              <p className="mb-2.5 text-pretty text-body text-muted-foreground">{t("extensions.listLine")}</p>
+              <Card>
+                {shownExtensions.map((ext) => (
+                  <Row
+                    key={ext.id}
+                    onOpen={() => setFocus({ kind: "extension", id: ext.id })}
+                    tile={
+                      <Tile>
+                        <Puzzle size={17} />
+                      </Tile>
+                    }
+                    name={ext.name}
+                    line={extensionLine(ext)}
+                    aside={<ExtensionRowAside ext={ext} onOpen={() => setFocus({ kind: "extension", id: ext.id })} />}
+                  />
+                ))}
+              </Card>
+            </>
+          ))}
       </div>
 
       <AddMcpServerDialog
@@ -459,6 +517,7 @@ export function PluginSettings() {
         }}
       />
       <AddSkillDialog open={addingSkill} onOpenChange={setAddingSkill} onInstalled={() => void loadSkills()} />
+      <InstallExtensionDialog open={addingExtension} onOpenChange={setAddingExtension} onInstalled={(id) => setFocus({ kind: "extension", id })} />
       <ComposioKeyDialog connectors={connectors} />
     </div>
   );

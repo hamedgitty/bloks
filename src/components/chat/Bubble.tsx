@@ -77,6 +77,8 @@ function viaLabel(message: Message): string {
       return t("bubble.fromAWebhook");
     case "service":
       return t("bubble.fromLocalService");
+    case "extension":
+      return t("bubble.fromAnExtension");
     case "goal":
       return goalLabel(message.text ?? "");
     case "incident":
@@ -540,7 +542,7 @@ export function Bubble({
   const words = <UserText text={message.via === "goal" ? goalNoteForPerson(message.text ?? "").body : (message.text ?? "")} highlight={highlight} />;
 
   if (group) {
-    const fromSomewhere = message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "service" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident";
+    const fromSomewhere = message.via === "watcher" || message.via === "email" || message.via === "webhook" || message.via === "service" || message.via === "routine" || message.via === "goal" || message.via === "intent" || message.via === "incident" || message.via === "extension";
     return (
       <GroupMessage
         mine={group.mine}

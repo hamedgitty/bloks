@@ -42,7 +42,7 @@ async function api(path: string, init?: RequestInit): Promise<any> {
 
 /** The colours a framed app is told about. Read off the page rather than
  * hard-coded, so an app matches whatever the theme is now. */
-function paletteNow(dark: boolean) {
+export function paletteNow(dark: boolean) {
   const style = getComputedStyle(document.documentElement);
   const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
   return {

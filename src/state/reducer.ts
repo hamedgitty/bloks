@@ -37,7 +37,7 @@ export type AutomationsFocus = { kind: "routine" | "watcher"; id: string };
 /** The pages of Customize, the rail's Plugins place (Customize.tsx). */
 export type CustomizeTab = "plugins" | "skills" | "catalog";
 /** One thing on Settings' Plugins page with a page of its own. */
-export type PluginFocus = { kind: "app" | "mcp" | "skill" | "cli"; id: string };
+export type PluginFocus = { kind: "app" | "mcp" | "skill" | "cli" | "extension"; id: string };
 /** What the Memory place has open (MemoryPlace.tsx): an agent by its id,
  * the notes about the person, or the shared memory every agent reads. */
 export type MemoryTarget = string;
@@ -294,7 +294,7 @@ export interface Message {
   /** Came in some other way than you typing it here. "goal" is Bloks
    * starting the next turn toward the conversation's goal; "incident" is
    * the incident desk handing a lead something that failed. */
-  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service";
+  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service" | "extension";
   /** Posted or sent by a standing intent (server/intents.ts). */
   intent?: { id: string; name: string };
   /** The incident desk (server/incidents.ts): the note on a lead's quiet

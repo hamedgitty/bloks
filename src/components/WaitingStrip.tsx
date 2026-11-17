@@ -499,6 +499,8 @@ export function waitingSender(m: Message): string | null {
       return t("waitingStrip.sender.webhook");
     case "service":
       return t("waitingStrip.sender.service");
+    case "extension":
+      return t("waitingStrip.sender.extension");
     case "email":
       return t("waitingStrip.sender.email");
     case "goal":

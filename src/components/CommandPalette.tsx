@@ -43,6 +43,8 @@ import { cn } from "@/lib/cn";
 import { openWorkspaceDialog, useWorkspaces } from "@/lib/workspaces";
 import type { WorkspaceInfo } from "@/types/bridge";
 import { WorkspaceMark } from "./WorkspaceMark";
+import { running, useExtensions } from "@/lib/extensions";
+import { runExtensionCommand } from "./extensions/ExtensionHost";
 import { goToWorkspace } from "./WorkspaceSwitcher";
 import { t, useLanguage } from "@/lib/i18n";
 
@@ -114,6 +116,7 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const platform = platformOf();
+  const extensions = useExtensions();
 
   useEffect(() => {
     const show = (how: "keys" | "pointer", toggle: boolean) => {
@@ -241,8 +244,22 @@ export function CommandPalette() {
       { id: "newRoom", label: t("commandPalette.newRoom"), keywords: "create add group team", icon: Users, quiet: true, run: go({ type: "toggleNewRoom", open: true }) },
       { id: "shortcuts", label: t("commandPalette.keyboardShortcuts"), keywords: "keys hotkeys help", icon: Keyboard, quiet: true, run: go({ type: "toggleShortcuts", open: true }) },
     );
+    // what running extensions add (src/components/extensions/ExtensionHost.tsx):
+    // shown once typed for, named with the extension they come from
+    for (const ext of running(extensions)) {
+      for (const command of ext.commands) {
+        list.push({
+          id: `extension:${ext.id}:${command.id}`,
+          label: t("commandPalette.extensionCommand", { name: ext.name, command: command.title }),
+          keywords: `extension ${ext.name} ${command.description ?? ""}`,
+          icon: Puzzle,
+          quiet: true,
+          run: () => runExtensionCommand(ext, command.id),
+        });
+      }
+    }
     return list;
-  }, [bot, working, dispatch, language]);
+  }, [bot, working, dispatch, language, extensions]);
 
   // The other workspaces are places too, and the way to them at any
   // width: the switcher lives in the title bar, which a narrow window hides.

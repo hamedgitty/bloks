@@ -24,6 +24,7 @@ import { AutomationsPanel } from "@/components/AutomationsPanel";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { WorkspaceDialogs } from "@/components/WorkspaceDialogs";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ExtensionHost } from "@/components/extensions/ExtensionHost";
 import { ShortcutKeys } from "@/components/Shortcuts";
 import { Switcher } from "@/components/Switcher";
 import { QuickAsk } from "@/components/QuickAsk";
@@ -205,6 +206,7 @@ function Shell() {
       {state.newRoomOpen && <NewRoomDialog />}
       {state.newAgentOpen && <NewAgentScreen />}
       <CommandPalette />
+      <ExtensionHost />
       <WorkspaceDialogs />
       <ShortcutKeys />
       <ErrorToasts />

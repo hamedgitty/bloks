@@ -403,6 +403,10 @@ export const NEVER = [
   // gh and git on this computer: installing, signing in and setting git
   // up are the person's to start (server/cli-plugins.ts)
   "/api/cli-plugins",
+  // workspace extensions: installing one, what it is granted, switching it
+  // off, and the calls its framed documents make through the app's page
+  // (server/extensions.ts). An agent never installs, grants or speaks for one.
+  "/api/extensions",
   // where the person is, as their phone says it: an agent reads it through
   // /api/agent/location and never says it, changes it or forgets it
   "/api/location",

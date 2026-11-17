@@ -51,7 +51,7 @@ import { mayLookAgain, newestBeforeInstall, updateFrame } from "./update-check.m
 import { markInstall, restartIntoUpdate, takeInstallMark, within } from "./update-restart.mjs";
 import { claimDirectLink, claimPairLink, parseDirectLink, reachOf, startLanProxy, startRemoteProxy } from "./remote.mjs";
 import { nativeSettingsObservation } from "./settings-observation.mjs";
-import { sameAppOrigin } from "./navigation.mjs";
+import { leavesExtensionFrame, sameAppOrigin } from "./navigation.mjs";
 import { installLink, joinLink, linkInArgv, planLink, teamLink } from "./links.mjs";
 import { licencePrint, withLicence } from "./plan-link.mjs";
 import { keepPlan, planFromReport, readKeptPlan } from "./account-plan.mjs";
@@ -2130,6 +2130,13 @@ function guardNavigation(target) {
     if (isOurOwnPage(url)) return; // the app reloading itself
     event.preventDefault();
     if (isHttpUrl(url)) shell.openExternal(url);
+  });
+  // A workspace extension's framed document stays its own document: a
+  // sandboxed frame may navigate itself, and one that left would take
+  // what it saw along in the address (electron/navigation.mjs).
+  target.webContents.on("will-frame-navigate", (event) => {
+    if (event.isMainFrame) return;
+    if (leavesExtensionFrame(event.frame?.url ?? "", event.url)) event.preventDefault();
   });
   // A compromised renderer must not be able to grow itself new surfaces.
   target.webContents.on("will-attach-webview", (event) => event.preventDefault());

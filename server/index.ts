@@ -551,6 +551,7 @@ import {
   type ConnectionRecord,
 } from "./connections.ts";
 import { checkGitHubCli, execRunner, ghHint, GH_SETUP_GIT, GH_SIGN_IN, type GitHubCliStatus } from "./cli-plugins.ts";
+import { ExtensionStore, extensionsRoute } from "./extension-routes.ts";
 import { claimDataFolder, inUseMessage } from "./data-lock.ts";
 import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quietRoutine, isQuietReply, lastReportNote, MAX_ROUTINES, normalize as normalizeRoutine, nextScheduledAfter, lastScheduledBefore, promptTooLong, QUIET_ASK, QUIET_COMMAND_ASK, type Routine, RoutineStore, scheduleProblem, todoAsk } from "./routines.ts";
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
@@ -11343,6 +11344,29 @@ async function fireAppTurn(w: Watcher, bot: BotRecord, text: string): Promise<{ 
   return { laneId: lane.id, messageId: said.id, queued: false };
 }
 
+/** The installed workspace extensions (server/extension-routes.ts). */
+const extensionStore = new ExtensionStore(DATA_DIR);
+
+/**
+ * An extension's words to one of the owner's agents, from a command the
+ * owner ran (server/extensions.ts agents.message): in the agent's first
+ * conversation, queued behind whatever is said there already, and marked
+ * as the extension's, as a watcher's or a webhook's turn is.
+ */
+async function sendExtensionMessage(botId: string, text: string): Promise<{ queued: boolean; laneId?: string }> {
+  const bot = store.bot(botId);
+  const lane = bot ? mainLaneOf(bot) : undefined;
+  if (!bot || !lane) throw new Error("that agent has no conversation to speak in");
+  if (laneWaits(lane)) {
+    queueOnLane(bot.id, lane.id, text, { via: "extension" });
+    return { queued: true, laneId: lane.id };
+  }
+  const said = store.appendMessage(lane.id, { role: "user", kind: "text", text, via: "extension" });
+  broadcast({ kind: "message", threadId: lane.id, message: said });
+  void startTurn(bot.id, text, { taskId: lane.id, presetMessage: true }).catch(() => {});
+  return { queued: false, laneId: lane.id };
+}
+
 /** Something arrived on the realtime channel. Events for triggers this
  * workspace did not make (another app on the same project) are not ours
  * and are dropped unread. */
@@ -21052,7 +21076,7 @@ function queueOnLane(
     /** Not the person: a webhook, a watcher, a standing intent, Bloks
      * keeping a goal going, or the incident desk handing a lead what
      * failed. */
-    via?: "webhook" | "watcher" | "goal" | "intent" | "incident" | "service";
+    via?: "webhook" | "watcher" | "goal" | "intent" | "incident" | "service" | "extension";
     serviceWake?: Message["serviceWake"];
     /** The incident a desk note is about (server/incidents.ts). */
     incident?: Message["incident"];
@@ -30990,6 +31014,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 200, connectionsView());
       }
       return json(res, 405, { error: "GET, POST, PATCH or DELETE" });
+    }
+
+    // Workspace extensions (server/extensions.ts, GitHub 507): the
+    // owner's, from this window or a device of their own; installing reads
+    // a folder here, so only this computer's window installs. Never an
+    // agent (NEVER in server/agent-cli.ts) and never a member, whose
+    // credential on this computer is taken at its word here.
+    if (path === "/api/extensions" || path.startsWith("/api/extensions/")) {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "extensions are the owner's" });
+      const answered = await extensionsRoute(extensionStore, method, path, url, () => readBody(req), {
+        dataDir: DATA_DIR,
+        appVersion: APP_VERSION,
+        fromThisComputer: local && !namesMember(),
+        bots: () => store.bots,
+        refusal: (botId) => (suspendedFor(botId) ? "that agent is archived" : (webhookRefusal(botId)?.error ?? null)),
+        send: sendExtensionMessage,
+        changed: () => broadcast({ kind: "extensions" }),
+      });
+      if (answered && "html" in answered) {
+        res.writeHead(answered.status, answered.headers);
+        return void res.end(answered.html);
+      }
+      if (answered) return json(res, answered.status, answered.body);
     }
 
     // Local CLI plugins (server/cli-plugins.ts, GitHub 387): git and gh on

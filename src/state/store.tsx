@@ -12,6 +12,7 @@
 import { sayMcpServersChanged } from "@/lib/mcpServersEvent";
 import { takeReadFrame } from "@/lib/readReceipts";
 import { consumeSettingsRequest } from "@/lib/settings-client";
+import { noteExtensionFrame } from "@/lib/extensions";
 import {
   createContext,
   useCallback,
@@ -947,6 +948,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // workspace's, so it is never folded into state (src/lib/waking.ts)
       if (frame?.kind === "remote.wake") return takeWake(frame);
       if (typeof frame._seq === "number") lastSeq = frame._seq;
+      // what a running extension hears of the workspace (src/lib/extensions.ts):
+      // a turn's start and end, by agent, and the list changing
+      noteExtensionFrame(frame, typeof frame._seq !== "number" || frame._seq > replayUntil.current);
       // what touches the agents is applied now and kept for a list still
       // on its way, which is older than it when made before it
       const applyFrame = (action: Action) => {

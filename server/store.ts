@@ -210,7 +210,7 @@ export interface Message {
   afterAgent?: { peerId: string; peerName: string };
   /** Set on a room message that was said in the room's linked chat
    * channel, so the bridge does not say it there a second time. */
-  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service";
+  via?: "slack" | "discord" | "whatsapp" | "signal" | "watcher" | "email" | "webhook" | "routine" | "goal" | "intent" | "incident" | "service" | "extension";
   /** Created only by strict trusted-host wake ingress. Never from client input. */
   serviceWake?: import("./service-wakes.ts").ServiceWake;
   /** Posted by a standing intent (server/intents.ts): a note in its own

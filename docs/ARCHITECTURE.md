@@ -4922,6 +4922,143 @@ such as a self-hosted OneCLI could later stand behind the same address
 and grants, with `upstream` pointed at it rather than at the service; the
 grant and audit stay here either way.
 
+## Workspace extensions
+
+An extension is a folder the owner installs into one workspace: up to
+four panels, a hidden background document, commands, handlers for a few
+workspace events, and settings (`server/extensions.ts` for the rules,
+`server/extension-routes.ts` for the routes and what is kept,
+`src/lib/extensions.ts` and `src/components/extensions/` for the page,
+GitHub 507). The author's side is `docs/EXTENSIONS.md`.
+
+**The manifest.** `bloks-extension.json` at the top of the folder:
+`manifestVersion` 1, an `id` (2 to 40 lower case letters, digits and
+dashes), `name`, `version` (`1.0.0`), `description`, `author`, `bloks`
+(a range: `*`, `>=3.3.0`, `<4`, `^3.3.0`, `~3.3.0`, `3.3.1`, spaces
+meaning and), `permissions`, `panels` (`{ id, title, entry }`),
+`background` (an HTML file), `commands` (`{ id, title, description }`),
+`events` and `settings` (`{ key, label, type: text | boolean | number,
+default }`). `checkManifest` collects every problem rather than the first:
+an unknown permission or event, an event whose permission is not asked
+for, an entry that is not an `.html` file in the folder, a range this
+Bloks is outside, commands or events with nothing to hear them, a folder
+that adds nothing. Names lose control and reordering characters.
+
+**Permissions**, each with the words the install screen shows
+(`PERMISSIONS`): `agents:read` (names, and whether each works),
+`turns:read` (a turn's start and end, by agent and conversation, never
+what was said), `agents:message` (high: a message to an agent, only
+right after the owner runs one of its commands), `composer:write`
+(words into a message box for the owner to send), `storage` (its own 256
+KB) and `notifications`. There is no permission for a secret, a
+connection, a key, a file, the network, another workspace or an agent's
+credential, because nothing an extension can call reaches one.
+
+**Installing.** `POST /api/extensions/inspect { path }` reads the folder
+once into memory (`snapshotFolder`: hidden files left out, a link
+anywhere refuses it, at most 200 files, 2 MB each, 5 MB in all), hashes
+it (`digestOf`, sha256 over sorted names, sizes and bytes) and answers
+the manifest, its permissions in words, every problem, and for an update
+what it asks for that the installed one was not granted (`installed.added`).
+`POST /api/extensions { path, digest, grant }` reads it again and refuses
+(409) unless the hash is the one looked at and `grant` is exactly the
+manifest's permissions: what was shown is what is installed, and an
+update is where a permission would otherwise slip in. The bytes that were
+hashed are written to `<data>/extensions/<id>/` through a staging folder
+renamed into place (`writeInstalled`); `extensions.json` (0600) keeps the
+manifest, the source, the grant, the hash, `enabled` and the owner's
+setting values. An update keeps `enabled`, settings that still exist and
+its storage. Thirty per workspace. Installing is from a folder on this
+computer, in its own window (`local && !namesMember()`); GitHub release
+URLs are not built yet.
+
+**Who.** `/api/extensions` is the owner's, from this computer's window
+or a device of theirs (`local ? !namesMember() : ownerDevice`), never a
+member and never an agent (on `NEVER` in `server/agent-cli.ts`, and the
+route refuses `asAgent` itself). A member's credential on this computer
+is taken at its word. A phone may list, switch and remove, never install.
+Disabling (`PATCH { enabled }`) makes every running route answer 409;
+`DELETE` removes the files, the storage and the record, and every window
+drops its panels, commands and frames with the next list
+(`{ kind: "extensions" }` on the stream).
+
+**The sandbox.** `GET /api/extensions/:id/frame/:panel|background` serves
+one document, after `readInstalled` finds the files still hash to what
+was approved (otherwise 409, and the list says `intact: false`: an agent
+able to write the data folder cannot change what the owner approved).
+`inlineAssets` folds in its own scripts, stylesheets and images (paths
+by `insidePath`: relative, no climbing, no scheme, nothing hidden);
+anything else is left to fail. `frameExtensionDocument` puts the policy
+again as a meta tag, the app's colours as variables (Bloks's own and the
+plain `--background`, `--foreground`, `--brand` other hosts use), and the
+SDK (`FRAME_PRELUDE`) ahead of the extension's markup. The header is
+`EXTENSION_CSP`: `sandbox allow-scripts` (an opaque origin wherever it is
+loaded), `default-src 'none'`, inline scripts and styles only, no eval,
+`connect-src`, `frame-src`, `worker-src`, `form-action` and
+`object-src 'none'`, `frame-ancestors 'self'`, with no-store, nosniff, no
+referrer and a permissions policy refusing devices. The page frames it
+with `sandbox="allow-scripts"` and nothing else. The prelude takes WebRTC
+away, which no policy covers. A frame can always navigate itself, and the
+packaged page's own `frame-src 'self'` stops it leaving for another
+origin; the desktop app refuses any navigation away from the document
+(`leavesExtensionFrame` on `will-frame-navigate`, `electron/navigation.mjs`),
+and in any browser a frame that loads a second time is taken down rather
+than talked to (`ExtensionFrame`). A request it somehow made to the API
+would carry Origin null, which `isLocalRequest` refuses.
+
+**Calls.** `window.bloks.call(method, params)` posts to the page.
+`ExtensionHost` knows a frame by its window, never by what it says, reads
+the message into one of three shapes (`parseFrameMessage`: `ready`,
+`error`, `call` with at most 64 KB of parameters), checks the grant
+(`callVerdict`) and answers the page's own calls itself: `agents.selected`,
+`composer.insert` (into the box the way a failed send comes back, so
+nothing typed is written over), `notify` and `panel.open`. The rest go to
+`POST /api/extensions/:id/call`, which checks the grant again (`mayCall`,
+the same table, held to the page's by a test): `agents.list` (id, name,
+working; the owner's own agents only, `agentsForExtension`),
+`settings.get`, `storage.get|set|remove` (`extension-data/<id>.json`,
+0600) and `agents.message`. A message goes only within thirty seconds of
+the owner running one of that extension's commands, once per run
+(`CommandWindows` on the page), at most twelve an hour (`messageRoom` on
+the server), to the agent's first conversation, queued like any message,
+framed as the extension's words and marked `via: "extension"`; the turn
+runs with the agent's usual approvals. An extension never starts a turn
+from an event or a timer.
+
+**Events and commands.** The page derives the events from what it already
+hears (`eventFromFrame`, `noteExtensionFrame` in the store; replays after
+a reconnect are not news): `turn.started` and `turn.finished` with
+`{ agentId, conversationId }`, `agents.changed` with the list,
+`selection.changed` with the agent on screen, and `theme.changed`, which
+the prelude also applies to the variables. A frame hears an event only
+when its manifest named it and the grant covers it (`hears`). Commands
+are in search as "Extension: command" and on the extension's page; one
+goes to the background document, else a panel, opened first if need be,
+with the agent on screen as context for an extension that may see agents.
+Background documents run while an owner's window is open. An error a
+frame reports is kept beside its name in Settings with Switch it off;
+it never reaches a turn.
+
+**Native sidecars and app watchers (GitHub 524).** A sidecar's interface
+is a panel extension: static HTML from its folder in the dock beside the
+chat, kept mounted across tabs, with the plain colour names a sidecar
+reads. Its event handlers are the extension's. What is not built, and
+why: a sidecar's own process (a supervisor, ports, health checks)
+would run as the owner outside any sandbox; handing it
+`BLOKS_AUTH_TOKEN` is handing it the owner's credential; writing its tools
+into a project's `.mcp.json` changes other tools' settings; and
+emulating another vendor's host RPC is a protocol of theirs to track. A
+local tool that should start a turn already can, through a signed webhook
+(Webhooks), and one with tools is an MCP server. An extension that needs
+a process has to wait for a runner that sandboxes one per platform and
+a credential that can reach nothing but the extension's own calls.
+
+Not built yet: installing from a GitHub release (a download into the same
+look, hash and grant), extension panels on a paired phone's own app,
+`settings` of a secret kind, per-agent or per-room scoping of a grant,
+more events (an approval waiting, a routine's run) and a way for a
+background document to run with no window open.
+
 ## Boundaries worth knowing
 
 - `server/http-guard.ts` checks `Origin` and `Host` on every request.
