@@ -150,6 +150,15 @@ contextBridge.exposeInMainWorld("bloks", {
   browserDo: (action, arg) => ipcRenderer.invoke("browser:do", action, arg),
   onBrowserState: subscription("browser:state"),
   onBrowserReveal: subscription("browser:reveal"),
+  // Chrome extensions in that browser's session, the owner's to add from a
+  // folder they pick (electron/browser-extensions.mjs)
+  browserExtensions: {
+    list: () => ipcRenderer.invoke("browser-extensions:list"),
+    pick: () => ipcRenderer.invoke("browser-extensions:pick"),
+    add: (path) => ipcRenderer.invoke("browser-extensions:add", path),
+    setEnabled: (slug, enabled) => ipcRenderer.invoke("browser-extensions:set-enabled", slug, enabled),
+    remove: (slug) => ipcRenderer.invoke("browser-extensions:remove", slug),
+  },
   onQuickOpened: subscription("quick:opened"),
   onNotifyActivate: subscription("notify:activate"),
   // bloks:// links from the website (electron/main.mjs)

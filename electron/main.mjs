@@ -73,6 +73,7 @@ import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
 import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
 import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, holdDialogs, partitionFor, refusedNavigation } from "./app-browser.mjs";
+import * as browserExtensions from "./browser-extensions.mjs";
 import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
@@ -2749,6 +2750,10 @@ function browserFor(id) {
     ownPorts,
   });
   guardBrowserSession(held, ws);
+  // The owner's Chrome extensions for this workspace's browser, into its
+  // own session and no other (electron/browser-extensions.mjs). Electron
+  // forgets them at quit, so they are loaded again each time.
+  held.extensionsReady = browserExtensions.loadInto(ses, ws.dataDir, appLog).catch((error) => appLog(`browser extensions: ${error?.message ?? error}`));
   browsers.set(id, held);
   return held;
 }
@@ -3012,6 +3017,57 @@ function watchWindowForBrowser(win) {
 }
 
 handle("browser:state", (event) => browserFor(senderWorkspace(event))?.browser.state() ?? null);
+
+// The owner's Chrome extensions in the workspace's browser (GitHub 510,
+// electron/browser-extensions.mjs). The app's own page only (handle), for
+// the workspace that window shows, and a folder only as the system's own
+// folder window answered it in this run: no agent and no page reaches
+// these, and nothing names a path for them but the owner's pick.
+const pickedExtensionFolders = new Set();
+const extensionWorkspace = (event) => {
+  const id = senderWorkspace(event);
+  const ws = id ? entryOf(id) : null;
+  if (!ws || isRemoteKind(ws.kind) || !ws.dataDir) throw new Error("Chrome extensions are for a workspace this app runs, in its own browser.");
+  return { id, ws };
+};
+handle("browser-extensions:list", (event) => {
+  const { ws } = extensionWorkspace(event);
+  return browserExtensions.listView(ws.dataDir);
+});
+handle("browser-extensions:pick", async (event) => {
+  extensionWorkspace(event);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return null;
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });
+  const dir = canceled ? null : filePaths[0];
+  if (!dir) return null;
+  try {
+    const looked = browserExtensions.inspectFolder(dir);
+    pickedExtensionFolders.add(dir);
+    return looked;
+  } catch (error) {
+    return { path: dir, error: String(error?.message ?? error) };
+  }
+});
+handle("browser-extensions:add", async (event, dir) => {
+  const { id, ws } = extensionWorkspace(event);
+  if (typeof dir !== "string" || !pickedExtensionFolders.has(dir)) throw new Error("Pick the extension's folder first.");
+  pickedExtensionFolders.delete(dir);
+  const entry = browserExtensions.addFromFolder(ws.dataDir, dir);
+  const held = browsers.get(id);
+  if (held) await browserExtensions.setEnabled(held.ses, ws.dataDir, entry.slug, true);
+  return browserExtensions.listView(ws.dataDir);
+});
+handle("browser-extensions:set-enabled", async (event, slug, enabled) => {
+  const { id, ws } = extensionWorkspace(event);
+  await browserExtensions.setEnabled(browsers.get(id)?.ses ?? null, ws.dataDir, String(slug), Boolean(enabled));
+  return browserExtensions.listView(ws.dataDir);
+});
+handle("browser-extensions:remove", (event, slug) => {
+  const { id, ws } = extensionWorkspace(event);
+  browserExtensions.removeExtension(browsers.get(id)?.ses ?? null, ws.dataDir, String(slug));
+  return browserExtensions.listView(ws.dataDir);
+});
 
 handle("browser:bounds", (event, rect) => {
   const id = senderWorkspace(event);

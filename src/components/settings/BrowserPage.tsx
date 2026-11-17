@@ -17,6 +17,7 @@ import { toast } from "@/components/ui/toast";
 import { X } from "@/components/icons";
 import { browserIsHere } from "@/lib/appBrowser";
 import { SavedMark, SettingRow, SettingsGroup, SettingsSkeleton } from "../SettingsLayout";
+import { BrowserExtensionsSection } from "./BrowserExtensions";
 import { t } from "@/lib/i18n";
 
 interface Settings {
@@ -169,6 +170,8 @@ export function BrowserPage() {
           />
         </SettingsGroup>
       )}
+      {/* Chrome extensions in this browser, the desktop app's alone */}
+      {home === "own" && <BrowserExtensionsSection />}
     </>
   );
 }

@@ -3797,6 +3797,44 @@ Four parts, each in its own place:
   `browser.app` frames, with the picture from `/api/browser/frame` every
   two seconds while visible.
 
+### Chrome extensions in the Bloks browser
+
+The owner may add unpacked Chrome extensions to a workspace's browser in
+the desktop app (Settings, Browser, Chrome extensions;
+`electron/browser-extensions.mjs`, `src/components/settings/BrowserExtensions.tsx`,
+GitHub 510). Only into that workspace's session,
+`persist:bloks-browser-<workspace>`: never the session the app's window
+runs in and never another workspace's. Adding starts at the system's own
+folder window (`browser-extensions:pick`), and `add` takes only a folder
+picked that way in this run, so no page and no agent names a path for
+it. `inspectFolder` refuses a folder with a link, more than 5,000 files
+or 100 MB, and reads `manifest.json` (a `__MSG_` name from its default
+locale) into what the owner sees first: name, version, manifest version,
+the sites it reads and changes, its permissions, and `compatibility`,
+what works here and what does not. The folder is copied to
+`<data>/browser-extensions/<slug>/` and walked again before Electron
+reads it, kept in `browser-extensions.json`, and loaded with
+`allowFileAccess: false` each time the workspace's browser is made
+(Electron forgets extensions at quit). Switching off removes it from the
+session; Remove also deletes the copy, and only ever a path under the
+copies folder.
+
+What works, as Electron supports it: content scripts, a background page
+or service worker, `chrome.storage`, `runtime` messaging, `scripting`,
+`tabs` in part, `webRequest`, `management` and `i18n`. What does not, and
+is said before adding: toolbar buttons and popups (the browser has no
+toolbar for extensions), options pages, devtools panels, keyboard
+shortcuts, side panels, `activeTab`, native messaging (a password
+manager's link to its desktop app), context menus, notifications,
+identity, cookies, alarms, declarativeNetRequest, downloads, history and
+bookmarks, and anything Electron does not list. So most password
+managers load but cannot be unlocked here yet. Agents never install,
+open or switch one; `chrome-extension:` addresses are refused in every
+tab (`refusedNavigation`); an agent's commands are the fixed CDP list and
+never run in an extension's isolated world; and a password or payment
+field is still an approval card. A server's own headless browser takes
+no extensions yet.
+
 ## Terminals
 
 `server/terminal.ts` keeps up to eight shells per agent, each in the

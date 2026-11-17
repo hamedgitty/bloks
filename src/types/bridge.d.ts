@@ -421,6 +421,15 @@ declare global {
       browserDo?(action: import("../lib/appBrowser").BrowserDo, arg?: string | import("../lib/appBrowser").DialogAnswer): Promise<{ ok?: boolean; error?: string; url?: string }>;
       onBrowserState?(handler: (state: import("../lib/appBrowser").AppBrowserState) => void): () => void;
       onBrowserReveal?(handler: (payload: { by?: string }) => void): () => void;
+      /** Chrome extensions in this workspace's browser session (GitHub 510,
+       * electron/browser-extensions.mjs). Absent in an older app. */
+      browserExtensions?: {
+        list(): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
+        pick(): Promise<import("../lib/browserExtensions").BrowserExtensionLook | null>;
+        add(path: string): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
+        setEnabled(slug: string, enabled: boolean): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
+        remove(slug: string): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
+      };
       onQuickOpened(handler: () => void): () => void;
       /** Whether this Mac can prove who is at the keyboard: "biometry",
        * "password", or "unavailable". */
