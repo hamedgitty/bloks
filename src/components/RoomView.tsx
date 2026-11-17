@@ -89,6 +89,14 @@ import { freshStartPreset } from "@/lib/roomEdit";
 import { RoomRename } from "./room/RoomRename";
 import { RoomAgentsDialog } from "./room/RoomAgentsDialog";
 import { formatList, t } from "@/lib/i18n";
+import { FileText, Globe, PanelRight } from "@/components/icons";
+import { SideDock, type DockPane } from "./dock/SideDock";
+import { DocsPanel } from "./dock/DocsPanel";
+import { DockHostContext, type DockHost } from "./dock/context";
+import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
+import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
+import { inThread, orderTopics, topicCounts, topicPowers, topicState, type RoomTopic, type TopicState } from "@/lib/roomTopics";
+import { NewTopicDialog, TopicBar, TopicPanel } from "./room/RoomTopics";
 
 /** A reaction in a room is the cheapest thing anyone can say, and often
  * the right thing: agreeing with a plan should not wake six agents. */
@@ -774,9 +782,23 @@ export function RoomView({ blok }: { blok: Blok }) {
   // conversation is not about to answer this room
   const working = members.filter((m) => workingInRoom(m, blok.id));
 
+  // ── topics (GitHub 523, server/room-topics.ts) ──
+  // The thread being read: one of the room's topics, or the main stream
+  // (null), which is everything said in none. Everything below reads the
+  // thread, so the scrubber, the folds and the box all follow it.
+  const topics = useMemo(() => orderTopics(blok.topics), [blok.topics]);
+  const [topicId, setTopicId] = useState<string | null>(null);
+  const topic = topicId ? (topics.find((tp) => tp.id === topicId) ?? null) : null;
+  const thread = topic?.id ?? null;
+  // the owner's app: the owner may do all of it (the server checks anyway)
+  const powers = topicPowers({ kind: "owner" });
+  const [topicDialog, setTopicDialog] = useState<{ topic?: RoomTopic } | null>(null);
+
   // The room's conversation, and what waits behind the round it is in,
   // above the composer until it goes (GitHub 170).
-  const { said, waiting } = useMemo(() => splitWaiting(blok.messages), [blok.messages]);
+  const split = useMemo(() => splitWaiting(blok.messages), [blok.messages]);
+  const said = useMemo(() => split.said.filter((m) => inThread(m, thread)), [split.said, thread]);
+  const waiting = useMemo(() => split.waiting.filter((m) => inThread(m, thread)), [split.waiting, thread]);
   const earlier = useHistoryPaging("room", { ...blok, threadId: blok.id }, said, scrollRef, pinned, lens === "stream" && !highlightId);
   const start = earlier.start;
   // which messages have answers hanging off them, for the stream's hint
@@ -1037,6 +1059,78 @@ export function RoomView({ blok }: { blok: Blok }) {
     }).catch((e: Error) => dispatch({ type: "error", message: e.message }));
   };
 
+  // where each topic stands, from the whole room, not the thread on screen
+  const topicStates = useMemo(
+    () => new Map<string, TopicState>(topics.map((tp) => [tp.id, topicState(tp, split.said, working.length > 0)])),
+    [topics, split.said, working.length],
+  );
+  const topicSizes = useMemo(() => topicCounts(split.said), [split.said]);
+
+  // ── the side dock (dock/SideDock.tsx) ──
+  // The topic's context, documents opened here and the browser, in one
+  // column. Never opened by an agent's work in a room: several agents at
+  // once would pull it back and forth. Only what the person does opens it.
+  const dockKey = roomKey(blok.id);
+  useEffect(() => dock.setCurrent(dockKey), [dockKey]);
+  const dockPlace = placeIn(useDockState(), dockKey);
+  const browserState = useBrowserState();
+  const browserWhere = useBrowserWhere();
+  const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
+  const dockHost: DockHost = {
+    openDoc: (doc) => dock.openDoc(dockKey, doc),
+    openLink: browserHere ? (url) => void showPage(url, browserState?.tabs) : null,
+  };
+  const nameOfActor = (by: string) =>
+    by === "owner" ? t("forumLens.you") : by.startsWith("agent:") ? (members.find((b) => `agent:${b.id}` === by)?.name ?? t("common.anAgent")) : personName(by);
+  const dockPanes: DockPane[] = [
+    {
+      id: "topic",
+      label: t("roomTopics.panel.label"),
+      icon: <MessagesSquare size={15} />,
+      render: () => (
+        <TopicPanel
+          blok={blok}
+          topic={topic}
+          state={topic ? (topicStates.get(topic.id) ?? "idle") : "idle"}
+          members={answering}
+          messages={split.said}
+          count={topic ? (topicSizes.get(topic.id) ?? 0) : 0}
+          canClose={powers.close}
+          canEdit={powers.edit}
+          creatorName={nameOfActor}
+          onEdit={() => topic && setTopicDialog({ topic })}
+          onOpenDoc={dockHost.openDoc}
+          onOpenLink={dockHost.openLink}
+        />
+      ),
+    },
+    {
+      id: "docs",
+      label: t("dock.docs.label"),
+      icon: <FileText size={15} />,
+      keepAlive: true,
+      render: (shown) => <DocsPanel placeKey={dockKey} place={dockPlace} shown={shown} />,
+    },
+    ...(browserHere
+      ? [
+          {
+            id: "browser" as const,
+            label: t("dock.browser.label"),
+            detail: browserWhere.home === "server" ? t("dock.browser.onServer") : t("dock.browser.here"),
+            icon: <Globe size={15} />,
+            render: (shown: boolean) => <DockedBrowser shown={shown} />,
+          },
+        ]
+      : []),
+  ];
+  // A topic picked opens its context in the dock, where there is room for
+  // both; on a narrow window the thread alone changes.
+  const pickTopic = (id: string | null) => {
+    setTopicId(id);
+    pinned.current = true;
+    if (id && window.innerWidth >= DOCK_SIDE_BY_SIDE + 320) dock.show(dockKey, "topic");
+  };
+
   const answers = answersOf(blok);
   const setAnswers = (next: RoomAnswers) => {
     if (next === answers) return;
@@ -1190,6 +1284,17 @@ export function RoomView({ blok }: { blok: Blok }) {
           </Button>
           <RoomFolderButton blok={blok} />
           <GroupCallButton blok={blok} members={answering} />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => dock.toggle(dockKey, dockPanes.map((p) => p.id))}
+            className={cn(dockPlace.open && "bg-accent text-foreground")}
+            title={t("dock.toggle")}
+            aria-label={t("dock.toggle")}
+            aria-pressed={dockPlace.open}
+          >
+            <PanelRight size={16} />
+          </Button>
           {/* What you reach for while reading stays in the header: people,
               the folder, a call and how to read it. Changing the room (its
               name, its agents, a fresh start) and tidying it (routines,
@@ -1224,6 +1329,7 @@ export function RoomView({ blok }: { blok: Blok }) {
             lead={lead}
             onLead={makeLead}
             onClose={() => setClosing(true)}
+            onNewTopic={powers.open ? () => setTopicDialog({}) : undefined}
           />
         </div>
       </div>
@@ -1277,6 +1383,20 @@ export function RoomView({ blok }: { blok: Blok }) {
         </div>
       )}
 
+      <DockHostContext.Provider value={dockHost}>
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {topics.length > 0 && (
+        <TopicBar
+          topics={topics}
+          current={thread}
+          states={topicStates}
+          counts={topicSizes}
+          canOpen={powers.open}
+          onPick={pickTopic}
+          onNew={() => setTopicDialog({})}
+        />
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
@@ -1405,6 +1525,7 @@ export function RoomView({ blok }: { blok: Blok }) {
         onSent={() => {
           if (!pinned.current) toLatest();
         }}
+        topic={topic ? { id: topic.id, title: topic.title, closed: topic.status === "closed" } : null}
       />
       {/* words selected in one message, quoted into the reply; a room has
           no branches, so Quote is all it offers */}
@@ -1425,6 +1546,22 @@ export function RoomView({ blok }: { blok: Blok }) {
         }}
         onQuote={setReplyTo}
       />
+      </div>
+      <SideDock placeKey={dockKey} panes={dockPanes} />
+      </div>
+      </DockHostContext.Provider>
+      {topicDialog && (
+        <NewTopicDialog
+          blok={blok}
+          members={answering}
+          topic={topicDialog.topic}
+          onClose={() => setTopicDialog(null)}
+          onDone={(done) => {
+            setTopicDialog(null);
+            if (!topicDialog.topic) pickTopic(done.id);
+          }}
+        />
+      )}
       {forwarding && (
         <ForwardDialog
           message={forwarding.message}
@@ -1540,8 +1677,11 @@ function RoomMenu({
   lead,
   onLead,
   onClose,
+  onNewTopic,
 }: {
   blok: Blok;
+  /** Opens a new topic, for whoever may (server/room-topics.ts). */
+  onNewTopic?: () => void;
   /** Turns the name in the header into a field. */
   onRename: () => void;
   onAgents: () => void;
@@ -1593,6 +1733,12 @@ function RoomMenu({
           <Plus size={15} />
           {t("roomView.newRoomWithTheseAgents")}
         </DropdownMenuItem>
+        {onNewTopic && (
+          <DropdownMenuItem onClick={onNewTopic}>
+            <MessagesSquare size={15} />
+            {t("roomTopics.new")}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onRoutines}>
           <CalendarClock size={15} />

@@ -217,6 +217,11 @@ export const RULES: Rule[] = [
   { method: "POST", path: "/api/agent/conversations", why: "open a new conversation, a tab of its own, for itself or another agent it may message, with the first message in it" },
   { method: "POST", path: "/api/bloks/:room/messages", why: "say something in a room it is in" },
   { method: "GET", path: "/api/bloks/:room/messages", why: "read what was said in a room it is in" },
+  // A room's topics, each a thread of its own (server/room-topics.ts):
+  // only the room's lead may open or close one, which the route checks;
+  // which agents work in it, its folder and its branch are the person's.
+  { method: "POST", path: "/api/bloks/:room/topics", why: "open a topic in a room it leads, by its title and category" },
+  { method: "PATCH", path: "/api/bloks/:room/topics/:id", why: "close or reopen a topic in a room it leads" },
 
   // Getting a colleague, and somewhere to work with them.
   { method: "POST", path: "/api/bots", why: "hire a teammate" },

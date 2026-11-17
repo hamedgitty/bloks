@@ -82,6 +82,8 @@ export interface MemberMessage {
   onBehalf?: { by: string; name: string };
   secret?: { label: string; status?: string };
   artifact?: { name: string };
+  /** Said in one of the room's topics. */
+  topicId?: string;
 }
 
 export interface Conversation {
@@ -137,6 +139,8 @@ export interface MemberRoom {
     owner: { name: string };
     agents: Array<{ id: string; name: string; title: string; color: string; shape: string | null; archived: boolean; busy: boolean }>;
     people: Array<{ id: string; name: string; role: string; joinedAt: number; guest?: boolean }>;
+    /** Its topics (server/room-topics.ts); absent from an older server. */
+    topics?: import("../../server/room-topics.ts").RoomTopic[];
   };
   messages: MemberMessage[];
   reads?: Array<{ personId: string; messageId: string; at: number }>;

@@ -27,6 +27,10 @@ import { useLastRead } from "@/lib/lastRead";
 import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
 import { AgentFace, MemberComposer, OnlyYou, PersonFace, Transcript } from "./MemberParts";
+import { TopicBar } from "@/components/room/RoomTopics";
+import { inThread, orderTopics, topicPowers, type TopicState } from "@/lib/roomTopics";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { formatList, t } from "@/lib/i18n";
 
 /** A list of messages with one more folded in: added, or put in place of
@@ -260,14 +264,22 @@ export function RoomView({
   usage,
   nameOf,
   known,
+  admin = false,
 }: {
   roomId: string;
   me: string;
   usage: MemberUsage | null;
   nameOf?: (id: string) => string;
   known?: ReadonlyArray<{ id: string; name: string }>;
+  /** A workspace admin, who opens and closes the room's topics. */
+  admin?: boolean;
 }) {
   const [data, setData] = useState<MemberRoom | null>(null);
+  // the room's topics and the thread being read: a topic's, or the main
+  // stream (server/room-topics.ts)
+  const [thread, setThread] = useState<string | null>(null);
+  const [naming, setNaming] = useState(false);
+  const [topicError, setTopicError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
     memberApi
@@ -297,6 +309,20 @@ export function RoomView({
   const agentName = (id: string | undefined) => data?.room.agents.find((a) => a.id === id)?.name ?? t("memberViews.anAgent");
   const busy = Boolean(data?.room.agents.some((a) => a.busy));
   const viewer = data?.room.role === "viewer";
+  const topics = orderTopics(data?.room.topics);
+  const topic = thread ? (topics.find((tp) => tp.id === thread) ?? null) : null;
+  const powers = topicPowers(viewer ? { kind: "viewer", personId: me } : admin ? { kind: "admin", personId: me } : { kind: "collaborator", personId: me });
+  const shownMessages = (data?.messages ?? []).filter((m) => inThread(m, topic?.id ?? null));
+  const topicStates = new Map<string, TopicState>(topics.map((tp) => [tp.id, tp.status === "closed" ? "closed" : "idle"]));
+  const topicCountMap = new Map<string, number>();
+  for (const m of data?.messages ?? []) if (m.topicId) topicCountMap.set(m.topicId, (topicCountMap.get(m.topicId) ?? 0) + 1);
+  // a topic changed elsewhere arrives with the room, so it is asked again
+  const changeTopic = (run: () => Promise<unknown>) => {
+    setTopicError(null);
+    run()
+      .then(load)
+      .catch((e: Error) => setTopicError(e.message));
+  };
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-5">
@@ -316,9 +342,45 @@ export function RoomView({
           </div>
         )}
       </header>
+      {data && (topics.length > 0 || powers.open) && (
+        <TopicBar
+          topics={topics}
+          current={topic?.id ?? null}
+          states={topicStates}
+          counts={topicCountMap}
+          canOpen={powers.open}
+          onPick={setThread}
+          onNew={() => setNaming(true)}
+        />
+      )}
+      {topic && powers.close && (
+        <div className="flex shrink-0 items-center gap-2 border-b px-5 py-1.5 text-small text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">{topic.category ?? topic.title}</span>
+          {topicError && <span role="alert" className="text-destructive">{topicError}</span>}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-small"
+            onClick={() => changeTopic(() => memberApi.topicStatus(roomId, topic.id, topic.status === "open" ? "closed" : "open"))}
+          >
+            {topic.status === "open" ? t("roomTopics.close") : t("roomTopics.reopen")}
+          </Button>
+        </div>
+      )}
+      {naming && (
+        <MemberTopicDialog
+          onClose={() => setNaming(false)}
+          onOpen={async (title, category) => {
+            const made = (await memberApi.openTopic(roomId, { title, category: category || null })) as { topic: { id: string } };
+            setNaming(false);
+            load();
+            setThread(made.topic.id);
+          }}
+        />
+      )}
       {data ? (
         <Transcript
-          messages={data.messages}
+          messages={shownMessages}
           me={me}
           people={told.people}
           owner={told.owner}
@@ -350,14 +412,54 @@ export function RoomView({
       <MemberComposer
         autoFocusKey={roomId}
         placeholder={data?.room.name ? t("memberViews.placeholder.room", { room: data.room.name }) : t("memberViews.placeholder.theRoom")}
-        disabled={viewer ? t("memberViews.viewerOnly") : null}
+        disabled={viewer ? t("memberViews.viewerOnly") : topic?.status === "closed" ? t("roomComposer.topicClosed", { name: topic.title }) : null}
         notice={usageNotice(usage)}
         onSend={async (text) => {
-          const said = await memberApi.post(roomId, text);
+          const said = await memberApi.post(roomId, text, topic?.id);
           setData((was) => (was ? { ...was, messages: withMessage(was.messages, said.message) } : was));
         }}
       />
     </main>
+  );
+}
+
+/** An admin opening a topic from the member's app: its title and, if
+ * wanted, a category. Which agents work in it, its folder and its branch
+ * are set from the owner's app. */
+function MemberTopicDialog({ onClose, onOpen }: { onClose: () => void; onOpen: (title: string, category: string) => Promise<void> }) {
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[calc(100vw-24px)] max-w-[420px] gap-3 p-5">
+        <DialogTitle className="text-ui">{t("roomTopics.newTitle")}</DialogTitle>
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!title.trim() || busy) return;
+            setBusy(true);
+            onOpen(title, category)
+              .catch((err: Error) => setError(err.message))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <Input autoFocus value={title} maxLength={80} onChange={(e) => setTitle(e.target.value)} placeholder={t("roomTopics.field.title")} aria-label={t("roomTopics.field.title")} />
+          <Input value={category} maxLength={40} onChange={(e) => setCategory(e.target.value)} placeholder={t("roomTopics.field.category")} aria-label={t("roomTopics.field.category")} />
+          {error && <p role="alert" className="text-small text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" disabled={!title.trim() || busy}>
+              {t("roomTopics.open")}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

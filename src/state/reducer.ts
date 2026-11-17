@@ -398,6 +398,8 @@ export interface Message {
   /** set when this message answers an earlier one */
   /** `quote` is the exact words selected in that message, when quoted. */
   replyTo?: { id?: string; author: string; excerpt: string; quote?: string };
+  /** Said in one of a room's topics rather than its main stream. */
+  topicId?: string;
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   at: number;
@@ -885,6 +887,8 @@ export interface Blok {
   /** Messages older than the first one here, still on the server. Only
    * set when the transcript arrived trimmed, through Bloks Cloud. */
   olderMessages?: number;
+  /** Its topics, each with a thread of its own (server/room-topics.ts). */
+  topics?: import("../../server/room-topics.ts").RoomTopic[];
 }
 
 /** A New room dialog filled in before it opens: a room's team, ready to
@@ -1117,7 +1121,7 @@ export type Action =
   /** The person dragged a heading: the new order, to show and to keep. */
   | { type: "moveSections"; order: string[] }
   /** `onFailed`: the send did not go, so the box can have it back. */
-  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; onFailed?: () => void }
+  | { type: "sendToRoom"; blokId: string; text: string; replyTo?: Message["replyTo"]; topicId?: string; onFailed?: () => void }
   /** `preset` fills the dialog in as it opens; any toggle without one
    * leaves it empty, so a preset never outlives the dialog it was for. */
   | { type: "toggleNewRoom"; open?: boolean; preset?: NewRoomPreset }

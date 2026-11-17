@@ -150,6 +150,19 @@ import { answersText, keptAnswers, readAnswers, type AskAnswers, type AskQuestio
 import { quoteIn } from "./quote-check.ts";
 import { COLORS as BLOK_COLORS, MAX_TASKS, ownerLanes, shapeOf, Store, type AgentNote, type BlokColor, type BotRecord, type DroppedWhy, type Message, type NewBotProfile, type RecalledNote, type TaskRecord } from "./store.ts";
 import { addressees, audienceOf, BlokStore, currentSpend, DEFAULT_SHARING, leadOf, MAX_MEMBERS, ranksForExport, type BlokRecord, type RoomSharing } from "./bloks.ts";
+import {
+  TOPIC_LIMITS,
+  TOPIC_REFUSALS,
+  applyDraft,
+  newTopic,
+  readTopicDraft,
+  setStatus,
+  topicAgents,
+  topicBrief,
+  topicForWriting,
+  topicPowers,
+  type TopicActor,
+} from "./room-topics.ts";
 import { answersOf, pickAnswerers, RECENT_LINES, roomAnswers, routeWords, type RoomAnswers, type RoomRoute, type RouteLine } from "./room-route.ts";
 import { cleanSectionOrder, placeAt, SidebarStore, sidebarView, upgradePlaces, type Placed } from "./sidebar.ts";
 import { extractTeamPlan, MAX_HIRES, normalizePlan, TEAM_PROTOCOL, type TeamPlan } from "./teams.ts";
@@ -5459,7 +5472,8 @@ async function onRuntimeEvent(event: RuntimeEvent) {
 
   // `soon` for the rows that stream (see Store.save)
   const pushMessage = (m: Omit<Message, "id" | "at">, soon = false) => {
-    const message = store.appendMessage(roomId, inRoom ? { ...m, from: bot.id } : m, { soon });
+    const topicId = inRoom ? roundTopic.get(roomId) : undefined;
+    const message = store.appendMessage(roomId, inRoom ? { ...m, from: bot.id, ...(topicId ? { topicId } : {}) } : m, { soon });
     // What a check-in says is news only once it has ended and was not
     // quiet, so the app holds its speech until then (src/lib/notify.ts);
     // its banner is the reply.settled its end sends, if it has one.
@@ -6862,6 +6876,9 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
  * session is keyed to the agent, so inbound events name the agent, not
  * the room; this is how a reply finds its way back to the right room. */
 const activeRoom = new Map<string, string>(); // taskId -> blokId
+/** The topic a room's round is answering, by room, while it runs: what its
+ * members say then goes into that topic (server/room-topics.ts). */
+const roundTopic = new Map<string, string>();
 
 // ── who the person has been with ──────────────────────────────────────
 // Whatever is not pinned in the sidebar sorts by the last time it had
@@ -7375,14 +7392,22 @@ function roomLine(blokId: string, speakerId: string): (m: Message) => string {
     const from = m.from ? store.bot(m.from) : null;
     return from ? (from.id === speakerId ? `${from.name} (you)` : from.name) : "Agent";
   };
+  // a line said in a topic says which, so a member reading the room's
+  // history knows which workstream each line belongs to
+  const topics = bloks.get(blokId)?.topics ?? [];
+  const inTopic = (m: Message) => {
+    const topic = m.topicId ? topics.find((t) => t.id === m.topicId) : undefined;
+    return topic ? `[in topic "${topic.title}"] ` : "";
+  };
   // a quote is the words picked out of the message it answers, said on
   // the one line a room's history gives each message
   return (m) =>
-    m.replyTo
+    inTopic(m) +
+    (m.replyTo
       ? m.replyTo.quote
         ? `${named(m)} (quoting ${m.replyTo.author}: "${m.replyTo.quote.replace(/\s+/g, " ")}"): ${m.text}`
         : `${named(m)} (replying to ${m.replyTo.author}: "${m.replyTo.excerpt}"): ${m.text}`
-      : `${named(m)}: ${m.text}`;
+      : `${named(m)}: ${m.text}`);
 }
 
 // ── turn dispatch ──────────────────────────────────────────────────────
@@ -10049,7 +10074,8 @@ async function startClaimedTurn(
       });
       broadcast({ kind: "message", threadId: roomId, message: failure });
       sweepArtifacts(task.id, (m) => {
-        const message = store.appendMessage(roomId, blok ? { ...m, from: bot.id } : m);
+        const topicId = blok ? roundTopic.get(roomId) : undefined;
+        const message = store.appendMessage(roomId, blok ? { ...m, from: bot.id, ...(topicId ? { topicId } : {}) } : m);
         broadcast({ kind: "message", threadId: roomId, message });
         return message;
       });
@@ -12929,6 +12955,8 @@ interface RoomAuthor {
    * either, so this is said rather than worked out: it decides whether
    * the members' answers are replies to the person. */
   byYou?: boolean;
+  /** Said in this topic of the room, already checked to be open. */
+  topicId?: string;
 }
 
 async function postToRoom(blok: BlokRecord, text: string, author: RoomAuthor) {
@@ -12949,6 +12977,7 @@ function enqueueRoomPost(blok: BlokRecord, text: string, author: RoomAuthor) {
     text,
     ...(previous ? { queued: true, queuedAt: Date.now() } : {}),
     ...(author.replyTo ? { replyTo: author.replyTo } : {}),
+    ...(author.topicId ? { topicId: author.topicId } : {}),
   });
   broadcast({ kind: "message", threadId: blok.id, message });
   let resolve!: (said: Message) => void;
@@ -13028,14 +13057,21 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
   // message: it is stored, nobody answers, which is the readable
   // tombstone this is for.
   if (!members.length) throw Object.assign(new Error("this room has no agents"), { status: 409 });
-  const awake = members.filter((m) => !m.archivedAt);
+  // In a topic, only the agents it names work: they are the room as far
+  // as this message goes, named or not (server/room-topics.ts). A topic
+  // closed since this was posted still answers it: it was open then.
+  const topic = author.topicId ? (bloks.get(blok.id)?.topics ?? []).find((t) => t.id === author.topicId) : undefined;
+  const inTopic = new Set(topicAgents(topic, members).map((m) => m.id));
+  const awake = members.filter((m) => !m.archivedAt && inTopic.has(m.id));
 
   // Names resolve against everyone in the room, not only those who can
   // answer. addressees returns the whole list when nothing matched, so
   // naming an archived member against the awake list looked like naming
   // nobody, and a message meant for one retired agent woke the entire
   // room instead.
-  const { ids, mentioned } = addressees(text, members);
+  const named = addressees(text, members);
+  const ids = named.ids.filter((id) => inTopic.has(id));
+  const mentioned = named.mentioned && ids.length > 0;
   // In a shared room, a message that names a person and no agent is for
   // that person: it wakes nobody. Without this, "@Sam can you check?"
   // would wake every agent in the room to reply to a question not meant
@@ -13085,14 +13121,21 @@ async function postToRoomNow(blok: BlokRecord, text: string, author: RoomAuthor,
     broadcast({ kind: "message", threadId: blok.id, message: notice });
   }
 
-  await dispatchRound(
-    blok.id,
-    targets.map((id) => [id, text] as const),
-    author.hops,
-    requester,
-    author.byYou,
-    Boolean(author.botId),
-  );
+  // each member is told which topic this is in, and its answers go there
+  const said = topic ? `${text}\n\n${topicBrief(topic)}` : text;
+  if (topic) roundTopic.set(blok.id, topic.id);
+  try {
+    await dispatchRound(
+      blok.id,
+      targets.map((id) => [id, said] as const),
+      author.hops,
+      requester,
+      author.byYou,
+      Boolean(author.botId),
+    );
+  } finally {
+    if (topic && roundTopic.get(blok.id) === topic.id) roundTopic.delete(blok.id);
+  }
   return message;
 }
 
@@ -22449,19 +22492,84 @@ function memberSays(
  * spending limit holds here too. A room open to everyone that nobody had
  * shared yet becomes shared the moment a member speaks in it: from now on
  * other people read its replies, so the room's rules for that apply. */
+/** The owner, or an agent in the room as its lead or not, as a topic's
+ * rules know them. */
+function topicActorIn(blok: BlokRecord, botId?: string): TopicActor {
+  if (!botId) return { kind: "owner" };
+  const awake = blok.memberIds.map((id) => store.bot(id)).filter((b): b is BotRecord => Boolean(b && !b.archivedAt));
+  return { kind: "agent", botId, lead: leadOf(awake, blok.leadId)?.id === botId };
+}
+
+/** A topic opened, or why not. An agent opens one by its title and
+ * category; which agents work in it, its folder and its branch are a
+ * person's to set. Said once in the main stream, so everyone sees it. */
+function openTopic(blok: BlokRecord, actor: TopicActor, by: string, body: Record<string, unknown>): { status: number; body: unknown } {
+  if (!topicPowers(actor).open) return { status: 403, body: { error: TOPIC_REFUSALS.open } };
+  if ((blok.topics?.length ?? 0) >= TOPIC_LIMITS.perRoom) return { status: 409, body: { error: TOPIC_REFUSALS.full } };
+  const asked = actor.kind === "agent" ? { title: body.title, ...("category" in body ? { category: body.category } : {}) } : body;
+  const read = readTopicDraft(asked, blok.memberIds, { creating: true });
+  if (!read.ok) return { status: 400, body: { error: read.error } };
+  const topic = newTopic(newId(), { ...read.draft, title: read.draft.title! }, by);
+  const room = bloks.setTopics(blok.id, [...(blok.topics ?? []), topic]);
+  if (!room) return { status: 404, body: { error: "no such room" } };
+  broadcast({ kind: "blok", blok: room });
+  sayTopicEvent(room, by, `opened the topic "${topic.title}"`);
+  return { status: 201, body: { topic } };
+}
+
+/** A topic closed, reopened or changed, or why not. Each part asks for its
+ * own power: closing and reopening is the lead's too, the rest is not. */
+function changeTopic(blok: BlokRecord, topicId: string, actor: TopicActor, by: string, body: Record<string, unknown>): { status: number; body: unknown } {
+  const topics = blok.topics ?? [];
+  const at = topics.findIndex((t) => t.id === topicId);
+  if (at < 0) return { status: 404, body: { error: TOPIC_REFUSALS.missing } };
+  const powers = topicPowers(actor);
+  const { status, ...rest } = body;
+  if (status !== undefined && status !== "open" && status !== "closed") return { status: 400, body: { error: "status is open or closed" } };
+  if (status !== undefined && !powers.close) return { status: 403, body: { error: TOPIC_REFUSALS.close } };
+  const editing = Object.keys(rest).some((key) => ["title", "category", "agents", "folder", "branch"].includes(key));
+  if (editing && !powers.edit) return { status: 403, body: { error: TOPIC_REFUSALS.edit } };
+  let topic = topics[at];
+  if (editing) {
+    const read = readTopicDraft(rest, blok.memberIds, { creating: false });
+    if (!read.ok) return { status: 400, body: { error: read.error } };
+    topic = applyDraft(topic, read.draft);
+  }
+  const was = topic.status;
+  if (status) topic = setStatus(topic, status, by);
+  const room = bloks.setTopics(blok.id, topics.map((t, i) => (i === at ? topic : t)));
+  if (!room) return { status: 404, body: { error: "no such room" } };
+  broadcast({ kind: "blok", blok: room });
+  if (status && status !== was) sayTopicEvent(room, by, `${status === "closed" ? "closed" : "reopened"} the topic "${topic.title}"`);
+  return { status: 200, body: { topic } };
+}
+
+/** "Sam opened the topic ...", in the main stream, as a room's other
+ * events are said there. */
+function sayTopicEvent(blok: BlokRecord, by: string, what: string) {
+  const who = by === "owner" ? hostName() : by.startsWith("agent:") ? (store.bot(by.slice(6))?.name ?? "An agent") : (people.person(by)?.name ?? "Someone");
+  const notice = store.appendMessage(blok.id, { role: "bot", kind: "notice", event: true, text: `${who} ${what}.` });
+  broadcast({ kind: "message", threadId: blok.id, message: notice });
+}
+
 function memberPosts(
   roomId: string,
   person: { id: string; limited: boolean },
   text: string,
   replyTo?: ReplyRef,
+  topicId?: string,
 ): { message: Message; blok: BlokRecord } | { status: number; error: string; code?: string } {
   let blok = bloks.get(roomId);
   if (!blok) return { status: 404, error: "no such room" };
+  if (topicId) {
+    const writing = topicForWriting(blok.topics, topicId);
+    if (!writing.ok) return { status: writing.status, error: writing.error };
+  }
   const stopped = person.limited ? workspacePeople.limitRefusal(person.id) : null;
   if (stopped) return { status: 402, error: stopped, code: "limit" };
   if (!blok.sharing) blok = bloks.share(blok.id, {}) ?? blok;
   // a human message starts a fresh chain: whoever it wakes is at no hops
-  const { message } = enqueueRoomPost(blok, text, { personId: person.id, hops: 0, replyTo });
+  const { message } = enqueueRoomPost(blok, text, { personId: person.id, hops: 0, replyTo, ...(topicId ? { topicId } : {}) });
   return { message, blok };
 }
 
@@ -23935,6 +24043,7 @@ function memberRoom(roomId: string, personId: string) {
       owner: { name: hostName() },
       agents,
       people: roomPeople(blok),
+      topics: blok.topics ?? [],
     },
     messages,
     reads: readsFor(roomId, personId),
@@ -24052,11 +24161,28 @@ async function serveMember(
     case "room":
       return json(res, 200, memberRoom(action.roomId, personId));
 
+    // an admin opens, closes and changes a room's topics as the owner does
+    // (memberCan has refused everyone else)
+    case "topicOpen": {
+      const done = openTopic(bloks.get(action.roomId)!, { kind: "admin", personId }, personId, await readBody(req));
+      return json(res, done.status, done.body);
+    }
+    case "topicEdit": {
+      const done = changeTopic(bloks.get(action.roomId)!, action.topicId, { kind: "admin", personId }, personId, await readBody(req));
+      return json(res, done.status, done.body);
+    }
+
     case "post": {
       const body = await readBody(req);
       const text = clamp(body.text, 8_000);
       if (!text) return json(res, 400, { error: "say something first" });
-      const posted = memberPosts(action.roomId, { id: personId, limited: Boolean(who.role) }, text, heldQuote(replyRef(body.replyTo), [action.roomId]));
+      const posted = memberPosts(
+        action.roomId,
+        { id: personId, limited: Boolean(who.role) },
+        text,
+        heldQuote(replyRef(body.replyTo), [action.roomId]),
+        typeof body.topicId === "string" && body.topicId ? body.topicId : undefined,
+      );
       if ("error" in posted) return json(res, posted.status, { error: posted.error, ...(posted.code ? { code: posted.code } : {}) });
       const view = viewOf(personId, posted.blok.id)!;
       return json(res, 202, { message: memberMessage(posted.message, view) });
@@ -31550,6 +31676,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (ok) broadcast({ kind: "blok.deleted", blokId: m[1] });
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "no such room" });
     }
+    // ── a room's topics (server/room-topics.ts) ──
+    // The owner opens, closes and changes them; an agent in the room may
+    // open and close one only if it is the room's lead.
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/topics$/);
+    if (m && method === "POST") {
+      const blok = bloks.get(m[1]);
+      if (!blok || (asAgent && !blok.memberIds.includes(asAgent.botId))) return json(res, 404, { error: "no such room" });
+      const done = openTopic(blok, topicActorIn(blok, asAgent?.botId), asAgent ? `agent:${asAgent.botId}` : "owner", await readBody(req));
+      return json(res, done.status, done.body);
+    }
+    m = path.match(/^\/api\/bloks\/([\w-]+)\/topics\/([\w-]+)$/);
+    if (m && method === "PATCH") {
+      const blok = bloks.get(m[1]);
+      if (!blok || (asAgent && !blok.memberIds.includes(asAgent.botId))) return json(res, 404, { error: "no such room" });
+      const done = changeTopic(blok, m[2], topicActorIn(blok, asAgent?.botId), asAgent ? `agent:${asAgent.botId}` : "owner", await readBody(req));
+      return json(res, done.status, done.body);
+    }
     m = path.match(/^\/api\/bloks\/([\w-]+)\/messages$/);
     if (m && method === "GET") {
       const room = bloks.bloks.find((b) => b.id === m![1]);
@@ -31570,6 +31713,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!text) {
         return json(res, 400, { error: "text required" });
       }
+      // into one of the room's topics, while it is open
+      let topicId: string | undefined;
+      if (typeof roomBody.topicId === "string" && roomBody.topicId) {
+        const writing = topicForWriting(blok.topics, roomBody.topicId);
+        if (!writing.ok) return json(res, writing.status, { error: writing.error });
+        topicId = writing.topic.id;
+      }
       // An agent's `bloks say` into a room comes through here too. It is
       // that agent speaking, not the person, so it goes in as its line
       // and is passed on the way its replies in the room are: only to
@@ -31583,6 +31733,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           kind: "text",
           text,
           ...(replyTo ? { replyTo } : {}),
+          ...(topicId ? { topicId } : {}),
         });
         // a run from a script this agent is in waits for the room too
         runs.linkRoom(asAgent.taskId, blok.id);
@@ -31598,6 +31749,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         hops: 0,
         replyTo: replyRef(roomBody.replyTo),
         byYou: true,
+        ...(topicId ? { topicId } : {}),
       });
       withYou({ room: blok }, message.at);
       triggersFired({ kind: "message", targetId: blok.id, text, fromUser: true });

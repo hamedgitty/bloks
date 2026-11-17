@@ -18,6 +18,7 @@ import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { ChatLink } from "./chat-bridge.ts";
 import type { RoomAnswers } from "./room-route.ts";
+import type { RoomTopic } from "./room-topics.ts";
 
 export interface BlokRecord {
   id: string;
@@ -85,6 +86,8 @@ export interface BlokRecord {
    * everything the owner said in private, and a member could otherwise
    * ask the agent to repeat it. See startTurn. */
   lanes?: Record<string, string>;
+  /** Its topics, open and closed (server/room-topics.ts). */
+  topics?: RoomTopic[];
 }
 
 /** What members of a shared room can see and do, set by the owner. */
@@ -184,6 +187,16 @@ export class BlokStore {
 
   get(id: string): BlokRecord | null {
     return this.bloks.find((b) => b.id === id) ?? null;
+  }
+
+  /** The room's topics, written whole: one is opened, closed or changed
+   * at a time, and the list is short. */
+  setTopics(id: string, topics: RoomTopic[]): BlokRecord | null {
+    const blok = this.get(id);
+    if (!blok) return null;
+    blok.topics = topics;
+    this.save();
+    return blok;
   }
 
   /** The room's first turn fixes the desk forever; later folder edits

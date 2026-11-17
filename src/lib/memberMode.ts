@@ -68,7 +68,13 @@ export const memberApi = {
   answer: (id: string, lane: "team" | "private", messageId: string, answer: string) =>
     call<{ ok: true }>(`/api/member/agents/${id}/${lane}/cards/${messageId}`, { method: "POST", body: JSON.stringify({ answer }) }),
   room: (id: string) => call<MemberRoom>(`/api/member/rooms/${id}`),
-  post: (id: string, text: string) => call<{ message: MemberMessage }>(`/api/member/rooms/${id}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  post: (id: string, text: string, topicId?: string | null) =>
+    call<{ message: MemberMessage }>(`/api/member/rooms/${id}/messages`, { method: "POST", body: JSON.stringify({ text, ...(topicId ? { topicId } : {}) }) }),
+  /** An admin's: open a topic, or close, reopen or change one. */
+  openTopic: (id: string, body: { title: string; category?: string | null }) =>
+    call<{ topic: unknown }>(`/api/member/rooms/${id}/topics`, { method: "POST", body: JSON.stringify(body) }),
+  topicStatus: (id: string, topicId: string, status: "open" | "closed") =>
+    call<{ topic: unknown }>(`/api/member/rooms/${id}/topics/${topicId}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   answerRoom: (id: string, messageId: string, answer: string) =>
     call<{ ok: true }>(`/api/member/rooms/${id}/cards/${messageId}`, { method: "POST", body: JSON.stringify({ answer }) }),
   usage: () => call<MemberUsage>("/api/member/usage"),

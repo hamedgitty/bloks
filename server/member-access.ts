@@ -25,6 +25,7 @@
 // room they are in, and only after it has been passed through
 // memberFrame(), which strips what belongs to the owner: tool arguments,
 // screenshots of the owner's screen, file paths, the buttons on approvals.
+import { TOPIC_REFUSALS } from "./room-topics.ts";
 import type { MemberRole, WorkspaceRole } from "./people.ts";
 import type { Message } from "./store.ts";
 
@@ -39,6 +40,9 @@ export type MemberAction =
   | { kind: "invite"; roomId: string }
   | { kind: "leave"; roomId: string }
   | { kind: "typing"; roomId: string }
+  // a room's topics, an admin's to open, close and change
+  | { kind: "topicOpen"; roomId: string }
+  | { kind: "topicEdit"; roomId: string; topicId: string }
   // how far they have read a room or a conversation, theirs to say
   | { kind: "read"; threadId: string }
   // where they left off in one, kept for them alone (server/last-read.ts)
@@ -86,6 +90,8 @@ const ROUTES: Array<{ method: string; pattern: RegExp; action: (m: RegExpMatchAr
   { method: "GET", pattern: /^\/api\/events$/, action: () => ({ kind: "events" }) },
   { method: "GET", pattern: /^\/api\/member\/me$/, action: () => ({ kind: "me" }) },
   { method: "GET", pattern: new RegExp(`^/api/member/rooms/${ID}$`), action: (m) => ({ kind: "room", roomId: m[1] }) },
+  { method: "POST", pattern: new RegExp(`^/api/member/rooms/${ID}/topics$`), action: (m) => ({ kind: "topicOpen", roomId: m[1] }) },
+  { method: "PATCH", pattern: new RegExp(`^/api/member/rooms/${ID}/topics/${ID}$`), action: (m) => ({ kind: "topicEdit", roomId: m[1], topicId: m[2] }) },
   {
     method: "POST",
     pattern: new RegExp(`^/api/member/rooms/${ID}/messages$`),
@@ -253,6 +259,11 @@ export function memberCan(
   if (!role) return { ok: false, status: 404, error: "no such room" };
   if (action.kind === "room" || action.kind === "leave") return { ok: true, action };
   if (role === "viewer") return { ok: false, status: 403, error: "viewers can read this room but not write in it" };
+  // topics are governed: in a room, only an admin among its people may
+  // open, close or change one (server/room-topics.ts)
+  if ((action.kind === "topicOpen" || action.kind === "topicEdit") && workspaceRole !== "admin") {
+    return { ok: false, status: 403, error: action.kind === "topicOpen" ? TOPIC_REFUSALS.open : TOPIC_REFUSALS.close };
+  }
   if (action.kind === "invite" && !canInvite(action.roomId)) {
     return { ok: false, status: 403, error: "only the owner can invite people to this room" };
   }

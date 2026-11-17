@@ -423,7 +423,7 @@ export function MemberApp({ mode }: { mode: Exclude<AppMode, { mode: "owner" }> 
                 known={known}
               />
             ) : place.kind === "room" ? (
-              <RoomView key={place.id} roomId={place.id} me={me} usage={usage} nameOf={nameOf} known={known} />
+              <RoomView key={place.id} roomId={place.id} me={me} usage={usage} nameOf={nameOf} known={known} admin={workspace?.you.role === "admin"} />
             ) : place.kind === "page" && workspace ? (
               place.page === "usage" ? (
                 <UsagePage usage={usage} workspace={workspace} />

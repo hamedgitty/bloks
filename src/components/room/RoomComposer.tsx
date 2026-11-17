@@ -197,6 +197,7 @@ export function RoomComposer({
   onClearReply,
   mentionAsk,
   onSent,
+  topic,
 }: {
   blok: Blok;
   /** Everyone in the room, archived members too. */
@@ -221,6 +222,9 @@ export function RoomComposer({
   mentionAsk?: { name: string; nonce: number } | null;
   /** A message went, so the room can follow it to the end. */
   onSent?: () => void;
+  /** The topic being read, which what is sent goes into; a closed one
+   * takes nothing, and the box says so. */
+  topic?: { id: string; title: string; closed: boolean } | null;
 }) {
   const { dispatch } = useStore();
   // One box per room (RoomView is keyed by room), so a half-written line
@@ -427,6 +431,8 @@ export function RoomComposer({
 
   const send = (stopFirst = false) => {
     const { text, attachments } = latest.current;
+    // a closed topic takes nothing new; the box says so, and keeps the words
+    if (topic?.closed) return;
     // the message waits for a picture still on its way, as in a chat,
     // rather than going without it
     if (heldLine(images.now())) return setSendHeld(true);
@@ -441,6 +447,7 @@ export function RoomComposer({
       blokId: blok.id,
       text: composeOutgoing(text, attachments),
       replyTo: replyTo ?? undefined,
+      ...(topic ? { topicId: topic.id } : {}),
       onFailed: () => giveBack(sent),
     });
     // empty now, before a quick refusal can hand the words back
@@ -776,7 +783,9 @@ export function RoomComposer({
               ? t("roomComposer.listening")
               : replyTo
                 ? t("roomComposer.replyTo", { name: replyTo.author })
-                : t("roomComposer.placeholder", { name: blok.name })
+                : topic
+                  ? t(topic.closed ? "roomComposer.topicClosed" : "roomComposer.inTopic", { name: topic.title })
+                  : t("roomComposer.placeholder", { name: blok.name })
           }
           className="relative block w-full min-w-0 resize-none bg-transparent px-1 py-1 text-lead text-foreground outline-none placeholder:truncate placeholder:text-muted-foreground placeholder-shown:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)]"
         />

@@ -325,6 +325,9 @@ export interface Message {
   mime?: string;
   /** set when this message answers an earlier one */
   replyTo?: { id?: string; author: string; excerpt: string; quote?: string };
+  /** Said in one of the room's topics (server/room-topics.ts), not its
+   * main stream. */
+  topicId?: string;
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   /** Sent while the lane was busy; drains into the next turn. Not part
