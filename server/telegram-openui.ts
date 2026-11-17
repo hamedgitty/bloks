@@ -2,7 +2,7 @@
 import { createParser } from "@openuidev/lang-core";
 import { extractUi, MAX_FENCES, MAX_SOURCE, MAX_STRING, safeHttpUrl, withheldShapes, type UiNode, type UiValue } from "./genui.ts";
 import { GENUI_ROOT, genuiShapes, isOpenUiLang } from "./genui-library.ts";
-import { messages } from "./telegram-format.ts";
+import { deliveries, messages } from "./telegram-format.ts";
 import type { Message } from "./store.ts";
 import type { TelegramText } from "./telegram-reply.ts";
 
@@ -76,6 +76,34 @@ function project(root: UiNode, truncated: boolean, disabled: Set<string>, redact
     if (typeof v === "boolean") return v ? "true" : "false";
     return string(v);
   };
+  // The formatter's rich table (#342), only when every heading and cell
+  // shows its own value unchanged: text headings, each value on one line,
+  // nothing the table would trim or that may have been clipped, and the
+  // whole table in rich messages rather than the formatter's legacy lines.
+  const richTable = (columns: UiNode[], data: UiValue[][], count: number): string | null => {
+    const shown = (v: unknown, markdown: boolean): string | undefined => {
+      let s: string;
+      if (typeof v === "number" && Number.isFinite(v)) s = String(v);
+      else if (typeof v === "boolean") s = v ? "true" : "false";
+      else if (typeof v === "string" && !(truncated && v.length >= MAX_STRING)) s = markdown ? shownMarkdown(v) : v;
+      else return undefined;
+      s = redact(s);
+      return /[\r\n]/.test(s) || s !== s.trim() ? undefined : s;
+    };
+    const row = (cells: Array<string | undefined>) =>
+      cells.every((c) => c !== undefined) ? `| ${cells.map((c) => literal(c!)).join(" | ")} |` : null;
+    const heading = row(columns.map((c) => typeof c.props.label === "string" ? shown(c.props.label, false) : undefined));
+    if (!heading) return null;
+    const body: string[] = [];
+    for (let r = 0; r < count; r++) {
+      const line = row(data.map((cells) => shown(cells[r], typeof cells[r] === "string")));
+      if (!line) return null;
+      body.push(line);
+    }
+    const table = [heading, `| ${columns.map(() => "---").join(" | ")} |`, ...body].join("\n");
+    const planned = deliveries(table, true);
+    return planned.length > 0 && planned.every((d) => d.richHtml !== undefined) ? table : null;
+  };
   const walk = (value: unknown): void => {
     if (!node(value)) { if (value !== undefined) limited = true; return; }
     if (disabled.has(value.type)) { limited = true; return; }
@@ -116,8 +144,11 @@ function project(root: UiNode, truncated: boolean, disabled: Set<string>, redact
         if (!cols.length || cols.some((c) => !node(c) || c.type !== "Col")) { limited = true; break; }
         const columns = cols as UiNode[];
         const data = columns.map((c) => array(c.props.data));
-        const headings = columns.map((c, i) => string(c.props.label) ?? `Column ${i + 1}`);
         const count = Math.max(0, ...data.map((c) => c.length));
+        const rich = count ? richTable(columns, data, count) : null;
+        // Blank lines keep the table apart from the lines around it.
+        if (rich) { lines.push("", rich, ""); break; }
+        const headings = columns.map((c, i) => string(c.props.label) ?? `Column ${i + 1}`);
         if (!count) headings.forEach((heading, i) => labelValue(`Column ${i + 1}`, heading));
         for (let r = 0; r < count; r++) {
           lines.push(`Row ${r + 1}`);

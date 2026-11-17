@@ -7964,6 +7964,10 @@ async function startClaimedTurn(
     /** Told the words a drain or a pause writes down to wait instead of
      * starting this turn, as sendUserMessage is told (tieRecord). */
     onQueued?: (laneId: string, waiting: Message) => void;
+    /** Handed the solo turn's own user row as soon as it is written, before
+     * its engine is asked. Not called when the words wait instead
+     * (onQueued) or no row is written here. */
+    onWritten?: (message: Message) => void;
     /** The user message is already in the transcript (a drained queue);
      * do not append it again. */
     presetMessage?: boolean;
@@ -8516,6 +8520,7 @@ async function startClaimedTurn(
       ...(groupSource ? { telegramGroup: groupSource } : {}),
       ...(opts.fromSignal ? { fromSignal: opts.fromSignal } : {}),
     });
+    opts.onWritten?.(userMessage);
     // this lane is in exchange with the tab the words came from, for a
     // reply sent later in this conversation
     if (opts.from?.laneId) store.setPeerLane(task.id, opts.from.botId, opts.from.laneId);
@@ -18007,9 +18012,11 @@ function deliverOverTelegram(runtime: TelegramRuntime, chatId: number, text: str
       if (!current()) return;
       // This check and the call into the existing sender have no await
       // between them. A changed row falls back to the ordinary answer.
+      // Once handed over, a changed row no longer stops the rest of it; the
+      // connection and a person's access are still checked before each part.
       const component = answer.component?.current() ? answer.component.reply() : undefined;
       await telegramSay(runtime, chatId, component?.text ?? answer.text, component?.markdown ?? answer.markdown,
-        component ? () => current() && Boolean(answer.component?.current()) : undefined);
+        component ? current : undefined);
       await telegramFiles(runtime, chatId, answer.files, delegate);
     });
     runtime.turns.set(chatId, turn);
@@ -18316,7 +18323,10 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
     }
   }
   try {
-    await startTurn(botId, text, { replyTo, byYou: true, fromTelegram: true, telegramBinding: binding });
+    // The row this start writes names the request, by its id, before its
+    // engine is asked. Its answer adds what its interface displays only if
+    // the reply lookup finds that same row.
+    await startTurn(botId, text, { replyTo, byYou: true, fromTelegram: true, telegramBinding: binding, onWritten: (row) => progress.allowComponentsFor(row.id) });
     progress.observe();
     // The request owns its return until its consuming turn settles,
     // including a card answered on the phone's schedule.
@@ -18325,7 +18335,7 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
   } finally {
     await settled();
   }
-  return replyIn(botId, progress);
+  return replyIn(botId, progress, true);
 }
 
 /** A Telegram turn's reply: what the agent said, and what it left. */

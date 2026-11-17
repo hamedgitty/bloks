@@ -147,9 +147,12 @@ export class TurnProgress {
     return this.finished ?? this.span();
   }
 
-  /** Only the explicitly identified queued waiter may capture a component. */
+  /** Only an explicitly identified request may capture a component: the
+   * queued waiter's own row, or the row a direct start wrote. A second,
+   * different one leaves neither able to. */
   allowComponentsFor(requestId: string): void {
-    this.componentRequest = requestId;
+    if (this.componentRequest !== undefined && this.componentRequest !== requestId) this.componentsExcluded = true;
+    this.componentRequest ??= requestId;
   }
 
   /** A retry/pickup of a request already taken keeps its ordinary answer,

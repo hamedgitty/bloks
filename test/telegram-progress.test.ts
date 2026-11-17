@@ -329,3 +329,40 @@ test("empty, failed, joined and continued turns never borrow a later component s
     await f.turn.stop();
   }
 });
+
+test("an allowance names one request: the same one again keeps it; none, or a different second one, captures nothing", async () => {
+  for (const allowed of [["request"], ["request", "request"], [], ["request", "other"], ["other", "request"]]) {
+    const request = row("request", "user");
+    const rows = [request, row("answer", "bot")];
+    const f = fixture(rows);
+    for (const id of allowed) f.turn.allowComponentsFor(id);
+    f.turn.ended();
+    assert.equal(f.turn.componentSource()?.message.id, allowed.every((id) => id === "request") && allowed.length ? "answer" : undefined, allowed.join(","));
+    assert.equal(f.answer(), "answer", "the ordinary reply is unchanged");
+    await f.turn.stop();
+  }
+});
+
+test("a direct start's own row captures only when the reply lookup resolves it, not a neighboring request and its completion", async () => {
+  // answerOverTelegram's lookup (asked): the first owner Telegram text row
+  // written after intake.
+  const lookup = (rows: Message[], before: number) => () => rows.slice(before)
+    .find((m) => m.role === "user" && m.kind === "text" && m.fromTelegram && !m.telegramPerson && !m.telegramDelegate)?.id;
+  for (const neighbor of [false, true]) {
+    const rows: Message[] = [row("history", "user", { fromTelegram: true }), row("HISTORY ANSWER", "bot")];
+    const before = rows.length;
+    if (neighbor) rows.push(row("neighbor", "user", { fromTelegram: true }), row("NEIGHBOR ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] }));
+    const own = row("own", "user", { fromTelegram: true });
+    rows.push(own);
+    const progress = new Progress({ post: async () => 7, remove: async () => {} }, () => false, 30, 30);
+    const turn = new TurnProgress(progress, () => rows, lookup(rows, before), () => Date.now());
+    turn.allowComponentsFor(own.id);
+    rows.push(row("OWN ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] }));
+    turn.ended();
+    assert.equal(turn.request, neighbor ? "neighbor" : "own");
+    assert.equal(turn.componentSource()?.message.id, neighbor ? undefined : "OWN ANSWER", neighbor ? "a neighbor's row and completion" : "its own row");
+    // The ordinary reply keeps the baseline lookup, not repaired here.
+    assert.equal(telegramReply(turn.answerSpan(), (text) => text).text, neighbor ? "NEIGHBOR ANSWER" : "OWN ANSWER");
+    await turn.stop();
+  }
+});

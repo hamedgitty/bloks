@@ -33,7 +33,10 @@ interface Call { method: string; body: any; at: number; token: string }
  * are kept as what they were called, what they said they were and how
  * big they were. */
 async function telegramStub(t: TestContext) {
-  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void>, pollTokens: [] as string[], getMeReplies: new Map<string, { status?: number; body: unknown }>(), holdDelete: false, deleteReleases: [] as Array<() => void>, deleted: [] as Array<{ id: number; at: number }> };
+  const state = { updates: [] as any[], next: 1, calls: [] as Call[], messageId: 100, holdToken: "", heldPolls: [] as Array<() => void>, pollTokens: [] as string[], getMeReplies: new Map<string, { status?: number; body: unknown }>(), holdDelete: false, deleteReleases: [] as Array<() => void>, deleted: [] as Array<{ id: number; at: number }>,
+    /** How Telegram answers one send: held until a test releases it, or
+     * the connection dropped once the message arrived (an unknown result). */
+    answer: undefined as ((call: Call) => "hold" | "drop" | undefined) | undefined, heldReplies: [] as Array<() => void> };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -69,6 +72,9 @@ async function telegramStub(t: TestContext) {
       }
       if (["sendMessage", "sendRichMessage", "sendPhoto", "sendDocument"].includes(method)) {
         const id = ++state.messageId;
+        const how = state.answer?.(state.calls.at(-1)!);
+        if (how === "drop") return void req.socket.destroy();
+        if (how === "hold") return void state.heldReplies.push(() => reply({ message_id: id }));
         return reply({ message_id: id });
       }
       if (method === "deleteMessage") {
@@ -80,7 +86,7 @@ async function telegramStub(t: TestContext) {
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => { state.deleteReleases.forEach((f) => f()); server.closeAllConnections(); server.close(); });
+  t.after(() => { state.deleteReleases.forEach((f) => f()); state.heldReplies.forEach((f) => f()); server.closeAllConnections(); server.close(); });
   return {
     state,
     url: `http://127.0.0.1:${(server.address() as any).port}`,
@@ -170,6 +176,19 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (m.method === "turn/steer" && existsSync(root + "/scope-force-queue")) return out({ id: m.id, error: { code: -32600, message: "no active turn to steer" } });
   if (m.method === "turn/steer") return reply({ turnId: turn });
   if (m.method !== "turn/start") return reply();
+  if (JSON.stringify(m.params.input).includes("START_REFUSED")) return out({ id: m.id, error: { code: -32000, message: "fixture cannot start this turn" } });
+  if (JSON.stringify(m.params.input).includes("OPENUI_IMMEDIATE")) {
+    turn = "work-" + process.pid;
+    const item = (id, text) => ({ method: "item/completed", params: { threadId: thread, turnId: turn, item: { type: "agentMessage", id, text } } });
+    const frames = [{ id: m.id, result: { turn: { id: turn } } }, { method: "turn/started", params: { threadId: thread, turn: { id: turn } } }];
+    if (existsSync(root + "/openui-earlier.json")) frames.push(item("immediate-earlier", JSON.parse(readFileSync(root + "/openui-earlier.json", "utf8"))));
+    frames.push(item("answer", JSON.parse(readFileSync(root + "/openui-answer.json", "utf8"))));
+    frames.push({ method: "turn/completed", params: { threadId: thread, turn: { id: turn, status: "completed" } } });
+    // One atomic pipe write: the receipt, the answer and the end arrive
+    // together, the earliest a turn can end.
+    process.stdout.write(frames.map(frame => JSON.stringify(frame)).join("\\n") + "\\n");
+    return;
+  }
   turn = "work-" + process.pid; reply({ turn: { id: turn } });
   out({ method: "turn/started", params: { threadId: thread, turn: { id: turn } } });
   const text = m.params.input.filter((i) => i.type === "text").map((i) => i.text).join("");
