@@ -300,6 +300,46 @@ const TOOLS = [
     },
   },
   {
+    name: "org_chart",
+    description:
+      "Who reports to whom in the Bloks workspace, as the owner set it in Agents: each agent with its lead and reports, what to contact it for, and the teams (rooms) with their leads.",
+    inputSchema: { type: "object", properties: {} },
+    run: async () => {
+      const org = await call("GET", "/api/registry");
+      const name = (id) => org.agents.find((a) => a.id === id)?.name ?? "someone";
+      const line = (a, depth) => `${"  ".repeat(depth)}- ${a.name}${a.title ? ` (${a.title})` : ""}${a.contactFor ? `: contact for ${a.contactFor}` : ""}`;
+      const out = [];
+      const walk = (id, depth, seen) => {
+        const a = org.agents.find((x) => x.id === id);
+        if (!a || seen.has(id)) return;
+        seen.add(id);
+        out.push(line(a, depth));
+        for (const r of a.reports) walk(r, depth + 1, seen);
+      };
+      const seen = new Set();
+      for (const top of org.tops) walk(top, 0, seen);
+      const loose = org.unplaced.map((id) => org.agents.find((a) => a.id === id)).filter(Boolean);
+      if (loose.length) out.push(`${out.length ? "\n" : ""}Not placed:`, ...loose.map((a) => line(a, 0)));
+      const teams = org.teams.map((t) => `- ${t.name}${t.lead ? `, led by ${name(t.lead)}` : ""}: ${t.members.map(name).join(", ")}`);
+      if (teams.length) out.push("\nTeams:", ...teams);
+      if (org.leadFirst) out.push("\nAgents ask their lead before reaching across teams.");
+      return out.join("\n") || "No agents yet.";
+    },
+  },
+  {
+    name: "who_to_contact",
+    description: "Which Bloks agents to ask about something: those whose contact line from the owner, role or skills match the words, best first.",
+    inputSchema: {
+      type: "object",
+      properties: { about: { type: "string", description: "What you need, in a few words" } },
+      required: ["about"],
+    },
+    run: async ({ about }) => {
+      const { contacts } = await call("GET", `/api/registry/contacts?q=${encodeURIComponent(String(about ?? ""))}`);
+      return (contacts ?? []).map((c) => `- ${c.name}${c.title ? ` (${c.title})` : ""}${c.contactFor ? `: ${c.contactFor}` : ""}`).join("\n") || "Nobody's role, skills or contact line matches that.";
+    },
+  },
+  {
     name: "ask_agent",
     description:
       "Send a message to one of your Bloks agents, as if you typed it in the app, and wait for its reply (up to three minutes). It goes to the conversation open in the app unless you name one with `lane`. The answer says which conversation was used; read_conversation reads it later. The agent works with its own tools and asks you in Bloks before anything consequential.",

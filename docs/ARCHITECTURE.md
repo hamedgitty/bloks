@@ -2213,6 +2213,41 @@ recipient, depth and limit, ignoring the redacted excerpt. A person's
 message between refusals allows a fresh notice. These notices retain
 `chainHeld` and explain the limit in the conversation.
 
+## Who reports to whom
+
+The roster is flat until the owner gives it a shape (GitHub 525). On the
+Agents page of the rail each agent may be given a lead, the one agent it
+reports to, and a line in the owner's words on what to contact it for.
+Both live in `registry.json` in the data folder, read and written by
+`server/registry.ts`, and only the owner sets them: `/api/registry` is
+on the agent command line's NEVER list, refuses a member's credential,
+and takes the owner's own paired devices. A loop is refused when it is
+set, and dropped if a hand edit makes one. A lead that is archived is
+passed over for the nearest lead above it; one that is deleted hands its
+reports up to its own lead. Rooms are the teams people hire, so the page
+lists them too, each with the lead `leadOf` gives it.
+
+Agents read the same picture: `bloks org` (`GET /api/agent/registry`)
+is every agent with its lead and reports, the teams, and where the
+caller sits; `bloks who <words>` (`GET /api/agent/registry/contacts`)
+ranks agents by the owner's contact line, then role, skills and brief,
+and says of each whether the caller may write to it directly or through
+which lead. The MCP server has the same two as `org_chart` and
+`who_to_contact`. A placed agent's briefing names its lead and its
+reports; an agent with no place is told nothing. An agent's lead may
+stop its turn and join it with `--now`, as the agent that hired it may.
+
+Nothing about how agents talk changes until the owner turns on "Ask
+their lead before reaching across teams" (`leadFirst`). Then
+`routeMessage` holds `bloks say` and `bloks tab` from an agent with a
+lead to an agent outside its team, which is everyone under its lead,
+unless the recipient is above it, shares a room with it, or wrote the
+message its turn is answering. The refusal is a 403 before anything is
+claimed or written, kept-back message included, and names the lead with
+its id so the next step is one command. An agent with no lead is at the
+top of its tree and reaches anyone. Rooms, jobs, intents and the
+person's own messages are not routed by it.
+
 ## Goals
 
 A conversation can be given a goal, and then keeps working turn after

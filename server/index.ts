@@ -757,6 +757,7 @@ import { rangeDays, summarize, turnRan, usageReport, UsageStore, USAGE_RANGES, t
 import { monthBounds, monthKey, monthSpend, providerCreditNotice, readLimit, spendNotices, spendRefusal, spendStatus, MAX_LIMIT_USD, type SpendStatus } from "./spend-limits.ts";
 import { PriceBook, PRICES_URL, readOwnPrice, type OwnPrice } from "./model-prices.ts";
 import { TeamLibrary } from "./team-library.ts";
+import * as reg from "./registry.ts";
 import { GALLERY_MAX_BYTES, GALLERY_URL, parseGallery, MAX_TEAM_ROUTINES, parseTeamFile, TeamFileError, teamFromManifest, type GalleryTeam, type TeamFile, type TeamFileMember, type TeamFileRoutine } from "./team-file.ts";
 import * as artifacts from "./artifacts.ts";
 import { ArtifactTurns } from "./artifact-turns.ts";
@@ -3180,6 +3181,9 @@ function stallLimitMs(): number {
   return (typeof minutes === "number" && Number.isFinite(minutes) && minutes >= 0 ? minutes : DEFAULT_STALL_MINUTES) * 60_000;
 }
 const teamLibrary = new TeamLibrary();
+// Who reports to whom, and who to ask for what (server/registry.ts). The
+// owner's to set; empty, it changes nothing.
+const orgChart = new reg.RegistryStore(join(DATA_DIR, "registry.json"));
 // A model server already running here is one nobody should have to go
 // and connect by hand. Looked for once, never written over an entry that
 // exists, and a miss costs one refused connection. See local-models.ts.
@@ -7519,6 +7523,58 @@ function ownLaneRefusal(asAgent: AgentToken | null, bot: BotRecord, taskId: unkn
   return sender && lane ? agentLaneRefusal(sender, bot, lane) : null;
 }
 
+// ── the registry: who reports to whom (server/registry.ts) ─────────────
+
+/** The agents the registry speaks of: the roster an agent reads, never a
+ * member's own agent, which is theirs alone (server/access.ts). */
+function registryAgents(): reg.RegistryAgent[] {
+  return store.bots
+    .filter((b) => !b.hidden && (!b.solo || b.solo.by === "owner"))
+    .map((b) => ({ id: b.id, name: b.name, title: b.title, description: b.description, skills: b.skills, archivedAt: b.archivedAt ?? null }));
+}
+
+/** The rooms, as the teams the registry shows, each with its lead. */
+function registryRooms(): reg.RegistryRoom[] {
+  return bloks.bloks
+    .filter((room) => !room.archived)
+    .map((room) => {
+      const members = room.memberIds.map((id) => store.bot(id)).filter((b): b is BotRecord => Boolean(b));
+      return { id: room.id, name: room.name, memberIds: [...room.memberIds], leadId: leadOf(members, room.leadId)?.id ?? null };
+    });
+}
+
+/** What the registry asks the server about two agents: whether they are
+ * in a room together, and whether the sender's turn is answering the
+ * other's message. Only the turn itself counts as an exchange: two
+ * agents that talked once, before the owner turned the rule on, are not
+ * let past it for good by a tab they once shared. */
+function registryCtx(fromId: string, toId: string, fromLane?: string): { sharesRoom: boolean; inExchange: boolean } {
+  const sharesRoom = bloks.bloks.some((room) => !room.archived && room.memberIds.includes(fromId) && room.memberIds.includes(toId));
+  const inExchange = fromLane ? replyingTo.get(fromLane)?.peerId === toId : false;
+  return { sharesRoom, inExchange };
+}
+
+/**
+ * Why an agent's message to another is held by the owner's registry, or
+ * null when it goes as it always has. Null for everyone until the owner
+ * turns on "Ask their lead before reaching across teams"; then only a
+ * message from an agent with a lead to one outside its team.
+ */
+function hierarchyRefusal(sender: BotRecord, recipient: BotRecord, fromLane?: string): string | null {
+  const chart = orgChart.get();
+  if (!chart.leadFirst || sender.id === recipient.id) return null;
+  const roster = reg.rosterOf(registryAgents());
+  const route = reg.routeMessage(chart, sender.id, recipient.id, roster, registryCtx(sender.id, recipient.id, fromLane));
+  if (route.ok) return null;
+  const lead = store.bot(route.via);
+  return reg.acrossRefusal(recipient, { id: route.via, name: lead?.name ?? "your lead" });
+}
+
+/** The registry as the app and `bloks org` read it. */
+function orgViewNow(): reg.OrgView {
+  return reg.orgView(orgChart.get(), registryAgents(), registryRooms());
+}
+
 /** The lane background work with a title of its own runs in (jobs,
  * workflows, mail, meetings, and a routine or webhook that names one).
  * Reuses an idle lane with this title, creates one when there is room,
@@ -8715,6 +8771,13 @@ async function startClaimedTurn(
       cfg.profile?.about?.trim() &&
       `About the person you work for: ${cfg.profile.about.trim()}`,
     workspaceBriefing(bot, task, turnPerson, messageHint(messageRoute, cliCommand)),
+    // Where the owner placed this agent, once they set who reports to
+    // whom (server/registry.ts). An agent with no place is told nothing,
+    // which is every agent until the owner sets a hierarchy.
+    !guestMail &&
+      !personSource &&
+      !sharing &&
+      reg.hierarchyBriefing(orgChart.get(), bot.id, reg.rosterOf(registryAgents()), hostName(), runsAProcess(instance.driverKind) ? cliCommand : null),
     placeNow && placeBriefing(placeNow, seenThere),
     moving.notes,
     !sharing && !guestMail && !personSource && noteBriefing(runsAProcess(instance.driverKind) ? cliCommand : null),
@@ -12129,11 +12192,13 @@ function speakerFor(bot: BotRecord) {
  * it hired that agent, or it outranks it in a room they are both in. The
  * same seniority that gives the lead the final call in a room (GitHub 141),
  * and the crown the person gave in one, which outranks seniority there. */
-function mayStop(callerId: string, targetId: string): "hired" | "senior" | null {
+function mayStop(callerId: string, targetId: string): "hired" | "lead" | "senior" | null {
   const target = store.bot(targetId);
   const caller = store.bot(callerId);
   if (!target || !caller || callerId === targetId) return null;
   if (target.hiredBy === callerId) return "hired";
+  // the owner set the target under the caller (server/registry.ts)
+  if (reg.isUnder(orgChart.get(), targetId, callerId, reg.rosterOf(registryAgents()))) return "lead";
   const outranks = (caller.seniority ?? 1) > (target.seniority ?? 1);
   const shared = bloks.bloks.filter((room) => room.memberIds.includes(callerId) && room.memberIds.includes(targetId));
   if (shared.some((room) => room.leadId === callerId)) return "senior";
@@ -24414,6 +24479,8 @@ async function forgetAgent(bot: BotRecord, actor: "you" | null) {
   }
   const waiting = bot.tasks.flatMap((task) => waitingAgentWords(task.id));
   store.deleteBot(bot.id);
+  // its reports move up to its own lead (server/registry.ts)
+  orgChart.forget(bot.id);
   for (const said of waiting) settleRecord(said, "closed");
   // Every lane, not just the first: an agent with three lanes used
   // to leave two files behind. The native copy goes with its gzipped
@@ -27384,6 +27451,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         const lane = recipient?.tasks.find((t) => t.id === body.taskId);
         const refusal = sender && recipient && lane ? agentLaneRefusal(sender, recipient, lane) : null;
         if (refusal) return json(res, 403, { error: refusal });
+      }
+      // The owner's registry, once they have agents ask their lead before
+      // reaching across teams (server/registry.ts). Held here, before
+      // anything is claimed or written, the kept-back message included.
+      if (asAgent && asAgent.botId !== m[1]) {
+        const sender = store.bot(asAgent.botId);
+        const recipient = store.bot(m[1]);
+        const held = sender && recipient ? hierarchyRefusal(sender, recipient, asAgent.taskId) : null;
+        if (held) return json(res, 403, { error: held });
       }
       if (reservedDirect && asAgent) {
         const current = () => agentTokens.identify(bearerToken(req), Date.now(), turnAlive) === asAgent;
@@ -30493,7 +30569,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // next thing said there (GitHub 141).
         const caller = store.bot(asAgent.botId)!;
         if (!mayStop(caller.id, bot.id)) {
-          return json(res, 403, { error: `${caller.name} can stop only an agent it hired, or one it outranks in a room they are both in` });
+          // the registry's reason is said only where the owner set one
+          const under = Object.keys(orgChart.get().leads).length ? ", one that reports to it," : "";
+          return json(res, 403, { error: `${caller.name} can stop only an agent it hired${under} or one it outranks in a room they are both in` });
         }
         const lane = mainLaneOf(bot);
         if (!lane.busy) return json(res, 200, { ok: true, stopped: false, note: `${bot.name} was not working; nothing to stop.` });
@@ -33281,6 +33359,52 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // ── saved team library: your own rooms, banked as manifests ──
     // The same member shape import consumes, so a saved team and a
     // premade one hire through the identical door.
+    // ── the registry: who reports to whom (server/registry.ts) ──
+    // Reading is anyone's on the owner's surface; setting a lead, a line
+    // on what to contact an agent for, or the rule that holds messages
+    // across teams is the owner's alone, on this computer or one of their
+    // own devices. No agent reaches these (agent-cli.ts NEVER); agents
+    // read the same picture through /api/agent/registry.
+    if (method === "GET" && path === "/api/registry") {
+      return json(res, 200, orgViewNow());
+    }
+    if (method === "GET" && path === "/api/registry/contacts") {
+      const asked = url.searchParams.get("q") ?? "";
+      const fromId = url.searchParams.get("from");
+      const from = fromId && store.bot(fromId) ? { id: fromId, ctx: (to: string) => registryCtx(fromId, to) } : undefined;
+      return json(res, 200, { contacts: reg.contactsFor(asked.slice(0, MAX_TITLE_CHARS), orgChart.get(), registryAgents(), from) });
+    }
+    if (method === "PATCH" && path === "/api/registry") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "who reports to whom is the owner's to set" });
+      const body = await readBody(req);
+      if (body.leadFirst !== undefined && typeof body.leadFirst !== "boolean") return json(res, 400, { error: "leadFirst is true or false" });
+      if (typeof body.leadFirst === "boolean") orgChart.put({ ...orgChart.get(), leadFirst: body.leadFirst });
+      return json(res, 200, orgViewNow());
+    }
+    m = path.match(/^\/api\/registry\/agents\/([\w-]+)$/);
+    if (m && method === "PATCH") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "who reports to whom is the owner's to set" });
+      const agents = registryAgents();
+      const roster = reg.rosterOf(agents);
+      const agent = roster.get(m[1]);
+      if (!agent) return json(res, 404, { error: "no such agent" });
+      const body = await readBody(req);
+      let next = orgChart.get();
+      if (body.lead !== undefined) {
+        if (body.lead !== null && typeof body.lead !== "string") return json(res, 400, { error: "lead is an agent's id, or null for nobody" });
+        const lead = typeof body.lead === "string" && body.lead ? body.lead : null;
+        if (lead && roster.get(lead)?.archivedAt) return json(res, 400, { error: `${roster.get(lead)!.name} is archived. Restore it first, or choose someone else.` });
+        const placed = reg.withLead(next, m[1], lead, roster);
+        if ("error" in placed) return json(res, 400, { error: placed.error });
+        next = placed.registry;
+      }
+      if (body.contactFor !== undefined) {
+        if (body.contactFor !== null && typeof body.contactFor !== "string") return json(res, 400, { error: "contactFor is a line of text" });
+        next = reg.withContactFor(next, m[1], body.contactFor);
+      }
+      orgChart.put(next);
+      return json(res, 200, orgViewNow());
+    }
     if (method === "GET" && path === "/api/team-library") {
       return json(res, 200, { teams: teamLibrary.list() });
     }
@@ -33882,6 +34006,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // the roster an agent reads (`bloks agents`): never a member's own agent
       const recipient = agentNamed(asked);
       if (!recipient) return json(res, 404, { error: "no such agent. `bloks agents` lists who you can write to" });
+      // wherever `say` to that agent would be held by the registry
+      const across = hierarchyRefusal(sender, recipient, asAgent.taskId);
+      if (across) return json(res, 403, { error: across });
       const chain = chainFrom(sender, asAgent.taskId);
       // Refused before anything is made, and as `say` refuses, so a
       // refusal never leaves an empty tab behind. Held at the chain limit,
@@ -34078,6 +34205,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // (server/model-proposals.ts). PATCH /api/bots/:id stays shut to an
     // agent for another agent's model: this is the way round, and it
     // never changes anything by itself.
+    // The registry as an agent reads it (`bloks org`, `bloks who`): the
+    // chart the owner set, where this agent sits in it, and who to contact
+    // for something with whether it may write to them directly. Reading
+    // only: the chart is the owner's (/api/registry is on NEVER).
+    if (method === "GET" && path === "/api/agent/registry") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const chart = orgChart.get();
+      const roster = reg.rosterOf(registryAgents());
+      const view = orgViewNow();
+      const lead = reg.leadNow(chart, asAgent.botId, roster);
+      return json(res, 200, {
+        ...view,
+        you: {
+          id: asAgent.botId,
+          lead,
+          chain: reg.chainOfCommand(chart, asAgent.botId, roster),
+          reports: reg.reportsOf(chart, asAgent.botId, roster),
+        },
+        note: !view.agents.some((a) => a.lead)
+          ? "The owner has not set who reports to whom, so every agent is on its own and you may message anyone."
+          : chart.leadFirst && lead
+            ? `Ask your lead before messaging an agent outside your team that you share no room with. \`bloks who <what>\` says who to contact and whether you may write to them directly.`
+            : "`bloks who <what>` says who to contact for something.",
+      });
+    }
+    if (method === "GET" && path === "/api/agent/registry/contacts") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      const asked = (url.searchParams.get("q") ?? "").slice(0, MAX_TITLE_CHARS);
+      const contacts = reg.contactsFor(asked, orgChart.get(), registryAgents(), {
+        id: asAgent.botId,
+        ctx: (to) => registryCtx(asAgent.botId, to, asAgent.taskId),
+      });
+      return json(res, 200, {
+        contacts,
+        ...(contacts.length ? {} : { note: asked.trim() ? "Nobody's role, skills or contact line matches that. `bloks org` lists everyone." : "The owner has not written what to contact anyone for. Give some words: `bloks who <what you need>`." }),
+      });
+    }
     if (method === "GET" && path === "/api/agent/models") {
       if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
       const world = modelWorld();

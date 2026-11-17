@@ -470,6 +470,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 
 ## People and rooms
 - \`agents\` and \`rooms\` list who and what exists, with ids; \`whoami\` is you. Use ids from there, never guessed ones.
+- \`org\` is who reports to whom, as the owner set it, and where you sit; \`who <what you need>\` says who to contact for something and whether to go through your lead. When the owner has agents ask their lead before reaching across teams, a \`say\` or \`tab\` to an agent outside your team is refused and names your lead: send it to them instead.
 - \`hire\` adds a teammate. \`stop\` and \`archive\` act only on an agent you hired or lead.
 - A room for shared work: \`room --name "<name>" --members "id,id"\` (you are added), then brief it with \`say <room-id> "<brief>"\`, naming with @Name each agent whose part it is. \`history <room-id>\` reads it.
 - \`sidebar\` shows the arrangement; \`file\`, \`pin\` and \`unpin\` change where a row sits.

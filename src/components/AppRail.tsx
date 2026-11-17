@@ -9,6 +9,7 @@ import { LayoutGrid } from "@/components/icons";
 import { Zap } from "@/components/icons";
 import { Brain } from "@/components/icons";
 import { Puzzle } from "@/components/icons";
+import { Users } from "@/components/icons";
 import { Settings as SettingsIcon } from "@/components/icons";
 import { Usage as UsageIcon } from "@/components/icons";
 import { useStore, type RailPage } from "@/state/store";
@@ -138,6 +139,9 @@ export function AppRail() {
           </RailButton>
           <RailButton label={t("appRail.automations")} active={place === "automations"} onClick={() => go("automations")}>
             <Zap size={18} strokeWidth={1.75} />
+          </RailButton>
+          <RailButton label={t("appRail.agents")} active={place === "agents"} onClick={() => go("agents")}>
+            <Users size={18} strokeWidth={1.75} />
           </RailButton>
           <RailButton
             label={t("common.memory")}

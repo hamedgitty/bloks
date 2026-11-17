@@ -276,6 +276,40 @@ const COMMANDS = {
       return (bloks ?? []).filter((room) => !room.archived).map((room) => ({ id: room.id, name: room.name, members: room.memberIds }));
     },
   },
+  org: {
+    use: "org",
+    about:
+      "who reports to whom, as the owner set it: every agent with its lead, its reports and what to contact it for, the teams (rooms) with their leads, " +
+      "and where you sit. When the owner has agents ask their lead before reaching across teams, a message to an agent outside your team that you share no room with is held, so ask your lead",
+    run: async () => {
+      const org = await request("GET", "/api/agent/registry");
+      const name = (id) => org.agents.find((a) => a.id === id)?.name ?? null;
+      return {
+        askLeadFirst: org.leadFirst,
+        you: { ...org.you, leadName: org.you.lead ? name(org.you.lead) : null, reportNames: org.you.reports.map(name) },
+        agents: org.agents.map((a) => ({
+          id: a.id,
+          name: a.name,
+          title: a.title,
+          lead: a.lead ? { id: a.lead, name: name(a.lead) } : null,
+          reports: a.reports.map((id) => ({ id, name: name(id) })),
+          ...(a.contactFor ? { contactFor: a.contactFor } : {}),
+        })),
+        teams: org.teams.map((t) => ({ id: t.id, name: t.name, lead: t.lead ? { id: t.lead, name: name(t.lead) } : null, members: t.members.map(name) })),
+        note: org.note,
+      };
+    },
+  },
+  who: {
+    use: "who [<what you need>…]",
+    about:
+      "who to contact for something: the agents whose contact line from the owner, role or skills match, best first, each saying whether you may message it directly " +
+      "or should go through your lead (and which one). Without words, everyone the owner wrote a contact line for",
+    run: async (args) => {
+      const query = args.join(" ").trim();
+      return request("GET", `/api/agent/registry/contacts${query ? `?q=${encodeURIComponent(query)}` : ""}`);
+    },
+  },
   say: {
     use: "say <agent-id|room-id> [--now] [--task <name>] <text…>",
     about:

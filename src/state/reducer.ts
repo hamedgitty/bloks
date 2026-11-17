@@ -19,7 +19,7 @@ import { resolveSettingsPage } from "../lib/settingsPages.ts";
 export type { BlokColor, BlokShape } from "@/lib/mascot";
 
 /** The full pages the main rail opens besides Chat, Automations and Settings. */
-export type RailPage = "overview" | "memory" | "plugins" | "usage";
+export type RailPage = "overview" | "memory" | "plugins" | "usage" | "agents";
 
 /** Who speaks a voice (server/speech.ts VOICE_PROVIDERS). */
 export type VoiceProvider = "elevenlabs" | "openai" | "fish" | "xai" | "chatterbox" | "system";

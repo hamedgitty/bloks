@@ -89,6 +89,7 @@ describe("bloks-mcp", () => {
       "list_skills",
       "message_room",
       "morning_brief",
+      "org_chart",
       "propose_skill_revision",
       "read_conversation",
       "read_message",
@@ -96,6 +97,7 @@ describe("bloks-mcp", () => {
       "search",
       "skill_history",
       "waiting_on_me",
+      "who_to_contact",
     ]);
     assert.ok(!names.some((n: string) => /approve|delete|setting|key/i.test(n)), "nothing that approves, deletes or configures");
   });
@@ -123,6 +125,18 @@ describe("bloks-mcp", () => {
     assert.equal(skill.body, "Three lines: done, doing, blocked.", "proposing changed the skill");
     const { proposals } = await h.json("/api/skills/proposals");
     assert.ok(proposals.some((p: any) => p.skillId === "standup" && p.botName === "An app over MCP" && p.whole));
+  });
+
+  test("the chart the owner set, and who to ask about something, read only", async () => {
+    const { bot: lead } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Editor", title: "Managing editor" }) });
+    const { bots } = await h.json("/api/bots?messages=0");
+    const writer = bots.find((b: any) => b.name === "Writer");
+    await h.fetch(`/api/registry/agents/${writer.id}`, { method: "PATCH", body: JSON.stringify({ lead: lead.id, contactFor: "Release notes" }) });
+    const chart = await tool("org_chart");
+    assert.equal(chart.isError, false);
+    assert.match(chart.text, /- Editor \(Managing editor\)\n  - Writer: contact for Release notes/);
+    assert.match((await tool("who_to_contact", { about: "release notes" })).text, /^- Writer: Release notes/);
+    await h.fetch(`/api/registry/agents/${writer.id}`, { method: "PATCH", body: JSON.stringify({ lead: null, contactFor: "" }) });
   });
 
   test("ask an agent by name and get its reply", async () => {

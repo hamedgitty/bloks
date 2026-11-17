@@ -11,6 +11,7 @@ export type Place =
   | { kind: "agent"; id: string }
   | { kind: "overview" }
   | { kind: "usage" }
+  | { kind: "agents" }
   | { kind: "memory"; target: MemoryTarget | null }
   | { kind: "customize"; tab: CustomizeTab; app?: string }
   | { kind: "automations" }
@@ -31,6 +32,7 @@ export function placeOf(state: AppState): Place | null {
   // from one agent's memory to another's
   if (state.page === "overview") return { kind: "overview" };
   if (state.page === "usage") return { kind: "usage" };
+  if (state.page === "agents") return { kind: "agents" };
   if (state.page === "memory") return { kind: "memory", target: state.memoryTarget };
   if (state.page === "plugins")
     return { kind: "customize", tab: state.customize, ...(state.customizeApp ? { app: state.customizeApp } : {}) };
@@ -58,6 +60,8 @@ export function goTo(place: Place): Action[] {
       return [{ type: "openPage", page: "overview" }];
     case "usage":
       return [{ type: "openPage", page: "usage" }];
+    case "agents":
+      return [{ type: "openPage", page: "agents" }];
     case "memory":
       return [{ type: "openMemory", target: place.target }];
     case "customize":

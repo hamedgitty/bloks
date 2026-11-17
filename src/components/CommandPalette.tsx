@@ -273,6 +273,7 @@ export function CommandPalette() {
     () => [
       { id: "overview", label: t("commandPalette.overview"), keywords: "home today brief activity", icon: LayoutGrid, run: () => dispatch({ type: "openPage", page: "overview" }) },
       { id: "automations", label: t("commandPalette.automations"), keywords: "routines schedules watchers workflows webhooks jobs", icon: Zap, run: () => dispatch({ type: "toggleRoutines", open: true }) },
+      { id: "agents", label: t("commandPalette.agents"), keywords: "registry org chart hierarchy reports lead teams who contact", icon: Users, run: () => dispatch({ type: "openPage", page: "agents" }) },
       { id: "memory", label: t("common.memory"), keywords: "notes remember about you", icon: Brain, run: () => dispatch({ type: "openPage", page: "memory" }) },
       { id: "plugins", label: t("common.plugins"), keywords: "apps skills connectors integrations tools mcp", icon: Puzzle, run: () => dispatch({ type: "openPage", page: "plugins" }) },
       { id: "usage", label: t("commandPalette.usage"), keywords: "cost spend tokens spending limit plan billing", icon: UsageIcon, run: () => dispatch({ type: "openPage", page: "usage" }) },

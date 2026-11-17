@@ -195,6 +195,12 @@ export const RULES: Rule[] = [
   // can see where things stand first. The order of the headings is read
   // here and only the person moves it.
   { method: "GET", path: "/api/sidebar", why: "see how the sidebar is arranged: its sections in order, and what is pinned where" },
+  // Who reports to whom, as the owner set it, and who to contact for
+  // something, with whether this agent may write to them directly
+  // (server/registry.ts). Reading only: the chart is the owner's, and
+  // /api/registry, where it is set, is on NEVER.
+  { method: "GET", path: "/api/agent/registry", why: "see who reports to whom, the teams, and where you sit" },
+  { method: "GET", path: "/api/agent/registry/contacts", why: "find who to contact for something, and whether to go through your lead" },
 
   // Saying something to somebody. This is the one that turns a chat
   // between one agent and one person into a workspace.
@@ -414,6 +420,10 @@ export const NEVER = [
   // the person's list as they see it, and closing a line on it: an agent
   // adds to it and clears its own through /api/bots/:me/todos
   "/api/todos",
+  // who reports to whom, and whether messages across teams go through a
+  // lead: an agent reads the chart through /api/agent/registry, and never
+  // rearranges who answers to whom
+  "/api/registry",
 ];
 
 const PATH_PART = /^[\w.-]+$/;
