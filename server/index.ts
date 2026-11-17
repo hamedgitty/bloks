@@ -14262,7 +14262,7 @@ async function takeOffline(): Promise<string | null> {
   if (token && cfg.relay?.url) {
     let gone: Response;
     try {
-      gone = await fetch(`${relayBase()}/space/agent`, {
+      gone = await relayLink.cloudFetch(`${relayBase()}/space/agent`, {
         method: "DELETE",
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(15_000),
@@ -27930,7 +27930,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const token = cfg.relay?.agentToken;
       if (!token || !cfg.relay?.url) return json(res, 200, { plan: null, spaces: null, licence: Boolean(licenceKey()) });
       try {
-        const asked = await fetch(`${relayBase()}/space/agent/plan`, {
+        // on the line's own connections, which a stuck shared pool cannot hold
+        const asked = await relayLink.cloudFetch(`${relayBase()}/space/agent/plan`, {
           headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(8_000),
         });

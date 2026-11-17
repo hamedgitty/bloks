@@ -282,7 +282,54 @@ const OUTBOUND_WINDOW = 10;
 const OUTBOUND_RECOVER = 3;
 const NOT_DELIVERING = "The line to Bloks Cloud is open, but replies are not getting through. Retrying.";
 
+/** What this file needs of a connection pool of Node's fetch (undici's
+ * Agent, which Node does not export by name). */
+export interface CloudPool {
+  close(): Promise<void>;
+  destroy(): Promise<void>;
+}
+
+const SHARED_POOL = Symbol.for("undici.globalDispatcher.1");
+
+/**
+ * A connection pool for the line to Bloks Cloud alone. Node's fetch runs
+ * every request in the process on one shared pool, which keeps its
+ * sockets, its secure sessions and whatever else it has learned about the
+ * relay for as long as the process lives. A workspace whose every dial
+ * then timed out connecting stayed that way for hours, through Cloud off
+ * and on, until its process restarted (GitHub 506), while another
+ * workspace's process beside it reached the same relay at once. A pool of
+ * the link's own can be thrown away and made again, which is what that
+ * restart did. Node makes its shared pool on its first fetch, and an
+ * Agent is all it is (or the one that follows the proxy settings, which
+ * reads them again when made), so its constructor makes another. Null
+ * for anything else, a pool somebody set up on purpose, and the shared
+ * pool is used as before.
+ */
+export async function ownPool(): Promise<CloudPool | null> {
+  const shared = () => (globalThis as unknown as Record<symbol, unknown>)[SHARED_POOL] as { constructor?: unknown } | undefined;
+  if (!shared()) await fetch("data:,").then((r) => r.arrayBuffer()).catch(() => {});
+  const Agent = shared()?.constructor;
+  if (typeof Agent !== "function" || !["Agent", "EnvHttpProxyAgent"].includes(Agent.name)) return null;
+  try {
+    return new (Agent as new () => CloudPool)();
+  } catch {
+    return null;
+  }
+}
+
+/** An answer read for its status alone is let go of at once. Left for the
+ * garbage collector, undici's own advice says, it can hold its
+ * connection back long enough to stall the ones after it. */
+function letGo(res: Response) {
+  void res.body?.cancel().catch(() => {});
+}
+
 export class RelayLink {
+  /** Makes the pool the line to Bloks Cloud runs on; a test hands in its
+   * own to see a broken one replaced. */
+  newPool: () => Promise<CloudPool | null> = ownPool;
+  private pool: Promise<CloudPool | null> | null = null;
   private config: RelayConfig | null = null;
   private controller: AbortController | null = null;
   private retry = RETRY_MIN_MS;
@@ -380,6 +427,9 @@ export class RelayLink {
       this.config?.url === config?.url && this.config?.agentToken === config?.agentToken;
     if (same && !this.stopped) return;
     this.stop();
+    // Cloud off and on, or another relay: a line made from nothing, the
+    // way a restart would make it
+    this.renewPool();
     this.config = config?.url && config?.agentToken ? config : null;
     // another relay, or the same one updated: ask it afresh
     this.activitiesMissingUntil = 0;
@@ -494,13 +544,13 @@ export class RelayLink {
             break;
           }
         }
-        const ok = await fetch(`${this.config.url}/space/agent/events`, {
+        const ok = await this.cloudFetch(`${this.config.url}/space/agent/events`, {
           method: "POST",
           headers: this.headers(),
           body: JSON.stringify({ frames, ...(wake !== undefined ? { wake } : {}) }),
           signal: AbortSignal.timeout(10_000),
         })
-          .then((res) => res.ok)
+          .then((res) => (letGo(res), res.ok))
           .catch(() => false);
         // A failed push is a dropped frame, not a broken link on its own.
         // But a run of them means the line is dead while its read still
@@ -534,12 +584,13 @@ export class RelayLink {
   async activity(push: ActivityPush): Promise<PushResult> {
     if (!this.config || Date.now() < this.activitiesMissingUntil) return "off";
     try {
-      const res = await fetch(`${this.config.url}/space/agent/activity`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/activity`, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify(push),
         signal: AbortSignal.timeout(10_000),
       });
+      letGo(res);
       if (res.ok) return "ok";
       if (res.status === 410) return "gone";
       if (res.status === 404) {
@@ -558,13 +609,16 @@ export class RelayLink {
   async mintClient(): Promise<string | null> {
     if (!this.config) return null;
     try {
-      const res = await fetch(`${this.config.url}/space/agent/clients`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/clients`, {
         method: "POST",
         headers: this.headers(),
         body: "{}",
         signal: AbortSignal.timeout(10_000),
       });
-      if (res.status !== 201) return null;
+      if (res.status !== 201) {
+        letGo(res);
+        return null;
+      }
       const body = (await res.json()) as { clientToken?: unknown };
       return typeof body.clientToken === "string" ? body.clientToken : null;
     } catch {
@@ -591,12 +645,13 @@ export class RelayLink {
   }): Promise<boolean> {
     if (!this.config) return false;
     try {
-      const res = await fetch(`${this.config.url}/space/agent/invites`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/invites`, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10_000),
       });
+      letGo(res);
       return res.ok;
     } catch {
       return false;
@@ -609,11 +664,12 @@ export class RelayLink {
   async cancelInvite(publicId: string): Promise<boolean> {
     if (!this.config) return false;
     try {
-      const res = await fetch(`${this.config.url}/space/agent/invites/${encodeURIComponent(publicId)}`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/invites/${encodeURIComponent(publicId)}`, {
         method: "DELETE",
         headers: this.headers(),
         signal: AbortSignal.timeout(10_000),
       });
+      letGo(res);
       return res.ok || res.status === 404;
     } catch {
       return false;
@@ -624,12 +680,13 @@ export class RelayLink {
   async revokeClient(tokenHash: string): Promise<boolean> {
     if (!this.config) return false;
     try {
-      const res = await fetch(`${this.config.url}/space/agent/clients`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/clients`, {
         method: "DELETE",
         headers: this.headers(),
         body: JSON.stringify({ tokenHash }),
         signal: AbortSignal.timeout(10_000),
       });
+      letGo(res);
       return res.ok;
     } catch {
       return false;
@@ -649,11 +706,14 @@ export class RelayLink {
   async planDetail(): Promise<{ plan: "cloud" | "team"; sharedRoom: boolean | null } | null> {
     if (!this.config) return null;
     try {
-      const res = await fetch(`${this.config.url}/space/agent/plan`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/plan`, {
         headers: this.headers(),
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        letGo(res);
+        return null;
+      }
       const body = (await res.json()) as { plan?: unknown; sharedRoom?: unknown };
       const plan = body.plan === "team" ? "team" : body.plan === "cloud" ? "cloud" : null;
       if (!plan) return null;
@@ -670,7 +730,7 @@ export class RelayLink {
    */
   async hookUrl(platform: "whatsapp", verifyToken: string): Promise<string> {
     if (!this.config) throw new Error("Turn on Bloks Cloud first: WhatsApp reaches this computer through it.");
-    const res = await fetch(`${this.config.url}/space/agent/hook`, {
+    const res = await this.cloudFetch(`${this.config.url}/space/agent/hook`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ platform, verifyToken }),
@@ -687,7 +747,7 @@ export class RelayLink {
    * Bloks Cloud and kept. */
   async mailId(): Promise<{ id: string; domain: string }> {
     if (!this.config) throw new Error("Turn on Bloks Cloud first: email reaches this computer through it.");
-    const res = await fetch(`${this.config.url}/space/agent/hook`, {
+    const res = await this.cloudFetch(`${this.config.url}/space/agent/hook`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ platform: "email" }),
@@ -704,7 +764,7 @@ export class RelayLink {
    * they wrote in, and sends it. */
   async sendEmail(mail: { to: string; replyTo: string; fromName: string; subject: string; text: string; inReplyTo?: string }): Promise<void> {
     if (!this.config) throw new Error("Bloks Cloud is off");
-    const res = await fetch(`${this.config.url}/space/agent/email`, {
+    const res = await this.cloudFetch(`${this.config.url}/space/agent/email`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(mail),
@@ -714,6 +774,30 @@ export class RelayLink {
       const body = (await res.json().catch(() => ({}))) as { error?: unknown };
       throw new Error(typeof body.error === "string" ? body.error : `the reply was not sent (${res.status})`);
     }
+  }
+
+  /** fetch, to Bloks Cloud, on the link's own pool. Public for the other
+   * asks this server makes of the relay (the plan, going offline), so
+   * they share the line's luck rather than the process's. */
+  async cloudFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    this.pool ??= this.newPool().catch(() => null);
+    const pool = await this.pool;
+    return fetch(url, pool ? ({ ...init, dispatcher: pool } as RequestInit) : init);
+  }
+
+  /** The next ask goes on a pool made afresh. The old one closes once what
+   * is on it has finished, and is destroyed if that takes too long. */
+  private renewPool() {
+    const old = this.pool;
+    this.pool = null;
+    void old
+      ?.then((pool) => {
+        if (!pool) return;
+        const late = setTimeout(() => void pool.destroy().catch(() => {}), 30_000);
+        late.unref?.();
+        return pool.close().then(() => clearTimeout(late));
+      })
+      .catch(() => {});
   }
 
   private headers(): Record<string, string> {
@@ -768,12 +852,13 @@ export class RelayLink {
     };
     armWatchdog();
     try {
-      const res = await fetch(`${this.config.url}/space/agent/stream`, {
+      const res = await this.cloudFetch(`${this.config.url}/space/agent/stream`, {
         headers: { authorization: `Bearer ${this.config.agentToken}` },
         signal: controller.signal,
       });
-      if (!alive()) return;
+      if (!alive()) return letGo(res);
       if (!res.ok || !res.body) {
+        letGo(res);
         // 401/403 usually means a wrong token, but it also means the relay
         // lost its state in a restart, and a memory-only relay does that.
         // So do not give up: back off hard and keep trying, with an honest
@@ -836,6 +921,10 @@ export class RelayLink {
       if (!alive()) return;
       const problem = heard ? lineProblem(e) : `Bloks Cloud could not be reached from ${thisMachine()}: ${lineProblem(e)}`;
       this.setState({ connected: false, delivering: false, spaceId: null, since: null, problem });
+      // A dial that never got as far as an answer may be failing on what
+      // the pool kept, not on the way to the relay: the next one, after
+      // the same backoff, starts from a pool made afresh.
+      if (!heard) this.renewPool();
       this.schedule();
     } finally {
       clearTimers();
@@ -1337,13 +1426,13 @@ export class RelayLink {
     const now = Date.now();
     if (!force && this.nextDueSent && this.nextDueSent.at === at && now - this.nextDueSent.when < NEXT_DUE_REPEAT_MS) return;
     this.nextDueSent = { at, when: now };
-    const ok = await fetch(`${this.config.url}/space/agent/next-due`, {
+    const ok = await this.cloudFetch(`${this.config.url}/space/agent/next-due`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ at }),
       signal: AbortSignal.timeout(10_000),
     })
-      .then((res) => res.ok)
+      .then((res) => (letGo(res), res.ok))
       .catch(() => false);
     // not said after all: the next look tries again
     if (!ok && this.nextDueSent?.when === now) this.nextDueSent = null;
@@ -1417,12 +1506,13 @@ export class RelayLink {
       // a line that no longer exists
       if (left <= 0 || this.config !== config) break;
       try {
-        const res = await fetch(`${config.url}/space/agent/result`, {
+        const res = await this.cloudFetch(`${config.url}/space/agent/result`, {
           method: "POST",
           headers: this.headers(),
           body,
           signal: AbortSignal.timeout(Math.min(attemptMs, left)),
         });
+        letGo(res);
         if (res.ok) {
           this.noteOutbound(true);
           return true;
