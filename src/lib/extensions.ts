@@ -10,7 +10,7 @@
 // rather than a surprise, and where the page decides which workspace
 // events a frame hears at all.
 import { useSyncExternalStore } from "react";
-import type { Bot } from "@/state/store";
+import type { Bot } from "@/state/reducer";
 
 export type Permission = "agents:read" | "turns:read" | "agents:message" | "composer:write" | "storage" | "notifications";
 
