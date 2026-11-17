@@ -10,7 +10,7 @@
 // not given said on its own.
 import { useEffect, useState } from "react";
 import { AlertTriangle, ChevronRight, Loader2, Puzzle, ShieldCheck, Trash2 } from "@/components/icons";
-import { api } from "@/state/store";
+import { api, useStore } from "@/state/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -235,6 +235,7 @@ export function extensionLine(ext: ExtensionInfo): string {
 
 /** One installed extension's page. */
 export function ExtensionPage({ ext, onBack }: { ext: ExtensionInfo; onBack: () => void }) {
+  const { dispatch } = useStore();
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | undefined>(() => extensionError(ext.id));
   useEffect(() => onExtensionErrors(() => setError(extensionError(ext.id))), [ext.id]);
@@ -312,7 +313,12 @@ export function ExtensionPage({ ext, onBack }: { ext: ExtensionInfo; onBack: () 
               {ext.panels.map((p) => (
                 <div key={p.id} className="flex items-center gap-3 py-2.5">
                   <span className="min-w-0 flex-1 text-body text-foreground">{t("extensions.panelNamed", { title: p.title })}</span>
-                  <Button variant="outline" size="sm" disabled={!ext.enabled || !ext.intact} onClick={() => openPanel(`${ext.id}/${p.id}`)}>
+                  <Button variant="outline" size="sm" disabled={!ext.enabled || !ext.intact} onClick={() => {
+                      // in the dock of the conversation last on screen, which
+                      // is where this takes you
+                      openPanel(`${ext.id}/${p.id}`);
+                      dispatch({ type: "toggleAppSettings", open: false });
+                    }}>
                     {t("extensions.open")}
                   </Button>
                 </div>

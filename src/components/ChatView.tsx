@@ -22,6 +22,7 @@ import { useTerminalDock } from "./terminal/TerminalDock";
 import { BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { Activity, FileText, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
+import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { DocsPanel } from "./dock/DocsPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
@@ -825,6 +826,8 @@ export function ChatView({ bot }: { bot: Bot }) {
     dispatch({ type: "toggleComputer", open: false });
   }, [state.computerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // the running extensions' panels, as one more panel of the dock
+  const extensionsPane = useExtensionsPane();
   const dockPanes: DockPane[] = [
     {
       id: "docs",
@@ -875,6 +878,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         />
       ),
     },
+    ...(extensionsPane ? [extensionsPane] : []),
   ];
   const offered = dockPanes.map((p) => p.id);
   const toggleDockRef = useRef<() => void>(() => {});

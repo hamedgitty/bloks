@@ -2414,7 +2414,7 @@
   "extensions.open": "Open",
   "extensions.panelFooter": "{name} runs in a sandbox with no network, and only sees what you allowed it.",
   "extensions.panelNamed": "Panel: {title}",
-  "extensions.panels": "Extension panels",
+  "extensions.panels": "Extensions",
   "extensions.reloadPanel": "Reload this panel",
   "extensions.remove": "Remove",
   "extensions.removeBody": "Its panels, commands, settings and the data it kept here are removed from this workspace.",

@@ -11,6 +11,7 @@
 // events a frame hears at all.
 import { useSyncExternalStore } from "react";
 import type { Bot } from "@/state/reducer";
+import { dock } from "./dock.ts";
 
 export type Permission = "agents:read" | "turns:read" | "agents:message" | "composer:write" | "storage" | "notifications";
 
@@ -201,46 +202,58 @@ export function onExtensionFrame(fn: (frame: unknown) => void): () => void {
   return () => frameListeners.delete(fn);
 }
 
-// ── the dock ──
+// ── their panels, in the side dock ──
+//
+// Every running extension's panels are tabs of one panel of the side dock
+// (src/lib/dock.ts, "extensions"), so they open, hide and are remembered
+// per conversation the way the browser and the documents are. What is
+// kept here is only which extension panel is in front, and which have
+// been opened since the window loaded: those stay mounted, hidden, so
+// switching between them keeps each one's state.
 
-export interface DockState {
-  open: boolean;
+export interface PanelsState {
   /** "<extension id>/<panel id>" */
   shown: string | null;
-  /** Panels opened since the window loaded, kept mounted so switching
-   * between them keeps their state. */
   kept: string[];
 }
 
-let dock: DockState = { open: false, shown: null, kept: [] };
-const dockListeners = new Set<Listener>();
+let panels: PanelsState = { shown: null, kept: [] };
+const panelListeners = new Set<Listener>();
 
-export function setDock(next: Partial<DockState>): void {
-  dock = { ...dock, ...next };
-  if (dock.shown && !dock.kept.includes(dock.shown)) dock = { ...dock, kept: [...dock.kept, dock.shown] };
-  dockListeners.forEach((fn) => fn());
+/** Which extension panel is in front, without opening the dock. */
+export function showExtensionPanel(key: string): void {
+  panels = { shown: key, kept: panels.kept.includes(key) ? panels.kept : [...panels.kept, key] };
+  panelListeners.forEach((fn) => fn());
 }
 
+/** An extension panel opened: in front, and the dock of the conversation
+ * on screen open on the extensions panel. */
 export function openPanel(key: string): void {
-  setDock({ open: true, shown: key });
+  showExtensionPanel(key);
+  const place = dock.current();
+  if (place) dock.show(place, "extensions");
 }
 
-export function useDock(): DockState {
+export const extensionPanelsNow = (): PanelsState => panels;
+
+export function useExtensionPanels(): PanelsState {
   return useSyncExternalStore(
     (fn) => {
-      dockListeners.add(fn);
-      return () => dockListeners.delete(fn);
+      panelListeners.add(fn);
+      return () => panelListeners.delete(fn);
     },
-    () => dock,
+    () => panels,
   );
 }
 
 /** Panels no longer installed or running drop out of what is kept. */
-export function pruneDock(list: readonly ExtensionInfo[] | null): void {
+export function prunePanels(list: readonly ExtensionInfo[] | null): void {
   const live = new Set(running(list).flatMap((e) => e.panels.map((p) => `${e.id}/${p.id}`)));
-  const kept = dock.kept.filter((k) => live.has(k));
-  const shown = dock.shown && live.has(dock.shown) ? dock.shown : (kept[0] ?? null);
-  if (kept.length !== dock.kept.length || shown !== dock.shown) setDock({ kept, shown, open: dock.open && shown !== null });
+  const kept = panels.kept.filter((k) => live.has(k));
+  const shown = panels.shown && live.has(panels.shown) ? panels.shown : (kept[0] ?? null);
+  if (kept.length === panels.kept.length && shown === panels.shown) return;
+  panels = { shown, kept };
+  panelListeners.forEach((fn) => fn());
 }
 
 // ── messages to agents, only right after a command ──

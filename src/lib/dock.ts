@@ -27,10 +27,12 @@
 // are at the end.
 import { useSyncExternalStore } from "react";
 
-export type DockPanel = "docs" | "browser" | "terminal" | "computer" | "trace" | "topic";
+export type DockPanel = "docs" | "browser" | "terminal" | "computer" | "trace" | "topic" | "extensions";
 
 /** The order the ribbon lists panels in, whichever are offered. */
-export const DOCK_PANELS: readonly DockPanel[] = ["topic", "docs", "browser", "terminal", "computer", "trace"];
+// "extensions" holds every running workspace extension's panels, as tabs
+// of its own (src/components/extensions/ExtensionDock.tsx, GitHub 507).
+export const DOCK_PANELS: readonly DockPanel[] = ["topic", "docs", "browser", "terminal", "computer", "trace", "extensions"];
 
 /** A file open in the dock: an agent's shared file, by its name. */
 export interface DockDoc {

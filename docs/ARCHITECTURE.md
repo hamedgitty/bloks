@@ -4969,6 +4969,17 @@ workspace events, and settings (`server/extensions.ts` for the rules,
 `src/lib/extensions.ts` and `src/components/extensions/` for the page,
 GitHub 507). The author's side is `docs/EXTENSIONS.md`.
 
+Panels live in the side dock (`src/lib/dock.ts`): while any running
+extension has one, the ribbon offers an Extensions panel (the puzzle
+piece), in chats and rooms alike, which opens, hides and is remembered
+per conversation like the dock's other panels. Inside it each extension
+panel is a tab (`ExtensionDock.tsx`); which is in front, and which have
+been opened since the window loaded, is the page's (`useExtensionPanels`),
+and those stay mounted out of sight so switching keeps their state, as
+the dock keeps the terminal's. A command or `panel.open` brings its panel
+to the front and opens the dock of the conversation on screen on it;
+Open on the extension's page in Settings does the same and goes there.
+
 **The manifest.** `bloks-extension.json` at the top of the folder:
 `manifestVersion` 1, an `id` (2 to 40 lower case letters, digits and
 dashes), `name`, `version` (`1.0.0`), `description`, `author`, `bloks`
@@ -5078,9 +5089,9 @@ frame reports is kept beside its name in Settings with Switch it off;
 it never reaches a turn.
 
 **Native sidecars and app watchers (GitHub 524).** A sidecar's interface
-is a panel extension: static HTML from its folder in the dock beside the
-chat, kept mounted across tabs, with the plain colour names a sidecar
-reads. Its event handlers are the extension's. What is not built, and
+is a panel extension: static HTML from its folder in the side dock's
+Extensions panel, kept mounted across its tabs and while another panel is
+in front, with the plain colour names a sidecar reads. Its event handlers are the extension's. What is not built, and
 why: a sidecar's own process (a supervisor, ports, health checks)
 would run as the owner outside any sandbox; handing it
 `BLOKS_AUTH_TOKEN` is handing it the owner's credential; writing its tools

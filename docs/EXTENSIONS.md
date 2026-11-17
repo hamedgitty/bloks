@@ -73,7 +73,7 @@ At most 200 files, 2 MB each, 5 MB in all. Hidden files (a `.git`, a
 | `version` | `1.0.0`, with an optional `-beta.1`. |
 | `bloks` | The Bloks versions it works with: `*`, `>=3.3.0`, `<4`, `^3.3.0`, `~3.3.0`, or several joined by spaces, all of which must hold. |
 | `permissions` | What it asks for; see below. The owner sees each one in words before installing. |
-| `panels` | Up to four. Each is a tab in the dock beside the chat, opened from the puzzle piece in the header. |
+| `panels` | Up to four. Each is a tab of the Extensions panel in the side dock beside a chat or room, its puzzle piece on the dock's ribbon. |
 | `background` | An optional hidden document that runs while a Bloks window is open, for commands and events with no panel showing. |
 | `commands` | Up to twenty. They appear in search (Cmd K) as "Team status: Draft a status request", and on the extension's page. |
 | `events` | The workspace events it handles; see below. |

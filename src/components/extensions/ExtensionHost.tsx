@@ -32,7 +32,7 @@ import {
   onExtensionFrame,
   openPanel,
   parseFrameMessage,
-  pruneDock,
+  prunePanels,
   running,
   useExtensions,
   type ExtensionInfo,
@@ -299,8 +299,8 @@ export function ExtensionHost() {
     };
   }, []);
 
-  // a panel that is gone or switched off leaves the dock
-  useEffect(() => pruneDock(list), [list]);
+  // a panel that is gone or switched off leaves the extensions panel
+  useEffect(() => prunePanels(list), [list]);
 
   // the roster as an extension may see it, when that changes
   const roster = JSON.stringify(agentsFor(state.bots));

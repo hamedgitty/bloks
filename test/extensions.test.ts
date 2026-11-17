@@ -57,6 +57,8 @@ import {
   type ExtensionInfo,
 } from "../src/lib/extensions.ts";
 import { leavesExtensionFrame } from "../electron/navigation.mjs";
+import { DOCK_PANELS, chatKey, dock, parseDock, pickPanel, placeIn } from "../src/lib/dock.ts";
+import { extensionPanelsNow, openPanel, prunePanels, showExtensionPanel } from "../src/lib/extensions.ts";
 
 const files = (...names: string[]) => new Set(names);
 const good = {
@@ -422,5 +424,33 @@ describe("the page's half", () => {
     // frames that are not an extension's are not this rule's business
     assert.equal(leavesExtensionFrame("about:srcdoc", "https://example.com"), false);
     assert.equal(leavesExtensionFrame("", "http://127.0.0.1:8799/api/extensions/team-status/frame/status"), false);
+  });
+});
+
+describe("their panels, in the side dock", () => {
+  test("extensions are one panel of the dock, last on its ribbon, remembered like the others", () => {
+    assert.equal(DOCK_PANELS.at(-1), "extensions");
+    const saved = parseDock(JSON.stringify({ [chatKey("a1", "t1")]: { open: true, panel: "extensions", docs: [], doc: null, at: 1 } }), "480");
+    assert.deepEqual(placeIn(saved, chatKey("a1", "t1")), { open: true, panel: "extensions", docs: [], doc: null, at: 1 });
+    // never opened on its own: with nothing said, the dock picks another
+    assert.equal(pickPanel({ open: false, panel: null, docs: [], doc: null, at: 0 }, ["browser", "extensions"]), "browser");
+  });
+
+  test("opening an extension's panel opens the dock of the conversation on screen on it, and a gone one leaves", () => {
+    const key = chatKey("ext-a1", "ext-t1");
+    dock.setCurrent(key);
+    openPanel("team-status/status");
+    assert.deepEqual([placeIn(dock.get(), key).open, placeIn(dock.get(), key).panel], [true, "extensions"]);
+    showExtensionPanel("other/main");
+    assert.deepEqual(extensionPanelsNow(), { shown: "other/main", kept: ["team-status/status", "other/main"] });
+    prunePanels([
+      {
+        id: "team-status", name: "Team status", version: "1.0.0", description: "", bloks: "*", enabled: true, intact: true,
+        permissions: [], panels: [{ id: "status", title: "Status" }], background: false, commands: [], events: [], settings: [], values: {},
+        source: { kind: "folder", path: "/x", name: "x" }, installedAt: 0, updatedAt: 0,
+      },
+    ]);
+    // one no longer running leaves, and the one still there comes to the front
+    assert.deepEqual(extensionPanelsNow(), { shown: "team-status/status", kept: ["team-status/status"] });
   });
 });

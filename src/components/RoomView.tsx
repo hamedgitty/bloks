@@ -91,6 +91,7 @@ import { RoomAgentsDialog } from "./room/RoomAgentsDialog";
 import { formatList, t } from "@/lib/i18n";
 import { FileText, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
+import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { DocsPanel } from "./dock/DocsPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
@@ -1082,6 +1083,8 @@ export function RoomView({ blok }: { blok: Blok }) {
   };
   const nameOfActor = (by: string) =>
     by === "owner" ? t("forumLens.you") : by.startsWith("agent:") ? (members.find((b) => `agent:${b.id}` === by)?.name ?? t("common.anAgent")) : personName(by);
+  // the running extensions' panels, as one more panel of the dock
+  const extensionsPane = useExtensionsPane();
   const dockPanes: DockPane[] = [
     {
       id: "topic",
@@ -1122,6 +1125,7 @@ export function RoomView({ blok }: { blok: Blok }) {
           },
         ]
       : []),
+    ...(extensionsPane ? [extensionsPane] : []),
   ];
   // A topic picked opens its context in the dock, where there is room for
   // both; on a narrow window the thread alone changes.
