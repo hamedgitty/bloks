@@ -110,6 +110,7 @@ import {
   setLocal,
   shownWorkspaces,
   fallbackWorkspace,
+  joinsFrom,
   freeName,
   removeWorkspace,
   reorder,
@@ -235,6 +236,14 @@ let pendingLink = null;
 function deliverLink(raw) {
   const link = teamLink(raw) ?? joinLink(raw) ?? planLink(raw) ?? installLink(raw);
   if (!link) return;
+  // an invite opened while a joined workspace is on screen is joined from
+  // one of this computer's own, whose page asks for it once it loads
+  const from = link.kind === "join" ? joinsFrom(registry, shownId) : null;
+  if (from) {
+    pendingLink = link;
+    void switchWorkspace(from).catch(() => {});
+    return;
+  }
   const main = BrowserWindow.getAllWindows().find((w) => isWorkspaceWindow(w));
   if (!main || main.webContents.isLoading()) {
     pendingLink = link;

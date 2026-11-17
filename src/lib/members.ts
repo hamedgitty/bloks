@@ -172,6 +172,9 @@ export interface FoundInvite {
   role: WorkspaceRole;
   expiresAt: number | null;
   password: boolean | null;
+  /** An invite into one shared room: `workspace` is the room's name, and
+   * joining makes this computer a guest of that room alone. */
+  room?: true;
 }
 
 export interface JoinFailure {
@@ -192,6 +195,8 @@ export interface Welcome {
   role: WorkspaceRole;
   agents: Array<{ id: string; name: string; title: string; color: string; shape: string | null }>;
   agentCount: number;
+  /** Let into one shared room rather than a workspace. */
+  room?: true;
 }
 
 /** What a joined workspace is reached with: the same profile the remote
@@ -243,6 +248,23 @@ export function codeIn(raw: string): string | null {
   const code = text.toUpperCase().replace(/[\s\-_.\u2010-\u2015\u2212]/g, "");
   if (code.length !== 8 || [...code].some((c) => !ALPHABET.includes(c))) return null;
   return code;
+}
+
+/** Whether some text is a shared room's invite link (bloks.dev/join#...
+ * or bloks://join#...), which carries the invite itself rather than a
+ * code. The server reads it in full (server/join-client.ts). */
+export function roomInviteIn(raw: string): boolean {
+  const text = raw.trim();
+  const hash = text.indexOf("#");
+  if (hash < 0 || text.length > 4096 || !/(^|\/)join\/?$/i.test(text.slice(0, hash))) return false;
+  const fragment = text.slice(hash + 1);
+  if (!/^[A-Za-z0-9_-]{40,4000}$/.test(fragment)) return false;
+  try {
+    const invite = JSON.parse(atob(fragment.replace(/-/g, "+").replace(/_/g, "/")));
+    return invite?.v === 1 && typeof invite.i === "string" && invite.i.startsWith("inv_");
+  } catch {
+    return false;
+  }
 }
 
 /** Whether some text is a Bloks workspace invite: a code, or a link to

@@ -20,23 +20,42 @@ export function teamLink(raw) {
   }
 }
 
+/** Longer than any room's pass needs, with its relay address and name. */
+const ROOM_PASS_LIMIT = 4096;
+
 /**
- * A workspace invite handed over by bloks.dev's "Open in Bloks", or a QR
- * scanned on this Mac: bloks://join#<code>, the fragment exactly as typed
- * (a dash, any case), sometimes with where the inviting computer answers
- * on this network after a "~". Passed on as text for the join dialog to
- * read the way it reads anything pasted; it opens nothing by itself.
+ * An invite handed over by bloks.dev's "Open in Bloks", or a QR scanned
+ * on this Mac, as bloks://join#<fragment>. A workspace's invite is its
+ * code, exactly as typed (a dash, any case), sometimes with where the
+ * inviting computer answers on this network after a "~". A shared room's
+ * invite is the invite itself, a base64url pass far longer than a code
+ * (server/index.ts inviteLink), and is passed on only when it reads as
+ * one. Either goes on as text for the join dialog to read the way it
+ * reads anything pasted; it opens nothing by itself.
  */
 export function joinLink(raw) {
   const text = String(raw ?? "");
-  if (!/^bloks:\/\/join\/?#/i.test(text) || text.length > 200) return null;
+  if (!/^bloks:\/\/join\/?#/i.test(text) || text.length > ROOM_PASS_LIMIT) return null;
   const fragment = text.slice(text.indexOf("#") + 1);
+  if (roomPass(fragment)) return { kind: "join", fragment };
   // a code is 8 of the readable characters, give or take dashes and spaces
-  if (!/^[0-9A-Za-z\s\-~.:[\]%]{8,120}$/.test(fragment)) return null;
+  if (text.length > 200 || !/^[0-9A-Za-z\s\-~.:[\]%]{8,120}$/.test(fragment)) return null;
   try {
     return { kind: "join", fragment: decodeURIComponent(fragment) };
   } catch {
     return null;
+  }
+}
+
+/** Whether a fragment is a shared room's invite: base64url of the JSON
+ * the room's computer writes, naming an invite. */
+function roomPass(fragment) {
+  if (!/^[A-Za-z0-9_-]{40,4000}$/.test(fragment)) return false;
+  try {
+    const invite = JSON.parse(Buffer.from(fragment, "base64url").toString("utf8"));
+    return invite?.v === 1 && typeof invite.i === "string" && invite.i.startsWith("inv_") && typeof invite.s === "string" && typeof invite.t === "string";
+  } catch {
+    return false;
   }
 }
 

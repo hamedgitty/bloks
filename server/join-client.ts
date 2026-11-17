@@ -14,8 +14,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import * as invites from "./invites.ts";
-import { joinPhrase } from "./people.ts";
-import { open, peek, seal } from "./relay-crypto.ts";
+import { checkPhrase, joinPhrase } from "./people.ts";
+import { inviteKey, open, peek, seal } from "./relay-crypto.ts";
 import { machineKind, thisMachine } from "./this-machine.ts";
 
 export type Fetch = typeof fetch;
@@ -30,6 +30,10 @@ export interface FoundInvite {
   /** Whether the workspace asks for a join password. Null when the host
    * did not say, in which case a claim without one finds out. */
   password: boolean | null;
+  /** An invite into one shared room rather than a workspace: `workspace`
+   * is then the room's name, and joining makes this computer a guest of
+   * that room alone. */
+  room?: true;
 }
 
 interface Session {
@@ -62,6 +66,55 @@ export interface JoinFailure {
 }
 
 const SESSION_TTL_MS = 25 * 60 * 60_000;
+
+/** A shared room's invite, as its link carries it after the # (the room's
+ * computer writes it, server/index.ts inviteLink). The browser client
+ * and the phone read the same five things. */
+export interface RoomInvite {
+  id: string;
+  relayUrl: string;
+  relayToken: string;
+  secret: string;
+  roomName: string;
+  hostName: string;
+}
+
+/** The room's invite in what was pasted or handed over by a link
+ * (https://bloks.dev/join#..., bloks://join#..., either without its
+ * scheme), or null when it is not one. */
+export function parseRoomInvite(raw: unknown): RoomInvite | null {
+  if (typeof raw !== "string" || raw.length > 4096) return null;
+  const text = raw.trim();
+  const hash = text.indexOf("#");
+  if (hash < 0 || !/(^|\/)join\/?$/i.test(text.slice(0, hash))) return null;
+  const fragment = text.slice(hash + 1);
+  if (!/^[A-Za-z0-9_-]{40,4000}$/.test(fragment)) return null;
+  try {
+    const p = JSON.parse(Buffer.from(fragment, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (p.v !== 1) return null;
+    const relayUrl = typeof p.r === "string" ? p.r.replace(/\/+$/, "") : "";
+    if (!/^https:\/\/|^http:\/\/127\.0\.0\.1(:\d+)?$/.test(relayUrl)) return null;
+    if (typeof p.t !== "string" || !p.t || typeof p.s !== "string" || !p.s) return null;
+    if (typeof p.i !== "string" || !p.i.startsWith("inv_")) return null;
+    const clean = (value: unknown, fallback: string) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 60) : fallback);
+    return { id: p.i, relayUrl, relayToken: p.t, secret: p.s, roomName: clean(p.room, "a room"), hostName: clean(p.host, "Someone") };
+  } catch {
+    return null;
+  }
+}
+
+interface RoomSession {
+  id: string;
+  invite: RoomInvite;
+  /** The room's own key for this invite, from the link's secret. */
+  secretHash: string;
+  deviceToken: string;
+  tokenHash: string;
+  createdAt: number;
+}
+
+/** A room has no mark of its own; the one a workspace with none gets. */
+const ROOM_MARK = { color: "#5B5F6B", pattern: "010111101" };
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 function readPreview(raw: unknown, fallbackPublicId: string): FoundInvite | null {
@@ -84,6 +137,7 @@ function readPreview(raw: unknown, fallbackPublicId: string): FoundInvite | null
 
 export class JoinClient {
   private sessions = new Map<string, Session>();
+  private rooms = new Map<string, RoomSession>();
   private readonly relayBase: () => string;
   private readonly fetcher: Fetch;
 
@@ -100,6 +154,7 @@ export class JoinClient {
   private sweep() {
     const now = Date.now();
     for (const [id, s] of this.sessions) if (now - s.createdAt > SESSION_TTL_MS) this.sessions.delete(id);
+    for (const [id, s] of this.rooms) if (now - s.createdAt > SESSION_TTL_MS) this.rooms.delete(id);
   }
 
   /** One sealed request to the host, and its opened answer. */
@@ -162,6 +217,8 @@ export class JoinClient {
    */
   async lookup(input: unknown): Promise<{ ok: true; session: string; invite: FoundInvite; via: "relay" | "lan" } | JoinFailure> {
     this.sweep();
+    const room = parseRoomInvite(input);
+    if (room) return this.lookupRoom(room);
     const parsed = invites.parseInviteInput(input);
     if (!parsed) return { ok: false, status: 400, code: "not_a_code", error: "That is not an invite link or code. A code has 8 letters and numbers, like K7QF-M2XR." };
     const base = () => {
@@ -299,6 +356,8 @@ export class JoinClient {
   }
 
   async claim(id: unknown, input: { name: unknown; password?: unknown }) {
+    const room = typeof id === "string" ? this.rooms.get(id) : undefined;
+    if (room) return this.claimRoom(room, input.name);
     const s = this.session(id);
     if (!s) return { ok: false, status: 404, code: "no_session", error: "Look the invite up again." } satisfies JoinFailure;
     const answer = await this.ask(s, "/api/join/claim", {
@@ -312,6 +371,8 @@ export class JoinClient {
   }
 
   async status(id: unknown) {
+    const room = typeof id === "string" ? this.rooms.get(id) : undefined;
+    if (room) return this.roomStatus(room);
     const s = this.session(id);
     if (!s) return { ok: false, status: 404, code: "no_session", error: "Look the invite up again." } satisfies JoinFailure;
     const answer = await this.ask(s, "/api/join/status", { tokenHash: s.tokenHash });
@@ -319,12 +380,144 @@ export class JoinClient {
   }
 
   async cancel(id: unknown) {
+    // a room's request has no taking back on its computer: it is let go
+    // here, and lapses with the invite there
+    if (typeof id === "string" && this.rooms.delete(id)) return { ok: true };
     const s = this.session(id);
     if (!s) return { ok: true };
     await this.ask(s, "/api/join/cancel", { tokenHash: s.tokenHash });
     this.sessions.delete(s.id);
     return { ok: true };
   }
+
+  // ── one shared room ──────────────────────────────────────────────────
+  // The way the browser client and the phone join a room: through Bloks
+  // Cloud with the pass the link carries, sealed with the key from the
+  // link's secret, and only the two invite routes the room's computer
+  // answers for it (server/relay-link.ts, INVITE_ROUTES). Once let in,
+  // the pass and this device's token are a guest's credentials, which the
+  // remote proxy takes like any joined workspace's.
+
+  /** One sealed request about a room's invite, and its opened answer. */
+  private async askRoom(r: RoomSession, method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> } | JoinFailure> {
+    const who = r.invite.hostName;
+    const payload = seal(inviteKey(r.secretHash, "phone-to-mac"), r.invite.id, {
+      method,
+      path,
+      ...(body ? { body } : {}),
+      ...(method === "GET" ? {} : { ts: Date.now(), nonce: randomUUID() }),
+    });
+    let res: Response;
+    try {
+      res = await this.fetcher(`${r.invite.relayUrl}/space/client/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${r.invite.relayToken}` },
+        body: JSON.stringify({ payload }),
+        signal: AbortSignal.timeout(25_000),
+      });
+    } catch {
+      return { ok: false, status: 503, code: "offline", error: `Bloks Cloud could not be reached. Check ${thisMachine()}'s connection.` };
+    }
+    const outer = (await res.json().catch(() => ({}))) as { status?: number; payload?: string; error?: string };
+    if (res.status === 503 || res.status === 504) {
+      return { ok: false, status: 503, code: "unreachable", error: `${who}'s computer is not reachable. It may be asleep or offline.` };
+    }
+    // the pass the link carried is no longer taken: the room stopped
+    // being shared, or the invite was closed
+    if (res.status === 401) return { ok: false, status: 410, code: "expired", error: "This invite has expired or was cancelled. Ask for a new one.", host: who };
+    const envelope = typeof outer.payload === "string" && outer.payload ? peek(outer.payload) : null;
+    const answer = envelope ? (open(inviteKey(r.secretHash, "mac-to-phone"), envelope) as { status?: number; body?: unknown } | null) : null;
+    if (!answer || typeof answer.status !== "number") {
+      if (outer.status === 401) return { ok: false, status: 410, code: "expired", error: "This invite has expired or was cancelled. Ask for a new one.", host: who };
+      return { ok: false, status: 502, code: "unreachable", error: outer.error ?? `${who}'s computer did not answer that.` };
+    }
+    return { status: answer.status, body: (answer.body ?? {}) as Record<string, unknown> };
+  }
+
+  private roomPhrase(r: RoomSession): string {
+    return checkPhrase(r.secretHash, r.tokenHash);
+  }
+
+  /** An invite that is over, by how its computer said it. */
+  private roomEnded(r: RoomSession, status: unknown): JoinFailure | null {
+    const host = r.invite.hostName;
+    if (status === "declined") return { ok: false, status: 409, code: "declined", error: `${host} did not let this request in.`, host };
+    if (status === "cancelled") return { ok: false, status: 410, code: "cancelled", error: "This invite was cancelled. Ask for a new one.", host };
+    if (status === "expired") return { ok: false, status: 410, code: "expired", error: "This invite has expired. Ask for a new one.", host };
+    return null;
+  }
+
+  private async lookupRoom(invite: RoomInvite) {
+    const deviceToken = randomBytes(32).toString("base64url");
+    const r: RoomSession = { id: randomUUID(), invite, secretHash: sha256(invite.secret), deviceToken, tokenHash: sha256(deviceToken), createdAt: Date.now() };
+    const answer = await this.askRoom(r, "GET", "/api/member/claim");
+    if ("ok" in answer) return answer;
+    if (answer.status !== 200) return roomFailure(r, answer);
+    const ended = this.roomEnded(r, answer.body.status);
+    if (ended) return ended;
+    // somebody already asked with this invite, or was let in with it
+    if (answer.body.status !== "open") return { ok: false as const, status: 409, code: "used", error: "Someone has already used this invite. Ask for a new one.", host: invite.hostName };
+    const said = (answer.body.room ?? {}) as { name?: unknown };
+    const roomName = typeof said.name === "string" && said.name.trim() ? said.name.trim().slice(0, 60) : invite.roomName;
+    const hostName = typeof answer.body.host === "string" && answer.body.host.trim() ? answer.body.host.trim().slice(0, 60) : invite.hostName;
+    r.invite = { ...invite, roomName, hostName };
+    this.rooms.set(r.id, r);
+    const found: FoundInvite = { publicId: "room", workspace: roomName, mark: ROOM_MARK, inviter: hostName, role: "member", expiresAt: null, password: false, room: true };
+    return { ok: true as const, session: r.id, invite: found, via: "relay" as const };
+  }
+
+  private async claimRoom(r: RoomSession, name: unknown) {
+    if (typeof name !== "string" || !name.trim()) return { ok: false, status: 400, code: "invalid", error: "A name is needed." } satisfies JoinFailure;
+    const answer = await this.askRoom(r, "POST", "/api/member/claim", { name: name.trim(), token: r.deviceToken });
+    if ("ok" in answer) return answer;
+    if (answer.status !== 200) return roomFailure(r, answer);
+    // let in at once is still told by the next look, with who this is now
+    return answer.body.status === "approved" ? this.roomStatus(r) : { ok: true as const, status: "waiting", phrase: this.roomPhrase(r) };
+  }
+
+  private async roomStatus(r: RoomSession) {
+    const answer = await this.askRoom(r, "GET", "/api/member/claim");
+    if ("ok" in answer) return answer;
+    if (answer.status !== 200) return roomFailure(r, answer);
+    const b = answer.body;
+    const ended = this.roomEnded(r, b.status);
+    if (ended) return ended;
+    if (b.status !== "approved") return { ok: true as const, status: "waiting", phrase: this.roomPhrase(r) };
+    if (typeof b.deviceId !== "string" || typeof b.personId !== "string") {
+      return { ok: false, status: 502, code: "unreachable", error: `${r.invite.hostName}'s computer let you in but did not say who you are now. Open the invite link again.` } satisfies JoinFailure;
+    }
+    const room = (b.room ?? {}) as { id?: unknown; name?: unknown };
+    const name = typeof room.name === "string" && room.name.trim() ? room.name.trim().slice(0, 60) : r.invite.roomName;
+    const workspace = { id: typeof room.id === "string" ? room.id : "room", name, kind: "room", mark: ROOM_MARK };
+    this.rooms.delete(r.id);
+    return {
+      ok: true as const,
+      status: "approved",
+      phrase: this.roomPhrase(r),
+      welcome: { workspace, inviter: r.invite.hostName, approvedBy: r.invite.hostName, role: "member", agents: [], agentCount: 0, room: true },
+      credentials: {
+        relayUrl: r.invite.relayUrl,
+        relayToken: r.invite.relayToken,
+        deviceId: b.deviceId,
+        deviceToken: r.deviceToken,
+        personId: b.personId,
+        role: "member",
+        hostKey: "",
+        lan: null,
+        workspace,
+      },
+    };
+  }
+}
+
+/** A room's computer saying no, in the words the join dialog knows. */
+function roomFailure(r: RoomSession, answer: { status: number; body: Record<string, unknown> }): JoinFailure {
+  const said = typeof answer.body.error === "string" ? answer.body.error : "";
+  const host = r.invite.hostName;
+  if (/already used/i.test(said)) return { ok: false, status: 409, code: "used", error: "Someone has already used this invite. Ask for a new one.", host };
+  if (/expired|cancelled/i.test(said)) return { ok: false, status: 410, code: "expired", error: "This invite has expired or was cancelled. Ask for a new one.", host };
+  if (/name/i.test(said)) return { ok: false, status: 400, code: "invalid", error: "A name is needed.", host };
+  return { ok: false, status: answer.status, code: "unreachable", error: said || `${host}'s computer did not answer that.`, host };
 }
 
 function failure(answer: { status: number; body: Record<string, unknown> }): JoinFailure {

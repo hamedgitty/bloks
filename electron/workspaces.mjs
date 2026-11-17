@@ -316,6 +316,19 @@ export function fallbackWorkspace(registry, except = null) {
   return (runsLocal(registry) && shown.find((w) => w.kind === "personal")) || shown[0] || null;
 }
 
+/** Where an invite opened while `shownId` is on screen is joined from:
+ * joining runs on a server of this computer's own, which a joined or
+ * paired workspace's window has not, so from one of those it is Personal
+ * (or the first workspace here). Null to join where the window is, and
+ * also when nothing runs here, which leaves it as it was. */
+export function joinsFrom(registry, shownId) {
+  if (!registry) return null;
+  const shown = registry.workspaces.find((w) => w.id === shownId);
+  if (!shown || !isRemoteKind(shown.kind) || !runsLocal(registry)) return null;
+  const here = registry.workspaces.filter((w) => !isRemoteKind(w.kind));
+  return (here.find((w) => w.kind === "personal") ?? here[0])?.id ?? null;
+}
+
 /** A name for a server not yet named: the one given, else its own, kept
  * apart from every other name here with a number. */
 export function freeName(registry, wanted, self = null) {

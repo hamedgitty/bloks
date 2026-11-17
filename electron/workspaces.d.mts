@@ -73,6 +73,7 @@ export function isLocalKind(kind: unknown): boolean;
 export function runsLocal(registry: Registry): boolean;
 export function shownWorkspaces(registry: Registry): WorkspaceEntry[];
 export function fallbackWorkspace(registry: Registry, except?: string | null): WorkspaceEntry | null;
+export function joinsFrom(registry: Registry | null, shownId: string): string | null;
 export function freeName(registry: Registry, wanted: unknown, self?: string | null): string;
 export function addRemote(
   registry: Registry,

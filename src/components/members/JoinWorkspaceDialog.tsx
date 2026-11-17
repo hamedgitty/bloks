@@ -27,6 +27,7 @@ import {
   formatCode,
   joinApi,
   looksLikeInvite,
+  roomInviteIn,
   whenWords,
   type FoundInvite,
   type JoinCredentials,
@@ -147,8 +148,9 @@ export function JoinWorkspaceDialog({
   }, [open, initialInput]);
 
   const lookup = useCallback(async (text: string) => {
-    const code = codeIn(text);
-    if (!code) return;
+    // a workspace's code, or a shared room's invite link, which carries
+    // the invite itself and no code
+    if (!codeIn(text) && !roomInviteIn(text)) return;
     looked.current = text;
     setBusy(true);
     setProblem(null);
@@ -193,7 +195,7 @@ export function JoinWorkspaceDialog({
   // looked up as soon as what is typed can be a code; nothing to press
   useEffect(() => {
     if (!open || stage.kind !== "enter") return;
-    if (!codeIn(input)) return;
+    if (!codeIn(input) && !roomInviteIn(input)) return;
     if (looked.current === input) return;
     const timer = setTimeout(() => void lookup(input), 300);
     return () => clearTimeout(timer);
@@ -296,7 +298,9 @@ export function JoinWorkspaceDialog({
         ? t("membersJoinWorkspaceDialog.waitingFor", { name: firstName(stage.invite.inviter) })
         : stage.kind === "ended"
           ? ended(stage.code, invite?.inviter ?? (stage.host ? firstName(stage.host) : null), invite?.workspace ?? stage.workspace ?? null, stage.error).title
-          : t("membersJoinWorkspaceDialog.joinAWorkspace");
+          : stage.kind === "found" && stage.invite.room
+            ? t("membersJoinWorkspaceDialog.joinARoom")
+            : t("membersJoinWorkspaceDialog.joinAWorkspace");
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -361,7 +365,9 @@ export function JoinWorkspaceDialog({
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-[15px] font-semibold text-foreground">{stage.invite.workspace}</span>
                     <span className="truncate text-body text-muted-foreground">
-                      {stage.invite.expiresAt
+                      {stage.invite.room
+                        ? t("membersJoinWorkspaceDialog.found.room", { name: firstName(stage.invite.inviter) })
+                        : stage.invite.expiresAt
                         ? t(stage.invite.role === "admin" ? "membersJoinWorkspaceDialog.found.adminExpires" : "membersJoinWorkspaceDialog.found.memberExpires", { name: firstName(stage.invite.inviter), when: whenWords(stage.invite.expiresAt) })
                         : t(stage.invite.role === "admin" ? "membersJoinWorkspaceDialog.found.admin" : "membersJoinWorkspaceDialog.found.member", { name: firstName(stage.invite.inviter) })}
                     </span>
@@ -483,7 +489,9 @@ export function JoinWorkspaceDialog({
             <p className="text-pretty text-lead text-muted-foreground">
               {t("membersJoinWorkspaceDialog.welcome.to", { workspace: stage.welcome.workspace.name, name: stage.name.split(" ")[0] })}
               <br />
-              {stage.welcome.role === "admin"
+              {stage.welcome.room
+                ? t("membersJoinWorkspaceDialog.welcome.letInRoom", { name: firstName(stage.welcome.approvedBy) })
+                : stage.welcome.role === "admin"
                 ? t("membersJoinWorkspaceDialog.welcome.letInAdmin", { name: firstName(stage.welcome.approvedBy) })
                 : t("membersJoinWorkspaceDialog.welcome.letInMember", { name: firstName(stage.welcome.approvedBy) })}
             </p>
