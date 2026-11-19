@@ -17,7 +17,7 @@
 //   lets it edit files and refuses the rest; the full-auto setting removes
 //   the guardrails entirely, which is the user's explicit call in settings.
 //   Approval cards therefore never originate here.
-import { execFile, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
 import { lineSplitter } from "../ndjson.ts";
@@ -39,6 +39,7 @@ import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses, signalGroup } from "./engine-processes.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
+import { TurnProcess } from "./turn-process.ts";
 
 const DRIVER_KIND = "antigravity";
 
@@ -109,6 +110,45 @@ function decodeConfig(raw: unknown): AntigravityConfig {
   };
 }
 
+/** agy's argv for one turn, never with the prompt unless this agy is too
+ * old to read it on stdin. No --print-timeout: that caps the whole turn,
+ * so long work that is still moving was cut off at the mark. A wedged
+ * tool call is the stall limit's to end, the way it is for Claude Code. */
+function agyArgv(config: AntigravityConfig, turn: SendTurnInput, viaStdin: boolean, prompt: string, resume: string | null) {
+  const argv = [
+    ...(viaStdin ? ["--input-format", "stream-json"] : ["--print", prompt]),
+    "--output-format", "stream-json",
+  ];
+  // a turn the owner did not vouch for asks, however the engine is set
+  if ((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) argv.push("--dangerously-skip-permissions");
+  else argv.push("--mode", "accept-edits");
+  if (turn.model) argv.push("--model", turn.model);
+  if (resume) argv.push("--conversation", resume);
+  return argv;
+}
+
+/** A request's tokens as agy counts them, cache reads as input. */
+function tokensOf(usage: any) {
+  return {
+    input: (usage.input_tokens || 0) + (usage.cache_read_tokens || 0),
+    output: usage.output_tokens || 0,
+  };
+}
+
+/** Once agy has given its result it exits by itself. It gets until then,
+ * or the stop grace, before anything is signalled, so no signal cuts
+ * short what it does on its way out. */
+function exitOrGrace(child: ChildProcess): Promise<void> {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, STOP_GRACE_MS);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
@@ -119,7 +159,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
   async create(input: DriverCreateInput<AntigravityConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
     const listeners = new Set<RuntimeEventListener>();
-    const running = new Map<string, { turnId: string; abort: () => void }>();
+    /** A thread's turn, held until agy and everything it started have
+     * ended (turn-process.ts), so a second agy never runs beside it. */
+    const running = new Map<string, { turnId: string; abort: () => void; cleanup: () => Promise<boolean> }>();
     /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
     const engines = new EngineProcesses();
 
@@ -176,19 +218,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // The persona rides ahead of the message in the same prompt, since
       // headless agy offers no separate system channel.
       const prompt = turn.system ? `${turn.system}\n\n${words}` : words;
-
-      // No --print-timeout: that caps the whole turn, so long work that is
-      // still moving was cut off at the mark. A wedged tool call is the
-      // stall limit's to end, below, the way it is for Claude Code.
-      const argv = [
-        ...(viaStdin ? ["--input-format", "stream-json"] : ["--print", prompt]),
-        "--output-format", "stream-json",
-      ];
-      // a turn the owner did not vouch for asks, however the engine is set
-      if ((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) argv.push("--dangerously-skip-permissions");
-      else argv.push("--mode", "accept-edits");
-      if (turn.model) argv.push("--model", turn.model);
-      if (resume) argv.push("--conversation", resume);
+      const argv = agyArgv(config, turn, viaStdin, prompt, resume);
 
       const child = (() => {
         try {
@@ -208,6 +238,12 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         }
       })();
       engines.add(child);
+      // before the error listener below, so a spawn that failed is seen as ended
+      let completed = false;
+      const release = () => {
+        if (completed && owner.confirmed && running.get(threadId)?.turnId === turnId) running.delete(threadId);
+      };
+      const owner = new TurnProcess(child, { onConfirmed: release });
       // The turn as one line, then the end of input: agy answers it and
       // exits. An older agy reads nothing here and gets the end at once.
       // A process that died at once closes its end first; its exit says why.
@@ -229,13 +265,27 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       let lastSign = Date.now();
       let watch: ReturnType<typeof setInterval> | null = null;
 
-      let finished = false;
-      const finish = (ok: boolean, stopReason: string | null) => {
-        if (finished) return;
-        finished = true;
+      // How the turn ends is chosen once, and sealed: nothing agy prints
+      // after that, a result written while it handles SIGTERM for one, can
+      // reach this turn or the next. The turn completes once agy and what
+      // it started are gone; after a result, agy first gets to exit itself.
+      let sealed = false;
+      const finish = (ok: boolean, stopReason: string | null, stop = true) => {
+        if (sealed) return;
+        sealed = true;
         if (watch) clearInterval(watch);
-        running.delete(threadId);
-        emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+        settlePreparation("uncertain");
+        const ended = stop ? owner.end(STOP_GRACE_MS) : exitOrGrace(child).then(() => owner.end(STOP_GRACE_MS));
+        void ended.then((confirmed) => {
+          if (!confirmed) {
+            emit({ ...envelope(threadId, turnId), type: "runtime.error",
+              message: "Antigravity did not finish stopping its process and the commands it started. This conversation cannot start another turn until they have ended." });
+          }
+          completed = true;
+          release();
+          emit({ ...envelope(threadId, turnId), type: "turn.completed",
+            ok: confirmed && ok, stopReason: confirmed ? stopReason : "interrupted", cost: null });
+        });
       };
 
       // agy frames as {event, conversation_id, <event-name>: payload}
@@ -245,6 +295,54 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       const requests = new Map<number, { input: number; output: number }>();
       let inputTokens = 0;
       let outputTokens = 0;
+      const onToolStep = (payload: any) => {
+        // steps are indexed, not id'd; the conversation plus the index is
+        // the stable name for one tool run
+        const itemId = `${conversationId ?? "conv"}:${payload.step_index}`;
+        if (payload.state === "ACTIVE") {
+          if (!openCalls.has(itemId)) openCalls.set(itemId, { name: payload.tool_name ?? "A tool call", input: null, since: Date.now() });
+          // agy never says which files a step wrote
+          emit({ ...envelope(threadId, turnId), type: "item.started", itemType: "tool", itemId, title: payload.tool_name, mayWrite: true });
+        } else if (payload.state === "DONE" || payload.state === "ERROR") {
+          openCalls.delete(itemId);
+          emit({ ...envelope(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: payload.state === "DONE" });
+        }
+      };
+
+      const onRequestUsage = (payload: any) => {
+        const { input, output } = tokensOf(payload.usage);
+        const before = requests.get(payload.step_index);
+        inputTokens += input - (before?.input ?? 0);
+        outputTokens += output - (before?.output ?? 0);
+        requests.set(payload.step_index, { input, output });
+        emit({ ...envelope(threadId, turnId), type: "thread.token-usage.updated", input: inputTokens, output: outputTokens, context: input });
+      };
+
+      const onResult = (payload: any) => {
+        settlePreparation(payload.status === "SUCCESS" ? "accepted" : "uncertain");
+        // chosen before anything is said, so nothing said can choose again
+        finish(payload.status === "SUCCESS", payload.status ?? null, false);
+        // the assistant text arrives here, whole, not streamed
+        const text = typeof payload.response === "string" ? payload.response : "";
+        if (text) {
+          emit({ ...envelope(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: text });
+          emit({ ...envelope(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+        }
+        // Older result-only streams can measure a fresh turn, but a
+        // resumed conversation's total cannot tell what this turn spent.
+        if (!requests.size && !resume && payload.usage) {
+          emit({ ...envelope(threadId, turnId), type: "thread.token-usage.updated", ...tokensOf(payload.usage) });
+        }
+        if (payload.status !== "SUCCESS") {
+          emit({
+            ...envelope(threadId, turnId),
+            type: "runtime.error",
+            message: typeof payload.error === "string" && payload.error
+              ? payload.error : `Antigravity ended with status ${payload.status ?? "unknown"}.`,
+          });
+        }
+      };
+
       const consume = (raw: string) => {
         let frame: any;
         try {
@@ -267,87 +365,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             break;
 
           case "step_update":
-            if (payload.step_type === "tool") {
-              // steps are indexed, not id'd; the conversation plus the
-              // index is the stable name for one tool run
-              const itemId = `${conversationId ?? "conv"}:${payload.step_index}`;
-              if (payload.state === "ACTIVE") {
-                if (!openCalls.has(itemId)) openCalls.set(itemId, { name: payload.tool_name ?? "A tool call", input: null, since: Date.now() });
-                emit({
-                  ...envelope(threadId, turnId),
-                  type: "item.started",
-                  itemType: "tool",
-                  itemId,
-                  title: payload.tool_name,
-                  // agy never says which files a step wrote
-                  mayWrite: true,
-                });
-              } else if (payload.state === "DONE" || payload.state === "ERROR") {
-                openCalls.delete(itemId);
-                emit({
-                  ...envelope(threadId, turnId),
-                  type: "item.completed",
-                  itemType: "tool",
-                  itemId,
-                  ok: payload.state === "DONE",
-                });
-              }
-            } else if (payload.step_type === "agent_response" && payload.usage) {
-              const input = (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0);
-              const output = payload.usage.output_tokens || 0;
-              const before = requests.get(payload.step_index);
-              inputTokens += input - (before?.input ?? 0);
-              outputTokens += output - (before?.output ?? 0);
-              requests.set(payload.step_index, { input, output });
-              emit({
-                ...envelope(threadId, turnId),
-                type: "thread.token-usage.updated",
-                input: inputTokens,
-                output: outputTokens,
-                context: input,
-              });
-            }
+            if (payload.step_type === "tool") onToolStep(payload);
+            else if (payload.step_type === "agent_response" && payload.usage) onRequestUsage(payload);
             break;
 
-          case "result": {
-            settlePreparation(payload.status === "SUCCESS" ? "accepted" : "uncertain");
-            // the assistant text arrives here, whole, not streamed
-            const text = typeof payload.response === "string" ? payload.response : "";
-            if (text) {
-              emit({
-                ...envelope(threadId, turnId),
-                type: "content.delta",
-                streamKind: "assistant_text",
-                delta: text,
-              });
-              emit({
-                ...envelope(threadId, turnId),
-                type: "item.completed",
-                itemType: "assistant_text",
-                text,
-              });
-            }
-            // Older result-only streams can measure a fresh turn, but a
-            // resumed conversation's total cannot tell what this turn spent.
-            if (!requests.size && !resume && payload.usage) {
-              emit({
-                ...envelope(threadId, turnId),
-                type: "thread.token-usage.updated",
-                input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
-                output: payload.usage.output_tokens || 0,
-              });
-            }
-            if (payload.status !== "SUCCESS") {
-              emit({
-                ...envelope(threadId, turnId),
-                type: "runtime.error",
-                message: typeof payload.error === "string" && payload.error
-                  ? payload.error : `Antigravity ended with status ${payload.status ?? "unknown"}.`,
-              });
-            }
-            finish(payload.status === "SUCCESS", payload.status ?? null);
+          case "result":
+            onResult(payload);
             break;
-          }
         }
       };
 
@@ -357,6 +381,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       child.stdout.on(
         "data",
         lineSplitter((line) => {
+          if (sealed) return;
           lastSign = Date.now();
           if (line.trim()) consume(line);
         }),
@@ -369,7 +394,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       });
 
       child.on("error", (error) => {
+        if (sealed) return;
         settlePreparation(child.pid ? "uncertain" : "refused");
+        finish(false, "spawn_error");
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -380,12 +407,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             signIn: "run `agy` once to sign in with Google",
           }),
         });
-        finish(false, "spawn_error");
       });
 
       child.on("close", (code) => {
-        if (finished) return;
-        settlePreparation("uncertain");
+        if (sealed) return;
+        finish(false, "exit_before_result");
         emit({
           ...envelope(threadId, turnId),
           type: "runtime.error",
@@ -394,20 +420,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             signIn: "run `agy` once in a terminal",
           }),
         });
-        finish(false, "exit_before_result");
       });
 
-      const abort = () => {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            /* gone */
-          }
-        }
-      };
+      // Stop: SIGTERM to the group, then SIGKILL, whatever the stall limit
+      // (turn-process.ts). Nothing agy says while it stops is the answer.
+      const abort = () => finish(false, "interrupted");
 
       // A tool step gone silent for the person's limit ends the turn and
       // says which step it was. Print mode never asks anyone anything, so
@@ -416,20 +433,20 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       if (limitMs > 0) {
         watch = setInterval(() => {
           const now = Date.now();
-          if (finished || !isStalled({ open: openCalls.size, asking: 0, lastSign, now, limitMs })) return;
+          if (sealed || !isStalled({ open: openCalls.size, asking: 0, lastSign, now, limitMs })) return;
           const oldest = [...openCalls.values()].sort((a, b) => a.since - b.since)[0];
-          settlePreparation("uncertain");
-          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: describeStall(oldest, now - lastSign) });
           finish(false, "tool_stalled");
-          abort();
-          // a wedged tool may not hear SIGTERM, even once agy has, and the
-          // turn has already let go of them: the whole group, as dispose does
-          setTimeout(() => signalGroup(child, "SIGKILL"), STOP_GRACE_MS).unref?.();
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: describeStall(oldest, now - lastSign) });
         }, Math.max(250, Math.min(15_000, limitMs / 4)));
         watch.unref?.();
       }
 
-      running.set(threadId, { turnId, abort });
+      running.set(threadId, { turnId, abort, cleanup: () => {
+        // Disposal's instance-wide helper may have forgotten this leader
+        // after its exit; what it left in the group still has to end now.
+        if (!owner.confirmed) signalGroup(child, "SIGKILL");
+        return owner.end(STOP_GRACE_MS);
+      } });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
       // never the prompt, which an older agy has in its argv
       appendNative(threadId, { dir: "out", source: "agy.stream", msg: { argv: viaStdin ? argv : argv.slice(2) } });
@@ -477,9 +494,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       },
 
       dispose: async () => {
-        for (const turn of running.values()) turn.abort();
+        const turns = [...running.values()];
+        for (const turn of turns) turn.abort();
         listeners.clear();
         await engines.end();
+        await Promise.all(turns.map((turn) => turn.cleanup()));
       },
     };
   },
