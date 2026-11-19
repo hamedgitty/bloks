@@ -37,7 +37,8 @@ import { appendNative } from "./native.ts";
 import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses } from "./engine-processes.ts";
+import { EngineProcesses, signalGroup } from "./engine-processes.ts";
+import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 
 const DRIVER_KIND = "antigravity";
 
@@ -176,12 +177,12 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // headless agy offers no separate system channel.
       const prompt = turn.system ? `${turn.system}\n\n${words}` : words;
 
+      // No --print-timeout: that caps the whole turn, so long work that is
+      // still moving was cut off at the mark. A wedged tool call is the
+      // stall limit's to end, below, the way it is for Claude Code.
       const argv = [
         ...(viaStdin ? ["--input-format", "stream-json"] : ["--print", prompt]),
         "--output-format", "stream-json",
-        // agy's own ceiling on a stuck turn; without it a wedged tool call
-        // would pin the composer forever
-        "--print-timeout", "10m",
       ];
       // a turn the owner did not vouch for asks, however the engine is set
       if ((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) argv.push("--dangerously-skip-permissions");
@@ -222,10 +223,17 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         turn.preparation?.unavailable();
       };
 
+      // Tool steps agy has started and not finished, and when agy last
+      // said anything at all: what the stall limit reads.
+      const openCalls = new Map<string, OpenCall>();
+      let lastSign = Date.now();
+      let watch: ReturnType<typeof setInterval> | null = null;
+
       let finished = false;
       const finish = (ok: boolean, stopReason: string | null) => {
         if (finished) return;
         finished = true;
+        if (watch) clearInterval(watch);
         running.delete(threadId);
         emit({ ...envelope(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
       };
@@ -264,6 +272,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
               // index is the stable name for one tool run
               const itemId = `${conversationId ?? "conv"}:${payload.step_index}`;
               if (payload.state === "ACTIVE") {
+                if (!openCalls.has(itemId)) openCalls.set(itemId, { name: payload.tool_name ?? "A tool call", input: null, since: Date.now() });
                 emit({
                   ...envelope(threadId, turnId),
                   type: "item.started",
@@ -274,6 +283,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                   mayWrite: true,
                 });
               } else if (payload.state === "DONE" || payload.state === "ERROR") {
+                openCalls.delete(itemId);
                 emit({
                   ...envelope(threadId, turnId),
                   type: "item.completed",
@@ -347,6 +357,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       child.stdout.on(
         "data",
         lineSplitter((line) => {
+          lastSign = Date.now();
           if (line.trim()) consume(line);
         }),
       );
@@ -397,6 +408,26 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           }
         }
       };
+
+      // A tool step gone silent for the person's limit ends the turn and
+      // says which step it was. Print mode never asks anyone anything, so
+      // no time here is the person's.
+      const limitMs = typeof turn.stallMs === "number" ? turn.stallMs : DEFAULT_STALL_MINUTES * 60_000;
+      if (limitMs > 0) {
+        watch = setInterval(() => {
+          const now = Date.now();
+          if (finished || !isStalled({ open: openCalls.size, asking: 0, lastSign, now, limitMs })) return;
+          const oldest = [...openCalls.values()].sort((a, b) => a.since - b.since)[0];
+          settlePreparation("uncertain");
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message: describeStall(oldest, now - lastSign) });
+          finish(false, "tool_stalled");
+          abort();
+          // a wedged tool may not hear SIGTERM, even once agy has, and the
+          // turn has already let go of them: the whole group, as dispose does
+          setTimeout(() => signalGroup(child, "SIGKILL"), STOP_GRACE_MS).unref?.();
+        }, Math.max(250, Math.min(15_000, limitMs / 4)));
+        watch.unref?.();
+      }
 
       running.set(threadId, { turnId, abort });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
