@@ -68,6 +68,8 @@ test("a current agy gets the persona and the message on stdin, never in its argu
     assert.ok(!args.some((arg) => arg.includes(secret)), `${secret} is in argv`);
   }
   assert.ok(!args.includes("--print"), "the prompt is still asked for on the command line");
+  // agy's --print-timeout caps the whole turn, however busy (GitHub 528)
+  assert.ok(!args.includes("--print-timeout"), "the whole turn is still capped");
   assert.deepEqual(args.slice(0, 4), ["--input-format", "stream-json", "--output-format", "stream-json"]);
   // one line, as agy's headless docs give it, then the end of input
   const lines = input.split("\n").filter(Boolean);
@@ -83,5 +85,6 @@ test("an agy too old to read stdin is still handed the prompt with --print", asy
   assert.equal(args[0], "--print");
   assert.ok(args[1].endsWith(MESSAGE));
   assert.ok(!args.includes("--input-format"));
+  assert.ok(!args.includes("--print-timeout"), "the whole turn is still capped");
   assert.equal(input, "");
 });
