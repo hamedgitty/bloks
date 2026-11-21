@@ -98,6 +98,20 @@ export function catalogFromAgyModels(stdout: string): ModelCatalog | null {
   return { default: keep ? keep.id : options[0].id, options };
 }
 
+/** How long a list agy gave is taken as current, and how soon one it
+ * could not give is asked for again. */
+const CATALOG_FRESH_MS = 10 * 60_000;
+const CATALOG_RETRY_MS = 60_000;
+
+/** Said in the picker while the list is ours rather than agy's. */
+const BUILT_IN_NOTE = "Antigravity did not list this account's models, so these are the ones built into Bloks. Run `agy` once in a terminal to sign in, and Bloks asks it again.";
+
+/** agy refusing the model it was given, in print mode's words or its
+ * error's ("invalid model selection ... not recognized as a known model"). */
+export function modelRefused(text: string): boolean {
+  return /\bmodel\b/i.test(text) && /not recognized|invalid model|unknown model|available models|not (?:a )?known model/i.test(text);
+}
+
 export interface AntigravityConfig {
   cli: string;
   fullAuto: boolean;
@@ -196,19 +210,41 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         });
       }));
 
-    // what this account can run, from the CLI itself; signed out or
-    // unreadable leaves the list above in place
+    // What this account can run, from the CLI itself; signed out or
+    // unreadable leaves the list above in place, and says so. Read again
+    // as it goes stale (freshenCatalog): an account gains and loses models
+    // without the CLI changing, an upgrade for one, and a list read once
+    // at start kept offering what agy no longer ran (GitHub 542).
     const models: ModelCatalog = { default: MODELS.default, options: [...MODELS.options] };
-    const catalogReady = new Promise<void>((resolve) => {
-      execFile(config.cli, ["models"], { timeout: 20_000, windowsHide: true }, (error, stdout) => {
-        const catalog = error ? null : catalogFromAgyModels(String(stdout));
-        if (catalog) {
-          models.options = catalog.options;
-          models.default = catalog.default;
-        }
-        resolve();
-      });
-    });
+    const catalogListeners = new Set<() => void>();
+    let catalogAsked = 0;
+    let reading: Promise<void> | null = null;
+    const readCatalog = () =>
+      (reading ??= new Promise<void>((resolve) => {
+        catalogAsked = Date.now();
+        execFile(config.cli, ["models"], { timeout: 20_000, windowsHide: true }, (error, stdout) => {
+          reading = null;
+          const catalog = error ? null : catalogFromAgyModels(String(stdout));
+          const before = JSON.stringify([models.default, models.options, models.note]);
+          if (catalog) {
+            models.options = catalog.options;
+            models.default = catalog.default;
+            models.checkedAt = Date.now();
+            delete models.note;
+          } else if (!models.checkedAt) {
+            // a list agy gave earlier is still the better guess than ours
+            models.note = BUILT_IN_NOTE;
+          }
+          if (JSON.stringify([models.default, models.options, models.note]) !== before) {
+            for (const listener of [...catalogListeners]) listener();
+          }
+          resolve();
+        });
+      }));
+    const catalogReady = readCatalog();
+    const freshenCatalog = () => {
+      if (Date.now() - catalogAsked >= (models.checkedAt ? CATALOG_FRESH_MS : CATALOG_RETRY_MS)) void readCatalog();
+    };
 
     const emit = (event: RuntimeEvent) => {
       for (const listener of [...listeners]) listener(event);
@@ -227,6 +263,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       const turnId = newId();
       const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
+      freshenCatalog();
+      // A model agy listed once and lists no longer fails every turn in
+      // print mode, so the list's default answers instead and the person
+      // is told. Only against a list agy itself gave: ours is a guess.
+      const unlisted = Boolean(turn.model && models.checkedAt && !models.options.some((o) => o.id === turn.model));
+      const model = unlisted ? models.default : turn.model;
+
       // An agy elsewhere is not probed on this computer.
       const viaStdin = turn.place ? true : await readsStdin();
       const prepared = turn.preparation?.freeze().commit();
@@ -234,7 +277,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // The persona rides ahead of the message in the same prompt, since
       // headless agy offers no separate system channel.
       const prompt = turn.system ? `${turn.system}\n\n${words}` : words;
-      const argv = agyArgv(config, turn, viaStdin, prompt, resume);
+      const argv = agyArgv(config, { ...turn, model }, viaStdin, prompt, resume);
 
       const child = (() => {
         try {
@@ -350,12 +393,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           emit({ ...envelope(threadId, turnId), type: "thread.token-usage.updated", ...tokensOf(payload.usage) });
         }
         if (payload.status !== "SUCCESS") {
-          emit({
-            ...envelope(threadId, turnId),
-            type: "runtime.error",
-            message: typeof payload.error === "string" && payload.error
-              ? payload.error : `Antigravity ended with status ${payload.status ?? "unknown"}.`,
-          });
+          const message = typeof payload.error === "string" && payload.error
+            ? payload.error : `Antigravity ended with status ${payload.status ?? "unknown"}.`;
+          if (modelRefused(message)) void readCatalog();
+          emit({ ...envelope(threadId, turnId), type: "runtime.error", message });
         }
       };
 
@@ -376,7 +417,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
               ...envelope(threadId, turnId),
               type: "session.started",
               sessionId: conversationId,
-              model: turn.model ?? null,
+              model: model ?? null,
             });
             break;
 
@@ -427,6 +468,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       child.on("close", (code) => {
         if (sealed) return;
+        // agy exits listing what it has when --model names something else
+        if (modelRefused(stderr)) void readCatalog();
         finish(false, "exit_before_result");
         emit({
           ...envelope(threadId, turnId),
@@ -464,6 +507,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         return owner.end(STOP_GRACE_MS);
       } });
       emit({ ...envelope(threadId, turnId), type: "turn.started" });
+      // A notice, not a failure: the turn goes on, on the model named. Not
+      // to a Telegram person, whom an engine's error tells the agent
+      // cannot answer; the owner's own next turn says it.
+      if (unlisted && !turn.person) {
+        emit({ ...envelope(threadId, turnId), type: "runtime.error",
+          message: `Antigravity no longer offers ${antigravityLabel(turn.model!)} on this account, so this turn runs on ${antigravityLabel(model!)}. Pick one of the models it offers now in this agent's settings.` });
+      }
       // never the prompt, which an older agy has in its argv
       appendNative(threadId, { dir: "out", source: "agy.stream", msg: { argv: viaStdin ? argv : argv.slice(2) } });
 
@@ -477,6 +527,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+      // Settings asking after the engine is the moment to look at its
+      // models again too, a sign-in or an upgrade since being the likely
+      // reason it is asked
+      freshenCatalog();
       // agy keeps its login in the system keyring, which leaves no file to
       // check. Installed is all that can honestly be reported.
       return { state: "available", version };
@@ -490,6 +544,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       models,
       snapshot,
       catalogReady,
+      refreshCatalog: readCatalog,
+      onCatalogChange: (listener) => {
+        catalogListeners.add(listener);
+        return () => catalogListeners.delete(listener);
+      },
 
       adapter: {
         provider: DRIVER_KIND,
@@ -513,6 +572,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         const turns = [...running.values()];
         for (const turn of turns) turn.abort();
         listeners.clear();
+        catalogListeners.clear();
         await engines.end();
         await Promise.all(turns.map((turn) => turn.cleanup()));
       },

@@ -653,6 +653,10 @@ export interface ProviderInstance {
    * an endpoint whose list could not be had. Only an engine that fetches
    * its list has it. */
   refreshCatalog?(): Promise<void>;
+  /** Tells the harness each time a catalog the engine reads again on its
+   * own (Antigravity's, as an account gains or loses models) has changed,
+   * so the picker shows it without a reload. Returns the unsubscribe. */
+  onCatalogChange?(listener: () => void): () => void;
   /** Read-only native skill discovery. Paths are server-only. */
   skills?(cwd: string): Promise<import("./codex-skills.ts").CodexSkill[] | null>;
   snapshot(): Promise<ProviderSnapshot>;

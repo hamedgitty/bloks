@@ -3884,11 +3884,15 @@ function askOwnerSurfaces(frame: object) {
   }
 }
 
-for (const inst of registry.instances()) {
-  void inst.catalogReady?.then(async () => {
-    broadcast({ kind: "instances", instances: await registry.describe() });
-  });
+/** The picker hears of an engine's model list as it arrives, and again
+ * each time an engine that reads its list again finds it changed. */
+function watchCatalog(inst: ProviderInstance) {
+  const tell = async () => broadcast({ kind: "instances", instances: await registry.describe() });
+  void inst.catalogReady?.then(tell);
+  inst.onCatalogChange?.(() => void tell().catch(() => {}));
 }
+
+for (const inst of registry.instances()) watchCatalog(inst);
 
 /**
  * The end of a turn, read for what happens to a failed one (GitHub 284).
@@ -23743,11 +23747,7 @@ async function rebuildEngines(): Promise<boolean> {
   await registry.reload(configs, stale);
   const rebuilt = registry.instances().filter((instance) => stale.includes(instance.instanceId));
   bus.attach(rebuilt);
-  for (const instance of rebuilt) {
-    void instance.catalogReady?.then(async () => {
-      broadcast({ kind: "instances", instances: await registry.describe() });
-    });
-  }
+  for (const instance of rebuilt) watchCatalog(instance);
   for (const { laneId, instanceId, driverKind } of cut) {
     // an idle compaction just ends; nobody asked for it to be picked up
     if (!idleCompacting.has(laneId)) rebuiltLanes.set(laneId, { turn: cutOff.get(laneId), instanceId });

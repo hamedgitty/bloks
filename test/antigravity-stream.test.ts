@@ -270,3 +270,95 @@ test("agy runs in its Auto mode only on an owner's own turn of an agent on auto"
   assert.deepEqual(agyMode(config, { ...turn, fullAccess: true }), ["--dangerously-skip-permissions"]);
   assert.deepEqual(agyMode({ ...config, fullAuto: true }, { ...turn, untrusted: true }), ["--mode", "accept-edits"]);
 });
+
+/** A stand-in agy whose `agy models` prints whatever is in its models
+ * file at the time, and counts how often it was asked. A turn records
+ * its argv and answers, or refuses the model the way print mode does. */
+async function account(listed: string, turn = `out({ event: "result", result: { status: "SUCCESS", response: "ok" } });`) {
+  const dir = mkdtempSync(join(home, "account-"));
+  const cli = join(dir, "agy.mjs");
+  writeFileSync(join(dir, "models.txt"), listed);
+  writeFileSync(cli, `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const here = ${JSON.stringify(dir)};
+if (process.argv[2] === "--version") { console.log("1.5.14"); process.exit(0); }
+if (process.argv[2] === "models") { appendFileSync(here + "/asked", "."); process.stdout.write(readFileSync(here + "/models.txt", "utf8")); process.exit(0); }
+writeFileSync(here + "/argv.json", JSON.stringify(process.argv.slice(2)));
+const out = (frame) => console.log(JSON.stringify(frame));
+process.stdin.resume();
+process.stdin.on("end", () => { ${turn} });
+`, { mode: 0o755 });
+  const instance = await AntigravityDriver.create({
+    instanceId: "agy", displayName: undefined, environment: {}, enabled: true,
+    config: { cli, fullAuto: false },
+  });
+  await instance.catalogReady;
+  const asked = () => { try { return readFileSync(join(dir, "asked"), "utf8").length; } catch { return 0; } };
+  return { instance, dir, asked, list: (text: string) => writeFileSync(join(dir, "models.txt"), text) };
+}
+
+const ids = (instance: { models: { options: Array<{ id: string }> } }) => instance.models.options.map((o) => o.id);
+const SIGNED_OUT = "Fetching available models...\nError: Please sign in to view available models. Launch the CLI without arguments to sign in.\n";
+
+// Bloks read `agy models` once, at start. Signed out then, or upgraded
+// since, the picker kept offering a list agy no longer ran (GitHub 542).
+test("the Antigravity model list is read again once Settings looks at the engine, and the picker is told", async (t) => {
+  const { instance, asked, list } = await account(SIGNED_OUT);
+  t.after(() => instance.dispose());
+  assert.ok(ids(instance).includes("gemini-3.1-pro-high"), "the built-in list should stand in");
+  assert.match(instance.models.note ?? "", /built into Bloks/);
+  list("gemini-4-neon-high\nclaude-opus-5-5-thinking\n");
+  // asked within the minute: not again yet
+  await instance.snapshot();
+  assert.equal(asked(), 1);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  t.mock.timers.tick(61_000);
+  const changed = new Promise<void>((resolve) => instance.onCatalogChange!(resolve));
+  await instance.snapshot();
+  await within(changed);
+  assert.deepEqual(ids(instance), ["gemini-4-neon-high", "claude-opus-5-5-thinking"]);
+  assert.equal(instance.models.note, undefined);
+  assert.equal(typeof instance.models.checkedAt, "number");
+  // a list agy gave stays for ten minutes before it is asked for again
+  t.mock.timers.tick(5 * 60_000);
+  await instance.snapshot();
+  assert.equal(asked(), 2);
+  t.mock.timers.tick(6 * 60_000);
+  await instance.snapshot();
+  await until(() => asked() === 3, "the list was not asked for again after ten minutes");
+  // and a sign-out later keeps the last list agy gave
+  list(SIGNED_OUT);
+  await instance.refreshCatalog!();
+  assert.deepEqual(ids(instance), ["gemini-4-neon-high", "claude-opus-5-5-thinking"]);
+});
+
+test("an agent's model agy no longer lists runs on the list's default, and the person is told", async (t) => {
+  const { instance, dir } = await account("gemini-3.1-pro-high\ngemini-4-neon-high\n");
+  t.after(() => instance.dispose());
+  const events: RuntimeEvent[] = [];
+  const completed = new Promise<void>((resolve) => instance.adapter.onEvent((event) => {
+    events.push(event);
+    if (event.type === "turn.completed") resolve();
+  }));
+  await instance.adapter.sendTurn({ threadId: "t", text: "hi", cwd: dir, model: "gemini-3.7-flash-medium" });
+  await within(completed);
+  const argv: string[] = JSON.parse(readFileSync(join(dir, "argv.json"), "utf8"));
+  assert.equal(argv[argv.indexOf("--model") + 1], "gemini-3.1-pro-high");
+  const notice = events.find((event) => event.type === "runtime.error");
+  assert.match(notice?.type === "runtime.error" ? notice.message : "",
+    /no longer offers Gemini 3\.7 Flash \(Medium\) on this account, so this turn runs on Gemini 3\.1 Pro \(High\)/);
+  const end = events.at(-1);
+  assert.equal(end?.type === "turn.completed" && end.ok, true);
+});
+
+test("a model agy refuses has its list read again at once", async (t) => {
+  const { instance, dir, asked, list } = await account("gemini-3.1-pro-high\n",
+    `process.stderr.write('Error: invalid model selection: "gemini-3.1-pro-high" is not recognized as a known model or custom model in settings. Available models: gemini-4-neon-high\\n'); process.exit(2);`);
+  t.after(() => instance.dispose());
+  list("gemini-4-neon-high\n");
+  const completed = new Promise<void>((resolve) => instance.adapter.onEvent((event) => event.type === "turn.completed" && resolve()));
+  await instance.adapter.sendTurn({ threadId: "t", text: "hi", cwd: dir, model: "gemini-3.1-pro-high" });
+  await within(completed);
+  await until(() => ids(instance).includes("gemini-4-neon-high"), "the list was not read again");
+  assert.equal(asked(), 2);
+});
