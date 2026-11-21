@@ -14,9 +14,10 @@
 //   bare --print just exits) and is still handed the prompt with --print.
 //
 //   There is no interactive permission channel in print mode. accept-edits
-//   lets it edit files and refuses the rest; the full-auto setting removes
-//   the guardrails entirely, which is the user's explicit call in settings.
-//   Approval cards therefore never originate here.
+//   lets it edit files and refuses the rest; an agent on auto approvals
+//   runs in agy's own Auto mode; full access and the full-auto setting
+//   remove the guardrails entirely, which is the user's explicit call in
+//   settings (agyMode). Approval cards therefore never originate here.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
@@ -110,6 +111,23 @@ function decodeConfig(raw: unknown): AntigravityConfig {
   };
 }
 
+/** How much agy may do on its own this turn, from the agent's approvals.
+ * Print mode cannot raise an approval card, and whatever agy would have
+ * asked about it refuses instead, so the agent's setting has to be told
+ * to agy before the turn rather than answered during it (GitHub 542).
+ * Full access takes agy's guard off. Auto is agy's own Auto mode: edits
+ * and the commands agy's reviewer clears go ahead, and only what that
+ * reviewer would still ask about is refused. Ask and edits stay in
+ * accept-edits, where edits go ahead and every command is refused,
+ * because a command nobody can approve is a command nobody approved. A
+ * turn the owner did not vouch for gets accept-edits, however the agent
+ * or the engine is set. */
+export function agyMode(config: AntigravityConfig, turn: SendTurnInput): string[] {
+  if ((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) return ["--dangerously-skip-permissions"];
+  if (turn.autoApproves && !turn.untrusted && !turn.shared && !turn.forOthers && !turn.person) return ["--mode", "auto"];
+  return ["--mode", "accept-edits"];
+}
+
 /** agy's argv for one turn, never with the prompt unless this agy is too
  * old to read it on stdin. No --print-timeout: that caps the whole turn,
  * so long work that is still moving was cut off at the mark. A wedged
@@ -119,9 +137,7 @@ function agyArgv(config: AntigravityConfig, turn: SendTurnInput, viaStdin: boole
     ...(viaStdin ? ["--input-format", "stream-json"] : ["--print", prompt]),
     "--output-format", "stream-json",
   ];
-  // a turn the owner did not vouch for asks, however the engine is set
-  if ((config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared)) argv.push("--dangerously-skip-permissions");
-  else argv.push("--mode", "accept-edits");
+  argv.push(...agyMode(config, turn));
   if (turn.model) argv.push("--model", turn.model);
   if (resume) argv.push("--conversation", resume);
   return argv;

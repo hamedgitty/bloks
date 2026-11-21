@@ -255,3 +255,18 @@ test("disposing during a stall's grace ends the command agy left behind, without
   assert.equal(running(command), false, "dispose returned with the command still running");
   assert.ok(Date.now() - began < SHUTDOWN_GRACE_MS, "dispose waited out the stop grace");
 });
+
+// Auto approvals answer yes for the owner's own requests only, as the
+// approval gate does (GitHub 542). Anyone else's turn stays in accept-edits.
+test("agy runs in its Auto mode only on an owner's own turn of an agent on auto", async () => {
+  const { agyMode } = await import("../server/drivers/antigravity.ts");
+  const config = { cli: "agy", fullAuto: false };
+  const turn = { threadId: "t", text: "hi" };
+  assert.deepEqual(agyMode(config, { ...turn, autoApproves: true }), ["--mode", "auto"]);
+  assert.deepEqual(agyMode(config, turn), ["--mode", "accept-edits"]);
+  for (const other of [{ untrusted: true }, { forOthers: true }, { shared: { tools: "desk" as const } }, { person: {} as never }]) {
+    assert.deepEqual(agyMode(config, { ...turn, autoApproves: true, ...other }), ["--mode", "accept-edits"], JSON.stringify(other));
+  }
+  assert.deepEqual(agyMode(config, { ...turn, fullAccess: true }), ["--dangerously-skip-permissions"]);
+  assert.deepEqual(agyMode({ ...config, fullAuto: true }, { ...turn, untrusted: true }), ["--mode", "accept-edits"]);
+});

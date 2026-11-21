@@ -4762,7 +4762,13 @@ Code runs with `bypassPermissions` and no approval bridge, Codex with
 `danger-full-access` and `approvalPolicy: never` (stated on resume too),
 ACP engines in their `yolo` mode, Antigravity with
 `--dangerously-skip-permissions`. Nothing asks, so rules cannot refuse
-anything in that mode. A shared room never gets `fullAccess`, and nor
+anything in that mode. Antigravity's print mode has no way to raise a
+card at all, so its turn is told the mode up front instead (GitHub 542):
+`auto` sets `autoApproves` and agy runs in its own `--mode auto`, where
+edits and the commands agy's reviewer clears go ahead and the rest are
+refused; `ask` and `edits` run it in `accept-edits`, where edits go
+ahead and every command is refused. Rules cannot see what agy does in
+either. A shared room never gets `fullAccess`, and nor
 does an email from anyone (see Email your agent): a turn somebody other
 than the owner asked for is held to the owner's yes, whatever the mode.
 

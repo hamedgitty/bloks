@@ -13,7 +13,7 @@ import { startHarness } from "./helpers/server.ts";
 const PERSONA = "persona_canary_5e1d";
 const MESSAGE = "message_canary_83b0";
 
-async function turnOn(t: TestContext, version: string) {
+async function turnOn(t: TestContext, version: string, approvals?: "ask" | "edits" | "auto" | "full") {
   const home = mkdtempSync(join(tmpdir(), "bloks-agy-stdin-"));
   const seen = join(home, "seen.json");
   const cli = join(home, "fake-agy.mjs");
@@ -51,7 +51,7 @@ process.stdin.on("end", () => {
   const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Gemma" }) });
   await h.fetch(`/api/bots/${bot.id}`, {
     method: "PATCH",
-    body: JSON.stringify({ modelSelection: { instanceId: "agy", model: "gemini-3.1-pro-high" } }),
+    body: JSON.stringify({ modelSelection: { instanceId: "agy", model: "gemini-3.1-pro-high" }, ...(approvals ? { approvals } : {}) }),
   });
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: MESSAGE }) });
   for (let i = 0; i < 200 && !existsSync(seen); i++) await new Promise((r) => setTimeout(r, 50));
@@ -87,4 +87,17 @@ test("an agy too old to read stdin is still handed the prompt with --print", asy
   assert.ok(!args.includes("--input-format"));
   assert.ok(!args.includes("--print-timeout"), "the whole turn is still capped");
   assert.equal(input, "");
+});
+
+// Print mode cannot raise an approval card, so whatever agy would have
+// asked it refuses. An agent on auto had every shell command refused that
+// way, because every turn ran in accept-edits (GitHub 542).
+test("the agent's approvals reach agy as the mode it runs in", async (t) => {
+  const modeOf = (args: string[]) =>
+    args.includes("--dangerously-skip-permissions") ? "skip" : args[args.indexOf("--mode") + 1];
+  assert.equal(modeOf((await turnOn(t, "1.5.14", "auto")).args), "auto");
+  assert.equal(modeOf((await turnOn(t, "1.5.14", "full")).args), "skip");
+  // nobody can say yes to a command here, so none goes ahead unasked
+  assert.equal(modeOf((await turnOn(t, "1.5.14", "ask")).args), "accept-edits");
+  assert.equal(modeOf((await turnOn(t, "1.5.14", "edits")).args), "accept-edits");
 });

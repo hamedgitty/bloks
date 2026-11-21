@@ -328,6 +328,12 @@ export interface SendTurnInput {
    * (no permission prompts, no sandbox), so nothing asks and nothing is
    * routed through the approval gate. Never set on a shared turn. */
   fullAccess?: boolean;
+  /** The agent's approvals are on auto, and this is the owner's own turn
+   * outside a shared room: every approval its engine raised would be
+   * answered yes. Only a driver whose engine has no way to raise one
+   * (Antigravity in print mode) reads it, to put its engine in that
+   * engine's own auto mode up front. Never with `fullAccess`. */
+  autoApproves?: boolean;
   /** Somebody the owner has not vouched for asked for this turn (an
    * email when anyone may write), and its approvals go to the owner as
    * cards. No driver skips its engine's guards for it, however its
