@@ -509,8 +509,12 @@ export interface ProviderAdapter {
    * mid-turn leaves it out and everything waits for the next turn.
    * onDispatch, when supplied for a reserved report, runs immediately before
    * the physical write. Errors after that attempt must propagate, not fall back.
+   * onUnread, at most once, is the turn ending before the engine read
+   * words it took: an engine that names what it reads (Claude Code's
+   * receipts) says so, and the harness carries them to the next turn.
+   * One that cannot tell never calls it.
    */
-  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void }): Promise<boolean>;
+  steerTurn?(threadId: ThreadId, text: string, options?: { skillNames?: string[]; onAccepted?: (turnId: string) => void; onDispatch?: () => void; onUnread?: () => void }): Promise<boolean>;
   /** Preparation-bound steering distinguishes refusal from an outcome
    * that may have reached the engine but has no matching receipt. */
   steerPrepared?(threadId: ThreadId, expectedTurnId: TurnId, text: string, options: { skillNames?: string[]; onDispatch: () => void; onAcceptedLate?: () => void }): Promise<"accepted" | "refused" | "uncertain">;

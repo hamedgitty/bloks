@@ -396,7 +396,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       abort: () => void;
       cleanup: () => Promise<boolean>;
       /** More words for this turn, or false when it can no longer take them. */
-      steer: (text: string, onDispatch?: () => void) => boolean;
+      steer: (text: string, onDispatch?: () => void, onUnread?: () => void) => boolean;
       steerPrepared: (text: string, options: { onDispatch: () => void; onAcceptedLate?: () => void }) => Promise<"accepted" | "refused" | "uncertain">;
       broker?: AskBroker;
     }
@@ -1589,12 +1589,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         checkCompletion();
         return true;
       };
-      const steer = (text: string, onDispatch?: () => void) => {
+      // The CLI queues words written mid-turn and reads them only at the
+      // next tool boundary. A turn stopped, stalled or crashed while they
+      // still wait behind a long call ends with them unread, and the CLI
+      // drops them (GitHub 527). So, where the CLI names what it takes
+      // (the receipts steerPrepared waits on), a steer that has none when
+      // the turn ends is told back to the harness as unread. No timer: a
+      // steer may wait as long as the call it waits behind.
+      const steer = (text: string, onDispatch?: () => void, onUnread?: () => void) => {
         if (sealed || stopping || exited || !inputOpen) return false;
         const previous = steered;
+        let id: string | null = null;
         try {
-          const accepted = say(text, () => { onDispatch?.(); steered = true; });
+          const accepted = say(text, () => { onDispatch?.(); steered = true; }, (value) => { id = value; });
           if (!accepted) steered = previous;
+          else if (id && onUnread) confirmations.set(id, { accepted: () => {}, ended: onUnread });
           return accepted;
         } catch (error) { steered = previous; throw error; }
       };
@@ -1790,7 +1799,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         capabilities: { sessionModelSwitch: "in-session", efforts: CLAUDE_EFFORTS, screens: ALL_SCREENS },
         sendTurn,
 
-        steerTurn: async (threadId, text, options) => running.get(threadId)?.steer(text, options?.onDispatch) ?? false,
+        steerTurn: async (threadId, text, options) => running.get(threadId)?.steer(text, options?.onDispatch, options?.onUnread) ?? false,
 
         steerPrepared: async (threadId, expectedTurnId, text, options) => {
           const active = running.get(threadId);

@@ -291,3 +291,39 @@ for (const backgroundWork of ["finish", "stop"] as const) test(`a steered turn w
   assert.equal(f.ends()[0].ok, true);
   stoppedFirst(f.timeline);
 });
+
+// A turn stopped while a steer still waits behind its running call ends
+// with that steer unread, and the CLI drops it (GitHub 527). The words
+// the CLI names as read are not told back; the ones it never named are.
+test("a steer the CLI never named as read is told back as unread when the turn is stopped", async (t) => {
+  const f = await fixture(t, "2.1.300 (Claude Code)");
+  await f.instance.adapter.sendTurn({ threadId: THREAD, text: "Sync the records", stallMs: 0 });
+  f.send({ type: "system", subtype: "init", session_id: "sess-unread", model: "claude-sonnet-5" });
+  f.send({ type: "system", subtype: "status", status: "requesting", user_message_uuids: [f.inputs()[0].uuid] });
+  const unread: string[] = [];
+  assert.equal(await f.instance.adapter.steerTurn!(THREAD, "READ_ONE", { onUnread: () => unread.push("READ_ONE") }), true);
+  f.send({ type: "command_lifecycle", command_uuid: f.inputs()[1].uuid, state: "started" });
+  f.send(LONG_COMMAND);
+  assert.equal(await f.instance.adapter.steerTurn!(THREAD, "WAITING_ONE", { onUnread: () => unread.push("WAITING_ONE") }), true);
+  await f.flush();
+  assert.deepEqual(unread, [], "a steer was told back while the turn still ran");
+  await f.instance.adapter.interruptTurn(THREAD);
+  await f.flush();
+  t.mock.timers.tick(10_000);
+  await f.flush();
+  assert.equal(f.ends().length, 1);
+  assert.deepEqual(unread, ["WAITING_ONE"]);
+});
+
+test("a CLI that names nothing it reads never has a steer told back as unread", async (t) => {
+  const f = await fixture(t, "2.1.299 (Claude Code)");
+  await f.instance.adapter.sendTurn({ threadId: THREAD, text: "Sync the records", stallMs: 0 });
+  let unread = 0;
+  assert.equal(await f.instance.adapter.steerTurn!(THREAD, "MAYBE_READ", { onUnread: () => { unread++; } }), true);
+  await f.instance.adapter.interruptTurn(THREAD);
+  await f.flush();
+  t.mock.timers.tick(10_000);
+  await f.flush();
+  assert.equal(f.ends().length, 1);
+  assert.equal(unread, 0, "words it may have read would be said twice");
+});

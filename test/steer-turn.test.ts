@@ -36,14 +36,14 @@ const waitFor = async <T,>(check: () => Promise<T | null | undefined> | T | null
  * handed in heard-<n> for the n-th process. `script` is the body of an
  * async function with `next(ms)` (the next user message's words, or null
  * once ms pass), `out(frame)`, `nap(ms)` and `prompt` in scope. */
-function workspace(script: string) {
+function workspace(script: string, version = "2.1.299 (Claude Code)") {
   const home = mkdtempSync(join(tmpdir(), "bloks-steer-"));
   mkdirSync(join(home, ".bloks"), { recursive: true });
   writeFileSync(join(home, ".bloks", "config.json"), JSON.stringify({ delivery: { mode: "interrupt" }, instances: { claude: { driver: "claudeAgent", config: { cli: join(home, "fake-claude.mjs") } } } }));
   const cli = `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log("2.1.299 (Claude Code)"); process.exit(0); }
+if (args[0] === "--version") { console.log(${JSON.stringify(version)}); process.exit(0); }
 if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const home = ${JSON.stringify(home)};
 const n = (existsSync(home + "/spawns") ? Number(readFileSync(home + "/spawns", "utf8")) : 0) + 1;
@@ -51,6 +51,7 @@ writeFileSync(home + "/spawns", String(n));
 const out = (frame) => console.log(JSON.stringify(frame));
 const nap = (ms) => new Promise((r) => setTimeout(r, ms));
 const lines = [];
+const uuids = [];
 let wake = null;
 let buf = "";
 process.stdin.on("data", (c) => {
@@ -64,6 +65,7 @@ process.stdin.on("data", (c) => {
     const words = String(frame.message?.content ?? "");
     appendFileSync(home + "/heard-" + n, words + "\\n");
     lines.push(words);
+    uuids.push(frame.uuid);
   }
   wake?.();
 });
@@ -96,8 +98,8 @@ const texts = (list: any[]) => list.filter((m) => m.kind === "text" && !m.delete
 const spawns = (home: string) => (existsSync(join(home, "spawns")) ? Number(readFileSync(join(home, "spawns"), "utf8")) : 0);
 const heard = (home: string, n: number) => (existsSync(join(home, `heard-${n}`)) ? readFileSync(join(home, `heard-${n}`), "utf8") : "");
 
-async function boot(t: TestContext, script: string) {
-  const home = workspace(script);
+async function boot(t: TestContext, script: string, version?: string) {
+  const home = workspace(script, version);
   const h = await startHarness({ HOME: home });
   t.after(async () => {
     await h.stop();
@@ -422,4 +424,51 @@ test("Codex completed items carry exact phase/question facts and item identity o
   // an async question is a card, not a reply (GitHub 402, test/codex-async-questions.test.ts)
   const asked = events.filter((e) => e.type === "request.opened");
   assert.deepEqual(asked.map((e) => e.type === "request.opened" && [e.requestType, e.summary, e.async]), [["question", "Which option?", true]]);
+});
+
+// Claude Code queues words written mid-turn and reads them only once the
+// tool call it is on returns. A turn stopped while they still waited
+// behind a long command ended with them unread and dropped, while the
+// chat showed them taken (GitHub 527). The CLI names what it reads, so
+// words it never named start the next turn instead.
+test("words still waiting behind a running command when the turn is stopped start the next turn", async (t) => {
+  const { home, h, bot } = await boot(
+    t,
+    `if (n === 1) {
+  // the prompt named as read, as a CLI that names its inputs does
+  out({ type: "system", subtype: "status", status: "requesting", user_message_uuids: [uuids[0]] });
+  say("Running the long sync");
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id: "bash-8m", name: "Bash", input: { command: "./sync.sh" } }] } });
+  // the command runs on; whatever arrives on stdin waits behind it,
+  // and nothing names it as read
+  await nap(60000);
+} else {
+  out({ type: "system", subtype: "status", status: "requesting", user_message_uuids: [uuids[0]] });
+  say("Answer to " + prompt);
+  out({ type: "result", subtype: "success", is_error: false, num_turns: 1, duration_api_ms: 400, total_cost_usd: 0, session_id: "sess-steer", result: "Answer", uuid: "result-2", user_message_uuid: uuids[0], user_message_uuids: [uuids[0]] });
+  out({ type: "command_lifecycle", command_uuid: uuids[0], state: "completed" });
+}`,
+    "2.1.300 (Claude Code)",
+  );
+
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "FIRST_ASK sync the records" }) });
+  assert.ok(await waitFor(async () => texts(await messages(h, bot)).includes("Running the long sync")), "the turn never started");
+  const sent = await h.json(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "URGENT_STEER wrong folder, use the archive!!!" }) });
+  assert.equal(sent.steered, true);
+  assert.ok(await waitFor(() => heard(home, 1).includes("URGENT_STEER")), "the steer never reached the engine");
+  assert.match(sent.delivery?.line ?? "", /after the current step/, "the line promised more than the engine does");
+
+  assert.equal((await h.fetch(`/api/bots/${bot.id}/interrupt`, { method: "POST" })).status, 200);
+  const answered = await waitFor(async () => {
+    const list = await messages(h, bot);
+    return list.some((m) => m.role === "bot" && m.text?.startsWith("Answer to")) && !(await busy(h, bot)) ? list : null;
+  });
+  assert.ok(answered, "the unread words never got a turn of their own");
+  assert.equal(spawns(home), 2);
+  assert.match(heard(home, 2), /URGENT_STEER/, "the next turn was not given the unread words");
+  const steer = answered.find((m) => m.text === "URGENT_STEER wrong folder, use the archive!!!");
+  assert.ok(steer && !steer.queued && !steer.midTurn, "the words still read as joined to the stopped turn");
+  assert.equal(answered.filter((m) => m.text === "URGENT_STEER wrong folder, use the archive!!!").length, 1, "the words were said twice");
+  const order = texts(answered);
+  assert.ok(order.indexOf("URGENT_STEER wrong folder, use the archive!!!") > order.indexOf("Running the long sync"));
 });

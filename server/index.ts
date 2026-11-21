@@ -423,6 +423,7 @@ import {
   previewLine,
   readModelAnswer,
   resolveMode,
+  UNREAD_LINE,
   type Delivery,
   type DeliveryWhy,
   type Reading as DeliveryReading,
@@ -21774,6 +21775,15 @@ async function steerOne(
   const names = !from && options.personal !== false && laneInstance(bot, lane.id)?.driverKind === "codex" ? codexSkillNames([text]) : [];
   const sourceTurnId = !from && options.personal !== false ? codexOrigins.get(lane.id)?.turnId : undefined;
   let joinedTurnId: string | undefined;
+  // The engine says when a turn ended with these words still unread
+  // behind the call it was on (GitHub 527). They are carried to the next
+  // turn then, rather than left in the chat as though the agent had them.
+  let joinedId: string | null = null;
+  let unread = false;
+  const onUnread = () => {
+    if (joinedId) carryUnread(bot.id, lane.id, joinedId);
+    else unread = true;
+  };
   // A turn its agent finished quietly takes no more words: they wait for a
   // turn of their own, which answers them. Otherwise they are counted on
   // their way in, so a quiet finish cannot slip past them (acceptQuiet).
@@ -21802,6 +21812,7 @@ async function steerOne(
         // Ask the driver to tell an explicit refusal from a lost receipt
         // for every steer, so an uncertain one at least holds the finish.
         onDispatch: () => options.admission?.beforeEffect(),
+        onUnread,
       }).catch(uncertain);
     } catch (error) {
       uncertain(error);
@@ -21837,6 +21848,8 @@ async function steerOne(
       ...(options.telegramGroup ? { telegramGroup: options.telegramGroup } : {}),
     });
     if (!moved) broadcast({ kind: "message", threadId: lane.id, message });
+    joinedId = message.id;
+    if (unread) carryUnread(bot.id, lane.id, message.id);
     if (from?.laneId) store.setPeerLane(lane.id, from.botId, from.laneId);
     if (from) agentWordsInTurn.add(lane.id);
     // what the turn says from here on is an answer to the person too, and
@@ -22171,6 +22184,24 @@ async function deliveryFor(bot: BotRecord, lane: TaskRecord, text: string, choic
 /** A waiting message going into the running turn as itself (steerOne):
  * moved to where the turn hears it, no longer waiting, and marked as
  * having joined. */
+/** Words that joined a turn the engine ended without reading them: Stop,
+ * a stall or a crash while they waited behind a long call (GitHub 527).
+ * They wait again, ahead of what was said after them, and start the
+ * next turn, which is what they were sent for; the line under them says
+ * why. The turn's end, which this runs before, drains them. */
+function carryUnread(botId: string, laneId: string, messageId: string) {
+  const m = store.messagesFor(laneId).find((row) => row.id === messageId);
+  if (!m || m.deleted || m.queued) return;
+  const delivery: Delivery = { route: "queued", why: m.delivery?.why ?? "you", line: UNREAD_LINE };
+  const patched = store.patchMessage(laneId, messageId, { queued: true, queuedAt: Date.now(), midTurn: undefined, joinedTurnId: undefined, delivery });
+  if (!patched) return;
+  broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+  const entry = steerQueues.get(laneId) ?? { botId, items: [] };
+  const ahead = entry.items.findIndex((waiting) => !waiting.alone);
+  entry.items.splice(ahead < 0 ? entry.items.length : ahead, 0, { messageId });
+  steerQueues.set(laneId, entry);
+}
+
 function moveIntoTurn(laneId: string, messageId: string, how: { joinedTurnId?: string; delivery?: Delivery }): Message | null {
   deliverQueued(laneId, [messageId]);
   const patched = store.patchMessage(laneId, messageId, {

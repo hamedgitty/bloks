@@ -186,16 +186,23 @@ const TAKES: Partial<Record<DeliveryWhy, string>> = {
   answer: "your answer",
 };
 
-/** The quiet line under a message, or above it while it waits. */
+/** Under words that joined a turn which ended before the engine read
+ * them, now waiting to start the next one (GitHub 527). */
+export const UNREAD_LINE = "Not read before the turn ended, so it starts the next one";
+
+/** The quiet line under a message, or above it while it waits. Words
+ * that join a turn go in after the step it is on, which can be a long
+ * command, so the line says that rather than promising an interruption
+ * (GitHub 527). */
 export function deliveryLine(route: Delivery["route"], why: DeliveryWhy, agent: string): string {
   if (route === "queued") return `Queued until ${agent} finishes`;
   if (route === "pending") return "Waiting for this turn to start";
   if (route === "uncertain") return "Delivery could not be confirmed";
   if (route === "not-sent") return "Not sent";
-  if (why === "you") return route === "stopped" ? `Stopped ${agent} to send this now` : "Sent now, as you asked";
+  if (why === "you") return route === "stopped" ? `Stopped ${agent} to send this now` : "Sent now, read after the current step";
   if (route === "stopped") return why === "stop" ? `Stopped ${agent}` : `Stopped ${agent} to take ${TAKES[why] ?? "your message"}`;
-  if (why === "urgent") return "Interrupted: this sounded urgent";
-  return `Interrupted to take ${TAKES[why] ?? "your message"}`;
+  if (why === "urgent") return "Sounded urgent, read after the current step";
+  return `Taken as ${TAKES[why] ?? "your message"}, read after the current step`;
 }
 
 /** What the composer says before sending, for the same decision. */
@@ -205,6 +212,8 @@ export function previewLine(route: DeliveryRoute, why: DeliveryWhy, agent: strin
   }
   if (route === "stop") return why === "stop" ? `Will stop ${agent}` : `Will stop ${agent} to send this`;
   const what = TAKES[why] ?? (why === "urgent" ? "this, as urgent" : "this");
-  if (why === "you") return canSteer ? `Goes into ${agent}'s turn now` : `Will stop ${agent} to send this now`;
-  return canSteer ? `Will interrupt to take ${what}` : `Will stop ${agent} to take ${what}`;
+  if (why === "you") return canSteer ? `Goes into ${agent}'s turn after the current step` : `Will stop ${agent} to send this now`;
+  return canSteer
+    ? `Will take ${TAKES[why] ?? "this"} after the current step${why === "urgent" ? ", as urgent" : ""}`
+    : `Will stop ${agent} to take ${what}`;
 }

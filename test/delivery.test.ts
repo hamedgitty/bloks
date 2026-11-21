@@ -161,20 +161,21 @@ describe("the small model", () => {
 describe("what the person is told", () => {
   test("after", () => {
     assert.equal(deliveryLine("queued", "other", "Research Analyst"), "Queued until Research Analyst finishes");
-    assert.equal(deliveryLine("steered", "correction", "Ivy"), "Interrupted to take your correction");
-    assert.equal(deliveryLine("steered", "answer", "Ivy"), "Interrupted to take your answer");
-    assert.equal(deliveryLine("steered", "urgent", "Ivy"), "Interrupted: this sounded urgent");
-    assert.equal(deliveryLine("steered", "you", "Ivy"), "Sent now, as you asked");
+    assert.equal(deliveryLine("steered", "correction", "Ivy"), "Taken as your correction, read after the current step");
+    assert.equal(deliveryLine("steered", "answer", "Ivy"), "Taken as your answer, read after the current step");
+    assert.equal(deliveryLine("steered", "urgent", "Ivy"), "Sounded urgent, read after the current step");
+    assert.equal(deliveryLine("steered", "you", "Ivy"), "Sent now, read after the current step");
     assert.equal(deliveryLine("stopped", "stop", "Ivy"), "Stopped Ivy");
     assert.equal(deliveryLine("stopped", "correction", "Ivy"), "Stopped Ivy to take your correction");
   });
 
   test("before, saying how the engine will take it", () => {
     assert.equal(previewLine("queue", "other", "Ivy", true), "Will wait until Ivy finishes");
-    assert.equal(previewLine("now", "correction", "Ivy", true), "Will interrupt to take your correction");
+    assert.equal(previewLine("now", "correction", "Ivy", true), "Will take your correction after the current step");
     assert.equal(previewLine("now", "correction", "Ivy", false), "Will stop Ivy to take your correction");
     assert.equal(previewLine("stop", "stop", "Ivy", true), "Will stop Ivy");
-    assert.equal(previewLine("now", "you", "Ivy", true), "Goes into Ivy's turn now");
+    assert.equal(previewLine("now", "you", "Ivy", true), "Goes into Ivy's turn after the current step");
+    assert.equal(previewLine("now", "urgent", "Ivy", true), "Will take this after the current step, as urgent");
   });
 
   test("no dashes in anything said", () => {

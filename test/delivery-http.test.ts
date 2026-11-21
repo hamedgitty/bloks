@@ -114,7 +114,7 @@ test("Automatic: a correction goes into the running turn, anything else waits fo
 
   const correction = await send(h, bot, "no, use the 2024 numbers");
   assert.equal(correction.steered, true, "a correction waited behind the work it corrects");
-  assert.equal(correction.delivery.line, "Interrupted to take your correction");
+  assert.equal(correction.delivery.line, "Taken as your correction, read after the current step");
   assert.ok(await waitFor(() => heard(home, 1).includes("no, use the 2024 numbers")), "the turn never heard the correction");
   assert.ok(!heard(home, 1).includes("also draft a summary"), "the turn was handed work meant for after it");
 
@@ -144,7 +144,7 @@ test("a stop stops the turn, and one tap sends the other way", async (t) => {
   assert.equal(held.delivery.why, "you");
   const pushed = await send(h, bot, "add a chart too", { delivery: "now" });
   assert.equal(pushed.steered, true);
-  assert.equal(pushed.delivery.line, "Sent now, as you asked");
+  assert.equal(pushed.delivery.line, "Sent now, read after the current step");
   assert.ok(await waitFor(() => heard(home, 1).includes("add a chart too")));
 
   // the tap after: what waits goes into the turn now, as itself
@@ -155,7 +155,7 @@ test("a stop stops the turn, and one tap sends the other way", async (t) => {
   assert.equal(blue.length, 1, "it went in as a second copy rather than as itself");
   assert.equal(blue[0].queued, false);
   assert.equal(blue[0].midTurn, true);
-  assert.equal(blue[0].delivery.line, "Sent now, as you asked");
+  assert.equal(blue[0].delivery.line, "Sent now, read after the current step");
 
   // a stop stops, and is what the next turn hears
   const stop = await send(h, bot, "stop");
@@ -187,7 +187,7 @@ test("Send now for one waiting message leaves the rest waiting, in their order",
   const sent = list.filter((m) => m.text === "then email it to the team");
   assert.equal(sent.length, 1, "it went in as a second copy rather than as itself");
   assert.equal(sent[0].midTurn, true);
-  assert.equal(sent[0].delivery.line, "Sent now, as you asked");
+  assert.equal(sent[0].delivery.line, "Sent now, read after the current step");
   assert.equal(list.find((m) => m.text === "also draft a summary").queued, true);
   assert.equal(list.find((m) => m.text === "and book the room for Friday").queued, true);
 
