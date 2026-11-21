@@ -330,25 +330,32 @@ const COMMANDS = {
     run: async (args) => {
       // --now and --task before the text, either side of who it is to,
       // and --now as the last word of it too, which is where somebody who
-      // thought of it late puts it. Anything else is the text.
+      // thought of it late puts it. Anything else is the text, and after
+      // a `--` everything is, even a word that looks like a flag.
       const rest = [...args];
       let now = false;
       let task;
+      let ended = false;
       const flags = (at) => {
-        for (;;) {
-          if (rest[at] === "--now") {
+        while (!ended) {
+          if (rest[at] === "--") {
+            ended = true;
+            rest.splice(at, 1);
+          } else if (rest[at] === "--now") {
             now = true;
             rest.splice(at, 1);
           } else if (rest[at] === "--task") {
+            // a name may start with a dash; only nothing, or another of
+            // these flags, is no name
             task = rest[at + 1];
-            if (!task || task.startsWith("--")) throw new Error("--task needs the name of the task this hands off");
+            if (!task || task === "--now" || task === "--task") throw new Error("--task needs the name of the task this hands off");
             rest.splice(at, 2);
           } else return;
         }
       };
       flags(0);
       flags(1);
-      if (rest.length > 2 && rest.at(-1) === "--now") {
+      if (!ended && rest.length > 2 && rest.at(-1) === "--now") {
         now = true;
         rest.pop();
       }
@@ -380,17 +387,21 @@ const COMMANDS = {
       "--title names the tab, in up to 40 characters; without it the tab is named from the message. " +
       "It is refused, and nothing is opened, wherever `say` to that agent would be. The answer names the tab and its id",
     run: async (args) => {
-      // --title anywhere, as a pair; everything else after who it is for
-      // is the message, as with `say`
+      // --title anywhere before a `--`, as a pair; everything else after
+      // who it is for is the message, as with `say`. A title may start
+      // with a dash: only nothing after --title is no title
       const rest = [...args];
       let title;
-      const at = rest.findIndex((arg) => arg === "--title" || arg.startsWith("--title="));
+      const end = rest.indexOf("--");
+      const at = rest.findIndex((arg, i) => (end < 0 || i < end) && (arg === "--title" || arg.startsWith("--title=")));
       if (at >= 0) {
         const joined = rest[at].startsWith("--title=");
         title = joined ? rest[at].slice("--title=".length) : rest[at + 1];
-        if (!title || title.startsWith("--")) throw new Error('--title needs the name of the tab, quoted when it has spaces: --title "Setup"');
+        if (!title || title === "--") throw new Error('--title needs the name of the tab, quoted when it has spaces: --title "Setup"');
         rest.splice(at, joined ? 1 : 2);
       }
+      const ended = rest.indexOf("--");
+      if (ended >= 0) rest.splice(ended, 1);
       const [target, ...words] = rest;
       const text = words.join(" ").trim();
       if (!target || !text) throw new Error("tab needs who it is for (an agent id, or me for yourself) and its first message");
@@ -590,18 +601,14 @@ const COMMANDS = {
       if (!id || id.startsWith("--")) throw new Error("edit-watch needs a watcher id");
       const fields = { do: "instruction", name: "name", every: "every", mentions: "mentions", thread: "thread", radius: "radius", until: "until", "per-hour": "perHour" };
       const kinds = ["folder", "page", "feed", "check", "arrive", "leave"];
-      for (let i = 0; i < rest.length; i++) {
-        const arg = rest[i];
-        const key = arg.split("=")[0].slice(2);
-        if (!arg.startsWith("--") || (!Object.hasOwn(fields, key) && !kinds.includes(key) && key !== "once")) throw new Error(`edit-watch does not understand ${arg}`);
-        // --once stands alone; --once=false takes it back
-        if (key === "once") continue;
-        if (!arg.includes("=")) {
-          if (rest[i + 1] === undefined || rest[i + 1].startsWith("--")) throw new Error(`--${key} needs a value`);
-          i++;
-        }
+      const { flags, words, bare } = parseArgs(rest);
+      const strange = [...words, ...Object.keys(flags).filter((key) => !Object.hasOwn(fields, key) && !kinds.includes(key) && key !== "once").map((key) => `--${key}`)];
+      if (strange.length) throw new Error(`edit-watch does not understand ${strange[0]}`);
+      // --once stands alone; --once=false takes it back. Every other flag
+      // here has a value, so one left bare was given none
+      for (const key of bare) {
+        if (key !== "once") throw new Error(`--${key} needs a value`);
       }
-      const flags = parseFlags(rest);
       if (flags.once !== undefined && flags.once !== "true" && flags.once !== "false") throw new Error("--once is true or false");
       const targets = kinds.filter((kind) => Object.hasOwn(flags, kind));
       if (targets.length > 1) throw new Error("edit-watch takes only one of --folder, --page, --feed, --check, --arrive or --leave");
@@ -787,13 +794,8 @@ const COMMANDS = {
       "ask the person for an API key or other secret: a secure field appears in the chat, and the value is never shown to you there. " +
       "Once they save it, it is in your environment on your next turn, under the name this answers with. End your turn after asking",
     run: async (args) => {
-      const flags = parseFlags(args);
       // the words that are not a flag or a flag's value are the label
-      const words = [];
-      for (let i = 0; i < args.length; i++) {
-        if (!args[i].startsWith("--")) words.push(args[i]);
-        else if (!args[i].includes("=") && args[i + 1] && !args[i + 1].startsWith("--")) i++;
-      }
+      const { flags, words } = parseArgs(args);
       const name = words.join(" ").trim();
       if (!name) throw new Error('secret needs to say what it is, like "Transistor API key"');
       const me = await request("GET", "/api/agent/whoami");
@@ -1568,36 +1570,84 @@ function withKeptNotes(answer, notes) {
   return said.length ? { ...answer, note: said.join(" ") } : answer;
 }
 
-/** `--flag value` and `--flag=value`, both of which somebody will type. */
-function parseFlags(args) {
+/**
+ * What a usage line says about its flags: `--name <value>` (or a quoted
+ * or literal example) takes a value, `[--name]` stands alone. The usage
+ * line is what an agent reads to call a command, so it is where a flag's
+ * shape is already written down, and reading it here keeps the two from
+ * drifting apart.
+ */
+function flagsIn(use) {
+  const valued = new Set();
+  const own = new Set();
+  for (const [, name, value] of use.matchAll(/--([a-z][\w-]*)(?:=\S*)?(\s+[^\s|[\]()-])?/gi)) {
+    own.add(name);
+    if (value) valued.add(name);
+  }
+  return { valued, own };
+}
+
+/** The running command's flags, from its usage line (set as it starts). */
+let usage = { valued: new Set(), own: new Set() };
+
+/**
+ * `--flag value` and `--flag=value`, both of which somebody will type,
+ * and `--` to end the flags. A flag the usage line gives a value takes the
+ * next argument whatever it starts with, so `--write "---"` writes the
+ * frontmatter rather than a bare "true" (GitHub 540); only another of the
+ * command's own flags, or nothing at all, leaves it bare. `--flag -- text`
+ * takes the text after the `--`, the way a shell user reaches for it.
+ */
+function parseArgs(args) {
   const flags = {};
+  const words = [];
+  // the flags given with no value at all, which "true" alone cannot say
+  const bare = new Set();
+  const ownFlag = (arg) => {
+    const name = /^--([a-z][\w-]*)(?:=|$)/i.exec(arg)?.[1];
+    return name !== undefined && usage.own.has(name);
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (!arg.startsWith("--")) continue;
+    if (arg === "--") {
+      words.push(...args.slice(i + 1));
+      break;
+    }
+    if (!arg.startsWith("--")) {
+      words.push(arg);
+      continue;
+    }
     const equals = arg.indexOf("=");
     if (equals > 0) {
       flags[arg.slice(2, equals)] = arg.slice(equals + 1);
+      bare.delete(arg.slice(2, equals));
       continue;
     }
+    const name = arg.slice(2);
     const next = args[i + 1];
-    // an empty argument is a value, as `--flag=` is, not a bare flag
-    flags[arg.slice(2)] = next !== undefined && !next.startsWith("--") ? (i++, next) : "true";
+    if (usage.valued.has(name) && next === "--" && args[i + 2] !== undefined) {
+      flags[name] = args[i + 2];
+      bare.delete(name);
+      words.push(...args.slice(i + 3));
+      break;
+    }
+    // a flag nobody described keeps the old reading: anything but another
+    // flag. An empty argument is a value, as `--flag=` is, not a bare flag
+    const alone = next === undefined || next === "--" || (usage.valued.has(name) ? ownFlag(next) : next.startsWith("--"));
+    flags[name] = alone ? "true" : (i++, next);
+    if (alone) bare.add(name);
+    else bare.delete(name);
   }
-  return flags;
+  return { flags, words, bare };
+}
+
+function parseFlags(args) {
+  return parseArgs(args).flags;
 }
 
 /** The words that are not flags or a flag's value. */
 function positional(args) {
-  const out = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith("--")) {
-      if (!arg.includes("=") && args[i + 1] !== undefined && !args[i + 1].startsWith("--")) i++;
-      continue;
-    }
-    out.push(arg);
-  }
-  return out;
+  return parseArgs(args).words;
 }
 
 /** One file's bytes, streamed rather than read whole: a recording can be
@@ -1716,6 +1766,7 @@ try {
   // named, since the likeliest cause is an engine that kept the turn's
   // environment from this shell, and that is something a person can fix
   if (!TOKEN && !(name === "reply" && process.env.BLOKS_REPLY_TOKEN)) throw new Error("no credential in this environment (BLOKS_TOKEN is not set), so there is nobody to act as");
+  usage = flagsIn(command.use);
   const result = await command.run(args);
   process.stdout.write(`${JSON.stringify(result ?? { ok: true }, null, 2)}\n`);
 } catch (error) {
