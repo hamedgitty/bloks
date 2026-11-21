@@ -10,9 +10,9 @@
 // Credentials may also arrive from the environment, which is what a
 // container or a CI run wants and what lets someone try the app without
 // writing a key to disk at all.
-import { readFileSync, mkdirSync, chmodSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFileSync, mkdirSync, chmodSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readSaved, isRecord, writeFileAtomic } from "./atomic-write.ts";
@@ -339,7 +339,35 @@ export function dataDirFrom(env: NodeJS.ProcessEnv = process.env, home: string =
   return isAbsolute(said) ? said : resolve(said);
 }
 
+/** Why a data folder named by BLOKS_DATA_DIR must not be used here, or
+ * null when it may. Only under node's test runner, which marks every test
+ * process with NODE_TEST_CONTEXT, and through the environment whatever a
+ * test starts: there the folder has to be one the test made in the temp
+ * folder. Anything else was inherited from the shell the tests ran in,
+ * and is a workspace's own, where a fixture would replace somebody's
+ * settings (GitHub 529). Outside a test run nothing changes. */
+export function testDataDirRefusal(env: NodeJS.ProcessEnv, dir: string, temp: string = tmpdir()): string | null {
+  if (!env.NODE_TEST_CONTEXT || !env.BLOKS_DATA_DIR?.trim()) return null;
+  const roots = new Set([resolve(temp)]);
+  try {
+    roots.add(realpathSync(temp));
+  } catch {
+    // a temp folder that cannot be resolved still has its own spelling
+  }
+  const inside = [...roots].some((root) => {
+    const rel = relative(root, resolve(dir));
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  });
+  if (inside) return null;
+  return `[bloks] refusing data folder ${dir} under the test runner: BLOKS_DATA_DIR names a folder outside ${temp}, most likely a workspace's own, inherited from the shell the tests were started in. Unset it, or point it at a folder the test made.`;
+}
+
 export const DATA_DIR = dataDirFrom();
+{
+  // Settled before anything below can open a file in it.
+  const refusal = testDataDirRefusal(process.env, DATA_DIR);
+  if (refusal) throw new Error(refusal);
+}
 export const EVENTS_DIR = join(DATA_DIR, "events");
 export const NATIVE_DIR = join(DATA_DIR, "native");
 /** User-installed skills, one markdown file each. */

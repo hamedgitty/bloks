@@ -13,6 +13,7 @@
 //                    credential in agent-token
 //   MAKEFILE <id>    writes made/report.txt in its folder and summary.txt
 //                    in agent <id>'s deliverables, then answers
+import "./isolated-env.ts";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

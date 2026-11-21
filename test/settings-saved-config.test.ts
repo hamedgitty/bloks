@@ -1,11 +1,17 @@
+import "./helpers/isolated-env.ts";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Each child writes fixtures into config.json, so its data folder is
+// named outright and checked before the first write: a BLOKS_DATA_DIR
+// inherited from a workspace's shell once sent these into somebody's
+// own settings (GitHub 529).
 function isolated(code: string): void {
   const home = mkdtempSync(join(tmpdir(), "bloks-settings-saved-"));
+  const data = join(home, ".bloks");
   try {
     const configUrl = new URL("../server/config.ts", import.meta.url).href;
     execFileSync(process.execPath, ["--input-type=module", "--eval", `
@@ -14,10 +20,11 @@ function isolated(code: string): void {
       import { syncBuiltinESMExports } from 'node:module';
       import { join } from 'node:path';
       const c = await import(${JSON.stringify(configUrl)});
+      assert.equal(c.DATA_DIR, ${JSON.stringify(data)});
       const file = join(c.DATA_DIR, 'config.json');
       fs.mkdirSync(c.DATA_DIR, {recursive:true});
       ${code}
-    `], { env: { ...process.env, HOME: home, XAI_API_KEY: "ENV_SECRET_FIXTURE", COMPOSIO_KEY: "ENV_SECRET_FIXTURE" }, stdio: "pipe" });
+    `], { env: { ...process.env, HOME: home, USERPROFILE: home, BLOKS_DATA_DIR: data, XAI_API_KEY: "ENV_SECRET_FIXTURE", COMPOSIO_KEY: "ENV_SECRET_FIXTURE" }, stdio: "pipe" });
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 

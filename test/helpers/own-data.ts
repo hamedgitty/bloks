@@ -6,14 +6,15 @@
 // test process then writes its native copy there, which on a developer's
 // machine is their own Bloks. Imported first, before anything that loads
 // config.ts, this points it at a throwaway folder instead. A folder said
-// already (CI, or a person running one file) is left as it is, and servers
-// started through helpers/server.ts choose their own regardless.
+// already in the environment is a workspace's, inherited from the shell
+// the tests were started in (GitHub 529), so it is dropped rather than
+// used; servers started through helpers/server.ts choose their own
+// regardless.
+import "./isolated-env.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-if (!process.env.BLOKS_DATA_DIR?.trim()) {
-  const dir = mkdtempSync(join(tmpdir(), "bloks-test-data-"));
-  process.env.BLOKS_DATA_DIR = dir;
-  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
-}
+const dir = mkdtempSync(join(tmpdir(), "bloks-test-data-"));
+process.env.BLOKS_DATA_DIR = dir;
+process.on("exit", () => rmSync(dir, { recursive: true, force: true }));

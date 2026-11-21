@@ -3,6 +3,7 @@
 // These tests talk to the actual server over HTTP rather than importing
 // its internals, because the things worth asserting (the origin check,
 // the body limits, the status codes) live in the request path.
+import "./isolated-env.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";

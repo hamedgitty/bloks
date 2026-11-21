@@ -3,6 +3,7 @@
 // writes, which requests it makes with its own credential, what it asks
 // through the bridge Bloks mounted for it, and when it ends. The real
 // server, driver, transcript and event stream are used throughout.
+import "./isolated-env.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
