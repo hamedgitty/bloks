@@ -18,6 +18,7 @@
   <img alt="macOS, Windows and Linux" src="https://img.shields.io/badge/desktop-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-6b7280">
   <a href="https://apps.apple.com/app/bloks-ai-agents/id6804453451"><img alt="iPhone app on the App Store" src="https://img.shields.io/badge/iPhone-App_Store-6b7280"></a>
   <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-6b7280">
+  <a href="https://discord.gg/FhV3SuGYfS"><img alt="Discord: Bloks community" src="https://img.shields.io/badge/discord-Bloks_community-5865f2"></a>
 </p>
 
 <p align="center">
@@ -46,6 +47,10 @@ The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451)
 pairs with the desktop app. Nothing runs on the phone: it is a window onto
 the agents on your computer, with approvals you answer from the Lock
 Screen or your wrist.
+
+Using Bloks, or thinking of sending a fix? Come and say hello in the
+[Bloks Discord](https://discord.gg/FhV3SuGYfS): it is where people help
+each other, talk ideas through, and agree on a change before writing it.
 
 ## 📣 Bloks 3 is out
 
@@ -999,6 +1004,11 @@ counts.
 
 ## Contributing
 
+Questions, ideas, or want to talk something through first? The
+[Bloks Discord](https://discord.gg/FhV3SuGYfS) is where people using and
+building Bloks help each other, and the quickest place to ask whether a
+change is wanted before you write it.
+
 Read [CONTRIBUTING.md](CONTRIBUTING.md). Short form: one thing per pull
 request, tell us what you verified rather than what you changed, and run
 `pnpm typecheck && pnpm test && pnpm build` before you push.
@@ -1007,10 +1017,6 @@ Bloks is maintained by one person alongside other work. Issues and pull
 requests are read, and answered when there is time. Small and focused
 gets merged quickly; a branch that renames files, fixes a bug and adds a
 feature may sit for a while.
-
-Questions, ideas, or want to talk something through first? The
-[Bloks Discord](https://discord.gg/FhV3SuGYfS) is where people using
-Bloks help each other.
 
 ```sh
 pnpm test
