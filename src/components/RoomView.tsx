@@ -2,6 +2,7 @@
 // every line is attributed, because who said it is half the meaning.
 import { Notice } from "./chat/Bubble";
 import { useSettingsObservation } from "@/lib/useSettingsObservation";
+import { linksOpenInDock, useChatLinksIn } from "@/lib/chatLinks";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react";
 import { AlertTriangle } from "@/components/icons";
@@ -1076,10 +1077,13 @@ export function RoomView({ blok }: { blok: Blok }) {
   const dockPlace = placeIn(useDockState(), dockKey);
   const browserState = useBrowserState();
   const browserWhere = useBrowserWhere();
+  const [chatLinksIn] = useChatLinksIn();
   const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
   const dockHost: DockHost = {
     openDoc: (doc) => dock.openDoc(dockKey, doc),
-    openLink: browserHere ? (url) => void showPage(url, browserState?.tabs) : null,
+    // in the dock only where its browser can open the page and the person
+    // has not chosen their own browser for links (GitHub 539)
+    openLink: linksOpenInDock(browserWhere, chatLinksIn) ? (url) => void showPage(url, browserState?.tabs) : null,
   };
   const nameOfActor = (by: string) =>
     by === "owner" ? t("forumLens.you") : by.startsWith("agent:") ? (members.find((b) => `agent:${b.id}` === by)?.name ?? t("common.anAgent")) : personName(by);

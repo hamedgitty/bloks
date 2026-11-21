@@ -331,6 +331,7 @@ export const SETTINGS_PAGE_INDEX = [] = [
       "settingsPages.browser.row.sitesAgentsNeverUse",
       "settingsPages.browser.row.downloads",
       "settingsPages.browser.row.signOutOfEverySite",
+      "settingsPages.browser.row.openChatLinksIn",
     ],
   },
   {

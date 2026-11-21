@@ -1,5 +1,6 @@
 // Settings, Browser: which sites agents may use in the Bloks browser,
-// and whether a new one asks first.
+// and whether a new one asks first; and, for this device, where a link in
+// a chat opens.
 //
 // The rules are the workspace's own and live on its server
 // (server/app-browser.ts), so this page reads and changes them from any
@@ -16,6 +17,8 @@ import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { X } from "@/components/icons";
 import { browserIsHere } from "@/lib/appBrowser";
+import { useChatLinksIn } from "@/lib/chatLinks";
+import { modKey } from "@/lib/thisComputer";
 import { SavedMark, SettingRow, SettingsGroup, SettingsSkeleton } from "../SettingsLayout";
 import { BrowserExtensionsSection } from "./BrowserExtensions";
 import { t } from "@/lib/i18n";
@@ -34,6 +37,7 @@ export function BrowserPage() {
   const [home, setHome] = useState<"own" | "server" | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatLinksIn, setChatLinksIn] = useChatLinksIn();
 
   useEffect(() => {
     api("/api/browser/settings")
@@ -170,6 +174,25 @@ export function BrowserPage() {
           />
         </SettingsGroup>
       )}
+      {/* this device's choice, kept here rather than on the server: the
+          browser a person reaches for is the one in front of them */}
+      <SettingsGroup title={t("browserPage.chatLinks")} footnote={t("browserPage.chatLinksFootnote")}>
+        <SettingRow
+          label={t("browserPage.openChatLinksIn")}
+          description={chatLinksIn === "bloks" ? t("browserPage.chatLinksInBloksHint", { mod: modKey() }) : t("browserPage.chatLinksInOwnHint")}
+          control={
+            <Segmented
+              aria-label={t("browserPage.openChatLinksIn")}
+              value={chatLinksIn}
+              onChange={setChatLinksIn}
+              options={[
+                { value: "bloks", label: t("browserPage.bloksBrowser") },
+                { value: "own", label: t("browserPage.myBrowser") },
+              ]}
+            />
+          }
+        />
+      </SettingsGroup>
       {/* Chrome extensions in this browser, the desktop app's alone */}
       {home === "own" && <BrowserExtensionsSection />}
     </>

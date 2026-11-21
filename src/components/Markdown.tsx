@@ -134,7 +134,9 @@ function inlineMd(text: string, keyBase: string, highlight: string, mentions?: R
  * the Bloks browser there, so the page is read next to the conversation
  * (GitHub 509); ⌘ or Ctrl with the click, or the middle button, still
  * opens it in the person's own browser, and so does the browser panel's
- * own button. Anywhere else it is the plain link it always was.
+ * own button. Anywhere else it is the plain link it always was, and so
+ * it is where that browser cannot open a page or the person chose their
+ * own browser for links (lib/chatLinks.ts, GitHub 539).
  */
 function WebLink({ href, children }: { href: string; children: React.ReactNode }) {
   const host = useDockHost();

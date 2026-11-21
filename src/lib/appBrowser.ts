@@ -242,7 +242,16 @@ export const BROWSER_SIDE_BY_SIDE = BROWSER_SIZE.min + BROWSER_SIZE.chat;
 // ── the store ──────────────────────────────────────────────────────────
 
 let current: AppBrowserState | null = null;
-let where: { home: BrowserHome | null; missing: BrowserMissing | null } = { home: null, missing: null };
+/** Where the browser is, why there is none when there is none, and
+ * whether it can open a page now: a server says `available` beside
+ * `missing`, and the app's own always can. */
+export interface BrowserWhere {
+  home: BrowserHome | null;
+  missing: BrowserMissing | null;
+  available: boolean;
+}
+
+let where: BrowserWhere = { home: null, missing: null, available: false };
 const listeners = new Set<() => void>();
 const tell = () => {
   for (const listener of listeners) listener();
@@ -255,15 +264,20 @@ const MISSING = new Set<BrowserMissing>(["none", "off", "path"]);
  * app's own page goes by the app instead, once it knows it has one. */
 export function noteServerBrowser(said: unknown) {
   if (where.home === "own") return;
-  const body = said && typeof said === "object" ? (said as { where?: unknown; missing?: unknown; state?: unknown }) : {};
+  const body = said && typeof said === "object" ? (said as { where?: unknown; missing?: unknown; available?: unknown; state?: unknown }) : {};
   const missing = MISSING.has(body.missing as BrowserMissing) ? (body.missing as BrowserMissing) : null;
-  where = { home: body.where === "server" ? "server" : "elsewhere", missing };
+  where = { home: body.where === "server" ? "server" : "elsewhere", missing, available: body.available !== false && missing === null };
   noteBrowserState(body.state ?? null);
 }
 
 /** Where the browser is, as last known, for code outside React. */
 export function browserHome(): BrowserHome | null {
   return where.home;
+}
+
+/** All of what is known of it, for code outside React. */
+export function browserWhere(): BrowserWhere {
+  return where;
 }
 
 /** What the app or the server last said. */
@@ -288,7 +302,7 @@ function start(load: () => Promise<unknown>) {
     .browserState()
     .then((state) => {
       if (!state) return ask();
-      where = { home: "own", missing: null };
+      where = { home: "own", missing: null, available: true };
       onState((next) => noteBrowserState(next));
       noteBrowserState(state);
     })
@@ -332,7 +346,7 @@ export function useAppBrowser(load: () => Promise<unknown>): AppBrowserState | n
 }
 
 /** Where the browser is, and why there is none when there is none. */
-export function useBrowserHome(load: () => Promise<unknown>): { home: BrowserHome | null; missing: BrowserMissing | null } {
+export function useBrowserHome(load: () => Promise<unknown>): BrowserWhere {
   useEffect(() => start(load), [load]);
   return useSyncExternalStore(
     (listener) => {

@@ -1,4 +1,5 @@
 import { useSettingsObservation } from "@/lib/useSettingsObservation";
+import { linksOpenInDock, useChatLinksIn } from "@/lib/chatLinks";
 import { useNamer, useWorkspaceRoster } from "@/lib/members";
 import { isGroup, otherHumans, receiptsAt, runs, senderOf, speakers, teamHumans } from "@/lib/participants";
 import { seedReads, useReadPosition, useReads } from "@/lib/readReceipts";
@@ -803,6 +804,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   useBrowserReveal();
   const browserState = useBrowserState();
   const browserWhere = useBrowserWhere();
+  const [chatLinksIn] = useChatLinksIn();
   const someoneBrowsing = browserState?.control.by === "agent";
   const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
   const botNames = useMemo(() => Object.fromEntries(state.bots.map((b) => [b.id, b.name])), [state.bots]);
@@ -891,7 +893,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   };
   const dockHost: DockHost = {
     openDoc: (doc) => dock.openDoc(dockKey, doc),
-    openLink: browserHere ? (url) => void showPage(url, browserState?.tabs) : null,
+    // in the dock only where its browser can open the page and the person
+    // has not chosen their own browser for links (GitHub 539)
+    openLink: linksOpenInDock(browserWhere, chatLinksIn) ? (url) => void showPage(url, browserState?.tabs) : null,
   };
   const lanesInSidebar = useLanesInSidebar();
   // One conversation is the usual agent (GitHub 237): with nothing to
