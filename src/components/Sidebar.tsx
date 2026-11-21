@@ -16,15 +16,18 @@ import { Bot as BotIcon } from "@/components/icons";
 import { Search } from "@/components/icons";
 import { Users } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
+import { X } from "@/components/icons";
 import { Target } from "@/components/icons";
 import { api, sidebarRows, useStore, formatWhen, workingInRoom, type Action, type Blok, type Bot } from "@/state/store";
 import { rowState } from "@/state/reducer";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { AgentAvatar } from "./Avatar";
 import { BloksLogo } from "./Brand";
 import { cn } from "@/lib/cn";
+import { archivedMatching } from "@/lib/archivedSearch";
 import { usePageVisible } from "@/lib/pageVisible";
 import { agentPreview, lastHeardAt, lastSaid, previewLine } from "@/lib/preview";
 import {
@@ -1338,6 +1341,10 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
 function ArchivedAgents({ onClose }: { onClose: () => void }) {
   const { state, dispatch } = useStore();
   const archived = state.bots.filter((b) => b.hidden);
+  // a long list is found by name or role, live as it is typed; nothing
+  // found keeps the dialog open, since the list itself is not empty
+  const [query, setQuery] = useState("");
+  const found = archivedMatching(archived, query);
 
   useEffect(() => {
     if (archived.length === 0) onClose();
@@ -1356,8 +1363,44 @@ function ArchivedAgents({ onClose }: { onClose: () => void }) {
         <div className="mt-0.5 text-body leading-relaxed text-muted-foreground">
           {t("sidebar.theirChatsRulesAndRooms")}
         </div>
-        <div className="mt-4 flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
-          {archived.map((bot) => (
+        <div className="relative mt-4">
+          <Search size={15} aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape clears a query first, and closes only once it is empty
+              if (e.key !== "Escape") return;
+              e.preventDefault();
+              if (query) setQuery("");
+              else onClose();
+            }}
+            placeholder={t("sidebar.searchArchived")}
+            aria-label={t("sidebar.searchArchived")}
+            spellCheck={false}
+            autoFocus
+            className="px-9"
+          />
+          {query && (
+            <button
+              type="button"
+              aria-label={t("sidebar.clearArchivedSearch")}
+              title={t("sidebar.clearArchivedSearch")}
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <div className="mt-2 flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
+          {found.length === 0 && (
+            <p role="status" className="px-2 py-6 text-center text-body text-muted-foreground">
+              {t("sidebar.noArchivedMatch", { query: query.trim() })}
+            </p>
+          )}
+          {found.map((bot) => (
             <div key={bot.id} className="flex items-center gap-2.5 rounded-xl px-2 py-1.5 hover:bg-accent/60">
               <AgentAvatar bot={bot} size={30} />
               <span className="min-w-0 flex-1">
