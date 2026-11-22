@@ -82,7 +82,7 @@ const SWEEP_EVERY = 50;
 const MAX_DIFF_LINES = 4_000;
 
 /** Regenerated, not written: skipping them is most of what keeps this fast. */
-const SKIP_DIRS = new Set([
+export const SKIP_DIRS = new Set([
   ".git",
   "node_modules",
   ".venv",
@@ -175,6 +175,11 @@ export interface ChangesSummary {
 export interface DiffLine {
   kind: "same" | "add" | "del" | "gap";
   text: string;
+  /** The line's number before and after, where it has one. */
+  old?: number;
+  new?: number;
+  /** A gap: how many unchanged lines it stands for. */
+  skipped?: number;
 }
 
 export interface FileDiff {
@@ -184,6 +189,21 @@ export interface FileDiff {
   big?: boolean;
   tooLong?: boolean;
   lines: DiffLine[];
+}
+
+/** One file a conversation changed, over all its turns (laneChanges). */
+export interface LaneChange {
+  path: string;
+  status: ChangeStatus;
+  /** The newest turn's record that changed it, and the folder it is in. */
+  checkpointId: string;
+  dir: string;
+  at: number;
+  /** How many of the conversation's turns changed it. */
+  turns: number;
+  big?: boolean;
+  added?: number;
+  removed?: number;
 }
 
 export interface RevertResult {
@@ -260,6 +280,13 @@ export function diffLines(before: string, after: string): DiffLine[] | null {
     ...middle,
     ...a.slice(a.length - tail).map((text) => ({ kind: "same" as const, text })),
   ];
+  // each line's number on either side, so a line can be opened where it is
+  let oldNo = 0;
+  let newNo = 0;
+  for (const line of all) {
+    if (line.kind !== "add") line.old = ++oldNo;
+    if (line.kind !== "del") line.new = ++newNo;
+  }
   return context(all, 3);
 }
 
@@ -274,12 +301,12 @@ function context(lines: DiffLine[], keep: number): DiffLine[] {
   let skipped = 0;
   lines.forEach((line, at) => {
     if (near[at]) {
-      if (skipped) out.push({ kind: "gap", text: `${skipped} unchanged line${skipped === 1 ? "" : "s"}` });
+      if (skipped) out.push({ kind: "gap", text: `${skipped} unchanged line${skipped === 1 ? "" : "s"}`, skipped });
       skipped = 0;
       out.push(line);
     } else skipped++;
   });
-  if (skipped && out.length) out.push({ kind: "gap", text: `${skipped} unchanged line${skipped === 1 ? "" : "s"}` });
+  if (skipped && out.length) out.push({ kind: "gap", text: `${skipped} unchanged line${skipped === 1 ? "" : "s"}`, skipped });
   return out;
 }
 
@@ -320,7 +347,7 @@ export function insideReally(folder: string, target: string): boolean {
 /** A git that runs without asking to install anything, or null. On a Mac
  * without the developer tools /usr/bin/git is a stub that opens an
  * installer dialog, so it only counts when the tools behind it exist. */
-function realGit(): string | null {
+export function realGit(): string | null {
   if (process.platform !== "darwin") return "git";
   for (const dir of (process.env.PATH ?? "").split(":")) {
     if (!dir || dir === "/usr/bin") continue;
@@ -653,6 +680,125 @@ export class Checkpoints {
     if (looksBinary(before) || looksBinary(after)) return { ...base, binary: true };
     const lines = diffLines(before.toString("utf8"), after.toString("utf8"));
     return lines ? { ...base, lines } : { ...base, tooLong: true };
+  }
+
+  /**
+   * Everything a conversation's turns changed, as one difference per file
+   * from before the first turn that touched it to after the last: what
+   * the side dock's Changes panel lists (GitHub 522). Only a turn's own
+   * files, never the shared ones another agent may have written; a turn
+   * undone, or a rehearsal not applied, changed nothing in the folder and
+   * is left out. A file one turn added and a later one deleted is gone
+   * again, and not listed. Newest first.
+   */
+  laneChanges(threadId: string): LaneChange[] {
+    const records = this.records
+      .filter((r) => r.threadId === threadId && !r.revertedAt && !r.discardedAt && (!r.rehearsal || Boolean(r.appliedAt)))
+      .sort((a, b) => a.at - b.at);
+    const byPath = new Map<string, LaneChange & { first?: string; last?: string; firstStatus: ChangeStatus }>();
+    for (const record of records) {
+      for (const change of record.files) {
+        if (change.shared) continue;
+        const was = byPath.get(change.path);
+        if (!was) {
+          byPath.set(change.path, {
+            path: change.path,
+            status: change.status,
+            firstStatus: change.status,
+            checkpointId: record.id,
+            dir: record.dir,
+            at: record.at,
+            turns: 1,
+            ...(change.big ? { big: true } : {}),
+            ...(change.before ? { first: change.before } : {}),
+            ...(change.after ? { last: change.after } : {}),
+          });
+          continue;
+        }
+        was.turns++;
+        was.at = record.at;
+        was.checkpointId = record.id;
+        was.dir = record.dir;
+        if (change.big) was.big = true;
+        if (change.after) was.last = change.after;
+        else delete was.last;
+      }
+    }
+    const out: LaneChange[] = [];
+    for (const each of byPath.values()) {
+      const existed = each.firstStatus !== "added";
+      const exists = Boolean(each.last) || (each.big === true && each.status !== "deleted");
+      if (!existed && !exists && !each.big) continue;
+      const status: ChangeStatus = !existed ? "added" : exists ? "modified" : "deleted";
+      if (status === "modified" && !each.big && each.first && each.first === each.last) continue;
+      const counted = this.counts(each.first, each.last, each.big === true);
+      const { first: _first, last: _last, firstStatus: _firstStatus, ...rest } = each;
+      out.push({ ...rest, status, ...counted });
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  /** One file's difference over a whole conversation (laneChanges). */
+  laneDiff(threadId: string, path: string): FileDiff | null {
+    const ends = this.laneEnds(threadId, path);
+    if (!ends) return null;
+    const base: FileDiff = { path, status: ends.status, lines: [] };
+    if (ends.big) return { ...base, big: true };
+    const before = ends.first ? this.blob(ends.first) : Buffer.alloc(0);
+    const after = ends.last ? this.blob(ends.last) : Buffer.alloc(0);
+    if (!before || !after) return { ...base, big: true };
+    if (looksBinary(before) || looksBinary(after)) return { ...base, binary: true };
+    const lines = diffLines(before.toString("utf8"), after.toString("utf8"));
+    return lines ? { ...base, lines } : { ...base, tooLong: true };
+  }
+
+  /** A changed file as the conversation's last turn on it left it, from
+   * the copy kept then: what the Changes panel opens at a line. Never the
+   * folder itself, which nothing here reads by a name it is handed. Null
+   * for a deletion, a big or binary file, or a path the lane never
+   * changed. */
+  laneFile(threadId: string, path: string): string | null {
+    const ends = this.laneEnds(threadId, path);
+    if (!ends?.last || ends.big) return null;
+    const data = this.blob(ends.last);
+    if (!data || looksBinary(data)) return null;
+    return data.toString("utf8");
+  }
+
+  private laneEnds(threadId: string, path: string): { status: ChangeStatus; first?: string; last?: string; big?: boolean } | null {
+    const listed = this.laneChanges(threadId).find((c) => c.path === path);
+    if (!listed) return null;
+    let first: string | undefined;
+    let last: string | undefined;
+    let seen = false;
+    for (const record of this.records
+      .filter((r) => r.threadId === threadId && !r.revertedAt && !r.discardedAt && (!r.rehearsal || Boolean(r.appliedAt)))
+      .sort((a, b) => a.at - b.at)) {
+      const change = record.files.find((f) => f.path === path && !f.shared);
+      if (!change) continue;
+      if (!seen) first = change.before;
+      seen = true;
+      last = change.after;
+    }
+    return { status: listed.status, ...(first ? { first } : {}), ...(last ? { last } : {}), ...(listed.big ? { big: true } : {}) };
+  }
+
+  /** Lines added and removed between two kept versions, when both can be
+   * read as text. */
+  private counts(first: string | undefined, last: string | undefined, big: boolean): { added?: number; removed?: number } {
+    if (big) return {};
+    const before = first ? this.blob(first) : Buffer.alloc(0);
+    const after = last ? this.blob(last) : Buffer.alloc(0);
+    if (!before || !after || looksBinary(before) || looksBinary(after)) return {};
+    const lines = diffLines(before.toString("utf8"), after.toString("utf8"));
+    if (!lines) return {};
+    let added = 0;
+    let removed = 0;
+    for (const line of lines) {
+      if (line.kind === "add") added++;
+      else if (line.kind === "del") removed++;
+    }
+    return { added, removed };
   }
 
   /** A file as the turn left it, from the copy kept then rather than the

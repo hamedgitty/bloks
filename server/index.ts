@@ -572,6 +572,7 @@ import { BRIEF_ASK, describe as describeRoutine, FAILS_TO_PAUSE, isQuiet as quie
 import { catchUpText, engineIsFresh, freshTurnText } from "./turn-context.ts";
 import { standingFor, type Standing, type StandingRecord } from "./standing-prompt.ts";
 import { Checkpoints, diffLines, trackable, type CheckpointRecord } from "./checkpoints.ts";
+import { gitChanges, gitFileDiff, safeRelativePath } from "./git-changes.ts";
 import { redoCounts, redoPlan, takenBack, type RedoRefusal } from "./redo.ts";
 import { branchAnswerId, branchCopy, branchDivider, branchPoint, branchTitle, carriedSummary, dividerText } from "./branch.ts";
 import { clockTime, Cooldowns, describeRest, errorWords, failureOf, outReason, REASON_WORDS, restIsNews, RETRY_WAIT_MS, RETRY_INTERVAL_MS, STAY_MS, toldOf, type Rest, type Told } from "./failover.ts";
@@ -29717,6 +29718,36 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const diff = checkpoints.diff(m[1], file);
       if (!diff) return json(res, 404, { error: "no such change" });
       return json(res, 200, { diff });
+    }
+
+    // What a conversation changed, for the side dock's Changes panel
+    // (GitHub 522): its own turns' files over the whole conversation, from
+    // the photographs taken around each turn, and, where its folder is a
+    // repository, what git says is not committed there. The owner's, like
+    // the diffs above: an agent's credential and a member's device reach
+    // neither (server/agent-cli.ts, server/member-access.ts).
+    m = path.match(/^\/api\/threads\/([\w-]+)\/changes(?:\/(diff|file|git|git-diff))?$/);
+    if (m && method === "GET") {
+      const found = store.taskByThread(m[1]);
+      if (!found) return json(res, 404, { error: "no such conversation" });
+      const what = m[2];
+      if (!what) {
+        const changes = checkpoints.laneChanges(m[1]).map(({ dir: _dir, ...change }) => change);
+        return json(res, 200, { changes });
+      }
+      if (what === "git") return json(res, 200, { git: await gitChanges(laneFolder(found.bot, found.task)) });
+      const file = safeRelativePath(url.searchParams.get("path"));
+      if (!file) return json(res, 400, { error: "a path inside the conversation's folder" });
+      if (what === "git-diff") {
+        const diff = await gitFileDiff(laneFolder(found.bot, found.task), file);
+        return diff ? json(res, 200, { diff }) : json(res, 404, { error: "git lists no change to that file now" });
+      }
+      if (what === "diff") {
+        const diff = checkpoints.laneDiff(m[1], file);
+        return diff ? json(res, 200, { diff }) : json(res, 404, { error: "no such change" });
+      }
+      const text = checkpoints.laneFile(m[1], file);
+      return text === null ? json(res, 404, { error: "no copy of that file to show" }) : json(res, 200, { path: file, text });
     }
 
     // Undo a turn. Not while that agent is working: its next edit would

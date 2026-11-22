@@ -16,7 +16,9 @@ import {
   chatKey,
   clampDockWidth,
   closeDoc,
+  closeTab,
   dropPanel,
+  mayShow,
   hideDock,
   isRoomKey,
   openDoc,
@@ -29,7 +31,7 @@ import {
   toggleDock,
   type DockState,
 } from "../src/lib/dock.ts";
-import { dockChord } from "../src/lib/dockKeys.ts";
+import { dockChord, panelChord } from "../src/lib/dockKeys.ts";
 import { keysFor } from "../src/lib/shortcuts.ts";
 
 const empty = (): DockState => ({ places: {}, width: DOCK_SIZE.fallback });
@@ -119,9 +121,10 @@ describe("documents", () => {
     assert.equal(placeIn(s, a).doc, "bot1/1.md");
   });
 
-  test("closing the last one closes the dock it was shown in", () => {
+  test("closing the last one leaves the Files panel on its tree", () => {
     const s = closeDoc(openDoc(empty(), a, doc("only.md")), a, "bot1/only.md");
-    assert.equal(placeIn(s, a).open, false);
+    assert.equal(placeIn(s, a).open, true);
+    assert.equal(placeIn(s, a).panel, "docs");
     assert.equal(placeIn(s, a).docs.length, 0);
   });
 
@@ -234,5 +237,133 @@ describe("opened by an agent's work", () => {
     dock.hide(key);
     assert.equal(dock.reveal("computer", width), true, "opened by hand, it may be opened again");
     assert.equal(dock.reveal("computer", REVEAL_WIDTH - 1), false);
+  });
+});
+
+describe("panels as tabs", () => {
+  test("each panel shown joins the tabs once, in the order they were opened", () => {
+    let s = showPanel(empty(), a, "changes", 1);
+    s = showPanel(s, a, "terminal", 2);
+    s = showPanel(s, a, "changes", 3);
+    assert.deepEqual(placeIn(s, a).tabs, ["changes", "terminal"]);
+    assert.equal(placeIn(s, a).panel, "changes");
+    s = openDoc(s, a, doc("x.md"), 4);
+    assert.deepEqual(placeIn(s, a).tabs, ["changes", "terminal", "docs"]);
+  });
+
+  test("closing the tab in front brings its neighbour forward, and the last one hides the dock", () => {
+    let s = showPanel(showPanel(showPanel(empty(), a, "docs", 1), a, "changes", 2), a, "terminal", 3);
+    s = showPanel(s, a, "changes", 4);
+    s = closeTab(s, a, "changes", 5);
+    assert.deepEqual(placeIn(s, a).tabs, ["docs", "terminal"]);
+    assert.equal(placeIn(s, a).panel, "terminal", "the one that took its place");
+    assert.equal(placeIn(s, a).open, true);
+    s = closeTab(s, a, "docs", 6);
+    assert.equal(placeIn(s, a).panel, "terminal", "a tab behind closes without moving the one in front");
+    s = closeTab(s, a, "terminal", 7);
+    assert.equal(placeIn(s, a).open, false);
+    assert.equal(placeIn(s, a).panel, null);
+    assert.equal(closeTab(s, a, "browser", 8), s, "a tab not open is no change");
+  });
+
+  test("a closed tab keeps what its panel held", () => {
+    let s = openDoc(empty(), a, doc("kept.md"), 1);
+    s = closeTab(s, a, "docs", 2);
+    assert.equal(placeIn(s, a).docs.length, 1);
+  });
+
+  test("toggling back opens on an open tab before anything else", () => {
+    let s = showPanel(showPanel(empty(), a, "changes", 1), a, "terminal", 2);
+    s = closeTab(s, a, "terminal", 3);
+    s = hideDock(s, a, 4);
+    s = toggleDock(s, a, ["docs", "changes", "browser"], 5);
+    assert.equal(placeIn(s, a).panel, "changes");
+  });
+
+  test("a place kept before there were tabs has its panel as its one tab", () => {
+    const back = parseDock(JSON.stringify({ [a]: { open: true, panel: "browser", docs: [], doc: null, at: 1 }, [b]: { open: false, panel: null, at: 2 } }), null);
+    assert.deepEqual(placeIn(back, a).tabs, ["browser"]);
+    assert.deepEqual(placeIn(back, b).tabs, []);
+    const kept = parseDock(JSON.stringify({ [a]: { open: true, panel: "docs", tabs: ["changes", "spaceship", "changes"], at: 1 } }), null);
+    assert.deepEqual(placeIn(kept, a).tabs, ["changes", "docs"], "unknown and repeated tabs dropped, the shown one kept");
+  });
+
+  test("a panel that went away leaves the tabs too", () => {
+    let s = showPanel(showPanel(empty(), a, "terminal", 1), a, "docs", 2);
+    s = dropPanel(s, a, "terminal", 3);
+    assert.deepEqual(placeIn(s, a).tabs, ["docs"]);
+    assert.equal(placeIn(s, a).open, true, "the one in front stays");
+  });
+
+  test("⇧⌘F, ⇧⌘D, ⇧⌘B and ⌘J name their panels, Ctrl off a Mac", () => {
+    const press = (over: Partial<{ key: string; code: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }>) => ({
+      key: "x", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...over,
+    });
+    assert.equal(panelChord(press({ metaKey: true, shiftKey: true, code: "KeyF" }), "mac"), "docs");
+    assert.equal(panelChord(press({ metaKey: true, shiftKey: true, code: "KeyD" }), "mac"), "changes");
+    assert.equal(panelChord(press({ ctrlKey: true, shiftKey: true, key: "B" }), "other"), "browser");
+    assert.equal(panelChord(press({ metaKey: true, code: "KeyJ" }), "mac"), "terminal");
+    assert.equal(panelChord(press({ metaKey: true, code: "KeyF" }), "mac"), null, "⌘F is find");
+    assert.equal(panelChord(press({ ctrlKey: true, code: "KeyJ" }), "mac"), null, "Ctrl is not ⌘ on a Mac");
+    assert.equal(panelChord(press({ metaKey: true, altKey: true, shiftKey: true, code: "KeyB" }), "mac"), null);
+  });
+});
+
+describe("shown by an agent on purpose", () => {
+  const wide = { width: REVEAL_WIDTH + 200, typingInDock: false, turn: "m2" };
+
+  test("chats only, with room, and never under the person's keys", () => {
+    assert.equal(mayShow(a, EMPTY_PLACE, wide), true);
+    assert.equal(mayShow(roomKey("r"), EMPTY_PLACE, wide), false);
+    assert.equal(mayShow(a, EMPTY_PLACE, { ...wide, width: REVEAL_WIDTH - 1 }), false);
+    const open = placeIn(showPanel(empty(), a, "terminal", 1), a);
+    assert.equal(mayShow(a, open, { ...wide, typingInDock: true }), false);
+    assert.equal(mayShow(a, open, wide), true, "the panel in front may be asked for again, for a file or a tab in it");
+  });
+
+  test("a no lasts the turn it was given in", () => {
+    assert.equal(mayShow(a, EMPTY_PLACE, { ...wide, declinedIn: "m2" }), false);
+    assert.equal(mayShow(a, EMPTY_PLACE, { ...wide, declinedIn: "m1" }), true, "asked again on a later turn");
+    assert.equal(mayShow(a, EMPTY_PLACE, { ...wide, declinedIn: "" , turn: "" }), false, "no turn known is the same turn");
+  });
+
+  test("only the conversation it answers, kept for when it is on screen, and a closed panel stays closed for the turn", async () => {
+    const key = chatKey("ask-bot", "lane");
+    const other = chatKey("ask-bot", "other");
+    const width = REVEAL_WIDTH + 100;
+    dock.setCurrent(key);
+    dock.noteTurn(key, "turn1", ["docs", "changes", "terminal"]);
+    assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "changes", target: { kind: "change", path: "a.ts", line: 3 } }, width), true);
+    assert.equal(placeIn(dock.get(), key).panel, "changes");
+    assert.equal(dock.focus(key)?.target.kind, "change");
+    dock.closeTab(key, "changes");
+    assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "changes" }, width), false, "closed in this turn");
+    dock.noteTurn(key, "turn2", ["docs", "changes", "terminal"]);
+    assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "changes" }, width), true, "a later turn may ask again");
+    assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "browser" }, width), false, "a panel this conversation does not offer");
+    // asked from a conversation not on screen: kept, and shown on return
+    dock.setCurrent(other);
+    assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "terminal" }, width), false);
+    assert.notEqual(placeIn(dock.get(), key).panel, "terminal");
+    // kept asks are judged by the window's width when they are shown
+    const g = globalThis as { window?: unknown };
+    g.window = { innerWidth: width };
+    try {
+      dock.setCurrent(key);
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      delete g.window;
+    }
+    assert.equal(placeIn(dock.get(), key).panel, "terminal");
+  });
+
+  test("a document asked for opens in Files", () => {
+    const key = chatKey("ask-doc", "lane");
+    dock.setCurrent(key);
+    dock.noteTurn(key, "t", ["docs"]);
+    assert.equal(dock.ask({ botId: "ask-doc", threadId: "lane", panel: "docs", target: { kind: "doc", botId: "ask-doc", name: "notes/a.md", mime: "text/markdown", size: 4, line: 7 } }, REVEAL_WIDTH + 1), true);
+    const place = placeIn(dock.get(), key);
+    assert.equal(place.panel, "docs");
+    assert.equal(place.doc, "ask-doc/notes/a.md");
   });
 });

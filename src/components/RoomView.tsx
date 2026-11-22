@@ -93,7 +93,7 @@ import { formatList, t } from "@/lib/i18n";
 import { FileText, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
-import { DocsPanel } from "./dock/DocsPanel";
+import { FilesPanel } from "./dock/FilesPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
@@ -1127,7 +1127,7 @@ export function RoomView({ blok }: { blok: Blok }) {
       label: t("dock.docs.label"),
       icon: <FileText size={15} />,
       keepAlive: true,
-      render: (shown) => <DocsPanel placeKey={dockKey} place={dockPlace} shown={shown} />,
+      render: (shown) => <FilesPanel placeKey={dockKey} place={dockPlace} shown={shown} />,
     },
     ...(browserHere
       ? [

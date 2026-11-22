@@ -62,6 +62,12 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   { id: "toggleSidebar", group: "navigation", keys: [["Mod", "B"]], does: "libShortcuts.does.toggleSidebar" },
   { id: "dockToggle", group: "navigation", keys: [["Mod", "Alt", "B"]], does: "libShortcuts.does.dockToggle", when: "libShortcuts.when.inAChat" },
+  // the dock's panels with a key of their own (src/lib/dockKeys.ts); a
+  // browser keeps these for itself, so only the desktop app hears them
+  { id: "dockFiles", group: "navigation", keys: [["Mod", "Shift", "F"]], does: "libShortcuts.does.dockFiles", when: "libShortcuts.when.inAChat", desktopOnly: true },
+  { id: "dockChanges", group: "navigation", keys: [["Mod", "Shift", "D"]], does: "libShortcuts.does.dockChanges", when: "libShortcuts.when.inAChat", desktopOnly: true },
+  { id: "dockBrowser", group: "navigation", keys: [["Mod", "Shift", "B"]], does: "libShortcuts.does.dockBrowser", when: "libShortcuts.when.inAChat", desktopOnly: true },
+  { id: "dockTerminal", group: "navigation", keys: [["Mod", "J"]], does: "libShortcuts.does.dockTerminal", when: "libShortcuts.when.inAChat", desktopOnly: true },
   { id: "back", group: "navigation", keys: [["Mod", "["]], does: "libShortcuts.does.back" },
   { id: "forward", group: "navigation", keys: [["Mod", "]"]], does: "libShortcuts.does.forward" },
   {

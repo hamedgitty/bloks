@@ -1,12 +1,16 @@
 // The side dock: the one column on a conversation's right (the rules are
 // in src/lib/dock.ts).
 //
-// Its top is a ribbon of small icons, one for each panel this conversation
-// offers, the shown one pressed, and an × that hides the dock and keeps
-// what is in it. Under an icon a dot says what its panel is doing
+// Its top is a strip of tabs, one for each panel open in this
+// conversation, the shown one pressed, each with its own × that closes
+// it; a + that lists every kind of panel this conversation offers, with
+// what each holds and its key; and an × that hides the dock and keeps
+// what is in it. On a tab a dot says what its panel is doing
 // (src/lib/dockActivity.ts): blue while an agent works in it, orange while
-// it waits on the person, purple while another person is at it. Below is the panel. One edge on its left sizes it, by drag
-// or by the arrow keys, for every panel alike. When the row is too narrow
+// it waits on the person, purple while another person is at it; one on a
+// panel that is not open marks the + instead. Below is the panel. One
+// edge on its left sizes it, by drag or by the arrow keys, for every
+// panel alike. When the row is too narrow
 // for the chat and the dock side by side, the dock covers the chat until
 // it is hidden, as the browser always did.
 //
@@ -17,11 +21,12 @@
 // browser's tabs live in the app or on the server, a trace on the server)
 // is drawn while it is shown, and costs nothing otherwise.
 import { useLayoutEffect, useState, type ReactNode } from "react";
-import { X } from "@/components/icons";
+import { Plus, X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
 import { clampDockWidth, dock, DOCK_PANELS, DOCK_SIDE_BY_SIDE, placeIn, useDockState, type DockPanel } from "@/lib/dock";
-import type { DockStatus } from "@/lib/dockActivity";
+import { strongest, type DockStatus } from "@/lib/dockActivity";
 import { t, type MessageKey } from "@/lib/i18n";
 
 const STATUS: Record<DockStatus, { dot: string; words: MessageKey; pulse: boolean }> = {
@@ -37,6 +42,11 @@ export interface DockPane {
   icon: ReactNode;
   /** A second line for the name: where the browser runs, say. */
   detail?: string;
+  /** What it holds now, beside its name in the + menu: "+12 −3", "2
+   * running". */
+  count?: string;
+  /** Its key, as the + menu writes it (src/lib/shortcuts.ts). */
+  keys?: string;
   /** What is happening in it, as the dot under its icon. Work is not
    * marked on the panel in front, where it can be seen; waiting and a
    * teammate are, since they ask something of the person. */
@@ -82,7 +92,17 @@ export function SideDock({
 
   const narrow = room > 0 && room < DOCK_SIDE_BY_SIDE;
   const width = narrow ? room : clampDockWidth(dragging ?? state.width, room || window.innerWidth);
-  const current = ordered.find((p) => p.id === shown);
+  // the open tabs, in the order they were opened; the one shown is always
+  // among them, even from a place kept before there were tabs
+  const tabs = [...place.tabs, ...(shown && !place.tabs.includes(shown) ? [shown] : [])]
+    .map((id) => ordered.find((p) => p.id === id))
+    .filter((p): p is DockPane => Boolean(p));
+  // something asking for the person on a panel that is not open marks the +
+  const behind = strongest(...ordered.filter((p) => !tabs.includes(p)).map((p) => (p.status === "working" ? null : p.status)));
+  const pick = (panel: DockPanel) => {
+    onPick?.(panel);
+    dock.show(placeKey, panel);
+  };
   const drawn = ordered.filter((p) => p.id === shown || (p.keepAlive && kept.has(p.id)));
 
   return (
@@ -107,37 +127,88 @@ export function SideDock({
         style={narrow ? undefined : { width }}
       >
         <div className="flex h-[38px] shrink-0 items-center gap-0.5 border-b px-1.5">
-          <div role="toolbar" aria-label={t("dock.panels")} className="flex shrink-0 items-center gap-0.5">
-            {ordered.map((pane) => {
+          <div
+            role="tablist"
+            aria-label={t("dock.panels")}
+            className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+          >
+            {tabs.map((pane) => {
               const status = pane.status && !(pane.status === "working" && pane.id === shown) ? STATUS[pane.status] : null;
+              const front = pane.id === shown;
+              const label = status ? t("dock.status.labelled", { panel: pane.label, status: t(status.words) }) : pane.label;
               return (
-                <HeaderButton
-                  key={pane.id}
-                  label={status ? t("dock.status.labelled", { panel: pane.label, status: t(status.words) }) : pane.label}
-                  pressed={pane.id === shown}
-                  onClick={() => {
-                    onPick?.(pane.id);
-                    dock.show(placeKey, pane.id);
-                  }}
-                  className="relative"
-                >
-                  {pane.icon}
-                  {status && (
-                    <span
-                      aria-hidden
-                      data-dock-status={pane.status}
-                      className={cn("absolute bottom-0.5 left-1/2 size-1.5 -translate-x-1/2 rounded-full", status.dot, status.pulse && "motion-safe:animate-pulse")}
-                    />
-                  )}
-                </HeaderButton>
+                <div key={pane.id} className="group relative flex shrink-0 items-center">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={front}
+                    aria-label={label}
+                    title={pane.detail ? `${pane.label}, ${pane.detail}` : pane.label}
+                    data-dock-tab={pane.id}
+                    onClick={() => pick(pane.id)}
+                    className={cn(
+                      "relative flex h-7 max-w-[148px] items-center gap-1.5 rounded-md pl-2 pr-6 text-body outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+                      front ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    )}
+                  >
+                    <span className="flex shrink-0 [&_svg]:size-[14px]" aria-hidden>
+                      {pane.icon}
+                    </span>
+                    <span className="truncate">{pane.label}</span>
+                    {status && (
+                      <span
+                        aria-hidden
+                        data-dock-status={pane.status}
+                        className={cn("absolute bottom-0.5 left-[13px] size-1.5 -translate-x-1/2 rounded-full", status.dot, status.pulse && "motion-safe:animate-pulse")}
+                      />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={t("dock.closeTab", { name: pane.label })}
+                    title={t("dock.closeTab", { name: pane.label })}
+                    onClick={() => dock.closeTab(placeKey, pane.id)}
+                    className={cn(
+                      "absolute right-1 flex size-5 items-center justify-center rounded text-muted-foreground transition-[opacity,background-color,color] duration-150 hover:bg-foreground/10 hover:text-foreground",
+                      front ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               );
             })}
           </div>
-          <div className="mx-1.5 h-4 w-px shrink-0 bg-border" aria-hidden />
-          <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-            <span className="truncate text-small font-medium text-foreground">{current?.label}</span>
-            {current?.detail && <span className="truncate text-caption text-muted-foreground">{current.detail}</span>}
-          </div>
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger
+              aria-label={t("dock.add")}
+              title={t("dock.add")}
+              className="relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground"
+            >
+              <Plus size={16} />
+              {behind && (
+                <span
+                  aria-hidden
+                  data-dock-status={behind}
+                  className={cn("absolute bottom-0.5 left-1/2 size-1.5 -translate-x-1/2 rounded-full", STATUS[behind].dot, STATUS[behind].pulse && "motion-safe:animate-pulse")}
+                />
+              )}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[232px]">
+              {ordered.map((pane) => (
+                <DropdownMenuItem key={pane.id} data-dock-kind={pane.id} onSelect={() => pick(pane.id)}>
+                  {pane.icon}
+                  <span className="flex-1 truncate">{pane.label}</span>
+                  {pane.count && <span className="text-caption tabular-nums text-muted-foreground">{pane.count}</span>}
+                  {pane.status && pane.status !== "working" && (
+                    <span aria-hidden className={cn("size-1.5 rounded-full", STATUS[pane.status].dot)} />
+                  )}
+                  {pane.keys && <kbd className="font-sans text-caption text-muted-foreground">{pane.keys}</kbd>}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey)}>
             <X size={16} />
           </HeaderButton>

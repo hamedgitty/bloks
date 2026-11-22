@@ -38,6 +38,7 @@ import { formatNumber, t } from "@/lib/i18n";
 import { FOLLOW_MS, followAnswer, tagOfEtag, UNSEEN, type Seen, type VersionAnswer } from "@/lib/followFile";
 import { usePageVisible } from "@/lib/pageVisible";
 import { useDockHost } from "@/components/dock/context";
+import { NumberedText } from "@/components/dock/NumberedText";
 
 type ArtifactMeta = NonNullable<Message["artifact"]>;
 
@@ -304,7 +305,7 @@ export function ArtifactViewer({
 
 /**
  * The viewer itself, in a dialog over the chat or in the side dock beside
- * it (dock/DocsPanel.tsx). Docked, it keeps its place while another
+ * it (dock/FilesPanel.tsx). Docked, it keeps its place while another
  * document is in front, since it stays drawn, and asks after newer
  * versions only while it is the one shown.
  */
@@ -315,11 +316,15 @@ export function ArtifactView({
   docked = false,
   active = true,
   onExpand,
+  line,
 }: {
   botId: string;
   artifact: ArtifactMeta;
   onClose: () => void;
   docked?: boolean;
+  /** A line to open a text file at, with a number that tells one ask for
+   * it from the next (`bloks dock show docs <file> --line`). */
+  line?: { at: number; n: number };
   /** Docked: the same file in the larger viewer over the chat. */
   onExpand?: () => void;
   /** Shown now: a docked one behind another asks the server nothing. */
@@ -760,7 +765,9 @@ export function ArtifactView({
             ))}
           {viewer === "markdown" &&
             (text !== null ? (
-              source ? (
+              line ? (
+                <NumberedText text={text} line={line.at} nonce={line.n} />
+              ) : source ? (
                 <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-body leading-relaxed text-foreground">
                   {text}
                 </pre>
@@ -776,9 +783,13 @@ export function ArtifactView({
             ))}
           {viewer === "text" &&
             (text !== null ? (
-              <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-body leading-relaxed text-foreground">
-                {text}
-              </pre>
+              line ? (
+                <NumberedText text={text} line={line.at} nonce={line.n} />
+              ) : (
+                <pre className="size-full overflow-auto whitespace-pre-wrap bg-background p-5 font-mono text-body leading-relaxed text-foreground">
+                  {text}
+                </pre>
+              )
             ) : (
               !error && <div className="p-6 text-body text-muted-foreground">{t("common.loading")}</div>
             ))}
