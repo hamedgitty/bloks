@@ -97,8 +97,12 @@ import { DocsPanel } from "./dock/DocsPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
+import { browserStatus, strongest, teammateActive, TEAMMATE_MS, type DockStatus } from "@/lib/dockActivity";
 import { inThread, orderTopics, topicCounts, topicPowers, topicState, type RoomTopic, type TopicState } from "@/lib/roomTopics";
 import { NewTopicDialog, TopicBar, TopicPanel } from "./room/RoomTopics";
+
+/** A topic's mark, as the dot on the dock's topic icon. */
+const topicDot: Record<TopicState, DockStatus | null> = { working: "working", waiting: "waiting", idle: null, closed: null };
 
 /** A reaction in a room is the cheapest thing anyone can say, and often
  * the right thing: agreeing with a plan should not wake six agents. */
@@ -739,10 +743,10 @@ export function RoomView({ blok }: { blok: Blok }) {
   // the last person seen typing, for a few seconds
   const typing = state.roomTyping[blok.id];
   const [, tick] = useState(0);
-  const typingNow = typing && Date.now() - typing.at < 6_000 ? typing.name : null;
+  const typingNow = typing && teammateActive(typing) ? typing.name : null;
   useEffect(() => {
     if (!typing) return;
-    const timer = setTimeout(() => tick((n) => n + 1), 6_100);
+    const timer = setTimeout(() => tick((n) => n + 1), TEAMMATE_MS + 100);
     return () => clearTimeout(timer);
   }, [typing]);
 
@@ -1094,6 +1098,12 @@ export function RoomView({ blok }: { blok: Blok }) {
       id: "topic",
       label: t("roomTopics.panel.label"),
       icon: <MessagesSquare size={15} />,
+      // the topic on screen working or waiting, or another person typing
+      // in the room
+      status: strongest(
+        topic ? topicDot[topicStates.get(topic.id) ?? "idle"] : null,
+        typingNow ? "teammate" : null,
+      ),
       render: () => (
         <TopicPanel
           blok={blok}
@@ -1125,6 +1135,7 @@ export function RoomView({ blok }: { blok: Blok }) {
             label: t("dock.browser.label"),
             detail: browserWhere.home === "server" ? t("dock.browser.onServer") : t("dock.browser.here"),
             icon: <Globe size={15} />,
+            status: browserStatus(browserState),
             render: (shown: boolean) => <DockedBrowser shown={shown} />,
           },
         ]

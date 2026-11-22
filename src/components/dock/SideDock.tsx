@@ -3,7 +3,9 @@
 //
 // Its top is a ribbon of small icons, one for each panel this conversation
 // offers, the shown one pressed, and an × that hides the dock and keeps
-// what is in it. Below is the panel. One edge on its left sizes it, by drag
+// what is in it. Under an icon a dot says what its panel is doing
+// (src/lib/dockActivity.ts): blue while an agent works in it, orange while
+// it waits on the person, purple while another person is at it. Below is the panel. One edge on its left sizes it, by drag
 // or by the arrow keys, for every panel alike. When the row is too narrow
 // for the chat and the dock side by side, the dock covers the chat until
 // it is hidden, as the browser always did.
@@ -19,7 +21,14 @@ import { X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import { cn } from "@/lib/cn";
 import { clampDockWidth, dock, DOCK_PANELS, DOCK_SIDE_BY_SIDE, placeIn, useDockState, type DockPanel } from "@/lib/dock";
-import { t } from "@/lib/i18n";
+import type { DockStatus } from "@/lib/dockActivity";
+import { t, type MessageKey } from "@/lib/i18n";
+
+const STATUS: Record<DockStatus, { dot: string; words: MessageKey; pulse: boolean }> = {
+  working: { dot: "bg-working", words: "dock.status.working", pulse: true },
+  waiting: { dot: "bg-warning", words: "dock.status.waiting", pulse: true },
+  teammate: { dot: "bg-teammate", words: "dock.status.teammate", pulse: false },
+};
 
 export interface DockPane {
   id: DockPanel;
@@ -28,8 +37,10 @@ export interface DockPane {
   icon: ReactNode;
   /** A second line for the name: where the browser runs, say. */
   detail?: string;
-  /** Something is happening in it while it is out of sight. */
-  dot?: boolean;
+  /** What is happening in it, as the dot under its icon. Work is not
+   * marked on the panel in front, where it can be seen; waiting and a
+   * teammate are, since they ask something of the person. */
+  status?: DockStatus | null;
   /** Stays drawn out of sight, for what it keeps (see above). */
   keepAlive?: boolean;
   render: (shown: boolean) => ReactNode;
@@ -90,29 +101,37 @@ export function SideDock({
       <aside
         ref={setHolder}
         aria-label={t("dock.label")}
+        data-side-dock=""
         hidden={!shown}
         className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border-l bg-card", narrow && "absolute inset-0 z-30 border-l-0 bg-background")}
         style={narrow ? undefined : { width }}
       >
         <div className="flex h-[38px] shrink-0 items-center gap-0.5 border-b px-1.5">
           <div role="toolbar" aria-label={t("dock.panels")} className="flex shrink-0 items-center gap-0.5">
-            {ordered.map((pane) => (
-              <HeaderButton
-                key={pane.id}
-                label={pane.label}
-                pressed={pane.id === shown}
-                onClick={() => {
-                  onPick?.(pane.id);
-                  dock.show(placeKey, pane.id);
-                }}
-                className="relative"
-              >
-                {pane.icon}
-                {pane.dot && pane.id !== shown && (
-                  <span aria-hidden className="absolute right-1 top-1 size-1.5 rounded-full bg-brand motion-safe:animate-pulse" />
-                )}
-              </HeaderButton>
-            ))}
+            {ordered.map((pane) => {
+              const status = pane.status && !(pane.status === "working" && pane.id === shown) ? STATUS[pane.status] : null;
+              return (
+                <HeaderButton
+                  key={pane.id}
+                  label={status ? t("dock.status.labelled", { panel: pane.label, status: t(status.words) }) : pane.label}
+                  pressed={pane.id === shown}
+                  onClick={() => {
+                    onPick?.(pane.id);
+                    dock.show(placeKey, pane.id);
+                  }}
+                  className="relative"
+                >
+                  {pane.icon}
+                  {status && (
+                    <span
+                      aria-hidden
+                      data-dock-status={pane.status}
+                      className={cn("absolute bottom-0.5 left-1/2 size-1.5 -translate-x-1/2 rounded-full", status.dot, status.pulse && "motion-safe:animate-pulse")}
+                    />
+                  )}
+                </HeaderButton>
+              );
+            })}
           </div>
           <div className="mx-1.5 h-4 w-px shrink-0 bg-border" aria-hidden />
           <div className="flex min-w-0 flex-1 items-baseline gap-1.5">

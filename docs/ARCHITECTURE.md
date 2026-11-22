@@ -3863,6 +3863,39 @@ full-window overlay, or, in the desktop app, a window of its own
 rebuilds a screen. Where it sits and how it draws are kept in
 localStorage (`src/lib/terminalLayout.ts`, `src/lib/terminalPrefs.ts`).
 
+## The side dock
+
+One column on a conversation's right holds the documents, the Bloks
+browser, a terminal on the right, the agent's computer, a turn's
+timeline, a room's topic and extension panels (`src/lib/dock.ts`,
+`src/components/dock/SideDock.tsx`). It is open or not, and on which
+panel, per conversation; its width is per device.
+
+An agent starting to use its browser or its computer in a chat opens
+that panel, by one rule (`mayReveal`): only in a chat, never a room; only
+when the window has room for the chat beside it; never while the keyboard
+is in a field of the dock; and never again in a conversation where the
+person put away a panel an agent's work had opened, until they open it
+there by hand (kept for the window, not stored). Browsing is heard from
+the browser (`browser:reveal` from the app, `browser.reveal` from the
+server); the computer is read off the turn's tool rows
+(`src/lib/dockActivity.ts`): a call on the computer's MCP server (or
+`computer_exec`), at most once a turn and only for calls made while the
+chat is on screen. The terminal is never opened for an agent and carries
+no dot: its shells are the person's, in the agent's folder, and an
+agent's commands run outside them, so it would point at something the
+agent is not doing. It can once the dock can show an agent's own
+commands.
+
+Each ribbon icon carries one dot: orange while its panel waits on the
+person (an unanswered approval for a computer action, the browser taken
+over while an agent waits, a page dialog), purple while
+another person is at it (typing in a shared room), blue while an agent
+works in it (not drawn on the panel in front). In a chat the browser's
+tab strip can be narrowed to the tabs the chat's agent opened; tabs know
+their agent, not their conversation, and shells and the computer are the
+agent's whole, so the agent is the narrowest view the dock can give.
+
 ## Recall and notes about the person
 
 `server/recall.ts` searches an agent's own lanes, the rooms it is in and

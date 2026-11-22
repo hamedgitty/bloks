@@ -7,6 +7,10 @@ import { describe, test } from "node:test";
 import {
   DOCK_SIDE_BY_SIDE,
   DOCK_SIZE,
+  EMPTY_PLACE,
+  REVEAL_WIDTH,
+  dock,
+  mayReveal,
   MAX_DOCS,
   MAX_PLACES,
   chatKey,
@@ -187,5 +191,48 @@ describe("rooms and keys", () => {
     assert.equal(dockChord(press({ metaKey: true, altKey: false }), "mac"), false, "⌘B is the sidebar's");
     assert.equal(dockChord(press({ metaKey: true, shiftKey: true }), "mac"), false);
     assert.deepEqual(keysFor("dockToggle", "mac").length, 1);
+  });
+});
+
+describe("opened by an agent's work", () => {
+  const wide = { width: REVEAL_WIDTH + 200, typingInDock: false };
+
+  test("only a chat, never a room, and only with room beside it", () => {
+    assert.equal(mayReveal(a, EMPTY_PLACE, "computer", wide), true);
+    assert.equal(mayReveal(roomKey("r1"), EMPTY_PLACE, "computer", wide), false, "several agents would pull a room's dock about");
+    assert.equal(mayReveal(null, EMPTY_PLACE, "computer", wide), false);
+    assert.equal(mayReveal(a, EMPTY_PLACE, "computer", { ...wide, width: REVEAL_WIDTH - 1 }), false, "it would cover the chat");
+  });
+
+  test("never from under the person's keys, and never after a no", () => {
+    const showingBrowser = placeIn(showPanel(empty(), a, "browser", 1), a);
+    assert.equal(mayReveal(a, showingBrowser, "computer", { ...wide, typingInDock: true }), false);
+    assert.equal(mayReveal(a, showingBrowser, "computer", wide), true);
+    assert.equal(mayReveal(a, EMPTY_PLACE, "computer", { ...wide, typingInDock: true }), true, "a closed dock has nothing being typed into");
+    assert.equal(mayReveal(a, EMPTY_PLACE, "computer", { ...wide, declined: true }), false);
+    const showingComputer = placeIn(showPanel(empty(), a, "computer", 1), a);
+    assert.equal(mayReveal(a, showingComputer, "computer", wide), false, "already in front");
+  });
+
+  test("a panel put away after an agent's work opened it stays away there, until the person opens it", () => {
+    const key = chatKey("reveal-bot", "lane");
+    const other = chatKey("reveal-bot", "other");
+    const width = REVEAL_WIDTH + 100;
+    dock.setCurrent(key);
+    assert.equal(dock.reveal("computer", width), true);
+    assert.equal(placeIn(dock.get(), key).panel, "computer");
+    assert.equal(dock.reveal("computer", width), false, "already showing");
+    dock.hide(key);
+    assert.equal(dock.reveal("computer", width), false, "the person said no");
+    assert.equal(dock.reveal("browser", width), true, "the no was to the computer only");
+    dock.show(key, "docs");
+    assert.equal(dock.reveal("browser", width), false, "picking another panel puts the browser away too");
+    dock.setCurrent(other);
+    assert.equal(dock.reveal("computer", width), true, "another conversation asks for itself");
+    dock.setCurrent(key);
+    dock.show(key, "computer");
+    dock.hide(key);
+    assert.equal(dock.reveal("computer", width), true, "opened by hand, it may be opened again");
+    assert.equal(dock.reveal("computer", REVEAL_WIDTH - 1), false);
   });
 });

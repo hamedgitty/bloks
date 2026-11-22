@@ -23,7 +23,7 @@
 // drive it from here.
 import { useEffect, useSyncExternalStore } from "react";
 import { formatNumber, t } from "./i18n.ts";
-import { dock, isRoomKey, placeIn, useDockCurrent, useDockState } from "./dock.ts";
+import { dock, placeIn, useDockCurrent, useDockState } from "./dock.ts";
 
 export type TabBy = { kind: "person" } | { kind: "agent"; botId: string; name: string };
 
@@ -376,10 +376,11 @@ export function setBrowserPanel(next: { open?: boolean; width?: number }) {
 }
 
 /** An agent started browsing: the browser opens in a chat's dock, never a
- * room's, where several agents at work would pull it back and forth. */
+ * room's, where several agents at work would pull it back and forth, by
+ * the rule the terminal and the computer open by too (mayReveal in
+ * src/lib/dock.ts). */
 export function revealInDock() {
-  const key = dock.current();
-  if (key && !isRoomKey(key)) dock.show(key, "browser");
+  dock.reveal("browser");
 }
 
 /** Whether the browser is what the dock shows here, and the dock's width. */

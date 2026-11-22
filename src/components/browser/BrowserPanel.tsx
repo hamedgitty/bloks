@@ -25,6 +25,7 @@ import { cn } from "@/lib/cn";
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   Download,
   ExternalLink,
   File as FileIcon,
@@ -73,6 +74,7 @@ import {
 } from "@/lib/appBrowser";
 import { t } from "@/lib/i18n";
 import { sameAddress } from "@/lib/mentions";
+import { tabsInScope, type TabScope } from "@/lib/dockActivity";
 import { screenInput, type InputSender } from "./screenInput";
 
 /** The server's word on the browser, for a page that does not have the
@@ -175,17 +177,58 @@ function useSomethingOver(panel: HTMLElement | null, watching: boolean): boolean
  * keeps. `shown` is false while the dock is being resized or another panel
  * is in front, and the app's page view is then put out of sight.
  */
-export function DockedBrowser({ shown, botNames }: { shown: boolean; botNames?: Record<string, string> }) {
+export function DockedBrowser({
+  shown,
+  botNames,
+  agent,
+}: {
+  shown: boolean;
+  botNames?: Record<string, string>;
+  /** The chat's agent, whose tabs the strip can be narrowed to. */
+  agent?: { id: string; name: string };
+}) {
   const { home } = useBrowserWhere();
   // a server's browser may have come to be since the page loaded
   useEffect(() => {
     if (shown) refreshBrowser(loadFromServer);
   }, [shown]);
   if (home !== "own" && home !== "server") return null;
-  return <BrowserPanel resizing={!shown} botNames={botNames} onServer={home === "server"} />;
+  return <BrowserPanel resizing={!shown} botNames={botNames} onServer={home === "server"} agent={agent} />;
 }
 
-function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; botNames?: Record<string, string>; onServer: boolean }) {
+// Every tab, or only the chat's agent's (tabsInScope), kept on this device
+// like the dock's width: it is about how this screen is used.
+const SCOPE_KEY = "bloks-browser-scope";
+function useTabScope(): [TabScope, (next: TabScope) => void] {
+  const [scope, setScope] = useState<TabScope>(() => {
+    try {
+      return localStorage.getItem(SCOPE_KEY) === "agent" ? "agent" : "all";
+    } catch {
+      return "all";
+    }
+  });
+  const set = (next: TabScope) => {
+    setScope(next);
+    try {
+      localStorage.setItem(SCOPE_KEY, next);
+    } catch {
+      /* kept for this window only */
+    }
+  };
+  return [scope, set];
+}
+
+function BrowserPanel({
+  resizing,
+  botNames,
+  onServer,
+  agent,
+}: {
+  resizing: boolean;
+  botNames?: Record<string, string>;
+  onServer: boolean;
+  agent?: { id: string; name: string };
+}) {
   const state = useBrowserState();
   const { missing } = useBrowserWhere();
   const { state: store } = useStore();
@@ -248,7 +291,10 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
     seenClose.current = closeKey(state.closed);
     if (was !== null && closesPanel(state.closed, was)) close();
   }, [state?.closed]); // eslint-disable-line react-hooks/exhaustive-deps
-  const tabs = state?.tabs ?? [];
+  const allTabs = state?.tabs ?? [];
+  const [scope, setScope] = useTabScope();
+  const tabs = tabsInScope(allTabs, scope, agent?.id, state?.activeTabId ?? null);
+  const hiddenTabs = allTabs.length - tabs.length;
   const nameOf = (botId: string, fallback: string) => botNames?.[botId] ?? fallback;
 
   return (
@@ -259,6 +305,19 @@ function BrowserPanel({ resizing, botNames, onServer }: { resizing: boolean; bot
           <Plus size={16} />
         </HeaderButton>
         <div className="min-w-2 flex-1 self-stretch" />
+        {agent && (
+          <HeaderButton
+            label={
+              scope === "agent"
+                ? t("browserPanel.scope.agentOn", { name: agent.name, count: hiddenTabs })
+                : t("browserPanel.scope.agentOff", { name: agent.name })
+            }
+            pressed={scope === "agent"}
+            onClick={() => setScope(scope === "agent" ? "all" : "agent")}
+          >
+            <Bot size={15} />
+          </HeaderButton>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1 border-t px-1.5 py-1.5">

@@ -28,6 +28,7 @@ import { DocsPanel } from "./dock/DocsPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
 import { chatKey, dock, placeIn, useDockState, type DockPanel } from "@/lib/dock";
+import { browserStatus, computerStatus, strongest, turnComputerUse } from "@/lib/dockActivity";
 import { dockChord } from "@/lib/dockKeys";
 import { moveTerminal } from "@/lib/terminalLayout";
 import { stepTab, terminalChord } from "@/lib/terminalTabs";
@@ -828,6 +829,29 @@ export function ChatView({ bot }: { bot: Bot }) {
     dispatch({ type: "toggleComputer", open: false });
   }, [state.computerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // An agent starting to work its computer opens the computer in the dock,
+  // by the rule the browser opens by (mayReveal in src/lib/dock.ts): in a
+  // chat, with room beside it, never under the person's keys and never
+  // after they put it away. Once a turn, and only for a call made while
+  // this conversation is on screen: what it did before is not news. The
+  // terminal is not opened this way: its shells are the person's, and an
+  // agent's commands do not run in them, so opening it would point at
+  // something other than what the agent is doing.
+  const computerUse = useMemo(() => turnComputerUse(bot.messages), [bot.messages]);
+  const laneWorking = openLaneWorking(bot);
+  const seenUse = useRef<{ key: string; computer: string | null } | null>(null);
+  const revealedTurns = useRef(new Set<string>());
+  useEffect(() => {
+    const was = seenUse.current;
+    const latest = computerUse.latest;
+    seenUse.current = { key: dockKey, computer: latest };
+    if (!was || was.key !== dockKey || !laneWorking || !latest || latest === was.computer) return;
+    const once = `${dockKey}:${computerUse.turn}`;
+    if (revealedTurns.current.has(once)) return;
+    revealedTurns.current.add(once);
+    dock.reveal("computer");
+  }, [dockKey, computerUse, laneWorking]);
+
   // the running extensions' panels, as one more panel of the dock
   const extensionsPane = useExtensionsPane();
   const dockPanes: DockPane[] = [
@@ -845,8 +869,8 @@ export function ChatView({ bot }: { bot: Bot }) {
             label: t("dock.browser.label"),
             detail: browserWhere.home === "server" ? t("dock.browser.onServer") : t("dock.browser.here"),
             icon: <Globe size={15} />,
-            dot: someoneBrowsing,
-            render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} />,
+            status: browserStatus(browserState),
+            render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} agent={{ id: bot.id, name: bot.name }} />,
           },
         ]
       : []),
@@ -862,6 +886,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       id: "computer",
       label: t("dock.computer.label"),
       icon: <Monitor size={15} />,
+      status: strongest(computerStatus(bot.messages, laneWorking), provisioning ? "working" : null),
       keepAlive: true,
       render: (shown) => <ComputerPanel bot={bot} docked shown={shown} />,
     },

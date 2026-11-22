@@ -20,8 +20,11 @@
 // Panels a conversation cannot have (a browser on a phone looking at the
 // Mac, a terminal in a room) are not this file's business: the dock is
 // told which it offers and shows only those. Nothing here opens the dock
-// by itself; something the person did, or an agent starting to browse in
-// a chat, asks for it, and a room never opens it on its own.
+// by itself; something the person did asks for it, or an agent starting
+// to use its browser or its computer in a chat does, by one rule
+// (mayReveal below), and a room never opens it on its own. The terminal
+// is never opened for an agent: its shells are the person's, and an
+// agent's commands do not run in them.
 //
 // No React and no page in the part the tests read; the store and the hook
 // are at the end.
@@ -141,6 +144,40 @@ export function dropPanel(state: DockState, key: string, panel: DockPanel, now =
   return withPlace(state, key, (p) => ({ ...p, open: false, panel: null }), now);
 }
 
+// ── opened by an agent's work ──────────────────────────────────────────
+
+/** Room enough for the chat, the dock and the sidebar beside them: below
+ * it the dock would cover the chat, so an agent's work never opens it. */
+export const REVEAL_WIDTH = DOCK_SIDE_BY_SIDE + 240;
+
+/**
+ * Whether an agent starting to use a panel (its browser or its computer)
+ * opens the dock on it, by itself. One rule for both:
+ *
+ *   - only in a chat: in a room several agents at once would pull it back
+ *     and forth;
+ *   - only where the chat keeps its room beside the dock;
+ *   - never while the person is typing into what the dock already shows
+ *     (the address bar, a shell): the panel would go from under the keys;
+ *   - never again in a conversation where the person put away a panel an
+ *     agent's work had opened, until they open it there themselves: one
+ *     no is enough.
+ *
+ * Opening never moves the keyboard either: neither panel takes focus when
+ * it is shown.
+ */
+export function mayReveal(
+  key: string | null,
+  place: DockPlace,
+  panel: DockPanel,
+  room: { width: number; typingInDock: boolean; declined?: boolean },
+): boolean {
+  if (!key || isRoomKey(key)) return false;
+  if (room.width < REVEAL_WIDTH || room.declined) return false;
+  if (place.open && place.panel === panel) return false;
+  return !(place.open && room.typingInDock);
+}
+
 /** A file opened in the dock: in front if it is open already, else added
  * and put in front, the oldest behind it dropped past the cap. */
 export function openDoc(state: DockState, key: string, doc: Omit<DockDoc, "id">, now = Date.now()): DockState {
@@ -258,20 +295,74 @@ function commit(next: DockState) {
   for (const listener of listeners) listener();
 }
 
+/** The keyboard is in a field of the dock (marked data-side-dock), or in a
+ * terminal's screen there, which xterm reads through a textarea. */
+function typingInDock(): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.activeElement as HTMLElement | null;
+  if (!el?.closest?.("[data-side-dock]")) return false;
+  return el.isContentEditable || el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
+// What an agent's work opened and is still on screen, and what the person
+// put away after it did, by conversation. For this window only: a new
+// day, or a restart, asks again.
+const revealed = new Map<string, DockPanel>();
+const declined = new Map<string, Set<DockPanel>>();
+
+/** The person did something to the dock of this conversation: if what an
+ * agent's work opened is going out of sight, that is a no to it. */
+function byHand(key: string, next: { open: boolean; panel: DockPanel | null }) {
+  const opened = revealed.get(key);
+  if (next.open && next.panel) declined.get(key)?.delete(next.panel);
+  if (!opened) return;
+  if (!next.open || next.panel !== opened) {
+    revealed.delete(key);
+    declined.set(key, (declined.get(key) ?? new Set()).add(opened));
+  }
+}
+
 export const dock = {
   get: read,
   current: () => current,
+  /** An agent started using a panel in the conversation on screen: shown
+   * there if mayReveal says so. Says whether it was. */
+  reveal(panel: DockPanel, width = typeof window === "undefined" ? 0 : window.innerWidth): boolean {
+    const key = current;
+    if (!key) return false;
+    const room = { width, typingInDock: typingInDock(), declined: Boolean(declined.get(key)?.has(panel)) };
+    if (!mayReveal(key, placeIn(read(), key), panel, room)) return false;
+    commit(showPanel(read(), key, panel));
+    revealed.set(key, panel);
+    return true;
+  },
   /** Said by the conversation on screen as it draws. */
   setCurrent(key: string) {
     if (current === key) return;
     current = key;
     for (const listener of listeners) listener();
   },
-  show: (key: string, panel: DockPanel) => commit(showPanel(read(), key, panel)),
-  hide: (key: string) => commit(hideDock(read(), key)),
-  toggle: (key: string, offered: readonly DockPanel[]) => commit(toggleDock(read(), key, offered)),
-  drop: (key: string, panel: DockPanel) => commit(dropPanel(read(), key, panel)),
-  openDoc: (key: string, doc: Omit<DockDoc, "id">) => commit(openDoc(read(), key, doc)),
+  show: (key: string, panel: DockPanel) => {
+    byHand(key, { open: true, panel });
+    commit(showPanel(read(), key, panel));
+  },
+  hide: (key: string) => {
+    byHand(key, { open: false, panel: null });
+    commit(hideDock(read(), key));
+  },
+  toggle: (key: string, offered: readonly DockPanel[]) => {
+    const next = placeIn(toggleDock(read(), key, offered), key);
+    byHand(key, { open: next.open, panel: next.panel });
+    commit(toggleDock(read(), key, offered));
+  },
+  drop: (key: string, panel: DockPanel) => {
+    if (placeIn(read(), key).panel === panel) byHand(key, { open: false, panel: null });
+    commit(dropPanel(read(), key, panel));
+  },
+  openDoc: (key: string, doc: Omit<DockDoc, "id">) => {
+    byHand(key, { open: true, panel: "docs" });
+    commit(openDoc(read(), key, doc));
+  },
   selectDoc: (key: string, id: string) => commit(selectDoc(read(), key, id)),
   closeDoc: (key: string, id: string) => commit(closeDoc(read(), key, id)),
   setWidth: (width: number) => commit({ ...read(), width }),

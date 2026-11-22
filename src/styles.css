@@ -82,6 +82,10 @@
      blue, the default accent, so a default workspace looks as it did.
      Dark mode lifts it: the logo blue on near black is about 2 to 1. */
   --working: #004aad;
+  /* Another person at something in a shared room (the side dock's dot,
+     GitHub 522): violet, which no other state uses, deep enough to read
+     at a dot's size on white. */
+  --teammate: #6d3fd6;
 
   --border: rgba(18, 18, 21, 0.09);
   --input: rgba(18, 18, 21, 0.12);
@@ -148,6 +152,7 @@
   /* the same deep blue, lifted in lightness only until it reads on every
      dark surface it sits on, the selected row's grey included */
   --working: #2e86ff;
+  --teammate: #a78bfa;
 
   --border: rgba(255, 255, 255, 0.09);
   --input: rgba(255, 255, 255, 0.13);
@@ -196,6 +201,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-working: var(--working);
+  --color-teammate: var(--teammate);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
