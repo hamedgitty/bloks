@@ -74,7 +74,7 @@ function FileRow({ path, status, added, removed, note, onOpen }: { path: string;
         type="button"
         onClick={onOpen}
         title={`${path}, ${t(STATUS_WORDS[status] ?? "dock.changes.status.modified")}`}
-        className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-body outline-none transition-colors duration-150 hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-body outline-none transition-colors duration-150 hover:bg-accent/60"
       >
         <Icon
           size={14}
@@ -166,7 +166,7 @@ export function ChangesPanel({ placeKey, threadId, files, shown }: { placeKey: s
                 aria-checked={scope === s}
                 onClick={() => setScope(s)}
                 className={cn(
-                  "h-7 truncate rounded-md px-2 text-body outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+                  "h-7 truncate rounded-md px-2 text-body outline-none transition-colors duration-150",
                   scope === s ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                 )}
               >
@@ -187,7 +187,7 @@ export function ChangesPanel({ placeKey, threadId, files, shown }: { placeKey: s
             onClick={() => setGitRound((n) => n + 1)}
             aria-label={t("dock.changes.refresh")}
             title={t("dock.changes.refresh")}
-            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground"
           >
             <RefreshCw size={14} />
           </button>
@@ -268,7 +268,7 @@ function BackBar({ path, onBack, children }: { path: string; onBack: () => void;
         onClick={onBack}
         aria-label={t("dock.changes.back")}
         title={t("dock.changes.back")}
-        className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground"
       >
         <ArrowLeft size={15} />
       </button>

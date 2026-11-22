@@ -88,7 +88,7 @@ export function FilesPanel({ placeKey, place, shown, botId }: { placeKey: string
             aria-label={t("dock.files.tree")}
             title={t("dock.files.tree")}
             className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+              "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground",
               treeOut && "bg-accent text-foreground",
             )}
           >
@@ -261,7 +261,7 @@ function FileTree({
                     onClick={() => (node.folder ? toggle(node.path) : node.file && onOpen(node.file))}
                     style={{ paddingLeft: 6 + depth * 14 }}
                     className={cn(
-                      "flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-left text-body outline-none transition-colors duration-150 hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-left text-body outline-none transition-colors duration-150 hover:bg-accent/60",
                       !node.folder && node.path === current ? "bg-accent text-foreground" : "text-foreground",
                     )}
                   >

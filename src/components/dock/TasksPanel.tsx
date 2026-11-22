@@ -89,7 +89,7 @@ export function TasksPanel({
               {task.command}
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              <button type="button" onClick={() => onShowTab(task.id)} className="h-6 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+              <button type="button" onClick={() => onShowTab(task.id)} className="h-6 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent">
                 {t("dock.tasks.show")}
               </button>
               {onOpenUrl &&
@@ -98,7 +98,7 @@ export function TasksPanel({
                     key={url}
                     type="button"
                     onClick={() => onOpenUrl(url)}
-                    className="flex h-6 items-center gap-1 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-6 items-center gap-1 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent"
                   >
                     <Globe size={12} aria-hidden />
                     <span className="font-mono">{url.replace(/^https?:\/\//, "")}</span>
@@ -108,7 +108,7 @@ export function TasksPanel({
                 <button
                   type="button"
                   onClick={() => onStopTab(task.id)}
-                  className="ml-auto flex h-6 items-center gap-1 rounded-md px-2 text-small text-muted-foreground outline-none transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
+                  className="ml-auto flex h-6 items-center gap-1 rounded-md px-2 text-small text-muted-foreground outline-none transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive"
                 >
                   <X size={12} aria-hidden />
                   {t("dock.tasks.stop")}
@@ -124,7 +124,7 @@ export function TasksPanel({
               <span className="text-caption text-muted-foreground">{t("dock.tasks.job")}</span>
             </span>
             {task.threadId && (
-              <button type="button" onClick={() => onOpenJob(task.threadId!)} className="h-6 shrink-0 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+              <button type="button" onClick={() => onOpenJob(task.threadId!)} className="h-6 shrink-0 rounded-md px-2 text-small text-foreground outline-none transition-colors duration-150 hover:bg-accent">
                 {t("dock.tasks.open")}
               </button>
             )}

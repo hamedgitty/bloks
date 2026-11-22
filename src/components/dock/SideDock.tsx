@@ -139,7 +139,7 @@ const SIDE_WORDS: Record<DockSide, MessageKey> = {
 };
 
 const ROUND_BUTTON =
-  "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
+  "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 export function SideDock({
   placeKey,
@@ -254,7 +254,7 @@ export function SideDock({
           data-dock-tab={key}
           onClick={onSelect}
           className={cn(
-            "relative flex h-7 max-w-[160px] items-center gap-1.5 rounded-md pl-2 pr-6 text-body outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+            "relative flex h-7 max-w-[160px] items-center gap-1.5 rounded-md pl-2 pr-6 text-body outline-none transition-colors duration-150",
             isFront ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
           )}
         >
