@@ -88,6 +88,10 @@ export interface BlokRecord {
   lanes?: Record<string, string>;
   /** Its topics, open and closed (server/room-topics.ts). */
   topics?: RoomTopic[];
+  /** The owner lets the room's lead move a person's message from the main
+   * stream into a topic, or open one for it (server/room-topics.ts,
+   * mayMove). Off unless the owner turns it on. */
+  leadRoutes?: boolean;
 }
 
 /** What members of a shared room can see and do, set by the owner. */
@@ -234,7 +238,7 @@ export class BlokStore {
 
   patch(
     id: string,
-    patch: Partial<Pick<BlokRecord, "name" | "memberIds" | "leadOnly" | "answers" | "leadId" | "cwd" | "archived" | "section">>,
+    patch: Partial<Pick<BlokRecord, "name" | "memberIds" | "leadOnly" | "answers" | "leadId" | "cwd" | "archived" | "section" | "leadRoutes">>,
   ): BlokRecord | null {
     const blok = this.get(id);
     if (!blok) return null;
@@ -254,6 +258,8 @@ export class BlokStore {
       blok.leadOnly = answers !== "everyone";
     }
     if (typeof patch.archived === "boolean") blok.archived = patch.archived || undefined;
+    // false rather than gone, so a client merging this frame drops it too
+    if (typeof patch.leadRoutes === "boolean") blok.leadRoutes = patch.leadRoutes;
     if ("cwd" in patch) blok.cwd = patch.cwd ?? undefined;
     // null rather than gone: a room frame is merged into what a client
     // already holds, and a missing key would leave the old heading there

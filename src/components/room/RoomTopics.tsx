@@ -9,10 +9,13 @@
 //                   folder and branch its work belongs in.
 //   TopicPanel      a topic's context in the side dock: what it is for, who
 //                   works in it, where its work goes, the files and pages
-//                   it has touched, and closing or reopening it.
+//                   it has touched, and closing or reopening it. On the
+//                   main stream, the owner's switch that lets the room's
+//                   lead move people's messages into topics.
 import { useState } from "react";
 import { Check, ChevronRight, FileText, Folder, GitBranch, Globe, Lock, MessagesSquare, Plus } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { AgentAvatar } from "@/components/Avatar";
@@ -264,6 +267,7 @@ export function TopicPanel({
   count,
   canClose,
   canEdit,
+  lead,
   creatorName,
   onEdit,
   onOpenDoc,
@@ -277,6 +281,8 @@ export function TopicPanel({
   count: number;
   canClose: boolean;
   canEdit: boolean;
+  /** The room's lead, who routes work into topics when allowed. */
+  lead: Bot | null;
   creatorName: (by: string) => string;
   onEdit: () => void;
   onOpenDoc: (doc: { botId: string; name: string; mime: string; size: number }) => void;
@@ -291,6 +297,7 @@ export function TopicPanel({
         </div>
         <p className="text-ui font-medium text-foreground">{t("roomTopics.panel.none")}</p>
         <p className="max-w-[36ch] text-pretty text-body text-muted-foreground">{t("roomTopics.panel.noneHint")}</p>
+        {canEdit && lead && <RoutingSwitch blok={blok} lead={lead} />}
       </div>
     );
   }
@@ -361,6 +368,7 @@ export function TopicPanel({
             </p>
           )}
           <p className="mt-1.5 text-small text-muted-foreground">{t("roomTopics.panel.whereHint")}</p>
+          {topic.folder && <p className="mt-1 text-pretty text-small text-muted-foreground">{t("roomTopics.panel.folderHeld")}</p>}
         </div>
       )}
       <div className={section}>
@@ -418,5 +426,33 @@ export function TopicPanel({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * The owner's switch for the room's lead routing work: with it on, the
+ * lead may move a person's message from the main stream into an open
+ * topic, or into one it opens for it, and the move is said in the stream.
+ * The server holds the rule (PATCH /api/bloks/:id, leadRoutes).
+ */
+function RoutingSwitch({ blok, lead }: { blok: Blok; lead: Bot }) {
+  const [error, setError] = useState<string | null>(null);
+  const on = blok.leadRoutes === true;
+  return (
+    <label htmlFor={`routes-${blok.id}`} className="mt-5 flex w-full max-w-[340px] items-start gap-3 rounded-xl border bg-card px-3.5 py-3 text-left">
+      <span className="min-w-0 flex-1">
+        <span className="block text-body font-medium text-foreground">{t("roomTopics.routing.label", { name: lead.name })}</span>
+        <span className="mt-0.5 block text-pretty text-small leading-relaxed text-muted-foreground">{t("roomTopics.routing.line", { name: lead.name })}</span>
+        {error && <span role="alert" className="mt-1 block text-small text-destructive">{error}</span>}
+      </span>
+      <Switch
+        id={`routes-${blok.id}`}
+        checked={on}
+        onCheckedChange={(next) => {
+          setError(null);
+          api(`/api/bloks/${blok.id}`, { method: "PATCH", body: JSON.stringify({ leadRoutes: next }) }).catch((e: Error) => setError(e.message));
+        }}
+      />
+    </label>
   );
 }

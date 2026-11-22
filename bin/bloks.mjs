@@ -718,6 +718,7 @@ const COMMANDS = {
           who: m.from ? (names.get(m.from) ?? "an agent") : m.author ? "a member" : "the person",
           by: m.from ? "agent" : m.author ? "member" : "person",
           ...(m.from ? { agentId: m.from } : {}),
+          ...(m.topicId ? { topicId: m.topicId } : {}),
           text: m.text,
         }));
     },
@@ -985,6 +986,62 @@ const COMMANDS = {
         name: flags.name,
         memberIds: (flags.members ?? "").split(",").map((s) => s.trim()).filter(Boolean),
       });
+    },
+  },
+  topics: {
+    use: "topics <room-id>",
+    about: "a room's topics: each one's id, title, category, whether it is open, the agents who work in it, and the folder and branch its work goes in",
+    run: async ([room]) => {
+      if (!room || room.startsWith("--")) throw new Error("topics needs a room id, from `rooms`");
+      const [{ bloks }, { bots }] = await Promise.all([request("GET", "/api/bloks?messages=0"), request("GET", "/api/bots?messages=0")]);
+      const found = (bloks ?? []).find((b) => b.id === room);
+      if (!found) throw new Error("no such room, or you are not in it. `rooms` lists them");
+      const names = new Map((bots ?? []).map((b) => [b.id, b.name]));
+      return {
+        topics: (found.topics ?? []).map((tp) => ({
+          id: tp.id,
+          title: tp.title,
+          ...(tp.category ? { category: tp.category } : {}),
+          status: tp.status,
+          agents: tp.agents?.length ? tp.agents.map((id) => names.get(id) ?? id) : "every agent in the room",
+          ...(tp.folder ? { folder: tp.folder } : {}),
+          ...(tp.branch ? { branch: tp.branch } : {}),
+        })),
+        routing: found.leadRoutes === true,
+      };
+    },
+  },
+  topic: {
+    use: 'topic open <room-id> --title <title> [--category <name>] | topic close <room-id> <topic-id> | topic reopen <room-id> <topic-id> | topic move <room-id> [<message-id>] (--into <topic-id> | --new <title> [--category <name>]) [--to <agent-id,...>]',
+    about:
+      "for a room you lead: open, close or reopen a topic, or move a person's message from the main stream into an open topic or a new one. " +
+      "Moving needs the owner to let you route work in that room; without a message id it moves the message your turn is answering. " +
+      "The move is said in the main stream, and wakes the topic's agents (or only those --to names) with the message there",
+    run: async ([verb, room, ...rest]) => {
+      if (!room || room.startsWith("--")) throw new Error("topic needs what to do and a room id: topic open|close|reopen|move <room-id> ...");
+      const at = `/api/bloks/${encodeURIComponent(room)}/topics`;
+      const { flags, words } = parseArgs(rest);
+      if (verb === "open") {
+        if (!flags.title || flags.title === "true") throw new Error("topic open needs a --title");
+        return request("POST", at, { title: flags.title, ...(flags.category && flags.category !== "true" ? { category: flags.category } : {}) });
+      }
+      if (verb === "close" || verb === "reopen") {
+        if (!words[0]) throw new Error(`topic ${verb} needs the topic's id, from \`topics ${room}\``);
+        return request("PATCH", `${at}/${encodeURIComponent(words[0])}`, { status: verb === "close" ? "closed" : "open" });
+      }
+      if (verb === "move") {
+        const into = flags.into && flags.into !== "true" ? flags.into : undefined;
+        const title = flags.new && flags.new !== "true" ? flags.new : undefined;
+        if (!into && !title) throw new Error('topic move needs where it goes: --into <topic-id>, or --new "<title>"');
+        const to = flags.to && flags.to !== "true" ? String(flags.to).split(",").map((id) => id.trim()).filter(Boolean) : undefined;
+        const moved = await request("POST", `${at}/move`, {
+          ...(words[0] ? { messageId: words[0] } : {}),
+          ...(into ? { topicId: into } : { title, ...(flags.category && flags.category !== "true" ? { category: flags.category } : {}) }),
+          ...(to ? { to } : {}),
+        });
+        return { ...moved, said: `Moved it into "${moved.topic?.title}"${moved.woke?.length ? `, which wakes ${moved.woke.join(", ")}` : ""}.` };
+      }
+      throw new Error("topic does open, close, reopen or move");
     },
   },
   routines: {

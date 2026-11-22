@@ -266,6 +266,41 @@ to a room's topics is broadcast as `room.topics` too, which members hear
 (the owner's app has the whole room in its `blok` frame), so a member's
 screen follows topics opened, closed or changed by someone else.
 
+A workflow's "Post in a room" step may open a topic instead of naming
+one (`Step.newTopic`): each run opens it, its title filled in from the
+run's values, posts into it, and adds the topic's title and id to the
+step's values. The main stream says the workflow opened it.
+
+The room's lead can route work into topics, once the owner switches it
+on for the room (`BlokRecord.leadRoutes`, the switch in the topic dock on
+the main stream; `PATCH /api/bloks/:id` refuses it to an agent). Then
+each person's message in the main stream reaches the lead with a note
+(`routingNote`): the message's id, the open topics and the command,
+`bloks topic move <room> [<message>] --into <topic> | --new <title>
+[--to <agents>]`, which is `POST /api/bloks/:room/topics/move`. The
+route checks it whole before anything changes (`mayMove`, `movable`,
+`moveWakes` in `server/room-topics.ts`): only the lead while the owner
+lets it, or the owner or an admin; only a person's own text in the main
+stream, and each message once; only agents who work in the topic woken,
+never the one who moved it, and a move that would wake nobody is
+refused. The message keeps its place and gains `topicId` and `moved`
+(who, when), the main stream says who moved whose message where, and the
+topic's agents are woken with it there through the room's queue
+(`RoomAuthor.existing` and `reach`), behind the round that is answering
+it. A new topic opened this way is the lead's, as one it opens itself.
+
+A topic's folder is held where Bloks can hold it (`folderHold`). For a
+Claude Code turn on this computer in a topic with a folder, the driver
+hands the engine `server/topic-folder-hook.ts` as a PreToolUse hook on
+Write, Edit, MultiEdit and NotebookEdit (`SendTurnInput.writeOnly`),
+with the topic's folder under the turn's folder, the agent's own notes
+folder and the temp folder; a write anywhere else, through a link
+included, is refused before it runs and the agent is told why. It holds
+in every permission mode. It cannot hold a command run in a shell, any
+other engine's own tools, an agent that works elsewhere, one whose engine
+hooks the owner switched off, a shared room, or Windows, and the agent's
+brief says which (`folderHoldBrief`), as the topic dock does for people.
+
 ## Persistence
 
 Plain JSON in the workspace's data folder (`~/.bloks` for Personal, see

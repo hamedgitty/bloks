@@ -228,6 +228,10 @@ export const RULES: Rule[] = [
   // which agents work in it, its folder and its branch are the person's.
   { method: "POST", path: "/api/bloks/:room/topics", why: "open a topic in a room it leads, by its title and category" },
   { method: "PATCH", path: "/api/bloks/:room/topics/:id", why: "close or reopen a topic in a room it leads" },
+  // and moving a person's message from the main stream into a topic, or
+  // into one it opens for it: the lead only, while the owner lets it,
+  // which the route checks and says in the room
+  { method: "POST", path: "/api/bloks/:room/topics/move", why: "move a person's message from the main stream of a room it leads into a topic, when the owner lets it" },
 
   // Getting a colleague, and somewhere to work with them.
   { method: "POST", path: "/api/bots", why: "hire a teammate" },

@@ -44,7 +44,8 @@ export interface RoomTopic {
   /** The room's agents who work in it; absent or empty is all of them. */
   agents?: string[];
   /** Where its work belongs, relative to the room's folder. Told to the
-   * agents with each message; not yet held to by the file tools. */
+   * agents with each message, and held to where Bloks can hold an
+   * engine's file writes (folderHold below). */
   folder?: string;
   /** The git branch its changes go on, told to the agents the same way. */
   branch?: string;
@@ -244,4 +245,135 @@ export function topicBrief(topic: RoomTopic): string {
   ].filter(Boolean);
   const work = where.length ? ` For this topic, ${where.join(" and ")}.` : "";
   return `(This is in the room's topic "${topic.title}". What you say now goes into that topic.${work})`;
+}
+
+// ── the lead routing work into topics ──────────────────────────────────
+//
+// A room's lead reads the main stream. When a person's message there is
+// work that belongs in an open topic, or new work, the lead can move it:
+// into that topic, or into one it opens for it. Only with the owner's
+// say-so for the room (BlokRecord.leadRoutes), only a person's own words
+// from the main stream, each message once, and never silently: the move
+// is said in the main stream, the message carries who moved it, and the
+// topic's agents are woken with it there. The owner and an admin may move
+// one too; nobody else.
+
+export const MOVE_REFUSALS = {
+  notLead: "only the room's lead can move work into a topic",
+  notLet: "the owner has not let this room's lead move work into topics. Answer in the main stream, or ask the owner to turn on routing for the room",
+  notPersons: "only a person's own message in the main stream can be moved into a topic",
+  already: "that message is already in a topic",
+  which: "say which message to move: its id, from `bloks history <room>`",
+  both: "move it into an open topic or into a new one, not both",
+  neither: "say where it goes: an open topic's id, or a title for a new one",
+  nobody: "nobody but you works in that topic, so moving it there wakes nobody. Answer it yourself, or name agents who work there",
+  stranger: "only agents who work in that topic can be woken there",
+} as const;
+
+/** Whether this actor may move a message into a topic, and why not. */
+export function mayMove(actor: TopicActor, leadRoutes: boolean): { ok: true } | { ok: false; error: string } {
+  if (actor.kind === "owner" || actor.kind === "admin") return { ok: true };
+  if (actor.kind !== "agent" || !actor.lead) return { ok: false, error: MOVE_REFUSALS.notLead };
+  if (!leadRoutes) return { ok: false, error: MOVE_REFUSALS.notLet };
+  return { ok: true };
+}
+
+/** The message as the move needs it. */
+export interface MovableMessage {
+  id: string;
+  role: "user" | "bot";
+  kind: string;
+  from?: string;
+  deleted?: boolean;
+  queued?: boolean;
+  topicId?: string;
+}
+
+/** Whether a message may be moved: a person's words, said and kept, in
+ * the main stream, and not moved before. */
+export function movable(message: MovableMessage | undefined): { ok: true } | { ok: false; status: number; error: string } {
+  if (!message) return { ok: false, status: 404, error: "no such message in this room" };
+  if (message.role !== "user" || message.from || message.kind !== "text" || message.deleted || message.queued) {
+    return { ok: false, status: 400, error: MOVE_REFUSALS.notPersons };
+  }
+  if (message.topicId) return { ok: false, status: 409, error: MOVE_REFUSALS.already };
+  return { ok: true };
+}
+
+/**
+ * Who a moved message wakes in its topic: the agents named, each of whom
+ * must work there, or every agent who works there; never the one who
+ * moved it, which has read it already. An empty answer is refused before
+ * anything moves, since a move that wakes nobody only hides the message.
+ */
+export function moveWakes(
+  workers: readonly string[],
+  mover: string | null,
+  named: readonly string[] | undefined,
+): { ok: true; ids: string[] } | { ok: false; error: string } {
+  if (named?.length) {
+    if (named.some((id) => !workers.includes(id))) return { ok: false, error: MOVE_REFUSALS.stranger };
+    const ids = [...new Set(named)].filter((id) => id !== mover);
+    return ids.length ? { ok: true, ids } : { ok: false, error: MOVE_REFUSALS.nobody };
+  }
+  const ids = workers.filter((id) => id !== mover);
+  return ids.length ? { ok: true, ids } : { ok: false, error: MOVE_REFUSALS.nobody };
+}
+
+/** What the room's lead is told with a person's message in the main
+ * stream, while it may route work: the message's id, the open topics, and
+ * the command, so moving it is one step and never a guess. */
+export function routingNote(roomId: string, messageId: string, topics: readonly RoomTopic[], cli: string): string {
+  const open = topics.filter((t) => t.status === "open");
+  const list = open.length
+    ? `Open topics: ${open.map((t) => `"${t.title}" (${t.id}${t.category ? `, ${t.category}` : ""})`).join("; ")}.`
+    : "The room has no open topics yet.";
+  return (
+    `(You lead this room and may route work into topics. This message is ${messageId}. ${list} ` +
+    `When it is work that clearly belongs in an open topic, move it there with \`${cli} topic move ${roomId} ${messageId} --into <topic-id>\`; ` +
+    `when it asks for new work, open a topic for it with \`${cli} topic move ${roomId} ${messageId} --new "<title>" [--category <name>]\`. ` +
+    `Add --to <agent-id,...> to wake only some of the topic's agents. The move is said in the main stream for everyone. ` +
+    `Answer questions, small talk and anything you are unsure of here yourself, and say in a line what you moved and why.)`
+  );
+}
+
+// ── holding a topic's folder ───────────────────────────────────────────
+//
+// A topic may say where its work goes. Bloks tells every agent, and holds
+// the writes it can: Claude Code's own file tools (Write, Edit, MultiEdit,
+// NotebookEdit) are checked before they run by a hook Bloks hands the
+// engine (server/topic-folder-hook.ts), and a write outside the topic's
+// folder, the agent's own notes folder and the temp folder is refused
+// with the reason. What Bloks cannot hold, it says: a command an agent
+// runs in its shell, any other engine's own tools, an agent that works
+// somewhere else, one whose engine hooks the owner switched off, a shared
+// room, and Windows.
+
+export type HoldGap = "engine" | "elsewhere" | "hooks" | "shared" | "platform";
+
+/** Whether Bloks can hold this turn's file writes to a topic's folder, or
+ * the reason it cannot. */
+export function folderHold(turn: { engine: string; elsewhere: boolean; hooksOff: boolean; shared: boolean; platform: string }): { held: true } | { held: false; gap: HoldGap } {
+  if (turn.engine !== "claudeAgent") return { held: false, gap: "engine" };
+  if (turn.platform === "win32") return { held: false, gap: "platform" };
+  if (turn.elsewhere) return { held: false, gap: "elsewhere" };
+  if (turn.shared) return { held: false, gap: "shared" };
+  if (turn.hooksOff) return { held: false, gap: "hooks" };
+  return { held: true };
+}
+
+/** What an agent working in a topic with a folder is told about it, in
+ * its brief: held, or honestly not. */
+export function folderHoldBrief(folder: string, hold: { held: true } | { held: false; gap: HoldGap }): string {
+  if (hold.held) {
+    return `This topic's files go in ${folder}. Bloks holds your file tools to it: a Write or Edit outside it (other than your own notes and the temp folder) is refused. Commands you run in a shell are not held, so keep their writes inside it too.`;
+  }
+  const why = {
+    engine: "your engine's own tools write files without asking Bloks",
+    elsewhere: "you work on another machine",
+    hooks: "the hooks of your engine are switched off for you",
+    shared: "this room is shared",
+    platform: "it cannot on this computer",
+  }[hold.gap];
+  return `This topic's files go in ${folder}. Bloks cannot hold you to it here, because ${why}, so keep every write inside it yourself.`;
 }

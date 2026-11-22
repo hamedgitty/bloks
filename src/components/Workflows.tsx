@@ -86,6 +86,9 @@ export interface Step {
   /** A "Post in a room" step's topic in that room; absent is the main
    * stream (server/workflows.ts). */
   topicId?: string;
+  /** Instead of topicId: a topic the step opens and posts into, its title
+   * filled in like the words (server/workflows.ts). */
+  newTopic?: { title: string; category?: string };
   text: string;
   when?: { left: string; op: ConditionOp; right?: string };
   timeoutMin?: number;
@@ -358,6 +361,7 @@ function stepTitle(step: Step, bots: Bot[], rooms: Room[]): string {
   }
   if (step.action === "post") {
     const picked = rooms.find((r) => r.id === step.targetId);
+    if (picked && step.newTopic) return t("workflows.stepTitle.postInNewTopic", { room: picked.name });
     const topic = step.topicId ? picked?.topics?.find((tp) => tp.id === step.topicId)?.title : undefined;
     if (picked && topic) return t("workflows.stepTitle.postInTopic", { room: picked.name, topic });
     return picked ? t("workflows.stepTitle.post", { room: picked.name }) : t("workflows.postInARoom");
@@ -1649,20 +1653,37 @@ function PaneHeading({ eyebrow, title, aside }: { eyebrow: string; title: string
   );
 }
 
-/** Where in the room a post goes: the main stream, or one of its open
- * topics under its category. A topic the step already names stays on the
- * list after it closes, said as closed, so the choice is never silently
- * changed. Offered only for a room that has topics. */
-function TopicChoice({ room, value, onPick }: { room: Room | undefined; value: string | undefined; onPick: (topicId: string | undefined) => void }) {
+/** Where in the room a post goes: the main stream, one of its open
+ * topics under its category, or a topic the step opens each time it runs.
+ * A topic the step already names stays on the list after it closes, said
+ * as closed, so the choice is never silently changed. */
+function TopicChoice({
+  room,
+  value,
+  fresh,
+  onPick,
+}: {
+  room: Room | undefined;
+  value: string | undefined;
+  fresh: Step["newTopic"];
+  onPick: (change: Pick<Step, "topicId" | "newTopic">) => void;
+}) {
   const topics = orderTopics(room?.topics).filter((tp) => tp.status === "open" || tp.id === value);
-  if (!room || !topics.length) return null;
+  if (!room) return null;
   const known = !value || topics.some((tp) => tp.id === value);
+  const NEW = "+new"; // never a topic id, which is letters, digits and dashes
   return (
     <Section title={t("workflows.topic")} className="mt-8">
       <SettingsSelect
         aria-label={t("workflows.topic")}
-        value={known ? (value ?? "") : ""}
-        onChange={(e) => onPick(e.target.value || undefined)}
+        value={fresh ? NEW : known ? (value ?? "") : ""}
+        onChange={(e) =>
+          onPick(
+            e.target.value === NEW
+              ? { topicId: undefined, newTopic: { title: fresh?.title ?? "", ...(fresh?.category ? { category: fresh.category } : {}) } }
+              : { topicId: e.target.value || undefined, newTopic: undefined },
+          )
+        }
         className="w-full max-w-[360px]"
       >
         <option value="">{t("workflows.topicMain")}</option>
@@ -1675,8 +1696,29 @@ function TopicChoice({ room, value, onPick }: { room: Room | undefined; value: s
             ))}
           </optgroup>
         ))}
+        <option value={NEW}>{t("workflows.topicNew")}</option>
       </SettingsSelect>
-      <p className="mt-2 text-pretty text-small text-muted-foreground">{t("workflows.topicLine")}</p>
+      {fresh ? (
+        <div className="mt-3 grid max-w-[520px] grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
+          <Input
+            value={fresh.title}
+            onChange={(e) => onPick({ topicId: undefined, newTopic: { ...fresh, title: e.target.value } })}
+            maxLength={300}
+            placeholder={t("workflows.topicNewTitle")}
+            aria-label={t("workflows.topicNewTitleLabel")}
+          />
+          <Input
+            value={fresh.category ?? ""}
+            onChange={(e) => onPick({ topicId: undefined, newTopic: { title: fresh.title, ...(e.target.value ? { category: e.target.value } : {}) } })}
+            maxLength={40}
+            placeholder={t("roomTopics.field.categoryHint")}
+            aria-label={t("roomTopics.field.category")}
+          />
+          <p className="text-pretty text-small text-muted-foreground sm:col-span-2">{t("workflows.topicNewLine")}</p>
+        </div>
+      ) : (
+        <p className="mt-2 text-pretty text-small text-muted-foreground">{t("workflows.topicLine")}</p>
+      )}
     </Section>
   );
 }
@@ -1908,7 +1950,7 @@ function StepPane({
                 <PickCard
                   key={room.id}
                   on={step.targetId === room.id}
-                  onPick={() => onChange(step.targetId === room.id ? { targetId: room.id } : { targetId: room.id, topicId: undefined })}
+                  onPick={() => onChange(step.targetId === room.id ? { targetId: room.id } : { targetId: room.id, topicId: undefined, newTopic: undefined })}
                   face={<RoomFace room={room} bots={allBots} />}
                   title={room.name}
                   line={t("workflows.members", { count: room.memberIds?.length ?? 0 })}
@@ -1918,7 +1960,7 @@ function StepPane({
           )}
         </Section>
       )}
-      {step.action === "post" && <TopicChoice room={rooms.find((r) => r.id === step.targetId)} value={step.topicId} onPick={(topicId) => onChange({ topicId })} />}
+      {step.action === "post" && <TopicChoice room={rooms.find((r) => r.id === step.targetId)} value={step.topicId} fresh={step.newTopic} onPick={onChange} />}
 
       <Section title={title} className="mt-8" aside={<Needs problem={problem} field="text" loud={loud} />}>
         <TokenField

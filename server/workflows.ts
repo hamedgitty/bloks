@@ -92,6 +92,10 @@ export interface Step {
   /** post only: one of the room's topics to post in (server/room-topics.ts).
    * Absent is the room's main stream. */
   topicId?: string;
+  /** post only, instead of topicId: a topic the step opens in the room
+   * and posts into, its title templated like the words. The run's values
+   * gain the topic's title and id, as `topic` and `topicId`. */
+  newTopic?: { title: string; category?: string };
   /** The words, templated. */
   text: string;
   /** Run this step only if this holds. Absent means always. */
@@ -166,6 +170,9 @@ export interface WorkflowRun {
 export const MAX_WORKFLOWS = 40;
 export const MAX_STEPS = 12;
 export const MAX_STEP_TEXT = 2_000;
+/** A new topic's title as written in a step, before its values are filled
+ * in; once they are, it is held to a topic title's length. */
+export const MAX_TOPIC_TITLE_TEMPLATE = 300;
 export const MAX_NAME = 80;
 /** How many runs a workflow remembers. Enough to see a pattern, not
  * enough to turn a settings file into a log store. Runs not yet finished
@@ -361,8 +368,10 @@ export function problems(input: { name?: string; trigger?: Trigger; steps?: Step
     if (step.when && !OPS.includes(step.when.op)) found.push(`${where} has a condition nobody can check`);
 
     // every reference has to name the trigger or a step already finished
+    if (step.newTopic && !String(step.newTopic.title ?? "").trim()) found.push(`${where} opens a topic with no title`);
     const references = [
       ...referencesIn(step.text ?? ""),
+      ...referencesIn(step.newTopic?.title ?? ""),
       ...referencesIn(step.when?.left ?? ""),
       ...referencesIn(step.when?.right ?? ""),
     ];
@@ -430,7 +439,13 @@ export function clean(raw: unknown): Omit<Workflow, "id" | "createdAt"> | null {
       takenIds.push(id);
       const step: Step = { id, action, text };
       if (typeof s.targetId === "string" && /^[\w-]{1,64}$/.test(s.targetId)) step.targetId = s.targetId;
-      if (action === "post" && step.targetId && typeof s.topicId === "string" && /^[\w-]{1,64}$/.test(s.topicId)) step.topicId = s.topicId;
+      // a new topic or an open one, never both: the new one wins
+      const fresh = action === "post" && step.targetId && typeof s.newTopic === "object" && s.newTopic !== null ? (s.newTopic as Record<string, unknown>) : null;
+      if (fresh) {
+        step.newTopic = { title: String(fresh.title ?? "").slice(0, MAX_TOPIC_TITLE_TEMPLATE) };
+        const category = typeof fresh.category === "string" ? fresh.category.replace(/\s+/g, " ").trim().slice(0, 40) : "";
+        if (category) step.newTopic.category = category;
+      } else if (action === "post" && step.targetId && typeof s.topicId === "string" && /^[\w-]{1,64}$/.test(s.topicId)) step.topicId = s.topicId;
       const rawWhen = (typeof s.when === "object" && s.when !== null ? s.when : null) as Record<string, unknown> | null;
       if (rawWhen && OPS.includes(rawWhen.op as ConditionOp)) {
         step.when = {
@@ -694,6 +709,7 @@ export class WorkflowStore {
         if (step.targetId === targetId) {
           delete step.targetId;
           delete step.topicId;
+          delete step.newTopic;
           workflow.enabled = false;
           touched = true;
         }

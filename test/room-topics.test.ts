@@ -7,8 +7,15 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  MOVE_REFUSALS,
   TOPIC_LIMITS,
   applyDraft,
+  folderHold,
+  folderHoldBrief,
+  mayMove,
+  movable,
+  moveWakes,
+  routingNote,
   cleanBranch,
   cleanFolder,
   newTopic,
@@ -210,5 +217,90 @@ describe("folders in the topics bar", () => {
     const states = new Map<string, TopicState>([["a", "working"], ["c", "waiting"]]);
     assert.equal(topicFolders(topics, states, null)[0].mark, "waiting");
     assert.equal(topicFolders(topics, new Map([["a", "working"]]), null)[0].mark, "working");
+  });
+});
+
+describe("the lead routing work into topics", () => {
+  const lead = { kind: "agent", botId: "marlow", lead: true } as const;
+  const member = { kind: "agent", botId: "ada", lead: false } as const;
+
+  test("only the lead moves work, and only once the owner lets it", () => {
+    assert.deepEqual(mayMove(lead, false), { ok: false, error: MOVE_REFUSALS.notLet });
+    assert.deepEqual(mayMove(lead, true), { ok: true });
+    assert.deepEqual(mayMove(member, true), { ok: false, error: MOVE_REFUSALS.notLead });
+    assert.deepEqual(mayMove({ kind: "collaborator", personId: "p" }, true), { ok: false, error: MOVE_REFUSALS.notLead });
+    assert.deepEqual(mayMove({ kind: "viewer", personId: "p" }, true), { ok: false, error: MOVE_REFUSALS.notLead });
+    // the owner and an admin need nobody's leave
+    assert.deepEqual(mayMove({ kind: "owner" }, false), { ok: true });
+    assert.deepEqual(mayMove({ kind: "admin", personId: "p" }, false), { ok: true });
+  });
+
+  test("only a person's own words in the main stream move, and each only once", () => {
+    const said = { id: "m1", role: "user" as const, kind: "text" };
+    assert.deepEqual(movable(said), { ok: true });
+    assert.equal(movable(undefined).ok, false);
+    for (const odd of [
+      { ...said, role: "bot" as const, from: "ada" },
+      { ...said, from: "ada" },
+      { ...said, kind: "notice" },
+      { ...said, deleted: true },
+      { ...said, queued: true },
+    ]) {
+      const verdict = movable(odd);
+      assert.equal(verdict.ok, false, JSON.stringify(odd));
+    }
+    const again = movable({ ...said, topicId: "t1" });
+    assert.ok(!again.ok && again.status === 409);
+  });
+
+  test("a move wakes the topic's agents, never the one who moved it, and never nobody", () => {
+    assert.deepEqual(moveWakes(["marlow", "ada", "sam"], "marlow", undefined), { ok: true, ids: ["ada", "sam"] });
+    assert.deepEqual(moveWakes(["marlow", "ada", "sam"], "marlow", ["sam"]), { ok: true, ids: ["sam"] });
+    assert.deepEqual(moveWakes(["ada"], null, undefined), { ok: true, ids: ["ada"] });
+    assert.deepEqual(moveWakes(["marlow"], "marlow", undefined), { ok: false, error: MOVE_REFUSALS.nobody });
+    assert.deepEqual(moveWakes(["marlow", "ada"], "marlow", ["marlow"]), { ok: false, error: MOVE_REFUSALS.nobody });
+    assert.deepEqual(moveWakes(["marlow", "ada"], "marlow", ["sam"]), { ok: false, error: MOVE_REFUSALS.stranger });
+  });
+
+  test("the lead is told the message, the open topics and the command", () => {
+    const topics = [
+      newTopic("t1", { title: "Auth", category: "Backend" }, "owner"),
+      setStatus(newTopic("t2", { title: "Old work" }, "owner"), "closed", "owner"),
+    ];
+    const note = routingNote("room-1", "m1", topics, "bloks");
+    assert.match(note, /This message is m1/);
+    assert.match(note, /"Auth" \(t1, Backend\)/);
+    assert.doesNotMatch(note, /Old work/);
+    assert.match(note, /bloks topic move room-1 m1 --into <topic-id>/);
+    assert.match(note, /--new "<title>"/);
+    assert.match(routingNote("room-1", "m1", [], "bloks"), /no open topics yet/);
+    assert.doesNotMatch(note, /[\u2013\u2014]/);
+  });
+});
+
+describe("holding a topic's folder", () => {
+  const turn = { engine: "claudeAgent", elsewhere: false, hooksOff: false, shared: false, platform: "darwin" };
+
+  test("Claude Code on this computer is held", () => {
+    assert.deepEqual(folderHold(turn), { held: true });
+  });
+
+  test("everything else is said as not held, with the reason", () => {
+    assert.deepEqual(folderHold({ ...turn, engine: "codex" }), { held: false, gap: "engine" });
+    assert.deepEqual(folderHold({ ...turn, elsewhere: true }), { held: false, gap: "elsewhere" });
+    assert.deepEqual(folderHold({ ...turn, hooksOff: true }), { held: false, gap: "hooks" });
+    assert.deepEqual(folderHold({ ...turn, shared: true }), { held: false, gap: "shared" });
+    assert.deepEqual(folderHold({ ...turn, platform: "win32" }), { held: false, gap: "platform" });
+  });
+
+  test("the brief says which, and never claims more than is held", () => {
+    const held = folderHoldBrief("src/auth/", { held: true });
+    assert.match(held, /Bloks holds your file tools to it/);
+    assert.match(held, /Commands you run in a shell are not held/);
+    for (const gap of ["engine", "elsewhere", "hooks", "shared", "platform"] as const) {
+      const brief = folderHoldBrief("src/auth/", { held: false, gap });
+      assert.match(brief, /Bloks cannot hold you to it here/);
+      assert.doesNotMatch(brief, /[\u2013\u2014]/);
+    }
   });
 });

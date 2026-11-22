@@ -473,6 +473,7 @@ Not for: the work itself. Do what was asked; reach for these only when Bloks has
 - \`org\` is who reports to whom, as the owner set it, and where you sit; \`who <what you need>\` says who to contact for something and whether to go through your lead. When the owner has agents ask their lead before reaching across teams, a \`say\` or \`tab\` to an agent outside your team is refused and names your lead: send it to them instead.
 - \`hire\` adds a teammate. \`stop\` and \`archive\` act only on an agent you hired or lead.
 - A room for shared work: \`room --name "<name>" --members "id,id"\` (you are added), then brief it with \`say <room-id> "<brief>"\`, naming with @Name each agent whose part it is. \`history <room-id>\` reads it.
+- \`topics <room-id>\` lists a room's topics. A room's lead opens, closes and reopens them with \`topic\`, and, when the owner lets it route work, moves a person's message from the main stream into a topic or a new one with \`topic move\`; the move is said in the room.
 - \`sidebar\` shows the arrangement; \`file\`, \`pin\` and \`unpin\` change where a row sits.
 - \`message-person\` writes to one person privately, only when the owner or an admin asked you to in a team conversation or a room.
 

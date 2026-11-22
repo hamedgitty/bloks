@@ -1114,6 +1114,7 @@ export function RoomView({ blok }: { blok: Blok }) {
           count={topic ? (topicSizes.get(topic.id) ?? 0) : 0}
           canClose={powers.close}
           canEdit={powers.edit}
+          lead={lead}
           creatorName={nameOfActor}
           onEdit={() => topic && setTopicDialog({ topic })}
           onOpenDoc={dockHost.openDoc}
@@ -1237,6 +1238,12 @@ export function RoomView({ blok }: { blok: Blok }) {
                 onReply={setReplyTo}
                 onForward={(message, author) => setForwarding({ message, author })}
               />
+              {m.moved && !m.deleted && (
+                <p className="ml-9 mt-0.5 flex items-center gap-1.5 text-small text-muted-foreground">
+                  <MessagesSquare size={12} className="shrink-0" aria-hidden />
+                  {t("roomTopics.movedBy", { name: nameOfActor(m.moved.by) })}
+                </p>
+              )}
               {m.route && !m.deleted && (
                 <RouteLine
                   route={m.route}

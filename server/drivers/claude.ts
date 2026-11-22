@@ -172,6 +172,20 @@ function decodeConfig(raw: unknown): ClaudeConfig {
 // (screen-servers.ts), which the ACP agents are handed too
 const SANDBOX_HELPER = helperEntry("sandbox-proxy");
 const PERMISSION_HELPER = helperEntry("permission-proxy");
+const TOPIC_FOLDER_HOOK = helperEntry("topic-folder-hook");
+
+/** One word for a POSIX shell, whatever is in it. */
+const shellWord = (word: string) => `'${word.replace(/'/g, "'\\''")}'`;
+
+/** The settings that hand Claude Code the topic folder hook: a PreToolUse
+ * check on its own file tools, run as plain node, with the folders this
+ * turn may write in as its arguments. */
+export function topicFolderSettings(dirs: readonly string[], node = process.execPath, hook = TOPIC_FOLDER_HOOK): string {
+  const command = ["ELECTRON_RUN_AS_NODE=1", shellWord(node), shellWord(hook), ...dirs.map(shellWord)].join(" ");
+  return JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: "Write|Edit|MultiEdit|NotebookEdit", hooks: [{ type: "command", command }] }] },
+  });
+}
 
 /** Socket path for a turn's permission bridge. Short and thread-derived:
  * unix socket paths have a length limit that full ids would risk. A home
@@ -538,6 +552,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // this agent's owner switched hooks off: a plugin's session-start
       // text would otherwise land in its context as if it were an order
       if (turn.noHooks || turn.person) argv.push("--settings", JSON.stringify({ disableAllHooks: true }));
+      // a room topic with a folder: its file tools are held to it, which
+      // the server asks only where hooks run (server/room-topics.ts)
+      else if (turn.writeOnly?.length && !turn.place) argv.push("--settings", topicFolderSettings(turn.writeOnly));
       if (turn.person) {
         argv.push("--setting-sources", "", "--strict-mcp-config", "--no-session-persistence");
         // one value per flag, so a folder name with a comma or a space in

@@ -340,6 +340,10 @@ export interface Message {
   /** Said in one of the room's topics (server/room-topics.ts), not its
    * main stream. */
   topicId?: string;
+  /** Moved from the main stream into its topic, by the room's lead or the
+   * owner (server/room-topics.ts): who moved it ("owner", a person's id or
+   * "agent:<id>") and when. Said in the main stream too. */
+  moved?: { by: string; at: number };
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   /** Sent while the lane was busy; drains into the next turn. Not part

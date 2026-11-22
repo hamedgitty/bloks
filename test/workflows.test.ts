@@ -295,6 +295,34 @@ describe("what arrives from a client", () => {
     assert.deepEqual(workflow.steps.map((s) => s.topicId), ["topic-1", undefined, undefined, undefined]);
   });
 
+  test("a post may open a new topic instead, which wins over naming one", () => {
+    const workflow = clean({
+      trigger: { kind: "manual" },
+      steps: [
+        { action: "post", text: "{{trigger.text}}", targetId: "room-1", newTopic: { title: "Deploy {{trigger.text}}", category: "  Dev   Ops " }, topicId: "topic-1" },
+        { action: "ask", text: "look", targetId: "b", newTopic: { title: "Not here" } },
+        { action: "post", text: "no room", newTopic: { title: "Nowhere" } },
+      ],
+    })!;
+    assert.deepEqual(workflow.steps[0].newTopic, { title: "Deploy {{trigger.text}}", category: "Dev Ops" });
+    assert.equal(workflow.steps[0].topicId, undefined);
+    assert.equal(workflow.steps[1].newTopic, undefined);
+    assert.equal(workflow.steps[2].newTopic, undefined);
+  });
+
+  test("a new topic needs a title, and reads only what has run by then", () => {
+    const found = problems({
+      trigger: { kind: "manual" },
+      steps: [
+        { id: "open", action: "post", targetId: "room-1", text: "go", newTopic: { title: "  " } },
+        { id: "later", action: "post", targetId: "room-1", text: "go", newTopic: { title: "{{steps.after.text}}" } },
+        { id: "after", action: "ask", targetId: "a", text: "x" },
+      ] as Step[],
+    });
+    assert.ok(found.some((p) => p.includes("opens a topic with no title")), found.join("; "));
+    assert.ok(found.some((p) => p.includes('reads "after"')), found.join("; "));
+  });
+
   test("an approval gets a timeout whether or not one was asked for", () => {
     const workflow = clean({ trigger: { kind: "manual" }, steps: [{ action: "approve", text: "ok?" }] })!;
     assert.equal(workflow.steps[0].timeoutMin, DEFAULT_TIMEOUT_MIN);

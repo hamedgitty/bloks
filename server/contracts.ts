@@ -368,6 +368,12 @@ export interface SendTurnInput {
    * takes such rules (Claude Code) passes them on; a shell the person
    * approves is not held by them, which the documentation says. */
   deniedDirs?: string[];
+  /** The only folders this turn's own file tools may write in, for a turn
+   * in a room topic with a folder (server/room-topics.ts, folderHold).
+   * Claude Code holds its Write, Edit, MultiEdit and NotebookEdit to them
+   * with a hook (server/topic-folder-hook.ts); the server passes this only
+   * to a turn that engine can hold, and says so to the agent either way. */
+  writeOnly?: string[];
   /** Extra environment for the process this turn runs in, where there is
    * one. This is how a turn's own credential reaches the agent: a driver
    * that runs a CLI merges it into the child's environment, and a driver

@@ -405,6 +405,9 @@ export interface Message {
   replyTo?: { id?: string; author: string; excerpt: string; quote?: string };
   /** Said in one of a room's topics rather than its main stream. */
   topicId?: string;
+  /** Moved there from the main stream, and by whom ("owner", a person's
+   * id or "agent:<id>"). */
+  moved?: { by: string; at: number };
   /** artifact messages: a file the agent saved to its deliverables dir */
   artifact?: { name: string; mime: string; size: number };
   at: number;
@@ -894,6 +897,8 @@ export interface Blok {
   olderMessages?: number;
   /** Its topics, each with a thread of its own (server/room-topics.ts). */
   topics?: import("../../server/room-topics.ts").RoomTopic[];
+  /** The owner lets the lead move people's messages into topics. */
+  leadRoutes?: boolean;
 }
 
 /** A New room dialog filled in before it opens: a room's team, ready to
