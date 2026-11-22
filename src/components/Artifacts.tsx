@@ -32,7 +32,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { modKey } from "@/lib/thisComputer";
 import { destination } from "@/lib/attachments";
-import { artifactHref, fileBase, fileTarget, openFailure, tooLargeHere, viewerFor, type Viewer } from "@/lib/sharedFile";
+import { artifactHref, failureActions, failureKind, fileBase, fileTarget, openFailure, tooLargeHere, viewerFor, type FailureKind, type Viewer } from "@/lib/sharedFile";
+import { useRequestShare } from "@/lib/shareRequest";
 import { formatNumber, t } from "@/lib/i18n";
 import { FOLLOW_MS, followAnswer, tagOfEtag, UNSEEN, type Seen, type VersionAnswer } from "@/lib/followFile";
 import { usePageVisible } from "@/lib/pageVisible";
@@ -805,14 +806,17 @@ type Opening =
   | { phase: "idle" }
   | { phase: "opening" }
   | { phase: "open"; botId: string; artifact: ArtifactMeta }
-  | { phase: "failed"; message: string };
+  | { phase: "failed"; message: string; kind: FailureKind };
 
 /**
  * A link in a reply that is a file rather than a page: the route a shared
  * file is served at, or the path the agent saved it to. Either way the
  * server says what it is (GET /api/artifacts/resolve), and it opens in the
  * same viewer as the file's card. A path that is not a shared file says
- * so and how to get it shared, instead of being a link that does nothing.
+ * so and how to get it shared, instead of being a link that does nothing:
+ * in the owner's own chat, Request share writes the ask into the composer
+ * for them to send (GitHub 543). Try again is only for a way there that
+ * failed for now; asking again for a file nobody shared changes nothing.
  */
 export function SharedFileLink({
   href,
@@ -825,6 +829,7 @@ export function SharedFileLink({
 }) {
   const [opening, setOpening] = useState<Opening>({ phase: "idle" });
   const host = useDockHost();
+  const requestShare = useRequestShare();
   const target = fileTarget(href);
   const open = useCallback(async () => {
     setOpening({ phase: "opening" });
@@ -832,9 +837,11 @@ export function SharedFileLink({
       const res = await fetch(`/api/artifacts/resolve?path=${encodeURIComponent(href)}`);
       const body = await res.json().catch(() => ({}) as Record<string, unknown>);
       if (!res.ok || !body.artifact) {
+        const kind = failureKind(res.ok ? 404 : res.status, body);
         setOpening({
           phase: "failed",
-          message: openFailure(res.status, typeof body.error === "string" ? body.error : undefined),
+          kind,
+          message: kind === "not-shared" ? t("sharedFile.notShared") : openFailure(res.status, typeof body.error === "string" ? body.error : undefined),
         });
         return;
       }
@@ -846,9 +853,10 @@ export function SharedFileLink({
         setOpening({ phase: "open", ...found });
       }
     } catch {
-      setOpening({ phase: "failed", message: openFailure(0) });
+      setOpening({ phase: "failed", kind: "temporary", message: openFailure(0) });
     }
   }, [href, host]);
+  const actions = opening.phase === "failed" ? failureActions(opening.kind, Boolean(requestShare)) : null;
 
   return (
     <>
@@ -873,12 +881,30 @@ export function SharedFileLink({
         <Dialog open onOpenChange={(isOpen) => !isOpen && setOpening({ phase: "idle" })}>
           <DialogContent className="max-w-[420px] gap-3 p-5">
             <DialogTitle className="text-ui">{t("artifacts.couldntOpenThisFile")}</DialogTitle>
-            <div className="text-body leading-relaxed text-muted-foreground">{opening.message}</div>
+            <div className="text-body leading-relaxed text-muted-foreground">
+              {opening.message}
+              {opening.kind === "not-shared" && ` ${actions?.requestShare ? t("sharedFile.requestShareHint") : t("sharedFile.askToShare")}`}
+            </div>
             <div className="break-all font-mono text-small text-muted-foreground/80">{href}</div>
             <div className="flex justify-end gap-2">
-              <Button size="sm" variant="secondary" onClick={() => void open()}>
-                {t("common.tryAgain")}
-              </Button>
+              {actions?.tryAgain && (
+                <Button size="sm" variant="secondary" onClick={() => void open()}>
+                  {t("common.tryAgain")}
+                </Button>
+              )}
+              {actions?.requestShare && requestShare && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    // into the composer only: the owner reads it and sends it
+                    requestShare(href);
+                    setOpening({ phase: "idle" });
+                  }}
+                >
+                  {t("sharedFile.requestShare")}
+                </Button>
+              )}
               <Button size="sm" onClick={() => setOpening({ phase: "idle" })}>
                 {t("common.close")}
               </Button>

@@ -74,6 +74,8 @@ import { branchBlocked } from "@/lib/branch";
 import { MessageGuard } from "./chat/MessageGuard";
 import { GroupMessage, PersonAvatar, SeenBy } from "./chat/Group";
 import { Markdownish } from "./Markdown";
+import { ShareRequestContext } from "@/lib/shareRequest";
+import { shareRequestText } from "@/lib/sharedFile";
 import { LiveBrowser, ScreenFrame, StreamingBubble, WorkingClock, WorkingLine } from "./chat/Live";
 import { EmptyState } from "./chat/EmptyState";
 import { NewLine } from "./chat/NewLine";
@@ -262,7 +264,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [forwarding, setForwarding] = useState<{ message: Message; author: string } | null>(null);
   // A rewind hands your message back to the composer, to send again or
   // change first. The nonce makes the same words land twice in a row.
-  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number; append?: boolean } | null>(null);
   // ↑ in the empty composer opens your last message for editing in its
   // bubble, the same edit as the bubble's own Edit button. The bubble
   // watches the nonce, so every press is heard.
@@ -744,6 +746,13 @@ export function ChatView({ bot }: { bot: Bot }) {
     setPrefill({ text: prompt, nonce: Date.now() });
     focusBox();
   };
+  // Request share on a file link nobody shared (GitHub 543): the ask, with
+  // the exact path, goes into this chat's composer after anything already
+  // typed, and waits there for you to read and send. Nothing is sent here.
+  const requestShare = (href: string) => {
+    setPrefill({ text: shareRequestText(href), nonce: Date.now(), append: true });
+    focusBox();
+  };
 
   // ── the side dock (dock/SideDock.tsx, src/lib/dock.ts) ──
   // One column on the right for the documents, the browser, a terminal
@@ -1142,6 +1151,7 @@ export function ChatView({ bot }: { bot: Bot }) {
 
   return (
     <DockHostContext.Provider value={dockHost}>
+    <ShareRequestContext.Provider value={requestShare}>
     <main ref={mainRef} className="@container/chat relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       {/* Header. Who you are talking to sits in the middle at every width,
           with the same room kept on both sides, so a narrow window does not
@@ -1473,6 +1483,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         />
       )}
     </main>
+    </ShareRequestContext.Provider>
     </DockHostContext.Provider>
   );
 }

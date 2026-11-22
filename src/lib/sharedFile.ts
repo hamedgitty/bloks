@@ -127,3 +127,49 @@ export function openFailure(status: number, said?: string): string {
   if (status === 0) return t("sharedFile.unreachable");
   return said?.trim() || t("sharedFile.failed", { status: String(status) });
 }
+
+/** Why a file did not open, as what the dialog can offer for it: a file
+ * the server says was never shared into the chat (`shared: false`), a
+ * way there that failed for now and may work on a second try, or an
+ * answer that a second try would only repeat (gone, not allowed, too
+ * large). */
+export type FailureKind = "not-shared" | "temporary" | "final";
+
+export function failureKind(status: number, body?: { shared?: unknown } | null): FailureKind {
+  if (status === 404 && body?.shared === false) return "not-shared";
+  if (status === 0 || status === 408 || status === 429 || status >= 500) return "temporary";
+  return "final";
+}
+
+/** The buttons beside Close. Try again only where a second try can
+ * differ (GitHub 543): asking again for a file that was not shared gets
+ * the same answer. Request share only for a file that was not shared, and
+ * only where the chat offers it, which is the owner's own chat with the
+ * agent: it writes a message there for them to read and send, and never
+ * sends one itself. A link is not access: the file opens once the agent
+ * has shared it, through the same checks as any shared file. */
+export function failureActions(kind: FailureKind, canRequest: boolean): { tryAgain: boolean; requestShare: boolean } {
+  return { tryAgain: kind === "temporary", requestShare: kind === "not-shared" && canRequest };
+}
+
+/** The path a link names, as the agent will read it: a file: URL as the
+ * path it stands for, anything else exactly as written. */
+export function linkPath(href: string): string {
+  const raw = href.trim();
+  if (!/^file:\/\//i.test(raw)) return raw;
+  try {
+    const path = decodeURIComponent(new URL(raw).pathname);
+    // file:///C:/x is C:/x on Windows
+    return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path || raw;
+  } catch {
+    return raw;
+  }
+}
+
+/** The words Request share puts in the composer: the exact path, as code
+ * so nothing in it reads as formatting, and what to do if it cannot. */
+export function shareRequestText(href: string): string {
+  const path = linkPath(href);
+  const code = path.includes("`") ? `\`\` ${path} \`\`` : `\`${path}\``;
+  return t("sharedFile.requestShareMessage", { path: code });
+}

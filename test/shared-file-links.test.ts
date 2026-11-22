@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { parseInline, type InlineToken } from "../src/lib/inlineMarkdown.ts";
-import { artifactHref, cleanName, fileBase, fileTarget, looksShared, openFailure, viewerFor } from "../src/lib/sharedFile.ts";
+import { readFileSync } from "node:fs";
+
+import { artifactHref, cleanName, failureActions, failureKind, fileBase, fileTarget, linkPath, looksShared, openFailure, shareRequestText, viewerFor } from "../src/lib/sharedFile.ts";
 import { attachmentHeader, mimeOf, parseRange, safeName } from "../server/artifacts.ts";
 
 const text = (t: string): InlineToken => ({ kind: "text", text: t });
@@ -154,5 +156,69 @@ describe("serving a file", () => {
     const header = attachmentHeader("reports/Café \"menu\".pdf");
     assert.match(header, /^attachment; filename="Caf_ menu.pdf"; filename\*=UTF-8''Caf%C3%A9%20%22menu%22\.pdf$/);
     assert.ok(/^[\x20-\x7e]*$/.test(header), "a header must be plain ASCII");
+  });
+});
+
+// A link to a file nobody shared, opened from another computer (GitHub
+// 543): what the dialog offers for each reason it did not open, and what
+// Request share writes. The runner has no DOM, so the dialog's wiring is
+// read from its source, as the rules it has to keep.
+describe("a file link that did not open", () => {
+  const source = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+
+  test("each failure is not shared, for now, or final, from what the server answered", () => {
+    assert.equal(failureKind(404, { shared: false }), "not-shared");
+    // gone is 404 without the server saying it was never shared
+    assert.equal(failureKind(404, {}), "final");
+    assert.equal(failureKind(404, null), "final");
+    assert.equal(failureKind(403, { shared: false }), "final");
+    assert.equal(failureKind(413), "final");
+    for (const status of [0, 408, 429, 500, 502, 503, 504]) assert.equal(failureKind(status), "temporary", String(status));
+  });
+
+  test("Try again only for a failure a second try can change, Request share only for the owner's chat", () => {
+    assert.deepEqual(failureActions("not-shared", true), { tryAgain: false, requestShare: true });
+    assert.deepEqual(failureActions("not-shared", false), { tryAgain: false, requestShare: false });
+    assert.deepEqual(failureActions("temporary", true), { tryAgain: true, requestShare: false });
+    assert.deepEqual(failureActions("final", true), { tryAgain: false, requestShare: false });
+  });
+
+  test("the request names the exact path, a file: URL as the path it stands for", () => {
+    assert.equal(linkPath("/Users/a/Reports/q3 final.pdf"), "/Users/a/Reports/q3 final.pdf");
+    assert.equal(linkPath("~/Desktop/x.pdf"), "~/Desktop/x.pdf");
+    assert.equal(linkPath("file:///Users/a/Reports/q3%20final.pdf"), "/Users/a/Reports/q3 final.pdf");
+    assert.equal(linkPath("file:///C:/Users/a/x.pdf"), "C:/Users/a/x.pdf");
+    const text = shareRequestText("file:///Users/a/Reports/q3%20final.pdf");
+    assert.ok(text.includes("`/Users/a/Reports/q3 final.pdf`"), text);
+    assert.match(text, /share this file into our chat/);
+    assert.match(text, /tell me why/);
+    // a backtick in the name cannot end the code early
+    assert.ok(shareRequestText("/tmp/a`b.txt").includes("`` /tmp/a`b.txt ``"));
+  });
+
+  test("the dialog offers Try again and Request share as those rules say, and Request share only fills the composer", () => {
+    const dialog = source("components/Artifacts.tsx");
+    const link = dialog.slice(dialog.indexOf("export function SharedFileLink"));
+    assert.match(link, /failureActions\(opening\.kind, Boolean\(requestShare\)\)/);
+    assert.match(link, /\{actions\?\.tryAgain && \(/);
+    assert.match(link, /\{actions\?\.requestShare && requestShare && \(/);
+    const press = link.slice(link.indexOf("actions?.requestShare && requestShare"), link.indexOf('t("sharedFile.requestShare")'));
+    assert.match(press, /requestShare\(href\);/);
+    assert.doesNotMatch(press, /fetch\(|api\(|method:/, "Request share sends nothing itself");
+
+    const chat = source("components/ChatView.tsx");
+    const ask = chat.slice(chat.indexOf("const requestShare = (href: string) =>"), chat.indexOf("};", chat.indexOf("const requestShare = (href: string) =>")));
+    assert.match(ask, /setPrefill\(\{ text: shareRequestText\(href\), nonce: Date\.now\(\), append: true \}\)/);
+    assert.doesNotMatch(ask, /fetch\(|api\(|dispatch\(/, "it waits in the composer for the owner to send");
+    assert.match(chat, /<ShareRequestContext\.Provider value=\{requestShare\}>/);
+
+    // a draft already typed is kept, with the request after it
+    const composer = source("components/Composer.tsx");
+    assert.match(composer, /if \(prefill\.append && latest\.current\.text\.trim\(\)\) \{\s*setDraft\(\{ \.\.\.latest\.current, text: `\$\{latest\.current\.text\.trimEnd\(\)\}\\n\\n\$\{back\.text\}` \}\);/);
+
+    // a member's app and a room offer no Request share: nothing provides it there
+    for (const file of ["components/member/MemberApp.tsx", "components/member/MemberParts.tsx", "components/member/MemberViews.tsx", "components/RoomView.tsx"]) {
+      assert.doesNotMatch(source(file), /ShareRequestContext/, file);
+    }
   });
 });

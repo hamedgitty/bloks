@@ -1088,8 +1088,21 @@ file only when it looks like a path in a deliverables folder, so the
 paths in a coding conversation stay text. Card and link open the same
 viewer: PDF, image, video (no autoplay; an unplayable format says so and
 offers the download), Markdown rendered with its source a click away,
-text, tables, HTML in a sandboxed frame. A failure says why and offers
-Try again, which asks for the file again and never starts a turn.
+text, tables, HTML in a sandboxed frame. A failure says why
+(`failureKind` and `failureActions` in `src/lib/sharedFile.ts`). Try
+again, which asks for the file again and never starts a turn, is
+offered only for a way there that failed for now (no answer, 408, 429,
+5xx): asking again for a file that was not shared, is gone, is not
+allowed or is too large only gets the same answer. For `shared: false`
+in the owner's own chat with the agent, Request share (GitHub 543)
+writes the ask into that chat's composer, after anything already
+typed, naming the exact path (`shareRequestText`, a `file:` URL as its
+path); `ChatView` provides it through `ShareRequestContext`
+(`src/lib/shareRequest.ts`), and a member's app or a room, which do not,
+say to ask the agent instead. Nothing is sent until the owner sends it.
+The agent then shares the file with `bloks share`, or says why it
+cannot; the link itself grants nothing, and the file opens only once it
+is shared, through the same checks as any shared file.
 
 An open viewer follows its file (`src/lib/followFile.ts`). The route
 answers `?version` with the file's `tag` and `size` and none of its

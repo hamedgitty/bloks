@@ -259,8 +259,9 @@ export function Composer({
   /** reply context to send with the next message */
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
-  /** Words to put in the box, such as a message handed back by a rewind. */
-  prefill?: { text: string; nonce: number } | null;
+  /** Words to put in the box, such as a message handed back by a rewind.
+   * `append` keeps what is already typed and adds these after it. */
+  prefill?: { text: string; nonce: number; append?: boolean } | null;
   /** ↑ in the empty box: open your last message for editing. False when
    * there is none that can be. */
   onEditLast?: () => boolean;
@@ -322,6 +323,11 @@ export function Composer({
     if (!prefill) return;
     // links the words were sent with come back as chips
     const back = incoming(prefill.text);
+    // a request added to a draft keeps the draft, and its links
+    if (prefill.append && latest.current.text.trim()) {
+      setDraft({ ...latest.current, text: `${latest.current.text.trimEnd()}\n\n${back.text}` });
+      return;
+    }
     const { mentions: _was, ...rest } = latest.current;
     setDraft({ ...rest, text: back.text, ...(back.mentions.length ? { mentions: back.mentions } : {}) });
   }, [prefill]);

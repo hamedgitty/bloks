@@ -227,6 +227,14 @@ process.stdin.on("data", (c) => (input += c));
   const phone = await h.fetchRemote(`/api/artifacts/resolve?path=${encodeURIComponent(join(files, "latest.md"))}`, { token: claimed.token });
   assert.equal(phone.status, 200);
   assert.equal(phone.body.artifact.name, "latest.md");
+  // from that remote device a link to a file nobody shared is still only
+  // "not shared" (GitHub 543): the link grants nothing, and asking writes
+  // nothing anywhere
+  const before = (await h.json(`/api/bots/${bot.id}/messages?limit=500`)).messages.length;
+  const unshared = await h.fetchRemote(`/api/artifacts/resolve?path=${encodeURIComponent(join(home, "secret.txt"))}`, { token: claimed.token });
+  assert.equal(unshared.status, 404);
+  assert.equal(unshared.body.shared, false);
+  assert.equal((await h.json(`/api/bots/${bot.id}/messages?limit=500`)).messages.length, before);
   const upload = await h.fetchRemote(`/api/bots/${bot.id}/artifacts`, {
     method: "POST",
     token: claimed.token,
