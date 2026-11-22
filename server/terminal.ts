@@ -59,6 +59,9 @@ export interface TerminalInfo {
   exitCode?: number | null;
   /** A tab an agent started: who, from which conversation, running what. */
   agent?: AgentTab;
+  /** Addresses on this computer it printed, newest last: what the
+   * browser's empty tab offers to open (a dev server's "ready on"). */
+  urls?: string[];
 }
 
 /** What makes a tab an agent's own. */
@@ -93,6 +96,9 @@ export const MAX_AGENT_TABS = 4;
 /** A command an agent may type into a tab of its own: one line, as long
  * as a person would type. */
 export const MAX_COMMAND = 2000;
+
+/** Addresses a tab remembers it printed. */
+export const MAX_URLS = 3;
 
 /** How much an agent may read back at once, in lines. */
 export const READ_LINES = { fallback: 80, max: 400 } as const;
@@ -547,6 +553,7 @@ export class TerminalSession {
 
     const take = (chunk: Buffer) => {
       this.scrollback.push(chunk);
+      this.noteUrls(chunk);
       for (const listener of this.listeners) listener(chunk);
     };
     this.child.stdout.on("data", take);
@@ -593,6 +600,14 @@ export class TerminalSession {
     return Boolean(this.child) && !this.exitedAt;
   }
 
+  private urls: string[] = [];
+  /** Addresses on this computer in what it printed, a few kept. */
+  private noteUrls(chunk: Buffer) {
+    for (const url of localUrls(chunk.toString("utf8"))) {
+      this.urls = [...this.urls.filter((u) => u !== url), url].slice(-MAX_URLS);
+    }
+  }
+
   get watchers(): number {
     return this.listeners.size;
   }
@@ -611,6 +626,7 @@ export class TerminalSession {
       startedAt: this.startedAt,
       ...(this.exitedAt ? { exitedAt: this.exitedAt, exitCode: this.exitCode ?? null } : {}),
       ...(this.agent ? { agent: { ...this.agent } } : {}),
+      ...(this.urls.length ? { urls: [...this.urls] } : {}),
     };
   }
 
@@ -952,4 +968,21 @@ export function cleanCommand(raw: unknown): string | null {
   const text = raw.trim();
   if (!text || text.length > MAX_COMMAND) return null;
   return text;
+}
+
+/**
+ * The addresses on this computer a terminal printed, as a person would
+ * open them: http or https on localhost, 127.0.0.1, [::1] or 0.0.0.0 (a
+ * server listening everywhere, opened here as localhost), with a port.
+ * Colours and other escapes are taken out first, and a trailing stop or
+ * bracket is not part of the address.
+ */
+export function localUrls(raw: string): string[] {
+  const text = plainText(raw);
+  const found: string[] = [];
+  for (const m of text.matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d{2,5})(?:\/[^\s"'<>`]*)?/gi)) {
+    const url = m[0].replace(/[).,;:\]]+$/, "").replace(/\/\/0\.0\.0\.0/i, "//localhost");
+    if (!found.includes(url)) found.push(url);
+  }
+  return found;
 }

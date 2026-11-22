@@ -11,6 +11,9 @@ import { after, describe, test } from "node:test";
 import { buildTree, countFiles, filterTree, visibleRows } from "../src/lib/fileTree.ts";
 import { changeTotals, changesRound, numberedDiff, totalsLabel, type ChangedFile } from "../src/lib/laneChanges.ts";
 import { Checkpoints, diffLines } from "../server/checkpoints.ts";
+import { localUrls } from "../server/terminal.ts";
+import { MAX_RECENT, noteRecent, parseRecent, previewsFrom } from "../src/lib/previews.ts";
+import { backgroundTasks, runningCount } from "../src/lib/backgroundTasks.ts";
 import { gitChanges, gitFileDiff, inSkippedDir, parseNumstat, parsePorcelainV2, parseUnifiedDiff, safeRelativePath } from "../server/git-changes.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "bloks-dock-panels-"));
@@ -194,5 +197,54 @@ describe("what git says is not committed", () => {
     assert.equal(await gitFileDiff(dir, "keep.txt"), null, "a file git does not list as changed");
     assert.equal(await gitFileDiff(dir, "../a.txt"), null);
     assert.deepEqual(await gitChanges(scratch), { repo: false, installed: true });
+  });
+});
+
+describe("the browser's empty tab and Background tasks", () => {
+  test("a terminal's addresses on this computer are found as a person would open them", () => {
+    assert.deepEqual(localUrls("\u001b[32m  ➜  Local:   http://localhost:5173/\u001b[0m\n"), ["http://localhost:5173/"]);
+    assert.deepEqual(localUrls("listening on http://0.0.0.0:3000, see (http://127.0.0.1:8080)."), ["http://localhost:3000", "http://127.0.0.1:8080"]);
+    assert.deepEqual(localUrls("visit https://example.com:443 or http://localhost without a port"), [], "only this computer, with a port");
+  });
+
+  test("the agent's running tabs come first, then recent pages not already offered", () => {
+    const shells = [
+      { title: "dev", agent: { name: "Ada" }, urls: ["http://localhost:5173/"] },
+      { title: "mine", urls: ["http://localhost:9999"] },
+      { title: "old", agent: { name: "Ada" }, urls: ["http://localhost:4000"], exitedAt: 5 },
+    ];
+    const offered = previewsFrom(shells, [{ url: "http://localhost:5173/" }, { url: "https://bloks.dev", title: "Bloks" }]);
+    assert.deepEqual(offered.map((p) => p.url), ["http://localhost:5173/", "https://bloks.dev"], "the person's tab and an ended one are not offered");
+    assert.deepEqual(offered[0].from, { kind: "terminal", title: "dev", agent: "Ada" });
+  });
+
+  test("recent pages: newest first, once each, web pages only, capped", () => {
+    let list: Array<{ url: string; title?: string }> = [];
+    for (let i = 0; i < MAX_RECENT + 2; i++) list = noteRecent(list, { url: `https://a.test/${i}` });
+    list = noteRecent(list, { url: "https://a.test/3", title: " Three " });
+    list = noteRecent(list, { url: "file:///etc/passwd" });
+    assert.equal(list.length, MAX_RECENT);
+    assert.deepEqual(list[0], { url: "https://a.test/3", title: "Three" });
+    assert.deepEqual(parseRecent(JSON.stringify([{ url: "javascript:alert(1)" }, { url: "http://x.test", title: 4 }, 7])), [{ url: "http://x.test" }]);
+    assert.deepEqual(parseRecent("{nope"), []);
+  });
+
+  test("background tasks are the agent's own tabs and the jobs it took, with a count of what runs", () => {
+    const tasks = backgroundTasks(
+      [
+        { id: "a", title: "dev", startedAt: 2, agent: { command: "npm run dev" }, urls: ["http://localhost:5173"] },
+        { id: "b", title: "tests", startedAt: 1, exitedAt: 3, exitCode: 1, agent: { command: "npm test" } },
+        { id: "c", title: "mine", startedAt: 4 },
+      ],
+      [
+        { id: "j1", title: "Draft notes", state: "claimed", claimedBy: "bot", postedAt: 1, threadId: "lane" },
+        { id: "j2", title: "Done one", state: "done", claimedBy: "bot", postedAt: 1 },
+        { id: "j3", title: "Theirs", state: "claimed", claimedBy: "other", postedAt: 1 },
+      ],
+      "bot",
+    );
+    assert.deepEqual(tasks.map((t) => `${t.kind}:${t.id}`), ["terminal:a", "terminal:b", "job:j1"]);
+    assert.equal(runningCount(tasks), 2);
+    assert.equal(tasks[1].kind === "terminal" && tasks[1].exitCode, 1);
   });
 });

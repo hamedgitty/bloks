@@ -40,12 +40,14 @@ import { useSyncExternalStore } from "react";
 // "docs" is the Files panel: the agent's shared files as a tree, and the
 // ones opened beside it. Its id is older than its name, and stays so
 // what a conversation remembered still opens.
-export type DockPanel = "docs" | "changes" | "browser" | "terminal" | "computer" | "trace" | "topic" | "extensions";
+export type DockPanel = "docs" | "changes" | "browser" | "terminal" | "tasks" | "computer" | "trace" | "topic" | "extensions";
 
 /** The order the + menu lists panels in, whichever are offered. */
 // "extensions" holds every running workspace extension's panels, as tabs
 // of its own (src/components/extensions/ExtensionDock.tsx, GitHub 507).
-export const DOCK_PANELS: readonly DockPanel[] = ["topic", "docs", "changes", "browser", "terminal", "computer", "trace", "extensions"];
+// "tasks" is Background tasks: the agent's own terminal tabs and the jobs
+// it took (src/components/dock/TasksPanel.tsx).
+export const DOCK_PANELS: readonly DockPanel[] = ["topic", "docs", "changes", "browser", "terminal", "tasks", "computer", "trace", "extensions"];
 
 /** A file open in the dock: an agent's shared file, by its name. */
 export interface DockDoc {

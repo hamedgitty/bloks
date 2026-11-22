@@ -32,13 +32,16 @@ import {
   FolderOpen,
   Globe,
   Hand,
+  History,
   Keyboard,
   Loader2,
   Lock,
   MessageSquare,
+  Play,
   Plus,
   Puzzle,
   RotateCw,
+  SquareTerminal,
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -76,6 +79,8 @@ import {
 import { t } from "@/lib/i18n";
 import { sameAddress } from "@/lib/mentions";
 import { tabsInScope, type TabScope } from "@/lib/dockActivity";
+import { noteRecent, parseRecent, previewsFrom, RECENT_KEY } from "@/lib/previews";
+import type { TerminalInfo } from "@/lib/useTerminalStream";
 import { screenInput, type InputSender } from "./screenInput";
 import { appExtensions, ExtensionsMenu, serverExtensions } from "./ExtensionsMenu";
 import type { ExtensionViewState } from "@/lib/browserExtensions";
@@ -259,6 +264,19 @@ function BrowserPanel({
       .catch(() => {});
   }, [onServer, absent]);
 
+  // no page, or a new tab with nothing in it yet: what can be previewed
+  const blank = !active || !active.url || active.url === "about:blank";
+  // the pages shown here lately, for the empty tab to offer again
+  useEffect(() => {
+    if (!active?.url || active.loading) return;
+    try {
+      const next = noteRecent(parseRecent(localStorage.getItem(RECENT_KEY)), { url: active.url, title: active.title });
+      localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    } catch {
+      /* kept for this window only, or not at all */
+    }
+  }, [active?.url, active?.loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Where the page goes, said to the app whenever it moves, and "nowhere"
   // while something is drawn over it, while the edge is dragged (the view
   // would lag the drag a frame behind) and once the panel is gone. A
@@ -266,9 +284,10 @@ function BrowserPanel({
   const report = useCallback(() => {
     if (onServer) return;
     const box = page.current?.getBoundingClientRect();
-    const hidden = !box || over || resizing || document.visibilityState === "hidden";
+    // a blank tab shows what can be previewed instead of an empty page
+    const hidden = !box || over || resizing || blank || document.visibilityState === "hidden";
     void window.bloks?.browserBounds?.(hidden ? null : { x: box.left, y: box.top, width: box.width, height: box.height });
-  }, [over, resizing, onServer]);
+  }, [over, resizing, onServer, blank]);
   useLayoutEffect(() => {
     if (onServer) return;
     let frame = 0;
@@ -407,16 +426,8 @@ function BrowserPanel({
       <div ref={page} className="relative min-h-0 flex-1 overflow-hidden border-t bg-background">
         {absent ? (
           <NoBrowserHere missing={missing!} />
-        ) : !active ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center">
-            <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Globe size={18} />
-            </div>
-            <p className="text-ui font-medium text-foreground">{t("browserPanel.nothingOpenYet")}</p>
-            <p className="max-w-[40ch] text-pretty text-body text-muted-foreground">
-              {t("browserPanel.typeAnAddressAboveOr")}
-            </p>
-          </div>
+        ) : blank ? (
+          <EmptyTab agent={agent} tabs={state?.tabs} />
         ) : onServer ? (
           <Screen tab={active} control={state?.control} />
         ) : over ? (
@@ -433,6 +444,78 @@ function BrowserPanel({
       </div>
 
       {shelf && <Shelf downloads={state?.downloads ?? []} onServer={onServer} onClose={() => setShelf(false)} />}
+    </div>
+  );
+}
+
+/**
+ * A tab with nothing in it: what Bloks knows can be previewed, each with
+ * an Open button. The addresses on this computer the chat's agent's own
+ * terminal tabs printed (a dev server it started), then the pages shown
+ * here lately (src/lib/previews.ts). Asked again every few seconds while
+ * shown, since a server says it is ready a moment after it starts.
+ */
+function EmptyTab({ agent, tabs }: { agent?: { id: string; name: string }; tabs?: readonly BrowserTab[] }) {
+  const [shells, setShells] = useState<TerminalInfo[]>([]);
+  useEffect(() => {
+    if (!agent) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = () => {
+      api(`/api/bots/${agent.id}/terminals`)
+        .then((r: { terminals?: TerminalInfo[] }) => live && setShells(Array.isArray(r.terminals) ? r.terminals : []))
+        // a device that cannot reach this computer's shells has none to offer
+        .catch(() => {})
+        .finally(() => {
+          if (live) timer = setTimeout(ask, 4_000);
+        });
+    };
+    ask();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const recent = (() => {
+    try {
+      return parseRecent(localStorage.getItem(RECENT_KEY));
+    } catch {
+      return [];
+    }
+  })();
+  const offered = previewsFrom(shells, recent);
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 overflow-y-auto px-6 py-8 text-center">
+      <div className="flex flex-col items-center gap-1.5">
+        <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+          <Globe size={18} />
+        </div>
+        <p className="text-ui font-medium text-foreground">{t("browserPanel.nothingOpenYet")}</p>
+        <p className="max-w-[40ch] text-pretty text-body text-muted-foreground">{t("browserPanel.previewHint")}</p>
+      </div>
+      {offered.length > 0 && (
+        <ul aria-label={t("browserPanel.previews")} className="w-full max-w-[420px] divide-y rounded-xl border bg-card text-left">
+          {offered.map((p) => (
+            <li key={p.url} className="flex items-center gap-2.5 px-3 py-2">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                {p.from.kind === "terminal" ? <SquareTerminal size={13} /> : <History size={13} />}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-mono text-small text-foreground">{shownAddress(p.url)}</span>
+                <span className="truncate text-caption text-muted-foreground">
+                  {p.from.kind === "terminal"
+                    ? t("browserPanel.previewFromTab", { name: p.from.agent, tab: p.from.title })
+                    : (p.from.title ?? t("browserPanel.previewRecent"))}
+                </span>
+              </span>
+              <Button size="sm" variant="secondary" className="h-7 shrink-0 gap-1 px-2.5" onClick={() => void showPage(p.url, tabs)} aria-label={t("browserPanel.previewOpen", { url: shownAddress(p.url) })}>
+                <Play size={12} />
+                {t("browserPanel.open")}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -22,11 +22,13 @@ import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
 import { showTerminalTab, useTerminalTabs } from "./Terminal";
 import { act as browserAct, BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
-import { Activity, Bot as BotIcon, FileDiff, Folder, Globe, PanelRight } from "@/components/icons";
+import { Activity, Bot as BotIcon, FileDiff, Folder, Globe, Hourglass, PanelRight } from "@/components/icons";
 import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
 import { ChangesPanel, useLaneChanges } from "./dock/ChangesPanel";
+import { TasksPanel, useBackgroundTasks } from "./dock/TasksPanel";
+import { runningCount } from "@/lib/backgroundTasks";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
 import { chatKey, dock, DOCK_SIDES, paneOf, placeIn, shownAnywhere, sideOf, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
@@ -885,6 +887,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   // the running extensions' panels, as one more panel of the dock
   const extensionsPane = useExtensionsPane();
   const terminalTabs = useTerminalTabs(bot.id);
+  // what the agent has running beside the chat, for Background tasks
+  const bgTasks = useBackgroundTasks(bot.id);
+  const tasksRunning = runningCount(bgTasks);
   const [browserScope] = useTabScope();
   // what this conversation's turns changed, for the Changes panel and the
   // count beside it in the + menu
@@ -956,6 +961,27 @@ export function ChatView({ bot }: { bot: Bot }) {
       popOut: window.bloks ? terminal.popOut : undefined,
       render: () =>
         terminal.dockSlot ?? <div className="flex h-full items-center justify-center text-small text-muted-foreground">{t("common.loading")}</div>,
+    },
+    {
+      id: "tasks",
+      label: t("dock.tasks.label"),
+      icon: <Hourglass size={15} />,
+      count: tasksRunning ? t("dock.tasks.count", { count: tasksRunning }) : undefined,
+      render: () => (
+        <TasksPanel
+          tasks={bgTasks}
+          agentName={bot.name}
+          onShowTab={(id) => {
+            showTerminalTab(bot.id, id);
+            if (!terminal.inDock) terminal.setLayout((l) => moveTerminal(l, "right"));
+            setTerminalOpen(true);
+            dock.show(dockKey, "terminal");
+          }}
+          onStopTab={(id) => void api(`/api/bots/${bot.id}/terminals/${id}`, { method: "DELETE" }).catch(() => {})}
+          onOpenUrl={browserHere ? (url) => void showPage(url, browserState?.tabs) : null}
+          onOpenJob={(taskId) => dispatch({ type: "selectTask", botId: bot.id, taskId })}
+        />
+      ),
     },
     {
       id: "computer",

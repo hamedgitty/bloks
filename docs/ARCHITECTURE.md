@@ -4163,6 +4163,24 @@ untracked files read only when plain and inside the folder. These routes
 are the owner's, like the turn diffs; an agent's credential and a
 member's device reach neither. Undo stays on each turn's card.
 
+**Background tasks** (`tasks`, `src/components/dock/TasksPanel.tsx`,
+`src/lib/backgroundTasks.ts`) lists what the conversation's agent has
+running beside the chat: its own terminal tabs, with what each runs,
+whether it still runs and the addresses it printed, to show, open in the
+browser or stop, and the jobs it took from the job board and has not
+finished, to open where the work is. The + says how many are running.
+Asked again every six seconds while the window is seen.
+
+**The browser's empty tab.** A tab with nothing in it (`blank`, the app's
+page view kept off it) shows what Bloks knows can be previewed
+(`src/lib/previews.ts`): the addresses on this computer the agent's own
+running terminal tabs printed (`localUrls` in `server/terminal.ts` keeps
+the last three a tab printed, http or https on localhost, 127.0.0.1,
+[::1] or 0.0.0.0 with a port, in what the terminal routes say), then the
+pages this window showed lately (`bloks-browser-recent`, six, web pages
+only), each with Open, under "Run a server to preview your app, or enter
+a URL." Nothing scans a port or starts a server.
+
 **In the window's top row.** On a wide window the conversation's header
 is the window's top row (`src/components/TitleBar.tsx`,
 `src/lib/titlebarSlot.ts`): after the workspace switcher, a hairline, then

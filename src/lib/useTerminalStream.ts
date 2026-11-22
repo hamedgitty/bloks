@@ -27,6 +27,8 @@ export interface TerminalInfo {
   /** A tab an agent started itself (`bloks terminal run`): it can read
    * this tab's output back, and only this kind. */
   agent?: { name: string; taskId: string; command: string };
+  /** Addresses on this computer it printed, newest last. */
+  urls?: string[];
 }
 
 /** Where a tab's output goes: its xterm. */
