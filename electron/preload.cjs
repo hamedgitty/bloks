@@ -143,6 +143,8 @@ contextBridge.exposeInMainWorld("bloks", {
   quickOpenMain: () => ipcRenderer.invoke("quick:open-main"),
   // an agent's terminal in a window of its own (electron/terminal-window.mjs)
   terminalWindow: (botId) => ipcRenderer.invoke("terminal:window", botId),
+  // a panel of the side dock in a window of its own (electron/dock-window.mjs)
+  dockWindow: (target) => ipcRenderer.invoke("dock:window", target),
   // the Bloks browser beside the chat (electron/app-browser.mjs): where
   // its panel is, what the person does in it, and what it is showing
   browserState: () => ipcRenderer.invoke("browser:state"),

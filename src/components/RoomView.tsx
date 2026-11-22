@@ -94,6 +94,8 @@ import { FileText, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
+import { createPortal } from "react-dom";
+import { useTitlebarSlot } from "@/lib/titlebarSlot";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
@@ -1266,22 +1268,24 @@ export function RoomView({ blok }: { blok: Blok }) {
       ];
     });
 
-  return (
-    <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <div className="titlebar-drag flex h-[52px] shrink-0 items-center justify-between gap-2 border-b px-3 max-md:pl-16 md:px-4">
+  const titleSlot = useTitlebarSlot();
+  const [dockHead, setDockHead] = useState<HTMLDivElement | null>(null);
+  // the room's name and who answers in it, up in the top row (`up`) or in
+  // its own header
+  const roomIdentity = (up: boolean) => (
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+          <span className={cn("flex shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground", up ? "size-6" : "size-7")}>
             <Users size={15} />
           </span>
-          <span className="min-w-0">
+          <span className={cn("min-w-0", up && "flex items-baseline gap-2")}>
             {renaming ? (
               <RoomRename name={blok.name} onDone={rename} className="-ml-1.5 block w-[min(360px,55vw)] text-ui font-semibold" />
             ) : (
-              <span className="block truncate text-ui font-semibold text-foreground">{blok.name}</span>
+              <span className={cn("block truncate text-ui font-semibold text-foreground", up && "shrink-0")}>{blok.name}</span>
             )}
             {/* the lead first, crowned, so a phone without the faces on
                 the right still says who has the final call */}
-            <span className="flex min-w-0 items-center gap-1 text-small text-muted-foreground">
+            <span className={cn("flex min-w-0 items-center gap-1 text-small text-muted-foreground", up && "hidden sm:flex")}>
               {lead && answering.length > 1 && <Crown size={11} className="shrink-0 text-brand-ink" aria-label={t("roomView.lead")} />}
               <span className="truncate">
                 {formatList(byLead(answering, lead).map((m) => m.name), { type: "unit" })}
@@ -1291,6 +1295,8 @@ export function RoomView({ blok }: { blok: Blok }) {
             </span>
           </span>
         </div>
+  );
+  const roomActions = (
         <div className="flex shrink-0 items-center gap-1.5">
           <RoomPresence members={answering} lead={lead} working={working} answers={answers} />
           <Button
@@ -1358,7 +1364,28 @@ export function RoomView({ blok }: { blok: Blok }) {
             onNewTopic={powers.open ? () => setTopicDialog({}) : undefined}
           />
         </div>
-      </div>
+  );
+
+  return (
+    <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      {/* Who and what the room is, and its buttons: on a wide window up
+          in the window's top row, as a chat's are (ChatView.tsx), with the
+          side dock's tabs over the dock; on a narrow one here. */}
+      {titleSlot ? (
+        createPortal(
+          <div className="flex h-full min-w-0 flex-1 items-center">
+            <div className="flex min-w-0 flex-1 items-center pl-1.5 pr-2">{roomIdentity(true)}</div>
+            <div className="flex shrink-0 items-center pr-2">{roomActions}</div>
+            <div ref={setDockHead} className="h-full w-0 shrink-0 overflow-hidden" />
+          </div>,
+          titleSlot,
+        )
+      ) : (
+        <div className="titlebar-drag flex h-[52px] shrink-0 items-center justify-between gap-2 border-b px-3 max-md:pl-16 md:px-4">
+          {roomIdentity(false)}
+          {roomActions}
+        </div>
+      )}
 
       <SharePanel blok={blok} open={sharingOpen} onOpenChange={setSharingOpen} />
 
@@ -1573,7 +1600,7 @@ export function RoomView({ blok }: { blok: Blok }) {
         onQuote={setReplyTo}
       />
       </div>
-      <SideDock canMove={false} placeKey={dockKey} panes={dockPanes} />
+      <SideDock canMove={false} placeKey={dockKey} panes={dockPanes} headSlot={titleSlot ? dockHead : null} />
       </div>
       </DockHostContext.Provider>
       {topicDialog && (

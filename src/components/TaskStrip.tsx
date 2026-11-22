@@ -23,6 +23,7 @@
 // A lane names itself from the first words of its first message, which
 // often say nothing about what it became. A double click renames it.
 import { useRef, useState } from "react";
+import { useFadeScroll } from "@/lib/fadeScroll";
 import { Plus } from "@/components/icons";
 import { X } from "@/components/icons";
 import { cn } from "@/lib/cn";
@@ -200,12 +201,18 @@ export function TaskStrip({
   // meets the band on each side (.tab-joined in styles.css). Thin lines
   // part the others, except beside the open tab, where the curve does.
   const activeIndex = tasks.findIndex((t) => t.id === activeId);
+  // past its room it scrolls sideways, with no scrollbar, and fades on the
+  // side with more (src/lib/fadeScroll.ts)
+  const strip = useRef<HTMLDivElement>(null);
+  const fade = useFadeScroll(strip, activeId);
   return (
     <div
+      ref={strip}
+      style={fade}
       role="tablist"
       aria-label={t("taskStrip.conversations")}
       className={cn(
-        "flex shrink-0 items-end gap-0 overflow-x-auto max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden",
+        "flex shrink-0 items-end gap-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         inTitleBar ? "h-full min-w-0 flex-1 pt-1.5 pr-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : "h-[38px] bg-tab-strip px-3 pt-1.5 md:px-4",
       )}
     >

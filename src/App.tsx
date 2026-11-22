@@ -35,6 +35,8 @@ import { Toaster, toast } from "@/components/ui/toast";
 import { ConfirmHost } from "@/components/ui/confirm";
 import { YourNameHost } from "@/components/YourNameDialog";
 import { TerminalWindow, terminalWindowAgent } from "@/components/terminal/TerminalWindow";
+import { DockWindow } from "@/components/dock/DockWindow";
+import { dockWindowFor } from "@/lib/dockWindow";
 import { MemberApp } from "@/components/member/MemberApp";
 import { detectMode, type AppMode } from "@/lib/memberMode";
 import { WebDoor } from "@/components/web/WebDoor";
@@ -245,6 +247,8 @@ export default function App() {
   // So does an agent's terminal popped out into a window of its own.
   const terminalFor = terminalWindowAgent(location.search);
   if (terminalFor) return <TerminalWindow botId={terminalFor} />;
+  const dockFor = dockWindowFor(location.search);
+  if (dockFor) return <DockWindow {...dockFor} />;
   // And the island in the notch, in a clear window over the menu bar,
   // which reads the working agents and nothing else.
   if (asked.has("notch")) return <NotchIsland demo={asked.has("demo")} />;

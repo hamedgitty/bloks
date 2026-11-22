@@ -69,6 +69,7 @@ import {
 } from "./hosting-move.mjs";
 import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } from "./server-line.mjs";
 import { terminalQuery } from "./terminal-window.mjs";
+import { dockWindowQuery } from "./dock-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
 import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
@@ -2507,6 +2508,20 @@ handle("notch:open", (event, target) => {
 function openTerminalWindow(botId, workspace = shownId) {
   const query = terminalQuery(botId);
   if (!query) throw new Error("not an agent");
+  openPanelWindow(query, workspace, "Terminal");
+}
+
+/** A panel of the side dock in a window of its own (dock-window.mjs). */
+function openDockWindow(target, workspace = shownId) {
+  const query = dockWindowQuery(target);
+  if (!query) throw new Error("not a panel");
+  openPanelWindow(query, workspace, "Bloks");
+}
+
+/** A window that draws one panel of the app's page: the one already open
+ * for the same query in the same workspace brought forward, or a new one
+ * a little down and across from the window it came out of. */
+function openPanelWindow(query, workspace, title) {
   for (const [win, has] of terminalWins) {
     if (has === query && windowWorkspace.get(win) === workspace && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
@@ -2525,7 +2540,7 @@ function openTerminalWindow(botId, workspace = shownId) {
     minWidth: 420,
     minHeight: 240,
     icon: APP_ICON,
-    title: "Terminal",
+    title,
     backgroundColor: nativeTheme.shouldUseDarkColors ? DARK_BACKDROP : LIGHT_BACKDROP,
     // the same settings as the main window, written out for the same
     // reason: this page draws a shell, and a shell's output is somebody
@@ -3890,6 +3905,7 @@ handle("shortcut:apply", (_event, accelerator) =>
 );
 handle("quick:hide", () => quickWin?.hide());
 handle("terminal:window", (event, botId) => openTerminalWindow(botId, senderWorkspace(event) ?? shownId));
+handle("dock:window", (event, target) => openDockWindow(target, senderWorkspace(event) ?? shownId));
 handle("quick:open-main", () => {
   quickWin?.hide();
   const [main] = BrowserWindow.getAllWindows().filter((w) => isWorkspaceWindow(w));

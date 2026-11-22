@@ -895,6 +895,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   // count beside it in the + menu
   const laneId = bot.activeTaskId ?? bot.threadId;
   const laneChanges = useLaneChanges(laneId, useMemo(() => changesRound(bot.messages), [bot.messages]), dockShows("changes"));
+  // a panel in a window of its own, in the desktop app (DockWindow.tsx)
+  const panelWindow = (panel: "docs" | "changes" | "tasks") =>
+    window.bloks?.dockWindow ? () => void window.bloks!.dockWindow!({ panel, botId: bot.id, laneId }) : undefined;
   const dockPanes: DockPane[] = [
     {
       id: "docs",
@@ -903,6 +906,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       count: dockPlace.docs.length ? String(dockPlace.docs.length) : undefined,
       keys: keysFor("dockFiles", platformOf(), Boolean(window.bloks))[0],
       keepAlive: true,
+      popOut: panelWindow("docs"),
       render: (shown) => <FilesPanel placeKey={dockKey} place={dockPlace} shown={shown} botId={bot.id} />,
     },
     {
@@ -911,6 +915,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       icon: <FileDiff size={15} />,
       count: totalsLabel(laneChanges ?? []),
       keys: keysFor("dockChanges", platformOf(), Boolean(window.bloks))[0],
+      popOut: panelWindow("changes"),
       render: (shown) => <ChangesPanel placeKey={dockKey} threadId={laneId} files={laneChanges} shown={shown} />,
     },
     ...(browserHere
@@ -967,6 +972,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       label: t("dock.tasks.label"),
       icon: <Hourglass size={15} />,
       count: tasksRunning ? t("dock.tasks.count", { count: tasksRunning }) : undefined,
+      popOut: panelWindow("tasks"),
       render: () => (
         <TasksPanel
           tasks={bgTasks}
@@ -1383,6 +1389,15 @@ export function ChatView({ bot }: { bot: Bot }) {
           </>
         )}
 
+      {/* The conversation and the terminal, which can sit on any side of
+          it (terminal/TerminalDock.tsx). */}
+      <div ref={terminal.body} className="relative flex min-h-0 min-w-0 flex-1">
+      {terminal.slot("left")}
+      <SideDock side="left" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* The conversation's tabs and the find bar belong to its own
+          column: the side dock beside it starts right under the window's
+          top row, its edge running up unbroken. */}
       {/* The conversations as tabs. The strip repeats what the sidebar
           lists when it lists conversations, so it only shows when the
           sidebar does not, and only once there is more than one. */}
@@ -1468,12 +1483,6 @@ export function ChatView({ bot }: { bot: Bot }) {
           </div>
         </div>
       )}
-      {/* The conversation and the terminal, which can sit on any side of
-          it (terminal/TerminalDock.tsx). */}
-      <div ref={terminal.body} className="relative flex min-h-0 min-w-0 flex-1">
-      {terminal.slot("left")}
-      <SideDock side="left" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {terminal.slot("top")}
       <SideDock side="top" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
       {/* The transcript, and the way back to its end floating over it. */}

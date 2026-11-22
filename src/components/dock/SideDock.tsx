@@ -30,7 +30,8 @@
 // browser's tabs live in the app or on the server, a trace on the server)
 // is drawn while it is shown, and costs nothing otherwise. A panel is
 // drawn by one pane at a time: the one on its side.
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useFadeScroll } from "@/lib/fadeScroll";
 import { createPortal } from "react-dom";
 import { AppWindow, Maximize2, Minimize2, MoreHorizontal, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
@@ -224,6 +225,11 @@ export function SideDock({
     p.onAdd?.();
   };
   const front = ordered.find((p) => p.id === shown);
+  // past its room the strip scrolls sideways and fades on the side with
+  // more, the tab in front kept in view (src/lib/fadeScroll.ts)
+  const strip = useRef<HTMLDivElement>(null);
+  const frontKey = `${shown ?? ""}:${front?.items?.find((i) => i.active)?.id ?? ""}`;
+  const fade = useFadeScroll(strip, frontKey);
   // up in the window's top row while the pane shows beside the
   // conversation; at its own top when it covers it or there is no top row
   const up = Boolean(headSlot && shown && !covering && side === "right");
@@ -283,7 +289,13 @@ export function SideDock({
 
   const head = (
     <div className={cn("flex shrink-0 items-center gap-0.5 px-1.5", up ? "h-full border-l bg-card" : "h-[38px] border-b")}>
-      <div role="tablist" aria-label={t("dock.panels")} className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
+      <div
+        ref={strip}
+        style={fade}
+        role="tablist"
+        aria-label={t("dock.panels")}
+        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {tabs.flatMap((p) =>
           p.items?.length
             ? p.items.map((item) =>

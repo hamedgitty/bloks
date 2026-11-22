@@ -412,6 +412,8 @@ declare global {
       /** An agent's terminal in a window of its own, or the one already
        * open brought forward. Absent in an app older than tabs. */
       terminalWindow?(botId: string): Promise<void>;
+      /** A panel of the side dock in a window of its own. */
+      dockWindow?(target: { panel: "docs" | "changes" | "tasks"; botId: string; laneId: string }): Promise<void>;
       /** The Bloks browser beside the chat (electron/app-browser.mjs):
        * what it shows, where its panel is (null when off screen, and the
        * tab hides), what the person does in it, and the app asking for

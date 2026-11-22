@@ -417,6 +417,7 @@ interface PanelTabs {
 const panelTabs = new Map<string, PanelTabs>();
 const tabListeners = new Set<() => void>();
 const noTabs: PanelTabs | null = null;
+const NO_TABS: readonly TerminalInfo[] = [];
 function publishTabs(botId: string, tabs: PanelTabs | null) {
   if (tabs) panelTabs.set(botId, tabs);
   else panelTabs.delete(botId);
@@ -678,9 +679,16 @@ export function TerminalPanel({
   const askedNew = useRef(0);
   const loaded = list !== null;
   // what the dock's strip draws, while this panel is drawn
+  // published only when the tabs or the one in front change: the list
+  // the server sent, not a fresh copy of it each render, and the handlers
+  // through refs, so the dock redrawing never redraws this into a loop
+  const closeRef = useRef(closeTab);
+  closeRef.current = closeTab;
+  const newRef = useRef(newTab);
+  newRef.current = newTab;
   useEffect(() => {
-    publishTabs(botId, { tabs, current: current?.id ?? null, close: (id) => void closeTab(id), add: () => void newTab() });
-  }, [botId, tabs, current?.id, closeTab, newTab]);
+    publishTabs(botId, { tabs: list ?? NO_TABS, current: current?.id ?? null, close: (id) => void closeRef.current(id), add: () => void newRef.current() });
+  }, [botId, list, current?.id]);
   useEffect(() => () => publishTabs(botId, null), [botId]);
   useEffect(() => {
     if (!loaded || askNew === askedNew.current) return;

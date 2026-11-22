@@ -4111,7 +4111,19 @@ and bottom panes' heights per device (`bloks-dock-sizes`), as the right
 pane's width is. A panel is drawn by the pane on its side only. Expand
 (the button, the ⋯ menu, or ⇧⌘\ for the pane the keyboard is in or the
 first one open) lays a pane over the conversation until it is put back.
-A room keeps its one pane on the right.
+A room keeps its one pane on the right. In the desktop app the ⋯ menu
+also opens Files, Changes or Background tasks in a window of its own
+(`dock:window`, `electron/dock-window.mjs`, which takes only those three
+names and ids that are ids; the page is `DockWindow.tsx`, read back by
+`src/lib/dockWindow.ts`), and a terminal in the terminal's own window;
+the browser and the computer draw over the window they belong to.
+
+**Strips past their room.** A pane's tabs and the conversation's tabs
+scroll sideways when they run past their room, with no scrollbar drawn;
+the side with more to see fades out (`fadeMask`, `src/lib/fadeScroll.ts`,
+a mask that is there only while that side overflows), a mouse wheel
+turned up or down scrolls them sideways, and the tab in front is kept in
+view.
 
 **Tabs and the +.** The panels open in a conversation are tabs along the
 dock's top, in the order they were opened, each with its own close
@@ -4188,8 +4200,11 @@ who the conversation is with (avatar, name and what the agent does, or
 where it works and how long it has been working), its buttons on the
 right, and over the dock the dock's tabs, + and hide, in a slot the dock
 sizes to its own width. The conversation's own tabs then sit where its
-header was. On a narrow window there is no top row and the header stays
-in the conversation, as before. Rooms keep their own header.
+header was, in the conversation's column only: the dock is a column of
+its own that starts right under the top row, its edge running up
+unbroken. A room does the same with its icon, its name and who answers
+in it. On a narrow window there is no top row and the header stays in
+the conversation, as before.
 
 **Opened by an agent's work.** An agent starting to use its browser or
 its computer in a chat opens that panel, by one rule (`mayReveal`): only

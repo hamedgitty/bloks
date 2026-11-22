@@ -14,6 +14,9 @@ import { Checkpoints, diffLines } from "../server/checkpoints.ts";
 import { localUrls } from "../server/terminal.ts";
 import { MAX_RECENT, noteRecent, parseRecent, previewsFrom } from "../src/lib/previews.ts";
 import { backgroundTasks, runningCount } from "../src/lib/backgroundTasks.ts";
+import { FADE, fadeMask, wheelToSideways } from "../src/lib/fadeScroll.ts";
+import { dockWindowQuery, dockWindowTarget } from "../electron/dock-window.mjs";
+import { dockWindowFor } from "../src/lib/dockWindow.ts";
 import { gitChanges, gitFileDiff, inSkippedDir, parseNumstat, parsePorcelainV2, parseUnifiedDiff, safeRelativePath } from "../server/git-changes.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "bloks-dock-panels-"));
@@ -246,5 +249,36 @@ describe("the browser's empty tab and Background tasks", () => {
     assert.deepEqual(tasks.map((t) => `${t.kind}:${t.id}`), ["terminal:a", "terminal:b", "job:j1"]);
     assert.equal(runningCount(tasks), 2);
     assert.equal(tasks[1].kind === "terminal" && tasks[1].exitCode, 1);
+  });
+});
+
+describe("a strip of tabs past its room", () => {
+  test("fades only on the side with more to see", () => {
+    assert.equal(fadeMask(0, 300, 300), undefined, "it all fits");
+    assert.equal(fadeMask(0, 600, 300), `linear-gradient(to right, #000 0, #000 calc(100% - ${FADE}px), transparent 100%)`);
+    assert.equal(fadeMask(300, 600, 300), `linear-gradient(to right, transparent 0, #000 ${FADE}px, #000 100%)`);
+    assert.match(fadeMask(100, 600, 300)!, /^linear-gradient\(to right, transparent 0, .*transparent 100%\)$/);
+    assert.equal(fadeMask(299.5, 600, 300), fadeMask(300, 600, 300), "a pixel of rounding is the end");
+  });
+
+  test("a wheel turned up or down scrolls it sideways, a trackpad as it is", () => {
+    assert.equal(wheelToSideways(0, 40), 40);
+    assert.equal(wheelToSideways(-30, 4), -30);
+  });
+});
+
+describe("a panel in a window of its own", () => {
+  test("only a panel that opens alone, for ids that are ids, becomes an address", () => {
+    assert.equal(dockWindowQuery({ panel: "changes", botId: "b-1", laneId: "l_2" }), "dock=changes&agent=b-1&lane=l_2");
+    assert.equal(dockWindowQuery({ panel: "browser", botId: "b", laneId: "l" }), null, "the browser stays over its window");
+    assert.equal(dockWindowQuery({ panel: "docs", botId: "../x", laneId: "l" }), null);
+    assert.equal(dockWindowQuery({ panel: "docs", botId: "b", laneId: "l&x=1" }), null);
+    assert.equal(dockWindowTarget("docs"), null);
+  });
+
+  test("the page reads the address back the same way", () => {
+    assert.deepEqual(dockWindowFor("?dock=tasks&agent=b&lane=l"), { panel: "tasks", botId: "b", laneId: "l" });
+    assert.equal(dockWindowFor("?dock=terminal&agent=b&lane=l"), null);
+    assert.equal(dockWindowFor("?dock=docs&agent=b%2F..&lane=l"), null);
   });
 });
