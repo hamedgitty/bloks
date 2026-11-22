@@ -47,7 +47,7 @@ export interface RedoPlan {
  * as that, and one that waited for a turn there keeps the chat it
  * answers. */
 function own(m: Message): boolean {
-  return m.role === "user" && m.kind === "text" && !m.agent && !m.via && !m.fromTelegram && !m.telegramReply;
+  return m.role === "user" && m.kind === "text" && !m.agent && !m.selfSent && !m.via && !m.fromTelegram && !m.telegramReply;
 }
 
 /** Something said to the agent that is part of the conversation: not

@@ -145,8 +145,8 @@ const isReply = (m: Message) =>
   m.role === "bot" && !m.quiet && !m.deleted && m.kind !== "activity" && m.kind !== "screen" && m.kind !== "notice";
 
 /** Typed here and sent, rather than said for you by a routine, a goal,
- * a watcher, another agent or someone on Telegram. */
-const sentByYou = (m: Message) => m.role === "user" && !m.via && !m.agent && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup;
+ * a watcher, another agent, the agent itself or someone on Telegram. */
+const sentByYou = (m: Message) => m.role === "user" && !m.via && !m.agent && !m.selfSent && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup;
 
 /** Somebody on Telegram who is not the owner, let in or given full access. */
 const telegramSpeaker = (m: Message) => {
@@ -253,7 +253,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     return who?.length ? <SeenBy people={who.map((p) => ({ id: p, name: readerName(p) }))} /> : undefined;
   };
   const faceOf = (m: Message) =>
-    m.role === "bot" ? (
+    m.role === "bot" || m.selfSent ? (
       <AgentAvatar bot={bot} size={28} />
     ) : telegramSpeaker(m) ? (
       <PersonAvatar id={telegramSpeaker(m)!.personId} name={telegramSpeaker(m)!.name} />
@@ -1112,11 +1112,12 @@ export function ChatView({ bot }: { bot: Bot }) {
               // a folded check-in below says no time of its own
               hideTime={list[offset + 1]?.quiet ? false : timeSaidBelow(m, list[offset + 1])}
               fresh={fresh}
-              author={telegramSpeaker(m)?.name ?? (m.role === "user" ? (m.author ? personName(m.author) : t("chatView.you")) : bot.name)}
+              author={telegramSpeaker(m)?.name ?? (m.role === "user" && !m.selfSent ? (m.author ? personName(m.author) : t("chatView.you")) : bot.name)}
               onReply={setReplyTo}
               onForward={(message, author) => setForwarding({ message, author })}
               onReact={(messageId, emoji) => reactTo(bot.threadId, messageId, emoji)}
-              onEdit={(messageId, next) => editMessage(bot.threadId, messageId, next)}
+              // the agent's own words are its record: not yours to edit or redo
+              onEdit={m.selfSent ? undefined : (messageId, next) => editMessage(bot.threadId, messageId, next)}
               onDelete={(messageId) => deleteMessage(bot.threadId, messageId)}
               onRewind={(messageId) => rewindTo(bot.threadId, messageId)}
               onBranch={m.role === "bot" ? (messageId) => dispatch({ type: "branchTask", botId: bot.id, taskId: bot.threadId, messageId }) : undefined}
@@ -1124,7 +1125,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               // somebody else's words only: what you wrote you have read
               onUnreadFrom={sentByYou(m) ? undefined : markUnreadFrom}
               previewRedo={(messageId) => previewRedo(bot.threadId, messageId)}
-              onRedo={(messageId, next) => redoFrom(bot.threadId, messageId, next)}
+              onRedo={m.selfSent ? undefined : (messageId, next) => redoFrom(bot.threadId, messageId, next)}
               redoTick={`${bot.messages.length}:${working}`}
               agentName={bot.name}
               highlight={finding ? query : ""}
@@ -1134,7 +1135,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               group={
                 group
                   ? {
-                      mine: m.role === "user" && !m.author && !telegramSpeaker(m),
+                      mine: m.role === "user" && !m.author && !m.selfSent && !telegramSpeaker(m),
                       ...(groupRuns.get(m.id) ?? { first: true, last: true }),
                       face: faceOf(m),
                       receipts: receiptsFor(m.id),
@@ -1450,7 +1451,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           const m = bot.messages.find((x) => x.id === id);
           if (!m || m.deleted || m.kind !== "text" || !m.text) return null;
           return {
-            author: telegramSpeaker(m)?.name ?? (m.role === "user" ? (m.author ? personName(m.author) : t("chatView.you")) : bot.name),
+            author: telegramSpeaker(m)?.name ?? (m.role === "user" && !m.selfSent ? (m.author ? personName(m.author) : t("chatView.you")) : bot.name),
             excerpt: excerptOf(m),
             // one of the agent's own answers, as Branch from here takes
             branchable: m.role === "bot" && !m.takeBack && (!m.agent || m.agent.dir === "reply"),

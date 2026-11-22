@@ -124,14 +124,15 @@ export function shouldFillEarlier(o: { width: number; height: number; contentHei
  * The message ↑ in an empty composer opens for editing: the newest one
  * you typed here that still has words to edit. A message taken back has
  * none left, so the one before it is the last thing you said. What came
- * in another way (a watcher, an email, a chat app) and what passed
- * between agents is not yours to rewrite from this box, and is passed
+ * in another way (a watcher, an email, a chat app), what passed between
+ * agents and what the agent wrote itself is not yours to rewrite from
+ * this box, and is passed
  * over the same way, as is one never sent, which is sent again instead.
  */
 export function lastEditable(messages: readonly Message[]): Message | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role !== "user" || m.deleted || m.unsent || m.via || m.agent) continue;
+    if (m.role !== "user" || m.deleted || m.unsent || m.via || m.agent || m.selfSent) continue;
     if (m.kind === "text" && m.text) return m;
   }
   return null;

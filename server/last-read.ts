@@ -133,6 +133,7 @@ export interface Said {
   compaction?: unknown;
   sessionReset?: boolean;
   agent?: { dir: string };
+  selfSent?: true;
   via?: string;
   author?: string;
   telegramPerson?: unknown;
@@ -149,7 +150,7 @@ const MACHINES = new Set(["routine", "watcher", "webhook", "goal", "intent", "in
  * and came from no chat app; a member's carry theirs. */
 export function wroteIt(personId: string): (m: Said) => boolean {
   if (personId === "owner") {
-    return (m) => m.role === "user" && !m.author && !m.agent && !m.via && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup;
+    return (m) => m.role === "user" && !m.author && !m.agent && !m.selfSent && !m.via && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup;
   }
   return (m) => m.role === "user" && m.author === personId;
 }

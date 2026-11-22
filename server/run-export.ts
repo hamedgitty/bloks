@@ -799,7 +799,7 @@ const OTHERS_VIA = new Set(["email", "whatsapp", "slack", "discord"]);
 /** Said to the agent and part of the conversation. */
 const said = (m: Message) => m.role === "user" && m.kind === "text" && !m.queued && !m.unsent && !dismissedPreparation(m);
 /** The owner's own words, typed here or from their own Telegram or Signal. */
-const ownWords = (m: Message) => said(m) && !m.agent && !m.via && !othersWords(m);
+const ownWords = (m: Message) => said(m) && !m.agent && !m.selfSent && !m.via && !othersWords(m);
 function othersWords(m: Message): boolean {
   if (m.role !== "user") return false;
   if (m.author && m.author !== "owner") return true;

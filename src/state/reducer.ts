@@ -238,6 +238,9 @@ export interface Message {
    * started: shown in full, with a link to the exchange. Not sent to it. */
   afterAgent?: { peerId: string; peerName: string };
   telegramPerson?: { personId: string; name: string; requester: string; group?: { title: string } };
+  /** Written by the agent itself (its words to itself, or a job one
+   * posted), server marked: shown as the agent's, never as yours. */
+  selfSent?: true;
   /** Said on Telegram by someone the owner gave full access to this agent:
    * a turn with the agent's own tools, answered in their own chat. */
   telegramDelegate?: { personId: string; name: string; requester: string; group?: { title: string } };

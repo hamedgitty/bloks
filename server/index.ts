@@ -31,6 +31,7 @@ import { openCard, placeOf, say, where } from "./where.ts";
 import { MAX_WHY, PROPOSABLE, proposable, readValue, refusal as proposalRefusal, valueLabel, type ProposalCard, type ProposalState } from "./settings-proposals.ts";
 import { blockers as modelBlockers, changeWords, readModelProposal, type ModelProposalCard, type ModelWorld } from "./model-proposals.ts";
 import { instructionMessage, parseInstruction, planInstruction } from "./model-instructions.ts";
+import { agentWrote, personsWords, startsChainOver } from "./said-by.ts";
 import { DEVICE_CATEGORIES, noStore, readReport, serveSettingsRead } from "./settings-read-http.ts";
 import { settingsCatalog } from "./settings-catalog.ts";
 import { inspectionRedactor } from "./settings-redaction.ts";
@@ -7091,7 +7092,7 @@ function carryOn(
     });
     const yours = alive.some(({ item }) => {
       const m = item.messageId ? store.messagesFor(turn.laneId).find((msg) => msg.id === item.messageId) : undefined;
-      return Boolean(m && !m.agent && !m.via);
+      return Boolean(m && !agentWrote(m) && !m.via);
     });
     // told to the agent, not written into the chat as if the person had
     // typed it: the notice above is what the person reads
@@ -8496,7 +8497,7 @@ async function startClaimedTurn(
   // Words that waited for a turn are already written; the person's own
   // among them are what is looked for, and the last of them keeps the notes.
   const waited = recallWanted && opts.presetMessage
-    ? store.messagesFor(task.id).filter((m) => opts.personalMessages?.includes(m.id) && m.role === "user" && m.kind === "text" && !m.deleted && !m.agent && !m.via)
+    ? store.messagesFor(task.id).filter((m) => opts.personalMessages?.includes(m.id) && m.role === "user" && m.kind === "text" && !m.deleted && !agentWrote(m) && !m.via)
     : [];
   const recalledAhead = recallWanted
     ? recallAhead(bot, task.id, opts.presetMessage ? waited.map((m) => m.text ?? "").join("\n") : text)
@@ -8577,7 +8578,7 @@ async function startClaimedTurn(
   // A named skill injects instructions. Take names from the person's
   // actual words, never from wrappers, notes or background sources.
   const personalWords = opts.personalMessages && !blok
-    ? store.messagesFor(task.id).filter((m) => opts.personalMessages!.includes(m.id) && m.namedSkills === true && m.role === "user" && m.kind === "text" && !m.deleted && !m.agent && !m.via).map((m) => m.text ?? "")
+    ? store.messagesFor(task.id).filter((m) => opts.personalMessages!.includes(m.id) && m.namedSkills === true && m.role === "user" && m.kind === "text" && !m.deleted && !agentWrote(m) && !m.via).map((m) => m.text ?? "")
     : opts.byYou && opts.personal !== false && !opts.from && !opts.presetMessage && !blok ? [said] : [];
   const skillNames = instance.driverKind === "codex" && !command ? codexSkillNames(personalWords) : [];
   // Whether this turn gets the agent's own full credential (minted below,
@@ -13492,7 +13493,10 @@ function burstChain(laneId: string, items: ReadonlyArray<{ messageId?: string; c
     else if (!item.messageId) depth = Math.max(depth, agentChain.get(laneId) ?? 0);
     else {
       const m = store.messagesFor(laneId).find((msg) => msg.id === item.messageId);
-      if (m && !m.agent && !m.via) return 0;
+      if (startsChainOver(m)) return 0;
+      // an agent's own words that lost their place in the chain (a
+      // restart keeps the words, not the place) still count as one
+      if (m?.selfSent) depth = Math.max(depth, agentChain.get(laneId) ?? 1);
     }
   }
   return depth;
@@ -21394,7 +21398,7 @@ function prepareFollowup(
   // Joining now would put these ahead of them.
   const earlierWaiting = (steerQueues.get(lane.id)?.items ?? []).some((item) => {
     const m = item.messageId ? store.messagesFor(lane.id).find((row) => row.id === item.messageId) : undefined;
-    return m && m.queued && m.preparation?.attempt !== attempt.id && !m.deleted && !m.agent && !m.via &&
+    return m && m.queued && m.preparation?.attempt !== attempt.id && !m.deleted && !agentWrote(m) && !m.via &&
       (m.delivery?.route !== "queued" || m.preparation?.state === "next") && sameTelegramDelegate(m.telegramDelegate, options.telegramDelegate);
   });
   if (earlierWaiting) return null;
@@ -21690,7 +21694,7 @@ async function drainPreparation(attempt: PreparationAttempt): Promise<void> {
       const ahead = position < 0 ? [] : queued.slice(0, position);
       const earlierPersonal = ahead.some((item) => {
         const m = item.messageId ? store.messagesFor(lane.id).find((row) => row.id === item.messageId) : undefined;
-        return m?.queued && !m.deleted && !m.agent && !m.via && m.delivery?.route !== "queued" &&
+        return m?.queued && !m.deleted && !agentWrote(m) && !m.via && m.delivery?.route !== "queued" &&
           sameTelegramDelegate(m.telegramDelegate, message.telegramDelegate) &&
           telegramAudience(m.telegramPerson ?? m.telegramGroup) === attempt.audience &&
           (m.telegramPerson?.requester ?? m.telegramGroup?.requester ?? "owner") === attempt.requester;
@@ -21933,7 +21937,7 @@ async function steerOne(
   // so only the same sender's waiting words count here.
   const yoursWaiting = waiting.some((item) => {
     const m = item.messageId ? store.messagesFor(lane.id).find((msg) => msg.id === item.messageId) : undefined;
-    return m && m.id !== options.moving && !m.deleted && !m.agent && !m.via &&
+    return m && m.id !== options.moving && !m.deleted && !agentWrote(m) && !m.via &&
       (m.delivery?.route !== "queued" || m.preparation?.state === "next") && sameTelegramDelegate(m.telegramDelegate, options.telegramDelegate);
   });
   if (yoursWaiting) return null;
@@ -22155,13 +22159,9 @@ function fromAgentPrompt(from: { botId: string; name: string }, text: string, qu
  * so another agent's words in it name `bloks quiet` (fromAgentPrompt). */
 type Burst = { person: boolean; others: boolean; command?: boolean };
 
-/** Whether a message is the person's own words as they wrote them here:
- * not another agent's, a routine's, a watcher's or a webhook's, and not
- * a Telegram person's, a delegate's or a Telegram group's, which say who
- * they are from already (storedPrompt). */
-function personsWords(m: Message | undefined): boolean {
-  return Boolean(m && m.role === "user" && !m.agent && !m.via && !m.telegramPerson && !m.telegramDelegate && !m.telegramGroup && !m.telegramSent);
-}
+// personsWords (server/said-by.ts): the person's own words as they wrote
+// them here, never an agent's, a machine's or a Telegram person's, which
+// say who they are from already (storedPrompt).
 
 /** What a list of waiting words carries, as a Burst. An item with no
  * message is a note from Bloks itself: somebody else's. */
@@ -22411,7 +22411,7 @@ async function sendWaitingNow(bot: BotRecord, lane: TaskRecord, only?: string): 
     const m = said(item.messageId);
     // This bulk action is private app input. Telegram senders and group
     // audiences retain their own queued provenance and delivery path.
-    return m && m.role === "user" && m.queued && !m.deleted && !m.agent && !m.via &&
+    return m && m.role === "user" && m.queued && !m.deleted && !agentWrote(m) && !m.via &&
       (!m.preparation || m.preparation.state === "next") &&
       (!m.telegramBinding || telegramConnectionCurrent(m.telegramBinding)) &&
       (!m.preparation?.source || preparationSourceCurrent(bot.id, m)) &&
@@ -23014,7 +23014,7 @@ function drainSteer(threadId: string) {
   // burst of Bloks' own notes (a key saved, say) carries on the turn
   // it resumes, so it answers whoever that one did.
   const said = alive.map(({ item }) => (item.messageId ? store.messagesFor(threadId).find((m) => m.id === item.messageId) : undefined));
-  const byYou = said.some((m) => m && !m.telegramPerson && !m.telegramDelegate && !m.agent && !m.via) || (said.every((m) => !m) && !alive[0].item.telegramPerson && turnsForYou.has(threadId));
+  const byYou = said.some((m) => m && !m.telegramPerson && !m.telegramDelegate && !agentWrote(m) && !m.via) || (said.every((m) => !m) && !alive[0].item.telegramPerson && turnsForYou.has(threadId));
   const telegramMessages = alive.flatMap(({ item }) => item.messageId ? [item.messageId] : []);
   const telegramBinding = said.find((message) => message?.telegramBinding)?.telegramBinding;
   const telegramPerson = [...said].reverse().find((m) => m?.telegramPerson)?.telegramPerson ?? [...alive].reverse().find((entry) => entry.item.telegramPerson)?.item.telegramPerson;
@@ -29219,6 +29219,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // Editing is for your own words. An agent's message is a record of
         // what it said, and rewriting that would make the transcript lie.
         if (row.role !== "user") return { status: 403, error: "only your own messages can be edited" };
+        // an agent's words to itself are its record, as its replies are
+        if (row.selfSent) return { status: 403, error: "only your own messages can be edited" };
         if (row.via === "service") return { status: 403, error: "service wake input is immutable" };
         if (row.deleted) return { status: 409, error: "that message was taken back" };
         if (row.preparation && ["dispatching", "uncertain", "joined"].includes(row.preparation.state)) {

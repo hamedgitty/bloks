@@ -269,7 +269,7 @@ export function towardYou(message: Message, yourTurn: boolean): boolean {
  * rather than arriving from a watcher, an email or a webhook, from
  * another agent, or from a member of a shared room. */
 function yours(message: Message): boolean {
-  return message.role === "user" && message.kind === "text" && !message.agent && !message.author && !message.via;
+  return message.role === "user" && message.kind === "text" && !message.agent && !message.selfSent && !message.author && !message.via;
 }
 
 /**
