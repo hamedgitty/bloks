@@ -22,6 +22,9 @@ files:
   # the Bloks browser's rules, shared with the server, which keeps them
   # (electron/app-browser.mjs imports them from there)
   - server/browser-core.mjs
+  # and how a Chrome extension is read, judged and kept, shared the same way
+  # (electron/browser-extensions.mjs)
+  - server/browser-extensions.mjs
   - package.json
 
 asar: true

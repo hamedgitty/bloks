@@ -1,7 +1,8 @@
 // Chrome extensions in the Bloks browser (GitHub 510), as the settings
 // page and the browser's extensions button see them: the shapes
-// electron/browser-extensions.mjs answers with, through the desktop
-// app's bridge.
+// server/browser-extensions.mjs answers with, through the desktop app's
+// bridge for a workspace it runs, or a server's routes for the browser
+// that server keeps (server/browser-extension-routes.ts).
 export interface BrowserExtensionInfo {
   name: string;
   version: string;
@@ -38,6 +39,16 @@ export interface BrowserExtensionRow {
  * extensions button: its toolbar popup and its options page. */
 export type ExtensionPage = "popup" | "options";
 
+/** One of them, open for the person in a server's browser, which shows
+ * it as pictures of a page of its own (server/server-browser.ts). */
+export interface ExtensionViewState {
+  slug: string;
+  name: string;
+  page: ExtensionPage;
+  width: number;
+  height: number;
+}
+
 /** What the extensions button lists: each one switched on, working, with
  * a popup or an options page to open, in the order they were added. */
 export function openableExtensions(rows: readonly BrowserExtensionRow[]): Array<{ slug: string; name: string; popup: boolean; options: boolean }> {
@@ -61,4 +72,12 @@ export function hostsLine(hosts: readonly string[]): { all: boolean; shown: stri
   const all = hosts.some((h) => h === "<all_urls>" || /^\*:\/\/\*\/\*$/.test(h) || /^https?:\/\/\*\/\*$/.test(h));
   const shown = all ? [] : hosts.slice(0, 4);
   return { all, shown, more: all ? 0 : Math.max(0, hosts.length - shown.length) };
+}
+
+/** A file's place in a folder the person chose, as the browser names it
+ * ("vault/popup/index.html"), without the folder's own name: its place
+ * in the extension. Empty for a name with no place in it. */
+export function folderPath(relative: string): string {
+  const parts = String(relative ?? "").split("/").filter(Boolean);
+  return parts.length > 1 ? parts.slice(1).join("/") : "";
 }

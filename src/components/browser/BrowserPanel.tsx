@@ -37,6 +37,7 @@ import {
   Lock,
   MessageSquare,
   Plus,
+  Puzzle,
   RotateCw,
   X,
 } from "@/components/icons";
@@ -76,7 +77,8 @@ import { t } from "@/lib/i18n";
 import { sameAddress } from "@/lib/mentions";
 import { tabsInScope, type TabScope } from "@/lib/dockActivity";
 import { screenInput, type InputSender } from "./screenInput";
-import { appExtensions, ExtensionsMenu } from "./ExtensionsMenu";
+import { appExtensions, ExtensionsMenu, serverExtensions } from "./ExtensionsMenu";
+import type { ExtensionViewState } from "@/lib/browserExtensions";
 
 /** The server's word on the browser, for a page that does not have the
  * app's own; its "browser.app" frames keep it fresh after this. */
@@ -240,8 +242,16 @@ function BrowserPanel({
   const active = state?.tabs.find((t) => t.id === state.activeTabId) ?? null;
   const line = controlLine(state?.control);
   const absent = onServer && missing !== null;
-  // the extensions' own pages, the person's to open (ExtensionsMenu)
-  const [extensions] = useState(() => (onServer ? null : appExtensions()));
+  // the extensions' own pages, the person's to open (ExtensionsMenu); a
+  // server's browser shows the one open over the page (ExtensionView)
+  const [extensions] = useState(() => (onServer ? serverExtensions() : appExtensions()));
+  const [extensionView, setExtensionView] = useState<ExtensionViewState | null>(null);
+  useEffect(() => {
+    if (!onServer || absent) return;
+    void api("/api/browser/extensions")
+      .then((said) => setExtensionView((said as { view?: ExtensionViewState | null }).view ?? null))
+      .catch(() => {});
+  }, [onServer, absent]);
 
   // Where the page goes, said to the app whenever it moves, and "nowhere"
   // while something is drawn over it, while the edge is dragged (the view
@@ -347,7 +357,7 @@ function BrowserPanel({
             <span aria-hidden className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-brand" />
           )}
         </HeaderButton>
-        {extensions && <ExtensionsMenu source={extensions} />}
+        {extensions && !absent && <ExtensionsMenu source={extensions} onOpened={(view) => onServer && setExtensionView(view)} />}
       </div>
 
       {line && (
@@ -401,6 +411,9 @@ function BrowserPanel({
         {/* a server's browser is sized to this box even before a page is
             open, so the first one lays out at the panel's width */}
         {onServer && !absent && <SizeReporter />}
+        {onServer && extensionView && (
+          <ExtensionView key={`${extensionView.slug}:${extensionView.page}`} view={extensionView} onClose={() => setExtensionView(null)} />
+        )}
       </div>
 
       {shelf && <Shelf downloads={state?.downloads ?? []} onServer={onServer} onClose={() => setShelf(false)} />}
@@ -556,12 +569,46 @@ function SizeReporter() {
  * comes up only when asked for, not with every tap on a link.
  */
 function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | undefined }) {
+  return (
+    <Surface
+      label={tabLabel(tab)}
+      screenPath="/api/browser/screen"
+      inputPath="/api/browser/input"
+      frameFor={tab.id}
+      drives={control?.by === "agent"}
+    />
+  );
+}
+
+/**
+ * A page of the server's browser as pictures, and the person's hands on
+ * it: the shown tab (Screen), or an extension's own page open for them
+ * (ExtensionView). `frameFor` is the picture's tab, when it names one;
+ * `onClosed` hears that the page is gone.
+ */
+function Surface({
+  label,
+  screenPath,
+  inputPath,
+  frameFor,
+  drives: agentDrives,
+  onClosed,
+}: {
+  label: string;
+  screenPath: string;
+  inputPath: string;
+  frameFor?: string;
+  drives: boolean;
+  onClosed?: () => void;
+}) {
   const [frame, setFrame] = useState<ScreenFrame | null>(null);
   const [typing, setTyping] = useState(false);
   const surface = useRef<HTMLDivElement>(null);
   const keys = useRef<HTMLTextAreaElement>(null);
   const drives = useRef(false);
-  drives.current = control?.by === "agent";
+  drives.current = agentDrives;
+  const closed = useRef(onClosed);
+  closed.current = onClosed;
   const touch = useRef<{ id: number; x: number; y: number; lastX: number; lastY: number; moved: boolean } | null>(null);
   const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
 
@@ -576,8 +623,12 @@ function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | u
         return;
       }
       try {
-        const got = (await api(`/api/browser/screen?after=${after}`)) as Partial<ScreenFrame>;
+        const got = (await api(`${screenPath}?after=${after}`)) as Partial<ScreenFrame> & { closed?: boolean };
         if (stopped) return;
+        if (got.closed) {
+          closed.current?.();
+          return;
+        }
         if (typeof got.jpeg === "string" && typeof got.seq === "number") {
           after = got.seq;
           setFrame(got as ScreenFrame);
@@ -592,15 +643,15 @@ function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | u
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [screenPath]);
 
   // one queue for everything the person does, sent a batch at a time
   const send = useRef<InputSender | null>(null);
   useEffect(() => {
-    const sender = screenInput((events) => api("/api/browser/input", { method: "POST", body: JSON.stringify({ events }) }));
+    const sender = screenInput((events) => api(inputPath, { method: "POST", body: JSON.stringify({ events }) }));
     send.current = sender;
     return () => sender.stop();
-  }, []);
+  }, [inputPath]);
 
   // the wheel, which React only hears passively
   useEffect(() => {
@@ -620,13 +671,13 @@ function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | u
     for (const type of ["down", "up"] as const) send.current?.mouse({ type, ...at, button: "left", buttons: type === "down" ? 1 : 0, clicks: 1, mods });
   };
 
-  const shown = frame && frame.tab === tab.id ? frame : null;
+  const shown = frame && (frameFor === undefined || frame.tab === frameFor) ? frame : null;
   return (
     <div
       ref={surface}
       role="application"
       aria-roledescription={t("browserPanel.pageRole")}
-      aria-label={tabLabel(tab)}
+      aria-label={label}
       className={cn("absolute inset-0 touch-none select-none overflow-hidden", typing && "shadow-[inset_0_0_0_2px_var(--ring)]")}
       onPointerDown={(e) => {
         if (e.pointerType === "mouse" && e.button > 2) return;
@@ -736,6 +787,46 @@ function Screen({ tab, control }: { tab: BrowserTab; control: BrowserControl | u
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * An extension's popup or options page, open for the person in a server's
+ * browser: pictures of a page of its own over the panel, the popup under
+ * the extensions button, the options page over the whole page. Its
+ * routes are the person's (server/browser-extension-routes.ts); no agent
+ * sees it.
+ */
+function ExtensionView({ view, onClose }: { view: ExtensionViewState; onClose: () => void }) {
+  const popup = view.page === "popup";
+  const title = popup ? view.name : t("browserPanel.extensionOptions", { name: view.name });
+  const close = () => {
+    onClose();
+    void api("/api/browser/extensions/view/close", { method: "POST" }).catch(() => {});
+  };
+  return (
+    <section
+      aria-label={title}
+      className={cn(
+        "absolute z-10 flex flex-col overflow-hidden bg-card",
+        popup ? "right-2 top-2 max-h-[calc(100%-16px)] max-w-[calc(100%-16px)] rounded-xl border shadow-lg shadow-(color:--shadow-color)" : "inset-0",
+      )}
+      style={popup ? { width: view.width } : undefined}
+    >
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b pl-2.5 pr-1 text-small">
+        <Puzzle size={13} className="shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1 truncate font-medium text-foreground">{title}</span>
+        <span className="shrink-0 text-muted-foreground">{t("browserPanel.extensionViewOnlyYou")}</span>
+        <HeaderButton label={t("browserPanel.closeExtensionPage", { name: view.name })} onClick={close} className="size-6">
+          <X size={13} />
+        </HeaderButton>
+      </div>
+      {/* a popup is its own height, shrinking to fit a short panel; an
+          options page fills what is left under the bar */}
+      <div className={cn("relative min-h-0", popup ? "flex-initial" : "flex-1")} style={popup ? { height: view.height } : undefined}>
+        <Surface label={title} screenPath="/api/browser/extensions/view/screen" inputPath="/api/browser/extensions/view/input" drives={false} onClosed={onClose} />
+      </div>
+    </section>
   );
 }
 

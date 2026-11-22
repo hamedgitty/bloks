@@ -29,10 +29,20 @@
 // (Target.setAutoAttach with flatten). Every page starts paused until its
 // guard is on (waitForDebuggerOnStart), so a popup an agent's page opens
 // is held to the rules from its first request.
+//
+// The owner's Chrome extensions for the workspace are loaded each time
+// this Chrome starts (server/browser-extensions.mjs), over the same line
+// (Extensions.loadUnpacked). An extension's own page is never a tab: one
+// that turns up as a page is closed, and a tab sent to one is sent to the
+// blank page. Its toolbar popup and options page are the person's to
+// open, as the extension view: a page of its own, pictured and driven
+// through routes of its own (/api/browser/extensions/view), which no
+// agent's tab list, picture or command reaches.
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle, type TabPeek } from "./browser-core.mjs";
+import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, isExtensionPage, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle, type TabPeek } from "./browser-core.mjs";
+import { isPageOf, loadInto, pageUrl, pagesOf, readList, type ExtensionSession } from "./browser-extensions.mjs";
 import { browserSocket, chromePath, launch, Session, type CdpEvent } from "./cdp.ts";
 
 // ── which Chrome ───────────────────────────────────────────────────────
@@ -293,9 +303,41 @@ export interface ScreenFrame {
   at: number;
 }
 
+/** An extension's own page, open for the person: its popup or options. */
+export interface ExtensionViewState {
+  slug: string;
+  name: string;
+  page: "popup" | "options";
+  width: number;
+  height: number;
+}
+
+/** A popup's size here: Chrome sizes one to its page, which a picture
+ * cannot, so a size most password managers' popups fit. */
+const POPUP_VIEW = { width: 400, height: 600 };
+
+interface ExtensionView extends ExtensionViewState {
+  extensionId: string;
+  targetId: string;
+  sessionId: string;
+  closed: boolean;
+}
+
+/** What Chrome says when it does not take extensions over this line, in
+ * the words the owner reads on the extension. */
+export function extensionLoadProblem(message: string): string {
+  return /wasn't found|not found|not available|not allowed|unknown method/i.test(message)
+    ? "This server's Chrome does not take extensions from Bloks. A recent Google Chrome or Chromium does."
+    : message;
+}
+
 export interface ServerBrowserOptions {
   /** The workspace's own profile, kept between starts. */
   profileDir: string;
+  /** The workspace's data folder, where its Chrome extensions are kept
+   * (server/browser-extensions.mjs); none are loaded without it. */
+  dataDir?: string;
+  log?: (line: string) => void;
   downloadsDir: string;
   chrome?: () => { binary: string } | { missing: BrowserMissing };
   /** Starts the browser and opens its socket; a fake one in the tests. */
@@ -337,6 +379,13 @@ export class ServerBrowser {
   private stateTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly downloads = new Map<string, { name: string; by?: string; at: number }>();
+  private view: ExtensionView | null = null;
+  /** The extension page being opened as the view, until it is claimed. */
+  private openingView: string | null = null;
+  private viewFrame: ScreenFrame | null = null;
+  private viewSeq = 0;
+  private readonly viewWaiters = new Set<() => void>();
+  private extensionsReady: Promise<unknown> = Promise.resolve();
 
   constructor(opts: ServerBrowserOptions) {
     this.opts = opts;
@@ -417,10 +466,227 @@ export class ServerBrowser {
       line.close();
       throw new Error(`Chrome on this server would not start: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // the owner's extensions, before any page is made: Chrome forgets
+    // them at quit, and a page made first would run without them
+    this.extensionsReady = this.loadExtensions(line);
+    await this.extensionsReady;
     // started for nothing (an agent asking which tabs there are) is
     // closed again after a while, like a browser whose tabs all closed
     this.changed();
     return line;
+  }
+
+  // ── the owner's Chrome extensions ──
+
+  /** This Chrome as an extension session (server/browser-extensions.mjs),
+   * or null while it is not running: a change then waits for its start. */
+  extensionSession(): ExtensionSession | null {
+    const line = this.line;
+    if (!line) return null;
+    return {
+      extensions: {
+        loadExtension: async (path: string) => {
+          try {
+            const said = await line.send("Extensions.loadUnpacked", { path }, 20_000);
+            return { id: String(said?.id ?? "") };
+          } catch (error) {
+            throw new Error(extensionLoadProblem(error instanceof Error ? error.message : String(error)));
+          }
+        },
+        removeExtension: (id: string) => {
+          if (this.view?.extensionId === id) void this.closeExtensionPage();
+          void line.send("Extensions.uninstall", { id }, 10_000).catch(() => {});
+        },
+      },
+    };
+  }
+
+  private async loadExtensions(line: CdpLine) {
+    const dataDir = this.opts.dataDir;
+    if (!dataDir || this.line !== line) return;
+    const ses = this.extensionSession();
+    if (!ses) return;
+    await loadInto(ses, dataDir, this.opts.log).catch((error) => this.opts.log?.(`browser extensions: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  /** The extension view, as the person's panel shows it. */
+  extensionView(): ExtensionViewState | null {
+    const view = this.view;
+    return view && !view.closed ? { slug: view.slug, name: view.name, page: view.page, width: view.width, height: view.height } : null;
+  }
+
+  /**
+   * Opens one of an extension's own pages for the person: its toolbar
+   * popup or its options page, as a page of this Chrome that is never one
+   * of the tabs. One at a time; opening another closes the last.
+   */
+  async openExtensionPage(slug: string, page: "popup" | "options"): Promise<{ ok?: boolean; error?: string; view?: ExtensionViewState }> {
+    const dataDir = this.opts.dataDir;
+    if (!dataDir) return { error: "This server keeps no Chrome extensions." };
+    if (page !== "popup" && page !== "options") return { error: "An extension has a popup and an options page to open, and nothing else." };
+    const line = await this.ensure();
+    await this.extensionsReady;
+    const entry = readList(dataDir).find((e) => e.slug === slug);
+    if (!entry?.enabled) return { error: "That extension is not on in this browser." };
+    if (!entry.extensionId) return { error: `${entry.name} is not loaded in this browser${entry.problem ? `: ${entry.problem}` : "."}` };
+    const url = pageUrl(entry.extensionId, pagesOf(entry.dir)[page] ?? "");
+    if (!url) return { error: page === "popup" ? `${entry.name} has no popup.` : `${entry.name} has no options page.` };
+    await this.closeExtensionPage();
+    // made at the extension's page itself (a blank page sent there after
+    // would change process, and lose its session on the way), paused until
+    // its guard is on, and claimed before anything could close it as an
+    // extension's stray page or take it for a tab;
+    this.creating++;
+    this.openingView = url;
+    let attached: Attached;
+    try {
+      // and in a window of its own: the shown tab is kept in front of its
+      // window for its pictures, and a page behind it paints nothing and
+      // takes no keys
+      const made = await line.send("Target.createTarget", { url, newWindow: true }, 10_000);
+      const targetId = String(made?.targetId ?? "");
+      attached =
+        this.unclaimed.get(targetId) ??
+        (await new Promise<Attached>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.claims.delete(targetId);
+            reject(new Error("the extension's page never opened"));
+          }, 10_000);
+          this.claims.set(targetId, (found) => {
+            clearTimeout(timer);
+            resolve(found);
+          });
+        }));
+      this.unclaimed.delete(attached.targetId);
+    } finally {
+      this.creating--;
+      this.openingView = null;
+    }
+    const size = page === "popup" ? POPUP_VIEW : { width: this.viewport.width, height: this.viewport.height };
+    const view: ExtensionView = { slug, name: entry.name, page, ...size, extensionId: entry.extensionId, targetId: attached.targetId, sessionId: attached.sessionId, closed: false };
+    this.view = view;
+    this.viewFrame = null;
+    const call = (method: string, params: Record<string, unknown> = {}) => line.send(method, params, 20_000, attached.sessionId);
+    try {
+      await Promise.all([
+        call("Page.enable"),
+        // its own pages, and nowhere else (viewGuard)
+        call("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }),
+        call("Emulation.setDeviceMetricsOverride", metrics({ ...size, scale: this.viewport.scale })),
+      ]);
+      if (attached.waiting) await call("Runtime.runIfWaitingForDebugger").catch(() => {});
+      await call("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: Math.round(size.width * this.viewport.scale), maxHeight: Math.round(size.height * this.viewport.scale), everyNthFrame: 1 });
+    } catch (error) {
+      await this.closeExtensionPage();
+      return { error: `${entry.name}'s ${page === "popup" ? "popup" : "options page"} did not open: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    // a page that has finished drawing sends no picture until it changes
+    setTimeout(() => {
+      if (this.view === view && !this.viewFrame) void this.viewStill(view);
+    }, 1_000).unref?.();
+    this.changed();
+    return { ok: true, view: this.extensionView() ?? undefined };
+  }
+
+  /** Closes the extension view, if one is open. */
+  async closeExtensionPage(): Promise<void> {
+    const view = this.view;
+    if (!view) return;
+    this.dropView(view);
+    await this.line?.send("Target.closeTarget", { targetId: view.targetId }, 5_000).catch(() => {});
+  }
+
+  private dropView(view: ExtensionView) {
+    if (this.view !== view) return;
+    view.closed = true;
+    this.view = null;
+    this.viewFrame = null;
+    for (const wake of [...this.viewWaiters]) wake();
+    this.changed();
+  }
+
+  /** The next picture of the extension view after `after`, as screen()
+   * is for the shown tab. Answers `closed` once there is no view. */
+  async extensionScreen(after: number, { waitMs = 20_000, gapMs = 0 }: { waitMs?: number; gapMs?: number } = {}): Promise<{ frame: ScreenFrame | null; seq: number; closed: boolean }> {
+    if (after > this.viewSeq) after = 0;
+    if (gapMs) await new Promise((resolve) => setTimeout(resolve, gapMs));
+    const fresh = () => (this.viewFrame && this.viewFrame.seq > after ? this.viewFrame : null);
+    if (this.view && !fresh()) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          this.viewWaiters.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(done, waitMs);
+        this.viewWaiters.add(done);
+      });
+    }
+    const frame = this.view ? fresh() : null;
+    return { frame, seq: frame?.seq ?? after, closed: !this.view };
+  }
+
+  /** The person's clicks, scrolls and keys on the extension view. Never
+   * an agent's: nothing an agent sends comes here. */
+  async extensionInput(events: PersonInput[]): Promise<{ ok: boolean; error?: string }> {
+    const view = this.view;
+    const line = this.line;
+    if (!view || !line) return { ok: false, error: "No extension page is open." };
+    const call = (method: string, params: Record<string, unknown>) => line.send(method, params, 20_000, view.sessionId);
+    for (const input of events) await dispatchInput(call, input).catch(() => {});
+    return { ok: true };
+  }
+
+  private viewEvent(line: CdpLine, view: ExtensionView, method: string, params: any) {
+    switch (method) {
+      case "Fetch.requestPaused":
+        return this.viewGuard(line, view, params);
+      case "Page.screencastFrame": {
+        const ack = () => void line.send("Page.screencastFrameAck", { sessionId: params?.sessionId }, 5_000, view.sessionId).catch(() => {});
+        if (typeof params?.data === "string") {
+          this.viewFrame = {
+            seq: ++this.viewSeq,
+            jpeg: params.data,
+            width: Math.round(Number(params.metadata?.deviceWidth) || view.width),
+            height: Math.round(Number(params.metadata?.deviceHeight) || view.height),
+            tab: `extension:${view.slug}`,
+            at: Date.now(),
+          };
+          for (const wake of [...this.viewWaiters]) wake();
+        }
+        setTimeout(ack, FRAME_GAP_MS).unref?.();
+        return;
+      }
+      // a dialog of its own is said no to: there is no bar to answer it
+      // in over a picture of a popup, and no agent is ever asked
+      case "Page.javascriptDialogOpening":
+        void line.send("Page.handleJavaScriptDialog", { accept: false }, 5_000, view.sessionId).catch(() => {});
+        return;
+    }
+  }
+
+  /** Where the extension view may go: its own extension's pages. A link
+   * out of them opens as the person's tab, under that tab's rules. */
+  private viewGuard(line: CdpLine, view: ExtensionView, params: { requestId?: string; request?: { url?: string } }) {
+    const requestId = String(params.requestId ?? "");
+    const url = String(params.request?.url ?? "");
+    const send = (method: string, extra: Record<string, unknown> = {}) => void line.send(method, { requestId, ...extra }, 10_000, view.sessionId).catch(() => {});
+    if (url === "about:blank" || isPageOf(url, view.extensionId)) return send("Fetch.continueRequest");
+    send("Fetch.failRequest", { errorReason: "Aborted" });
+    if (/^https?:/i.test(url) && !refusedNavigation(url, { ownPorts: this.opts.ownPorts() })) {
+      try {
+        this.browser.newTab({ kind: "person" }).load(url);
+      } catch {
+        /* the most tabs there may be are open */
+      }
+    }
+  }
+
+  private async viewStill(view: ExtensionView) {
+    const shot = await this.line?.send("Page.captureScreenshot", { format: "jpeg", quality: 70 }, 10_000, view.sessionId).catch(() => null);
+    if (typeof shot?.data !== "string" || this.view !== view) return;
+    this.viewFrame = { seq: ++this.viewSeq, jpeg: shot.data, width: view.width, height: view.height, tab: `extension:${view.slug}`, at: Date.now() };
+    for (const wake of [...this.viewWaiters]) wake();
   }
 
   /** The browser went: quit, crashed, or killed. Its tabs go with it, and
@@ -435,6 +701,7 @@ export class ServerBrowser {
     this.castTab = null;
     this.castSize = "";
     this.frame = null;
+    if (this.view) this.dropView(this.view);
     this.browser.closeAll();
     this.wakeWatchers();
   }
@@ -560,9 +827,14 @@ export class ServerBrowser {
     const sessionId = String(params.sessionId ?? "");
     const info = params.targetInfo ?? {};
     const targetId = String(info.targetId ?? "");
+    // Let run first, and only then let go: a worker started paused for its
+    // guard (an extension's background, a site's service worker) stays
+    // paused for good when the detach overtakes the word to run.
     const letGo = () => {
-      void line.send("Runtime.runIfWaitingForDebugger", {}, 5_000, sessionId).catch(() => {});
-      void line.send("Target.detachFromTarget", { sessionId }, 5_000).catch(() => {});
+      void line
+        .send("Runtime.runIfWaitingForDebugger", {}, 5_000, sessionId)
+        .catch(() => {})
+        .finally(() => void line.send("Target.detachFromTarget", { sessionId }, 5_000).catch(() => {}));
     };
     if (!sessionId || !targetId) return;
     // a worker, a service worker: nothing a tab is
@@ -574,6 +846,17 @@ export class ServerBrowser {
     if (claim) {
       this.claims.delete(targetId);
       return claim(attached);
+    }
+    // An extension's own page, opened by the extension itself or left by
+    // a run before this one: never a tab. Its popup and options page are
+    // the person's to open, as the extension view.
+    if (isExtensionPage(info.url ?? "")) {
+      // the one being opened as the view, said before its target's id was
+      // answered: kept for openExtensionPage to claim
+      if (this.openingView && info.url === this.openingView) return void this.unclaimed.set(targetId, attached);
+      letGo();
+      void line.send("Target.closeTarget", { targetId }, 5_000).catch(() => {});
+      return;
     }
     const opener = info.openerId ? this.byTarget.get(info.openerId) : undefined;
     if (opener) return this.popup(line, opener, attached);
@@ -628,12 +911,15 @@ export class ServerBrowser {
       case "Target.detachedFromTarget": {
         const tab = this.bySession.get(String(params?.sessionId ?? ""));
         if (tab) this.gone(tab);
+        if (this.view && this.view.sessionId === String(params?.sessionId ?? "")) this.dropView(this.view);
         return;
       }
       case "Target.targetDestroyed": {
         const tab = this.byTarget.get(String(params?.targetId ?? ""));
         if (tab) this.gone(tab);
         this.unclaimed.delete(String(params?.targetId ?? ""));
+        // a popup that closed itself (window.close) is closed for the person
+        if (this.view && this.view.targetId === String(params?.targetId ?? "")) this.dropView(this.view);
         return;
       }
       case "Target.targetInfoChanged": {
@@ -647,6 +933,7 @@ export class ServerBrowser {
       case "Browser.downloadProgress":
         return this.downloadMoves(params);
     }
+    if (this.view && sessionId === this.view.sessionId) return this.viewEvent(line, this.view, method, params);
     const tab = sessionId ? this.bySession.get(sessionId) : undefined;
     if (!tab) return;
     switch (method) {
@@ -654,6 +941,11 @@ export class ServerBrowser {
         return void this.guard(line, tab, params);
       case "Page.frameNavigated":
         if (params?.frame?.parentId) return;
+        // An extension moving a tab to its own page (chrome.tabs.update)
+        // is not a request the guard hears: the tab goes to the blank
+        // page instead, and no agent's command runs on it meanwhile
+        // (browser-core.mjs isExtensionPage).
+        if (isExtensionPage(params?.frame?.url)) void this.send(tab, "Page.navigate", { url: "about:blank" }).catch(() => {});
         // a new document: the last snapshot's refs name nothing on it
         tab.refs = new Map();
         if (typeof params.frame?.url === "string") tab.href = params.frame.url;
@@ -765,10 +1057,10 @@ export class ServerBrowser {
   private changed() {
     void this.cast();
     // a browser nobody uses gives the server its memory back
-    if (this.browser.state().tabs.length === 0 && this.line) {
+    if (this.browser.state().tabs.length === 0 && !this.view && this.line) {
       this.idleTimer ??= setTimeout(() => {
         this.idleTimer = null;
-        if (this.browser.state().tabs.length === 0) void this.shutDown();
+        if (this.browser.state().tabs.length === 0 && !this.view) void this.shutDown();
       }, this.opts.closeIdleMs ?? IDLE_CLOSE_MS);
       this.idleTimer.unref?.();
     } else if (this.idleTimer) {
@@ -890,7 +1182,7 @@ export class ServerBrowser {
       if (tab.dialog?.held) break;
       const watch = this.browser.watchDialog(tab);
       try {
-        await Promise.race([this.dispatch(tab, input).catch(() => {}), watch.opened]);
+        await Promise.race([dispatchInput((method, params) => tab.cdp(method, params), input).catch(() => {}), watch.opened]);
       } finally {
         watch.stop();
       }
@@ -898,40 +1190,6 @@ export class ServerBrowser {
     return { ok: true, tookOver };
   }
 
-  private dispatch(tab: PageTab, input: PersonInput): Promise<unknown> {
-    switch (input.t) {
-      case "mouse":
-        return tab.cdp("Input.dispatchMouseEvent", {
-          type: input.type === "down" ? "mousePressed" : input.type === "up" ? "mouseReleased" : "mouseMoved",
-          x: input.x,
-          y: input.y,
-          button: input.type === "move" && !input.buttons ? "none" : input.button,
-          buttons: input.buttons,
-          clickCount: input.type === "move" ? 0 : input.clicks,
-          modifiers: input.mods,
-        });
-      case "wheel":
-        return tab.cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.dx, deltaY: input.dy, modifiers: input.mods });
-      case "key": {
-        const commands = shortcut(input);
-        // a character typed with Control or Command is a shortcut, not text
-        const text = input.text && !(input.mods & (2 | 4)) ? input.text : undefined;
-        return tab.cdp("Input.dispatchKeyEvent", {
-          type: input.type === "up" ? "keyUp" : text ? "keyDown" : "rawKeyDown",
-          key: input.key,
-          code: input.code,
-          windowsVirtualKeyCode: input.keyCode,
-          nativeVirtualKeyCode: input.keyCode,
-          modifiers: input.mods,
-          autoRepeat: input.repeat,
-          ...(text && input.type === "down" ? { text, unmodifiedText: text } : {}),
-          ...(commands ? { commands } : {}),
-        });
-      }
-      case "text":
-        return tab.cdp("Input.insertText", { text: input.text });
-    }
-  }
 
   /** The panel's size, which every tab lays out at. The last panel to
    * say wins: one person, one panel at a time, in practice. */
@@ -1093,6 +1351,43 @@ export class ServerBrowser {
     await closed;
     this.lost(line);
     line.close();
+  }
+}
+
+/** The person's input, played into a page as protocol calls on `call`:
+ * the shown tab's, or the extension view's. */
+function dispatchInput(call: (method: string, params: Record<string, unknown>) => Promise<unknown>, input: PersonInput): Promise<unknown> {
+  switch (input.t) {
+    case "mouse":
+      return call("Input.dispatchMouseEvent", {
+        type: input.type === "down" ? "mousePressed" : input.type === "up" ? "mouseReleased" : "mouseMoved",
+        x: input.x,
+        y: input.y,
+        button: input.type === "move" && !input.buttons ? "none" : input.button,
+        buttons: input.buttons,
+        clickCount: input.type === "move" ? 0 : input.clicks,
+        modifiers: input.mods,
+      });
+    case "wheel":
+      return call("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.dx, deltaY: input.dy, modifiers: input.mods });
+    case "key": {
+      const commands = shortcut(input);
+      // a character typed with Control or Command is a shortcut, not text
+      const text = input.text && !(input.mods & (2 | 4)) ? input.text : undefined;
+      return call("Input.dispatchKeyEvent", {
+        type: input.type === "up" ? "keyUp" : text ? "keyDown" : "rawKeyDown",
+        key: input.key,
+        code: input.code,
+        windowsVirtualKeyCode: input.keyCode,
+        nativeVirtualKeyCode: input.keyCode,
+        modifiers: input.mods,
+        autoRepeat: input.repeat,
+        ...(text && input.type === "down" ? { text, unmodifiedText: text } : {}),
+        ...(commands ? { commands } : {}),
+      });
+    }
+    case "text":
+      return call("Input.insertText", { text: input.text });
   }
 }
 

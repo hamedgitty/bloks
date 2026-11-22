@@ -23,6 +23,7 @@ import {
   removeExtension,
   setEnabled,
 } from "../electron/browser-extensions.mjs";
+import { folderPath, openableExtensions, type BrowserExtensionRow } from "../src/lib/browserExtensions.ts";
 import { BLUR_GRACE_MS, POPUP_MAX, POPUP_MIN, anchorFrom, openExtensionWindow, popupPosition, popupSize } from "../electron/extension-windows.mjs";
 
 function unpacked(root: string, name: string, manifest: Record<string, unknown>) {
@@ -413,4 +414,25 @@ test("the app opens an extension's pages through that window, out of every agent
   // and a tab never shows an extension's page, however it was asked for
   assert.match(main, /did-start-navigation[\s\S]{0,160}extensionPage\(event\.url\)\) setImmediate\(\(\) => !wc\.isDestroyed\(\) && wc\.stop\(\)\)/, "stopped a tick later: stopping in the event itself crashes Electron");
   assert.match(main, /if \(extensionPage\(url\)\) void wc\.loadURL\("about:blank"\)/, "and one that commits all the same is blanked");
+});
+
+test("the extensions button lists each one switched on and working with a page to open; a sent folder loses its own name", () => {
+  const row = (over: Partial<BrowserExtensionRow>): BrowserExtensionRow => ({ slug: "s", name: "N", version: "1", enabled: true, from: "", addedAt: 1, pages: { popup: true, options: false }, ...over });
+  assert.deepEqual(
+    openableExtensions([
+      row({ slug: "vault", name: "Vault", pages: { popup: true, options: true } }),
+      row({ slug: "off", enabled: false }),
+      row({ slug: "broken", problem: "did not load" }),
+      row({ slug: "nothing", pages: { popup: false, options: false } }),
+      row({ slug: "old", pages: undefined }),
+      row({ slug: "settings", name: "Settings only", pages: { popup: false, options: true } }),
+    ]),
+    [
+      { slug: "vault", name: "Vault", popup: true, options: true },
+      { slug: "settings", name: "Settings only", popup: false, options: true },
+    ],
+  );
+  assert.equal(folderPath("vault/popup/index.html"), "popup/index.html");
+  assert.equal(folderPath("vault/manifest.json"), "manifest.json");
+  assert.equal(folderPath("loose.txt"), "", "a file with no folder has no place in one");
 });

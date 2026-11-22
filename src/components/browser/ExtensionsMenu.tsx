@@ -4,21 +4,37 @@
 //
 // Each opens as a page of its own where the extension runs, never as a
 // tab: in the desktop app a small window in the workspace's browser
-// session (electron/main.mjs openExtensionPage). No agent's tab list,
-// picture or command reaches it, which the menu says.
+// session (electron/extension-windows.mjs), in a server's browser a page
+// of its own shown over the panel as pictures (BrowserPanel's
+// ExtensionView). No agent's tab list, picture or command reaches it,
+// which the menu says.
 import { useRef, useState } from "react";
 import { Loader2, Puzzle, Settings } from "@/components/icons";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
-import { openableExtensions, type BrowserExtensionRow, type ExtensionPage } from "@/lib/browserExtensions";
-import { useStore } from "@/state/store";
+import { openableExtensions, type BrowserExtensionRow, type ExtensionPage, type ExtensionViewState } from "@/lib/browserExtensions";
+import { api, useStore } from "@/state/store";
 import { t } from "@/lib/i18n";
 
 /** Where the extensions are and how one's page opens: the app's own
- * browser through its bridge. */
+ * browser through its bridge, or a server's through its routes, which
+ * answer the view it opened. */
 export interface ExtensionSource {
   list(): Promise<BrowserExtensionRow[]>;
-  open(slug: string, page: ExtensionPage, anchor: { x: number; y: number; width: number; height: number }): Promise<unknown>;
+  open(slug: string, page: ExtensionPage, anchor: { x: number; y: number; width: number; height: number }): Promise<ExtensionViewState | null | void>;
+}
+
+/** The browser a server keeps for itself (server/browser-extension-routes.ts). */
+export function serverExtensions(): ExtensionSource {
+  return {
+    list: () => api("/api/browser/extensions").then((said) => (said as { extensions?: BrowserExtensionRow[] }).extensions ?? []),
+    open: (slug, page) =>
+      api(`/api/browser/extensions/${encodeURIComponent(slug)}/open`, { method: "POST", body: JSON.stringify({ page }) }).then((said) => {
+        const answer = said as { error?: string; view?: ExtensionViewState };
+        if (answer.error) throw new Error(answer.error);
+        return answer.view ?? null;
+      }),
+  };
 }
 
 /** The desktop app's own browser, when this app can open an extension's
@@ -29,14 +45,14 @@ export function appExtensions(): ExtensionSource | null {
   if (!bridge || !open) return null;
   return {
     list: () => bridge.list(),
-    open: (slug, page, anchor) => open(slug, page, anchor),
+    open: (slug, page, anchor) => open(slug, page, anchor).then(() => null),
   };
 }
 
 const TRIGGER =
   "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
-export function ExtensionsMenu({ source }: { source: ExtensionSource }) {
+export function ExtensionsMenu({ source, onOpened }: { source: ExtensionSource; onOpened?: (view: ExtensionViewState) => void }) {
   const { dispatch } = useStore();
   const trigger = useRef<HTMLButtonElement>(null);
   const [rows, setRows] = useState<ReturnType<typeof openableExtensions> | null>(null);
@@ -44,7 +60,10 @@ export function ExtensionsMenu({ source }: { source: ExtensionSource }) {
   const open = (slug: string, page: ExtensionPage) => {
     const box = trigger.current?.getBoundingClientRect();
     const anchor = box ? { x: box.left, y: box.top, width: box.width, height: box.height } : { x: 0, y: 0, width: 0, height: 0 };
-    void source.open(slug, page, anchor).catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+    void source
+      .open(slug, page, anchor)
+      .then((view) => view && onOpened?.(view))
+      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
   };
 
   return (

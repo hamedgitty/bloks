@@ -194,7 +194,7 @@ export function BrowserPage() {
         />
       </SettingsGroup>
       {/* Chrome extensions in this browser, the desktop app's alone */}
-      {home === "own" && <BrowserExtensionsSection />}
+      {home && <BrowserExtensionsSection home={home} />}
     </>
   );
 }

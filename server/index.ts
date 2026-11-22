@@ -131,6 +131,7 @@ import { BrowserGate, browserRoute, hostOf, readBrowserSettings, siteMatches, ty
 import { PEEK_WAIT_MS, type TabPeek } from "./browser-core.mjs";
 import { addressKey, mentionFields, mentionsAsLabels, readMentions, RECENT_MESSAGES, withMentions, type ConversationRead, type MentionDrop, type Mentioned, type TabRead } from "./mentions.ts";
 import { missingForAgent, ServerBrowser } from "./server-browser.ts";
+import { browserExtensionRoute } from "./browser-extension-routes.ts";
 import { MintLimiter, mintPairing, othersRoute, pairCheck } from "./other-workspaces.ts";
 import { choosableMark, defaultForKind, markRoute, markView, type MarkRouteDeps } from "./workspace-mark.ts";
 import { Reads, type ReadMark } from "./reads.ts";
@@ -14285,6 +14286,10 @@ const serverBrowser = desktopLine.available || HOSTED
   : new ServerBrowser({
       profileDir: join(DATA_DIR, "browser-session"),
       downloadsDir: APP_BROWSER_DOWNLOADS,
+      // the owner's Chrome extensions, loaded each time it starts
+      // (server/browser-extension-routes.ts adds them)
+      dataDir: DATA_DIR,
+      log: (line) => console.warn(line),
       ownPorts: () => [PORT],
       onChange: (state) => noteAppBrowser(state),
       // an agent started browsing while nobody looked: the person's
@@ -26948,6 +26953,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // Where this server keeps the browser itself, the person's panel too:
     // its pictures, their clicks and keys, and what they do in it.
     if (path === "/api/agent/browser" || path === "/api/browser" || path.startsWith("/api/browser/")) {
+      // the owner's Chrome extensions in this server's own browser, and
+      // the view of one's popup or options page: never an agent's
+      if (path === "/api/browser/extensions" || path.startsWith("/api/browser/extensions/")) {
+        const answered = await browserExtensionRoute(method, path, () => readBody(req), (max) => readBytes(req, max), {
+          dataDir: DATA_DIR,
+          agent: Boolean(asAgent),
+          own: serverBrowser,
+          relay: Boolean(viaRelay),
+          query: url.searchParams,
+        });
+        if (answered) return json(res, answered.status, answered.body);
+      }
       const browserDeps: BrowserRouteDeps = {
         available: () => (serverBrowser ? serverBrowser.missing() === null : desktopLine.available && !HOSTED),
         ask: askBrowser,

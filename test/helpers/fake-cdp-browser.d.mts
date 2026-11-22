@@ -28,6 +28,11 @@ export interface FakeTarget {
 export interface FakeBrowser {
   calls: Array<{ method: string; params: Record<string, unknown>; sessionId?: string }>;
   targets: Map<string, FakeTarget>;
+  /** Extensions loaded over the line: id to folder. */
+  loaded: Map<string, string>;
+  extensionOpens(url: string): FakeTarget;
+  worker(url: string, type?: string): { targetId: string; url: string; type: string; waiting: boolean; detachedWaiting: boolean | null };
+  extensionMoves(targetId: string, url: string): void;
   readonly downloadPath: string;
   line: CdpLine;
   open(url: string): FakeTarget;
@@ -41,4 +46,4 @@ export interface FakeBrowser {
   readonly closed: boolean;
 }
 
-export function fakeBrowser(options?: { pages?: Record<string, FakePageDef>; userAgent?: string }): FakeBrowser;
+export function fakeBrowser(options?: { pages?: Record<string, FakePageDef>; userAgent?: string; extensions?: boolean }): FakeBrowser;

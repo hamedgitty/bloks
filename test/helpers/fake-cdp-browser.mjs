@@ -27,8 +27,11 @@ const DEFAULT_PAGES = {
 
 /** A fake browser. `pages` by address; `hold` makes every page wait for
  * the Fetch guard to say, as Chrome does once Fetch is on. */
-export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36" } = {}) {
+export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36", extensions = true } = {}) {
   const listeners = new Set();
+  /** Unpacked extensions loaded over the line, by id, as Chrome keeps
+   * them: its id is made from its folder's path. */
+  const loaded = new Map();
   const closers = new Set();
   const targets = new Map();
   const sessions = new Map();
@@ -234,9 +237,30 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
     }
   }
 
+  /** Workers (a site's service worker, an extension's background), by
+   * session: started paused, as auto-attach with waitForDebuggerOnStart
+   * starts them, until they are told to run. */
+  const workers = new Map();
+
   async function send(method, params = {}, _timeoutMs, sessionId) {
     if (closed) throw new Error("the page closed");
     calls.push({ method, params, sessionId });
+    const worker = workers.get(sessionId) ?? (method === "Target.detachFromTarget" ? workers.get(params.sessionId) : undefined);
+    if (worker) {
+      if (method === "Runtime.runIfWaitingForDebugger") {
+        // Chrome answers after a moment, as it does over a real line
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        worker.waiting = false;
+        return {};
+      }
+      if (method === "Target.detachFromTarget") {
+        // a worker let go of while still paused stays paused for good
+        worker.detachedWaiting = worker.waiting;
+        workers.delete(params.sessionId);
+        return {};
+      }
+      return {};
+    }
     // the guard's answer, on the page's session as Chrome takes it
     if (method === "Fetch.continueRequest" || method === "Fetch.failRequest") {
       const waiting = paused.get(params.requestId);
@@ -288,6 +312,16 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
       case "Browser.close":
         setTimeout(() => fake.close(), 5);
         return {};
+      case "Extensions.loadUnpacked": {
+        // an older Chrome does not take extensions over this line at all
+        if (!extensions) throw new Error("'Extensions.loadUnpacked' wasn't found");
+        const id = [...createHash("sha256").update(String(params.path)).digest("hex").slice(0, 32)].map((c) => "abcdefghijklmnop"[parseInt(c, 16)]).join("");
+        loaded.set(id, String(params.path));
+        return { id };
+      }
+      case "Extensions.uninstall":
+        loaded.delete(String(params.id));
+        return {};
       default:
         return {};
     }
@@ -296,6 +330,27 @@ export function fakeBrowser({ pages = DEFAULT_PAGES, userAgent = "Mozilla/5.0 (X
   const fake = {
     calls,
     targets,
+    loaded,
+    /** A worker starting, paused, as auto-attach hands it over. */
+    worker(url, type = "service_worker") {
+      const sessionId = `S${++seq}`;
+      const worker = { targetId: `W${++seq}`, url, type, waiting: true, detachedWaiting: null };
+      workers.set(sessionId, worker);
+      emit("Target.attachedToTarget", { sessionId, targetInfo: { targetId: worker.targetId, type, url, title: "", attached: true }, waitingForDebugger: true });
+      return worker;
+    },
+    /** An extension opening a page of its own, as chrome.tabs.create would. */
+    extensionOpens(url) {
+      const target = makeTarget(url);
+      if (autoAttach) attach(target, true);
+      return target;
+    },
+    /** An extension moving a tab to `url` itself (chrome.tabs.update): no
+     * request the Fetch guard hears, only the page arriving there. */
+    extensionMoves(targetId, url) {
+      const target = targets.get(targetId);
+      if (target) commit(target, url);
+    },
     get downloadPath() {
       return downloadPath;
     },

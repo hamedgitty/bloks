@@ -3967,8 +3967,70 @@ refused and a mention does not read it (`isExtensionPage` in
 `server/browser-core.mjs`). An agent's commands are the fixed CDP list and
 never run in an extension's isolated world, and a password or payment
 field is still an approval card; after a fill, a password reads as dots
-in a snapshot and is absent from `read`. A server's own headless browser
-takes no extensions yet.
+in a snapshot and is absent from `read`. What an extension draws into a
+page itself (a badge, an inline fill menu) is part of that page, and so
+of an agent's picture of it.
+
+The rules for reading, judging, copying and keeping an extension live in
+`server/browser-extensions.mjs`, which the app loads through
+`electron/browser-extensions.mjs` as it does `browser-core.mjs`, so both
+browsers treat a manifest the same way. `compatibility(info, { host })`
+judges it against the browser it is for: `"app"` (Electron's part of
+Chrome's support) or `"server"`.
+
+#### In a server's own browser
+
+A server with no app behind it (`server/server-browser.ts`) runs a
+headless Chrome, which has nearly all of Chrome's extension support. Its
+extensions are kept the same way, in the workspace's data folder, and
+loaded each time that Chrome starts, before any page is made, over its
+debugging line (`Extensions.loadUnpacked`, which a current Google Chrome
+or Chromium takes over the websocket; branded Chrome ignores
+`--load-extension` now). Chrome does not keep one loaded that way across
+a restart, so switching one off or removing it is `Extensions.uninstall`
+and the list. A Chrome that refuses the method has the reason said on
+each extension (`extensionLoadProblem`). What is said to be missing
+there: native messaging (no password manager's desktop app on a server),
+`activeTab`, context menus, notifications, side panels, devtools panels
+and keyboard shortcuts.
+
+The owner adds one from Settings, Browser, Chrome extensions, in the
+desktop app or the server's own page alike
+(`server/browser-extension-routes.ts`, `/api/browser/extensions`): the
+folder is chosen on their device (a directory input) and sent file by
+file into `<data>/browser-extensions/.staging/<id>/`, each path plain
+parts that stay inside it (`stagedPath`), at most 5,000 files, 25 MB a
+file and 100 MB in all, refused when sent twice. Nothing staged runs;
+`look` judges it for the same review screen, and only the owner's yes
+copies it in (`addFromFolder`, as the app's) and loads it; a staging
+nobody added is swept within the hour. Every route refuses an agent's
+credential, and members never reach `/api/browser/*`.
+
+An extension's own page is never a tab there either. A page target that
+attaches at a `chrome-extension:` address (an extension's
+`chrome.tabs.create`, or a run before this one) is closed; a tab an
+extension moves to its own page (which the Fetch guard does not hear) is
+sent to `about:blank` on `Page.frameNavigated`; and agent commands are
+refused on one meanwhile, as in the app. The owner's popup or options
+page is the extension view: a target of its own made at the page's
+address (a blank page sent there would change process and lose its
+session), in a window of its own (the shown tab is kept in front of its
+window for its pictures, and a page behind it paints nothing and takes
+no input), claimed before anything could close it, paused until its
+guard is on, held to its own extension's pages (a link out opens as the
+person's tab under the tab rules), sized 400 by 600 for a popup and to
+the panel for an options page, and pictured and driven through
+`/view/screen`, `/view/input` and `/view/close`, never through the tab
+routes, the tab list, `state()` or a thumbnail. One is open at a time, a
+dialog in it is answered no, a popup that closes itself closes the view,
+and a browser with a view open is not shut for being idle. The panel
+shows it over the page (`ExtensionView` in `BrowserPanel.tsx`), with
+"Only you see this" on it.
+
+A worker that auto-attach starts paused (an extension's background, a
+site's service worker) is now told to run before it is let go:
+detaching first left it paused for good, so an extension's background
+never answered.
 
 ## Terminals
 
