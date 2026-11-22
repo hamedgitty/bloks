@@ -278,6 +278,18 @@ export interface Message {
   /** A completed fresh-session reset: persistent transcript information,
    * not a warning, reply, or new attention. */
   sessionReset?: boolean;
+  /** Server-created. Words an agent started with no other agent named as
+   * their sender: its own to itself, or a job one posted on the board. They
+   * carry no `from` and no `agent` note, and are never the person's words,
+   * however they read (server/model-instructions.ts). Never read from a
+   * client body. */
+  selfSent?: true;
+  /** Server-written, on the owner's own message: what an agent did with it
+   * as an instruction to change agents' models (server/model-instructions.ts),
+   * which agent and when, and the answer it got. One use per message: a
+   * second call answers this again and changes nothing. Never read from a
+   * client body. */
+  modelInstruction?: { botId: string; at: number; status: number; result: Record<string, unknown> };
   /** Which person wrote a user message in a shared room: a person id from
    * server/people.ts. Absent means the owner, which is every message
    * written before rooms could be shared. */

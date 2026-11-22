@@ -621,8 +621,13 @@ export interface ModelCatalog {
   default: string;
   /** codexFast: whether Codex offers Fast for the model, where it said.
    * efforts: the effort levels the engine listed for the model, where it
-   * said; a model without them has the engine's own (server/effort.ts). */
-  options: Array<{ id: string; label: string; codexFast?: boolean; efforts?: import("./effort.ts").Effort[] }>;
+   * said; a model without them has the engine's own (server/effort.ts).
+   * successor: the model that replaces this one on this engine, where
+   * Bloks has it on good authority: the engine's own list says so (Codex's
+   * `upgrade`), or a pair kept with a list that ships with Bloks. Never
+   * guessed from a name or a family alias. "Upgrade to the new version"
+   * (server/model-instructions.ts) follows it and nothing else. */
+  options: Array<{ id: string; label: string; codexFast?: boolean; efforts?: import("./effort.ts").Effort[]; successor?: string }>;
   /** When the engine last reported the list, so an old answer about Fast
    * is not taken as current. */
   checkedAt?: number;

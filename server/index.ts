@@ -30,6 +30,7 @@ import { SettingsPages, type SettingsCategory } from "./settings-pages.ts";
 import { openCard, placeOf, say, where } from "./where.ts";
 import { MAX_WHY, PROPOSABLE, proposable, readValue, refusal as proposalRefusal, valueLabel, type ProposalCard, type ProposalState } from "./settings-proposals.ts";
 import { blockers as modelBlockers, changeWords, readModelProposal, type ModelProposalCard, type ModelWorld } from "./model-proposals.ts";
+import { instructionMessage, parseInstruction, planInstruction } from "./model-instructions.ts";
 import { DEVICE_CATEGORIES, noStore, readReport, serveSettingsRead } from "./settings-read-http.ts";
 import { settingsCatalog } from "./settings-catalog.ts";
 import { inspectionRedactor } from "./settings-redaction.ts";
@@ -5733,6 +5734,14 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         void asker?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "answer", message: answer }).catch(() => {});
         break;
       }
+      // the owner's instruction to change agents' models, from an engine
+      // with no shell: the same checks as the command, the turn's own lane
+      if (event.tool === "apply_model_instruction" && event.requestId) {
+        const input = (event.input ?? {}) as Record<string, unknown>;
+        const done = applyModelInstruction(bot.id, event.threadId, input.message_id, undefined, Object.keys(input).filter((k) => k !== "message_id"));
+        void asker?.adapter.respondToRequest(event.threadId, event.requestId, { behavior: "answer", message: JSON.stringify(done.body) }).catch(() => {});
+        break;
+      }
       // a note about the person, suggested for them to keep or not
       if (event.tool === "note_about_person" && event.requestId) {
         const inShared = bloks.bloks.some((b) => b.sharing && b.lanes?.[bot.id] === event.threadId);
@@ -8520,6 +8529,9 @@ async function startClaimedTurn(
       ...(opts.from
         ? { agent: { dir: "in" as const, peerId: opts.from.botId, peerName: opts.from.name, ...(opts.from.laneId ? { laneId: opts.from.laneId } : {}) } }
         : {}),
+      // an agent's words in a chain with no other agent as sender: its
+      // own to itself, or a job one posted (Message.selfSent)
+      ...(opts.chain && !opts.from && !opts.routine ? { selfSent: true as const } : {}),
       ...(opts.routine ? { via: "routine" as const, routine: opts.routine, ...(command ? { commandInstance } : {}) } : {}),
       ...(opts.fromTelegram ? { fromTelegram: true } : {}),
       ...(opts.telegramBinding ? { telegramBinding: opts.telegramBinding } : {}),
@@ -19686,7 +19698,7 @@ function modelWorld(): ModelWorld {
       name: i.displayName ?? i.instanceId,
       enabled: i.enabled,
       default: i.models.default,
-      options: i.models.options.map((o) => ({ id: o.id, label: o.label })),
+      options: i.models.options.map((o) => ({ id: o.id, label: o.label, ...(o.successor ? { successor: o.successor } : {}) })),
       ...(i.models.acceptsAnyId ? { acceptsAnyId: true } : {}),
     })),
   };
@@ -19890,6 +19902,119 @@ function modelProposalsAnswered(laneId: string, botId: string): string | null {
     patchModelProposal(laneId, message, { told: true });
   }
   return lines.length ? `(Since your last turn here, ${lines.join("; ")}.)` : null;
+}
+
+// ── models changed by the owner's own instruction (server/model-instructions.ts)
+// The agent names the owner's message; everything else is read here from
+// the message as stored and the agents as saved. Nothing in between awaits,
+// so the check, the write and the read back are one step: no other request
+// can change an agent's model between them.
+
+/** Which conversation an agent may carry out an owner's instruction from:
+ * one of its own with the owner, its turn running now, as the owner's
+ * turn. Null when it may, or why not. */
+function instructionLaneRefusal(botId: string, laneId: string, seq?: number): string | null {
+  const bot = store.bot(botId);
+  if (!bot || bot.archivedAt) return "no such agent";
+  if (bot.solo && bot.solo.by !== "owner") return "Only the owner's own agents carry out the owner's instructions about models.";
+  const lane = bot.tasks.find((t) => t.id === laneId);
+  // a member's private conversation and a team one are other people's
+  // words too, and a room's are said in front of others
+  if (!lane || lane.personId || lane.team || privateTo(laneId) || bloks.bloks.some((b) => b.id === laneId || (b.lanes && Object.values(b.lanes).includes(laneId)))) {
+    return "Only an instruction the owner gave in one of your own conversations with them can change models. Nothing changed.";
+  }
+  if (!lane.busy || (seq !== undefined && laneTurns.get(laneId) !== seq)) return "That turn is over, so nothing changed.";
+  if (!access.runsAsOwner(bot, laneRequester.get(laneId) ?? "")) return "This turn is not the owner's, so it cannot carry out their instructions about models. Nothing changed.";
+  return null;
+}
+
+/**
+ * The owner's instruction in this conversation, carried out: the message
+ * checked, its words read, the change set planned against the agents as
+ * they are, checked again and written in one go, read back and said. The
+ * result is kept on the message, so a second call for it answers the
+ * same and changes nothing. Anything the agent sent beyond the message id
+ * is not read: it cannot widen, narrow or reword what the owner said.
+ */
+function applyModelInstruction(botId: string, laneId: string, rawId: unknown, seq?: number, extra: string[] = []): { status: number; body: Record<string, unknown> } {
+  const refused = instructionLaneRefusal(botId, laneId, seq);
+  if (refused) return { status: 403, body: { error: refused } };
+  if (rawId !== undefined && rawId !== null && (typeof rawId !== "string" || !/^[\w-]{1,80}$/.test(rawId))) {
+    return { status: 400, body: { error: "A message id is letters, digits, - and _." } };
+  }
+  const id = typeof rawId === "string" && rawId ? rawId : undefined;
+  const checked = instructionMessage(store.messagesFor(laneId), id, Date.now(), turnStarted.get(laneId));
+  if (!checked.ok) return { status: checked.status, body: { error: checked.error } };
+  const message = checked.message;
+  const ignored = extra.length ? { ignored: extra, ignoredNote: "Only the message id is read. Which agents and models change is what the owner's words say." } : {};
+  if (message.modelInstruction) {
+    // once per message: the first call's answer again, and nothing written
+    const was = message.modelInstruction;
+    return { status: was.status, body: { ...was.result, again: true, note: `${String(was.result.note ?? "")} This instruction was carried out already, at ${new Date(was.at).toISOString()}; nothing was changed again.`.trim(), ...ignored } };
+  }
+  const bot = store.bot(botId)!;
+  const keep = (status: number, result: Record<string, unknown>) => {
+    const patched = store.patchMessage(laneId, message.id, { modelInstruction: { botId, at: Date.now(), status, result } }, { durable: true });
+    if (patched) broadcast({ kind: "message.patch", threadId: laneId, message: patched });
+    return { status, body: { ...result, ...ignored } };
+  };
+  const parsed = parseInstruction(message.text ?? "");
+  if (!parsed.ok) {
+    return keep(200, {
+      ok: false,
+      ask: true,
+      message: message.id,
+      note: `Nothing changed: the owner's message is not one instruction Bloks can carry out (${parsed.reason}). Ask them in your reply which agents to change and to which model, in one plain sentence.`,
+    });
+  }
+  const world = modelWorld();
+  const plan = planInstruction(parsed.instruction, world);
+  if (!plan.ok) {
+    return keep(200, { ok: false, ask: true, message: message.id, read: plan.read, note: `Nothing changed: ${plan.ask}.` });
+  }
+  const skipped = plan.skipped.map((s) => ({ agent: s.name, id: s.botId, why: s.why }));
+  if (!plan.changes.length) {
+    return keep(200, { ok: true, nothingMatched: true, message: message.id, read: plan.read, changed: [], skipped, note: "Nothing matched, so nothing changed. Tell the owner so, with the reason for each agent skipped." });
+  }
+  // checked again against what is saved now, all or nothing: a change set
+  // that no longer says what is there writes nothing over anybody's edit
+  const blocked = modelBlockers({ targets: plan.changes }, modelWorld());
+  if (blocked.length) {
+    return keep(409, { ok: false, stale: true, message: message.id, read: plan.read, error: `Nothing changed: ${blocked.join("; ")}. Run \`bloks models\` to see where each agent is now, and ask the owner again.` });
+  }
+  // only the primary model, on the engine each is on: the rest of every
+  // agent (effort, backup, accounts, permissions) is not in the patch
+  const changed = store.patchBots(plan.changes.map((t) => ({ id: t.botId, patch: { modelSelection: oneModel({ ...store.bot(t.botId)!.modelSelection, instanceId: t.from.instanceId, model: t.to.model } as ModelSelection) } })));
+  for (const saved of changed) broadcast({ kind: "bot", bot: clientBot(saved) });
+  // read back as saved: what the agent tells the owner is what is there
+  const done: Array<Record<string, unknown>> = [];
+  const unverified: Array<Record<string, unknown>> = [];
+  for (const target of plan.changes) {
+    const saved = store.bot(target.botId)?.modelSelection;
+    const line = { agent: target.name, id: target.botId, engine: target.from.engine, from: target.from.label, to: target.to.label };
+    if (saved?.instanceId === target.to.instanceId && saved.model === target.to.model) {
+      done.push(line);
+      record({
+        at: Date.now(),
+        kind: "settings.changed",
+        actor: "you",
+        summary: `Changed ${changeWords(target)}, as you told ${bot.name} in chat`,
+        detail: { agent: target.name, from: `${target.from.engine}, ${target.from.label}`, to: `${target.to.engine}, ${target.to.label}`, instructedThrough: bot.name },
+      });
+    } else {
+      const engine = saved ? registry.get(saved.instanceId) : undefined;
+      unverified.push({ ...line, saved: saved ? `${engine?.displayName ?? saved.instanceId}, ${saved.model || "its default"}` : "nothing" });
+    }
+  }
+  return keep(unverified.length ? 500 : 200, {
+    ok: !unverified.length,
+    message: message.id,
+    read: plan.read,
+    changed: done,
+    skipped,
+    ...(unverified.length ? { unverified, error: `${unverified.map((u) => u.agent).join(", ")} did not read back as changed; tell the owner to look in those agents' settings.` } : {}),
+    note: `Changed as saved: ${done.map((d) => `${d.agent} from ${d.from} to ${d.to}`).join("; ") || "none"}.${skipped.length ? ` Skipped: ${skipped.map((s) => `${s.agent} (${s.why})`).join("; ")}.` : ""} Tell the owner each of these in your reply. Each agent uses its new model from its next turn; a turn running now finishes on the model it started with.`,
+  });
 }
 
 // ── a new skill an agent asks for (server/skill-requests.ts) ──────────
@@ -21199,6 +21324,9 @@ function queueOnLane(
     ...(options.from
       ? { agent: { dir: "in" as const, peerId: options.from.botId, peerName: options.from.name, ...(options.from.laneId ? { laneId: options.from.laneId } : {}) } }
       : {}),
+    // an agent's words in a chain with no other agent as sender: its own
+    // to itself, or a job one posted (Message.selfSent)
+    ...(options.chain && !options.from && !options.via && !options.routine ? { selfSent: true as const } : {}),
     ...(options.via ? { via: options.via } : {}),
     ...(options.serviceWake ? { serviceWake: options.serviceWake } : {}),
     ...(options.incident ? { incident: options.incident } : {}),
@@ -34591,13 +34719,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           const engine = a.selection ? world.engines.find((e) => e.id === a.selection!.instanceId) : undefined;
           return { id: a.id, name: a.name, engine: a.selection?.instanceId ?? null, engineName: engine?.name ?? a.selection?.instanceId ?? null, model: a.selection ? a.selection.model || engine?.default || "" : null };
         }),
-        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do. An engine with anyModelId runs a model id it does not list, so one newer than its list can be proposed by its exact id. `bloks models withdraw <id>` takes back a card of yours still waiting.",
+        note: "Propose changes with `bloks models propose <agent> <engine> <model> [<agent> <engine> <model>...] --why \"<reason>\"`. The owner sees every change on one card and applies all of them or none; nothing changes until they do. An engine with anyModelId runs a model id it does not list, so one newer than its list can be proposed by its exact id. `bloks models withdraw <id>` takes back a card of yours still waiting. When the owner has told you in this conversation to change agents' models, `bloks models apply-instruction` carries out their message itself, with no card: the server reads their words and changes only what they said.",
       });
     }
     if (method === "POST" && path === "/api/agent/models/proposals") {
       if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
       const answered = await proposeModels(asAgent, await readBody(req));
       return json(res, answered.status, answered.body);
+    }
+    // The owner's own instruction in this conversation, carried out
+    // (server/model-instructions.ts): the agent names the message, and
+    // the server reads it, checks it and decides what changes. Only a full
+    // credential: a Telegram contact's reply credential and an admin's
+    // messenger one get none of the owner's standing.
+    if (method === "POST" && path === "/api/agent/models/instruction") {
+      if (!asAgent) return json(res, 401, { error: "no agent credential on this request" });
+      if (asAgent.reply || asAgent.messenger) return json(res, 403, { error: "This turn is not the owner's, so it cannot carry out their instructions about models. Nothing changed." });
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const done = applyModelInstruction(asAgent.botId, asAgent.taskId, body.message, asAgent.seq, Object.keys(body).filter((k) => k !== "message"));
+      return json(res, done.status, done.body);
     }
     m = path.match(/^\/api\/agent\/models\/proposals\/([\w-]+)$/);
     if (m && method === "GET") {

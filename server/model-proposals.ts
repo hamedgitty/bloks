@@ -47,7 +47,9 @@ export interface EngineView {
   enabled: boolean;
   /** The model it runs when an agent names none. */
   default: string;
-  options: Array<{ id: string; label?: string }>;
+  /** successor: the model Bloks' catalog says replaces this one on this
+   * engine (ModelCatalog), read by server/model-instructions.ts. */
+  options: Array<{ id: string; label?: string; successor?: string }>;
   /** It runs any model id it is given, listed or not (ModelCatalog). */
   acceptsAnyId?: boolean;
 }
@@ -103,7 +105,8 @@ export interface ModelProposalCard {
 const flat = (text: string) => text.trim().toLowerCase();
 
 /** A model id as the picker takes one typed in, and PATCH /api/bots/:id saves it. */
-const modelId = (id: string) => id.length <= MAX_MODEL_ID_CHARS && MODEL_ID.test(id);
+export const pickerTakes = (id: string) => id.length <= MAX_MODEL_ID_CHARS && MODEL_ID.test(id);
+const modelId = pickerTakes;
 
 /** An engine's model, by id or by the name the picker shows, or, on an
  * engine that takes any id, a model id it does not list. */

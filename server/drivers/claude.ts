@@ -100,15 +100,20 @@ const DRIVER_KIND = "claudeAgent";
  * own aliases, which always mean the newest model in that family, and any
  * other model id can be typed into the picker, since the CLI takes
  * whatever `--model` it is given. The picker says which of these it is.
+ *
+ * A `successor` is a pair kept here, with the list, for "upgrade to the
+ * new version" (server/model-instructions.ts): a newer version of the
+ * same model, released to replace it. Only between models on this list,
+ * and changed with it in a release. The Latest aliases are not a lineage.
  */
 const MODELS: ModelCatalog = {
   default: "claude-sonnet-5",
   options: [
     { id: "claude-fable-5-2", label: "Claude Fable 5.2" },
-    { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
+    { id: "claude-fable-5-1", label: "Claude Fable 5.1", successor: "claude-fable-5-2" },
     { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
-    { id: "claude-fable-5", label: "Claude Fable 5" },
-    { id: "claude-opus-5", label: "Claude Opus 5" },
+    { id: "claude-fable-5", label: "Claude Fable 5", successor: "claude-fable-5-1" },
+    { id: "claude-opus-5", label: "Claude Opus 5", successor: "claude-opus-5-5" },
     { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
     { id: "opus", label: "Latest Opus" },

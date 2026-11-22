@@ -101,6 +101,7 @@ export function codexLabel(displayName: string | undefined, id: string): string 
  * CLI's order, with its default first choice. Null when there is none. */
 export function catalogFromModelList(pages: any[]): ModelCatalog | null {
   const options: ModelCatalog["options"] = [];
+  const upgrades = new Map<string, string>();
   let defaultId = "";
   for (const page of pages) {
     for (const m of Array.isArray(page?.data) ? page.data : []) {
@@ -117,7 +118,16 @@ export function catalogFromModelList(pages: any[]): ModelCatalog | null {
           : {}),
       });
       if (m.isDefault === true && !defaultId) defaultId = id;
+      // the model Codex itself says to move to from this one, as an id or
+      // as an object naming one; kept only when it is another model the
+      // same list shows (below), so a hidden or unknown id is no lineage
+      const upgrade = typeof m.upgrade === "string" ? m.upgrade : typeof m.upgrade?.id === "string" ? m.upgrade.id : typeof m.upgrade?.model === "string" ? m.upgrade.model : "";
+      if (upgrade && upgrade !== id) upgrades.set(id, upgrade);
     }
+  }
+  for (const option of options) {
+    const next = upgrades.get(option.id);
+    if (next && options.some((o) => o.id === next)) option.successor = next;
   }
   if (!options.length) return null;
   return { default: defaultId || options[0].id, options, checkedAt: Date.now() };

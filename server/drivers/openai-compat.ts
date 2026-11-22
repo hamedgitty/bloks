@@ -470,6 +470,24 @@ function toolSchemas(hasComputer: boolean, hasSandbox: boolean) {
         },
       },
     },
+    // The owner's own instruction to change agents' models, carried out
+    // by the workspace from their message (server/model-instructions.ts):
+    // the same as `bloks models apply-instruction` for an engine with no
+    // shell. The model names a message and nothing else.
+    {
+      type: "function",
+      function: {
+        name: "apply_model_instruction",
+        description:
+          "Only when the owner has told you in this conversation to change agents' models (\"switch everyone on model A to model B\", \"upgrade all to the latest version\"): carry out their message. The workspace reads their words itself and changes only the primary model of the agents they named, on the engines those agents are on, then answers what changed, what was skipped and why, or that you should ask them which model they mean. Tell them the result.",
+        parameters: {
+          type: "object",
+          properties: {
+            message_id: { type: "string", description: "The owner's message, if not their newest in this conversation" },
+          },
+        },
+      },
+    },
     {
       type: "function",
       function: {
@@ -1115,7 +1133,7 @@ export function openAiCompatDriver(spec: ProviderSpec, access?: CompatAccess): P
               result = await requestSecret(threadId, turnId, args);
             } else if (
               name === "search_history" || name === "read_message" || name === "note_about_person" ||
-              name === "memory_read" || name === "memory_write" || name === "message_person"
+              name === "memory_read" || name === "memory_write" || name === "message_person" || name === "apply_model_instruction"
             ) {
               result = await askWorkspace(threadId, turnId, name, args ?? {});
             } else if (name === "sandbox_exec" && sandbox) {

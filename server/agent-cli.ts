@@ -168,6 +168,11 @@ export const RULES: Rule[] = [
   { method: "POST", path: "/api/agent/models/proposals", why: "propose changing the engine and model of named agents, on one card the owner answers with Apply or Keep; nothing changes until they apply it, and then all of it or none" },
   { method: "GET", path: "/api/agent/models/proposals/:id", why: "wait for the owner's answer to model changes it proposed" },
   { method: "DELETE", path: "/api/agent/models/proposals/:id", why: "withdraw model changes of its own the owner has not answered, closing the card with nothing changed" },
+  // The owner's own instruction to change models, carried out with no
+  // card (server/model-instructions.ts). The credential names a message
+  // and nothing more: the server reads the owner's words as stored and
+  // decides what changes, so an agent cannot widen, reuse or invent one.
+  { method: "POST", path: "/api/agent/models/instruction", why: "carry out the owner's own instruction in this conversation to change agents' primary models on the engines they are on, read and checked by the server from the owner's message" },
   // The goal the person set for the conversation this turn runs in, if
   // any. Reading only: a goal starts turns unattended and can run a
   // command on the person's computer, so setting one is theirs alone,

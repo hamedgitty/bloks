@@ -4717,6 +4717,74 @@ the card at once, so whichever comes first stands and the others are
 refused. The refusal of a second proposal names the open card's id and
 this command.
 
+### Models changed by the owner's instruction in chat
+
+A proposal waits for Apply at the computer Bloks runs on, which is in
+the way when the owner has already said exactly what they want from a
+paired Mac or their own private Telegram chat (GitHub 544). `bloks
+models apply-instruction [--message <id>]` is `POST
+/api/agent/models/instruction` with `{ message }`, and an API engine has
+the same as its `apply_model_instruction` tool. The agent only names the
+owner's message (no id is their newest in the conversation); anything
+else in the body is not read, and the answer lists it as `ignored`.
+The authority is the message, read by the server as stored
+(`server/model-instructions.ts`):
+
+- `notOwners`: the owner's own words, typed in the app, on a paired
+  device, or in the owner's own private Telegram chat. Not a member's
+  or a guest's (`author`), another agent's, a routine's, a goal's, a
+  notice, anything that came in `via` mail, a webhook or a bridge, a
+  Telegram contact, delegate or group, Signal, a message sent on
+  somebody's behalf, brought over from another conversation, queued,
+  taken back or with its delivery unsettled.
+- `instructionMessage`: in the calling agent's own conversation (not a
+  member's, a team's or a room's), at most `INSTRUCTION_MAX_AGE_MS` (30
+  minutes) since it was written, not edited after it was heard, and the
+  newest of the owner's messages there or the last one before the turn
+  started. The turn has to be running, the credential's own (`seq`), and
+  the owner's (`runsAsOwner`); a reply or messenger credential is
+  refused.
+- Once: the answer is kept on the message (`Message.modelInstruction`,
+  server written), so a second call for it changes nothing and answers
+  the first result again, with `again`.
+
+`parseInstruction` reads the words with fixed rules, in English and
+Ukrainian, typed or dictated: "change/update/switch/move/set [all |
+named agents | all except X] [from | on] A to B", "all A agents to B",
+"to B for everyone", and "upgrade/update [...] to the new/latest
+version" (or "upgrade all"). Courtesy around it and "and tell me what
+changed" are dropped. A question, a negation, a condition, reported
+speech, a quoted command, more than one instruction, an exception that
+cannot be read, or a message over `MAX_INSTRUCTION_CHARS` is no
+instruction. `planInstruction` reads it against the owner's agents
+(`modelWorld`, as for proposals): agents by name (a Ukrainian case
+ending allowed when it still names one), an exception that names nobody
+stops everything rather than becoming "all", and each agent stays on the
+engine it is on. Both models are resolved on that engine as its picker
+would (`modelNamed`: an id, a label, either without the maker's name, or
+on an engine that `acceptsAnyId` an id `pickerTakes` that is no prefix
+of a listed one); a model that could be two, or that no engine of the
+agents asked about has, plans nothing and the agent is told to ask which
+model the owner means. A model only another engine lists is skipped and
+pointed at a proposal. "The new version" follows `successor` in the
+engine's `ModelCatalog` to its newest (`newestOf`): Codex's own
+`upgrade` field where `model/list` gives one that names another model it
+shows, or a pair kept with Claude Code's built in list. An alias is no
+lineage, and a model with none is skipped with "ask"; when nothing in
+scope has one, the agent asks.
+
+The plan is checked again against what is saved (`blockers`, as for a
+proposal), then written in one `store.patchBots`: only `modelSelection.model`,
+on the same `instanceId`, with nothing awaited between the check and the
+write. A set that no longer matches writes nothing over a later edit.
+Effort, backups, accounts, permissions and defaults are not in the
+patch; a turn under way finishes on its model. Each agent is read back
+as saved: `changed` (agent, engine, from, to), `skipped` with why,
+`unverified` where the read back differs, or `nothingMatched`; each
+change is `settings.changed` with actor `you`. The agent tells the owner
+from that answer. Proposals stay for engine switches, other people's
+agents and anything unclear.
+
 ## Rule suggestions
 
 When the owner keeps answering the same approval the same way, Bloks
