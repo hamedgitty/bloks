@@ -4060,38 +4060,139 @@ full-window overlay, or, in the desktop app, a window of its own
 rebuilds a screen. Where it sits and how it draws are kept in
 localStorage (`src/lib/terminalLayout.ts`, `src/lib/terminalPrefs.ts`).
 
+### An agent's own tabs
+
+An agent's ordinary commands run in its turn, never in these shells. For
+a command that keeps running (a dev server, a watcher, tests the person
+wants to watch) it can start a tab of its own: `bloks terminal run
+"<cmd>" [--title]` (`POST /api/agent/terminals`), which opens a shell in
+the conversation's folder on this computer and types the command into it
+once the shell has printed its prompt. The tab carries `agent` (name,
+conversation, command) in what the routes and the stream say, and the
+app draws it with the agent's badge and a line above the screen saying
+the agent started it and reads what it prints. The person can type in
+it, close it, or restart it (a restart keeps the label and types
+nothing). At most four of an agent's eight tabs are its own.
+
+Starting one is decided like any command the agent runs
+(`agentTerminalRun` in `server/index.ts`): someone at the wheel refuses
+it, a deny rule refuses it, an allow rule or the agent's `auto` or
+`full` mode lets it go, and anything else is a card in the conversation
+(the browser's gate, `BrowserGate`, so an answer that comes late is kept
+for the agent's next try). A turn a member asked for, a member's own
+agent and a room are held to the owner's yes. An agent whose commands run
+in another place (Where an agent works) is refused: a tab would not be
+its folder. Each start is written to the record as an approval.
+
+`bloks terminal read <tab> [--lines]` answers the tab's recent output as
+plain text (`plainText`: escape sequences out, carriage returns and
+backspaces applied; 80 lines, at most 400), marked as data. `list` and
+`stop` do what they say. These routes find only tabs the agent started:
+the person's tabs are never listed, read, stopped or shown by an agent,
+the person's own `/api/bots/:id/terminals` routes refuse an agent's
+credential, and no route lets an agent type into any tab.
+
 ## The side dock
 
-One column on a conversation's right holds the documents, the Bloks
-browser, a terminal on the right, the agent's computer, a turn's
-timeline, a room's topic and extension panels (`src/lib/dock.ts`,
-`src/components/dock/SideDock.tsx`). It is open or not, and on which
-panel, per conversation; its width is per device.
+One column on a conversation's right holds the agent's files, what the
+conversation changed, the Bloks browser, a terminal on the right, the
+agent's computer, a turn's timeline, a room's topic and extension panels
+(`src/lib/dock.ts`, `src/components/dock/SideDock.tsx`). It is open or
+not, on which panel, and with which panels open as tabs, per
+conversation; its width is per device.
 
-An agent starting to use its browser or its computer in a chat opens
-that panel, by one rule (`mayReveal`): only in a chat, never a room; only
-when the window has room for the chat beside it; never while the keyboard
-is in a field of the dock; and never again in a conversation where the
-person put away a panel an agent's work had opened, until they open it
-there by hand (kept for the window, not stored). Browsing is heard from
-the browser (`browser:reveal` from the app, `browser.reveal` from the
-server); the computer is read off the turn's tool rows
-(`src/lib/dockActivity.ts`): a call on the computer's MCP server (or
-`computer_exec`), at most once a turn and only for calls made while the
-chat is on screen. The terminal is never opened for an agent and carries
-no dot: its shells are the person's, in the agent's folder, and an
-agent's commands run outside them, so it would point at something the
-agent is not doing. It can once the dock can show an agent's own
-commands.
+**Tabs and the +.** The panels open in a conversation are tabs along the
+dock's top, in the order they were opened, each with its own close
+(`closeTab`): closing the one in front brings its neighbour forward, and
+closing the last hides the dock. What a panel keeps (open files, shells)
+outlives its tab. The + lists every kind the conversation offers, with
+what each holds (Changes says `+12 −3`, Files how many are open) and its
+key: Shift+Cmd+F Files, Shift+Cmd+D Changes, Shift+Cmd+B the browser and
+Cmd+J the terminal, heard in the desktop app only (`panelChord`,
+`src/lib/dockKeys.ts`). A panel with nothing to show is not a tab until
+something opens it. A place stored before tabs comes back with the panel
+it showed as its one tab. On a wide window the tabs sit in the window's
+top row, right over the dock (below); where the dock covers the chat, or
+there is no top row, they sit at the dock's own top.
 
-Each ribbon icon carries one dot: orange while its panel waits on the
-person (an unanswered approval for a computer action, the browser taken
-over while an agent waits, a page dialog), purple while
-another person is at it (typing in a shared room), blue while an agent
-works in it (not drawn on the panel in front). In a chat the browser's
-tab strip can be narrowed to the tabs the chat's agent opened; tabs know
-their agent, not their conversation, and shells and the computer are the
-agent's whole, so the agent is the narrowest view the dock can give.
+**Files** (the panel's id is still `docs`) is the agent's shared files
+folder as a tree with a filter box (`src/lib/fileTree.ts`, from `GET
+/api/bots/:id/artifacts`, asked again every eight seconds while shown),
+beside the files opened from it, from a card or from a path in the
+conversation. It is the same boundary as Shared files: never the folder
+the agent works in. Closing the last file leaves the tree. A text file
+opens at a line when asked (`NumberedText`). A room has no tree.
+
+**Changes** (`src/components/dock/ChangesPanel.tsx`) lists what the
+conversation's turns changed, from the photographs around each turn
+(`Checkpoints.laneChanges`): one difference per file from before the
+first turn that touched it to after the last, with lines added and
+removed, the turn's own files only, leaving out undone turns and
+rehearsals not applied, and a file made and gone again. `GET
+/api/threads/:id/changes`, `/changes/diff?path=` and `/changes/file?path=`
+answer the list, a file's diff with each line numbered on both sides,
+and the file as the conversation left it, from the kept copy, never the
+folder; picking a line number in the diff opens it there. Where the
+conversation's folder is a git repository a second view, Uncommitted,
+lists what git says is not committed there, whoever wrote it, with the
+branch and how far it is from its upstream (`server/git-changes.ts`, `GET
+/changes/git` and `/changes/git-diff?path=`): git only when it is really
+there (`realGit`), with no prompts, optional locks, fsmonitor or hooks,
+no external diff or textconv, literal paths, only paths git reported, and
+untracked files read only when plain and inside the folder. These routes
+are the owner's, like the turn diffs; an agent's credential and a
+member's device reach neither. Undo stays on each turn's card.
+
+**In the window's top row.** On a wide window the conversation's header
+is the window's top row (`src/components/TitleBar.tsx`,
+`src/lib/titlebarSlot.ts`): after the workspace switcher, a hairline, then
+who the conversation is with (avatar, name and what the agent does, or
+where it works and how long it has been working), its buttons on the
+right, and over the dock the dock's tabs, + and hide, in a slot the dock
+sizes to its own width. The conversation's own tabs then sit where its
+header was. On a narrow window there is no top row and the header stays
+in the conversation, as before. Rooms keep their own header.
+
+**Opened by an agent's work.** An agent starting to use its browser or
+its computer in a chat opens that panel, by one rule (`mayReveal`): only
+in a chat, never a room; only when the window has room for the chat
+beside it; never while the keyboard is in a field of the dock; and never
+again in a conversation where the person put away a panel an agent's
+work had opened, until they open it there by hand (kept for the window,
+not stored). Browsing is heard from the browser (`browser:reveal` from
+the app, `browser.reveal` from the server); the computer is read off the
+turn's tool rows (`src/lib/dockActivity.ts`): a call on the computer's
+MCP server (or `computer_exec`), at most once a turn and only for calls
+made while the chat is on screen. The terminal is not opened by an
+agent's ordinary commands, which do not run in its shells.
+
+**Shown by an agent on purpose.** `bloks dock show <files|changes|
+browser|terminal|timeline|computer> [target] [--line]` (`POST
+/api/agent/dock`, and `dock_show` for the MCP server inside a turn) brings
+a panel forward in the conversation the agent is answering: one of its
+shared files at a line, the changes at a file it changed and a line, the
+browser on an http(s) page, one of its own terminal tabs, the timeline or
+the computer. The server checks the target is the agent's (its file, its
+tab, a file its conversation changed) and sends `dock.show` with the
+agent and conversation; owners' windows only. The window decides
+(`mayShow`, `dock.ask`): only that conversation's key; a chat, with room;
+never while the person types in the dock; and a panel the person closed
+stays closed for the rest of the turn it was closed in, where a turn is
+the person's message that started it (`currentTurn`), so the agent
+asking on a later turn brings it back. An ask for a conversation not on
+screen waits there for ten minutes. Asking for the panel already in
+front still goes ahead, for what it names inside it. Neither this nor the
+browser counts against the turn's twelve changes.
+
+Each tab carries one dot: orange while its panel waits on the person (an
+unanswered approval for a computer action, the browser taken over while
+an agent waits, a page dialog), purple while another person is at it
+(typing in a shared room), blue while an agent works in it (not drawn on
+the panel in front); a dot on a panel not open marks the + instead. In a
+chat the browser's tab strip can be narrowed to the tabs the chat's agent
+opened; tabs know their agent, not their conversation, and shells and the
+computer are the agent's whole, so the agent is the narrowest view the
+dock can give.
 
 ## Recall and notes about the person
 
@@ -4595,7 +4696,12 @@ browser's twelve (`browser_open` and the rest, through
 `POST /api/browser/command`), and three for Home Assistant once the owner
 allows it (see Home Assistant). It has no tool that approves, deletes or
 configures. `/api/mcp-config` gives the command to paste, using the
-runtime the server itself runs on.
+runtime the server itself runs on. Run inside an agent's turn, with the
+turn's credential in `BLOKS_TOKEN`, it also offers the side dock's tools
+for that agent and conversation: `dock_show` and `terminal_run`,
+`terminal_read`, `terminal_list` and `terminal_stop`, by the same routes
+and rules as `bloks dock` and `bloks terminal` (see The side dock and An
+agent's own tabs). Another app has no conversation, and no such tools.
 
 ## Lanes, unread and the sidebar
 

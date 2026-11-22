@@ -1,7 +1,9 @@
 // The window's top row: room for macOS's traffic lights over the rail,
 // then back and forward and the sidebar toggle, then the workspace you
-// are in (WorkspaceSwitcher.tsx). The whole row is the window's handle;
-// its buttons are not.
+// are in (WorkspaceSwitcher.tsx). In a conversation the rest of the row is
+// the conversation's: who you are talking to, its buttons, and over the
+// side dock the dock's tabs (ChatView.tsx, dock/SideDock.tsx). The whole
+// row is the window's handle; its buttons are not.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft } from "@/components/icons";
 import { ArrowRight } from "@/components/icons";
@@ -139,19 +141,21 @@ export function TitleBar() {
           {/* the workspace you are in, right after the buttons that move
               you around inside it, a hairline apart so the two read as
               different things; nothing at all outside the desktop app */}
-          <WorkspaceSwitcher divider />
+          {/* and a hairline after it in a conversation, whose name and
+              buttons fill the rest of the row (ChatView.tsx) */}
+          <WorkspaceSwitcher divider trailing={chat} />
         </div>
-        {/* An open conversation puts its tabs here (lib/titlebarSlot.ts),
-            starting where the conversation itself starts so the open tab
-            joins the page under it rather than the sidebar; with the
-            sidebar closed they start after these buttons instead. The
-            rest of the strip stays a handle for moving the window. */}
+        {/* An open conversation puts its header here (lib/titlebarSlot.ts),
+            starting where the conversation itself starts so it sits over
+            the page it names rather than the sidebar; with the sidebar
+            closed it starts after these buttons instead. What it leaves
+            empty stays a handle for moving the window. */}
         {/* It moves with the sidebar as it folds, at the fold's own pace,
             and with the pointer, at once, while the edge is dragged. */}
         <div
           id={TITLEBAR_TABS_ID}
           className={cn(
-            "absolute inset-y-0 right-0 flex min-w-0 items-end",
+            "absolute inset-y-0 right-0 flex min-w-0 items-stretch",
             !sidebar.resizing && "transition-[left] duration-200 ease-out-quart",
           )}
           style={{ left: Math.max(RAIL + (chat && sidebar.open ? sidebar.width : 0) + 12, clusterEnd + 8) }}

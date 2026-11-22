@@ -8,7 +8,7 @@
 //
 // It reads; it never writes. Undo stays on each turn's card in the
 // conversation, where it says which turn it takes back.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, FileMinus, FilePen, FilePlus, GitBranch, RefreshCw } from "@/components/icons";
 import { api } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -113,6 +113,15 @@ export function ChangesPanel({ placeKey, threadId, files, shown }: { placeKey: s
     };
   }, [threadId, shown, gitRound]);
 
+  // another conversation is another list: what was open goes
+  const seenThread = useRef(threadId);
+  useEffect(() => {
+    if (seenThread.current === threadId) return;
+    seenThread.current = threadId;
+    setOpen(null);
+    setAtLine(null);
+  }, [threadId]);
+
   // an agent's `bloks dock show changes <file> --line`
   useEffect(() => {
     if (focus?.panel !== "changes" || focus.target?.kind !== "change") return;
@@ -123,10 +132,6 @@ export function ChangesPanel({ placeKey, threadId, files, shown }: { placeKey: s
     setAtLine(target.line ? { path: target.path, line: target.line, n: focus.n } : null);
   }, [focus?.n]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    setOpen(null);
-    setAtLine(null);
-  }, [threadId]);
 
   const totals = changeTotals(files ?? []);
   const gitHere = git?.repo === true;

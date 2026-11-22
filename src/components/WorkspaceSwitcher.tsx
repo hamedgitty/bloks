@@ -398,11 +398,15 @@ function WorkspaceList({ s }: { s: Extract<WorkspacesState, { available: true }>
 export function WorkspaceSwitcher({
   className,
   divider = false,
+  trailing = false,
   onSettings,
   onLeave,
 }: {
   className?: string;
   divider?: boolean;
+  /** A hairline after it too: in the window's top row, where the
+   * conversation's name follows it (TitleBar.tsx). */
+  trailing?: boolean;
   /** Where Workspace settings goes in a member's app, which has no
    * owner's settings to open. */
   onSettings?: () => void;
@@ -570,6 +574,7 @@ export function WorkspaceSwitcher({
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
+      {trailing && <span aria-hidden className="mx-2.5 h-4 w-px shrink-0 bg-border" />}
     </DropdownMenu>
   );
 }

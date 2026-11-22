@@ -21,6 +21,7 @@
 // browser's tabs live in the app or on the server, a trace on the server)
 // is drawn while it is shown, and costs nothing otherwise.
 import { useLayoutEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Plus, X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -60,6 +61,7 @@ export function SideDock({
   placeKey,
   panes,
   onPick,
+  headSlot,
 }: {
   placeKey: string;
   /** The panels this conversation offers, in any order. */
@@ -67,6 +69,9 @@ export function SideDock({
   /** A panel picked on the ribbon, before it is shown: a terminal moved
    * into the dock, say. */
   onPick?: (panel: DockPanel) => void;
+  /** Where its tabs go in the window's top row, over the dock, on a wide
+   * window (ChatView.tsx); null keeps them at the dock's own top. */
+  headSlot?: HTMLElement | null;
 }) {
   const state = useDockState();
   const place = placeIn(state, placeKey);
@@ -103,30 +108,17 @@ export function SideDock({
     onPick?.(panel);
     dock.show(placeKey, panel);
   };
-  const drawn = ordered.filter((p) => p.id === shown || (p.keepAlive && kept.has(p.id)));
-
-  return (
-    <>
-      {shown && !narrow && (
-        <Edge
-          width={width}
-          room={room}
-          onDrag={setDragging}
-          onDone={(next) => {
-            setDragging(null);
-            dock.setWidth(next);
-          }}
-        />
-      )}
-      <aside
-        ref={setHolder}
-        aria-label={t("dock.label")}
-        data-side-dock=""
-        hidden={!shown}
-        className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border-l bg-card", narrow && "absolute inset-0 z-30 border-l-0 bg-background")}
-        style={narrow ? undefined : { width }}
-      >
-        <div className="flex h-[38px] shrink-0 items-center gap-0.5 border-b px-1.5">
+  // up in the window's top row while the dock shows beside the chat; at
+  // its own top when it covers the chat or there is no top row
+  const up = Boolean(headSlot && shown && !narrow);
+  useLayoutEffect(() => {
+    if (!headSlot) return;
+    // the slot takes the dock's width and its edge's, so the tabs sit
+    // right over the panel they belong to
+    headSlot.style.width = up ? `${width + 6}px` : "0px";
+  }, [headSlot, up, width]);
+  const head = (
+        <div className={cn("flex shrink-0 items-center gap-0.5 px-1.5", up ? "h-full border-l bg-card" : "h-[38px] border-b")}>
           <div
             role="tablist"
             aria-label={t("dock.panels")}
@@ -213,6 +205,32 @@ export function SideDock({
             <X size={16} />
           </HeaderButton>
         </div>
+  );
+  const drawn = ordered.filter((p) => p.id === shown || (p.keepAlive && kept.has(p.id)));
+
+  return (
+    <>
+      {up && headSlot && createPortal(head, headSlot)}
+      {shown && !narrow && (
+        <Edge
+          width={width}
+          room={room}
+          onDrag={setDragging}
+          onDone={(next) => {
+            setDragging(null);
+            dock.setWidth(next);
+          }}
+        />
+      )}
+      <aside
+        ref={setHolder}
+        aria-label={t("dock.label")}
+        data-side-dock=""
+        hidden={!shown}
+        className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border-l bg-card", narrow && "absolute inset-0 z-30 border-l-0 bg-background")}
+        style={narrow ? undefined : { width }}
+      >
+        {!up && head}
         {drawn.map((pane) => (
           <div key={pane.id} hidden={pane.id !== shown} className="flex min-h-0 min-w-0 flex-1 flex-col">
             {pane.render(pane.id === shown && dragging === null)}

@@ -195,7 +195,8 @@ export function ChatView({ bot }: { bot: Bot }) {
   // On a desktop the conversation's tabs sit up in the title bar, in the
   // row with the window's own buttons; on a phone they stay under the header
   const titleSlot = useTitlebarSlot();
-  const inTitleBar = (tabs: React.ReactNode) => (titleSlot ? createPortal(tabs, titleSlot) : tabs);
+  // where the dock's tabs go in the window's top row, over the dock
+  const [dockHead, setDockHead] = useState<HTMLDivElement | null>(null);
   const { state, dispatch } = useStore();
   const { ears, macApp } = useEars();
   // Only a frame that arrived during this turn is live. The one held from
@@ -1204,22 +1205,19 @@ export function ChatView({ bot }: { bot: Bot }) {
       }
   };
 
-  return (
-    <DockHostContext.Provider value={dockHost}>
-    <ShareRequestContext.Provider value={requestShare}>
-    <main ref={mainRef} className="@container/chat relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      {/* Header. Who you are talking to sits in the middle at every width,
-          with the same room kept on both sides, so a narrow window does not
-          push the name against the menu button and leave the right empty.
-          A long name truncates before it reaches either side. */}
-      <div className="titlebar-drag relative flex h-[52px] shrink-0 items-center justify-between gap-2 px-3 max-md:pl-16 md:px-4">
+  // who you are talking to, up in the window's top row (`up`) or in the
+  // middle of the conversation's own header
+  const identityButton = (up: boolean) => (
         <button
           onClick={() => dispatch({ type: "toggleSettings" })}
-          className="absolute left-1/2 flex min-w-0 -translate-x-1/2 items-center gap-2.5 rounded-lg px-1.5 py-1 transition-colors duration-150 hover:bg-accent"
-          style={{ maxWidth: `calc(100% - ${headerSide * 2}px)` }}
+          className={cn(
+            "flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 transition-colors duration-150 hover:bg-accent",
+            !up && "absolute left-1/2 -translate-x-1/2",
+          )}
+          style={up ? undefined : { maxWidth: `calc(100% - ${headerSide * 2}px)` }}
           title={t("chatView.agentSettings")}
         >
-          <AgentAvatar bot={bot} size={28} />
+          <AgentAvatar bot={bot} size={up ? 24 : 28} />
           <span className="flex min-w-0 items-baseline gap-2 text-left">
             <span className="truncate text-ui font-semibold text-foreground">{bot.name}</span>
             {/* An agent that works elsewhere says where, in place of its
@@ -1239,7 +1237,9 @@ export function ChatView({ bot }: { bot: Bot }) {
             )}
           </span>
         </button>
-        <div ref={actionsRef} className="ml-auto flex shrink-0 items-center gap-1.5">
+  );
+  const headerActions = (
+        <div ref={actionsRef} className={cn("flex shrink-0 items-center gap-1.5", titleSlot ? "pr-2" : "ml-auto")}>
           {/* the model is picked where you type, in the composer's footer */}
           <CallButton bot={bot} />
           {/* meeting notes need something to hear them (src/lib/hearing.ts),
@@ -1281,17 +1281,47 @@ export function ChatView({ bot }: { bot: Bot }) {
             )}
           </Button>
         </div>
-      </div>
+  );
 
-      {/* A hairline under the header, faint and fading out at both ends,
-          so the header and what follows read as one surface. */}
-      <div aria-hidden className="h-px shrink-0 bg-linear-to-r from-transparent via-border to-transparent" />
+  return (
+    <DockHostContext.Provider value={dockHost}>
+    <ShareRequestContext.Provider value={requestShare}>
+    <main ref={mainRef} className="@container/chat relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      {/* Header. On a wide window it is the window's own top row
+          (TitleBar.tsx): who you are talking to on the left where the
+          conversation starts, its buttons on the right, and over the side
+          dock the dock's own tabs (dock/SideDock.tsx), one row as the
+          desktop apps that keep panes beside a chat have it. The
+          conversation's tabs then sit where this header was. On a narrow
+          window there is no top row, and the header stays here: the name
+          in the middle at every width, with the same room kept on both
+          sides, truncating before it reaches either. */}
+      {titleSlot
+        ? createPortal(
+            <div className="flex h-full min-w-0 flex-1 items-center">
+              <div className="flex min-w-0 flex-1 items-center pr-2">{identityButton(true)}</div>
+              {headerActions}
+              <div ref={setDockHead} className="h-full w-0 shrink-0 overflow-hidden" />
+            </div>,
+            titleSlot,
+          )
+        : (
+          <>
+            <div className="titlebar-drag relative flex h-[52px] shrink-0 items-center justify-between gap-2 px-3 max-md:pl-16 md:px-4">
+              {identityButton(false)}
+              {headerActions}
+            </div>
+            {/* A hairline under the header, faint and fading out at both
+                ends, so the header and what follows read as one surface. */}
+            <div aria-hidden className="h-px shrink-0 bg-linear-to-r from-transparent via-border to-transparent" />
+          </>
+        )}
 
-      {/* Messages. The strip repeats what the sidebar lists when it lists
-          conversations, so it only shows when the sidebar does not, and
-          only once there is more than one to choose between. */}
-      {strip && inTitleBar(<TaskStrip
-        inTitleBar={!!titleSlot}
+      {/* The conversations as tabs. The strip repeats what the sidebar
+          lists when it lists conversations, so it only shows when the
+          sidebar does not, and only once there is more than one. */}
+      {strip && (<TaskStrip
+        inTitleBar={false}
         tasks={bot.tasks ?? []}
         activeId={bot.activeTaskId ?? bot.threadId}
         onSelect={(taskId) => taskId !== bot.activeTaskId && dispatch({ type: "selectTask", botId: bot.id, taskId })}
@@ -1516,7 +1546,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         branchBlocked={branchWhy}
       />
       </div>
-      <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
+      <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} headSlot={titleSlot ? dockHead : null} />
       </div>
       {terminal.overlay}
       {terminal.panel}

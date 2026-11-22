@@ -1,9 +1,10 @@
-// Where a conversation's tabs go on a desktop: up in the title bar, in the
-// row the window's own buttons sit in, the way Claude, browsers and many
-// Mac apps use that strip. TitleBar.tsx leaves an empty slot; the chat
-// renders its tabs into it with a portal. On a phone-narrow window the
-// title bar is not drawn, so this answers null and the tabs stay under
-// the header, where they were.
+// Where a conversation's header goes on a desktop: up in the title bar, in
+// the row the window's own buttons sit in, the way many desktop apps use
+// that strip. TitleBar.tsx leaves an empty slot; the chat renders who it
+// is with, its buttons and the side dock's tabs into it with a portal,
+// and its own tabs go where its header was. On a phone-narrow window the
+// title bar is not drawn, so this answers null and the header stays in
+// the conversation, where it was.
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 export const TITLEBAR_TABS_ID = "titlebar-tabs";

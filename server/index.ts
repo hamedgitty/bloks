@@ -1132,7 +1132,7 @@ async function agentTerminalRun(asAgent: AgentToken, bot: BotRecord, body: Recor
   const decision = decideEach(policy.list(), asks);
   if (decision.verdict === "deny") return { status: 403, body: { error: refusal(decision) } };
   const requester = laneRequester.get(asAgent.taskId);
-  const byMember = (requester !== undefined && requester !== "owner") || access.agentOwner(bot) !== "owner" || activeRoom.has(asAgent.taskId);
+  const byMember = (requester !== undefined && requester !== "owner") || access.agentOwner(bot) !== "owner" || inSharedRoom(asAgent.taskId);
   const mode = bot.approvals ?? "ask";
   const waved = !byMember && (decision.verdict === "allow" || mode === "auto" || mode === "full");
   if (!waved) {
@@ -1191,6 +1191,13 @@ async function agentTerminalRun(asAgent: AgentToken, bot: BotRecord, body: Recor
     if (e instanceof TerminalLimitError) return { status: 409, body: { error: e.message } };
     return { status: 500, body: { error: e instanceof Error ? e.message : "no terminal" } };
   }
+}
+
+/** Whether a lane's turn is speaking in a room: activeRoom names the
+ * lane itself for a turn in its own conversation. */
+function inSharedRoom(taskId: string): boolean {
+  const room = activeRoom.get(taskId);
+  return Boolean(room && room !== taskId && bloks.get(room));
 }
 
 /** What an agent's `bloks dock show` asks for, checked: a panel the dock
@@ -35101,7 +35108,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return json(res, 200, {
         ok: true,
         panel: asked.ask.panel,
-        note: activeRoom.has(asAgent.taskId)
+        note: inSharedRoom(asAgent.taskId)
           ? "A room's dock is never opened for an agent, so nothing was shown. Say where it is in your reply."
           : "Asked the person's app to show it in this conversation. It appears if they are looking at this conversation with room beside it and are not typing in the dock, and not if they closed that panel during this turn. Say what you showed in your reply too.",
       });
