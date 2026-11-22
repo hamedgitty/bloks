@@ -139,6 +139,7 @@ export type RoutineDraft = {
   durationMin?: number;
   runsOn?: "cloud" | "local" | "off";
   thread?: string;
+  topicId?: string;
   every?: number;
   activeHours?: { from: string; to: string };
   quiet?: boolean;
@@ -158,6 +159,7 @@ const CLEARED = {
   durationMin: undefined,
   runsOn: null,
   thread: null,
+  topicId: null,
   every: null,
   activeHours: null,
   quiet: false,

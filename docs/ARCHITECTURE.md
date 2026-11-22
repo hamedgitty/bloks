@@ -252,6 +252,20 @@ Team formation (`server/teams.ts`) sits on top: a senior agent can emit a
 fenced plan, which becomes an approval card. Only your yes creates the
 agents and the room.
 
+**Topics** (`server/room-topics.ts`) are threads inside a room, each with
+the agents who answer in it. A workflow's "Post in a room" step and a
+room's routine may name one (`topicId`): the post goes into that topic's
+thread and wakes only its agents. One closed or gone since it was set up
+fails the step or the run with the reason (`scheduledTopic`), never
+spilling into the main stream; saving a routine refuses a topic that is
+not open. The topics bar folds topics under their category
+(`topicFolders` in `src/lib/roomTopics.ts`): a folder with work or a
+question in it, or the topic being read, opens by itself, a quiet one is
+folded once there are several, and the person's choice wins. Every change
+to a room's topics is broadcast as `room.topics` too, which members hear
+(the owner's app has the whole room in its `blok` frame), so a member's
+screen follows topics opened, closed or changed by someone else.
+
 ## Persistence
 
 Plain JSON in the workspace's data folder (`~/.bloks` for Personal, see

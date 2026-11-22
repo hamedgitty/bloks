@@ -404,7 +404,9 @@ export function memberMessage(message: Message, view: MemberView): Message | nul
 
 /** The frame kinds a member can ever receive, besides messages. Each is
  * emitted by the server specifically for rooms and carries a roomId. */
-const ROOM_FRAMES = new Set(["room.people", "room.sharing", "room.typing", "room.activity", "room.offline"]);
+// room.topics: the room's topics after one was opened, closed or changed,
+// the same list the member's own read of the room carries
+const ROOM_FRAMES = new Set(["room.people", "room.sharing", "room.typing", "room.activity", "room.offline", "room.topics"]);
 /** Frames about one member's own conversation, keyed by its lane. */
 const LANE_FRAMES = new Set(["member.lane"]);
 /** The workspace's own news every member hears: who is in it, which way

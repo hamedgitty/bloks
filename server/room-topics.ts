@@ -212,6 +212,22 @@ export function topicForWriting(
   return { ok: true, topic };
 }
 
+/** Where something set up ahead of time (a workflow's "Post in a room"
+ * step, a room's routine) posts: the main stream when it names no topic,
+ * or its topic while that is open. A topic closed or gone since it was set
+ * up fails the run with the reason, rather than spilling into the main
+ * stream the person chose to keep it out of. */
+export function scheduledTopic(
+  topics: readonly RoomTopic[] | undefined,
+  topicId: string | undefined,
+): { ok: true; topicId?: string } | { ok: false; error: string } {
+  if (!topicId) return { ok: true };
+  const topic = topics?.find((t) => t.id === topicId);
+  if (!topic) return { ok: false, error: "its topic is no longer in that room" };
+  if (topic.status === "closed") return { ok: false, error: `its topic "${topic.title}" is closed. Reopen it, or post in the main stream` };
+  return { ok: true, topicId: topic.id };
+}
+
 /** The room's agents a message in this topic may reach: those it names,
  * of the agents given, or all of them when it names none. */
 export function topicAgents<T extends { id: string }>(topic: RoomTopic | null | undefined, agents: readonly T[]): T[] {

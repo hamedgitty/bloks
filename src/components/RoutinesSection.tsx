@@ -53,6 +53,8 @@ export interface Routine {
   runsOn?: "cloud" | "local" | "off";
   /** The conversation it runs in, by title or id; absent is General. */
   thread?: string;
+  /** A room's routine: the topic it posts in; absent is the main stream. */
+  topicId?: string;
   /** A check-in: every this many minutes, instead of at a time of day. */
   every?: number;
   /** The hours a check-in keeps to; absent is the whole day. */

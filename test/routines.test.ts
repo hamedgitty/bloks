@@ -116,6 +116,15 @@ test("a routine on a day it does not run stays quiet", () => {
   assert.equal(isDue(weekdays, at("2026-03-22T09:00:10")), false);
 });
 
+test("only a room's routine keeps a topic, and only one that reads as an id", () => {
+  const room = normalize({ targetId: "r1", targetKind: "room", prompt: "Standup", time: "09:00", topicId: "topic-1" });
+  assert.equal(room?.topicId, "topic-1");
+  const agent = normalize({ targetId: "b1", targetKind: "agent", prompt: "hi", time: "09:00", topicId: "topic-1" });
+  assert.equal(agent?.topicId, undefined, "an agent's routine has no topic");
+  const odd = normalize({ targetId: "r1", targetKind: "room", prompt: "hi", time: "09:00", topicId: "../x" });
+  assert.equal(odd?.topicId, undefined);
+});
+
 test("normalize refuses what it cannot store and clamps the rest", () => {
   assert.equal(normalize(null), null);
   assert.equal(normalize({ prompt: "hi", time: "09:00" }), null, "no target");

@@ -28,7 +28,7 @@ import { distinctNames } from "@/lib/names";
 import { ownerOrNull } from "@/lib/yourName";
 import { AgentFace, MemberComposer, OnlyYou, PersonFace, Transcript } from "./MemberParts";
 import { TopicBar } from "@/components/room/RoomTopics";
-import { inThread, orderTopics, topicPowers, type TopicState } from "@/lib/roomTopics";
+import { inThread, orderTopics, topicPowers, type RoomTopic, type TopicState } from "@/lib/roomTopics";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { formatList, t } from "@/lib/i18n";
@@ -300,6 +300,11 @@ export function RoomView({
     useCallback(
       (frame) => {
         if ((frame.kind === "room.people" || frame.kind === "room.activity") && frame.roomId === roomId) load();
+        // a topic opened, closed or changed by someone else, live
+        if (frame.kind === "room.topics" && frame.roomId === roomId && Array.isArray(frame.topics)) {
+          const topics = frame.topics as RoomTopic[];
+          setData((was) => (was ? { ...was, room: { ...was.room, topics } } : was));
+        }
       },
       [roomId, load],
     ),

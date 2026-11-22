@@ -192,6 +192,10 @@ test("frames reach a member only for their own rooms", () => {
   assert.equal(memberFrame({ kind: "message", threadId: "lane_1", message: msg({}) }, viewOf), null);
   assert.ok(memberFrame({ kind: "room.typing", roomId: ROOM, name: "Sam" }, viewOf));
   assert.equal(memberFrame({ kind: "room.typing", roomId: OTHER, name: "Sam" }, viewOf), null);
+  // a topic opened, closed or changed reaches the room's people live
+  assert.ok(memberFrame({ kind: "room.topics", roomId: ROOM, topics: [] }, viewOf));
+  assert.equal(memberFrame({ kind: "room.topics", roomId: OTHER, topics: [] }, viewOf), null);
+  assert.ok(memberFrame({ kind: "room.topics", roomId: ROOM, topics: [] }, viewOf, "guest"), "a guest of the room hears its topics");
   for (const kind of ["bot", "runtime", "config", "relay", "screen", "blok", "instances", "room.joinRequest", "computer"]) {
     assert.equal(memberFrame({ kind, roomId: ROOM, threadId: ROOM }, viewOf), null, kind);
   }

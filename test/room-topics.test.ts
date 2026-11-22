@@ -13,6 +13,7 @@ import {
   cleanFolder,
   newTopic,
   readTopicDraft,
+  scheduledTopic,
   setStatus,
   topicAgents,
   topicBrief,
@@ -21,6 +22,7 @@ import {
   type RoomTopic,
 } from "../server/room-topics.ts";
 import { memberCan } from "../server/member-access.ts";
+import { topicFolders, type TopicState } from "../src/lib/roomTopics.ts";
 
 const members = ["marlow", "ada", "sam"];
 
@@ -141,6 +143,24 @@ describe("open and closed", () => {
   });
 });
 
+describe("posts set up ahead of time", () => {
+  const topic: RoomTopic = newTopic("t1", { title: "Deploys", category: "DevOps" }, "owner", 1);
+
+  test("go to the main stream when they name no topic, and into an open one when they do", () => {
+    assert.deepEqual(scheduledTopic([topic], undefined), { ok: true });
+    assert.deepEqual(scheduledTopic([topic], "t1"), { ok: true, topicId: "t1" });
+  });
+
+  test("a topic closed or gone since is a failed run with the reason, never a post in the main stream", () => {
+    const closed = scheduledTopic([setStatus(topic, "closed", "owner")], "t1");
+    assert.equal(closed.ok, false);
+    assert.match(!closed.ok ? closed.error : "", /"Deploys" is closed/);
+    const gone = scheduledTopic([topic], "nope");
+    assert.equal(gone.ok, false);
+    assert.equal(scheduledTopic(undefined, "t1").ok, false);
+  });
+});
+
 describe("which agents a topic reaches", () => {
   const agents = members.map((id) => ({ id }));
 
@@ -156,5 +176,39 @@ describe("which agents a topic reaches", () => {
     assert.match(brief, /src\/auth\//);
     assert.match(brief, /auth-mw/);
     assert.doesNotMatch(topicBrief(newTopic("t", { title: "Plain" }, "owner")), /branch/);
+  });
+});
+
+describe("folders in the topics bar", () => {
+  const t = (id: string, category?: string) => newTopic(id, { title: id, ...(category ? { category } : {}) }, "owner", 1);
+  const topics = [t("a", "Research"), t("b", "Backend"), t("c", "Research"), t("d")];
+  const idle = new Map<string, TopicState>();
+
+  test("topics sit under their category, the uncategorized last and never folded", () => {
+    const folders = topicFolders(topics, idle, null);
+    assert.deepEqual(folders.map((f) => [f.category, f.topics.map((x) => x.id)]), [["Research", ["a", "c"]], ["Backend", ["b"]], [null, ["d"]]]);
+    assert.equal(folders[2].open, true);
+  });
+
+  test("with several folders, a quiet one is folded and a lively one open", () => {
+    const states = new Map<string, TopicState>([["b", "waiting"]]);
+    const [research, backend] = topicFolders(topics, states, null);
+    assert.equal(research.open, false);
+    assert.equal(backend.open, true);
+    assert.equal(backend.mark, "waiting");
+    assert.equal(topicFolders(topics, idle, "c")[0].open, true, "the topic being read keeps its folder open");
+  });
+
+  test("one folder alone stays open, and the person's choice wins", () => {
+    const one = [t("a", "Research"), t("d")];
+    assert.equal(topicFolders(one, idle, null)[0].open, true);
+    assert.equal(topicFolders(one, idle, null, { Research: true })[0].open, false);
+    assert.equal(topicFolders(topics, idle, null, { Research: false })[0].open, true);
+  });
+
+  test("the folder's mark is the loudest inside", () => {
+    const states = new Map<string, TopicState>([["a", "working"], ["c", "waiting"]]);
+    assert.equal(topicFolders(topics, states, null)[0].mark, "waiting");
+    assert.equal(topicFolders(topics, new Map([["a", "working"]]), null)[0].mark, "working");
   });
 });

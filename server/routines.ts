@@ -91,6 +91,10 @@ export interface Routine {
    * each with its own context; naming a lane the person already has puts
    * the routine's turns in that conversation. */
   thread?: string;
+  /** A room's routine only: the topic it posts in (server/room-topics.ts),
+   * waking only that topic's agents. Absent is the room's main stream. A
+   * topic closed or gone since fails the run with the reason. */
+  topicId?: string;
   enabled: boolean;
   createdAt: number;
   /** When its schedule was last set: made, retimed, or switched back on.
@@ -483,6 +487,7 @@ export function normalize(raw: unknown): Omit<Routine, "id" | "createdAt"> | nul
     durationMin: every ? undefined : durationMin,
     runsOn,
     thread: targetKind === "agent" ? thread : undefined,
+    topicId: targetKind === "room" && typeof o.topicId === "string" && /^[\w-]{1,64}$/.test(o.topicId) ? o.topicId : undefined,
     every,
     activeHours,
     quiet: targetKind === "agent" && (every !== undefined || o.quiet === true) ? true : undefined,

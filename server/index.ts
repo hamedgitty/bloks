@@ -160,6 +160,7 @@ import {
   topicAgents,
   topicBrief,
   topicForWriting,
+  scheduledTopic,
   topicPowers,
   type TopicActor,
 } from "./room-topics.ts";
@@ -15872,11 +15873,14 @@ async function runRoutineNow(routine: Routine, manual: boolean): Promise<void> {
   if (routine.targetKind === "room") {
     const blok = bloks.get(routine.targetId);
     if (!blok) throw Object.assign(new Error("that room is gone"), { status: 404 });
+    // a topic closed since is said now, to the person who pressed Run
+    const into = scheduledTopic(blok.topics, routine.topicId);
+    if (!into.ok) throw Object.assign(new Error(`This routine did not post: ${into.error}.`), { status: 409 });
     const run = routines.beginRun(routine.id, blok.id);
     if (run) openRuns.set(blok.id, { routineId: routine.id, runId: run.id });
     broadcast({ kind: "routines" });
-    void postToRoom(blok, routine.prompt, { hops: 0 })
-      .then(() => closeRun(blok.id, { ok: true, summary: "Posted to the room." }))
+    void postToRoom(blok, routine.prompt, { hops: 0, ...(into.topicId ? { topicId: into.topicId } : {}) })
+      .then(() => closeRun(blok.id, { ok: true, summary: into.topicId ? "Posted to its topic in the room." : "Posted to the room." }))
       .catch((e) =>
         closeRun(blok.id, {
           ok: false,
@@ -16694,7 +16698,10 @@ async function walkRun(runId: string): Promise<void> {
         const blok = step.targetId ? bloks.get(step.targetId) : null;
         if (!blok) throw new Error("that room is not there any more");
         if (!text) throw new Error("there was nothing left to say once the values were filled in");
-        await postToRoom(blok, text, { hops: 0 });
+        // into the topic it names, while that is open
+        const into = scheduledTopic(blok.topics, step.topicId);
+        if (!into.ok) throw new Error(into.error);
+        await postToRoom(blok, text, { hops: 0, ...(into.topicId ? { topicId: into.topicId } : {}) });
         endStep(runId, step.id, "ok", { summary: text });
         workflows.update(runId, (r) => {
           r.values[step.id] = { text };
@@ -17031,8 +17038,16 @@ async function runDueRoutines() {
       const run = routines.beginRun(routine.id, blok.id);
       if (run) openRuns.set(blok.id, { routineId: routine.id, runId: run.id });
       broadcast({ kind: "routines" });
-      void postToRoom(blok, routine.prompt, { hops: 0 })
-        .then(() => closeRun(blok.id, { ok: true, summary: "Posted to the room." }))
+      // Into its topic while that is open. One closed or gone since is a
+      // failed run with the reason, never a post in the main stream the
+      // person chose to keep it out of.
+      const into = scheduledTopic(blok.topics, routine.topicId);
+      if (!into.ok) {
+        closeRun(blok.id, { ok: false, error: `It did not post: ${into.error}.` });
+        continue;
+      }
+      void postToRoom(blok, routine.prompt, { hops: 0, ...(into.topicId ? { topicId: into.topicId } : {}) })
+        .then(() => closeRun(blok.id, { ok: true, summary: into.topicId ? "Posted to its topic in the room." : "Posted to the room." }))
         .catch((e) =>
           closeRun(blok.id, {
             ok: false,
@@ -22567,6 +22582,7 @@ function openTopic(blok: BlokRecord, actor: TopicActor, by: string, body: Record
   const room = bloks.setTopics(blok.id, [...(blok.topics ?? []), topic]);
   if (!room) return { status: 404, body: { error: "no such room" } };
   broadcast({ kind: "blok", blok: room });
+  broadcastTopics(room);
   sayTopicEvent(room, by, `opened the topic "${topic.title}"`);
   return { status: 201, body: { topic } };
 }
@@ -22594,8 +22610,17 @@ function changeTopic(blok: BlokRecord, topicId: string, actor: TopicActor, by: s
   const room = bloks.setTopics(blok.id, topics.map((t, i) => (i === at ? topic : t)));
   if (!room) return { status: 404, body: { error: "no such room" } };
   broadcast({ kind: "blok", blok: room });
+  broadcastTopics(room);
   if (status && status !== was) sayTopicEvent(room, by, `${status === "closed" ? "closed" : "reopened"} the topic "${topic.title}"`);
   return { status: 200, body: { topic } };
+}
+
+/** A room's topics as they now stand, for the people in it: the owner's
+ * app hears the whole room in its blok frame, which a member never gets,
+ * so this is how a member's screen learns that a topic was opened, closed
+ * or changed by someone else (server/member-access.ts, ROOM_FRAMES). */
+function broadcastTopics(room: BlokRecord) {
+  broadcast({ kind: "room.topics", roomId: room.id, topics: room.topics ?? [] });
 }
 
 /** "Sam opened the topic ...", in the main stream, as a room's other
@@ -36157,6 +36182,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       if (!exists) return json(res, 404, { error: "no such agent or room" });
       const unnamed = clean.targetKind === "agent" ? threadRefusal(clean.targetId, clean.thread) : null;
       if (unnamed) return json(res, 400, { error: unnamed });
+      const untopic = clean.topicId ? scheduledTopic(bloks.get(clean.targetId)?.topics, clean.topicId) : null;
+      if (untopic && !untopic.ok) return json(res, 400, { error: `this routine cannot post there: ${untopic.error}` });
       // filed from an agent's turn, its turns go on from that one's place
       const routine = routines.create({ ...clean, ...(asAgent ? { chain: nextAgentChain(asAgent.taskId) } : {}) });
       if (!routine) return json(res, 507, { error: `you can have at most ${MAX_ROUTINES} routines` });
@@ -36193,6 +36220,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         durationMin: body.durationMin ?? existing.durationMin,
         runsOn: body.runsOn === null ? undefined : (body.runsOn ?? existing.runsOn),
         thread: body.thread === null ? undefined : (body.thread ?? existing.thread),
+        topicId: body.topicId === null ? undefined : (body.topicId ?? existing.topicId),
         every: body.every === null ? undefined : (body.every ?? existing.every),
         activeHours: body.activeHours === null ? undefined : (body.activeHours ?? existing.activeHours),
         quiet: body.quiet ?? (leavesCheckIn ? undefined : existing.quiet),
@@ -36206,6 +36234,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       // must not stop the rest of an edit
       const unnamed = merged.thread !== existing.thread ? threadRefusal(merged.targetId, merged.thread) : null;
       if (unnamed) return json(res, 400, { error: unnamed });
+      // only a topic newly picked, for the same reason
+      const untopic = merged.topicId && merged.topicId !== existing.topicId ? scheduledTopic(bloks.get(merged.targetId)?.topics, merged.topicId) : null;
+      if (untopic && !untopic.ok) return json(res, 400, { error: `this routine cannot post there: ${untopic.error}` });
       // the person changing it has had their say; an agent changing it
       // carries its own turn's place
       // Changed is had a say: one stopped for failing runs again on its

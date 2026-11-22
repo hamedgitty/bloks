@@ -282,6 +282,19 @@ describe("what arrives from a client", () => {
     assert.deepEqual(workflow.steps.map((s) => s.id), ["look", "look-2"]);
   });
 
+  test("a post in a room may name one of its topics, and nothing else may", () => {
+    const workflow = clean({
+      trigger: { kind: "manual" },
+      steps: [
+        { action: "post", text: "Deploy done", targetId: "room-1", topicId: "topic-1" },
+        { action: "ask", text: "look", targetId: "b", topicId: "topic-1" },
+        { action: "post", text: "no room", topicId: "topic-1" },
+        { action: "post", text: "odd", targetId: "room-1", topicId: "../nope" },
+      ],
+    })!;
+    assert.deepEqual(workflow.steps.map((s) => s.topicId), ["topic-1", undefined, undefined, undefined]);
+  });
+
   test("an approval gets a timeout whether or not one was asked for", () => {
     const workflow = clean({ trigger: { kind: "manual" }, steps: [{ action: "approve", text: "ok?" }] })!;
     assert.equal(workflow.steps[0].timeoutMin, DEFAULT_TIMEOUT_MIN);

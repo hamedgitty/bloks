@@ -41,6 +41,46 @@ export function byCategory(topics: readonly RoomTopic[]): Array<{ category: stri
 
 export type TopicState = "working" | "waiting" | "idle" | "closed";
 
+const STATE_RANK: Record<TopicState, number> = { waiting: 3, working: 2, idle: 1, closed: 0 };
+
+/** A category's topics in the topics bar, as one folder. */
+export interface TopicFolder {
+  /** null for the topics with no category, which are not a folder. */
+  category: string | null;
+  topics: RoomTopic[];
+  /** The loudest mark among them: something waiting over work over quiet. */
+  mark: TopicState;
+  /** Open unless the person said otherwise: a folder with work or a
+   * question in it, or the topic being read, opens by itself; a quiet one
+   * stays closed once there is more than one folder to scan. */
+  open: boolean;
+}
+
+/**
+ * The topics bar's folders (GitHub 523): the topics under each category,
+ * in the order given, the uncategorized last and never folded. `folded`
+ * is what the person chose for a category, which wins over the default.
+ */
+export function topicFolders(
+  topics: readonly RoomTopic[],
+  states: ReadonlyMap<string, TopicState>,
+  current: string | null,
+  folded: Readonly<Record<string, boolean>> = {},
+): TopicFolder[] {
+  const groups = byCategory(topics);
+  const folders = groups.filter((g) => g.category !== null).length;
+  return groups.map(({ category, topics: list }) => {
+    const mark = list.reduce<TopicState>((top, tp) => {
+      const st = states.get(tp.id) ?? (tp.status === "closed" ? "closed" : "idle");
+      return STATE_RANK[st] > STATE_RANK[top] ? st : top;
+    }, "closed");
+    const lively = mark === "waiting" || mark === "working" || list.some((tp) => tp.id === current);
+    const chosen = category === null ? undefined : folded[category];
+    const open = category === null || (chosen !== undefined ? !chosen : lively || folders <= 1);
+    return { category, topics: list, mark, open };
+  });
+}
+
 const said = (m: Message) => !m.deleted && !m.queued && m.kind !== "notice";
 
 /**

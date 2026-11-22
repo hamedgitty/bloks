@@ -55,6 +55,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
+import { SettingsSelect } from "./SettingsLayout";
+import { byCategory, orderTopics, type RoomTopic } from "@/lib/roomTopics";
 import { Slider, type SliderStop } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/cn";
@@ -81,6 +83,9 @@ export interface Step {
   id: string;
   action: StepAction;
   targetId?: string;
+  /** A "Post in a room" step's topic in that room; absent is the main
+   * stream (server/workflows.ts). */
+  topicId?: string;
   text: string;
   when?: { left: string; op: ConditionOp; right?: string };
   timeoutMin?: number;
@@ -126,7 +131,7 @@ export interface Workflow {
   summary?: string;
 }
 
-type Room = { id: string; name: string; memberIds?: string[] };
+type Room = { id: string; name: string; memberIds?: string[]; topics?: RoomTopic[] };
 
 /** The words for each test, as the condition editor's menu says them. */
 const OPS: Array<[ConditionOp, MessageKey]> = [
@@ -352,8 +357,10 @@ function stepTitle(step: Step, bots: Bot[], rooms: Room[]): string {
     return who ? t("workflows.stepTitle.ask", { name: who }) : t("workflows.askAnAgent");
   }
   if (step.action === "post") {
-    const room = rooms.find((r) => r.id === step.targetId)?.name;
-    return room ? t("workflows.stepTitle.post", { room }) : t("workflows.postInARoom");
+    const picked = rooms.find((r) => r.id === step.targetId);
+    const topic = step.topicId ? picked?.topics?.find((tp) => tp.id === step.topicId)?.title : undefined;
+    if (picked && topic) return t("workflows.stepTitle.postInTopic", { room: picked.name, topic });
+    return picked ? t("workflows.stepTitle.post", { room: picked.name }) : t("workflows.postInARoom");
   }
   return t("workflows.askYou");
 }
@@ -1642,6 +1649,38 @@ function PaneHeading({ eyebrow, title, aside }: { eyebrow: string; title: string
   );
 }
 
+/** Where in the room a post goes: the main stream, or one of its open
+ * topics under its category. A topic the step already names stays on the
+ * list after it closes, said as closed, so the choice is never silently
+ * changed. Offered only for a room that has topics. */
+function TopicChoice({ room, value, onPick }: { room: Room | undefined; value: string | undefined; onPick: (topicId: string | undefined) => void }) {
+  const topics = orderTopics(room?.topics).filter((tp) => tp.status === "open" || tp.id === value);
+  if (!room || !topics.length) return null;
+  const known = !value || topics.some((tp) => tp.id === value);
+  return (
+    <Section title={t("workflows.topic")} className="mt-8">
+      <SettingsSelect
+        aria-label={t("workflows.topic")}
+        value={known ? (value ?? "") : ""}
+        onChange={(e) => onPick(e.target.value || undefined)}
+        className="w-full max-w-[360px]"
+      >
+        <option value="">{t("workflows.topicMain")}</option>
+        {byCategory(topics).map(({ category, topics: list }) => (
+          <optgroup key={category ?? ""} label={category ?? t("roomTopics.noCategory")}>
+            {list.map((tp) => (
+              <option key={tp.id} value={tp.id}>
+                {tp.status === "closed" ? t("workflows.topicClosed", { title: tp.title }) : tp.title}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </SettingsSelect>
+      <p className="mt-2 text-pretty text-small text-muted-foreground">{t("workflows.topicLine")}</p>
+    </Section>
+  );
+}
+
 function Section({ title, aside, children, className }: { title: string; aside?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
     <section className={cn("mt-8", className)}>
@@ -1869,7 +1908,7 @@ function StepPane({
                 <PickCard
                   key={room.id}
                   on={step.targetId === room.id}
-                  onPick={() => onChange({ targetId: room.id })}
+                  onPick={() => onChange(step.targetId === room.id ? { targetId: room.id } : { targetId: room.id, topicId: undefined })}
                   face={<RoomFace room={room} bots={allBots} />}
                   title={room.name}
                   line={t("workflows.members", { count: room.memberIds?.length ?? 0 })}
@@ -1879,6 +1918,7 @@ function StepPane({
           )}
         </Section>
       )}
+      {step.action === "post" && <TopicChoice room={rooms.find((r) => r.id === step.targetId)} value={step.topicId} onPick={(topicId) => onChange({ topicId })} />}
 
       <Section title={title} className="mt-8" aside={<Needs problem={problem} field="text" loud={loud} />}>
         <TokenField

@@ -30,6 +30,8 @@ import { Sunrise } from "@/components/icons";
 import { Trash2 } from "@/components/icons";
 import { Users } from "@/components/icons";
 import { useStore, type Bot } from "@/state/store";
+import { SettingsSelect } from "./SettingsLayout";
+import { byCategory, orderTopics } from "@/lib/roomTopics";
 import { AgentAvatar } from "./Avatar";
 import { type Routine, routineStatus } from "./RoutinesSection";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -564,9 +566,11 @@ function CreateForm({
   const { state } = useStore();
   const ownScreen = offersThisComputer(state.config?.hosted?.computers);
   const [thread, setThread] = useState(editing?.thread ?? "");
+  // a room's routine may post in one of its topics (server/room-topics.ts)
+  const [topicId, setTopicId] = useState(editing?.topicId ?? "");
   const [part, setPart] = useState<Part>("when");
   // open on a routine that has them, so they are seen
-  const [more, setMore] = useState(Boolean(editing?.runsOn || editing?.thread));
+  const [more, setMore] = useState(Boolean(editing?.runsOn || editing?.thread || editing?.topicId));
   const [saving, setSaving] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
@@ -581,6 +585,10 @@ function CreateForm({
   // A room's routine keeps to a time of day and speaks every time:
   // several agents answer it, and a channel may be reading along.
   const forAgent = target?.kind === "agent";
+  // the room's open topics, and the one already picked even once closed,
+  // so an edit never changes it without saying
+  const roomTopics = forAgent || !target ? [] : orderTopics(state.bloks.find((r) => r.id === target.id)?.topics).filter((tp) => tp.status === "open" || tp.id === topicId);
+  const pickedTopic = roomTopics.some((tp) => tp.id === topicId) ? topicId : "";
   const shownMode: Mode = mode === "every" && !forAgent ? "weekly" : mode;
   const checkIn = shownMode === "every";
   const hours = keepsHours ? { from, to } : null;
@@ -615,6 +623,7 @@ function CreateForm({
             }),
         ...(forAgent && runsOn ? { runsOn } : {}),
         ...(forAgent && thread.trim() ? { thread: thread.trim() } : {}),
+        ...(!forAgent && pickedTopic ? { topicId: pickedTopic } : {}),
       }
     : null;
   // the routine as the form first showed it: what an edit is measured against
@@ -1071,6 +1080,29 @@ function CreateForm({
                             ? ""
                             : ` ${t("routinesDialog.runsOn.eitherWay", { computer: thisComputer() })}`}
                         </div>
+                      </div>
+                    )}
+                    {!forAgent && roomTopics.length > 0 && (
+                      <div>
+                        <div className="mb-2 text-body font-medium text-foreground">{t("routinesDialog.topic")}</div>
+                        <SettingsSelect
+                          aria-label={t("routinesDialog.topic")}
+                          value={pickedTopic}
+                          onChange={(e) => setTopicId(e.target.value)}
+                          className="w-full max-w-[320px]"
+                        >
+                          <option value="">{t("workflows.topicMain")}</option>
+                          {byCategory(roomTopics).map(({ category, topics: list }) => (
+                            <optgroup key={category ?? ""} label={category ?? t("roomTopics.noCategory")}>
+                              {list.map((tp) => (
+                                <option key={tp.id} value={tp.id}>
+                                  {tp.status === "closed" ? t("workflows.topicClosed", { title: tp.title }) : tp.title}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </SettingsSelect>
+                        <div className="mt-1.5 text-small text-muted-foreground">{t("routinesDialog.topicLine")}</div>
                       </div>
                     )}
                     {forAgent && (

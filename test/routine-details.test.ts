@@ -82,6 +82,12 @@ test("a field taken away is sent cleared, the way the server clears it", () => {
   assert.deepEqual(routinePatch(weekly, bare), { name: "", runsOn: null, thread: null });
 });
 
+test("a room's routine sends its topic when it changes, and clears it with null", () => {
+  const room: RoutineDraft = { targetId: "room-a", targetKind: "room", prompt: "Standup.", time: "09:00", days: [] };
+  assert.deepEqual(routinePatch(room, { ...room, topicId: "t1" }), { topicId: "t1" });
+  assert.deepEqual(routinePatch({ ...room, topicId: "t1" }, room), { topicId: null });
+});
+
 test("changing the kind of schedule clears the old one", () => {
   const once: RoutineDraft = { ...weekly, days: [], repeat: "once", date: "2026-11-02" };
   assert.deepEqual(routinePatch(once, weekly), { days: [1, 3], repeat: "weekly" });

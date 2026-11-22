@@ -2,14 +2,16 @@
 //
 //   TopicBar        under the room's header: the main stream and each open
 //                   topic, with its mark, and a way to open a new one for
-//                   whoever may. Closed topics wait behind a count.
+//                   whoever may. Topics with a category sit in its folder,
+//                   which folds to one chip with a count and the loudest
+//                   mark inside. Closed topics wait behind a count.
 //   NewTopicDialog  a title, a category, which agents work in it, and the
 //                   folder and branch its work belongs in.
 //   TopicPanel      a topic's context in the side dock: what it is for, who
 //                   works in it, where its work goes, the files and pages
 //                   it has touched, and closing or reopening it.
 import { useState } from "react";
-import { Check, FileText, Folder, GitBranch, Globe, Lock, MessagesSquare, Plus } from "@/components/icons";
+import { Check, ChevronRight, FileText, Folder, GitBranch, Globe, Lock, MessagesSquare, Plus } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -20,7 +22,7 @@ import { formatList, t } from "@/lib/i18n";
 import { stamp } from "@/lib/when";
 import { fileBase } from "@/lib/sharedFile";
 import { hostLabel } from "@/lib/appBrowser";
-import { topicFiles, topicLinks, type RoomTopic, type TopicState } from "@/lib/roomTopics";
+import { topicFiles, topicFolders, topicLinks, type RoomTopic, type TopicState } from "@/lib/roomTopics";
 
 /** A topic's mark: blue while an agent works in it, amber while something
  * in it waits for a person, a hollow ring when open and quiet, nothing
@@ -57,9 +59,12 @@ export function TopicBar({
   onNew: () => void;
 }) {
   const [showClosed, setShowClosed] = useState(false);
+  // folders the person folded (true) or opened (false), by category
+  const [folded, setFolded] = useState<Record<string, boolean>>({});
   const open = topics.filter((tp) => tp.status === "open");
   const closed = topics.filter((tp) => tp.status === "closed");
   const shown = showClosed ? [...open, ...closed] : [...open, ...closed.filter((tp) => tp.id === current)];
+  const folders = topicFolders(shown, states, current, folded);
   const chip = (selected: boolean) =>
     cn(
       "flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-body outline-none transition-colors duration-150",
@@ -71,20 +76,46 @@ export function TopicBar({
         <MessagesSquare size={13} className="shrink-0" aria-hidden />
         {t("roomTopics.main")}
       </button>
-      {shown.map((topic) => (
-        <button
-          key={topic.id}
-          type="button"
-          role="tab"
-          aria-selected={current === topic.id}
-          onClick={() => onPick(topic.id)}
-          title={[topic.title, topic.category, t("roomTopics.messages", { count: counts.get(topic.id) ?? 0 })].filter(Boolean).join("\n")}
-          className={cn(chip(current === topic.id), topic.status === "closed" && "opacity-70")}
-        >
-          <TopicMark state={states.get(topic.id) ?? "idle"} />
-          <span className="truncate">{topic.title}</span>
-        </button>
-      ))}
+      {folders.map((folder) => {
+        const tabs = folder.open
+          ? folder.topics.map((topic) => (
+              <button
+                key={topic.id}
+                type="button"
+                role="tab"
+                aria-selected={current === topic.id}
+                onClick={() => onPick(topic.id)}
+                title={[topic.title, topic.category, t("roomTopics.messages", { count: counts.get(topic.id) ?? 0 })].filter(Boolean).join("\n")}
+                className={cn(chip(current === topic.id), topic.status === "closed" && "opacity-70")}
+              >
+                <TopicMark state={states.get(topic.id) ?? "idle"} />
+                <span className="truncate">{topic.title}</span>
+              </button>
+            ))
+          : [];
+        if (folder.category === null) return tabs;
+        const category = folder.category;
+        return [
+          <button
+            key={`folder:${category}`}
+            type="button"
+            aria-expanded={folder.open}
+            onClick={() => setFolded((was) => ({ ...was, [category]: folder.open }))}
+            title={t(folder.open ? "roomTopics.folder.fold" : "roomTopics.folder.unfold", { category, count: folder.topics.length })}
+            className={cn(
+              "flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full px-2 text-body outline-none transition-colors duration-150 hover:bg-accent/60 hover:text-foreground",
+              folder.open ? "text-muted-foreground" : "bg-muted/60 text-foreground",
+            )}
+          >
+            <ChevronRight size={12} aria-hidden className={cn("shrink-0 transition-transform duration-150", folder.open && "rotate-90")} />
+            <Folder size={13} aria-hidden className="shrink-0" />
+            <span className="truncate">{category}</span>
+            <span className="shrink-0 tabular-nums text-small text-muted-foreground">{folder.topics.length}</span>
+            {!folder.open && (folder.mark === "working" || folder.mark === "waiting") && <TopicMark state={folder.mark} />}
+          </button>,
+          ...tabs,
+        ];
+      })}
       {closed.length > 0 && (
         <button
           type="button"

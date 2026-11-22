@@ -89,6 +89,9 @@ export interface Step {
   /** ask: the agent. post: the room. approve: the lane the card lands
    * in, which defaults to the agent of the nearest ask before it. */
   targetId?: string;
+  /** post only: one of the room's topics to post in (server/room-topics.ts).
+   * Absent is the room's main stream. */
+  topicId?: string;
   /** The words, templated. */
   text: string;
   /** Run this step only if this holds. Absent means always. */
@@ -427,6 +430,7 @@ export function clean(raw: unknown): Omit<Workflow, "id" | "createdAt"> | null {
       takenIds.push(id);
       const step: Step = { id, action, text };
       if (typeof s.targetId === "string" && /^[\w-]{1,64}$/.test(s.targetId)) step.targetId = s.targetId;
+      if (action === "post" && step.targetId && typeof s.topicId === "string" && /^[\w-]{1,64}$/.test(s.topicId)) step.topicId = s.topicId;
       const rawWhen = (typeof s.when === "object" && s.when !== null ? s.when : null) as Record<string, unknown> | null;
       if (rawWhen && OPS.includes(rawWhen.op as ConditionOp)) {
         step.when = {
@@ -689,6 +693,7 @@ export class WorkflowStore {
       for (const step of workflow.steps) {
         if (step.targetId === targetId) {
           delete step.targetId;
+          delete step.topicId;
           workflow.enabled = false;
           touched = true;
         }
