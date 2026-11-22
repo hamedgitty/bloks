@@ -2248,6 +2248,14 @@ its id so the next step is one command. An agent with no lead is at the
 top of its tree and reaches anyone. Rooms, jobs, intents and the
 person's own messages are not routed by it.
 
+The sidebar can list Favorites instead of every agent
+(`src/lib/agentFilter.ts`, a choice kept on the device): the pinned
+agents, the one on screen, and any other only while it has an unread
+reply or a conversation stopped for the person. A line under the list
+counts the rest and opens the Agents page, whose last group lists the
+archived agents with Restore beside each (the same `restoreBot` the
+sidebar's archive uses; deleting for good stays there).
+
 ## Goals
 
 A conversation can be given a goal, and then keeps working turn after

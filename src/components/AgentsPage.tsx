@@ -10,9 +10,12 @@
 // It is made of the settings page's own pieces (SettingsLayout.tsx), rows
 // in a card, so it reads like the rest of the app and invents nothing.
 // The teams are the rooms, each with its lead; a room is where a hired
-// team works, and the place to open it is the sidebar's.
+// team works, and the place to open it is the sidebar's. Archived agents
+// wait at the bottom, each a click from coming back; deleting one for good
+// stays behind the sidebar's archive, where the confirm names what goes.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Crown, Search, Users } from "@/components/icons";
+import { Crown, RotateCcw, Search, Users } from "@/components/icons";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AgentAvatar } from "./Avatar";
@@ -63,6 +66,8 @@ export function AgentsPage() {
   const lines = view ? reportingRows(view).filter((row) => shown(row.agent)) : [];
   const loose = view ? unplacedAgents(view).filter(shown) : [];
   const anyLead = Boolean(view?.agents.some((a) => a.lead));
+  const needle = query.trim().toLowerCase();
+  const archived = state.bots.filter((b) => b.hidden && (!needle || b.name.toLowerCase().includes(needle) || (b.title ?? "").toLowerCase().includes(needle)));
 
   return (
     <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -136,7 +141,7 @@ export function AgentsPage() {
                 </SettingsGroup>
               )}
 
-              {query && !lines.length && !loose.length && view.agents.length > 0 && (
+              {query && !lines.length && !loose.length && !archived.length && view.agents.length > 0 && (
                 <SettingsGroup>
                   <SettingsEmpty icon={<Search size={16} />} title={t("agentsPage.noMatch")} />
                 </SettingsGroup>
@@ -172,6 +177,39 @@ export function AgentsPage() {
                       />
                     );
                   })}
+                </SettingsGroup>
+              )}
+
+              {archived.length > 0 && (
+                <SettingsGroup title={t("agentsPage.archived")} description={t("agentsPage.archivedLine")}>
+                  {archived.map((bot) => (
+                    <SettingRow
+                      key={bot.id}
+                      rowId={`archived-${bot.id}`}
+                      label={
+                        <span className="flex min-w-0 items-center gap-2.5">
+                          <AgentAvatar bot={bot} size={22} className="opacity-70" />
+                          <span className="truncate">{bot.name}</span>
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-8">
+                          {bot.archivedBy
+                            ? t(bot.archiveNote ? "sidebar.archivedByWithNote" : "sidebar.archivedBy", {
+                                name: bots.get(bot.archivedBy)?.name ?? t("sidebar.theAgentThatHiredIt"),
+                                note: bot.archiveNote ?? "",
+                              })
+                            : bot.title || t("agentsPage.noRole")}
+                        </span>
+                      }
+                      control={
+                        <Button size="sm" variant="secondary" onClick={() => dispatch({ type: "restoreBot", botId: bot.id })}>
+                          <RotateCcw size={14} aria-hidden />
+                          {t("sidebar.restore")}
+                        </Button>
+                      }
+                    />
+                  ))}
                 </SettingsGroup>
               )}
             </>

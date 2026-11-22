@@ -58,6 +58,8 @@ import { SideColumn } from "./SideColumn";
 import { openSearch } from "./CommandPalette";
 import { setLanesInSidebar, useConversationsView } from "@/lib/conversationsView";
 import { agentRowShape, bareTrailing, useCompactAgentRows, type AgentRowShape } from "@/lib/agentRows";
+import { filterAgents, useAgentFilter } from "@/lib/agentFilter";
+import { Segmented } from "@/components/ui/segmented";
 import { Loader2 } from "@/components/icons";
 import { ListTree } from "@/components/icons";
 import { usePinnedHeads } from "@/lib/pinnedHeads";
@@ -783,6 +785,9 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   const { state, dispatch } = useStore();
   const [conversations, setConversations] = useConversationsView();
   const [compactRows] = useCompactAgentRows();
+  // Favorites or All (src/lib/agentFilter.ts): the pinned agents and any
+  // with something for you, or every one
+  const [agentFilter, setAgentFilter] = useAgentFilter();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [filing, setFiling] = useState<FilingState | null>(null);
   // the room whose row is a field for its name
@@ -1003,6 +1008,14 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
     [state.bots, projectMembers],
   );
 
+  const { shown: listedBots, more: moreAgents } = useMemo(
+    () => filterAgents(visibleBots, agentFilter, state.selectedId),
+    [visibleBots, agentFilter, state.selectedId],
+  );
+  // the switch is for a list long enough to want shortening, and stays
+  // while Favorites is on so the way back is never hidden
+  const offerFilter = visibleBots.length > 1 || agentFilter === "favorites";
+
   // The whole list in the one order every surface follows (sidebarLayout
   // in src/lib/sections.ts), with activity held still under the pointer.
   const layout = useMemo(() => {
@@ -1017,7 +1030,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
         createdAt: room.createdAt,
         room,
       })),
-      ...visibleBots.map((bot) => ({
+      ...listedBots.map((bot) => ({
         kind: "agent" as const,
         id: bot.id,
         section: bot.section ?? null,
@@ -1029,7 +1042,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
       })),
     ];
     return sidebarLayout(rows, state.sectionOrder);
-  }, [state.bloks, visibleBots, heldActivity, state.sectionOrder]);
+  }, [state.bloks, listedBots, heldActivity, state.sectionOrder]);
 
   const newMenuItems = (
     <DropdownMenuContent align="end" className="min-w-[160px]">
@@ -1178,7 +1191,7 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
         onMouseLeave={() => setHeldActivity(null)}
       >
         <div className="flex flex-col gap-px pt-1">
-          {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling) && (
+          {(unfiledRooms.length > 0 || unfiledBots.length > 0 || unfiling || offerFilter) && (
             <div
               {...fileZone(null, (kind) => (kind === "room" ? unfiledRooms : unfiledBots))}
               className={cn(
@@ -1202,9 +1215,28 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                 </div>
               )}
               <div className="flex flex-col gap-px">
-                {unfiledRooms.length > 0 && (
-                  <div data-pin="" className="sidebar-pin sticky top-0 z-10 flex items-center justify-between px-2.5 pb-1 pt-3 text-small font-medium text-muted-foreground">
-                    {t("sidebar.agents")}
+                {(unfiledRooms.length > 0 || offerFilter) && (
+                  <div
+                    data-pin=""
+                    className={cn(
+                      "sidebar-pin sticky top-0 z-10 flex items-center gap-1.5 px-2.5 pb-1 text-small font-medium text-muted-foreground",
+                      unfiledRooms.length > 0 ? "pt-3" : "pt-1",
+                    )}
+                  >
+                    <span className="mr-auto truncate">{t("sidebar.agents")}</span>
+                    {offerFilter && (
+                      <Segmented
+                        aria-label={t("sidebar.agentFilter.label")}
+                        size="sm"
+                        className="shrink-0 [&_button]:px-2 [&_button]:py-0.5 [&_button]:text-caption"
+                        value={agentFilter}
+                        onChange={setAgentFilter}
+                        options={[
+                          { value: "favorites", label: t("sidebar.agentFilter.favorites"), title: t("sidebar.agentFilter.favoritesTitle") },
+                          { value: "all", label: t("sidebar.agentFilter.all") },
+                        ]}
+                      />
+                    )}
                     <button
                       onClick={() => setConversations(!conversations)}
                       aria-pressed={conversations}
@@ -1219,6 +1251,19 @@ export function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                   </div>
                 )}
                 {drawList(unfiledBots)}
+                {agentFilter === "favorites" && !visibleBots.some((b) => b.pinned) && (
+                  <div className="px-2.5 py-1.5 text-pretty text-small text-muted-foreground">{t("sidebar.agentFilter.noFavorites")}</div>
+                )}
+                {moreAgents > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => dispatch({ type: "openPage", page: "agents" })}
+                    className="flex h-8 items-center gap-2 rounded-xl px-2.5 text-left text-small text-muted-foreground transition-colors duration-150 hover:bg-accent/60 hover:text-foreground"
+                  >
+                    <Users size={13} className="shrink-0" aria-hidden />
+                    <span className="truncate">{t("sidebar.agentFilter.more", { count: moreAgents })}</span>
+                  </button>
+                )}
                 {unfiling && (
                   <div
                     className={cn(
